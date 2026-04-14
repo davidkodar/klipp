@@ -1,3 +1,4 @@
+pub mod consolidate;
 mod format;
 pub mod fcpxml;
 mod load;

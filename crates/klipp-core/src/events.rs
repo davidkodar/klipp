@@ -438,6 +438,14 @@ pub enum AppCommand {
     /// Unsupported features (filters, non-cross-dissolve transitions, keyframes)
     /// are logged to a `<name>.import_warnings.txt` file alongside the source.
     ImportKdenlive { path: PathBuf },
+    /// Copy the current project and all referenced media into a new
+    /// self-contained directory at `dest_dir`. Source project is untouched.
+    /// Runs on a background thread — see `ConsolidateDone` for completion.
+    ConsolidateProject {
+        dest_dir: PathBuf,
+        include_proxies: bool,
+        include_skims: bool,
+    },
     /// Create a new empty subtitle clip at the given timeline position on
     /// the first Subtitle/Text track (creates a Subtitle track if none exists).
     /// Used by the subtitle editor panel's "Add at playhead" button.

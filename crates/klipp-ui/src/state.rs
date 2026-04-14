@@ -655,6 +655,16 @@ pub struct AppState {
     pub show_subtitle_editor: bool,
     /// Per-session editing state for the subtitle editor panel.
     pub subtitle_editor: SubtitleEditorState,
+    /// Live state for a running project-consolidation operation (None = no
+    /// consolidation in progress). Progress + completion arrive via the
+    /// embedded mpsc channel; see consolidate::ConsolidateMessage.
+    pub consolidate_progress: Option<ConsolidateProgress>,
+    /// Editable destination path in the consolidate dialog.
+    pub consolidate_dest_path: String,
+    /// Dialog toggle: include proxy files.
+    pub consolidate_include_proxies: bool,
+    /// Dialog toggle: include skim transcodes.
+    pub consolidate_include_skims: bool,
     pub show_browser_panel: bool,
     /// When set, the browser panel should scroll to this media item.
     pub reveal_in_browser: Option<klipp_core::MediaId>,
@@ -855,6 +865,36 @@ pub enum EyedropperMode {
     None,
     WhiteBalance,
     Qualifier,
+}
+
+/// Messages sent from the consolidation background thread to the UI thread.
+#[derive(Debug)]
+pub enum ConsolidateMessage {
+    Progress {
+        done: usize,
+        total: usize,
+        filename: String,
+    },
+    Done(Result<klipp_project::consolidate::ConsolidateResult, String>),
+}
+
+/// Live state for an active consolidation operation. Dropped when the
+/// operation completes (success or failure).
+pub struct ConsolidateProgress {
+    pub files_done: usize,
+    pub files_total: usize,
+    pub current_file: String,
+    pub receiver: std::sync::mpsc::Receiver<ConsolidateMessage>,
+}
+
+impl std::fmt::Debug for ConsolidateProgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConsolidateProgress")
+            .field("files_done", &self.files_done)
+            .field("files_total", &self.files_total)
+            .field("current_file", &self.current_file)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Per-session editing state for the subtitle editor panel.
@@ -1609,6 +1649,10 @@ impl Default for AppState {
             show_markers_panel: false,
             show_subtitle_editor: false,
             subtitle_editor: SubtitleEditorState::default(),
+            consolidate_progress: None,
+            consolidate_dest_path: String::new(),
+            consolidate_include_proxies: false,
+            consolidate_include_skims: false,
             show_browser_panel: true,
             reveal_in_browser: None,
             show_inspector_panel: true,
@@ -1712,5 +1756,33 @@ mod tests {
         assert!(s.text_buf.is_empty());
         assert!(s.timecode_buf.is_empty());
         assert!(!s.ripple);
+    }
+
+    #[test]
+    fn consolidate_progress_channel_roundtrip() {
+        // Sanity: the mpsc channel used by ConsolidateProgress can deliver
+        // both Progress and Done messages, and try_recv returns them in order.
+        let (tx, rx) = std::sync::mpsc::channel::<ConsolidateMessage>();
+        tx.send(ConsolidateMessage::Progress {
+            done: 1,
+            total: 3,
+            filename: "clip.mp4".into(),
+        })
+        .unwrap();
+        tx.send(ConsolidateMessage::Done(Err("simulated".into())))
+            .unwrap();
+        drop(tx);
+
+        let first = rx.recv().unwrap();
+        match first {
+            ConsolidateMessage::Progress { done, total, filename } => {
+                assert_eq!(done, 1);
+                assert_eq!(total, 3);
+                assert_eq!(filename, "clip.mp4");
+            }
+            _ => panic!("expected Progress first"),
+        }
+        let second = rx.recv().unwrap();
+        assert!(matches!(second, ConsolidateMessage::Done(Err(_))));
     }
 }

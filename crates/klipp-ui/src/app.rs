@@ -1330,6 +1330,49 @@ impl KlippApp {
                 result.height,
             );
         }
+
+        // Drain consolidation progress messages from the background thread.
+        // Keeps the status bar / dialog progress counter fresh and transitions
+        // the UI out of "consolidating" state when Done arrives.
+        let mut consolidate_finished: Option<Result<klipp_project::consolidate::ConsolidateResult, String>> = None;
+        if let Some(progress) = self.state.consolidate_progress.as_mut() {
+            while let Ok(msg) = progress.receiver.try_recv() {
+                match msg {
+                    crate::state::ConsolidateMessage::Progress { done, total, filename } => {
+                        progress.files_done = done;
+                        progress.files_total = total;
+                        progress.current_file = filename;
+                    }
+                    crate::state::ConsolidateMessage::Done(r) => {
+                        consolidate_finished = Some(r);
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(result) = consolidate_finished {
+            self.state.consolidate_progress = None;
+            match result {
+                Ok(r) => {
+                    let msg = if r.offline_skipped.is_empty() {
+                        format!(
+                            "Project consolidated — {} file(s) copied.",
+                            r.files_copied,
+                        )
+                    } else {
+                        format!(
+                            "Project consolidated — {} file(s) copied, {} offline skipped.",
+                            r.files_copied,
+                            r.offline_skipped.len(),
+                        )
+                    };
+                    self.state.toast.show(msg);
+                }
+                Err(e) => {
+                    self.state.toast.show(format!("Consolidation failed: {e}"));
+                }
+            }
+        }
         // Process up to 50 filmstrip frames per UI tick for fast progressive updates
         for _ in 0..50 {
             match self.filmstrip_rx.try_recv() {
@@ -9773,6 +9816,10 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::ConsolidateProject { dest_dir, include_proxies, include_skims } => {
+                self.start_consolidation(dest_dir.clone(), *include_proxies, *include_skims);
+                true
+            }
             AppCommand::AddSubtitleAtPlayhead { timeline_in, duration_frames } => {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 let fps_rate = seq.fps.rate();
@@ -11239,6 +11286,77 @@ impl KlippApp {
         for &i in to_remove.iter().rev() {
             track.clips.remove(i);
         }
+    }
+
+    /// Kick off a project consolidation on a background thread. Sets up the
+    /// `consolidate_progress` channel on state so the main loop picks up
+    /// progress + completion messages.
+    fn start_consolidation(
+        &mut self,
+        dest_dir: std::path::PathBuf,
+        include_proxies: bool,
+        include_skims: bool,
+    ) {
+        let Some(source_dir) = self.state.project_path.clone() else {
+            self.state.toast.show(
+                "Save the project before consolidating.".to_string(),
+            );
+            return;
+        };
+        if self.state.consolidate_progress.is_some() {
+            self.state.toast.show(
+                "Consolidation already in progress.".to_string(),
+            );
+            return;
+        }
+
+        let media_pool = self.state.media_pool.clone();
+        let sequences = self.state.sequences.clone();
+        let color = klipp_project::ColorSettings {
+            global_lut_path: self.state.global_lut_path.clone(),
+            global_lut_opacity: self.state.global_lut_opacity,
+            global_lut_enabled: self.state.global_lut_enabled,
+            track_header_width: self.state.track_header_width,
+            auto_generate_filmstrips: self.state.project_auto_filmstrips,
+            auto_generate_skim: self.state.project_auto_skim,
+        };
+        let options = klipp_project::consolidate::ConsolidateOptions {
+            dest_dir,
+            include_proxies,
+            include_skims,
+        };
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.state.consolidate_progress = Some(crate::state::ConsolidateProgress {
+            files_done: 0,
+            files_total: 0,
+            current_file: String::new(),
+            receiver: rx,
+        });
+        self.state.show_consolidate_dialog = false;
+
+        let tx_progress = tx.clone();
+        std::thread::spawn(move || {
+            let result = klipp_project::consolidate::consolidate_project(
+                &source_dir,
+                &media_pool,
+                &sequences,
+                &color,
+                options,
+                Some(Box::new(move |done, total, name| {
+                    let _ = tx_progress.send(
+                        crate::state::ConsolidateMessage::Progress {
+                            done,
+                            total,
+                            filename: name.to_string(),
+                        },
+                    );
+                })),
+            );
+            let _ = tx.send(crate::state::ConsolidateMessage::Done(
+                result.map_err(|e| e.to_string()),
+            ));
+        });
     }
 
     fn do_save_project(&mut self, path: &std::path::Path) {
@@ -15142,75 +15260,101 @@ impl KlippApp {
         }
 
         // 4c2. Consolidate Project dialog
+        // Copies the project + all referenced media into a NEW self-contained
+        // directory. The source project is never modified.
         if self.state.show_consolidate_dialog {
-            if let Some(ref project_path) = self.state.project_path.clone() {
-                let mut open = true;
-                // Count media files outside the project directory
-                let project_dir = project_path.clone();
-                let external_media: Vec<_> = self.state.media_pool.all()
-                    .filter(|item| !item.offline && !item.path.starts_with(&project_dir))
-                    .map(|item| (item.id, item.path.clone(), item.file_size_bytes))
-                    .collect();
-                let file_count = external_media.len();
-                let total_bytes: u64 = external_media.iter().map(|(_, _, s)| s).sum();
+            let Some(ref project_path) = self.state.project_path.clone() else {
+                self.state.show_consolidate_dialog = false;
+                return;
+            };
+            let mut open = true;
+            let total_media = self.state.media_pool.all().count();
+            let offline_count = self.state.media_pool.all().filter(|m| m.offline).count();
+            let online_count = total_media - offline_count;
+            let consolidation_active = self.state.consolidate_progress.is_some();
 
-                egui::Window::new("Consolidate Project")
-                    .open(&mut open)
-                    .collapsible(false)
-                    .resizable(false)
-                    .default_width(380.0)
-                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                    .show(ctx, |ui| {
-                        ui.label("Copy all referenced media files into the project folder for portability.");
-                        ui.add_space(8.0);
-                        if file_count == 0 {
-                            ui.label(egui::RichText::new("All media is already inside the project folder.")
-                                .color(self.theme.text_secondary));
-                        } else {
-                            ui.label(format!("Media to copy: {} file(s)", file_count));
-                            ui.label(format!("Total size: {}", format_size_brief(total_bytes)));
-                            ui.add_space(12.0);
-                            ui.horizontal(|ui| {
-                                if ui.button("Cancel").clicked() {
-                                    self.state.show_consolidate_dialog = false;
-                                }
-                                if ui.button("Consolidate").clicked() {
-                                    self.state.show_consolidate_dialog = false;
-                                    let media_dir = project_dir.join("media").join("files");
-                                    if let Err(e) = std::fs::create_dir_all(&media_dir) {
-                                        tracing::error!("Failed to create media/files dir: {e}");
-                                    } else {
-                                        let mut copied = 0usize;
-                                        for (media_id, src_path, _) in &external_media {
-                                            let filename = src_path.file_name().unwrap_or_default();
-                                            let dst = media_dir.join(filename);
-                                            match std::fs::copy(src_path, &dst) {
-                                                Ok(_) => {
-                                                    // Update media item path
-                                                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
-                                                        item.path = dst;
-                                                    }
-                                                    copied += 1;
-                                                }
-                                                Err(e) => {
-                                                    tracing::error!("Failed to copy {:?}: {e}", src_path);
-                                                }
-                                            }
-                                        }
-                                        self.state.dirty = true;
-                                        self.state.toast.show(format!("Consolidated {copied} file(s)"));
-                                        tracing::info!("Consolidated {copied}/{file_count} media files");
-                                    }
-                                }
-                            });
+            egui::Window::new("Consolidate Project")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .default_width(460.0)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(
+                        "Copies all referenced media into a new self-contained \
+                         project folder. The original is untouched.",
+                    );
+                    ui.add_space(8.0);
+
+                    ui.label(format!("Media files:  {online_count} online"));
+                    if offline_count > 0 {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(0xc0, 0x90, 0x30),
+                            format!(
+                                "\u{26A0} {offline_count} offline file(s) will be skipped",
+                            ),
+                        );
+                    }
+                    ui.add_space(8.0);
+
+                    ui.checkbox(
+                        &mut self.state.consolidate_include_proxies,
+                        "Include proxy files",
+                    );
+                    ui.checkbox(
+                        &mut self.state.consolidate_include_skims,
+                        "Include skim files",
+                    );
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label("Destination:");
+                        ui.add(
+                            egui::TextEdit::singleline(
+                                &mut self.state.consolidate_dest_path,
+                            )
+                            .desired_width(280.0),
+                        );
+                        if ui.button("\u{2026}").clicked() {
+                            if let Some(dir) = rfd::FileDialog::new()
+                                .set_title("Choose Consolidation Destination")
+                                .pick_folder()
+                            {
+                                self.state.consolidate_dest_path =
+                                    dir.to_string_lossy().to_string();
+                            }
                         }
                     });
-                if !open {
-                    self.state.show_consolidate_dialog = false;
-                }
-            } else {
+                    ui.add_space(8.0);
+
+                    let can_consolidate =
+                        !self.state.consolidate_dest_path.trim().is_empty()
+                            && !consolidation_active;
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            self.state.show_consolidate_dialog = false;
+                        }
+                        if ui
+                            .add_enabled(
+                                can_consolidate,
+                                egui::Button::new("Consolidate"),
+                            )
+                            .clicked()
+                        {
+                            let dest = std::path::PathBuf::from(
+                                self.state.consolidate_dest_path.trim(),
+                            );
+                            let include_proxies = self.state.consolidate_include_proxies;
+                            let include_skims = self.state.consolidate_include_skims;
+                            self.start_consolidation(dest, include_proxies, include_skims);
+                        }
+                    });
+                });
+            if !open {
                 self.state.show_consolidate_dialog = false;
             }
+            let _ = project_path; // silence unused warning in release builds
         }
 
         // 4c3. Project Info window
