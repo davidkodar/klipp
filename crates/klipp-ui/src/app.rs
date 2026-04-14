@@ -10256,6 +10256,7 @@ impl KlippApp {
                         self.state.sequences.push(result.sequence);
                         self.state.active_sequence_idx = self.state.sequences.len() - 1;
                         self.state.dirty = true;
+                        self.sync_media_pool_to_engine();
                         self.sync_sequence_to_engine();
                     }
                     Err(e) => {
