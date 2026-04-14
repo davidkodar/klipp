@@ -1332,9 +1332,13 @@ impl KlippApp {
         }
 
         // Drain consolidation progress messages from the background thread.
-        // Keeps the status bar / dialog progress counter fresh and transitions
-        // the UI out of "consolidating" state when Done arrives.
-        let mut consolidate_finished: Option<Result<klipp_project::consolidate::ConsolidateResult, String>> = None;
+        // Keeps the status bar / dialog progress counter fresh, transitions
+        // the UI out of Phase 1 when `Done` arrives, and — if the optional
+        // archive phase was opted into — stays subscribed until `ArchiveDone`
+        // arrives. `ArchiveProgress` is byte-granular; Phase 1 progress is
+        // file-granular.
+        let mut phase1_finished: Option<Result<klipp_project::consolidate::ConsolidateResult, String>> = None;
+        let mut archive_finished: Option<Result<std::path::PathBuf, String>> = None;
         if let Some(progress) = self.state.consolidate_progress.as_mut() {
             while let Ok(msg) = progress.receiver.try_recv() {
                 match msg {
@@ -1344,16 +1348,29 @@ impl KlippApp {
                         progress.current_file = filename;
                     }
                     crate::state::ConsolidateMessage::Done(r) => {
-                        consolidate_finished = Some(r);
-                        break;
+                        phase1_finished = Some(r);
+                    }
+                    crate::state::ConsolidateMessage::ArchiveProgress {
+                        bytes_done,
+                        bytes_total,
+                        filename,
+                    } => {
+                        progress.archiving = true;
+                        progress.archive_bytes_done = bytes_done;
+                        progress.archive_bytes_total = bytes_total;
+                        progress.current_file = filename;
+                    }
+                    crate::state::ConsolidateMessage::ArchiveDone(r) => {
+                        archive_finished = Some(r);
                     }
                 }
             }
         }
-        if let Some(result) = consolidate_finished {
-            self.state.consolidate_progress = None;
+        // Fire Phase 1 toast (always). The progress handle stays alive if
+        // archive messages are still expected (determined below).
+        if let Some(result) = phase1_finished {
             match result {
-                Ok(r) => {
+                Ok(ref r) => {
                     let msg = if r.offline_skipped.is_empty() {
                         format!(
                             "Project consolidated — {} file(s) copied.",
@@ -1368,8 +1385,37 @@ impl KlippApp {
                     };
                     self.state.toast.show(msg);
                 }
-                Err(e) => {
+                Err(ref e) => {
                     self.state.toast.show(format!("Consolidation failed: {e}"));
+                }
+            }
+            // If Phase 1 failed OR the user didn't ask for an archive, we're
+            // done. Otherwise keep the progress struct alive so we can still
+            // receive ArchiveProgress / ArchiveDone in subsequent frames.
+            let expects_archive = self
+                .state
+                .consolidate_progress
+                .as_ref()
+                .map(|p| p.expects_archive)
+                .unwrap_or(false);
+            let keep_alive = result.is_ok() && expects_archive && archive_finished.is_none();
+            if !keep_alive {
+                self.state.consolidate_progress = None;
+            }
+        }
+        // Fire archive-phase toast when ArchiveDone arrives, and drop the
+        // progress struct.
+        if let Some(result) = archive_finished {
+            self.state.consolidate_progress = None;
+            match result {
+                Ok(zip_path) => {
+                    self.state.toast.show(format!(
+                        "Archive created at {}",
+                        zip_path.display(),
+                    ));
+                }
+                Err(e) => {
+                    self.state.toast.show(format!("Archive failed: {e}"));
                 }
             }
         }
@@ -10268,8 +10314,20 @@ impl KlippApp {
                 }
                 true
             }
-            AppCommand::ConsolidateProject { dest_dir, include_proxies, include_skims } => {
-                self.start_consolidation(dest_dir.clone(), *include_proxies, *include_skims);
+            AppCommand::ConsolidateProject {
+                dest_dir,
+                include_proxies,
+                include_skims,
+                create_zip,
+                delete_folder_after_zip,
+            } => {
+                self.start_consolidation(
+                    dest_dir.clone(),
+                    *include_proxies,
+                    *include_skims,
+                    *create_zip,
+                    *delete_folder_after_zip,
+                );
                 true
             }
             AppCommand::AddSubtitleAtPlayhead { timeline_in, duration_frames } => {
@@ -11748,6 +11806,8 @@ impl KlippApp {
         dest_dir: std::path::PathBuf,
         include_proxies: bool,
         include_skims: bool,
+        create_zip: bool,
+        delete_folder_after_zip: bool,
     ) {
         let Some(source_dir) = self.state.project_path.clone() else {
             self.state.toast.show(
@@ -11783,9 +11843,17 @@ impl KlippApp {
             files_done: 0,
             files_total: 0,
             current_file: String::new(),
+            expects_archive: create_zip,
+            archiving: false,
+            archive_bytes_done: 0,
+            archive_bytes_total: 0,
             receiver: rx,
         });
         self.state.show_consolidate_dialog = false;
+
+        // Capture the destination once for Phase 2 so later state edits can't
+        // redirect the archive target mid-run.
+        let phase2_dest = options.dest_dir.clone();
 
         let tx_progress = tx.clone();
         std::thread::spawn(move || {
@@ -11805,9 +11873,53 @@ impl KlippApp {
                     );
                 })),
             );
+            let phase1_ok = result.is_ok();
             let _ = tx.send(crate::state::ConsolidateMessage::Done(
                 result.map_err(|e| e.to_string()),
             ));
+
+            if create_zip && phase1_ok {
+                // Place the archive next to the consolidated folder.
+                // `<dest>/MyProject/` → `<dest>/MyProject.zip`.
+                let zip_path = phase2_dest.with_extension("zip");
+                let tx_arch = tx.clone();
+                let progress_fn: klipp_project::consolidate::ArchiveProgressFn =
+                    Box::new(move |bytes_done: u64, bytes_total: u64, name: &str| {
+                        let _ = tx_arch.send(
+                            crate::state::ConsolidateMessage::ArchiveProgress {
+                                bytes_done,
+                                bytes_total,
+                                filename: name.to_string(),
+                            },
+                        );
+                    });
+                let archive_result = klipp_project::consolidate::execute_zip_folder(
+                    &phase2_dest,
+                    &zip_path,
+                    Some(&progress_fn),
+                );
+                match archive_result {
+                    Ok(()) => {
+                        let _ = tx.send(
+                            crate::state::ConsolidateMessage::ArchiveDone(Ok(zip_path.clone())),
+                        );
+                        if delete_folder_after_zip {
+                            // Best-effort cleanup — the archive is already on
+                            // disk, so a failure here isn't fatal.
+                            if let Err(e) = std::fs::remove_dir_all(&phase2_dest) {
+                                tracing::warn!(
+                                    "delete folder after archiving failed: {e}",
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(
+                            crate::state::ConsolidateMessage::ArchiveDone(Err(e.to_string())),
+                        );
+                    }
+                }
+            }
         });
     }
 
@@ -15757,6 +15869,18 @@ impl KlippApp {
                         &mut self.state.consolidate_include_skims,
                         "Include skim files",
                     );
+                    ui.checkbox(
+                        &mut self.state.consolidate_create_zip,
+                        "Also create .zip archive",
+                    );
+                    if self.state.consolidate_create_zip {
+                        ui.indent("consolidate_zip_opts", |ui| {
+                            ui.checkbox(
+                                &mut self.state.consolidate_delete_folder_after_zip,
+                                "Delete folder after archiving",
+                            );
+                        });
+                    }
                     ui.add_space(8.0);
 
                     ui.horizontal(|ui| {
@@ -15799,7 +15923,16 @@ impl KlippApp {
                             );
                             let include_proxies = self.state.consolidate_include_proxies;
                             let include_skims = self.state.consolidate_include_skims;
-                            self.start_consolidation(dest, include_proxies, include_skims);
+                            let create_zip = self.state.consolidate_create_zip;
+                            let delete_folder_after_zip =
+                                self.state.consolidate_delete_folder_after_zip;
+                            self.start_consolidation(
+                                dest,
+                                include_proxies,
+                                include_skims,
+                                create_zip,
+                                delete_folder_after_zip,
+                            );
                         }
                     });
                 });

@@ -445,6 +445,11 @@ pub enum AppCommand {
         dest_dir: PathBuf,
         include_proxies: bool,
         include_skims: bool,
+        /// After copying, zip the consolidated folder into `<dest_dir>.zip`.
+        create_zip: bool,
+        /// After a successful zip, remove the consolidated folder. Ignored
+        /// when `create_zip` is false.
+        delete_folder_after_zip: bool,
     },
     /// Create a new empty subtitle clip at the given timeline position on
     /// the first Subtitle/Text track (creates a Subtitle track if none exists).

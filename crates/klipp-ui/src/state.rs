@@ -665,6 +665,13 @@ pub struct AppState {
     pub consolidate_include_proxies: bool,
     /// Dialog toggle: include skim transcodes.
     pub consolidate_include_skims: bool,
+    /// Dialog toggle: after copying, zip the consolidated folder into
+    /// `<dest_dir>.zip` alongside it. Default off.
+    pub consolidate_create_zip: bool,
+    /// Dialog toggle: after a successful zip, recursively delete the
+    /// consolidated folder so only the archive remains. Default off.
+    /// Only visible when `consolidate_create_zip` is true.
+    pub consolidate_delete_folder_after_zip: bool,
     pub show_browser_panel: bool,
     /// When set, the browser panel should scroll to this media item.
     pub reveal_in_browser: Option<klipp_core::MediaId>,
@@ -868,6 +875,10 @@ pub enum EyedropperMode {
 }
 
 /// Messages sent from the consolidation background thread to the UI thread.
+///
+/// Ordering guarantees: `Progress`* then `Done`. If the optional archive
+/// phase runs, `ArchiveProgress`* then `ArchiveDone` follow, strictly after
+/// `Done`.
 #[derive(Debug)]
 pub enum ConsolidateMessage {
     Progress {
@@ -876,6 +887,15 @@ pub enum ConsolidateMessage {
         filename: String,
     },
     Done(Result<klipp_project::consolidate::ConsolidateResult, String>),
+    /// Phase 2 archive progress in bytes (granular per-file).
+    ArchiveProgress {
+        bytes_done: u64,
+        bytes_total: u64,
+        filename: String,
+    },
+    /// Phase 2 terminal message. On success carries the zip path; on failure
+    /// the error string (partial zip is already deleted by the writer).
+    ArchiveDone(Result<std::path::PathBuf, String>),
 }
 
 /// Live state for an active consolidation operation. Dropped when the
@@ -884,6 +904,16 @@ pub struct ConsolidateProgress {
     pub files_done: usize,
     pub files_total: usize,
     pub current_file: String,
+    /// Set at construction time from the dialog's "Also create .zip archive"
+    /// checkbox. The drain uses it to know whether to keep the progress
+    /// struct alive after Phase 1 `Done` (archive messages will follow) or
+    /// drop it immediately (Phase 1 was the only phase).
+    pub expects_archive: bool,
+    /// Set to true once the first `ArchiveProgress` or `ArchiveDone` message
+    /// arrives. Keeps the dialog in archive mode for status rendering.
+    pub archiving: bool,
+    pub archive_bytes_done: u64,
+    pub archive_bytes_total: u64,
     pub receiver: std::sync::mpsc::Receiver<ConsolidateMessage>,
 }
 
@@ -893,6 +923,10 @@ impl std::fmt::Debug for ConsolidateProgress {
             .field("files_done", &self.files_done)
             .field("files_total", &self.files_total)
             .field("current_file", &self.current_file)
+            .field("expects_archive", &self.expects_archive)
+            .field("archiving", &self.archiving)
+            .field("archive_bytes_done", &self.archive_bytes_done)
+            .field("archive_bytes_total", &self.archive_bytes_total)
             .finish_non_exhaustive()
     }
 }
@@ -1653,6 +1687,8 @@ impl Default for AppState {
             consolidate_dest_path: String::new(),
             consolidate_include_proxies: false,
             consolidate_include_skims: false,
+            consolidate_create_zip: false,
+            consolidate_delete_folder_after_zip: false,
             show_browser_panel: true,
             reveal_in_browser: None,
             show_inspector_panel: true,
