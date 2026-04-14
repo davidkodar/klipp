@@ -179,7 +179,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
 
     // Reconstruct all sequences
     let mut sequences: Vec<Sequence> = project.sequences.iter()
-        .filter_map(|seq_json| load_sequence_from_json(seq_json).ok())
+        .filter_map(|seq_json| load_sequence_from_json(seq_json, dir).ok())
         .collect();
 
     if sequences.is_empty() {
@@ -220,7 +220,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
 }
 
 
-fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> {
+fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Result<Sequence, String> {
     Ok(Sequence {
         id: SequenceId(parse_uuid(&seq_json.id)?),
         name: seq_json.name.clone(),
@@ -262,7 +262,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
                 })
             }).collect();
             track.clips = t.clips.iter().map(|c| {
-                let clip_kind = load_clip_kind(c);
+                let clip_kind = load_clip_kind(c, project_dir);
                 Clip {
                     id: ClipId(parse_uuid(&c.id).unwrap_or_else(|_| Uuid::new_v4())),
                     kind: clip_kind,
@@ -395,7 +395,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson) -> Result<Sequence, String> 
 }
 
 /// Load ClipKind from JSON — backward-compatible with old `media_id`-only format.
-fn load_clip_kind(c: &ClipJson) -> ClipKind {
+fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
     // New format: `kind` field is present
     if let Some(kind_json) = &c.kind {
         return match kind_json {
@@ -482,7 +482,13 @@ fn load_clip_kind(c: &ClipJson) -> ClipKind {
                     extrusion: ext,
                     text_path: tp,
                     char_animation: ca,
-                    texture_fill_path: texture_fill_path.clone(),
+                    // texture_fill_path stored relative for portability —
+                    // resolve against the project directory on load.
+                    texture_fill_path: texture_fill_path.as_ref().map(|p| {
+                        crate::path_util::resolve_media_path(project_dir, Path::new(p))
+                            .to_string_lossy()
+                            .to_string()
+                    }),
                     motion_blur: mb,
                     style_runs: sr,
                 })

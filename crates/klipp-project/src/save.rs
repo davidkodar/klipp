@@ -17,6 +17,7 @@ fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
 }
 
 /// Project-level settings persisted alongside sequence data.
+#[derive(Debug, Clone)]
 pub struct ColorSettings {
     pub global_lut_path: Option<std::path::PathBuf>,
     pub global_lut_opacity: f32,
@@ -182,7 +183,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                     ClipJson {
                         id: c.id.to_string(),
                         media_id: c.media_id().map(|mid| mid.to_string()),
-                        kind: Some(clip_kind_to_json(&c.kind)),
+                        kind: Some(clip_kind_to_json(&c.kind, project_dir)),
                         timeline_in: c.timeline_in.value,
                         timeline_out: c.timeline_out.value,
                         source_in: c.source_in.value,
@@ -274,7 +275,7 @@ fn effect_to_json(effect: &klipp_plugin::AppliedEffect) -> EffectJson {
 }
 
 #[allow(clippy::needless_borrows_for_generic_args)]
-fn clip_kind_to_json(kind: &ClipKind) -> ClipKindJson {
+fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
     match kind {
         ClipKind::Media { media_id } => ClipKindJson::Media {
             media_id: media_id.to_string(),
@@ -302,7 +303,15 @@ fn clip_kind_to_json(kind: &ClipKind) -> ClipKindJson {
             extrusion: serde_json::to_value(&data.extrusion).unwrap_or_default(),
             text_path: serde_json::to_value(&data.text_path).unwrap_or_default(),
             char_animation: serde_json::to_value(&data.char_animation).unwrap_or_default(),
-            texture_fill_path: data.texture_fill_path.clone(),
+            // Store texture fill paths relative to the project dir for
+            // portability. An empty relative path is impossible here (a
+            // texture is always an actual file), so the fallback just
+            // keeps the original string.
+            texture_fill_path: data.texture_fill_path.as_ref().map(|p| {
+                crate::path_util::to_project_relative(project_dir, Path::new(p))
+                    .to_string_lossy()
+                    .to_string()
+            }),
             motion_blur: serde_json::to_value(&data.motion_blur).unwrap_or_default(),
             style_runs: serde_json::to_value(&data.style_runs).unwrap_or_default(),
         },
