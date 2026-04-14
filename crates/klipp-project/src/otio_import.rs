@@ -20,9 +20,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use klipp_core::{Fps, MarkerColor, MediaId, RationalTime, Resolution, SequenceId};
+use klipp_core::{Fps, MarkerColor, MarkerId, MediaId, RationalTime, Resolution, SequenceId};
 use klipp_media::{MediaItem, MediaPool};
-use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
+use klipp_timeline::{Clip, ClipKind, ClipMarker, Marker, Sequence, Track, TrackKind};
 use serde::Deserialize;
 
 pub use crate::mlt_import::ImportResult;
@@ -82,8 +82,8 @@ pub(crate) struct RawStack {
     /// Parsed as `Value` and dispatched on `OTIO_SCHEMA`.
     #[serde(default)]
     pub children: Vec<serde_json::Value>,
+    /// Stack-level markers become timeline (Sequence) markers.
     #[serde(default)]
-    #[allow(dead_code)] // consumed in commit 3 (timeline markers)
     pub markers: Vec<serde_json::Value>,
 }
 
@@ -102,8 +102,8 @@ pub(crate) struct RawTrack {
     /// Mixed schemas: `Clip.?`, `Gap.?`, `Transition.?`.
     #[serde(default)]
     pub children: Vec<serde_json::Value>,
+    /// Track-level markers are dropped with a warning — Klipp has no such concept.
     #[serde(default)]
-    #[allow(dead_code)] // consumed in commit 3 (track-level markers are dropped with warning)
     pub markers: Vec<serde_json::Value>,
 }
 
@@ -128,8 +128,8 @@ pub(crate) struct RawClip {
     pub media_references: Option<HashMap<String, serde_json::Value>>,
     #[serde(default)]
     pub active_media_reference_key: Option<String>,
+    /// Clip markers are placed in source-relative coordinates.
     #[serde(default)]
-    #[allow(dead_code)] // consumed in commit 3 (per-clip markers)
     pub markers: Vec<serde_json::Value>,
 }
 
@@ -141,6 +141,20 @@ pub(crate) struct RawGap {
     #[allow(dead_code)] // read via child_schema() at dispatch time
     pub schema: String,
     pub source_range: RawTimeRange,
+}
+
+/// `Marker.?` — a named point (or range) with a color. Valid on Clip,
+/// Track, and Stack children; positional semantics differ by parent.
+#[derive(Debug, Deserialize)]
+pub(crate) struct RawMarker {
+    #[serde(rename = "OTIO_SCHEMA")]
+    #[allow(dead_code)] // dispatched via child_schema() before deserialisation
+    pub schema: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    pub marked_range: RawTimeRange,
 }
 
 /// Map an OTIO `rate` (plain `f64`) to a Klipp `Fps` using the SMPTE
@@ -180,7 +194,6 @@ pub(crate) fn rt_from_otio(rt: &RawRationalTime, target_rate: u32) -> RationalTi
 /// Map an OTIO marker color string (UPPERCASE, e.g. `"RED"`, `"CYAN"`)
 /// to the nearest Klipp `MarkerColor`. Unknown or missing colors default
 /// to `Blue` — the same default Klipp uses elsewhere.
-#[allow(dead_code)] // wired into load_otio in the next OTIO commit (markers)
 pub(crate) fn otio_color_to_klipp(color: Option<&str>) -> MarkerColor {
     match color.unwrap_or("") {
         "RED" => MarkerColor::Red,
@@ -352,6 +365,34 @@ fn register_otio_media_ref(
     }
 }
 
+/// Parse a heterogeneous markers array, collecting only valid `Marker.?`
+/// entries. Malformed entries (missing `marked_range`, unexpected schema)
+/// are recorded in `warnings` and skipped — the rest of the import still
+/// lands.
+fn parse_markers(
+    raw: &[serde_json::Value],
+    scope_label: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<RawMarker> {
+    let mut out = Vec::new();
+    for v in raw {
+        let schema = child_schema(v);
+        if !schema.starts_with("Marker.") {
+            warnings.push(format!(
+                "{scope_label}: unexpected marker schema '{schema}' — skipped",
+            ));
+            continue;
+        }
+        match serde_json::from_value::<RawMarker>(v.clone()) {
+            Ok(m) => out.push(m),
+            Err(e) => warnings.push(format!(
+                "{scope_label}: marker parse failed: {e} — skipped",
+            )),
+        }
+    }
+    out
+}
+
 /// Choose a sequence fps. Priority: `global_start_time.rate`, then the rate
 /// of the first clip's `source_range.start_time`, else 24.
 fn sequence_fps(doc: &RawTimeline) -> Fps {
@@ -451,11 +492,39 @@ fn build_track(
                 }
                 Err(e) => warnings.push(format!("Gap parse failed: {e} — skipped")),
             }
+        } else if schema.starts_with("Transition.") {
+            // OTIO transitions overlap the adjacent clips (in_offset + out_offset)
+            // and carry a transition_type enum. Klipp's transition model doesn't
+            // fit the OTIO overlap semantics directly — drop with a specific
+            // warning. Crucially the cursor does NOT advance: transitions are
+            // conceptually zero-duration at the track timeline level.
+            let kind = child_val
+                .get("transition_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            warnings.push(format!(
+                "Transition '{schema}' (type={kind}) not supported — skipped",
+            ));
         } else {
-            // Transition.? and anything else — dropped with a warning. The
-            // dedicated transition handler lands in the next OTIO commit.
-            warnings.push(format!("Track child schema '{schema}' not supported — skipped"));
+            warnings.push(format!(
+                "Track child schema '{schema}' not supported — skipped",
+            ));
         }
+    }
+
+    // Track-level markers are parsed but dropped — Klipp's data model only
+    // supports timeline (Sequence) and clip-scope markers.
+    let track_markers = parse_markers(
+        &raw.markers,
+        &format!("Track '{}'", track.name),
+        warnings,
+    );
+    if !track_markers.is_empty() {
+        warnings.push(format!(
+            "Track '{}': {} track-level marker(s) dropped — Klipp has no track markers",
+            track.name,
+            track_markers.len(),
+        ));
     }
 
     track
@@ -507,6 +576,21 @@ fn build_clip(
     clip.source_in = source_in;
     clip.source_out = source_out;
     clip.kind = ClipKind::Media { media_id };
+
+    // OTIO clip markers sit in the source's coordinate system (same basis as
+    // source_range). Klipp's `ClipMarker.time_secs` is expressed relative to
+    // `source_in`, so subtract before converting to seconds.
+    let source_in_secs = source_in.to_secs_f64();
+    let clip_name = raw.name.as_deref().unwrap_or("<unnamed>");
+    for rm in parse_markers(&raw.markers, &format!("Clip '{clip_name}'"), warnings) {
+        let absolute = rt_from_otio(&rm.marked_range.start_time, fps_rate);
+        let time_secs = absolute.to_secs_f64() - source_in_secs;
+        clip.clip_markers.push(ClipMarker {
+            time_secs,
+            name: rm.name.unwrap_or_default(),
+            color: otio_color_to_klipp(rm.color.as_deref()),
+        });
+    }
 
     Some((clip, duration))
 }
@@ -588,6 +672,18 @@ pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
         .map(|s| s.to_string())
         .unwrap_or_else(|| "Imported OTIO".to_string());
 
+    // Stack-level markers become timeline markers on the Sequence.
+    let mut sequence_markers: Vec<Marker> = Vec::new();
+    for rm in parse_markers(&doc.tracks.markers, "Timeline", &mut warnings) {
+        let position = rt_from_otio(&rm.marked_range.start_time, fps_rate);
+        sequence_markers.push(Marker {
+            id: MarkerId::new(),
+            position,
+            label: rm.name.unwrap_or_default(),
+            color: otio_color_to_klipp(rm.color.as_deref()),
+        });
+    }
+
     let sequence = Sequence {
         id: SequenceId::new(),
         name: doc.name.unwrap_or(name),
@@ -599,13 +695,20 @@ pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
         tracks,
         in_point: None,
         out_point: None,
-        markers: Vec::new(), // populated in the next OTIO commit
+        markers: sequence_markers,
         last_playhead: None,
     };
 
     tracing::info!(
         tracks = sequence.tracks.len(),
         total_clips = sequence.tracks.iter().map(|t| t.clips.len()).sum::<usize>(),
+        sequence_markers = sequence.markers.len(),
+        clip_markers = sequence
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .map(|c| c.clip_markers.len())
+            .sum::<usize>(),
         warnings = warnings.len(),
         "OTIO import: done"
     );
@@ -804,6 +907,39 @@ mod tests {
     fn active_media_ref_none_when_no_fields() {
         let clip = parse_clip(r#"{ "OTIO_SCHEMA": "Clip.2" }"#);
         assert!(active_media_ref(&clip).is_none());
+    }
+
+    // ── markers ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_markers_valid_and_malformed_mix() {
+        // Two valid markers + one with bad schema + one with missing
+        // marked_range. Valid ones come through; bad ones become warnings.
+        let raw = vec![
+            serde_json::from_str(
+                r#"{"OTIO_SCHEMA":"Marker.1","name":"a","color":"RED",
+                    "marked_range":{"OTIO_SCHEMA":"TimeRange.1",
+                        "start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24.0,"value":5.0},
+                        "duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24.0,"value":0.0}}}"#,
+            ).unwrap(),
+            serde_json::from_str(r#"{"OTIO_SCHEMA":"Effect.1","name":"x"}"#).unwrap(),
+            serde_json::from_str(r#"{"OTIO_SCHEMA":"Marker.1","name":"broken"}"#).unwrap(),
+            serde_json::from_str(
+                r#"{"OTIO_SCHEMA":"Marker.2","name":"b","color":"GREEN",
+                    "marked_range":{"OTIO_SCHEMA":"TimeRange.1",
+                        "start_time":{"OTIO_SCHEMA":"RationalTime.1","rate":24.0,"value":10.0},
+                        "duration":{"OTIO_SCHEMA":"RationalTime.1","rate":24.0,"value":0.0}}}"#,
+            ).unwrap(),
+        ];
+        let mut warnings = Vec::new();
+        let out = parse_markers(&raw, "TEST", &mut warnings);
+
+        assert_eq!(out.len(), 2, "two valid markers");
+        assert_eq!(out[0].name.as_deref(), Some("a"));
+        assert_eq!(out[1].name.as_deref(), Some("b"));
+        assert_eq!(warnings.len(), 2, "one unexpected schema + one malformed");
+        assert!(warnings.iter().any(|w| w.contains("Effect.1")));
+        assert!(warnings.iter().any(|w| w.contains("parse failed")));
     }
 
     #[test]
