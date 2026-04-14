@@ -11,7 +11,7 @@
 
 use crate::state::AppState;
 use crate::widgets::timecode_edit::timecode_edit;
-use klipp_core::{AppCommand, ClipId, Fps, RationalTime, Timecode};
+use klipp_core::{AppCommand, ClipId, Fps, Timecode};
 
 /// Row data flattened from all subtitle/text tracks, sorted by timeline_in.
 #[derive(Debug, Clone)]

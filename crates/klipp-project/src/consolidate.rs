@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 use klipp_core::MediaId;
 use klipp_media::{MediaItem, MediaPool};
-use klipp_timeline::{ClipKind, Sequence, TitleData};
+use klipp_timeline::{ClipKind, Sequence};
 
 use crate::save::{save_project_with_color_and_backups, ColorSettings};
 
