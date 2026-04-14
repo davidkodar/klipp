@@ -41,6 +41,7 @@ pub enum OtioImportError {
 /// `fps_from_otio_rate` to reach Klipp's RationalTime/Fps conventions.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[cfg_attr(test, derive(PartialEq))]
+#[allow(dead_code)] // wired into the timeline/track/clip parser in the next OTIO commit
 pub(crate) struct RawRationalTime {
     #[serde(default)]
     pub rate: f64,
@@ -50,6 +51,7 @@ pub(crate) struct RawRationalTime {
 
 /// `TimeRange.1` payload — `start_time` + `duration` (NOT start + end).
 #[derive(Debug, Clone, Copy, Deserialize)]
+#[allow(dead_code)] // wired into the timeline/track/clip parser in the next OTIO commit
 pub(crate) struct RawTimeRange {
     pub start_time: RawRationalTime,
     pub duration: RawRationalTime,
@@ -62,6 +64,7 @@ pub(crate) struct RawTimeRange {
 /// timeline maths stays frame-accurate. Anything unrecognised is rounded
 /// to the nearest integer rate — good enough for MVP; real NTSC content
 /// should hit the explicit branches.
+#[allow(dead_code)] // wired into load_otio in the next OTIO commit
 pub(crate) fn fps_from_otio_rate(rate: f64) -> Fps {
     const EPS: f64 = 0.01;
     if (rate - 23.976).abs() < EPS || (rate - 23.98).abs() < EPS {
@@ -84,6 +87,7 @@ pub(crate) fn fps_from_otio_rate(rate: f64) -> Fps {
 /// For example OTIO `{rate: 23.976, value: 24.0}` (= 1.001 s) at target
 /// rate 24000 produces `{value: 24024, rate: 24000}` — i.e. 24 NTSC
 /// frames × 1001 ticks/frame, matching `Fps::ntsc_23976()`.
+#[allow(dead_code)] // wired into load_otio in the next OTIO commit
 pub(crate) fn rt_from_otio(rt: &RawRationalTime, target_rate: u32) -> RationalTime {
     let secs = if rt.rate > 0.0 { rt.value / rt.rate } else { 0.0 };
     RationalTime::from_secs_f64(secs, target_rate)
@@ -92,6 +96,7 @@ pub(crate) fn rt_from_otio(rt: &RawRationalTime, target_rate: u32) -> RationalTi
 /// Map an OTIO marker color string (UPPERCASE, e.g. `"RED"`, `"CYAN"`)
 /// to the nearest Klipp `MarkerColor`. Unknown or missing colors default
 /// to `Blue` — the same default Klipp uses elsewhere.
+#[allow(dead_code)] // wired into load_otio in the next OTIO commit
 pub(crate) fn otio_color_to_klipp(color: Option<&str>) -> MarkerColor {
     match color.unwrap_or("") {
         "RED" => MarkerColor::Red,
