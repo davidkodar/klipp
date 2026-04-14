@@ -8770,7 +8770,42 @@ impl KlippApp {
             }
             AppCommand::DeleteSequence { sequence_idx } => {
                 if self.state.sequences.len() > 1 && *sequence_idx < self.state.sequences.len() {
+                    // Refuse to delete a sequence that is used as a compound
+                    // clip elsewhere — otherwise the compound clip's
+                    // ClipKind::Sequence { sequence_id } reference would
+                    // dangle and double-click to re-open would silently fail.
+                    let target_id = self.state.sequences[*sequence_idx].id;
+                    let referenced_by: Option<String> = self
+                        .state
+                        .sequences
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != *sequence_idx)
+                        .find_map(|(_, seq)| {
+                            let used = seq.tracks.iter().any(|t| {
+                                t.clips.iter().any(|c| {
+                                    matches!(c.kind, klipp_timeline::ClipKind::Sequence {
+                                        sequence_id
+                                    } if sequence_id == target_id)
+                                })
+                            });
+                            if used { Some(seq.name.clone()) } else { None }
+                        });
+                    if let Some(parent_name) = referenced_by {
+                        self.state.toast.show(format!(
+                            "Cannot delete: sequence is used as a compound clip in \"{parent_name}\". Switch to that sequence and remove the compound clip first."
+                        ));
+                        return true;
+                    }
                     self.state.sequences.remove(*sequence_idx);
+                    // Drop any compound_clip_stack entries pointing at the
+                    // removed sequence and renumber indices that shifted.
+                    self.state.compound_clip_stack.retain(|(idx, _)| *idx != *sequence_idx);
+                    for entry in self.state.compound_clip_stack.iter_mut() {
+                        if entry.0 > *sequence_idx {
+                            entry.0 -= 1;
+                        }
+                    }
                     // Adjust active index
                     if self.state.active_sequence_idx >= self.state.sequences.len() {
                         self.state.active_sequence_idx = self.state.sequences.len() - 1;
