@@ -1,4 +1,5 @@
 mod clip_kind;
+pub mod flatten;
 pub mod magnetic;
 pub mod magnetic_commands;
 mod marker;
