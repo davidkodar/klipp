@@ -1981,7 +1981,12 @@ impl KlippApp {
 
     fn sync_sequence_to_engine(&self) {
         let mut seq = self.sequence.write().unwrap();
-        *seq = self.state.sequences[self.state.active_sequence_idx].clone();
+        let active = &self.state.sequences[self.state.active_sequence_idx];
+        // Flatten compound clips so the engine receives a plain sequence
+        // with no ClipKind::Sequence clips — the engine has no compound-clip
+        // awareness. This mirrors the export path exactly: viewer and export
+        // are consistent by construction.
+        *seq = klipp_timeline::flatten::flatten_sequence(active, &self.state.sequences);
     }
 
     /// Sync sequence and re-grade the cached frame directly on the UI thread.
@@ -2245,7 +2250,19 @@ impl KlippApp {
         }
 
         let nested_seq_id = nested_seq.id;
+        let parent_seq_id = self.state.sequences[active_idx].id;
         self.state.sequences.push(nested_seq);
+
+        // Refuse to create a circular reference: if the new nested sequence
+        // (which contains the moved clips, possibly including other compound
+        // clips) transitively references the parent, abort and roll back.
+        if would_create_cycle(nested_seq_id, parent_seq_id, &self.state.sequences) {
+            self.state.sequences.pop();
+            self.state
+                .toast
+                .show("Cannot create compound clip: this would create a circular reference.");
+            return;
+        }
 
         // Remove original clips from parent and insert compound clip
         let parent_seq = &mut self.state.sequences[active_idx];
@@ -2422,6 +2439,17 @@ impl KlippApp {
                         });
                     if let Some(sid) = nested_id {
                         if let Some(target_idx) = self.state.sequences.iter().position(|s| s.id == sid) {
+                            // Defensive: a compound clip already in the
+                            // project should never form a cycle (the
+                            // CreateCompoundClip guard rejects creation that
+                            // would do so). Trip a debug_assert if data
+                            // integrity has been violated.
+                            let parent_seq_id =
+                                self.state.sequences[self.state.active_sequence_idx].id;
+                            debug_assert!(
+                                !would_create_cycle(sid, parent_seq_id, &self.state.sequences),
+                                "Existing compound clip is already a cycle — data integrity issue"
+                            );
                             // Push current position to breadcrumb stack
                             self.state.compound_clip_stack.push((
                                 self.state.active_sequence_idx,
@@ -16839,6 +16867,38 @@ struct ColorWsParams {
     bottom_scope_cursor: Option<crate::state::ScopeCursorData>,
 }
 
+/// Returns true if inserting `candidate_id` as a compound clip into a sequence
+/// identified by `host_id` would create a circular reference. Performs a DFS
+/// from `candidate_id` through every transitively-referenced compound clip;
+/// if `host_id` appears anywhere in that subtree (including `candidate_id`
+/// itself), it is a cycle.
+fn would_create_cycle(
+    candidate_id: klipp_core::SequenceId,
+    host_id: klipp_core::SequenceId,
+    all_sequences: &[klipp_timeline::Sequence],
+) -> bool {
+    let mut visited = std::collections::HashSet::new();
+    let mut stack = vec![candidate_id];
+    while let Some(sid) = stack.pop() {
+        if sid == host_id {
+            return true;
+        }
+        if !visited.insert(sid) {
+            continue;
+        }
+        if let Some(seq) = all_sequences.iter().find(|s| s.id == sid) {
+            for track in &seq.tracks {
+                for clip in &track.clips {
+                    if let klipp_timeline::ClipKind::Sequence { sequence_id } = &clip.kind {
+                        stack.push(*sequence_id);
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Count how many clips across all sequences reference this media_id.
 fn media_usage_count(media_id: MediaId, sequences: &[Sequence]) -> usize {
     sequences.iter()
@@ -17936,5 +17996,90 @@ mod node_param_undo_tests {
             }
             _ => panic!(),
         }
+    }
+}
+
+#[cfg(test)]
+mod compound_clip_cycle_tests {
+    //! Tests for the cycle-detection guard around compound clip creation.
+    use super::would_create_cycle;
+    use klipp_core::{Fps, RationalTime, Resolution, SequenceId};
+    use klipp_timeline::{Clip, Sequence, Track, TrackKind};
+
+    fn t(frames: i64) -> RationalTime {
+        RationalTime::from_frames(frames, 24)
+    }
+
+    fn make_seq(name: &str) -> Sequence {
+        Sequence {
+            id: SequenceId::new(),
+            name: name.to_string(),
+            fps: Fps::new(24, 1),
+            resolution: Resolution { width: 1920, height: 1080 },
+            tracks: Vec::new(),
+            in_point: None,
+            out_point: None,
+            markers: Vec::new(),
+            last_playhead: None,
+        }
+    }
+
+    fn add_compound(seq: &mut Sequence, target: SequenceId) {
+        let mut tr = Track::new("V1", TrackKind::Video);
+        tr.clips.push(Clip::sequence(target, t(0), t(24)));
+        seq.tracks.push(tr);
+    }
+
+    #[test]
+    fn self_reference_is_a_cycle() {
+        let a = make_seq("a");
+        let id = a.id;
+        assert!(would_create_cycle(id, id, &[a]));
+    }
+
+    #[test]
+    fn direct_cycle_a_contains_b_then_b_into_a_detected() {
+        let mut a = make_seq("a");
+        let mut b = make_seq("b");
+        let a_id = a.id;
+        let b_id = b.id;
+        // a contains b
+        add_compound(&mut a, b_id);
+        // would inserting a as compound clip into b create a cycle?
+        // candidate=a (contains b), host=b → DFS from a finds b, NOT host b ... wait
+        // We want: candidate must transitively reach host. a → b. host=b. Yes cycle.
+        let _ = b; // suppress unused
+        assert!(would_create_cycle(a_id, b_id, &[a.clone(), make_seq("b_dup")]),
+            "candidate=a (a contains b), host=b → DFS from a hits b");
+    }
+
+    #[test]
+    fn transitive_cycle_a_to_c_to_b_detected() {
+        let mut a = make_seq("a");
+        let mut c = make_seq("c");
+        let b = make_seq("b");
+        let a_id = a.id;
+        let b_id = b.id;
+        let c_id = c.id;
+        add_compound(&mut a, c_id); // a contains c
+        add_compound(&mut c, b_id); // c contains b
+        // candidate=a, host=b → DFS a → c → b. Cycle.
+        assert!(would_create_cycle(a_id, b_id, &[a, b, c]));
+    }
+
+    #[test]
+    fn independent_sequences_no_cycle() {
+        let a = make_seq("a");
+        let b = make_seq("b");
+        let a_id = a.id;
+        let b_id = b.id;
+        assert!(!would_create_cycle(a_id, b_id, &[a, b]));
+    }
+
+    #[test]
+    fn empty_all_sequences_no_panic() {
+        let a_id = SequenceId::new();
+        let b_id = SequenceId::new();
+        assert!(!would_create_cycle(a_id, b_id, &[]));
     }
 }
