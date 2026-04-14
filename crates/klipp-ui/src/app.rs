@@ -9719,6 +9719,60 @@ impl KlippApp {
                 self.sync_sequence_to_engine();
                 true
             }
+            AppCommand::ImportKdenlive { path } => {
+                let path = path.clone();
+                match klipp_project::mlt_import::load_kdenlive(&path) {
+                    Ok(result) => {
+                        // Write warnings file if any features were dropped.
+                        if !result.warnings.is_empty() {
+                            let warnings_path = path.with_extension("import_warnings.txt");
+                            let body = result.warnings.join("\n");
+                            match std::fs::write(&warnings_path, &body) {
+                                Ok(_) => {
+                                    self.state.toast.show(format!(
+                                        "Kdenlive project imported with {} warning(s). See {}",
+                                        result.warnings.len(),
+                                        warnings_path.display(),
+                                    ));
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Could not write import warnings: {e}");
+                                    self.state.toast.show(format!(
+                                        "Imported with {} warning(s); could not write log: {e}",
+                                        result.warnings.len(),
+                                    ));
+                                }
+                            }
+                        } else {
+                            self.state.toast.show(
+                                "Kdenlive project imported successfully.".to_string(),
+                            );
+                        }
+
+                        // Merge the imported media pool into our state's pool.
+                        // We cloning the items then calling add() which preserves
+                        // the MediaId so clips that reference these items continue
+                        // to resolve correctly.
+                        let items: Vec<_> = result.media_pool.all().cloned().collect();
+                        for item in items {
+                            self.state.media_pool.add(item);
+                        }
+
+                        // Append the new sequence and switch to it.
+                        self.state.sequences.push(result.sequence);
+                        self.state.active_sequence_idx = self.state.sequences.len() - 1;
+                        self.state.dirty = true;
+                        self.sync_sequence_to_engine();
+                    }
+                    Err(e) => {
+                        tracing::error!("Kdenlive import failed: {e:?}");
+                        self.state.toast.show(format!(
+                            "Failed to import Kdenlive project: {e}",
+                        ));
+                    }
+                }
+                true
+            }
             AppCommand::AddSubtitleAtPlayhead { timeline_in, duration_frames } => {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 let fps_rate = seq.fps.rate();

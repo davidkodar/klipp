@@ -359,6 +359,16 @@ impl ToolbarPanel {
                     cmds.push(AppCommand::ImportSubtitles { path });
                 }
             }
+            if ui.button("Import Kdenlive Project...").clicked() {
+                ui.close_menu();
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_title("Import Kdenlive Project")
+                    .add_filter("Kdenlive Project", &["kdenlive", "mlt"])
+                    .pick_file()
+                {
+                    cmds.push(AppCommand::ImportKdenlive { path });
+                }
+            }
             ui.separator();
             if ui.add(egui::Button::new("Export...").shortcut_text("Ctrl+E")).clicked() { cmds.push(AppCommand::ShowExportDialog); ui.close_menu(); }
             if ui.button("Export FCPXML...").clicked() { ui.close_menu(); if let Some(path) = rfd::FileDialog::new().set_title("Export FCPXML").add_filter("FCPXML", &["fcpxml"]).set_file_name("export.fcpxml").save_file() { cmds.push(AppCommand::ExportFcpxml { path }); } }

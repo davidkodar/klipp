@@ -1,6 +1,7 @@
 mod format;
 pub mod fcpxml;
 mod load;
+pub mod mlt_import;
 pub mod path_util;
 mod save;
 pub mod workspace;

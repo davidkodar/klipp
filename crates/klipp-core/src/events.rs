@@ -434,6 +434,10 @@ pub enum AppCommand {
     FrameGrab,
     /// Import SRT/VTT subtitle file onto a subtitle track.
     ImportSubtitles { path: PathBuf },
+    /// Import a Kdenlive MLT XML project as a new sequence.
+    /// Unsupported features (filters, non-cross-dissolve transitions, keyframes)
+    /// are logged to a `<name>.import_warnings.txt` file alongside the source.
+    ImportKdenlive { path: PathBuf },
     /// Create a new empty subtitle clip at the given timeline position on
     /// the first Subtitle/Text track (creates a Subtitle track if none exists).
     /// Used by the subtitle editor panel's "Add at playhead" button.

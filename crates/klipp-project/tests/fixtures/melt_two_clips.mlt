@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mlt LC_NUMERIC="sv_SE.UTF-8" version="7.36.1" root="/tmp/klipp_mlt_fixtures" title="klipp_blue.mp4">
+  <profile description="automatic" width="320" height="240" progressive="1" sample_aspect_num="1" sample_aspect_den="1" display_aspect_num="4" display_aspect_den="3" frame_rate_num="24" frame_rate_den="1" colorspace="601"/>
+  <producer id="producer0" in="0" out="23">
+    <property name="length">48</property>
+    <property name="eof">pause</property>
+    <property name="resource">klipp_blue.mp4</property>
+    <property name="meta.media.nb_streams">1</property>
+    <property name="meta.media.0.stream.type">video</property>
+    <property name="meta.media.0.stream.frame_rate">24</property>
+    <property name="meta.media.0.stream.sample_aspect_ratio">1</property>
+    <property name="meta.media.0.codec.width">320</property>
+    <property name="meta.media.0.codec.height">240</property>
+    <property name="meta.media.0.codec.rotate">0</property>
+    <property name="meta.media.0.codec.pix_fmt">yuv420p</property>
+    <property name="meta.media.0.codec.sample_aspect_ratio">1</property>
+    <property name="meta.media.0.codec.colorspace">601</property>
+    <property name="meta.media.0.codec.name">h264</property>
+    <property name="meta.media.0.codec.long_name">H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10</property>
+    <property name="meta.media.0.codec.bit_rate">6156</property>
+    <property name="meta.attr.0.stream.handler_name.markup">VideoHandler</property>
+    <property name="meta.attr.0.stream.encoder.markup">Lavc62.28.100 libx264</property>
+    <property name="meta.attr.major_brand.markup">isom</property>
+    <property name="meta.attr.minor_version.markup">512</property>
+    <property name="meta.attr.compatible_brands.markup">isomiso2avc1mp41</property>
+    <property name="meta.attr.encoder.markup">Lavf62.12.100</property>
+    <property name="seekable">1</property>
+    <property name="meta.media.sample_aspect_num">1</property>
+    <property name="meta.media.sample_aspect_den">1</property>
+    <property name="aspect_ratio">1</property>
+    <property name="format">3</property>
+    <property name="audio_index">-1</property>
+    <property name="video_index">0</property>
+    <property name="mute_on_pause">0</property>
+    <property name="mlt_service">avformat</property>
+  </producer>
+  <producer id="producer1" in="0" out="14999">
+    <property name="length">15000</property>
+    <property name="eof">pause</property>
+    <property name="resource">blank</property>
+    <property name="mlt_service">blank</property>
+  </producer>
+  <producer id="producer2" in="0" out="23">
+    <property name="length">48</property>
+    <property name="eof">pause</property>
+    <property name="resource">klipp_red.mp4</property>
+    <property name="meta.media.nb_streams">1</property>
+    <property name="meta.media.0.stream.type">video</property>
+    <property name="meta.media.0.stream.frame_rate">24</property>
+    <property name="meta.media.0.stream.sample_aspect_ratio">1</property>
+    <property name="meta.media.0.codec.width">320</property>
+    <property name="meta.media.0.codec.height">240</property>
+    <property name="meta.media.0.codec.rotate">0</property>
+    <property name="meta.media.0.codec.pix_fmt">yuv420p</property>
+    <property name="meta.media.0.codec.sample_aspect_ratio">1</property>
+    <property name="meta.media.0.codec.colorspace">601</property>
+    <property name="meta.media.0.codec.name">h264</property>
+    <property name="meta.media.0.codec.long_name">H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10</property>
+    <property name="meta.media.0.codec.bit_rate">6156</property>
+    <property name="meta.attr.0.stream.handler_name.markup">VideoHandler</property>
+    <property name="meta.attr.0.stream.encoder.markup">Lavc62.28.100 libx264</property>
+    <property name="meta.attr.major_brand.markup">isom</property>
+    <property name="meta.attr.minor_version.markup">512</property>
+    <property name="meta.attr.compatible_brands.markup">isomiso2avc1mp41</property>
+    <property name="meta.attr.encoder.markup">Lavf62.12.100</property>
+    <property name="seekable">1</property>
+    <property name="meta.media.sample_aspect_num">1</property>
+    <property name="meta.media.sample_aspect_den">1</property>
+    <property name="aspect_ratio">1</property>
+    <property name="format">3</property>
+    <property name="audio_index">-1</property>
+    <property name="video_index">0</property>
+    <property name="mute_on_pause">0</property>
+    <property name="mlt_service">avformat</property>
+  </producer>
+  <tractor id="tractor0" in="0" out="9">
+    <track producer="producer1" in="3" out="12"/>
+    <track producer="producer2" in="0" out="9"/>
+    <transition id="transition0" out="9">
+      <property name="a_track">0</property>
+      <property name="b_track">1</property>
+      <property name="factory">loader</property>
+      <property name="mlt_service">luma</property>
+    </transition>
+  </tractor>
+  <playlist id="playlist0">
+    <entry producer="producer0" in="0" out="23"/>
+    <blank length="3"/>
+    <entry producer="tractor0" in="0" out="9"/>
+    <entry producer="producer2" in="10" out="23"/>
+  </playlist>
+  <tractor id="tractor1" title="klipp_blue.mp4" in="0" out="50">
+    <track producer="playlist0"/>
+    <filter id="filter0">
+      <property name="start">1</property>
+      <property name="level">1.2</property>
+      <property name="mlt_service">brightness</property>
+      <property name="track">0</property>
+    </filter>
+  </tractor>
+</mlt>
