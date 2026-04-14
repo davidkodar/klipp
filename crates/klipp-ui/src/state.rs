@@ -651,6 +651,10 @@ pub struct AppState {
     // Phase 7: Dynamic tracks
     pub confirm_remove_track: Option<TrackId>,
     pub show_markers_panel: bool,
+    /// Visibility of the dedicated subtitle editor panel.
+    pub show_subtitle_editor: bool,
+    /// Per-session editing state for the subtitle editor panel.
+    pub subtitle_editor: SubtitleEditorState,
     pub show_browser_panel: bool,
     /// When set, the browser panel should scroll to this media item.
     pub reveal_in_browser: Option<klipp_core::MediaId>,
@@ -851,6 +855,23 @@ pub enum EyedropperMode {
     None,
     WhiteBalance,
     Qualifier,
+}
+
+/// Per-session editing state for the subtitle editor panel.
+/// Not persisted — resets each time the panel opens.
+#[derive(Debug, Clone, Default)]
+pub struct SubtitleEditorState {
+    /// Which clip's text field is being edited (None = display mode).
+    pub editing_text: Option<ClipId>,
+    /// Text buffer for the active text edit.
+    pub text_buf: String,
+    /// Which timecode field is being edited (None = display mode).
+    /// Scoped by egui::Id so start- and end-fields of the same row don't collide.
+    pub editing_timecode: Option<egui::Id>,
+    /// Timecode edit buffer.
+    pub timecode_buf: String,
+    /// Ripple mode — when true, timing changes shift downstream clips.
+    pub ripple: bool,
 }
 
 /// Independent viewer overlay toggles — multiple can be active simultaneously.
@@ -1586,6 +1607,8 @@ impl Default for AppState {
             peak_hold_time_secs: 3.0,
             confirm_remove_track: None,
             show_markers_panel: false,
+            show_subtitle_editor: false,
+            subtitle_editor: SubtitleEditorState::default(),
             show_browser_panel: true,
             reveal_in_browser: None,
             show_inspector_panel: true,
@@ -1674,5 +1697,20 @@ impl AppState {
     }
     pub fn sequence_duration(&self) -> Timecode {
         self.sequence().total_duration()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subtitle_editor_state_default_is_inactive() {
+        let s = SubtitleEditorState::default();
+        assert!(s.editing_text.is_none());
+        assert!(s.editing_timecode.is_none());
+        assert!(s.text_buf.is_empty());
+        assert!(s.timecode_buf.is_empty());
+        assert!(!s.ripple);
     }
 }

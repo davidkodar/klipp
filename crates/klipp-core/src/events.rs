@@ -434,6 +434,10 @@ pub enum AppCommand {
     FrameGrab,
     /// Import SRT/VTT subtitle file onto a subtitle track.
     ImportSubtitles { path: PathBuf },
+    /// Create a new empty subtitle clip at the given timeline position on
+    /// the first Subtitle/Text track (creates a Subtitle track if none exists).
+    /// Used by the subtitle editor panel's "Add at playhead" button.
+    AddSubtitleAtPlayhead { timeline_in: Timecode, duration_frames: u32 },
     /// Export subtitles from subtitle tracks as SRT.
     ExportSubtitles { path: PathBuf },
     /// Export sequence as FCPXML 1.9 for Final Cut Pro interchange.

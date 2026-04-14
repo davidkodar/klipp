@@ -3131,19 +3131,25 @@ impl TimelinePanel {
         // Clip name label
         if clip_rect.width() > 40.0 {
             if let Some(title_data) = clip.title_data() {
-                // Title clip: show "T" badge and text preview
+                // Title clip: show badge and text preview. Differentiate
+                // subtitle tracks (blue "S" badge) from text/title tracks
+                // (purple "T" badge) for at-a-glance track type identification.
                 let font_size = 11.0;
                 let max_text_width = clip_rect.width() - 28.0;
-                // "T" badge
+                let (badge_letter, badge_color) = if matches!(track_kind, TrackKind::Subtitle) {
+                    ("S", egui::Color32::from_rgba_premultiplied(180, 210, 255, 180))
+                } else {
+                    ("T", egui::Color32::from_rgba_premultiplied(200, 180, 255, 180))
+                };
                 let badge_rect = egui::Rect::from_min_size(
                     egui::pos2(clip_rect.left() + 3.0, clip_rect.center().y - 8.0),
                     egui::vec2(16.0, 16.0),
                 );
-                painter.rect_filled(badge_rect, 3.0, egui::Color32::from_rgba_premultiplied(200, 180, 255, 180));
+                painter.rect_filled(badge_rect, 3.0, badge_color);
                 painter.text(
                     badge_rect.center(),
                     egui::Align2::CENTER_CENTER,
-                    "T",
+                    badge_letter,
                     egui::FontId::proportional(10.0),
                     egui::Color32::BLACK,
                 );

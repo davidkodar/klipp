@@ -1,0 +1,576 @@
+//! Dedicated subtitle editor panel.
+//!
+//! A list-based editing surface for all subtitle and text clips in the active
+//! sequence, sorted by timeline_in. Each row shows start/end timecodes and
+//! the text with inline multiline editing. The viewer's double-click text
+//! editor remains unchanged — this panel is an additional editing surface.
+//!
+//! Mirrors the structural pattern of `panels/markers.rs`: ScrollArea,
+//! per-row rendering, AppState flag for visibility, edits flow back as
+//! AppCommands through the existing handlers.
+
+use crate::state::AppState;
+use crate::widgets::timecode_edit::timecode_edit;
+use klipp_core::{AppCommand, ClipId, Fps, RationalTime, Timecode};
+
+/// Row data flattened from all subtitle/text tracks, sorted by timeline_in.
+#[derive(Debug, Clone)]
+struct SubRow {
+    clip_id: ClipId,
+    track_index: usize,
+    timeline_in: Timecode,
+    timeline_out: Timecode,
+    source_in: Timecode,
+    source_out: Timecode,
+    text: String,
+    /// All TitleData fields that must be preserved when emitting UpdateTitleData.
+    font_size: f32,
+    font_name: String,
+    font_style_u8: u8,
+    color: [u8; 4],
+}
+
+/// Collect all subtitle/text clips across tracks, sorted by timeline_in.
+fn collect_subtitle_clips(seq: &klipp_timeline::Sequence) -> Vec<SubRow> {
+    let mut rows = Vec::new();
+    for (track_idx, track) in seq.tracks.iter().enumerate() {
+        if !matches!(
+            track.kind,
+            klipp_timeline::TrackKind::Subtitle | klipp_timeline::TrackKind::Text
+        ) {
+            continue;
+        }
+        for clip in &track.clips {
+            if let klipp_timeline::ClipKind::Title(td) = &clip.kind {
+                rows.push(SubRow {
+                    clip_id: clip.id,
+                    track_index: track_idx,
+                    timeline_in: clip.timeline_in,
+                    timeline_out: clip.timeline_out,
+                    source_in: clip.source_in,
+                    source_out: clip.source_out,
+                    text: td.text.clone(),
+                    font_size: td.font_size,
+                    font_name: td.font_name.clone(),
+                    font_style_u8: font_style_to_u8(td.font_style),
+                    color: td.color,
+                });
+            }
+        }
+    }
+    rows.sort_by_key(|r| r.timeline_in);
+    rows
+}
+
+/// Find the index of the subtitle whose range contains the playhead.
+/// Returns None if no subtitle covers the playhead.
+fn active_subtitle_at(rows: &[SubRow], playhead: Timecode) -> Option<usize> {
+    rows.iter().position(|r| {
+        r.timeline_in <= playhead && playhead < r.timeline_out
+    })
+}
+
+/// Compute reading-speed warning color. <=3.5 w/s: none. 3.5-5.0: amber. >5.0: red.
+fn reading_speed_color(words_per_sec: f64) -> Option<egui::Color32> {
+    if words_per_sec > 5.0 {
+        Some(egui::Color32::from_rgb(0xff, 0x60, 0x60))
+    } else if words_per_sec > 3.5 {
+        Some(egui::Color32::from_rgb(0xe0, 0xa0, 0x30))
+    } else {
+        None
+    }
+}
+
+fn font_style_to_u8(style: klipp_timeline::FontStyle) -> u8 {
+    match style {
+        klipp_timeline::FontStyle::Regular => 0,
+        klipp_timeline::FontStyle::Bold => 1,
+        klipp_timeline::FontStyle::Italic => 2,
+        klipp_timeline::FontStyle::BoldItalic => 3,
+    }
+}
+
+pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
+    let mut cmds = Vec::new();
+    let mut open = state.show_subtitle_editor;
+
+    let fps = state.sequence().fps;
+    let playhead = state.playhead;
+    let selected_clip = state.selected_clip;
+
+    let rows = collect_subtitle_clips(state.sequence());
+    let active_idx = active_subtitle_at(&rows, playhead);
+
+    egui::Window::new("Subtitle Editor")
+        .open(&mut open)
+        .default_width(520.0)
+        .default_height(420.0)
+        .resizable(true)
+        .show(ctx, |ui| {
+            // ── Top toolbar ──────────────────────────────────────
+            ui.horizontal(|ui| {
+                if ui.button("+ Add at playhead").clicked() {
+                    // Flush any pending text edit first
+                    flush_text_edit(&mut state.subtitle_editor, &rows, &mut cmds);
+                    let dur_frames = (fps.as_f64() * 3.0).round() as u32;
+                    cmds.push(AppCommand::AddSubtitleAtPlayhead {
+                        timeline_in: playhead,
+                        duration_frames: dur_frames,
+                    });
+                }
+
+                // Split — enabled only if playhead is inside the selected subtitle
+                let can_split = selected_clip
+                    .and_then(|cid| rows.iter().find(|r| r.clip_id == cid))
+                    .map(|r| r.timeline_in < playhead && playhead < r.timeline_out)
+                    .unwrap_or(false);
+                if ui.add_enabled(can_split, egui::Button::new("\u{2702} Split")).clicked() {
+                    if let Some(cid) = selected_clip {
+                        if let Some(row) = rows.iter().find(|r| r.clip_id == cid) {
+                            cmds.push(AppCommand::BladeClip {
+                                track_index: row.track_index,
+                                clip_id: cid,
+                                cut_at: playhead,
+                            });
+                        }
+                    }
+                }
+
+                // Delete — enabled only if a subtitle is selected
+                let can_delete = selected_clip
+                    .is_some_and(|cid| rows.iter().any(|r| r.clip_id == cid));
+                if ui.add_enabled(can_delete, egui::Button::new("\u{1F5D1} Delete")).clicked() {
+                    if let Some(cid) = selected_clip {
+                        cmds.push(AppCommand::RemoveClip { clip_id: cid });
+                    }
+                }
+
+                ui.separator();
+
+                // Ripple toggle
+                let ripple = state.subtitle_editor.ripple;
+                let ripple_btn = if ripple {
+                    egui::Button::new("\u{27F3} Ripple").fill(egui::Color32::from_rgb(0x60, 0x80, 0x40))
+                } else {
+                    egui::Button::new("\u{27F3} Ripple")
+                };
+                if ui.add(ripple_btn).on_hover_text(
+                    "When enabled, adjusting a subtitle's timing shifts all subsequent subtitles.",
+                ).clicked() {
+                    state.subtitle_editor.ripple = !ripple;
+                }
+
+                // Import SRT/VTT
+                if ui.button("\u{2191} Import SRT/VTT").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("SRT/VTT", &["srt", "vtt"])
+                        .pick_file()
+                    {
+                        cmds.push(AppCommand::ImportSubtitles { path });
+                    }
+                }
+            });
+
+            ui.separator();
+
+            // ── Empty state ──────────────────────────────────────
+            if rows.is_empty() {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(40.0);
+                    ui.label(
+                        egui::RichText::new("No subtitles yet.")
+                            .size(13.0)
+                            .color(egui::Color32::from_rgb(0xa0, 0xa0, 0xb0)),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Click [+ Add at playhead] or [\u{2191} Import SRT/VTT] to get started.")
+                            .size(11.0)
+                            .color(egui::Color32::from_rgb(0x70, 0x70, 0x80)),
+                    );
+                });
+                return;
+            }
+
+            // ── List ─────────────────────────────────────────────
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                for (i, row) in rows.iter().enumerate() {
+                    let is_active = active_idx == Some(i);
+                    let is_selected = selected_clip == Some(row.clip_id);
+                    let row_frame = egui::Frame::none()
+                        .fill(if is_active {
+                            egui::Color32::from_rgba_unmultiplied(0xff, 0xdc, 0x32, 30)
+                        } else if is_selected {
+                            egui::Color32::from_rgba_unmultiplied(0x40, 0x80, 0xff, 20)
+                        } else {
+                            egui::Color32::TRANSPARENT
+                        })
+                        .inner_margin(egui::Margin::same(4.0))
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 10),
+                        ));
+
+                    row_frame.show(ui, |ui| {
+                        render_row(ui, i, row, fps, state, &mut cmds);
+                    });
+                    ui.add_space(2.0);
+                }
+            });
+        });
+
+    // Flush any pending edit if editing_text clip is no longer in the list
+    // (defensive: e.g. if clip was deleted while being edited)
+    if let Some(cid) = state.subtitle_editor.editing_text {
+        if !rows.iter().any(|r| r.clip_id == cid) {
+            state.subtitle_editor.editing_text = None;
+            state.subtitle_editor.text_buf.clear();
+        }
+    }
+
+    state.show_subtitle_editor = open;
+    cmds
+}
+
+fn render_row(
+    ui: &mut egui::Ui,
+    index: usize,
+    row: &SubRow,
+    fps: Fps,
+    state: &mut AppState,
+    cmds: &mut Vec<AppCommand>,
+) {
+    ui.horizontal(|ui| {
+        // Row number
+        ui.add_sized(
+            [28.0, 20.0],
+            egui::Label::new(
+                egui::RichText::new(format!("{}", index + 1))
+                    .monospace()
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(0x80, 0x80, 0x90)),
+            ),
+        );
+
+        // Start timecode — click to seek, separate click on timecode text to edit
+        let start_id = egui::Id::new(("subtitle_start_tc", row.clip_id));
+        ui.vertical(|ui| {
+            ui.label(
+                egui::RichText::new("Start")
+                    .size(9.0)
+                    .color(egui::Color32::from_rgb(0x70, 0x70, 0x80)),
+            );
+            let editing_timecode = &mut state.subtitle_editor.editing_timecode;
+            let timecode_buf = &mut state.subtitle_editor.timecode_buf;
+            if let Some(new_time) = timecode_edit(
+                ui, start_id, row.timeline_in, fps, editing_timecode, timecode_buf,
+            ) {
+                // Clamp: start must be < end, and >= 0
+                let min = Timecode::from_frames(0, fps.rate());
+                let max_val = row.timeline_out.value.saturating_sub(1);
+                let max = Timecode {
+                    value: max_val,
+                    rate: fps.rate(),
+                };
+                let clamped = if new_time < min { min }
+                    else if new_time > max { max }
+                    else { new_time };
+                emit_trim_start(row, clamped, state.subtitle_editor.ripple, cmds);
+            }
+        });
+
+        // End timecode
+        let end_id = egui::Id::new(("subtitle_end_tc", row.clip_id));
+        ui.vertical(|ui| {
+            ui.label(
+                egui::RichText::new("End")
+                    .size(9.0)
+                    .color(egui::Color32::from_rgb(0x70, 0x70, 0x80)),
+            );
+            let editing_timecode = &mut state.subtitle_editor.editing_timecode;
+            let timecode_buf = &mut state.subtitle_editor.timecode_buf;
+            if let Some(new_time) = timecode_edit(
+                ui, end_id, row.timeline_out, fps, editing_timecode, timecode_buf,
+            ) {
+                let min_val = row.timeline_in.value.saturating_add(1);
+                let min = Timecode {
+                    value: min_val,
+                    rate: fps.rate(),
+                };
+                let clamped = if new_time < min { min } else { new_time };
+                emit_trim_end(row, clamped, state.subtitle_editor.ripple, cmds);
+            }
+        });
+
+        // Text column fills remaining width
+        ui.vertical(|ui| {
+            // If this row became active, load its text into buffer
+            if state.subtitle_editor.editing_text != Some(row.clip_id) {
+                // Not currently editing this row — show text and seed buffer on interaction below
+            }
+
+            let was_editing = state.subtitle_editor.editing_text == Some(row.clip_id);
+            let mut text_to_show = if was_editing {
+                state.subtitle_editor.text_buf.clone()
+            } else {
+                row.text.clone()
+            };
+
+            let avail = ui.available_width();
+            let resp = ui.add(
+                egui::TextEdit::multiline(&mut text_to_show)
+                    .desired_rows(2)
+                    .desired_width(avail)
+                    .font(egui::TextStyle::Body),
+            );
+
+            // Row click = select + seek
+            if resp.gained_focus() {
+                // Flush any previous row's edit
+                if state.subtitle_editor.editing_text.is_some()
+                    && state.subtitle_editor.editing_text != Some(row.clip_id)
+                {
+                    let rows_snapshot: Vec<SubRow> = collect_subtitle_clips(state.sequence());
+                    flush_text_edit(&mut state.subtitle_editor, &rows_snapshot, cmds);
+                }
+                // Start editing this row
+                state.subtitle_editor.editing_text = Some(row.clip_id);
+                state.subtitle_editor.text_buf = row.text.clone();
+                cmds.push(AppCommand::SelectClip(Some(row.clip_id)));
+                cmds.push(AppCommand::SeekTo(row.timeline_in));
+            }
+
+            if was_editing {
+                // Commit text changes from the widget back to our buffer
+                if text_to_show != state.subtitle_editor.text_buf {
+                    state.subtitle_editor.text_buf = text_to_show.clone();
+                    // Emit UpdateTitleData on every keystroke — undo coalescing
+                    // handles the noise, matching viewer.rs behavior.
+                    cmds.push(AppCommand::UpdateTitleData {
+                        clip_id: row.clip_id,
+                        text: text_to_show.clone(),
+                        font_size: row.font_size,
+                        font_name: row.font_name.clone(),
+                        font_style: row.font_style_u8,
+                        color: row.color,
+                    });
+                }
+                if resp.lost_focus() {
+                    state.subtitle_editor.editing_text = None;
+                    state.subtitle_editor.text_buf.clear();
+                }
+            }
+
+            // Character count + reading speed indicator
+            let duration_secs = (row.timeline_out - row.timeline_in).to_secs_f64().max(0.001);
+            let char_count = row.text.chars().count();
+            let word_count = row.text.split_whitespace().count();
+            let wps = word_count as f64 / duration_secs;
+            let wps_color = reading_speed_color(wps);
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let text = format!("{char_count} chars \u{00B7} {wps:.1} w/s");
+                    let mut rt = egui::RichText::new(&text).size(10.0);
+                    if let Some(c) = wps_color {
+                        rt = rt.color(c);
+                    } else {
+                        rt = rt.color(egui::Color32::from_rgb(0x70, 0x70, 0x80));
+                    }
+                    ui.label(rt);
+                });
+            });
+        });
+    });
+}
+
+fn emit_trim_start(row: &SubRow, new_timeline_in: Timecode, ripple: bool, cmds: &mut Vec<AppCommand>) {
+    // For title clips, source timing mirrors timeline timing (no media seek).
+    // Adjust source_in by the same delta as timeline_in.
+    let delta = new_timeline_in - row.timeline_in;
+    let new_source_in = row.source_in + delta;
+    cmds.push(AppCommand::TrimClip {
+        clip_id: row.clip_id,
+        old_source_in: row.source_in,
+        old_source_out: row.source_out,
+        old_timeline_in: row.timeline_in,
+        old_timeline_out: row.timeline_out,
+        new_source_in,
+        new_source_out: row.source_out,
+        new_timeline_in,
+        new_timeline_out: row.timeline_out,
+        ripple,
+    });
+}
+
+fn emit_trim_end(row: &SubRow, new_timeline_out: Timecode, ripple: bool, cmds: &mut Vec<AppCommand>) {
+    let delta = new_timeline_out - row.timeline_out;
+    let new_source_out = row.source_out + delta;
+    cmds.push(AppCommand::TrimClip {
+        clip_id: row.clip_id,
+        old_source_in: row.source_in,
+        old_source_out: row.source_out,
+        old_timeline_in: row.timeline_in,
+        old_timeline_out: row.timeline_out,
+        new_source_in: row.source_in,
+        new_source_out,
+        new_timeline_in: row.timeline_in,
+        new_timeline_out,
+        ripple,
+    });
+}
+
+/// Flush the current text edit buffer as a final UpdateTitleData command.
+fn flush_text_edit(
+    ed: &mut crate::state::SubtitleEditorState,
+    rows: &[SubRow],
+    cmds: &mut Vec<AppCommand>,
+) {
+    if let Some(cid) = ed.editing_text {
+        if let Some(row) = rows.iter().find(|r| r.clip_id == cid) {
+            if row.text != ed.text_buf {
+                cmds.push(AppCommand::UpdateTitleData {
+                    clip_id: cid,
+                    text: ed.text_buf.clone(),
+                    font_size: row.font_size,
+                    font_name: row.font_name.clone(),
+                    font_style: row.font_style_u8,
+                    color: row.color,
+                });
+            }
+        }
+    }
+    ed.editing_text = None;
+    ed.text_buf.clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use klipp_timeline::{Clip, ClipKind, Sequence, TitleData, Track, TrackKind};
+
+    fn make_title_clip(text: &str, start_frames: i64, end_frames: i64) -> Clip {
+        let ti = Timecode::from_frames(start_frames, 24);
+        let to = Timecode::from_frames(end_frames, 24);
+        Clip {
+            id: ClipId::new(),
+            kind: ClipKind::Title(TitleData {
+                text: text.to_string(),
+                ..TitleData::default()
+            }),
+            timeline_in: ti,
+            timeline_out: to,
+            source_in: Timecode::from_frames(0, 24),
+            source_out: to - ti,
+            ..Clip::gap(ti, to)
+        }
+    }
+
+    fn make_seq_with_tracks() -> Sequence {
+        let mut seq = Sequence::new_default();
+        // tracks[0] = Video 1, tracks[1] = Audio 1
+        // Add a Subtitle track and a Text track
+        let mut sub_track = Track::new("Subs", TrackKind::Subtitle);
+        sub_track.clips.push(make_title_clip("B-subtitle", 48, 72));
+        sub_track.clips.push(make_title_clip("A-subtitle", 0, 24));
+        seq.tracks.push(sub_track);
+
+        let mut text_track = Track::new("Text", TrackKind::Text);
+        text_track.clips.push(make_title_clip("C-text", 96, 120));
+        seq.tracks.push(text_track);
+        seq
+    }
+
+    #[test]
+    fn collect_sorts_across_tracks() {
+        let seq = make_seq_with_tracks();
+        let rows = collect_subtitle_clips(&seq);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].text, "A-subtitle");
+        assert_eq!(rows[1].text, "B-subtitle");
+        assert_eq!(rows[2].text, "C-text");
+    }
+
+    #[test]
+    fn collect_empty_for_sequence_with_no_subtitles() {
+        let seq = Sequence::new_default();
+        let rows = collect_subtitle_clips(&seq);
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn active_subtitle_playhead_inside() {
+        let seq = make_seq_with_tracks();
+        let rows = collect_subtitle_clips(&seq);
+        // Playhead at frame 12 — inside "A-subtitle" (0-24)
+        let playhead = Timecode::from_frames(12, 24);
+        assert_eq!(active_subtitle_at(&rows, playhead), Some(0));
+    }
+
+    #[test]
+    fn active_subtitle_playhead_at_start_is_inclusive() {
+        let seq = make_seq_with_tracks();
+        let rows = collect_subtitle_clips(&seq);
+        let playhead = Timecode::from_frames(0, 24);
+        assert_eq!(active_subtitle_at(&rows, playhead), Some(0));
+    }
+
+    #[test]
+    fn active_subtitle_playhead_at_end_is_exclusive() {
+        let seq = make_seq_with_tracks();
+        let rows = collect_subtitle_clips(&seq);
+        // Playhead exactly at frame 24 — outside "A-subtitle" (0..24), inside nothing
+        let playhead = Timecode::from_frames(24, 24);
+        assert_eq!(active_subtitle_at(&rows, playhead), None);
+    }
+
+    #[test]
+    fn active_subtitle_playhead_in_gap() {
+        let seq = make_seq_with_tracks();
+        let rows = collect_subtitle_clips(&seq);
+        // Playhead at frame 30 — between subtitle A (ends at 24) and B (starts at 48)
+        let playhead = Timecode::from_frames(30, 24);
+        assert_eq!(active_subtitle_at(&rows, playhead), None);
+    }
+
+    #[test]
+    fn reading_speed_amber_threshold() {
+        // 3.6 w/s → amber
+        assert_eq!(
+            reading_speed_color(3.6),
+            Some(egui::Color32::from_rgb(0xe0, 0xa0, 0x30)),
+        );
+    }
+
+    #[test]
+    fn reading_speed_red_threshold() {
+        // 5.5 w/s → red
+        assert_eq!(
+            reading_speed_color(5.5),
+            Some(egui::Color32::from_rgb(0xff, 0x60, 0x60)),
+        );
+    }
+
+    #[test]
+    fn reading_speed_normal_returns_none() {
+        // 2.0 w/s → no warning
+        assert_eq!(reading_speed_color(2.0), None);
+    }
+
+    #[test]
+    fn reading_speed_boundary_35_is_not_amber() {
+        // Exactly 3.5 w/s → no warning (strict > 3.5)
+        assert_eq!(reading_speed_color(3.5), None);
+    }
+
+    #[test]
+    fn character_count_from_multi_word_text() {
+        // 42 chars, 3 seconds → correct wps
+        let text = "The quick brown fox jumps over the lazy d."; // 42 chars, 9 words
+        let char_count = text.chars().count();
+        let word_count = text.split_whitespace().count();
+        let wps = word_count as f64 / 3.0;
+        assert_eq!(char_count, 42);
+        assert_eq!(word_count, 9);
+        assert!((wps - 3.0).abs() < 0.001);
+    }
+}

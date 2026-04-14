@@ -9719,6 +9719,55 @@ impl KlippApp {
                 self.sync_sequence_to_engine();
                 true
             }
+            AppCommand::AddSubtitleAtPlayhead { timeline_in, duration_frames } => {
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let fps_rate = seq.fps.rate();
+                let timeline_in = timeline_in.rescale_to(fps_rate);
+                let duration = klipp_core::RationalTime::from_frames(
+                    *duration_frames as i64, fps_rate,
+                );
+                let timeline_out = timeline_in + duration;
+
+                // Find or create a Subtitle track (prefer existing Subtitle, then Text)
+                let track_idx = seq.tracks.iter()
+                    .position(|t| t.kind == klipp_timeline::TrackKind::Subtitle)
+                    .or_else(|| seq.tracks.iter()
+                        .position(|t| t.kind == klipp_timeline::TrackKind::Text))
+                    .unwrap_or_else(|| {
+                        let id = seq.add_subtitle_track("Subtitles".into());
+                        seq.tracks.iter().position(|t| t.id == id).unwrap()
+                    });
+
+                let title_data = klipp_timeline::TitleData {
+                    text: String::new(),
+                    font_size: 32.0,
+                    font_name: String::new(),
+                    position: klipp_timeline::TitlePosition { x: 0.5, y: 0.88 },
+                    alignment: klipp_timeline::TextAlignment::Center,
+                    background: klipp_timeline::TitleBackground::None,
+                    outline: Some(klipp_timeline::TextOutline {
+                        color: [0, 0, 0, 200], width: 2.0,
+                    }),
+                    ..Default::default()
+                };
+
+                let new_clip = klipp_timeline::Clip {
+                    id: klipp_core::ClipId::new(),
+                    kind: klipp_timeline::ClipKind::Title(title_data),
+                    timeline_in,
+                    timeline_out,
+                    source_in: klipp_core::RationalTime::from_secs_f64(0.0, fps_rate),
+                    source_out: duration,
+                    ..klipp_timeline::Clip::gap(timeline_in, timeline_out)
+                };
+                let new_clip_id = new_clip.id;
+                seq.tracks[track_idx].clips.push(new_clip);
+                seq.tracks[track_idx].sort_clips();
+                self.state.selected_clip = Some(new_clip_id);
+                self.state.dirty = true;
+                self.sync_sequence_to_engine();
+                true
+            }
             AppCommand::ExportSubtitles { path } => {
                 let path = path.clone();
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
@@ -12369,6 +12418,11 @@ impl KlippApp {
             if i.key_pressed(egui::Key::M) && i.modifiers.ctrl && i.modifiers.shift && !i.modifiers.alt {
                 self.state.show_audio_mixer = !self.state.show_audio_mixer;
             }
+            // Ctrl+Shift+T — Toggle subtitle editor panel
+            // (Ctrl+Shift+S is already bound to Save Project As)
+            if i.key_pressed(egui::Key::T) && i.modifiers.ctrl && i.modifiers.shift && !i.modifiers.alt {
+                self.state.show_subtitle_editor = !self.state.show_subtitle_editor;
+            }
             // Alt+Left — Navigate to previous keyframe
             if i.modifiers.alt && !i.modifiers.ctrl && i.key_pressed(egui::Key::ArrowLeft) {
                 if let Some(clip_id) = self.state.selected_clip {
@@ -13178,6 +13232,12 @@ impl eframe::App for KlippApp {
         // Markers panel
         if self.state.show_markers_panel {
             let cmds = self.markers.show(ctx, &mut self.state);
+            all_cmds.extend(cmds);
+        }
+
+        // Subtitle editor panel
+        if self.state.show_subtitle_editor {
+            let cmds = crate::panels::subtitle_editor::show(ctx, &mut self.state);
             all_cmds.extend(cmds);
         }
 

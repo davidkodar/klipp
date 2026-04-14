@@ -11,6 +11,7 @@ pub mod file_info;
 pub mod preferences;
 pub mod render_queue;
 pub mod status_bar;
+pub mod subtitle_editor;
 pub mod timeline;
 pub mod toolbar;
 pub mod transport;

@@ -11,6 +11,7 @@ pub use scrubby_param::EasePreset;
 pub mod slider;
 pub mod toast;
 pub mod toggle;
+pub mod timecode_edit;
 pub mod tooltip;
 pub mod vertical_slider;
 pub mod waveform;
