@@ -513,6 +513,14 @@ impl PreferencesPanel {
                 });
         });
 
+        Self::setting_row_with_subtitle(ui, "Also auto-save every N operations", "0 = off", |ui| {
+            let mut v = prefs.general.auto_save_op_threshold;
+            if ui.add(egui::DragValue::new(&mut v).range(0..=1000).speed(0.5)).changed() {
+                prefs.general.auto_save_op_threshold = v;
+                *dirty = true;
+            }
+        });
+
         Self::setting_row(ui, "Backup versions to keep", |ui| {
             let mut v = prefs.editing.backup_count;
             if ui.add(egui::DragValue::new(&mut v).range(0..=20).speed(0.5)).changed() {

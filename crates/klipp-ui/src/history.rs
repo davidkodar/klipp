@@ -357,6 +357,11 @@ pub struct CommandHistory {
     pending_coalesce_key: Option<String>,
     /// "Before" state captured at drag start
     pending_old_entry: Option<HistoryEntry>,
+
+    /// Number of ops pushed since the last project save. Incremented by push(),
+    /// reset to 0 by reset_ops_since_save() when the project is saved. Used by
+    /// the op-count autosave trigger.
+    pub ops_since_save: u64,
 }
 
 impl CommandHistory {
@@ -367,7 +372,13 @@ impl CommandHistory {
             max_size: 1000,
             pending_coalesce_key: None,
             pending_old_entry: None,
+            ops_since_save: 0,
         }
+    }
+
+    /// Reset the ops-since-save counter. Call from the project-save path.
+    pub fn reset_ops_since_save(&mut self) {
+        self.ops_since_save = 0;
     }
 
     /// Set the maximum undo stack size. 0 = unlimited.
@@ -381,6 +392,7 @@ impl CommandHistory {
         if self.max_size > 0 && self.undo_stack.len() > self.max_size {
             self.undo_stack.remove(0);
         }
+        self.ops_since_save = self.ops_since_save.saturating_add(1);
     }
 
     /// Call when the user starts dragging a parameter (mouse down on slider/DragValue).

@@ -112,6 +112,9 @@ where
 pub struct GeneralPrefs {
     /// Auto-save interval in seconds. 0 = disabled. Default 300 (5 min).
     pub auto_save_interval_secs: u32,
+    /// Also auto-save every N editing operations. 0 = disabled. Default 25.
+    #[serde(default = "default_auto_save_ops")]
+    pub auto_save_op_threshold: u32,
     pub default_project_dir: Option<PathBuf>,
     /// Most-recent first, max 20 entries.
     #[serde(deserialize_with = "deserialize_recent_projects")]
@@ -587,10 +590,13 @@ pub struct ProxyPrefs {
     pub proxy_cache_dir: Option<PathBuf>,
 }
 
+fn default_auto_save_ops() -> u32 { 25 }
+
 impl Default for GeneralPrefs {
     fn default() -> Self {
         Self {
             auto_save_interval_secs: 300,
+            auto_save_op_threshold: default_auto_save_ops(),
             default_project_dir: None,
             recent_projects: Vec::new(),
             remember_inspector_layout: true,

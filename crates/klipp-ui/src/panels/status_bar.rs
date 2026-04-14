@@ -39,14 +39,19 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
         };
         status_item(ui, theme, status_label);
 
-        // Project name
+        // Project name — suffixed with " •" when there are unsaved changes.
         let project_name = state
             .project_path
             .as_ref()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "Untitled".into());
-        status_label_value(ui, theme, "Project:", &project_name);
+        let project_display = if state.dirty {
+            format!("{project_name} •")
+        } else {
+            project_name
+        };
+        status_label_value(ui, theme, "Project:", &project_display);
 
         // Duration
         let dur = state.sequence_duration();

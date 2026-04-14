@@ -11997,6 +11997,7 @@ impl KlippApp {
             Ok(()) => {
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
+                self.state.history.reset_ops_since_save();
                 tracing::info!("Project saved to {:?}", path);
                 let rp = crate::prefs::RecentProject {
                     path: path.to_path_buf(),
@@ -13858,12 +13859,16 @@ impl eframe::App for KlippApp {
             self.prefs_last_save = std::time::Instant::now();
         }
 
-        // Auto-save
+        // Auto-save: trigger on time interval OR op-count threshold (whichever hits first).
         let interval = self.prefs.general.auto_save_interval_secs;
-        if interval > 0
+        let op_threshold = self.prefs.general.auto_save_op_threshold;
+        let time_trigger = interval > 0
+            && self.last_autosave.elapsed().as_secs() >= interval as u64;
+        let op_trigger = op_threshold > 0
+            && self.state.history.ops_since_save >= op_threshold as u64;
+        if (time_trigger || op_trigger)
             && self.state.dirty
             && self.state.project_path.is_some()
-            && self.last_autosave.elapsed().as_secs() >= interval as u64
         {
             if let Some(ref project_path) = self.state.project_path.clone() {
                 let autosave_path = autosave_path_for(project_path);
@@ -13877,7 +13882,11 @@ impl eframe::App for KlippApp {
                 };
                 let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
                 match klipp_project::save_project_with_color(&autosave_path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref()) {
-                    Ok(()) => tracing::info!("Auto-saved to {:?}", autosave_path),
+                    Ok(()) => {
+                        tracing::info!("Auto-saved to {:?}", autosave_path);
+                        self.state.toast.show("Auto-saved");
+                        self.state.history.reset_ops_since_save();
+                    }
                     Err(e) => tracing::warn!("Auto-save failed: {e}"),
                 }
             }
