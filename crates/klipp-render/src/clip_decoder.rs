@@ -2,61 +2,20 @@ use crate::error::RenderError;
 use std::path::Path;
 use tracing::{debug, info, warn};
 
-/// Detected GPU vendor for hardware acceleration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GpuVendor {
-    Nvidia,
-    Amd,
-    None,
-}
+pub use klipp_core::GpuVendor;
 
-/// Probe for available GPU hardware at startup. Call once.
+/// Probe for the primary GPU vendor at startup (sysfs-based, no FFmpeg or
+/// Vulkan calls). Thin wrapper kept for backward compatibility with external
+/// callers — the underlying implementation is `klipp_core::GpuVendor::detect()`.
 pub fn detect_gpu() -> GpuVendor {
-    unsafe {
-        use ffmpeg_next::ffi::*;
-
-        // Try CUDA (NVIDIA)
-        let cuda_type = av_hwdevice_find_type_by_name(c"cuda".as_ptr());
-        if cuda_type != AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
-            let mut ctx: *mut AVBufferRef = std::ptr::null_mut();
-            let ret = av_hwdevice_ctx_create(
-                &mut ctx,
-                cuda_type,
-                std::ptr::null(),
-                std::ptr::null_mut(),
-                0,
-            );
-            if ret >= 0 {
-                av_buffer_unref(&mut ctx);
-                info!("GPU detected: NVIDIA (CUDA)");
-                return GpuVendor::Nvidia;
-            }
-        }
-
-        // Try VAAPI (AMD or Intel)
-        let vaapi_type = av_hwdevice_find_type_by_name(c"vaapi".as_ptr());
-        if vaapi_type != AVHWDeviceType::AV_HWDEVICE_TYPE_NONE {
-            for path in [b"/dev/dri/renderD128\0", b"/dev/dri/renderD129\0"] {
-                let mut ctx: *mut AVBufferRef = std::ptr::null_mut();
-                let ret = av_hwdevice_ctx_create(
-                    &mut ctx,
-                    vaapi_type,
-                    path.as_ptr() as *const _,
-                    std::ptr::null_mut(),
-                    0,
-                );
-                if ret >= 0 {
-                    av_buffer_unref(&mut ctx);
-                    // Check if it's AMD by looking at the driver name
-                    info!("GPU detected: VAAPI (AMD/Intel)");
-                    return GpuVendor::Amd;
-                }
-            }
-        }
-
-        info!("No GPU hardware acceleration detected, using software");
-        GpuVendor::None
+    let v = GpuVendor::detect();
+    match v {
+        GpuVendor::Nvidia => info!("GPU detected: NVIDIA"),
+        GpuVendor::Amd => info!("GPU detected: AMD"),
+        GpuVendor::Intel => info!("GPU detected: Intel"),
+        GpuVendor::Unknown => info!("No recognised GPU vendor — will use software decode"),
     }
+    v
 }
 
 /// Hardware acceleration mode for the decoder.

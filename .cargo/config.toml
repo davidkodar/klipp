@@ -1,6 +1,14 @@
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+rustflags = [
+    "-C", "link-arg=-fuse-ld=lld",
+    # target-cpu=native enables AVX2 (and AVX-VNNI on Intel 13th/14th gen)
+    # so LLVM auto-vectorizes the stride-4 loop in composite.rs:blend_chunk.
+    # Safe: zero #[cfg(target_feature)] guards in Klipp source; wgpu/egui
+    # build scripts do platform cfgs only; ffmpeg-sys-next links against
+    # system libavcodec.so which is unaffected.
+    "-C", "target-cpu=native",
+]
 
 [env]
 RUST_MIN_STACK = "134217728"

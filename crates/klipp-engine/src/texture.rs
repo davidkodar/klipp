@@ -76,6 +76,19 @@ impl FrameBuffer {
         self.pending_ready = true;
     }
 
+    /// Swap-based write — the engine provides a `&mut Vec<u8>` that is swapped
+    /// with `pending_data`. After the call, `rgba_data` contains the previous
+    /// `pending_data` buffer (which the engine can clear and reuse next frame,
+    /// eliminating per-frame allocations). Same semantics as `write_frame`
+    /// otherwise — the pending buffer becomes the engine's newest composite.
+    pub fn write_frame_swap(&mut self, rgba_data: &mut Vec<u8>, width: u32, height: u32) {
+        std::mem::swap(&mut self.pending_data, rgba_data);
+        self.pending_width = width;
+        self.pending_height = height;
+        self.pending_generation = self.generation.wrapping_add(1);
+        self.pending_ready = true;
+    }
+
     /// UI thread swaps pending into active — fast pointer swap, no allocation.
     pub fn swap_pending(&mut self) -> bool {
         if !self.pending_ready {
@@ -97,3 +110,41 @@ impl FrameBuffer {
 }
 
 pub type SharedFrameBuffer = Arc<Mutex<FrameBuffer>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_frame_swap_exchanges_buffers() {
+        let mut fb = FrameBuffer::new(4, 4);
+        // Pre-seed pending_data with a marker
+        fb.pending_data = vec![0xAA; 4 * 4 * 4];
+
+        let mut engine_buf = vec![0x55; 4 * 4 * 4];
+        fb.write_frame_swap(&mut engine_buf, 4, 4);
+
+        // engine_buf now holds the old pending_data (0xAA)
+        assert!(engine_buf.iter().all(|&b| b == 0xAA));
+        // pending_data now holds what engine wrote (0x55)
+        assert!(fb.pending_data.iter().all(|&b| b == 0x55));
+        assert!(fb.pending_ready);
+    }
+
+    #[test]
+    fn write_frame_swap_preserves_capacity_for_reuse() {
+        let mut fb = FrameBuffer::new(4, 4);
+        fb.pending_data = Vec::with_capacity(1000);
+        fb.pending_data.resize(64, 0); // len=64, capacity=1000
+
+        let mut engine_buf = vec![1u8; 64];
+        let engine_cap_before = engine_buf.capacity();
+
+        fb.write_frame_swap(&mut engine_buf, 4, 4);
+
+        // engine_buf now has capacity from the original pending_data (1000)
+        assert!(engine_buf.capacity() >= 1000);
+        // pending_data has the original engine capacity
+        assert_eq!(fb.pending_data.capacity(), engine_cap_before);
+    }
+}

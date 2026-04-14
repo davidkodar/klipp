@@ -300,6 +300,16 @@ pub struct PlaybackEngine {
     gpu_effects: Option<klipp_effects::gpu::GpuEffectsPipeline>,
     /// True if GPU effects init was attempted and failed — prevents retrying every frame.
     gpu_effects_failed: bool,
+    /// GPU vendor detected at startup — gates VAAPI in thumbnail/filmstrip decode
+    /// on AMD/Intel while skipping it on NVIDIA (where nvidia-vaapi-driver
+    /// writes stderr noise that bypasses av_log suppression).
+    #[allow(dead_code)] // Read via DETECTED_GPU_VENDOR cache from free functions
+    gpu_vendor: klipp_core::GpuVendor,
+    /// Reusable accumulator for the viewer compositor. Sized to the last
+    /// composite resolution; reallocated only on resolution change. Swapped
+    /// with `FrameBuffer::pending_data` via `write_frame_swap` to eliminate
+    /// the per-frame 8-33 MB allocation of the composite buffer.
+    composite_scratch: Vec<u8>,
     // Rolling shutter correction motion cache
     rsc_motion_cache: klipp_effects::rolling_shutter::MotionCache,
     // Transition decoder — secondary decoder for the partner clip during transitions
@@ -472,6 +482,13 @@ impl PlaybackEngine {
             ofx_host,
             gpu_effects: None, // lazily initialized on first use
             gpu_effects_failed: false,
+            gpu_vendor: {
+                let v = klipp_core::GpuVendor::detect();
+                let _ = DETECTED_GPU_VENDOR.set(v);
+                info!("PlaybackEngine: detected GPU vendor = {v:?}");
+                v
+            },
+            composite_scratch: Vec::new(),
             rsc_motion_cache: klipp_effects::rolling_shutter::MotionCache::new(256),
             transition_decoder: None,
             transition_clip_id: None,
@@ -2098,14 +2115,27 @@ impl PlaybackEngine {
             // Build the composite incrementally so adjustment layers can intercept
             // and apply their effects to the accumulated result between layers.
             // V1 is always the first layer (already in `layers`).
+            //
+            // Reuse the pooled composite_scratch buffer from PlaybackEngine. Take
+            // ownership via mem::take — we'll put it (or the swapped pending_data
+            // buffer) back at the end.
             let pixel_count = (final_w * final_h) as usize;
-            let mut accumulated = vec![0u8; pixel_count * 4];
+            let needed = pixel_count * 4;
+            let mut accumulated = std::mem::take(&mut self.composite_scratch);
+            if accumulated.len() != needed {
+                accumulated.resize(needed, 0);
+            } else {
+                accumulated.fill(0);
+            }
 
             // Blend V1 (the first layer) onto the empty canvas
             if let Some(v1_layer) = layers.first() {
+                let t_blend = std::time::Instant::now();
                 crate::composite::blend_layer(
                     &mut accumulated, &v1_layer.rgba, v1_layer.opacity, v1_layer.blend_mode,
                 );
+                let blend_ms = t_blend.elapsed().as_secs_f64() * 1000.0;
+                tracing::trace!("PERF blend_layer pass: {blend_ms:.3}ms res={final_w}x{final_h} layer=V1");
             }
 
             // Each overlay clip's effects are applied before compositing so every
@@ -2142,8 +2172,14 @@ impl PlaybackEngine {
                         let scaled = image::imageops::resize(&img, final_w, final_h, image::imageops::FilterType::Triangle);
                         scaled.into_raw()
                     };
+                    let t_blend = std::time::Instant::now();
                     crate::composite::blend_layer(
                         &mut accumulated, &src, *effective, klipp_core::BlendMode::Normal,
+                    );
+                    let blend_ms = t_blend.elapsed().as_secs_f64() * 1000.0;
+                    tracing::trace!(
+                        "PERF blend_layer pass: {blend_ms:.3}ms res={final_w}x{final_h} \
+                         overlay_track={track_idx}",
                     );
                 }
             }
@@ -2152,17 +2188,39 @@ impl PlaybackEngine {
         };
 
         let composite_ms = t_composite.elapsed().as_secs_f64() * 1000.0;
+        let overlay_count = {
+            let seq = self.sequence.read().unwrap();
+            seq.overlay_video_tracks(self.current_track_index).len()
+        };
         if composite_ms > 2.0 {
             debug!("PERF composite+into_rgba: {composite_ms:.1}ms");
         }
+        if composite_ms > 5.0 {
+            let budget = if composite_ms < 16.7 { "OK" }
+                else if composite_ms < 41.0 { "WARN" }
+                else { "OVER" };
+            debug!(
+                "PERF blend_composite: {composite_ms:.2}ms overlays={overlay_count} \
+                 res={final_w}x{final_h} budget={budget}",
+            );
+        }
 
-        // Check for active transition and blend if needed
-        let final_rgba = self.apply_transition_if_active(final_rgba, final_w, final_h);
+        // Check for active transition and blend if needed.
+        // If a transition is active this may build a new Vec — in that case
+        // the composite_scratch pool contribution is lost for this frame
+        // but restored on the next frame when no transition is active.
+        let mut final_rgba = self.apply_transition_if_active(final_rgba, final_w, final_h);
 
-        // Write frame to the shared FrameBuffer
-        let mut fb = self.frame_buffer.lock().unwrap();
-        fb.write_frame(final_rgba, final_w, final_h);
-        drop(fb);
+        // Write frame to the shared FrameBuffer via swap — `final_rgba` ends up
+        // holding the PREVIOUS pending_data buffer, which we return to the pool.
+        // This eliminates the 8-33 MB per-frame allocation that used to be
+        // `vec![0u8; pixel_count * 4]` at the top of the composite block.
+        {
+            let mut fb = self.frame_buffer.lock().unwrap();
+            fb.write_frame_swap(&mut final_rgba, final_w, final_h);
+        }
+        // Return the stale buffer (formerly pending_data) to the pool.
+        self.composite_scratch = final_rgba;
 
         self.frames_consumed += 1;
 
@@ -5457,7 +5515,22 @@ fn fps_from_float(fps: f64) -> Fps {
 // GPU-accelerated thumbnail/filmstrip helpers
 // ---------------------------------------------------------------------------
 
-/// Open a video decoder with GPU acceleration (CUDA → VAAPI → Software fallback).
+/// Cached GPU vendor, initialised at `PlaybackEngine::new()` and read by
+/// thumbnail/filmstrip background threads that don't have a `&PlaybackEngine`
+/// reference. Falls back to sysfs detection if somehow accessed before the
+/// engine starts (e.g. a unit test that builds a decoder directly).
+static DETECTED_GPU_VENDOR: std::sync::OnceLock<klipp_core::GpuVendor> =
+    std::sync::OnceLock::new();
+
+fn cached_gpu_vendor() -> klipp_core::GpuVendor {
+    *DETECTED_GPU_VENDOR.get_or_init(klipp_core::GpuVendor::detect)
+}
+
+/// Open a video decoder for thumbnail/filmstrip generation.
+/// Hardware acceleration chain: CUDA → VAAPI (AMD/Intel only) → Software.
+/// VAAPI is skipped on NVIDIA to avoid stderr noise from nvidia-vaapi-driver,
+/// which bypasses av_log suppression. On AMD and Intel iGPUs, VAAPI is the
+/// native GPU decode path and works correctly.
 /// Returns (decoder, stream_index, is_hw).
 fn open_gpu_decoder(
     format_ctx: &ffmpeg_next::format::context::Input,
@@ -5472,9 +5545,14 @@ fn open_gpu_decoder(
     let mut codec_ctx = ffmpeg_next::codec::context::Context::from_parameters(params)
         .map_err(|e| format!("codec context: {e}"))?;
 
-    // Try GPU acceleration: CUDA → Software (skip VAAPI — broken on NVIDIA, spams stderr)
+    // Try GPU acceleration: CUDA → VAAPI (AMD/Intel only) → Software
+    let vendor = cached_gpu_vendor();
     let is_hw = unsafe {
         if crate::video_decoder::try_init_cuda(codec_ctx.as_mut_ptr()) {
+            true
+        } else if vendor.should_try_vaapi()
+            && crate::video_decoder::try_init_vaapi(codec_ctx.as_mut_ptr())
+        {
             true
         } else {
             // Software fallback: use half cores
@@ -6533,5 +6611,46 @@ mod codec_fix_tests {
                 eprintln!("[WARN] all positions returned the same frame — precise seek may not be working for this file");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod gpu_vendor_cache_tests {
+    use super::*;
+
+    #[test]
+    fn cached_gpu_vendor_is_stable_across_calls() {
+        // Whatever the first call returns (real detection on current machine,
+        // or whatever PlaybackEngine::new set earlier in the test run), all
+        // subsequent calls must return the same value. This verifies the
+        // OnceLock cache semantics.
+        let first = cached_gpu_vendor();
+        let second = cached_gpu_vendor();
+        let third = cached_gpu_vendor();
+        assert_eq!(first, second);
+        assert_eq!(second, third);
+    }
+
+    #[test]
+    fn cached_gpu_vendor_returns_defined_value() {
+        // Must return one of the four defined variants — never panic or hang.
+        let v = cached_gpu_vendor();
+        assert!(matches!(
+            v,
+            klipp_core::GpuVendor::Nvidia
+                | klipp_core::GpuVendor::Amd
+                | klipp_core::GpuVendor::Intel
+                | klipp_core::GpuVendor::Unknown,
+        ));
+    }
+
+    #[test]
+    fn should_try_vaapi_drives_the_gate() {
+        // Sanity: gating logic is the one bit that differs between vendors.
+        // NVIDIA is the only one excluded. Confirm the library function agrees.
+        assert!(!klipp_core::GpuVendor::Nvidia.should_try_vaapi());
+        assert!(klipp_core::GpuVendor::Amd.should_try_vaapi());
+        assert!(klipp_core::GpuVendor::Intel.should_try_vaapi());
+        assert!(klipp_core::GpuVendor::Unknown.should_try_vaapi());
     }
 }
