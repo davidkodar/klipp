@@ -438,6 +438,11 @@ pub enum AppCommand {
     /// Unsupported features (filters, non-cross-dissolve transitions, keyframes)
     /// are logged to a `<name>.import_warnings.txt` file alongside the source.
     ImportKdenlive { path: PathBuf },
+    /// Parse an OpenTimelineIO `.otio` JSON file and import its timeline as
+    /// a new Sequence. Unsupported features (transitions, effects, nested
+    /// stacks) are logged to a `<name>.import_warnings.txt` file alongside
+    /// the source.
+    ImportOtio { path: PathBuf },
     /// Copy the current project and all referenced media into a new
     /// self-contained directory at `dest_dir`. Source project is untouched.
     /// Runs on a background thread — see `ConsolidateDone` for completion.

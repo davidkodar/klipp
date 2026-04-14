@@ -10314,6 +10314,58 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::ImportOtio { path } => {
+                let path = path.clone();
+                match klipp_project::otio_import::load_otio(&path) {
+                    Ok(result) => {
+                        // Write warnings file if any features were dropped.
+                        if !result.warnings.is_empty() {
+                            let warnings_path = path.with_extension("import_warnings.txt");
+                            let body = result.warnings.join("\n");
+                            match std::fs::write(&warnings_path, &body) {
+                                Ok(_) => {
+                                    self.state.toast.show(format!(
+                                        "OTIO project imported with {} warning(s). See {}",
+                                        result.warnings.len(),
+                                        warnings_path.display(),
+                                    ));
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Could not write import warnings: {e}");
+                                    self.state.toast.show(format!(
+                                        "Imported with {} warning(s); could not write log: {e}",
+                                        result.warnings.len(),
+                                    ));
+                                }
+                            }
+                        } else {
+                            self.state.toast.show(
+                                "OTIO project imported successfully.".to_string(),
+                            );
+                        }
+
+                        // Merge the imported media pool, preserving MediaIds so
+                        // imported clips resolve correctly. Same pattern as Kdenlive.
+                        let items: Vec<_> = result.media_pool.all().cloned().collect();
+                        for item in items {
+                            self.state.media_pool.add(item);
+                        }
+
+                        self.state.sequences.push(result.sequence);
+                        self.state.active_sequence_idx = self.state.sequences.len() - 1;
+                        self.state.dirty = true;
+                        self.sync_media_pool_to_engine();
+                        self.sync_sequence_to_engine();
+                    }
+                    Err(e) => {
+                        tracing::error!("OTIO import failed: {e:?}");
+                        self.state.toast.show(format!(
+                            "Failed to import OTIO project: {e}",
+                        ));
+                    }
+                }
+                true
+            }
             AppCommand::ConsolidateProject {
                 dest_dir,
                 include_proxies,

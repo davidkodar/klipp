@@ -373,6 +373,16 @@ impl ToolbarPanel {
                         cmds.push(AppCommand::ImportKdenlive { path });
                     }
                 }
+                if ui.button("OpenTimelineIO (.otio)...").clicked() {
+                    ui.close_menu();
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title("Import OpenTimelineIO")
+                        .add_filter("OpenTimelineIO", &["otio"])
+                        .pick_file()
+                    {
+                        cmds.push(AppCommand::ImportOtio { path });
+                    }
+                }
             });
             ui.separator();
             if ui.add(egui::Button::new("Export...").shortcut_text("Ctrl+E")).clicked() { cmds.push(AppCommand::ShowExportDialog); ui.close_menu(); }

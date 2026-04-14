@@ -466,7 +466,7 @@ fn build_track(
                     match build_clip(&raw_clip, cursor, fps_rate, project_dir, media_pool, warnings) {
                         Some((clip, consumed)) => {
                             track.clips.push(clip);
-                            cursor = cursor + consumed;
+                            cursor += consumed;
                         }
                         None => {
                             // Clip lacked a source_range — skip it entirely
@@ -488,7 +488,7 @@ fn build_track(
                     if dur.value > 0 {
                         track.clips.push(Clip::gap(cursor, cursor + dur));
                     }
-                    cursor = cursor + dur;
+                    cursor += dur;
                 }
                 Err(e) => warnings.push(format!("Gap parse failed: {e} — skipped")),
             }
