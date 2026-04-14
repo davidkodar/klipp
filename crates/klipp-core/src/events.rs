@@ -487,6 +487,9 @@ pub enum AppCommand {
     OpenCompoundClip { clip_id: ClipId },
     /// Navigate back from a nested sequence to the parent.
     CloseCompoundClip,
+    /// Delete a compound clip from the timeline AND, if its inner sequence
+    /// is no longer referenced anywhere else, also delete that inner sequence.
+    DeleteCompoundClip { clip_id: ClipId },
     /// Navigate to next edit point (clip boundary) on the timeline.
     NextEditPoint,
     /// Navigate to previous edit point (clip boundary) on the timeline.

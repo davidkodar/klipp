@@ -4848,11 +4848,24 @@ impl TimelinePanel {
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.id == clip_id)
                     .is_some_and(|c| matches!(c.kind, klipp_timeline::ClipKind::Sequence { .. }));
-                if is_compound
-                    && ui.button("Open Compound Clip").clicked() {
+                if is_compound {
+                    if ui.button("Open Compound Clip").clicked() {
                         cmds.push(AppCommand::OpenCompoundClip { clip_id });
                         ui.close_menu();
                     }
+                    if ui
+                        .button("Delete Compound Clip")
+                        .on_hover_text(
+                            "Removes the compound clip from the timeline and \
+                             also deletes its inner sequence if nothing else \
+                             references it.",
+                        )
+                        .clicked()
+                    {
+                        cmds.push(AppCommand::DeleteCompoundClip { clip_id });
+                        ui.close_menu();
+                    }
+                }
                 let has_multi_for_compound = state.selected_clips.len() >= 2
                     || (state.selected_clip.is_some() && !state.selected_clips.is_empty());
                 if ui.add_enabled(has_multi_for_compound, egui::Button::new("Create Compound Clip...")).clicked() {

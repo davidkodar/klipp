@@ -2479,6 +2479,85 @@ impl KlippApp {
                     }
                     return true;
                 }
+                // Delete a compound clip from the parent timeline AND, if its
+                // inner sequence is no longer referenced anywhere else, also
+                // delete that sequence so it doesn't hang around as an unused
+                // tab. If other compound clips still reference the inner
+                // sequence, only the timeline clip is removed.
+                AppCommand::DeleteCompoundClip { clip_id } => {
+                    let cid = *clip_id;
+                    // Find the inner sequence_id this compound clip points at,
+                    // if any. Bail out quietly for non-compound clips.
+                    let inner_seq_id = self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips()
+                        .find(|c| c.id == cid)
+                        .and_then(|c| match &c.kind {
+                            klipp_timeline::ClipKind::Sequence { sequence_id } => Some(*sequence_id),
+                            _ => None,
+                        });
+                    let Some(inner_seq_id) = inner_seq_id else {
+                        // Not a compound clip — fall back to plain Remove.
+                        self.remove_clip_impl(cid);
+                        return true;
+                    };
+                    // 1. Remove the compound clip from the timeline.
+                    self.remove_clip_impl(cid);
+                    // 2. Decide whether the inner sequence is still referenced.
+                    let still_referenced = self.state.sequences.iter().any(|seq| {
+                        seq.tracks.iter().any(|t| {
+                            t.clips.iter().any(|c| {
+                                matches!(c.kind, klipp_timeline::ClipKind::Sequence {
+                                    sequence_id
+                                } if sequence_id == inner_seq_id)
+                            })
+                        })
+                    });
+                    if still_referenced {
+                        self.state.toast.show(
+                            "Compound clip removed. Inner sequence is still used elsewhere and was kept.",
+                        );
+                        return true;
+                    }
+                    // 3. No other references — delete the inner sequence too.
+                    let inner_idx = self
+                        .state
+                        .sequences
+                        .iter()
+                        .position(|s| s.id == inner_seq_id);
+                    if let Some(inner_idx) = inner_idx {
+                        // Refuse if it's the last sequence (project must keep ≥1).
+                        if self.state.sequences.len() <= 1 {
+                            self.state.toast.show(
+                                "Compound clip removed. Inner sequence kept (project requires at least one sequence).",
+                            );
+                            return true;
+                        }
+                        self.state.sequences.remove(inner_idx);
+                        // Clean up breadcrumb entries pointing at the removed
+                        // sequence and renumber indices that shifted.
+                        self.state
+                            .compound_clip_stack
+                            .retain(|(idx, _)| *idx != inner_idx);
+                        for entry in self.state.compound_clip_stack.iter_mut() {
+                            if entry.0 > inner_idx {
+                                entry.0 -= 1;
+                            }
+                        }
+                        if self.state.active_sequence_idx >= self.state.sequences.len() {
+                            self.state.active_sequence_idx = self.state.sequences.len() - 1;
+                        } else if self.state.active_sequence_idx > inner_idx {
+                            self.state.active_sequence_idx -= 1;
+                        }
+                        self.state.fps =
+                            self.state.sequences[self.state.active_sequence_idx].fps;
+                        self.state.dirty = true;
+                        self.sync_sequence_to_engine();
+                        self.state
+                            .toast
+                            .show("Compound clip and its inner sequence removed.");
+                    }
+                    return true;
+                }
                 // Create multicam clip: group clips at playhead across tracks as angles
                 AppCommand::CreateMulticamClip => {
                     let ph = self.state.playhead;
