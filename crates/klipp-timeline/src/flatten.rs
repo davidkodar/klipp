@@ -148,41 +148,28 @@ fn flatten_clip_inner(
                 continue;
             }
 
-            let ic_in = inner_clip.timeline_in.to_secs_f64();
-            let ic_out = inner_clip.timeline_out.to_secs_f64();
+            let sliced = match slice_inner_clip_to_compound(
+                inner_clip,
+                compound_timeline_in,
+                compound_source_in,
+                compound_source_out,
+                compound_speed,
+                rate,
+            ) {
+                Some(c) => c,
+                None => continue,
+            };
 
-            // Must overlap the compound's source window
-            if ic_out <= compound_source_in || ic_in >= compound_source_out {
-                continue;
-            }
-
-            let visible_in = ic_in.max(compound_source_in);
-            let visible_out = ic_out.min(compound_source_out);
-
-            let parent_in = compound_timeline_in + (visible_in - compound_source_in);
-            let parent_out = compound_timeline_in + (visible_out - compound_source_in);
-
-            let source_in_offset = visible_in - ic_in;
-            let inner_source_in_secs = inner_clip.source_in.to_secs_f64() + source_in_offset;
-            let inner_source_out_secs =
-                inner_clip.source_out.to_secs_f64() - (ic_out - visible_out);
-
-            // Recurse into nested compound clips
+            // Recurse into nested compound clips — feed the sliced synthetic
+            // back through flatten_clip_inner so the inner-of-inner clips get
+            // remapped against the new compound bounds.
             if let ClipKind::Sequence {
                 sequence_id: nested_id,
-            } = &inner_clip.kind
+            } = &sliced.kind
             {
                 if depth + 1 < MAX_COMPOUND_DEPTH {
-                    let mut synthetic = inner_clip.clone();
-                    synthetic.timeline_in = RationalTime::from_secs_f64(parent_in, rate);
-                    synthetic.timeline_out = RationalTime::from_secs_f64(parent_out, rate);
-                    synthetic.source_in =
-                        RationalTime::from_secs_f64(inner_source_in_secs, rate);
-                    synthetic.source_out =
-                        RationalTime::from_secs_f64(inner_source_out_secs, rate);
-                    synthetic.speed = inner_clip.speed * compound_speed;
                     out.extend(flatten_clip_inner(
-                        &synthetic,
+                        &sliced,
                         *nested_id,
                         all_sequences,
                         parent_kind,
@@ -192,17 +179,61 @@ fn flatten_clip_inner(
                 continue;
             }
 
-            // Leaf clip — clone and remap time coordinates
-            let mut flat = inner_clip.clone();
-            flat.timeline_in = RationalTime::from_secs_f64(parent_in, rate);
-            flat.timeline_out = RationalTime::from_secs_f64(parent_out, rate);
-            flat.source_in = RationalTime::from_secs_f64(inner_source_in_secs, rate);
-            flat.source_out = RationalTime::from_secs_f64(inner_source_out_secs, rate);
-            flat.speed = inner_clip.speed * compound_speed;
-            out.push(flat);
+            out.push(sliced);
         }
     }
     out
+}
+
+/// Slice one inner clip to a compound clip's source window and remap its
+/// time coordinates onto the parent timeline.
+///
+/// - Returns `None` if the inner clip lies entirely outside the compound's
+///   source window (caller should drop it).
+/// - Honours `compound_speed`: parent-timeline duration equals the
+///   inner-timeline visible span divided by the compound speed.
+/// - Multiplies the inner clip's own `speed` by `compound_speed` so the
+///   restored leaf plays at the combined rate.
+///
+/// All `*_secs` parameters are seconds; `rate` is the `RationalTime` rate
+/// the output time fields will be expressed in.
+pub fn slice_inner_clip_to_compound(
+    inner: &Clip,
+    compound_timeline_in_secs: f64,
+    compound_source_in_secs: f64,
+    compound_source_out_secs: f64,
+    compound_speed: f64,
+    rate: u32,
+) -> Option<Clip> {
+    let ic_in = inner.timeline_in.to_secs_f64();
+    let ic_out = inner.timeline_out.to_secs_f64();
+
+    if ic_out <= compound_source_in_secs || ic_in >= compound_source_out_secs {
+        return None;
+    }
+
+    let visible_in = ic_in.max(compound_source_in_secs);
+    let visible_out = ic_out.min(compound_source_out_secs);
+
+    // Defensive: avoid divide-by-zero if speed is somehow 0 or negative.
+    let speed = if compound_speed.abs() < 1e-9 { 1.0 } else { compound_speed };
+
+    let parent_in =
+        compound_timeline_in_secs + (visible_in - compound_source_in_secs) / speed;
+    let parent_out =
+        compound_timeline_in_secs + (visible_out - compound_source_in_secs) / speed;
+
+    let source_in_offset = visible_in - ic_in;
+    let inner_source_in_secs = inner.source_in.to_secs_f64() + source_in_offset;
+    let inner_source_out_secs = inner.source_out.to_secs_f64() - (ic_out - visible_out);
+
+    let mut flat = inner.clone();
+    flat.timeline_in = RationalTime::from_secs_f64(parent_in, rate);
+    flat.timeline_out = RationalTime::from_secs_f64(parent_out, rate);
+    flat.source_in = RationalTime::from_secs_f64(inner_source_in_secs, rate);
+    flat.source_out = RationalTime::from_secs_f64(inner_source_out_secs, rate);
+    flat.speed = inner.speed * speed;
+    Some(flat)
 }
 
 #[cfg(test)]
@@ -551,5 +582,115 @@ mod tests {
             assert_eq!(a.timeline_in, b.timeline_in);
             assert_eq!(a.timeline_out, b.timeline_out);
         }
+    }
+
+    // ─── slice_inner_clip_to_compound ───────────────────────────────────────
+
+    fn approx_eq(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-6
+    }
+
+    #[test]
+    fn slice_inner_fully_inside_window() {
+        // Compound: parent [100..148], source window [0..48], speed 1.0.
+        // Inner clip on inner timeline at [12..36], source [0..24].
+        let inner = media_clip(12, 36, 0, 24);
+        let sliced = slice_inner_clip_to_compound(
+            &inner, /*parent_in*/ 100.0 / 24.0,
+            /*src_in*/ 0.0, /*src_out*/ 48.0 / 24.0,
+            1.0, 24,
+        )
+        .expect("inside window should slice");
+        // visible_in=12/24, visible_out=36/24 → parent_in=100/24+12/24, parent_out=100/24+36/24
+        assert!(approx_eq(sliced.timeline_in.to_secs_f64(), (100.0 + 12.0) / 24.0));
+        assert!(approx_eq(sliced.timeline_out.to_secs_f64(), (100.0 + 36.0) / 24.0));
+        assert!(approx_eq(sliced.source_in.to_secs_f64(), 0.0));
+        assert!(approx_eq(sliced.source_out.to_secs_f64(), 24.0 / 24.0));
+        assert!(approx_eq(sliced.speed, 1.0));
+    }
+
+    #[test]
+    fn slice_inner_outside_left_returns_none() {
+        // Inner clip at inner timeline [0..24]; compound source window [48..72].
+        let inner = media_clip(0, 24, 0, 24);
+        let sliced = slice_inner_clip_to_compound(
+            &inner, 0.0, 48.0 / 24.0, 72.0 / 24.0, 1.0, 24,
+        );
+        assert!(sliced.is_none());
+    }
+
+    #[test]
+    fn slice_inner_outside_right_returns_none() {
+        // Inner clip at inner timeline [72..96]; compound source window [0..48].
+        let inner = media_clip(72, 96, 0, 24);
+        let sliced = slice_inner_clip_to_compound(
+            &inner, 0.0, 0.0, 48.0 / 24.0, 1.0, 24,
+        );
+        assert!(sliced.is_none());
+    }
+
+    #[test]
+    fn slice_inner_clipped_at_left_advances_source_in() {
+        // Inner [0..48] with source [0..48]. Compound source window [12..48].
+        // Visible window: [12..48]; left-clipped by 12.
+        // source_in advances from 0 to 12 (in inner-timeline secs == source secs).
+        let inner = media_clip(0, 48, 0, 48);
+        let sliced = slice_inner_clip_to_compound(
+            &inner, 0.0, 12.0 / 24.0, 48.0 / 24.0, 1.0, 24,
+        )
+        .expect("partial overlap should slice");
+        assert!(approx_eq(sliced.source_in.to_secs_f64(), 12.0 / 24.0));
+        assert!(approx_eq(sliced.source_out.to_secs_f64(), 48.0 / 24.0));
+        // parent_in starts at 0 (the trim starts at the compound's left edge)
+        assert!(approx_eq(sliced.timeline_in.to_secs_f64(), 0.0));
+    }
+
+    #[test]
+    fn slice_inner_clipped_at_right_pulls_source_out_back() {
+        // Inner [0..48] with source [0..48]. Compound source window [0..36].
+        // Visible window: [0..36]; right-clipped by 12.
+        let inner = media_clip(0, 48, 0, 48);
+        let sliced = slice_inner_clip_to_compound(
+            &inner, 0.0, 0.0, 36.0 / 24.0, 1.0, 24,
+        )
+        .expect("partial overlap should slice");
+        assert!(approx_eq(sliced.source_in.to_secs_f64(), 0.0));
+        assert!(approx_eq(sliced.source_out.to_secs_f64(), 36.0 / 24.0));
+    }
+
+    #[test]
+    fn slice_compound_speed_two_halves_parent_interval() {
+        // Inner [0..24] with source [0..24]. Compound source window [0..24].
+        // Compound speed 2.0 → parent_out = parent_in + 24/2 = parent_in + 12.
+        let inner = media_clip(0, 24, 0, 24);
+        let sliced = slice_inner_clip_to_compound(
+            &inner, 0.0, 0.0, 24.0 / 24.0, 2.0, 24,
+        )
+        .expect("speed=2 should still slice");
+        // parent timeline duration is half the inner-timeline window (24/2=12 frames=0.5s)
+        assert!(approx_eq(
+            sliced.timeline_out.to_secs_f64() - sliced.timeline_in.to_secs_f64(),
+            12.0 / 24.0,
+        ));
+        // speed = inner.speed (1.0) * compound.speed (2.0)
+        assert!(approx_eq(sliced.speed, 2.0));
+        // source window unchanged (the inner clip's own media still spans [0..24])
+        assert!(approx_eq(sliced.source_in.to_secs_f64(), 0.0));
+        assert!(approx_eq(sliced.source_out.to_secs_f64(), 24.0 / 24.0));
+    }
+
+    #[test]
+    fn slice_compound_speed_one_matches_old_additive_math() {
+        // Regression: speed=1.0 must match the old additive flatten math.
+        let inner = media_clip(12, 36, 0, 24);
+        let sliced = slice_inner_clip_to_compound(
+            &inner, 100.0 / 24.0, 0.0, 48.0 / 24.0, 1.0, 24,
+        )
+        .expect("speed=1 should slice");
+        let parent_in_secs = 100.0 / 24.0 + 12.0 / 24.0;
+        let parent_out_secs = 100.0 / 24.0 + 36.0 / 24.0;
+        assert!(approx_eq(sliced.timeline_in.to_secs_f64(), parent_in_secs));
+        assert!(approx_eq(sliced.timeline_out.to_secs_f64(), parent_out_secs));
+        assert!(approx_eq(sliced.speed, 1.0));
     }
 }
