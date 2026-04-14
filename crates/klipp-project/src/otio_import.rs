@@ -724,6 +724,9 @@ pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
 mod tests {
     use super::*;
 
+    const FIXTURE_MULTITRACK: &str =
+        include_str!("../tests/fixtures/otio_multitrack.otio");
+
     #[test]
     fn fps_integer_rate() {
         assert_eq!(fps_from_otio_rate(24.0), Fps::film_24());
@@ -957,6 +960,70 @@ mod tests {
             resolve_target_url("file:///abs/clip.mp4", dir),
             PathBuf::from("/abs/clip.mp4"),
             "file:// prefix must be stripped"
+        );
+    }
+
+    // ── End-to-end against the real multitrack.otio fixture ─────────
+
+    #[test]
+    fn load_otio_multitrack_fixture() {
+        // The fixture is the canonical OpenTimelineIO `multitrack.otio` —
+        // 3 Video tracks, 5 Clip.1 entries (all MissingReference), 7 Gaps,
+        // rate 24 throughout, no transitions, no markers.
+        let tmp = std::env::temp_dir().join("klipp_otio_multitrack.otio");
+        std::fs::write(&tmp, FIXTURE_MULTITRACK).unwrap();
+        let result = load_otio(&tmp).expect("import should succeed");
+        let _ = std::fs::remove_file(&tmp);
+
+        // Three tracks, all Video.
+        assert_eq!(result.sequence.tracks.len(), 3);
+        for t in &result.sequence.tracks {
+            assert_eq!(t.kind, TrackKind::Video, "track '{}' must be Video", t.name);
+        }
+
+        // Clip / gap counts per track — match the audit of the file.
+        let counts: Vec<(usize, usize)> = result
+            .sequence
+            .tracks
+            .iter()
+            .map(|t| {
+                let clips = t.clips.iter().filter(|c| matches!(c.kind, ClipKind::Media { .. })).count();
+                let gaps = t.clips.iter().filter(|c| matches!(c.kind, ClipKind::Gap)).count();
+                (clips, gaps)
+            })
+            .collect();
+        assert_eq!(counts, vec![(3, 3), (1, 2), (1, 2)], "per-track clip/gap layout");
+
+        // 5 Clip.1 entries → 5 media items in the pool, all offline
+        // (the fixture has only MissingReference).
+        let all: Vec<_> = result.media_pool.all().collect();
+        assert_eq!(all.len(), 5, "one MediaItem per Clip, no dedupe across missing refs");
+        for item in &all {
+            assert!(item.offline, "MissingReference → offline MediaItem");
+        }
+
+        // Sequence fps = 24 (from the fixture's RationalTimes).
+        assert_eq!(result.sequence.fps, Fps::film_24());
+
+        // Fixture has no markers or transitions — warnings should be empty.
+        assert!(
+            result.warnings.is_empty(),
+            "no unexpected warnings for a clean fixture, got: {:?}",
+            result.warnings,
+        );
+
+        // Clip timing spot-check: track 0 clip 0 is a 720-frame media clip
+        // starting at timeline position 0.
+        let t0_c0 = &result.sequence.tracks[0].clips[0];
+        assert!(matches!(t0_c0.kind, ClipKind::Media { .. }));
+        assert_eq!(t0_c0.timeline_in.value, 0);
+        assert_eq!(t0_c0.timeline_in.rate, 24);
+        // source_range had start=0, duration=720 at rate 24.
+        assert_eq!(t0_c0.source_in.value, 0);
+        assert_eq!(
+            (t0_c0.source_out.value - t0_c0.source_in.value),
+            720,
+            "clip duration should be 720 frames",
         );
     }
 }
