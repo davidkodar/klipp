@@ -43,6 +43,31 @@ fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
+    // Route Rust panics (from any thread) into klipp-debug.log via tracing.
+    // Without this, `panic = "abort"` + stripped release symbols makes
+    // background-thread panics invisible — stderr goes nowhere when the app
+    // isn't launched from a terminal. Call `next` (the default hook) after
+    // logging so panic output still reaches stderr for users who do run
+    // from a terminal.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("<unnamed>");
+        let location = panic_info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let message = panic_info.to_string();
+        // RUST_BACKTRACE=1 (or "full") to include a symbolicated backtrace.
+        let backtrace = std::backtrace::Backtrace::capture();
+        tracing::error!(
+            thread = thread_name,
+            location = %location,
+            "PANIC: {message}\nbacktrace:\n{backtrace}"
+        );
+        default_hook(panic_info);
+    }));
+
     mark("main entered (logging up)");
     info!("Klipp starting up");
 

@@ -155,6 +155,12 @@ pub struct KlippApp {
     proxy_progress_rx: Receiver<(MediaId, f32)>,
     // Auto-save
     last_autosave: std::time::Instant,
+    // Main-thread liveness — written to klipp-debug.log every 30 s so an
+    // idle freeze is visible as a gap in the log timeline. Paired with the
+    // panic hook in klipp-app/src/main.rs, every freeze or crash now leaves
+    // a trace.
+    last_heartbeat: std::time::Instant,
+    frame_count: u64,
     // GUI redesign
     theme: KlippTheme,
     layout: LayoutState,
@@ -292,6 +298,8 @@ impl KlippApp {
             proxy_progress_tx,
             proxy_progress_rx,
             last_autosave: std::time::Instant::now(),
+            last_heartbeat: std::time::Instant::now(),
+            frame_count: 0,
             theme,
             layout,
             layout_dirty: false,
@@ -13526,6 +13534,20 @@ fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPrese
 
 impl eframe::App for KlippApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Main-thread heartbeat. Logs once every 30 s with the running
+        // frame count. During normal use the log is full of PERF lines so
+        // this is noise; when the UI freezes, the gap after the last
+        // heartbeat pinpoints when the main loop stopped running.
+        self.frame_count = self.frame_count.wrapping_add(1);
+        if self.last_heartbeat.elapsed() >= std::time::Duration::from_secs(30) {
+            tracing::debug!(
+                frame = self.frame_count,
+                state = ?self.state.playback,
+                "main-thread heartbeat"
+            );
+            self.last_heartbeat = std::time::Instant::now();
+        }
+
         // CONTRAST RULE: Ensure selection bg stays dark each frame.
         // egui popup windows can reset visuals; re-apply selection colors to be safe.
         ctx.style_mut(|style| {
