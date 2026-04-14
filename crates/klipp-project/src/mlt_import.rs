@@ -12,10 +12,10 @@
 //! The parser is read-only (uses `roxmltree`). Zero panic paths — all
 //! errors are returned as `MltImportError`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use klipp_core::{Fps, RationalTime, Resolution};
+use klipp_core::{Fps, Interpolation, Keyframe, RationalTime, Resolution};
 use klipp_media::MediaPool;
 use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
 
@@ -103,7 +103,10 @@ impl<'a> MltDoc<'a> {
                 "profile" => {
                     profile = parse_profile(child);
                 }
-                "producer" => {
+                // Kdenlive 22+ uses <chain> for media sources (MLT 7's chain
+                // concept wraps a producer + filters). Structurally identical
+                // to <producer> for our purposes — index them in the same map.
+                "producer" | "chain" => {
                     if let Some(id) = child.attribute("id") {
                         producers.insert(id, child);
                     }
@@ -206,6 +209,147 @@ fn frames_to_rt(frames: i64, fps: &Fps) -> RationalTime {
     RationalTime::from_frames(frames, fps.rate())
 }
 
+/// Parse an MLT scalar keyframe string into a `Vec<Keyframe>`.
+///
+/// Format: `"0=0.0;50=0.5;100=1.0"` — semicolon-separated stops, each stop
+/// `time_key=value`. The time key may be a frame number or `HH:MM:SS.mmm`
+/// (delegated to `parse_mlt_time`). Times are returned as **source-relative
+/// seconds** (matches `Keyframe::time_secs` contract and `EvalContext.clip_time_secs`).
+///
+/// All imported keyframes use `Interpolation::Linear` with zero tangents
+/// (the MVP does not attempt to reconstruct Kdenlive's smooth curves).
+///
+/// An empty input returns `Ok(vec![])`. A malformed stop returns `Err`.
+fn parse_scalar_keyframes(raw: &str, fps: &Fps) -> Result<Vec<Keyframe>, String> {
+    let mut out = Vec::new();
+    for stop in raw.split(';') {
+        let stop = stop.trim();
+        if stop.is_empty() {
+            continue;
+        }
+        let (key, val) = stop
+            .split_once('=')
+            .ok_or_else(|| format!("malformed keyframe stop '{stop}' (expected 'time=value')"))?;
+        let frames = parse_mlt_time(key.trim(), fps)
+            .ok_or_else(|| format!("invalid keyframe time '{key}'"))?;
+        let value: f32 = val
+            .trim()
+            .parse()
+            .map_err(|_| format!("invalid keyframe value '{val}'"))?;
+        let time_secs = frames as f64 / fps.as_f64();
+        out.push(Keyframe {
+            time_secs,
+            value,
+            interpolation: Interpolation::Linear,
+            tangent_out: (0.0, 0.0),
+            tangent_in: (0.0, 0.0),
+        });
+    }
+    Ok(out)
+}
+
+/// Four keyframe tracks decomposed from an MLT geometry string, plus any
+/// per-stop warnings collected during parsing.
+#[derive(Debug, Default)]
+struct GeometryKeyframes {
+    pos_x: Vec<Keyframe>,
+    pos_y: Vec<Keyframe>,
+    scale: Vec<Keyframe>,
+    opacity: Vec<Keyframe>,
+    /// One entry per stop where the w/h ratio doesn't match the sequence's
+    /// aspect — the width-axis scale is used and the user is warned.
+    scale_warnings: Vec<String>,
+}
+
+/// Parse an MLT geometry keyframe string into four decomposed tracks.
+///
+/// Format: `"time=x y w h a;time=x y w h a"` — semicolon-separated stops,
+/// delimiter `=` (Kdenlive) or `~=`/`|=` (MLT interpolation hints, which
+/// we normalise to Linear). Time may be a frame number or `HH:MM:SS.mmm`.
+/// Each stop carries `x y w h alpha` where `x, y` are absolute pixels
+/// (origin top-left), `w, h` are absolute pixel dimensions, and `a` is
+/// alpha in `0.0..=1.0`. Scale is derived as `w / seq_width`; if
+/// `w/seq_width` and `h/seq_height` disagree by more than `0.01`, a
+/// warning is recorded and the width-axis value is used.
+///
+/// All emitted keyframes are `Linear` with zero tangents.
+fn parse_geometry_keyframes(
+    raw: &str,
+    fps: &Fps,
+    seq_width: u32,
+    seq_height: u32,
+) -> Result<GeometryKeyframes, String> {
+    let mut gk = GeometryKeyframes::default();
+    if seq_width == 0 || seq_height == 0 {
+        return Err(format!(
+            "invalid sequence dimensions {seq_width}x{seq_height}"
+        ));
+    }
+    let seq_w = seq_width as f64;
+    let seq_h = seq_height as f64;
+
+    for stop in raw.split(';') {
+        let stop = stop.trim();
+        if stop.is_empty() {
+            continue;
+        }
+        let (key, val) = stop
+            .split_once('=')
+            .ok_or_else(|| format!("malformed geometry stop '{stop}' (expected 'time=x y w h a')"))?;
+        // Strip MLT interpolation-hint suffixes on the time key (e.g. "0~",
+        // "0|", "0!"). We map all to Linear — the hint is informational.
+        let key = key.trim().trim_end_matches(|c: char| matches!(c, '~' | '|' | '!'));
+        let frames = parse_mlt_time(key, fps)
+            .ok_or_else(|| format!("invalid geometry time '{key}'"))?;
+        let time_secs = frames as f64 / fps.as_f64();
+
+        let parts: Vec<&str> = val.split_whitespace().collect();
+        if parts.len() != 5 {
+            return Err(format!(
+                "geometry stop '{stop}' has {} values (expected 5: x y w h a)",
+                parts.len()
+            ));
+        }
+        let x: f64 = parts[0]
+            .parse()
+            .map_err(|_| format!("invalid x '{}'", parts[0]))?;
+        let y: f64 = parts[1]
+            .parse()
+            .map_err(|_| format!("invalid y '{}'", parts[1]))?;
+        let w: f64 = parts[2]
+            .parse()
+            .map_err(|_| format!("invalid w '{}'", parts[2]))?;
+        let h: f64 = parts[3]
+            .parse()
+            .map_err(|_| format!("invalid h '{}'", parts[3]))?;
+        let a: f64 = parts[4]
+            .parse()
+            .map_err(|_| format!("invalid alpha '{}'", parts[4]))?;
+
+        let scale_x = w / seq_w;
+        let scale_y = h / seq_h;
+        if (scale_x - scale_y).abs() > 0.01 {
+            gk.scale_warnings.push(format!(
+                "frame {frames}: non-uniform scale (x={scale_x:.3}, y={scale_y:.3}), using width-axis",
+            ));
+        }
+
+        let kf = |value: f32| Keyframe {
+            time_secs,
+            value,
+            interpolation: Interpolation::Linear,
+            tangent_out: (0.0, 0.0),
+            tangent_in: (0.0, 0.0),
+        };
+        gk.pos_x.push(kf(x as f32));
+        gk.pos_y.push(kf(y as f32));
+        gk.scale.push(kf(scale_x as f32));
+        gk.opacity.push(kf(a as f32));
+    }
+
+    Ok(gk)
+}
+
 /// Classification of an MLT `<producer>` element, used by the timeline walker
 /// to decide how to build the corresponding Klipp clip.
 #[derive(Debug, Clone, PartialEq)]
@@ -233,7 +377,9 @@ enum ProducerKind {
 fn classify_producer(node: roxmltree::Node<'_, '_>, project_dir: &Path) -> ProducerKind {
     let service = get_property(node, "mlt_service").unwrap_or("");
     match service {
-        "avformat" => {
+        // Kdenlive emits "avformat-novalidate" for chains (skips file probing
+        // on open); semantically identical to "avformat" for import purposes.
+        "avformat" | "avformat-novalidate" => {
             let resource = get_property(node, "resource").unwrap_or("");
             let path = resolve_resource_path(resource, project_dir);
             ProducerKind::AvFormat { path }
@@ -434,7 +580,8 @@ fn resolve_playlist(
     media_pool: &mut MediaPool,
     warnings: &mut Vec<String>,
 ) -> Track {
-    let fps = &doc.profile.fps;
+    let profile = &doc.profile;
+    let fps = &profile.fps;
     let track_kind = infer_track_kind(playlist, doc);
     let name = playlist
         .attribute("id")
@@ -485,7 +632,7 @@ fn resolve_playlist(
                         inner,
                         cursor,
                         duration,
-                        fps,
+                        profile,
                         doc,
                         media_pool,
                         &mut track,
@@ -510,7 +657,7 @@ fn resolve_playlist(
                     src_in,
                     src_out,
                     cursor,
-                    fps,
+                    profile,
                     &doc.project_dir,
                     media_pool,
                     warnings,
@@ -536,11 +683,12 @@ fn build_clip_from_entry(
     src_in: i64,
     src_out: i64,
     cursor: i64,
-    fps: &Fps,
+    profile: &MltProfile,
     project_dir: &Path,
     media_pool: &mut MediaPool,
     warnings: &mut Vec<String>,
 ) -> Option<Clip> {
+    let fps = &profile.fps;
     let duration = (src_out - src_in + 1).max(0);
     let ti = frames_to_rt(cursor, fps);
     let to = frames_to_rt(cursor + duration, fps);
@@ -601,7 +749,112 @@ fn build_clip_from_entry(
         }
     }
 
+    // Producer-level filters: parse the handful of services Klipp can map
+    // onto keyframe tracks, warn on the rest. (Previously dropped silently.)
+    apply_producer_filters(producer, profile, &mut clip, warnings);
+
     Some(clip)
+}
+
+/// Iterate `<filter>` children of a producer and dispatch the ones Klipp
+/// can model onto keyframe tracks on `clip`. Unsupported filters are
+/// recorded as warnings (one per filter instance — see `collect_filter_warnings`
+/// for the collapsed tractor/playlist-level variant).
+fn apply_producer_filters(
+    producer: roxmltree::Node<'_, '_>,
+    profile: &MltProfile,
+    clip: &mut Clip,
+    warnings: &mut Vec<String>,
+) {
+    let fps = &profile.fps;
+    for filter in producer
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "filter")
+    {
+        // Skip filters Kdenlive flags as disabled — applying them would
+        // override the clip's default transform with inactive data.
+        if get_property(filter, "disable").map(|v| v.trim() == "1").unwrap_or(false) {
+            tracing::debug!(
+                service = get_property(filter, "mlt_service").unwrap_or("?"),
+                "skipping disabled filter"
+            );
+            continue;
+        }
+
+        let service = get_property(filter, "mlt_service").unwrap_or("unknown");
+        match service {
+            "qtblend" => {
+                apply_geometry_filter(filter, "rect", service, profile, clip, warnings);
+                // Kdenlive carries rotation as a separate scalar-keyframe
+                // property alongside `rect`. Degrees, same time-key format.
+                if let Some(raw) = get_property(filter, "rotation") {
+                    match parse_scalar_keyframes(raw, fps) {
+                        Ok(kfs) => clip.transform_rotation_keyframes = kfs,
+                        Err(e) => warnings.push(format!(
+                            "Filter 'qtblend' rotation parse failed: {e} — rotation dropped",
+                        )),
+                    }
+                }
+            }
+            "affine" => {
+                apply_geometry_filter(filter, "geometry", service, profile, clip, warnings);
+            }
+            "volume" => {
+                if let Some(raw) = get_property(filter, "level") {
+                    match parse_scalar_keyframes(raw, fps) {
+                        Ok(kfs) => clip.volume_keyframes = kfs,
+                        Err(e) => warnings.push(format!(
+                            "Filter 'volume' level parse failed: {e} — filter dropped",
+                        )),
+                    }
+                }
+            }
+            other => {
+                warnings.push(format!(
+                    "Producer filter '{other}' is not supported and was not imported. \
+                     Re-apply it manually in Klipp.",
+                ));
+            }
+        }
+    }
+}
+
+/// Shared body for `qtblend` / `affine` — both carry a geometry string on a
+/// known property name and map to the same four keyframe tracks.
+fn apply_geometry_filter(
+    filter: roxmltree::Node<'_, '_>,
+    property: &str,
+    service: &str,
+    profile: &MltProfile,
+    clip: &mut Clip,
+    warnings: &mut Vec<String>,
+) {
+    let raw = match get_property(filter, property) {
+        Some(r) => r,
+        None => return,
+    };
+    match parse_geometry_keyframes(raw, &profile.fps, profile.width, profile.height) {
+        Ok(gk) => {
+            tracing::info!(
+                service,
+                property,
+                pos_x = gk.pos_x.len(),
+                scale = gk.scale.len(),
+                opacity = gk.opacity.len(),
+                "geometry keyframes imported"
+            );
+            clip.transform_pos_x_keyframes = gk.pos_x;
+            clip.transform_pos_y_keyframes = gk.pos_y;
+            clip.transform_scale_keyframes = gk.scale;
+            clip.opacity_keyframes = gk.opacity;
+            for msg in gk.scale_warnings {
+                warnings.push(format!("Filter '{service}': {msg}"));
+            }
+        }
+        Err(e) => warnings.push(format!(
+            "Filter '{service}' {property} parse failed: {e} — filter dropped",
+        )),
+    }
 }
 
 /// Collect `<filter>` children from a node and emit one warning per
@@ -661,12 +914,13 @@ fn resolve_transition_entry(
     inner_tractor: roxmltree::Node<'_, '_>,
     cursor: i64,
     duration: i64,
-    fps: &Fps,
+    profile: &MltProfile,
     doc: &MltDoc<'_>,
     media_pool: &mut MediaPool,
     track: &mut Track,
     warnings: &mut Vec<String>,
 ) {
+    let fps = &profile.fps;
     // Find the two <track> child elements — these reference the A (outgoing)
     // and B (incoming) producers.
     let tracks: Vec<roxmltree::Node> = inner_tractor
@@ -700,12 +954,12 @@ fn resolve_transition_entry(
                 "Transition '{service}' not supported — replaced with cut",
             ));
             // Build both clips back-to-back, no Transition record
-            build_transition_clips(&tracks, cursor, duration, fps, doc, media_pool, track, warnings, None);
+            build_transition_clips(&tracks, cursor, duration, profile, doc, media_pool, track, warnings, None);
             return;
         }
     };
 
-    build_transition_clips(&tracks, cursor, duration, fps, doc, media_pool, track, warnings, Some(kind));
+    build_transition_clips(&tracks, cursor, duration, profile, doc, media_pool, track, warnings, Some(kind));
 }
 
 /// Shared helper: build the two clips referenced by an inner tractor's
@@ -720,13 +974,14 @@ fn build_transition_clips(
     track_refs: &[roxmltree::Node<'_, '_>],
     cursor: i64,
     duration: i64,
-    fps: &Fps,
+    profile: &MltProfile,
     doc: &MltDoc<'_>,
     media_pool: &mut MediaPool,
     track: &mut Track,
     warnings: &mut Vec<String>,
     kind: Option<klipp_core::TransitionKind>,
 ) {
+    let fps = &profile.fps;
     // Resolve both <track> references to their producer entries.
     let mut built_clip_ids: [Option<klipp_core::ClipId>; 2] = [None, None];
 
@@ -772,7 +1027,7 @@ fn build_transition_clips(
             src_in,
             src_out,
             clip_start,
-            fps,
+            profile,
             &doc.project_dir,
             media_pool,
             warnings,
@@ -834,12 +1089,240 @@ fn infer_track_kind(playlist: roxmltree::Node<'_, '_>, doc: &MltDoc<'_>) -> Trac
     TrackKind::Video
 }
 
+/// Cap on tractor nesting depth when recursing through Kdenlive's main-
+/// timeline container and its per-track-pair tractors. Real projects use
+/// depth 2 (outer root -> UUID container -> track-pair tractors -> playlists).
+const MAX_TRACTOR_DEPTH: u32 = 3;
+
+/// Does this tractor hold a `<transition>` child? If so, it's a transition
+/// wrapper (expected to live inside a playlist `<entry>`, not as a direct
+/// track) — NOT a container we should recurse into.
+fn tractor_has_transition(tractor: roxmltree::Node<'_, '_>) -> bool {
+    tractor
+        .children()
+        .any(|n| n.is_element() && n.tag_name().name() == "transition")
+}
+
+/// A Kdenlive per-track-pair tractor holds exactly the two playlists that
+/// make up one timeline track (main + transition-overlap). Heuristic: every
+/// `<track>` child's `producer` attribute resolves to a known playlist.
+fn is_track_pair_tractor(tractor: roxmltree::Node<'_, '_>, doc: &MltDoc<'_>) -> bool {
+    let mut seen_any = false;
+    for t in tractor
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "track")
+    {
+        seen_any = true;
+        match t.attribute("producer") {
+            Some(pid) if doc.playlists.contains_key(pid) => {}
+            _ => return false,
+        }
+    }
+    seen_any
+}
+
+/// Read the `hide` attribute from the `<track>` elements INSIDE a per-track-
+/// pair tractor (Kdenlive puts it there, not on the referenced `<playlist>`).
+/// `hide="video"` → audio is active (Audio track).
+/// `hide="audio"` → video is active (Video track).
+fn infer_track_kind_from_hide(tractor: roxmltree::Node<'_, '_>) -> Option<TrackKind> {
+    let hide = tractor
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "track")
+        .find_map(|t| t.attribute("hide"))?;
+    match hide {
+        "video" => Some(TrackKind::Audio),
+        "audio" => Some(TrackKind::Video),
+        _ => None,
+    }
+}
+
+/// Resolve one Kdenlive per-track-pair tractor into a single Klipp `Track`.
+///
+/// Kdenlive wraps each timeline track in a tractor holding two playlists:
+/// the primary carries the clips; the secondary is a "blank pair" used for
+/// transition overlap windows. MVP: use the first playlist with `<entry>`
+/// content as the clip source; warn if the secondary also has content (we
+/// don't yet reconstruct Kdenlive's dual-playlist transition trick).
+fn resolve_track_pair_tractor(
+    tractor: roxmltree::Node<'_, '_>,
+    doc: &MltDoc<'_>,
+    media_pool: &mut MediaPool,
+    warnings: &mut Vec<String>,
+) -> Option<Track> {
+    let playlist_ids: Vec<&str> = tractor
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "track")
+        .filter_map(|t| t.attribute("producer"))
+        .collect();
+    if playlist_ids.is_empty() {
+        return None;
+    }
+
+    let has_entries = |pid: &str| -> bool {
+        doc.playlists
+            .get(pid)
+            .map(|pl| {
+                pl.children()
+                    .any(|n| n.is_element() && n.tag_name().name() == "entry")
+            })
+            .unwrap_or(false)
+    };
+
+    // Pick the first playlist with `<entry>` content; if none, fall back to
+    // the first playlist (empty track).
+    let primary_id = playlist_ids
+        .iter()
+        .copied()
+        .find(|pid| has_entries(pid))
+        .unwrap_or(playlist_ids[0]);
+    let primary = doc.playlists.get(primary_id).copied()?;
+
+    let mut track = resolve_playlist(primary, doc, media_pool, warnings);
+    if let Some(kind) = infer_track_kind_from_hide(tractor) {
+        track.kind = kind;
+    }
+
+    // Warn if any NON-primary playlist also has content.
+    for pid in playlist_ids.iter().copied().filter(|p| *p != primary_id) {
+        if has_entries(pid) {
+            warnings.push(format!(
+                "Track-pair tractor: secondary playlist '{pid}' has content \
+                 (transition overlap not fully reconstructed)",
+            ));
+        }
+    }
+
+    Some(track)
+}
+
+/// Recurse into a container tractor (a tractor referenced directly as a
+/// `<track>` child of another tractor, with no `<transition>` element).
+///
+/// Each child `<track>` either:
+/// - references `main_bin` → skipped (Kdenlive's media-bin sentinel)
+/// - references a plain `<producer>` → silently skipped (typically the
+///   black-BG slot at the top of Kdenlive's UUID container)
+/// - references another tractor that is a per-track-pair → built into a
+///   single `Track` via `resolve_track_pair_tractor`
+/// - references another container tractor → recurse
+/// - references a playlist → handled via `resolve_playlist`
+fn walk_container_tractor(
+    tractor: roxmltree::Node<'_, '_>,
+    doc: &MltDoc<'_>,
+    media_pool: &mut MediaPool,
+    sequence: &mut Sequence,
+    warnings: &mut Vec<String>,
+    visited: &mut HashSet<String>,
+    depth: u32,
+) {
+    let tractor_id = tractor.attribute("id").unwrap_or("<no-id>");
+    let track_count = tractor
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "track")
+        .count();
+    tracing::info!(
+        tractor_id = %tractor_id,
+        depth,
+        track_count,
+        "walk_container_tractor: enter"
+    );
+
+    if depth > MAX_TRACTOR_DEPTH {
+        warnings.push(format!(
+            "Tractor nesting exceeds depth {MAX_TRACTOR_DEPTH} — stopping recursion",
+        ));
+        return;
+    }
+
+    for track_ref in tractor
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "track")
+    {
+        let pid = match track_ref.attribute("producer") {
+            Some(p) => p,
+            None => continue,
+        };
+        tracing::debug!(pid = %pid, depth, "container <track>");
+
+        if pid == "main_bin" {
+            tracing::debug!(pid = %pid, "skipping main_bin");
+            continue;
+        }
+
+        if doc.producers.contains_key(pid) {
+            // Plain producer at this position is almost always Kdenlive's
+            // black-BG slot. Silently skip.
+            tracing::debug!(pid = %pid, "skipping plain producer (BG slot)");
+            continue;
+        }
+
+        if let Some(playlist) = doc.playlists.get(pid).copied() {
+            tracing::info!(pid = %pid, "container track: direct playlist → resolve_playlist");
+            collect_filter_warnings(playlist, warnings);
+            let track = resolve_playlist(playlist, doc, media_pool, warnings);
+            sequence.tracks.push(track);
+            continue;
+        }
+
+        let inner = match doc.tractors.get(pid) {
+            Some(&t) => t,
+            None => {
+                tracing::warn!(pid = %pid, "container track: unknown producer");
+                warnings.push(format!(
+                    "Track references unknown producer '{pid}' — skipped",
+                ));
+                continue;
+            }
+        };
+
+        if !visited.insert(pid.to_string()) {
+            warnings.push(format!("Tractor cycle detected at '{pid}' — skipped"));
+            continue;
+        }
+
+        // A <transition> child on a tractor reached via a <track> ref is
+        // Kdenlive's track-level compositor — recurse anyway. Clip-to-clip
+        // transition tractors reach the importer via playlist <entry>s.
+        if tractor_has_transition(inner) {
+            tracing::debug!(
+                pid = %pid,
+                "tractor has <transition> child (track-level compositor) — recursing anyway"
+            );
+        }
+
+        let is_pair = is_track_pair_tractor(inner, doc);
+        tracing::info!(
+            pid = %pid,
+            is_pair,
+            depth,
+            "container track: tractor dispatch"
+        );
+        if is_pair {
+            if let Some(track) = resolve_track_pair_tractor(inner, doc, media_pool, warnings) {
+                tracing::info!(
+                    pid = %pid,
+                    kind = ?track.kind,
+                    clips = track.clips.len(),
+                    "track-pair: resolved"
+                );
+                sequence.tracks.push(track);
+            } else {
+                tracing::warn!(pid = %pid, "track-pair: resolve returned None");
+            }
+        } else {
+            walk_container_tractor(inner, doc, media_pool, sequence, warnings, visited, depth + 1);
+        }
+    }
+}
+
 /// Parse a Kdenlive .kdenlive (MLT XML) file into a Klipp sequence.
 ///
 /// Never panics — all errors are returned as `MltImportError`. Warnings for
 /// unsupported features (filters, non-cross-dissolve transitions, keyframes)
 /// are collected in `ImportResult::warnings` for the caller to report.
 pub fn load_kdenlive(path: &Path) -> Result<ImportResult, MltImportError> {
+    tracing::info!(path = %path.display(), "MLT import: starting");
     let xml_text = std::fs::read_to_string(path)?;
     let doc = roxmltree::Document::parse(&xml_text)
         .map_err(|e| MltImportError::Xml(e.to_string()))?;
@@ -880,32 +1363,99 @@ pub fn load_kdenlive(path: &Path) -> Result<ImportResult, MltImportError> {
     let mut media_pool = MediaPool::new();
     let mut warnings: Vec<String> = Vec::new();
 
-    // Walk the root tractor's <track> children. Each references a playlist.
+    tracing::info!(
+        producers = mlt.producers.len(),
+        playlists = mlt.playlists.len(),
+        tractors = mlt.tractors.len(),
+        "MLT import: document indexed",
+    );
+
+    // Walk the root tractor's <track> children. Each references a playlist
+    // OR another tractor (Kdenlive's main-timeline container shape).
     let root_id = mlt.root_tractor_id.expect("checked above");
+    tracing::info!(root_id = %root_id, "MLT import: root tractor selected");
     let root_tractor = mlt.tractors.get(root_id).copied();
     if let Some(root) = root_tractor {
         // Filters on the root tractor apply globally — collect warnings.
         collect_filter_warnings(root, &mut warnings);
+
+        let mut visited: HashSet<String> = HashSet::new();
+        visited.insert(root_id.to_string());
 
         for track_ref in root.children().filter(|n| n.is_element() && n.tag_name().name() == "track") {
             let producer_id = match track_ref.attribute("producer") {
                 Some(p) => p,
                 None => continue,
             };
-            // Usually the track references a playlist. Could also reference
-            // another tractor for nested compositions — we only support
-            // playlist tracks in the MVP.
+
+            tracing::debug!(producer_id = %producer_id, "root <track>");
+
+            // Kdenlive's media bin is a playlist but is never a timeline track.
+            if producer_id == "main_bin" {
+                tracing::debug!("skipping main_bin");
+                continue;
+            }
+
+            // Direct playlist reference — existing path.
             if let Some(playlist) = mlt.playlists.get(producer_id).copied() {
-                // Filters on the playlist itself also drop with a warning.
+                tracing::info!(producer_id = %producer_id, "root track: playlist → resolve_playlist");
                 collect_filter_warnings(playlist, &mut warnings);
                 let track = resolve_playlist(playlist, &mlt, &mut media_pool, &mut warnings);
                 sequence.tracks.push(track);
-            } else if mlt.tractors.contains_key(producer_id) {
-                warnings.push(format!(
-                    "Nested tractor track '{producer_id}' not supported — skipped",
-                ));
+                continue;
             }
+
+            // Tractor reference: the Kdenlive main-timeline container.
+            // NOTE: a <transition> child on a tractor referenced here is
+            // Kdenlive's track-level compositor (e.g. frei0r.cairoblend),
+            // NOT a clip-to-clip transition — those only appear inside
+            // playlist <entry> elements via resolve_transition_entry.
+            if let Some(&inner) = mlt.tractors.get(producer_id) {
+                if tractor_has_transition(inner) {
+                    tracing::debug!(
+                        producer_id = %producer_id,
+                        "tractor has <transition> child (track-level compositor) — recursing anyway"
+                    );
+                }
+                tracing::info!(producer_id = %producer_id, "root track: tractor → recurse");
+                if !visited.insert(producer_id.to_string()) {
+                    warnings.push(format!(
+                        "Tractor cycle detected at '{producer_id}' — skipped",
+                    ));
+                    continue;
+                }
+                walk_container_tractor(
+                    inner,
+                    &mlt,
+                    &mut media_pool,
+                    &mut sequence,
+                    &mut warnings,
+                    &mut visited,
+                    1,
+                );
+                continue;
+            }
+
+            warnings.push(format!(
+                "Root track references unknown producer '{producer_id}' — skipped",
+            ));
         }
+    }
+
+    tracing::info!(
+        tracks = sequence.tracks.len(),
+        total_clips = sequence.tracks.iter().map(|t| t.clips.len()).sum::<usize>(),
+        warnings = warnings.len(),
+        "MLT import: done"
+    );
+    for (i, t) in sequence.tracks.iter().enumerate() {
+        tracing::info!(
+            index = i,
+            name = %t.name,
+            kind = ?t.kind,
+            clips = t.clips.len(),
+            "MLT import: track summary"
+        );
     }
 
     Ok(ImportResult {
@@ -920,6 +1470,14 @@ mod tests {
     use super::*;
 
     const FIXTURE_TWO_CLIPS: &str = include_str!("../tests/fixtures/melt_two_clips.mlt");
+    const FIXTURE_GEOMETRY_KEYFRAMES: &str =
+        include_str!("../tests/fixtures/mlt_geometry_keyframes.mlt");
+    const FIXTURE_NONUNIFORM_SCALE: &str =
+        include_str!("../tests/fixtures/mlt_nonuniform_scale.mlt");
+    const FIXTURE_SCALAR_KEYFRAMES: &str =
+        include_str!("../tests/fixtures/mlt_scalar_keyframes.mlt");
+    const FIXTURE_MAIN_TIMELINE: &str =
+        include_str!("../tests/fixtures/mlt_kdenlive_main_timeline.mlt");
 
     #[test]
     fn loads_fixture_without_error() {
@@ -996,6 +1554,115 @@ mod tests {
         let fps = Fps::new(24, 1);
         assert_eq!(parse_mlt_time("", &fps), None);
         assert_eq!(parse_mlt_time("garbage", &fps), None);
+    }
+
+    #[test]
+    fn parse_scalar_keyframes_basic() {
+        let fps = Fps::new(25, 1);
+        let kfs = parse_scalar_keyframes("0=0.0;50=0.5;100=1.0", &fps)
+            .expect("basic 3-stop parse");
+        assert_eq!(kfs.len(), 3);
+
+        assert!((kfs[0].time_secs - 0.0).abs() < 1e-9);
+        assert!((kfs[0].value - 0.0).abs() < 1e-6);
+        assert!((kfs[1].time_secs - 2.0).abs() < 1e-9); // 50 frames / 25 fps
+        assert!((kfs[1].value - 0.5).abs() < 1e-6);
+        assert!((kfs[2].time_secs - 4.0).abs() < 1e-9); // 100 frames / 25 fps
+        assert!((kfs[2].value - 1.0).abs() < 1e-6);
+
+        // All imports are Linear with zero tangents.
+        for kf in &kfs {
+            assert_eq!(kf.interpolation, Interpolation::Linear);
+            assert_eq!(kf.tangent_out, (0.0, 0.0));
+            assert_eq!(kf.tangent_in, (0.0, 0.0));
+        }
+    }
+
+    #[test]
+    fn parse_scalar_keyframes_single_stop() {
+        let fps = Fps::new(25, 1);
+        let kfs = parse_scalar_keyframes("42=0.25", &fps)
+            .expect("single-stop parse");
+        assert_eq!(kfs.len(), 1);
+        assert!((kfs[0].time_secs - (42.0 / 25.0)).abs() < 1e-9);
+        assert!((kfs[0].value - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_geometry_keyframes_uniform() {
+        let fps = Fps::new(25, 1);
+        // 1920x1080 sequence, zoom-in-then-out with uniform aspect.
+        let gk = parse_geometry_keyframes(
+            "0~=0 0 1920 1080 1;25~=480 270 960 540 1;49~=0 0 1920 1080 1",
+            &fps,
+            1920,
+            1080,
+        )
+        .expect("uniform geometry parse");
+
+        assert!(gk.scale_warnings.is_empty(), "unexpected warnings: {:?}", gk.scale_warnings);
+        assert_eq!(gk.pos_x.len(), 3);
+        assert_eq!(gk.pos_y.len(), 3);
+        assert_eq!(gk.scale.len(), 3);
+        assert_eq!(gk.opacity.len(), 3);
+
+        // Middle stop: frame 25 → 1.0s, pos (480, 270), scale 0.5, alpha 1.0
+        assert!((gk.pos_x[1].time_secs - 1.0).abs() < 1e-9);
+        assert!((gk.pos_x[1].value - 480.0).abs() < 1e-4);
+        assert!((gk.pos_y[1].value - 270.0).abs() < 1e-4);
+        assert!((gk.scale[1].value - 0.5).abs() < 1e-6);
+        assert!((gk.opacity[1].value - 1.0).abs() < 1e-6);
+
+        // Endpoints full-frame.
+        assert!((gk.scale[0].value - 1.0).abs() < 1e-6);
+        assert!((gk.scale[2].value - 1.0).abs() < 1e-6);
+        assert_eq!(gk.pos_x[0].interpolation, Interpolation::Linear);
+    }
+
+    #[test]
+    fn parse_geometry_keyframes_nonuniform_scale() {
+        let fps = Fps::new(25, 1);
+        // w/W = 1.0 but h/H = 0.5 → non-uniform, width-axis wins.
+        let gk = parse_geometry_keyframes("0~=0 0 1920 540 1", &fps, 1920, 1080)
+            .expect("non-uniform parse");
+
+        assert_eq!(gk.scale_warnings.len(), 1);
+        assert!(
+            gk.scale_warnings[0].contains("non-uniform"),
+            "unexpected warning text: {}",
+            gk.scale_warnings[0]
+        );
+        assert!((gk.scale[0].value - 1.0).abs() < 1e-6, "should use width-axis (1.0), got {}", gk.scale[0].value);
+    }
+
+    #[test]
+    fn parse_geometry_keyframes_kdenlive_format() {
+        // Real Kdenlive uses plain `=` delimiter (not `~=`) and HH:MM:SS times.
+        // Sample taken directly from a testar.kdenlive file.
+        let fps = Fps::new(25, 1);
+        let gk = parse_geometry_keyframes(
+            "00:00:00.000=0 0 1920 1080 1.000000;\
+             00:00:07.560=0 0 1920 1080 1.000000;\
+             00:01:05.160=-2946 -641 4263 2398 1.000000",
+            &fps,
+            1920,
+            1080,
+        )
+        .expect("Kdenlive-format geometry parse");
+        assert_eq!(gk.pos_x.len(), 3);
+        assert!((gk.pos_x[0].time_secs - 0.0).abs() < 1e-6);
+        assert!((gk.pos_x[1].time_secs - 7.56).abs() < 1e-6);
+        assert!((gk.pos_x[2].value - (-2946.0)).abs() < 1e-3);
+        assert!((gk.opacity[0].value - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parse_geometry_keyframes_alpha() {
+        let fps = Fps::new(25, 1);
+        let gk = parse_geometry_keyframes("0~=0 0 1920 1080 0.5", &fps, 1920, 1080)
+            .expect("alpha parse");
+        assert_eq!(gk.opacity.len(), 1);
+        assert!((gk.opacity[0].value - 0.5).abs() < 1e-6);
     }
 
     #[test]
@@ -1540,5 +2207,126 @@ mod tests {
         let result = load_kdenlive(&tmp).unwrap();
         let _ = std::fs::remove_file(&tmp);
         assert!(!result.sequence.tracks.is_empty());
+    }
+
+    #[test]
+    fn load_kdenlive_qtblend_fixture() {
+        // End-to-end: qtblend filter on a color producer should populate
+        // transform_pos_x/y/scale and opacity keyframes on the imported clip.
+        let tmp = std::env::temp_dir().join("klipp_mlt_test_qtblend.mlt");
+        std::fs::write(&tmp, FIXTURE_GEOMETRY_KEYFRAMES).unwrap();
+        let result = load_kdenlive(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+
+        let clip = &result.sequence.tracks[0].clips[0];
+        assert_eq!(clip.transform_pos_x_keyframes.len(), 3);
+        assert_eq!(clip.transform_pos_y_keyframes.len(), 3);
+        assert_eq!(clip.transform_scale_keyframes.len(), 3);
+        assert_eq!(clip.opacity_keyframes.len(), 3);
+
+        // Middle stop at frame 25 / 25fps = 1.0s: zoomed-in half size,
+        // centered offset (480, 270).
+        assert!((clip.transform_pos_x_keyframes[1].time_secs - 1.0).abs() < 1e-9);
+        assert!((clip.transform_pos_x_keyframes[1].value - 480.0).abs() < 1e-4);
+        assert!((clip.transform_pos_y_keyframes[1].value - 270.0).abs() < 1e-4);
+        assert!((clip.transform_scale_keyframes[1].value - 0.5).abs() < 1e-6);
+
+        // Uniform scale — no non-uniform warnings expected.
+        let non_uniform: Vec<&String> = result
+            .warnings
+            .iter()
+            .filter(|w| w.contains("non-uniform"))
+            .collect();
+        assert!(non_uniform.is_empty(), "unexpected warnings: {non_uniform:?}");
+    }
+
+    #[test]
+    fn load_kdenlive_nonuniform_scale_fixture() {
+        // End-to-end: a w/h ratio that doesn't match the sequence aspect
+        // should still populate keyframes, using the width-axis scale,
+        // plus emit a "non-uniform" warning scoped to the filter service.
+        let tmp = std::env::temp_dir().join("klipp_mlt_test_nonuniform.mlt");
+        std::fs::write(&tmp, FIXTURE_NONUNIFORM_SCALE).unwrap();
+        let result = load_kdenlive(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+
+        let clip = &result.sequence.tracks[0].clips[0];
+        assert_eq!(clip.transform_scale_keyframes.len(), 2);
+        // Width-axis: 1920/1920 = 1.0 (height-axis would give 0.5).
+        assert!((clip.transform_scale_keyframes[0].value - 1.0).abs() < 1e-6);
+
+        let warning = result
+            .warnings
+            .iter()
+            .find(|w| w.contains("non-uniform"))
+            .expect("expected a non-uniform-scale warning");
+        assert!(warning.contains("qtblend"), "warning should name the filter service: {warning}");
+    }
+
+    #[test]
+    fn load_kdenlive_main_timeline_fixture() {
+        // End-to-end: Kdenlive's real main-timeline shape — a root tractor
+        // pointing at a UUID container, which holds a BG producer + 4
+        // per-track-pair tractors — must produce 2 video + 2 audio tracks
+        // with clips on the right kinds.
+        let tmp = std::env::temp_dir().join("klipp_mlt_test_main_timeline.mlt");
+        std::fs::write(&tmp, FIXTURE_MAIN_TIMELINE).unwrap();
+        let result = load_kdenlive(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+
+        // 4 tracks total: V1, V2, A1, A2. BG producer silently skipped.
+        assert_eq!(
+            result.sequence.tracks.len(),
+            4,
+            "expected 4 tracks, got {:?}",
+            result.sequence.tracks.iter().map(|t| (&t.name, t.kind)).collect::<Vec<_>>(),
+        );
+
+        let video_tracks: Vec<&Track> = result
+            .sequence
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Video)
+            .collect();
+        let audio_tracks: Vec<&Track> = result
+            .sequence
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio)
+            .collect();
+        assert_eq!(video_tracks.len(), 2, "expected 2 Video tracks");
+        assert_eq!(audio_tracks.len(), 2, "expected 2 Audio tracks");
+
+        // Exactly one V track and one A track should have a clip.
+        let v_with_clip = video_tracks.iter().filter(|t| !t.clips.is_empty()).count();
+        let a_with_clip = audio_tracks.iter().filter(|t| !t.clips.is_empty()).count();
+        assert_eq!(v_with_clip, 1, "expected exactly 1 Video track with a clip");
+        assert_eq!(a_with_clip, 1, "expected exactly 1 Audio track with a clip");
+
+        // No "not supported" warnings — the container must be recursed, not skipped.
+        let unsupported: Vec<&String> = result
+            .warnings
+            .iter()
+            .filter(|w| w.contains("not supported"))
+            .collect();
+        assert!(unsupported.is_empty(), "unexpected warnings: {unsupported:?}");
+    }
+
+    #[test]
+    fn load_kdenlive_volume_fixture() {
+        // End-to-end: volume filter's level property should populate
+        // volume_keyframes on the imported clip.
+        let tmp = std::env::temp_dir().join("klipp_mlt_test_volume.mlt");
+        std::fs::write(&tmp, FIXTURE_SCALAR_KEYFRAMES).unwrap();
+        let result = load_kdenlive(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+
+        let clip = &result.sequence.tracks[0].clips[0];
+        assert_eq!(clip.volume_keyframes.len(), 3);
+        assert!((clip.volume_keyframes[0].time_secs - 0.0).abs() < 1e-9);
+        assert!((clip.volume_keyframes[0].value - 0.0).abs() < 1e-6);
+        assert!((clip.volume_keyframes[1].time_secs - 1.0).abs() < 1e-9); // 25/25
+        assert!((clip.volume_keyframes[1].value - 1.0).abs() < 1e-6);
+        assert!((clip.volume_keyframes[2].value - 0.5).abs() < 1e-6);
     }
 }

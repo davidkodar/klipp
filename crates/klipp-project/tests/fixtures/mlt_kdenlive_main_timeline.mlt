@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<mlt version="7.0">
+  <profile frame_rate_num="25" frame_rate_den="1" width="1920" height="1080"/>
+
+  <producer id="producer0" in="0" out="99">
+    <property name="mlt_service">color</property>
+    <property name="resource">0x000000ff</property>
+  </producer>
+  <producer id="c_red" in="0" out="49">
+    <property name="mlt_service">color</property>
+    <property name="resource">0xff0000ff</property>
+  </producer>
+  <producer id="c_blue" in="0" out="49">
+    <property name="mlt_service">color</property>
+    <property name="resource">0x0000ffff</property>
+  </producer>
+
+  <!-- V1: one clip -->
+  <playlist id="pl0"><entry producer="c_red" in="0" out="49"/></playlist>
+  <playlist id="pl1"/>
+  <tractor id="tractor0" in="0" out="49">
+    <track producer="pl0" hide="audio"/>
+    <track producer="pl1" hide="audio"/>
+  </tractor>
+
+  <!-- V2: empty -->
+  <playlist id="pl2"/>
+  <playlist id="pl3"/>
+  <tractor id="tractor1" in="0" out="49">
+    <track producer="pl2" hide="audio"/>
+    <track producer="pl3" hide="audio"/>
+  </tractor>
+
+  <!-- A1: one clip -->
+  <playlist id="pl4"><entry producer="c_blue" in="0" out="49"/></playlist>
+  <playlist id="pl5"/>
+  <tractor id="tractor2" in="0" out="49">
+    <track producer="pl4" hide="video"/>
+    <track producer="pl5" hide="video"/>
+  </tractor>
+
+  <!-- A2: empty -->
+  <playlist id="pl6"/>
+  <playlist id="pl7"/>
+  <tractor id="tractor3" in="0" out="49">
+    <track producer="pl6" hide="video"/>
+    <track producer="pl7" hide="video"/>
+  </tractor>
+
+  <!-- UUID container tractor (main timeline). Kdenlive emits a track-level
+       compositor <transition> here — the importer must still recurse. -->
+  <tractor id="{0d946e13-aaaa-bbbb-cccc-000000000000}" in="0" out="49">
+    <track producer="producer0"/>
+    <track producer="tractor0"/>
+    <track producer="tractor1"/>
+    <track producer="tractor2"/>
+    <track producer="tractor3"/>
+    <transition id="compositor">
+      <property name="mlt_service">frei0r.cairoblend</property>
+      <property name="a_track">1</property>
+      <property name="b_track">2</property>
+    </transition>
+  </tractor>
+
+  <!-- Root tractor (last in document order) -->
+  <tractor id="tractor4" in="0" out="49">
+    <track producer="{0d946e13-aaaa-bbbb-cccc-000000000000}"/>
+  </tractor>
+</mlt>

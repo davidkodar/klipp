@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<mlt version="7.0">
+  <profile frame_rate_num="25" frame_rate_den="1" width="1920" height="1080"/>
+  <producer id="p0" in="0" out="49">
+    <property name="mlt_service">color</property>
+    <property name="resource">0xff0000ff</property>
+    <filter id="f0">
+      <property name="mlt_service">qtblend</property>
+      <property name="rect">0~=0 0 1920 1080 1;25~=480 270 960 540 1;49~=0 0 1920 1080 1</property>
+    </filter>
+  </producer>
+  <playlist id="pl0"><entry producer="p0" in="0" out="49"/></playlist>
+  <tractor id="root" in="0" out="49"><track producer="pl0"/></tractor>
+</mlt>

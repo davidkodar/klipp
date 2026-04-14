@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<mlt version="7.0">
+  <profile frame_rate_num="25" frame_rate_den="1" width="1920" height="1080"/>
+  <producer id="p0" in="0" out="49">
+    <property name="mlt_service">color</property>
+    <property name="resource">0x0000ffff</property>
+    <filter id="f0">
+      <property name="mlt_service">volume</property>
+      <property name="level">0=0.0;25=1.0;49=0.5</property>
+    </filter>
+  </producer>
+  <playlist id="pl0"><entry producer="p0" in="0" out="49"/></playlist>
+  <tractor id="root" in="0" out="49"><track producer="pl0"/></tractor>
+</mlt>
