@@ -1,8 +1,8 @@
 use crate::icons::Icon;
 use crate::state::{AppState, PlayheadFollow};
-use klipp_core::{AppCommand, ClipId, RationalTime, Timecode, Tool};
+use klipp_core::{AppCommand, ClipId, MediaId, RationalTime, SequenceId, Timecode, Tool};
 use klipp_engine::PlaybackState;
-use klipp_timeline::TrackKind;
+use klipp_timeline::{ClipKind, TrackKind};
 use std::collections::HashMap;
 
 const TRACK_HEADER_MIN_WIDTH: f32 = 80.0;
@@ -3454,6 +3454,105 @@ impl TimelinePanel {
 
                 // Timeline skimming: show frame at hover position in viewer
                 if state.skimming_enabled && !state.has_modal_open() {
+                    // Compound clip path — resolve hover to inner media at this
+                    // position and skim through that media. The existing
+                    // `if let Some(media_id) = clip.media_id()` block below
+                    // short-circuits to None for compound clips, so this branch
+                    // does not need to early-return.
+                    if let ClipKind::Sequence { sequence_id } = &clip.kind {
+                        let frac = ((pos.x - clip_rect.min.x) / clip_rect.width())
+                            .clamp(0.0, 1.0) as f64;
+                        if let Some((inner_media_id, inner_source_secs)) =
+                            resolve_compound_at_frac(
+                                clip,
+                                *sequence_id,
+                                frac,
+                                TrackKind::Video,
+                                &state.sequences,
+                            )
+                        {
+                            state.browser_skim_active_this_frame = true;
+
+                            let has_skim_file = state
+                                .media_pool
+                                .get(&inner_media_id)
+                                .and_then(|m| m.skim_file.as_ref())
+                                .is_some_and(|p| p.exists());
+
+                            if has_skim_file {
+                                if !state.skim_decode_in_flight {
+                                    cmds.push(AppCommand::BrowserSkimFrame {
+                                        media_id: inner_media_id,
+                                        time_secs: inner_source_secs,
+                                    });
+                                } else {
+                                    state.skim_queued_request =
+                                        Some((inner_media_id, inner_source_secs));
+                                }
+                            }
+
+                            if state.browser_skim_texture.is_none() {
+                                if let Some(tex) =
+                                    state.thumbnail_textures.get(&inner_media_id)
+                                {
+                                    state.browser_skim_texture = Some(tex.clone());
+                                    state.browser_skim_media_id = Some(inner_media_id);
+                                }
+                            } else {
+                                state.browser_skim_media_id = Some(inner_media_id);
+                            }
+
+                            state.source_media_id = Some(inner_media_id);
+
+                            painter.line_segment(
+                                [
+                                    egui::Pos2::new(pos.x, clip_rect.min.y),
+                                    egui::Pos2::new(pos.x, clip_rect.max.y),
+                                ],
+                                egui::Stroke::new(1.5, egui::Color32::WHITE),
+                            );
+
+                            if state.audio_skimming_enabled {
+                                if let Some((audio_media_id, audio_source_secs)) =
+                                    resolve_compound_at_frac(
+                                        clip,
+                                        *sequence_id,
+                                        frac,
+                                        TrackKind::Audio,
+                                        &state.sequences,
+                                    )
+                                {
+                                    if let Some(source_path) = state
+                                        .media_pool
+                                        .get(&audio_media_id)
+                                        .map(|m| m.path.clone())
+                                    {
+                                        let now = std::time::Instant::now();
+                                        let elapsed = state
+                                            .skim_last_audio_dispatch
+                                            .elapsed()
+                                            .as_millis()
+                                            as u64;
+                                        let is_new = state.skim_audio_session.is_none();
+                                        if is_new {
+                                            state.skim_last_audio_dispatch = now;
+                                            cmds.push(AppCommand::BrowserSkimAudioStart {
+                                                media_id: audio_media_id,
+                                                source_path,
+                                                time_secs: audio_source_secs,
+                                            });
+                                        } else if elapsed >= 16 {
+                                            state.skim_last_audio_dispatch = now;
+                                            cmds.push(AppCommand::BrowserSkimAudioUpdate {
+                                                media_id: audio_media_id,
+                                                time_secs: audio_source_secs,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if let Some(media_id) = clip.media_id() {
                         state.browser_skim_active_this_frame = true;
 
@@ -3968,6 +4067,31 @@ impl TimelinePanel {
 
         // Draw thumbnail/filmstrip background for video/text/subtitle clips
         if track_kind != TrackKind::Audio {
+            // Compound clip: resolve inner media per tile and stitch together
+            // a strip from those inner clips' filmstrips. Keeps the existing
+            // per-MediaId cache; no new storage.
+            if let ClipKind::Sequence { sequence_id } = &clip.kind {
+                draw_compound_filmstrip(
+                    painter,
+                    clip_rect,
+                    clip,
+                    *sequence_id,
+                    &state.sequences,
+                    &state.filmstrip_textures,
+                    filmstrip_tint,
+                    content_rect,
+                );
+                trigger_inner_filmstrips(
+                    *sequence_id,
+                    &state.sequences,
+                    &state.media_pool,
+                    &state.thumbnail_cache,
+                    &state.filmstrip_in_progress,
+                    &state.filmstrip_queue,
+                    cmds,
+                );
+                return;
+            }
             let mut drew_filmstrip = false;
             if let Some(filmstrip) = clip.media_id().and_then(|mid| state.filmstrip_textures.get(&mid)) {
                 if !filmstrip.is_empty() {
@@ -4854,15 +4978,15 @@ impl TimelinePanel {
                         ui.close_menu();
                     }
                     if ui
-                        .button("Delete Compound Clip")
+                        .button("Decompose Compound Clip")
                         .on_hover_text(
-                            "Removes the compound clip from the timeline and \
-                             also deletes its inner sequence if nothing else \
-                             references it.",
+                            "Replaces the compound clip with the inner clips \
+                             at their original positions, then deletes the \
+                             inner sequence. Inverse of \"Create Compound Clip\".",
                         )
                         .clicked()
                     {
-                        cmds.push(AppCommand::DeleteCompoundClip { clip_id });
+                        cmds.push(AppCommand::DecomposeCompoundClip { clip_id });
                         ui.close_menu();
                     }
                 }
@@ -10650,5 +10774,444 @@ mod tests {
         let s = format_shortfall_tooltip(&ha, 24);
         assert!(s.contains("Clip A: availability unknown"));
         assert!(s.contains("Clip B: availability unknown"));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Compound clip filmstrip & skim helpers
+// ═══════════════════════════════════════════════════════════════════
+
+/// Given a compound clip and a fractional position within its screen rect
+/// (0.0 = left edge, 1.0 = right edge), resolve to the innermost real Media
+/// clip visible at that position, returning its `MediaId` and the source-time
+/// within that media file.
+///
+/// Returns `None` if the position falls on a gap, a non-media clip, or an
+/// unknown sequence reference.
+///
+/// Track priority: storage order — for video parents the topmost video track
+/// is matched first (highest V number), matching standard NLE convention.
+/// For audio parents, only audio inner tracks are considered.
+fn resolve_compound_at_frac(
+    compound: &klipp_timeline::Clip,
+    sequence_id: SequenceId,
+    frac: f64,
+    track_kind: TrackKind,
+    all_sequences: &[klipp_timeline::Sequence],
+) -> Option<(MediaId, f64)> {
+    // Step 1: frac within the compound's source window → inner-sequence
+    // timeline position (the compound's "source space" *is* the inner
+    // sequence's timeline space — see Clip::sequence in klipp-timeline).
+    let compound_source_in = compound.source_in.to_secs_f64();
+    let compound_source_out = compound.source_out.to_secs_f64();
+    let inner_seq_timeline_secs =
+        compound_source_in + (compound_source_out - compound_source_in) * frac;
+
+    // Step 2: locate the inner sequence by id.
+    let inner_seq = all_sequences.iter().find(|s| s.id == sequence_id)?;
+
+    let rate = inner_seq.fps.rate();
+    let inner_tc = RationalTime::from_secs_f64(inner_seq_timeline_secs, rate);
+
+    // Step 3: walk inner tracks (storage order) and stop at the first
+    // overlapping clip. For video, video/text/subtitle tracks all qualify
+    // (mirrors the export-side track-kind compatibility rule).
+    let compatible_kinds: &[TrackKind] = match track_kind {
+        TrackKind::Video => &[TrackKind::Video, TrackKind::Text, TrackKind::Subtitle],
+        TrackKind::Audio => &[TrackKind::Audio],
+        _ => &[TrackKind::Video],
+    };
+
+    let inner_hit = inner_seq
+        .tracks
+        .iter()
+        .filter(|t| compatible_kinds.contains(&t.kind))
+        .find_map(|t| t.clip_at_timecode(inner_tc));
+    let (_idx, inner_clip) = inner_hit?;
+
+    // Step 4: nested compound — recurse one level. Build the local frac
+    // within the nested clip's own duration, then descend.
+    if let ClipKind::Sequence { sequence_id: nested_id } = &inner_clip.kind {
+        let ic_in = inner_clip.timeline_in.to_secs_f64();
+        let ic_out = inner_clip.timeline_out.to_secs_f64();
+        let local_frac = if ic_out > ic_in {
+            ((inner_seq_timeline_secs - ic_in) / (ic_out - ic_in)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        return resolve_compound_at_frac(
+            inner_clip,
+            *nested_id,
+            local_frac,
+            track_kind,
+            all_sequences,
+        );
+    }
+
+    // Step 5: leaf media clip — compute the source-time within that media
+    // file. local_offset is the position within the inner clip's own
+    // duration; multiplying by speed converts to source-media seconds.
+    let media_id = inner_clip.media_id()?;
+    let local_offset = inner_seq_timeline_secs - inner_clip.timeline_in.to_secs_f64();
+    let inner_source_secs = inner_clip.source_in.to_secs_f64() + local_offset * inner_clip.speed;
+
+    Some((media_id, inner_source_secs))
+}
+
+/// Draw a stitched filmstrip for a compound clip. Each tile in the compound
+/// clip's screen rect is mapped to the topmost overlapping inner media clip
+/// at that source-time, and the corresponding texture from that inner
+/// media's filmstrip is drawn. Gaps and tiles whose inner filmstrip is not
+/// yet generated render as a dark fill.
+fn draw_compound_filmstrip(
+    painter: &egui::Painter,
+    clip_rect: egui::Rect,
+    compound: &klipp_timeline::Clip,
+    sequence_id: SequenceId,
+    all_sequences: &[klipp_timeline::Sequence],
+    filmstrip_textures: &HashMap<MediaId, Vec<(f64, egui::TextureHandle)>>,
+    filmstrip_tint: egui::Color32,
+    content_rect: &egui::Rect,
+) {
+    // Pick a tile width from the first inner filmstrip we can find — tiles
+    // should match real frame aspect so they look like the existing
+    // per-clip filmstrip. Fall back to 16:9 if no inner filmstrip exists yet.
+    let tile_w = {
+        let inner_seq = all_sequences.iter().find(|s| s.id == sequence_id);
+        let mut tw = clip_rect.height() * (16.0 / 9.0);
+        'outer: for seq in inner_seq.iter() {
+            for track in &seq.tracks {
+                if !matches!(
+                    track.kind,
+                    TrackKind::Video | TrackKind::Text | TrackKind::Subtitle
+                ) {
+                    continue;
+                }
+                for inner_clip in &track.clips {
+                    if let Some(mid) = inner_clip.media_id() {
+                        if let Some(fs) = filmstrip_textures.get(&mid) {
+                            if let Some((_, tex)) = fs.first() {
+                                let fw = tex.size()[0] as f32;
+                                let fh = tex.size()[1] as f32;
+                                tw = clip_rect.height() * (fw / fh.max(1.0));
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        tw.max(1.0)
+    };
+
+    let clip_painter = painter.with_clip_rect(clip_rect);
+    let num_tiles = ((clip_rect.width() / tile_w).ceil() as usize).max(1);
+    let view_left = content_rect.left();
+    let view_right = content_rect.right();
+
+    let first_visible = if clip_rect.left() >= view_left {
+        0
+    } else {
+        ((view_left - clip_rect.left()) / tile_w).floor() as usize
+    };
+    let last_visible = if clip_rect.right() <= view_right {
+        num_tiles
+    } else {
+        (((view_right - clip_rect.left()) / tile_w).ceil() as usize).min(num_tiles)
+    };
+
+    let mut prev_media_id: Option<MediaId> = None;
+    let mut prev_filmstrip_idx: Option<usize> = None;
+
+    for ti in first_visible..last_visible {
+        let x0 = clip_rect.left() + ti as f32 * tile_w;
+        let x1 = if ti == num_tiles - 1 {
+            clip_rect.right()
+        } else {
+            x0 + tile_w
+        };
+        let tile_center_x = (x0 + x1) * 0.5;
+        let frac = ((tile_center_x - clip_rect.left()) / clip_rect.width().max(1.0)) as f64;
+
+        let resolved = resolve_compound_at_frac(
+            compound,
+            sequence_id,
+            frac,
+            TrackKind::Video,
+            all_sequences,
+        );
+
+        let (inner_media_id, inner_source_secs) = match resolved {
+            Some(r) => r,
+            None => {
+                // Gap or unresolved — dark fill, no separator continuity.
+                clip_painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(x0, clip_rect.top()),
+                        egui::pos2(x1, clip_rect.bottom()),
+                    ),
+                    0.0,
+                    egui::Color32::from_rgb(25, 25, 30),
+                );
+                prev_media_id = None;
+                prev_filmstrip_idx = None;
+                continue;
+            }
+        };
+
+        let filmstrip = match filmstrip_textures.get(&inner_media_id) {
+            Some(fs) if !fs.is_empty() => fs,
+            _ => {
+                // Inner filmstrip not generated yet — placeholder fill;
+                // trigger_inner_filmstrips will request generation.
+                clip_painter.rect_filled(
+                    egui::Rect::from_min_max(
+                        egui::pos2(x0, clip_rect.top()),
+                        egui::pos2(x1, clip_rect.bottom()),
+                    ),
+                    0.0,
+                    egui::Color32::from_rgb(35, 35, 40),
+                );
+                prev_media_id = None;
+                prev_filmstrip_idx = None;
+                continue;
+            }
+        };
+
+        let idx = match filmstrip.binary_search_by(|f| {
+            f.0.partial_cmp(&inner_source_secs)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
+            Ok(i) => i,
+            Err(i) => {
+                if i == 0 {
+                    0
+                } else if i >= filmstrip.len() {
+                    filmstrip.len() - 1
+                } else {
+                    let dl = (filmstrip[i - 1].0 - inner_source_secs).abs();
+                    let dr = (filmstrip[i].0 - inner_source_secs).abs();
+                    if dl <= dr { i - 1 } else { i }
+                }
+            }
+        };
+
+        // Separator at boundaries between distinct inner clips OR distinct frames.
+        let draw_sep = prev_media_id.is_some_and(|pm| pm != inner_media_id)
+            || prev_filmstrip_idx.is_some_and(|pi| pi != idx);
+        let img_x0 = if draw_sep { x0 + 1.0 } else { x0 };
+
+        if draw_sep {
+            clip_painter.line_segment(
+                [
+                    egui::pos2(x0, clip_rect.top()),
+                    egui::pos2(x0, clip_rect.bottom()),
+                ],
+                egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(0, 0, 0, 140)),
+            );
+        }
+
+        prev_media_id = Some(inner_media_id);
+        prev_filmstrip_idx = Some(idx);
+
+        let (_, ref tex) = filmstrip[idx];
+        let tile_rect = egui::Rect::from_min_max(
+            egui::pos2(img_x0, clip_rect.top()),
+            egui::pos2(x1, clip_rect.bottom()),
+        );
+        clip_painter.rect_filled(tile_rect, 0.0, egui::Color32::from_rgb(35, 35, 40));
+        clip_painter.image(
+            tex.id(),
+            tile_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            filmstrip_tint,
+        );
+    }
+}
+
+/// Walk the inner sequence and request filmstrip generation for any inner
+/// media clip that doesn't have one yet. Existing dedupe in the
+/// `RegenerateFilmstrip` handler / `spawn_filmstrip` pipeline guarantees
+/// that repeated calls (one per paint frame, common case) don't queue
+/// duplicates.
+fn trigger_inner_filmstrips(
+    sequence_id: SequenceId,
+    all_sequences: &[klipp_timeline::Sequence],
+    media_pool: &klipp_media::MediaPool,
+    thumbnail_cache: &klipp_media::ThumbnailCache,
+    filmstrip_in_progress: &std::collections::HashSet<MediaId>,
+    filmstrip_queue: &[(MediaId, std::path::PathBuf, RationalTime)],
+    cmds: &mut Vec<AppCommand>,
+) {
+    let inner_seq = match all_sequences.iter().find(|s| s.id == sequence_id) {
+        Some(s) => s,
+        None => return,
+    };
+
+    for track in &inner_seq.tracks {
+        if !matches!(
+            track.kind,
+            TrackKind::Video | TrackKind::Text | TrackKind::Subtitle
+        ) {
+            continue;
+        }
+        for inner_clip in &track.clips {
+            let media_id = match inner_clip.media_id() {
+                Some(m) => m,
+                None => continue,
+            };
+            if thumbnail_cache.filmstrip(&media_id).is_some_and(|f| !f.is_empty()) {
+                continue;
+            }
+            if filmstrip_in_progress.contains(&media_id) {
+                continue;
+            }
+            if filmstrip_queue.iter().any(|(id, _, _)| *id == media_id) {
+                continue;
+            }
+            if media_pool.get(&media_id).is_some() {
+                cmds.push(AppCommand::RegenerateFilmstrip { media_id });
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod compound_filmstrip_tests {
+    use super::*;
+    use klipp_core::{Fps, MediaId, RationalTime, Resolution, SequenceId};
+    use klipp_timeline::{Clip, Sequence, Track};
+
+    fn t(frames: i64) -> RationalTime {
+        RationalTime::from_frames(frames, 24)
+    }
+
+    fn make_seq(name: &str) -> Sequence {
+        Sequence {
+            id: SequenceId::new(),
+            name: name.to_string(),
+            fps: Fps::new(24, 1),
+            resolution: Resolution { width: 1920, height: 1080 },
+            tracks: Vec::new(),
+            in_point: None,
+            out_point: None,
+            markers: Vec::new(),
+            last_playhead: None,
+        }
+    }
+
+    fn media_clip(in_f: i64, out_f: i64) -> Clip {
+        Clip::media(MediaId::new(), t(in_f), t(out_f), t(0), t(out_f - in_f))
+    }
+
+    #[test]
+    fn frac_zero_returns_first_inner_clip() {
+        let mut child = make_seq("child");
+        let c0 = media_clip(0, 24);
+        let c1 = media_clip(24, 48);
+        let mid0 = c0.media_id().unwrap();
+        let mut tr = Track::new("V1", TrackKind::Video);
+        tr.clips.push(c0);
+        tr.clips.push(c1);
+        child.tracks.push(tr);
+        let cid = child.id;
+
+        let compound = Clip::sequence(cid, t(100), t(148));
+        let resolved = resolve_compound_at_frac(
+            &compound, cid, 0.0, TrackKind::Video, &[child.clone()]
+        );
+        let (mid, secs) = resolved.expect("frac=0 should resolve");
+        assert_eq!(mid, mid0);
+        assert!(secs.abs() < 1e-6, "source_in at start should be 0");
+    }
+
+    #[test]
+    fn frac_one_resolves_to_last_inner_clip() {
+        let mut child = make_seq("child");
+        let c0 = media_clip(0, 24);
+        let c1 = media_clip(24, 48);
+        let mid1 = c1.media_id().unwrap();
+        let mut tr = Track::new("V1", TrackKind::Video);
+        tr.clips.push(c0);
+        tr.clips.push(c1);
+        child.tracks.push(tr);
+        let cid = child.id;
+
+        let compound = Clip::sequence(cid, t(0), t(48));
+        // frac 0.75 maps to inner-timeline 36/48 frames — squarely inside c1
+        // ([24..48)). frac=1.0 lands on the excluded upper boundary, so we
+        // pick a frac that's clearly inside the last clip.
+        let resolved = resolve_compound_at_frac(
+            &compound, cid, 0.75, TrackKind::Video, &[child.clone()]
+        );
+        let (mid, _) = resolved.expect("frac~last should resolve");
+        assert_eq!(mid, mid1);
+    }
+
+    #[test]
+    fn frac_in_gap_returns_none() {
+        let mut child = make_seq("child");
+        let mut tr = Track::new("V1", TrackKind::Video);
+        tr.clips.push(media_clip(0, 24));
+        tr.clips.push(media_clip(48, 72)); // gap from 24..48
+        child.tracks.push(tr);
+        let cid = child.id;
+
+        let compound = Clip::sequence(cid, t(0), t(72));
+        // frac = 0.5 → 36 frames into compound → 36 frames into child timeline → gap
+        let resolved = resolve_compound_at_frac(
+            &compound, cid, 0.5, TrackKind::Video, &[child.clone()]
+        );
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn nested_compound_resolves_to_innermost_media() {
+        let mut grandchild = make_seq("gc");
+        let leaf = media_clip(0, 24);
+        let leaf_mid = leaf.media_id().unwrap();
+        let mut gtr = Track::new("V1", TrackKind::Video);
+        gtr.clips.push(leaf);
+        grandchild.tracks.push(gtr);
+        let gc_id = grandchild.id;
+
+        let mut child = make_seq("child");
+        let mut ctr = Track::new("V1", TrackKind::Video);
+        ctr.clips.push(Clip::sequence(gc_id, t(0), t(24)));
+        child.tracks.push(ctr);
+        let child_id = child.id;
+
+        let parent_compound = Clip::sequence(child_id, t(0), t(24));
+        let resolved = resolve_compound_at_frac(
+            &parent_compound, child_id, 0.5, TrackKind::Video,
+            &[child.clone(), grandchild.clone()]
+        );
+        let (mid, _) = resolved.expect("nested compound should resolve");
+        assert_eq!(mid, leaf_mid);
+    }
+
+    #[test]
+    fn unknown_sequence_returns_none() {
+        let bogus = SequenceId::new();
+        let compound = Clip::sequence(bogus, t(0), t(24));
+        let resolved = resolve_compound_at_frac(
+            &compound, bogus, 0.5, TrackKind::Video, &[]
+        );
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn audio_kind_skips_video_only_inner_sequence() {
+        let mut child = make_seq("child");
+        let mut tr = Track::new("V1", TrackKind::Video);
+        tr.clips.push(media_clip(0, 24));
+        child.tracks.push(tr);
+        let cid = child.id;
+
+        let compound = Clip::sequence(cid, t(0), t(24));
+        let resolved = resolve_compound_at_frac(
+            &compound, cid, 0.5, TrackKind::Audio, &[child.clone()]
+        );
+        assert!(resolved.is_none(), "audio parent must skip video-only inner");
     }
 }

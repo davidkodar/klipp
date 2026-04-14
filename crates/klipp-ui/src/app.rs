@@ -2288,6 +2288,386 @@ impl KlippApp {
         self.sync_sequence_to_engine();
     }
 
+    /// Replace a compound clip on the active sequence with its inner clips at
+    /// their original positions, then delete the now-orphaned inner sequence.
+    /// Inverse of `create_compound_clip_impl`.
+    ///
+    /// Honours the compound's source-window trim, speed, and per-clip effects:
+    /// - inner clips outside the trim are dropped
+    /// - inner clips at the trim boundaries are sliced (via
+    ///   `klipp_timeline::flatten::slice_inner_clip_to_compound`)
+    /// - `compound.speed` is multiplied into each restored leaf's `speed`,
+    ///   and the parent-timeline interval is scaled accordingly
+    /// - any non-default `node_graph`, `effects`, `builtin_effects`,
+    ///   `*_keyframes`, or `param_modifiers` on the compound are carried over
+    ///   to a new `ClipKind::AdjustmentLayer` clip placed on a video track
+    ///   above the restored inner clips
+    ///
+    /// KNOWN LIMITATIONS:
+    /// 1. `compound.speed_keyframes` (variable speed ramp) are dropped — baking
+    ///    a time-varying envelope into each inner clip is out of scope. A toast
+    ///    warns the user when this applies.
+    /// 2. Audio effects on the compound (`audio_effects`, non-default `volume`
+    ///    `gain`, `pan`, fades) are dropped — adjustment layers don't apply to
+    ///    audio in Klipp's data model. Toast warns.
+    /// 3. `compound.source_rotation` is dropped — minor visual difference.
+    /// 4. `linked_clip_id` on inner clips: if two compound instances share the
+    ///    same inner sequence, decomposing both may produce duplicate ClipIds
+    ///    with `linked_clip_id` pointing at the wrong partner. Rare edge case.
+    fn decompose_compound_clip_impl(&mut self, clip_id: klipp_core::ClipId) {
+        let active_idx = self.state.active_sequence_idx;
+
+        // 1. Find the compound clip and snapshot every field we'll need before
+        //    mutating either the parent or the inner sequence.
+        struct CompoundSnapshot {
+            parent_track_idx: usize,
+            parent_clip_idx: usize,
+            timeline_in: klipp_core::Timecode,
+            source_in: klipp_core::Timecode,
+            source_out: klipp_core::Timecode,
+            speed: f64,
+            inner_seq_id: klipp_core::SequenceId,
+            // Effect-side fields carried into the adjustment layer if any
+            node_graph: klipp_nodes::NodeGraph,
+            builtin_effects: Vec<klipp_effects::BuiltinEffect>,
+            builtin_effects_enabled: Vec<bool>,
+            effects: Vec<klipp_plugin::AppliedEffect>,
+            effect_keyframes:
+                std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+            opacity_keyframes: Vec<klipp_core::Keyframe>,
+            transform_pos_x_keyframes: Vec<klipp_core::Keyframe>,
+            transform_pos_y_keyframes: Vec<klipp_core::Keyframe>,
+            transform_scale_keyframes: Vec<klipp_core::Keyframe>,
+            transform_rotation_keyframes: Vec<klipp_core::Keyframe>,
+            param_modifiers:
+                std::collections::HashMap<klipp_core::ParamId, klipp_core::ModifierStack>,
+            // Limitation-warning fields
+            has_speed_keyframes: bool,
+            audio_effects_count: usize,
+            volume: f32,
+            gain: f32,
+            pan: f32,
+            fade_in_secs: f32,
+            fade_out_secs: f32,
+        }
+        let snap: CompoundSnapshot = {
+            let parent = &self.state.sequences[active_idx];
+            let mut found: Option<CompoundSnapshot> = None;
+            'outer: for (ti, track) in parent.tracks.iter().enumerate() {
+                for (ci, c) in track.clips.iter().enumerate() {
+                    if c.id == clip_id {
+                        if let klipp_timeline::ClipKind::Sequence { sequence_id } = &c.kind {
+                            found = Some(CompoundSnapshot {
+                                parent_track_idx: ti,
+                                parent_clip_idx: ci,
+                                timeline_in: c.timeline_in,
+                                source_in: c.source_in,
+                                source_out: c.source_out,
+                                speed: c.speed,
+                                inner_seq_id: *sequence_id,
+                                node_graph: c.node_graph.clone(),
+                                builtin_effects: c.builtin_effects.clone(),
+                                builtin_effects_enabled: c.builtin_effects_enabled.clone(),
+                                effects: c.effects.clone(),
+                                effect_keyframes: c.effect_keyframes.clone(),
+                                opacity_keyframes: c.opacity_keyframes.clone(),
+                                transform_pos_x_keyframes: c.transform_pos_x_keyframes.clone(),
+                                transform_pos_y_keyframes: c.transform_pos_y_keyframes.clone(),
+                                transform_scale_keyframes: c.transform_scale_keyframes.clone(),
+                                transform_rotation_keyframes: c
+                                    .transform_rotation_keyframes
+                                    .clone(),
+                                param_modifiers: c.param_modifiers.clone(),
+                                has_speed_keyframes: !c.speed_keyframes.is_empty(),
+                                audio_effects_count: c.audio_effects.len(),
+                                volume: c.volume,
+                                gain: c.gain,
+                                pan: c.pan,
+                                fade_in_secs: c.fade_in_secs,
+                                fade_out_secs: c.fade_out_secs,
+                            });
+                        }
+                        break 'outer;
+                    }
+                }
+            }
+            match found {
+                Some(v) => v,
+                None => return,
+            }
+        };
+
+        // 2. Snapshot the inner sequence's clips before any mutation.
+        let inner_idx = match self
+            .state
+            .sequences
+            .iter()
+            .position(|s| s.id == snap.inner_seq_id)
+        {
+            Some(i) => i,
+            None => {
+                self.remove_clip_impl(clip_id);
+                self.state.toast.show(
+                    "Compound clip removed (inner sequence was missing).",
+                );
+                return;
+            }
+        };
+        let inner_track_blueprint: Vec<(
+            klipp_timeline::TrackKind,
+            String,
+            Vec<klipp_timeline::Clip>,
+        )> = self.state.sequences[inner_idx]
+            .tracks
+            .iter()
+            .map(|t| (t.kind, t.name.clone(), t.clips.clone()))
+            .collect();
+
+        // 3. Remove the compound clip from the parent in place (no ripple).
+        {
+            let parent = &mut self.state.sequences[active_idx];
+            if let Some(track) = parent.tracks.get_mut(snap.parent_track_idx) {
+                if snap.parent_clip_idx < track.clips.len()
+                    && track.clips[snap.parent_clip_idx].id == clip_id
+                {
+                    track.clips.remove(snap.parent_clip_idx);
+                }
+            }
+        }
+
+        // 4. Slice each inner clip to the compound's source window and place
+        //    it on a parent track of matching kind. The slice helper handles
+        //    trim, speed propagation (parent interval + leaf .speed), and
+        //    drops clips that lie entirely outside the trim window.
+        let compound_in_secs = snap.timeline_in.to_secs_f64();
+        let compound_source_in_s = snap.source_in.to_secs_f64();
+        let compound_source_out_s = snap.source_out.to_secs_f64();
+        let rate = snap.timeline_in.rate;
+
+        for (kind, src_name, inner_clips) in inner_track_blueprint {
+            let sliced: Vec<klipp_timeline::Clip> = inner_clips
+                .iter()
+                .filter_map(|c| {
+                    klipp_timeline::flatten::slice_inner_clip_to_compound(
+                        c,
+                        compound_in_secs,
+                        compound_source_in_s,
+                        compound_source_out_s,
+                        snap.speed,
+                        rate,
+                    )
+                })
+                .filter(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap))
+                .collect();
+
+            if sliced.is_empty() {
+                continue;
+            }
+
+            let block_start = sliced
+                .iter()
+                .map(|c| c.timeline_in.to_secs_f64())
+                .fold(f64::INFINITY, f64::min);
+            let block_end = sliced
+                .iter()
+                .map(|c| c.timeline_out.to_secs_f64())
+                .fold(f64::NEG_INFINITY, f64::max);
+
+            // Find an existing parent track of matching kind with room (no
+            // clip overlapping the sliced block); otherwise create a new one.
+            let parent = &self.state.sequences[active_idx];
+            let target_track_idx = parent
+                .tracks
+                .iter()
+                .enumerate()
+                .find(|(_, t)| {
+                    t.kind == kind
+                        && t.clips.iter().all(|c| {
+                            let a = c.timeline_in.to_secs_f64();
+                            let b = c.timeline_out.to_secs_f64();
+                            b <= block_start || a >= block_end
+                        })
+                })
+                .map(|(i, _)| i);
+
+            let target_track_idx = match target_track_idx {
+                Some(i) => i,
+                None => {
+                    let parent = &mut self.state.sequences[active_idx];
+                    let new_track = klipp_timeline::Track::new(&src_name, kind);
+                    match kind {
+                        klipp_timeline::TrackKind::Video => {
+                            parent.tracks.insert(0, new_track);
+                        }
+                        klipp_timeline::TrackKind::Audio
+                        | klipp_timeline::TrackKind::Text
+                        | klipp_timeline::TrackKind::Subtitle => {
+                            parent.tracks.push(new_track);
+                        }
+                    };
+                    parent.renumber_tracks();
+                    parent
+                        .tracks
+                        .iter()
+                        .position(|t| t.kind == kind && t.clips.is_empty())
+                        .unwrap_or(0)
+                }
+            };
+
+            let parent = &mut self.state.sequences[active_idx];
+            if let Some(track) = parent.tracks.get_mut(target_track_idx) {
+                for clip in sliced {
+                    track.clips.push(clip);
+                }
+                track.sort_clips();
+            }
+        }
+
+        // 5. Compound-level effects → adjustment layer above the restored
+        //    clips. Skip when the compound had no effects to carry.
+        let needs_adj_layer = !snap.node_graph.is_identity()
+            || !snap.builtin_effects.is_empty()
+            || !snap.effects.is_empty()
+            || !snap.opacity_keyframes.is_empty()
+            || !snap.transform_pos_x_keyframes.is_empty()
+            || !snap.transform_pos_y_keyframes.is_empty()
+            || !snap.transform_scale_keyframes.is_empty()
+            || !snap.transform_rotation_keyframes.is_empty()
+            || !snap.effect_keyframes.is_empty()
+            || !snap.param_modifiers.is_empty();
+
+        if needs_adj_layer {
+            // Adjustment layer spans the compound's sliced parent-timeline
+            // range (start = compound_in; end = compound_in + window/speed).
+            let speed = if snap.speed.abs() < 1e-9 { 1.0 } else { snap.speed };
+            let adj_in_secs = compound_in_secs;
+            let adj_out_secs =
+                adj_in_secs + (compound_source_out_s - compound_source_in_s) / speed;
+            let adj_in = klipp_core::RationalTime::from_secs_f64(adj_in_secs, rate);
+            let adj_out = klipp_core::RationalTime::from_secs_f64(adj_out_secs, rate);
+
+            let adj_clip = klipp_timeline::Clip {
+                id: klipp_core::ClipId::new(),
+                kind: klipp_timeline::ClipKind::AdjustmentLayer,
+                timeline_in: adj_in,
+                timeline_out: adj_out,
+                source_in: klipp_core::RationalTime::from_secs_f64(0.0, rate),
+                source_out: klipp_core::RationalTime::from_secs_f64(
+                    adj_out_secs - adj_in_secs,
+                    rate,
+                ),
+                node_graph: snap.node_graph,
+                builtin_effects: snap.builtin_effects,
+                builtin_effects_enabled: snap.builtin_effects_enabled,
+                effects: snap.effects,
+                effect_keyframes: snap.effect_keyframes,
+                opacity_keyframes: snap.opacity_keyframes,
+                transform_pos_x_keyframes: snap.transform_pos_x_keyframes,
+                transform_pos_y_keyframes: snap.transform_pos_y_keyframes,
+                transform_scale_keyframes: snap.transform_scale_keyframes,
+                transform_rotation_keyframes: snap.transform_rotation_keyframes,
+                param_modifiers: snap.param_modifiers,
+                ..klipp_timeline::Clip::gap(adj_in, adj_out)
+            };
+
+            // Place on a video track at index 0 so the compositor processes
+            // it AFTER (above) the restored inner clips. If the existing top
+            // video track has room at the adjustment range, reuse it;
+            // otherwise insert a new "Decomposed Adjustments" track at idx 0.
+            let parent = &mut self.state.sequences[active_idx];
+            let topmost_has_room = parent
+                .tracks
+                .first()
+                .is_some_and(|t| {
+                    t.kind == klipp_timeline::TrackKind::Video
+                        && t.clips.iter().all(|c| {
+                            c.timeline_out.to_secs_f64() <= adj_in_secs
+                                || c.timeline_in.to_secs_f64() >= adj_out_secs
+                        })
+                });
+            let adj_track_idx = if topmost_has_room {
+                0
+            } else {
+                let new_track = klipp_timeline::Track::new(
+                    "Decomposed Adjustments",
+                    klipp_timeline::TrackKind::Video,
+                );
+                parent.tracks.insert(0, new_track);
+                parent.renumber_tracks();
+                0
+            };
+            parent.tracks[adj_track_idx].clips.push(adj_clip);
+            parent.tracks[adj_track_idx].sort_clips();
+        }
+
+        // 6. Surface limitations the user might care about as a toast.
+        let has_audio_effects = snap.audio_effects_count > 0
+            || (snap.volume - 1.0).abs() > 1e-6
+            || (snap.gain - 1.0).abs() > 1e-6
+            || snap.pan.abs() > 1e-6
+            || snap.fade_in_secs > 0.0
+            || snap.fade_out_secs > 0.0;
+        if snap.has_speed_keyframes {
+            self.state.toast.show(
+                "Note: variable speed (speed ramp) on the compound clip was not restored. Re-apply manually.",
+            );
+        } else if has_audio_effects {
+            self.state.toast.show(
+                "Note: audio effects on the compound clip were not restored. Re-apply on the audio tracks.",
+            );
+        } else if needs_adj_layer {
+            self.state.toast.show(
+                "Compound clip decomposed — inner clips restored. Effects carried to an adjustment layer above.",
+            );
+        } else {
+            self.state
+                .toast
+                .show("Compound clip decomposed — inner clips restored.");
+        }
+
+        // 7. Delete the now-orphaned inner sequence (no other compound
+        //    references it). Skip if it's the project's last sequence.
+        let still_referenced = self.state.sequences.iter().enumerate().any(|(i, seq)| {
+            i != inner_idx
+                && seq.tracks.iter().any(|t| {
+                    t.clips.iter().any(|c| {
+                        matches!(c.kind, klipp_timeline::ClipKind::Sequence {
+                            sequence_id
+                        } if sequence_id == snap.inner_seq_id)
+                    })
+                })
+        });
+        if !still_referenced && self.state.sequences.len() > 1 {
+            if let Some(inner_idx) = self
+                .state
+                .sequences
+                .iter()
+                .position(|s| s.id == snap.inner_seq_id)
+            {
+                self.state.sequences.remove(inner_idx);
+                self.state
+                    .compound_clip_stack
+                    .retain(|(idx, _)| *idx != inner_idx);
+                for entry in self.state.compound_clip_stack.iter_mut() {
+                    if entry.0 > inner_idx {
+                        entry.0 -= 1;
+                    }
+                }
+                if self.state.active_sequence_idx >= self.state.sequences.len() {
+                    self.state.active_sequence_idx = self.state.sequences.len() - 1;
+                } else if self.state.active_sequence_idx > inner_idx {
+                    self.state.active_sequence_idx -= 1;
+                }
+                self.state.fps = self.state.sequences[self.state.active_sequence_idx].fps;
+            }
+        }
+
+        self.state.selected_clip = None;
+        self.state.selected_clips.clear();
+        self.state.dirty = true;
+        self.sync_sequence_to_engine();
+    }
+
     fn handle_timeline_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         if self.handle_timeline_track_creation(cmd, needs_refresh) { return true; }
         if self.handle_timeline_navigation_markers(cmd, needs_refresh) { return true; }
@@ -2479,83 +2859,12 @@ impl KlippApp {
                     }
                     return true;
                 }
-                // Delete a compound clip from the parent timeline AND, if its
-                // inner sequence is no longer referenced anywhere else, also
-                // delete that sequence so it doesn't hang around as an unused
-                // tab. If other compound clips still reference the inner
-                // sequence, only the timeline clip is removed.
-                AppCommand::DeleteCompoundClip { clip_id } => {
-                    let cid = *clip_id;
-                    // Find the inner sequence_id this compound clip points at,
-                    // if any. Bail out quietly for non-compound clips.
-                    let inner_seq_id = self.state.sequences[self.state.active_sequence_idx]
-                        .all_clips()
-                        .find(|c| c.id == cid)
-                        .and_then(|c| match &c.kind {
-                            klipp_timeline::ClipKind::Sequence { sequence_id } => Some(*sequence_id),
-                            _ => None,
-                        });
-                    let Some(inner_seq_id) = inner_seq_id else {
-                        // Not a compound clip — fall back to plain Remove.
-                        self.remove_clip_impl(cid);
-                        return true;
-                    };
-                    // 1. Remove the compound clip from the timeline.
-                    self.remove_clip_impl(cid);
-                    // 2. Decide whether the inner sequence is still referenced.
-                    let still_referenced = self.state.sequences.iter().any(|seq| {
-                        seq.tracks.iter().any(|t| {
-                            t.clips.iter().any(|c| {
-                                matches!(c.kind, klipp_timeline::ClipKind::Sequence {
-                                    sequence_id
-                                } if sequence_id == inner_seq_id)
-                            })
-                        })
-                    });
-                    if still_referenced {
-                        self.state.toast.show(
-                            "Compound clip removed. Inner sequence is still used elsewhere and was kept.",
-                        );
-                        return true;
-                    }
-                    // 3. No other references — delete the inner sequence too.
-                    let inner_idx = self
-                        .state
-                        .sequences
-                        .iter()
-                        .position(|s| s.id == inner_seq_id);
-                    if let Some(inner_idx) = inner_idx {
-                        // Refuse if it's the last sequence (project must keep ≥1).
-                        if self.state.sequences.len() <= 1 {
-                            self.state.toast.show(
-                                "Compound clip removed. Inner sequence kept (project requires at least one sequence).",
-                            );
-                            return true;
-                        }
-                        self.state.sequences.remove(inner_idx);
-                        // Clean up breadcrumb entries pointing at the removed
-                        // sequence and renumber indices that shifted.
-                        self.state
-                            .compound_clip_stack
-                            .retain(|(idx, _)| *idx != inner_idx);
-                        for entry in self.state.compound_clip_stack.iter_mut() {
-                            if entry.0 > inner_idx {
-                                entry.0 -= 1;
-                            }
-                        }
-                        if self.state.active_sequence_idx >= self.state.sequences.len() {
-                            self.state.active_sequence_idx = self.state.sequences.len() - 1;
-                        } else if self.state.active_sequence_idx > inner_idx {
-                            self.state.active_sequence_idx -= 1;
-                        }
-                        self.state.fps =
-                            self.state.sequences[self.state.active_sequence_idx].fps;
-                        self.state.dirty = true;
-                        self.sync_sequence_to_engine();
-                        self.state
-                            .toast
-                            .show("Compound clip and its inner sequence removed.");
-                    }
+                // Decompose a compound clip — restore its inner clips to the
+                // parent timeline at their original positions, remove the
+                // compound clip itself, and delete the now-orphaned inner
+                // sequence. Inverse of CreateCompoundClip.
+                AppCommand::DecomposeCompoundClip { clip_id } => {
+                    self.decompose_compound_clip_impl(*clip_id);
                     return true;
                 }
                 // Create multicam clip: group clips at playhead across tracks as angles
