@@ -47,6 +47,8 @@ thread_local! {
     static TL_CLIP_COLORS: std::cell::RefCell<Vec<[u8; 3]>> = std::cell::RefCell::new(vec![
         [50,90,160], [50,130,80], [160,90,50], [130,50,130], [50,130,130], [160,50,80]
     ]);
+    static TL_SELECTION_COLOR: std::cell::Cell<[u8; 3]> = const { std::cell::Cell::new([255, 200, 0]) };
+    static TL_SELECTION_BORDER_WIDTH: std::cell::Cell<f32> = const { std::cell::Cell::new(3.0) };
 }
 
 /// Sync timeline prefs into thread-locals at start of each show() call.
@@ -55,6 +57,19 @@ fn sync_timeline_prefs(prefs: &crate::prefs::TimelinePrefs) {
     TL_TRIM_HANDLE_WIDTH.set(prefs.trim_handle_width);
     TL_OVERVIEW_BAR_HEIGHT.set(prefs.overview_bar_height);
     TL_CLIP_COLORS.with(|c| *c.borrow_mut() = prefs.clip_colors.clone());
+    TL_SELECTION_COLOR.set(prefs.clip_selection_color);
+    TL_SELECTION_BORDER_WIDTH.set(prefs.clip_selection_border_width);
+}
+
+/// Selection border colour configured in TimelinePrefs.
+fn selection_color() -> egui::Color32 {
+    let [r, g, b] = TL_SELECTION_COLOR.get();
+    egui::Color32::from_rgb(r, g, b)
+}
+
+/// Selection border width configured in TimelinePrefs.
+fn selection_border_width() -> f32 {
+    TL_SELECTION_BORDER_WIDTH.get()
 }
 
 /// Sync snap threshold from editing prefs.
@@ -4627,11 +4642,34 @@ impl TimelinePanel {
                     } else {
                         let modifiers = ui.input(|i| i.modifiers);
                         if modifiers.shift || modifiers.ctrl || modifiers.command {
-                            // Multi-select: toggle in selected_clips
-                            if let Some(pos) = state.selected_clips.iter().position(|&id| id == hit_clip.id) {
-                                state.selected_clips.remove(pos);
+                            // Multi-select: standard NLE semantics.
+                            //   - Seed the existing primary into the multi-set so a
+                            //     plain click followed by a shift-click ends up with
+                            //     both clips selected (otherwise the first clip is
+                            //     forgotten the moment the user shift-clicks the second).
+                            //   - If the just-clicked clip is already part of the
+                            //     selection, toggle it off and pick a new primary
+                            //     from whatever remains.
+                            //   - Otherwise add it and make it the new primary.
+                            if let Some(prev) = state.selected_clip {
+                                if prev != hit_clip.id && !state.selected_clips.contains(&prev) {
+                                    state.selected_clips.push(prev);
+                                }
+                            }
+                            let already_in_multi = state
+                                .selected_clips
+                                .iter()
+                                .position(|&id| id == hit_clip.id);
+                            let was_primary = state.selected_clip == Some(hit_clip.id);
+                            if already_in_multi.is_some() || was_primary {
+                                if let Some(pos) = already_in_multi {
+                                    state.selected_clips.remove(pos);
+                                }
+                                let new_primary = state.selected_clips.last().copied();
+                                cmds.push(AppCommand::SelectClip(new_primary));
                             } else {
                                 state.selected_clips.push(hit_clip.id);
+                                cmds.push(AppCommand::SelectClip(Some(hit_clip.id)));
                             }
                         } else {
                             // If clip is grouped, select all group members
@@ -4644,8 +4682,8 @@ impl TimelinePanel {
                             } else {
                                 state.selected_clips.clear();
                             }
+                            cmds.push(AppCommand::SelectClip(Some(hit_clip.id)));
                         }
-                        cmds.push(AppCommand::SelectClip(Some(hit_clip.id)));
                         state.selected_transition = None;
                         // Clear media browser selection so inspector shows timeline clip (State 3)
                         state.selected_media_ids.clear();
@@ -7643,14 +7681,18 @@ impl TimelinePanel {
             clip_color_bright(clip_index)
         };
 
+        // Selection styling is configurable via TimelinePrefs and intentionally
+        // high-contrast (default: yellow-gold, 3px) so selection reads at a
+        // glance against any clip palette colour. Primary and multi-selected
+        // share the same colour and width — selection is selection.
+        let sel_color = selection_color();
+        let sel_width = selection_border_width();
         let (fill, border_color, border_width) = if is_being_dragged {
             // Semi-transparent when being dragged so clips underneath are visible
             let f = egui::Color32::from_rgba_unmultiplied(base_color.r(), base_color.g(), base_color.b(), 140);
             (f, egui::Color32::from_rgb(232, 160, 32), 2.0)
-        } else if is_selected {
-            (bright_color, egui::Color32::from_rgb(120, 160, 240), 2.0)
-        } else if is_multi_selected {
-            (bright_color, egui::Color32::from_rgb(80, 130, 220), 1.5)
+        } else if is_selected || is_multi_selected {
+            (bright_color, sel_color, sel_width)
         } else if is_hovered {
             (base_color, egui::Color32::from_rgb(160, 160, 180), 1.0)
         } else {

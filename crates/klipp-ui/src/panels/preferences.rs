@@ -2475,6 +2475,28 @@ impl PreferencesPanel {
         dim_row(ui, "Min track height:", &mut prefs.timeline.min_track_height, 16.0, 64.0, " px", dirty);
         dim_row(ui, "Max track height:", &mut prefs.timeline.max_track_height, 100.0, 500.0, " px", dirty);
         dim_row(ui, "Text track height:", &mut prefs.timeline.text_track_height, 20.0, 80.0, " px", dirty);
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Selection").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Selection border colour:");
+            let sc = &mut prefs.timeline.clip_selection_color;
+            let mut c = egui::Color32::from_rgb(sc[0], sc[1], sc[2]);
+            if ui.color_edit_button_srgba(&mut c).changed() {
+                *sc = [c.r(), c.g(), c.b()];
+                *dirty = true;
+            }
+        });
+        dim_row(
+            ui,
+            "Selection border width:",
+            &mut prefs.timeline.clip_selection_border_width,
+            1.0,
+            8.0,
+            " px",
+            dirty,
+        );
     }
 
     fn show_viewer(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
