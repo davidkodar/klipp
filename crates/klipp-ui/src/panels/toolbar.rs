@@ -359,21 +359,39 @@ impl ToolbarPanel {
                     cmds.push(AppCommand::ImportSubtitles { path });
                 }
             }
-            if ui.button("Import Kdenlive Project...").clicked() {
-                ui.close_menu();
-                if let Some(path) = rfd::FileDialog::new()
-                    .set_title("Import Kdenlive Project")
-                    .add_filter("Kdenlive Project", &["kdenlive", "mlt"])
-                    .pick_file()
-                {
-                    cmds.push(AppCommand::ImportKdenlive { path });
+            // Timeline-format imports (foreign NLE projects → a new Sequence).
+            // Grouped under a submenu so adding formats (OTIO, FCPXML, EDL, AAF)
+            // doesn't clutter the top level.
+            ui.menu_button("Import Timeline", |ui| {
+                if ui.button("Kdenlive Project...").clicked() {
+                    ui.close_menu();
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title("Import Kdenlive Project")
+                        .add_filter("Kdenlive Project", &["kdenlive", "mlt"])
+                        .pick_file()
+                    {
+                        cmds.push(AppCommand::ImportKdenlive { path });
+                    }
                 }
-            }
+            });
             ui.separator();
             if ui.add(egui::Button::new("Export...").shortcut_text("Ctrl+E")).clicked() { cmds.push(AppCommand::ShowExportDialog); ui.close_menu(); }
-            if ui.button("Export FCPXML...").clicked() { ui.close_menu(); if let Some(path) = rfd::FileDialog::new().set_title("Export FCPXML").add_filter("FCPXML", &["fcpxml"]).set_file_name("export.fcpxml").save_file() { cmds.push(AppCommand::ExportFcpxml { path }); } }
-            if ui.button("Export EDL...").clicked() { ui.close_menu(); if let Some(path) = rfd::FileDialog::new().set_title("Export EDL").add_filter("EDL", &["edl"]).set_file_name("export.edl").save_file() { cmds.push(AppCommand::ExportEdl { path }); } }
             if ui.button("Export Subtitles...").clicked() { ui.close_menu(); if let Some(path) = rfd::FileDialog::new().set_title("Export Subtitles").add_filter("SRT", &["srt"]).add_filter("WebVTT", &["vtt"]).set_file_name("subtitles.srt").save_file() { cmds.push(AppCommand::ExportSubtitles { path }); } }
+            // Timeline-format exports (current Sequence → interchange format).
+            ui.menu_button("Export Timeline", |ui| {
+                if ui.button("FCPXML...").clicked() {
+                    ui.close_menu();
+                    if let Some(path) = rfd::FileDialog::new().set_title("Export FCPXML").add_filter("FCPXML", &["fcpxml"]).set_file_name("export.fcpxml").save_file() {
+                        cmds.push(AppCommand::ExportFcpxml { path });
+                    }
+                }
+                if ui.button("EDL...").clicked() {
+                    ui.close_menu();
+                    if let Some(path) = rfd::FileDialog::new().set_title("Export EDL").add_filter("EDL", &["edl"]).set_file_name("export.edl").save_file() {
+                        cmds.push(AppCommand::ExportEdl { path });
+                    }
+                }
+            });
             ui.separator();
             if ui.add(egui::Button::new("Close Project").shortcut_text("Ctrl+W")).clicked() { cmds.push(AppCommand::CloseProject); ui.close_menu(); }
             if ui.button("Project Properties...").clicked() { state.show_project_info = true; ui.close_menu(); }
