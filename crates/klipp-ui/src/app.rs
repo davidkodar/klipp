@@ -64,8 +64,18 @@ struct ExportDialogState {
     audio_codec: ExportAudioCodec,
     audio_bitrate: u32,
     confirm_overwrite: bool,
-    /// 0=Full timeline, 1=Marked in/out range, 2=Selected clips
+    /// Range selection for export.
+    /// - 0 = Full timeline
+    /// - 1 = Marked in/out range
+    /// - 2 = Selected clips
+    /// - 3 = Between markers (one file per range)
     range_mode: u8,
+    /// In multi-marker mode, include the segment from sequence start
+    /// to the first marker as its own export.
+    include_pre_marker_segment: bool,
+    /// In multi-marker mode, include the segment from the last marker
+    /// to sequence end as its own export.
+    include_post_marker_segment: bool,
     selected_preset_id: Option<String>,
     save_preset_name: String,
     show_save_preset: bool,
@@ -97,6 +107,8 @@ impl Default for ExportDialogState {
             audio_bitrate: 128,
             confirm_overwrite: false,
             range_mode: 0,
+            include_pre_marker_segment: true,
+            include_post_marker_segment: true,
             selected_preset_id: None,
             save_preset_name: String::new(),
             show_save_preset: false,
@@ -10204,6 +10216,12 @@ impl KlippApp {
                     self.state.export_offline_warning = Some((offline_clips, Box::new(settings.clone())));
                     return true;
                 }
+                // Marker multi-export: enqueue one job per segment between markers.
+                if self.export_dialog.range_mode == 3 {
+                    self.enqueue_marker_segments(settings);
+                    self.state.show_render_queue = true;
+                    return true;
+                }
                 // Route through RenderQueue — snapshot reads in/out from sequence directly
                 let use_marked = self.export_dialog.range_mode == 1;
                 let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
@@ -10238,6 +10256,11 @@ impl KlippApp {
             AppCommand::ForceExportSequence { settings } => {
                 // Same as ExportSequence but skips offline check (user confirmed)
                 self.state.export_offline_warning = None;
+                if self.export_dialog.range_mode == 3 {
+                    self.enqueue_marker_segments(settings);
+                    self.state.show_render_queue = true;
+                    return true;
+                }
                 let use_marked = self.export_dialog.range_mode == 1;
                 let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
                     &self.state.sequences[self.state.active_sequence_idx],
@@ -10553,6 +10576,129 @@ impl KlippApp {
             }
             _ => false,
         }
+    }
+
+    /// Marker multi-export: enqueue one render job per segment between
+    /// adjacent markers in the active sequence. Bookend segments
+    /// (sequence-start → first marker, last marker → sequence-end) are
+    /// included only when the corresponding dialog checkbox is on.
+    /// Zero-length segments (e.g. two markers at the same frame) are
+    /// silently skipped.
+    fn enqueue_marker_segments(&mut self, settings: &klipp_core::ExportSettings) {
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let fps = seq.fps.as_f64();
+
+        // Sort markers by frame position so adjacent-pair iteration is correct.
+        let mut markers: Vec<&klipp_timeline::Marker> = seq.markers.iter().collect();
+        markers.sort_by_key(|m| timecode_to_frame(&m.position, fps));
+
+        let seq_end_frame = timecode_to_frame(&seq.total_duration(), fps);
+
+        // Boundary points = (frame, label_for_segment_ENDING_here).
+        // A segment is named after its ending marker — Kdenlive's convention
+        // ("the marker tells you what just played"). The synthetic "start"
+        // and "end" pseudo-labels are recognised below and trigger the
+        // numeric segment_N fallback.
+        let mut boundaries: Vec<(u64, String)> = Vec::new();
+        if self.export_dialog.include_pre_marker_segment {
+            boundaries.push((0, "start".to_string()));
+        } else if let Some(first) = markers.first() {
+            // Without the pre-segment we still need a starting boundary
+            // — use the first marker as the segment kickoff.
+            boundaries.push((timecode_to_frame(&first.position, fps), first.label.clone()));
+        }
+        for m in markers.iter().skip(if self.export_dialog.include_pre_marker_segment { 0 } else { 1 }) {
+            boundaries.push((timecode_to_frame(&m.position, fps), m.label.clone()));
+        }
+        if self.export_dialog.include_post_marker_segment {
+            boundaries.push((seq_end_frame, "end".to_string()));
+        }
+
+        // Build segments between consecutive boundaries.
+        let mut segments: Vec<(u64, u64, String)> = Vec::new();
+        for i in 0..boundaries.len().saturating_sub(1) {
+            let (start, _) = &boundaries[i];
+            let (end, label) = &boundaries[i + 1];
+            if *end <= *start {
+                continue; // skip zero-length (two markers same frame)
+            }
+            segments.push((*start, *end, label.clone()));
+        }
+
+        if segments.is_empty() {
+            self.state.toast.show("No valid segments to export.");
+            return;
+        }
+
+        // Derive output dir / extension / stem from the user's chosen path.
+        let base_path = &settings.output_path;
+        let ext = base_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("mp4")
+            .to_string();
+        let base_dir = base_path.parent().unwrap_or(std::path::Path::new("."));
+        let base_stem = base_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("export")
+            .to_string();
+
+        let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let total = segments.len();
+        let mut job_count = 0u32;
+
+        for (i, (start_frame, end_frame, label)) in segments.iter().enumerate() {
+            // Synthetic boundary names ("start"/"end") fall back to numeric
+            // segment numbering. Real marker labels get sanitised + appended.
+            let seg_label = if label.is_empty() || label == "start" || label == "end" {
+                format!("{}_segment_{}", base_stem, i + 1)
+            } else {
+                format!("{}_{}", base_stem, sanitise_filename(label))
+            };
+            let output_path = unique_export_path(base_dir, &seg_label, &ext, &mut used_names);
+
+            // Per-job ExportSettings clone with overridden output path.
+            let mut job_settings: klipp_core::ExportSettings = settings.clone();
+            job_settings.output_path = output_path.clone();
+
+            // Build a snapshot for this segment. Pass `false` for
+            // use_marked_range and override export_range manually so the
+            // sequence in/out points (if any) don't interfere.
+            let snap = klipp_export::RenderSnapshot::from_sequence_with_all(
+                &self.state.sequences[self.state.active_sequence_idx],
+                &self.state.sequences,
+                &self.state.media_pool,
+                &job_settings,
+                self.state.global_lut_path.clone(),
+                false,
+            );
+            let mut snap = match snap {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("Failed to create snapshot for segment {}: {e}", i + 1);
+                    continue;
+                }
+            };
+            snap.sequence_snapshot.export_range = Some((*start_frame, *end_frame));
+
+            let display_label = format!(
+                "{} [{}/{}]",
+                output_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("segment"),
+                i + 1,
+                total,
+            );
+
+            self.state
+                .render_queue
+                .add_job(output_path, job_settings, display_label, snap);
+            job_count += 1;
+        }
+
+        self.state.toast.show(format!("Queued {job_count} export job(s)."));
     }
 
     fn handle_playback_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
@@ -13523,6 +13669,47 @@ fn dialog_fps(dialog: &ExportDialogState) -> Option<klipp_core::Fps> {
 /// Compute the frame range covering all selected clips. Returns None if no clips selected.
 /// Note: this is a time range, not a clip filter — unselected clips that overlap the range
 /// will still render, matching how in-to-out export works.
+/// Replace characters illegal on Linux/Windows/macOS filenames with
+/// underscores; trim leading/trailing whitespace and dots; fall back
+/// to "segment" when the result would be empty.
+fn sanitise_filename(label: &str) -> String {
+    let sanitised: String = label.chars().map(|c| match c {
+        '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+        c => c,
+    }).collect();
+    let sanitised = sanitised.trim_matches(|c: char| c == '.' || c.is_whitespace()).to_string();
+    if sanitised.is_empty() {
+        "segment".to_string()
+    } else {
+        sanitised
+    }
+}
+
+/// Build a unique export path under `base_dir` by suffixing `_2`, `_3`, …
+/// when a candidate name has already been used in this batch. Tracks
+/// taken names in `used` (caller owns the set).
+fn unique_export_path(
+    base_dir: &std::path::Path,
+    stem: &str,
+    ext: &str,
+    used: &mut std::collections::HashSet<String>,
+) -> std::path::PathBuf {
+    let mut candidate = format!("{}.{}", stem, ext);
+    let mut counter = 2u32;
+    while used.contains(&candidate) {
+        candidate = format!("{}_{}.{}", stem, counter, ext);
+        counter += 1;
+    }
+    used.insert(candidate.clone());
+    base_dir.join(candidate)
+}
+
+/// Convert a Timecode to a frame number at the given fps. Mirrors the
+/// helper in `klipp-render/src/snapshot.rs:693` (private there).
+fn timecode_to_frame(rt: &klipp_core::RationalTime, fps: f64) -> u64 {
+    (rt.to_secs_f64() * fps).round() as u64
+}
+
 fn selected_clips_frame_range(
     selected: &[klipp_core::ClipId],
     seq: &klipp_timeline::Sequence,
@@ -15455,11 +15642,47 @@ impl KlippApp {
                     };
                     ui.radio_value(&mut self.export_dialog.range_mode, 2, label);
                 });
+                // Marker-range multi-export: one file per segment between markers.
+                let marker_count = self.state.sequences[self.state.active_sequence_idx].markers.len();
+                let markers_enabled = marker_count > 0;
+                ui.add_enabled_ui(markers_enabled, |ui| {
+                    let label = if marker_count > 0 {
+                        format!("Between markers \u{2014} one file per range ({marker_count} marker{})",
+                            if marker_count == 1 { "" } else { "s" })
+                    } else {
+                        "Between markers \u{2014} one file per range".to_string()
+                    };
+                    ui.radio_value(&mut self.export_dialog.range_mode, 3, label);
+                });
+                if !markers_enabled {
+                    ui.indent("markers_hint", |ui| {
+                        ui.label(
+                            egui::RichText::new("Add markers to the timeline to use this mode.")
+                                .small()
+                                .color(egui::Color32::from_rgb(0x80, 0x80, 0x90)),
+                        );
+                    });
+                }
+                if self.export_dialog.range_mode == 3 {
+                    ui.indent("marker_options", |ui| {
+                        ui.checkbox(
+                            &mut self.export_dialog.include_pre_marker_segment,
+                            "Include segment before first marker",
+                        );
+                        ui.checkbox(
+                            &mut self.export_dialog.include_post_marker_segment,
+                            "Include segment after last marker",
+                        );
+                    });
+                }
                 // Reset to Full if the selected mode is no longer valid
                 if self.export_dialog.range_mode == 1 && !has_range {
                     self.export_dialog.range_mode = 0;
                 }
                 if self.export_dialog.range_mode == 2 && !sel_enabled {
+                    self.export_dialog.range_mode = 0;
+                }
+                if self.export_dialog.range_mode == 3 && !markers_enabled {
                     self.export_dialog.range_mode = 0;
                 }
 
@@ -18970,5 +19193,56 @@ mod compound_clip_cycle_tests {
         let a_id = SequenceId::new();
         let b_id = SequenceId::new();
         assert!(!would_create_cycle(a_id, b_id, &[]));
+    }
+}
+
+#[cfg(test)]
+mod marker_export_tests {
+    use super::*;
+
+    #[test]
+    fn sanitise_filename_replaces_illegal_chars() {
+        assert_eq!(sanitise_filename("act/one"), "act_one");
+        assert_eq!(sanitise_filename("scene:1"), "scene_1");
+        assert_eq!(sanitise_filename("  .hidden"), "hidden");
+        assert_eq!(sanitise_filename(""), "segment");
+    }
+
+    #[test]
+    fn sanitise_filename_handles_all_illegal_chars() {
+        assert_eq!(sanitise_filename(r#"a\b/c:d*e?f"g<h>i|j"#), "a_b_c_d_e_f_g_h_i_j");
+    }
+
+    #[test]
+    fn unique_export_path_avoids_collisions() {
+        let dir = std::path::Path::new("/tmp");
+        let mut used = std::collections::HashSet::new();
+        let p1 = unique_export_path(dir, "clip", "mp4", &mut used);
+        let p2 = unique_export_path(dir, "clip", "mp4", &mut used);
+        let p3 = unique_export_path(dir, "clip", "mp4", &mut used);
+        assert!(p1.to_str().unwrap().ends_with("clip.mp4"));
+        assert!(p2.to_str().unwrap().ends_with("clip_2.mp4"));
+        assert!(p3.to_str().unwrap().ends_with("clip_3.mp4"));
+    }
+
+    #[test]
+    fn unique_export_path_distinct_stems_dont_collide() {
+        let dir = std::path::Path::new("/tmp");
+        let mut used = std::collections::HashSet::new();
+        let p1 = unique_export_path(dir, "intro", "mp4", &mut used);
+        let p2 = unique_export_path(dir, "outro", "mp4", &mut used);
+        assert!(p1.to_str().unwrap().ends_with("intro.mp4"));
+        assert!(p2.to_str().unwrap().ends_with("outro.mp4"));
+    }
+
+    #[test]
+    fn timecode_to_frame_rounds_to_nearest() {
+        use klipp_core::RationalTime;
+        // 2 seconds at 24 fps -> frame 48
+        let tc = RationalTime { value: 48, rate: 24 };
+        assert_eq!(timecode_to_frame(&tc, 24.0), 48);
+        // 1.5 seconds at 30 fps -> frame 45
+        let tc = RationalTime { value: 45, rate: 30 };
+        assert_eq!(timecode_to_frame(&tc, 30.0), 45);
     }
 }
