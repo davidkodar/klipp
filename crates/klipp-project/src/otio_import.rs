@@ -131,7 +131,21 @@ pub(crate) struct RawClip {
     /// Clip markers are placed in source-relative coordinates.
     #[serde(default)]
     pub markers: Vec<serde_json::Value>,
+    /// OTIO `enabled` defaults to `true` — `false` means the editor
+    /// disabled the clip.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Effects (LinearTimeWarp / FreezeFrame / colour ops). Klipp drops
+    /// these but emits a warning so the user knows.
+    #[serde(default)]
+    pub effects: Vec<serde_json::Value>,
+    /// Editor's in/out points within the source — when present, narrows
+    /// `source_range` further.
+    #[serde(default)]
+    pub marked_range: Option<RawTimeRange>,
 }
+
+fn default_true() -> bool { true }
 
 /// `Gap.?` — placeholder entry whose `source_range.duration` is the only
 /// field we care about.
@@ -576,12 +590,62 @@ fn build_clip(
     clip.source_in = source_in;
     clip.source_out = source_out;
     clip.kind = ClipKind::Media { media_id };
+    clip.enabled = raw.enabled;
+
+    let clip_name = raw.name.as_deref().unwrap_or("<unnamed>");
+
+    // marked_range narrows source_in/source_out to the editor's in/out
+    // points within the source. Clamped to the existing source_range so a
+    // malformed marked_range (extending past the loaded portion) can't
+    // produce a garbage clip.
+    if let Some(mr) = raw.marked_range.as_ref() {
+        let new_in = rt_from_otio(&mr.start_time, fps_rate);
+        let mr_dur = rt_from_otio(&mr.duration, fps_rate);
+        let new_out = new_in + mr_dur;
+        let in_secs = new_in.to_secs_f64();
+        let out_secs = new_out.to_secs_f64();
+        let lo_secs = clip.source_in.to_secs_f64();
+        let hi_secs = clip.source_out.to_secs_f64();
+        let clamped_in = if in_secs < lo_secs { clip.source_in } else { new_in };
+        let clamped_out = if out_secs > hi_secs { clip.source_out } else { new_out };
+        if clamped_out > clamped_in {
+            clip.source_in = clamped_in;
+            clip.source_out = clamped_out;
+        }
+    }
+
+    // Effects (LinearTimeWarp, FreezeFrame, colour ops) are dropped. Emit
+    // a specific warning for time warps since they change clip duration
+    // and a generic one for everything else.
+    if !raw.effects.is_empty() {
+        let mut has_time_warp = false;
+        for fx in &raw.effects {
+            let schema = fx
+                .get("OTIO_SCHEMA")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if schema.starts_with("LinearTimeWarp") || schema.starts_with("FreezeFrame") {
+                has_time_warp = true;
+                break;
+            }
+        }
+        if has_time_warp {
+            warnings.push(format!(
+                "Clip '{clip_name}': speed ramp / freeze-frame effect not imported (clip will play at normal speed)"
+            ));
+        } else {
+            warnings.push(format!(
+                "Clip '{}': {} effect(s) not imported (OTIO effects are not supported — LinearTimeWarp, colour corrections etc. are dropped)",
+                clip_name,
+                raw.effects.len(),
+            ));
+        }
+    }
 
     // OTIO clip markers sit in the source's coordinate system (same basis as
     // source_range). Klipp's `ClipMarker.time_secs` is expressed relative to
     // `source_in`, so subtract before converting to seconds.
-    let source_in_secs = source_in.to_secs_f64();
-    let clip_name = raw.name.as_deref().unwrap_or("<unnamed>");
+    let source_in_secs = clip.source_in.to_secs_f64();
     for rm in parse_markers(&raw.markers, &format!("Clip '{clip_name}'"), warnings) {
         let absolute = rt_from_otio(&rm.marked_range.start_time, fps_rate);
         let time_secs = absolute.to_secs_f64() - source_in_secs;
@@ -1024,6 +1088,344 @@ mod tests {
             (t0_c0.source_out.value - t0_c0.source_in.value),
             720,
             "clip duration should be 720 frames",
+        );
+    }
+
+    // ── Warning-text + drop-case coverage ────────────────────────────
+
+    /// Build a minimal valid Timeline JSON wrapping one Video track whose
+    /// `children` array is the supplied JSON value. Keeps the boilerplate
+    /// out of every drop-case test.
+    fn timeline_with_track_children(children_json: serde_json::Value, markers_json: serde_json::Value) -> String {
+        serde_json::json!({
+            "OTIO_SCHEMA": "Timeline.1",
+            "metadata": {},
+            "name": "test",
+            "tracks": {
+                "OTIO_SCHEMA": "Stack.1",
+                "metadata": {},
+                "name": "tracks",
+                "children": [{
+                    "OTIO_SCHEMA": "Track.1",
+                    "metadata": {},
+                    "name": "V1",
+                    "kind": "Video",
+                    "children": children_json,
+                    "markers": markers_json,
+                }]
+            }
+        }).to_string()
+    }
+
+    /// Write a JSON string to a temp file and load via `load_otio`, so a
+    /// test can avoid wiring up tempfile boilerplate inline.
+    fn load_inline(json: &str, slug: &str) -> ImportResult {
+        let path = std::env::temp_dir().join(format!("klipp_otio_test_{slug}.otio"));
+        std::fs::write(&path, json).unwrap();
+        let result = load_otio(&path).expect("import should succeed");
+        let _ = std::fs::remove_file(&path);
+        result
+    }
+
+    fn warnings_contain_substring(warnings: &[String], needle: &str) -> bool {
+        let lc = needle.to_lowercase();
+        warnings.iter().any(|w| w.to_lowercase().contains(&lc))
+    }
+
+    #[test]
+    fn transition_drop_produces_warning() {
+        let json = timeline_with_track_children(
+            serde_json::json!([
+                {
+                    "OTIO_SCHEMA": "Clip.1",
+                    "name": "A",
+                    "source_range": {
+                        "OTIO_SCHEMA": "TimeRange.1",
+                        "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 },
+                        "duration":   { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 },
+                    },
+                    "media_reference": { "OTIO_SCHEMA": "MissingReference.1", "metadata": {} }
+                },
+                {
+                    "OTIO_SCHEMA": "Transition.1",
+                    "name": "fade",
+                    "transition_type": "SMPTE_Dissolve",
+                    "in_offset":  { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 6.0 },
+                    "out_offset": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 6.0 }
+                },
+                {
+                    "OTIO_SCHEMA": "Clip.1",
+                    "name": "B",
+                    "source_range": {
+                        "OTIO_SCHEMA": "TimeRange.1",
+                        "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 },
+                        "duration":   { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 },
+                    },
+                    "media_reference": { "OTIO_SCHEMA": "MissingReference.1", "metadata": {} }
+                },
+            ]),
+            serde_json::json!([]),
+        );
+        let result = load_inline(&json, "transition");
+        assert!(
+            warnings_contain_substring(&result.warnings, "transition"),
+            "warnings should mention 'transition', got: {:?}", result.warnings,
+        );
+    }
+
+    #[test]
+    fn track_marker_drop_produces_warning() {
+        let json = timeline_with_track_children(
+            serde_json::json!([
+                {
+                    "OTIO_SCHEMA": "Clip.1",
+                    "name": "A",
+                    "source_range": {
+                        "OTIO_SCHEMA": "TimeRange.1",
+                        "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 },
+                        "duration":   { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 },
+                    },
+                    "media_reference": { "OTIO_SCHEMA": "MissingReference.1", "metadata": {} }
+                }
+            ]),
+            serde_json::json!([{
+                "OTIO_SCHEMA": "Marker.1",
+                "name": "track-mark",
+                "color": "RED",
+                "marked_range": {
+                    "OTIO_SCHEMA": "TimeRange.1",
+                    "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 12.0 },
+                    "duration":   { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 },
+                }
+            }]),
+        );
+        let result = load_inline(&json, "track_marker");
+        assert!(
+            warnings_contain_substring(&result.warnings, "marker"),
+            "warnings should mention 'marker', got: {:?}", result.warnings,
+        );
+    }
+
+    #[test]
+    fn effect_on_clip_produces_warning() {
+        let json = timeline_with_track_children(
+            serde_json::json!([{
+                "OTIO_SCHEMA": "Clip.1",
+                "name": "fx_clip",
+                "source_range": {
+                    "OTIO_SCHEMA": "TimeRange.1",
+                    "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 },
+                    "duration":   { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 },
+                },
+                "media_reference": { "OTIO_SCHEMA": "MissingReference.1", "metadata": {} },
+                "effects": [{
+                    "OTIO_SCHEMA": "Effect.1",
+                    "name": "SomeEffect",
+                    "effect_name": "blur",
+                    "metadata": {}
+                }]
+            }]),
+            serde_json::json!([]),
+        );
+        let result = load_inline(&json, "effect");
+        assert!(
+            warnings_contain_substring(&result.warnings, "effect"),
+            "warnings should mention 'effect', got: {:?}", result.warnings,
+        );
+    }
+
+    #[test]
+    fn linear_time_warp_produces_specific_warning() {
+        let json = timeline_with_track_children(
+            serde_json::json!([{
+                "OTIO_SCHEMA": "Clip.1",
+                "name": "warp_clip",
+                "source_range": {
+                    "OTIO_SCHEMA": "TimeRange.1",
+                    "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 },
+                    "duration":   { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 },
+                },
+                "media_reference": { "OTIO_SCHEMA": "MissingReference.1", "metadata": {} },
+                "effects": [{
+                    "OTIO_SCHEMA": "LinearTimeWarp.1",
+                    "name": "slowmo",
+                    "time_scalar": 0.5,
+                    "metadata": {}
+                }]
+            }]),
+            serde_json::json!([]),
+        );
+        let result = load_inline(&json, "time_warp");
+        let mentions_speed_or_freeze = result.warnings.iter().any(|w| {
+            let lw = w.to_lowercase();
+            lw.contains("speed ramp") || lw.contains("freeze-frame")
+        });
+        assert!(
+            mentions_speed_or_freeze,
+            "warnings should mention 'speed ramp' or 'freeze-frame', got: {:?}",
+            result.warnings,
+        );
+    }
+
+    #[test]
+    fn disabled_clip_imports_as_disabled() {
+        let json = timeline_with_track_children(
+            serde_json::json!([{
+                "OTIO_SCHEMA": "Clip.1",
+                "name": "off",
+                "enabled": false,
+                "source_range": {
+                    "OTIO_SCHEMA": "TimeRange.1",
+                    "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 },
+                    "duration":   { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 },
+                },
+                "media_reference": { "OTIO_SCHEMA": "MissingReference.1", "metadata": {} }
+            }]),
+            serde_json::json!([]),
+        );
+        let result = load_inline(&json, "disabled");
+        let clip = &result.sequence.tracks[0].clips[0];
+        assert!(!clip.enabled, "disabled OTIO clip should land as Clip.enabled = false");
+    }
+
+    #[test]
+    fn enabled_defaults_true_when_field_absent() {
+        let json = timeline_with_track_children(
+            serde_json::json!([{
+                "OTIO_SCHEMA": "Clip.1",
+                "name": "default",
+                "source_range": {
+                    "OTIO_SCHEMA": "TimeRange.1",
+                    "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 },
+                    "duration":   { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 },
+                },
+                "media_reference": { "OTIO_SCHEMA": "MissingReference.1", "metadata": {} }
+            }]),
+            serde_json::json!([]),
+        );
+        let result = load_inline(&json, "enabled_default");
+        let clip = &result.sequence.tracks[0].clips[0];
+        assert!(clip.enabled, "absent enabled field must default to true");
+    }
+
+    #[test]
+    fn marked_range_narrows_source_in_out() {
+        // source_range is 0..24 frames; marked_range narrows to 6..18.
+        let json = timeline_with_track_children(
+            serde_json::json!([{
+                "OTIO_SCHEMA": "Clip.1",
+                "name": "marked",
+                "source_range": {
+                    "OTIO_SCHEMA": "TimeRange.1",
+                    "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 },
+                    "duration":   { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 },
+                },
+                "marked_range": {
+                    "OTIO_SCHEMA": "TimeRange.1",
+                    "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 6.0 },
+                    "duration":   { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 12.0 },
+                },
+                "media_reference": { "OTIO_SCHEMA": "MissingReference.1", "metadata": {} }
+            }]),
+            serde_json::json!([]),
+        );
+        let result = load_inline(&json, "marked_range");
+        let clip = &result.sequence.tracks[0].clips[0];
+        assert_eq!(clip.source_in.value, 6, "source_in should narrow to 6");
+        assert_eq!(
+            clip.source_out.value - clip.source_in.value,
+            12,
+            "marked_range duration should win",
+        );
+    }
+
+    #[test]
+    fn unicode_clip_and_track_names_preserved() {
+        // Track + clip names with non-ASCII characters and emoji must
+        // survive parsing intact — Klipp uses String everywhere so this
+        // mostly tests serde and our own field plumbing.
+        let json = serde_json::json!({
+            "OTIO_SCHEMA": "Timeline.1",
+            "metadata": {},
+            "name": "ünîcødé project",
+            "tracks": {
+                "OTIO_SCHEMA": "Stack.1",
+                "metadata": {},
+                "name": "tracks",
+                "children": [{
+                    "OTIO_SCHEMA": "Track.1",
+                    "metadata": {},
+                    "name": "Spår 1 — Björn 🎬",
+                    "kind": "Video",
+                    "children": [{
+                        "OTIO_SCHEMA": "Clip.1",
+                        "name": "Scène 42 – été",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 },
+                            "duration":   { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 },
+                        },
+                        "media_reference": { "OTIO_SCHEMA": "MissingReference.1", "metadata": {} }
+                    }],
+                    "markers": []
+                }]
+            }
+        }).to_string();
+        let result = load_inline(&json, "unicode");
+        let track = &result.sequence.tracks[0];
+        assert_eq!(track.name, "Spår 1 — Björn 🎬");
+        // Clip name lands on the MediaItem.filename via register_otio_media_ref
+        // when the reference is Missing (no URL to derive from).
+        let item = result.media_pool.all().next().expect("one media item");
+        assert!(
+            item.filename.contains("Scène 42")
+                || item.filename.contains("été"),
+            "unicode clip name should reach the MediaItem, got '{}'",
+            item.filename,
+        );
+    }
+
+    // ── End-to-end against a hand-crafted fixture exercising drops ──
+
+    #[test]
+    fn load_otio_with_transitions_and_markers() {
+        // Hand-crafted small fixture: one Video track with two clips,
+        // a transition between them, a track marker, a clip marker on
+        // the first clip, and a stack-level (sequence) marker.
+        let fixture = include_str!(
+            "../tests/fixtures/otio_with_transitions_and_markers.otio"
+        );
+        let path = std::env::temp_dir().join("klipp_otio_with_t_and_m.otio");
+        std::fs::write(&path, fixture).unwrap();
+        let result = load_otio(&path).expect("import should succeed");
+        let _ = std::fs::remove_file(&path);
+
+        // One track, two clips (transition isn't materialised as a clip).
+        assert_eq!(result.sequence.tracks.len(), 1);
+        let track = &result.sequence.tracks[0];
+        let clip_count = track
+            .clips
+            .iter()
+            .filter(|c| matches!(c.kind, ClipKind::Media { .. }))
+            .count();
+        assert_eq!(clip_count, 2, "expected 2 media clips");
+
+        // Sequence-level marker promoted from the Stack.
+        assert_eq!(result.sequence.markers.len(), 1, "one sequence marker");
+
+        // Clip marker on the first clip.
+        let first_clip_markers = track.clips[0].clip_markers.len();
+        assert_eq!(first_clip_markers, 1, "one marker on first clip");
+
+        // Warnings: transition + track marker drops.
+        assert!(!result.warnings.is_empty(), "warnings expected");
+        assert!(
+            warnings_contain_substring(&result.warnings, "transition"),
+            "warnings should mention 'transition', got: {:?}", result.warnings,
+        );
+        assert!(
+            warnings_contain_substring(&result.warnings, "marker"),
+            "warnings should mention 'marker', got: {:?}", result.warnings,
         );
     }
 }

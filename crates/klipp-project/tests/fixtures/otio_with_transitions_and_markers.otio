@@ -1,0 +1,83 @@
+{
+    "OTIO_SCHEMA": "Timeline.1",
+    "metadata": {},
+    "name": "transitions_and_markers",
+    "tracks": {
+        "OTIO_SCHEMA": "Stack.1",
+        "metadata": {},
+        "name": "tracks",
+        "children": [
+            {
+                "OTIO_SCHEMA": "Track.1",
+                "metadata": {},
+                "name": "V1",
+                "kind": "Video",
+                "children": [
+                    {
+                        "OTIO_SCHEMA": "Clip.1",
+                        "name": "clip_a",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 },
+                            "duration":   { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 }
+                        },
+                        "media_reference": { "OTIO_SCHEMA": "MissingReference.1", "metadata": {} },
+                        "markers": [
+                            {
+                                "OTIO_SCHEMA": "Marker.1",
+                                "name": "clip_a_mark",
+                                "color": "GREEN",
+                                "marked_range": {
+                                    "OTIO_SCHEMA": "TimeRange.1",
+                                    "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 12.0 },
+                                    "duration":   { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 }
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "OTIO_SCHEMA": "Transition.1",
+                        "name": "fade_a_to_b",
+                        "transition_type": "SMPTE_Dissolve",
+                        "in_offset":  { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 6.0 },
+                        "out_offset": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 6.0 }
+                    },
+                    {
+                        "OTIO_SCHEMA": "Clip.1",
+                        "name": "clip_b",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 },
+                            "duration":   { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 }
+                        },
+                        "media_reference": { "OTIO_SCHEMA": "MissingReference.1", "metadata": {} }
+                    }
+                ],
+                "markers": [
+                    {
+                        "OTIO_SCHEMA": "Marker.1",
+                        "name": "track_mark",
+                        "color": "RED",
+                        "marked_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 },
+                            "duration":   { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 }
+                        }
+                    }
+                ]
+            }
+        ],
+        "markers": [
+            {
+                "OTIO_SCHEMA": "Marker.1",
+                "name": "stack_mark",
+                "color": "BLUE",
+                "marked_range": {
+                    "OTIO_SCHEMA": "TimeRange.1",
+                    "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 },
+                    "duration":   { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 0.0 }
+                }
+            }
+        ]
+    }
+}
