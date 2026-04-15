@@ -303,6 +303,10 @@ pub enum AppCommand {
     ToggleLoopPlayback,
     SetLoopPlayback(bool),
 
+    /// Sync the user's "play audio during playhead scrub" preference into the
+    /// engine so mute/chirp decisions can honour it.
+    SetScrubAudioEnabled(bool),
+
     // Timeline
     SetPlayhead(Timecode),
     SetSpeed(f64),

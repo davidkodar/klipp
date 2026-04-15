@@ -358,6 +358,11 @@ pub struct PlaybackEngine {
     skim_consumer: crate::audio_output::SkimConsumer,
     // Loop playback — cycle between in/out points or whole sequence
     loop_enabled: bool,
+    // Audio scrubbing: when false, audio is muted while the user drags the
+    // playhead. Mirrors `prefs.playback.scrub_audio` from the UI side.
+    scrub_audio_enabled: bool,
+    // True while BeginScrub…EndScrub brackets a playhead drag.
+    is_scrubbing: bool,
     // Predictive pre-seek — background thread pre-opens audio decoders before loop point
     pre_seek_result: Arc<std::sync::Mutex<Option<LoopPreSeekResult>>>,
     pre_seek_generation: u64,
@@ -548,6 +553,8 @@ impl PlaybackEngine {
             use_proxies: true,
             skim_consumer,
             loop_enabled: false,
+            scrub_audio_enabled: true,
+            is_scrubbing: false,
             pre_seek_result: Arc::new(std::sync::Mutex::new(None)),
             pre_seek_generation: 0,
             pre_seek_started: false,
@@ -950,10 +957,27 @@ impl PlaybackEngine {
                 // Handled on UI thread — ignore in engine
             }
             AppCommand::BeginScrub => {
-                // Engine can optimize decode during scrub (handled via use_proxies on UI side)
+                // Engine can optimize decode during scrub (handled via use_proxies on UI side).
+                self.is_scrubbing = true;
+                // Mute eagerly so the first tick of the drag is silent too —
+                // update_playback's per-tick mute check will keep things in sync.
+                if !self.scrub_audio_enabled {
+                    for active in &self.audio_sources {
+                        active.source.muted().store(true, Ordering::Release);
+                    }
+                }
             }
             AppCommand::EndScrub => {
-                // Scrub ended — UI will restore proxy state
+                // Scrub ended — UI will restore proxy state. Clear any
+                // scrub-induced mute; the per-tick update_playback reasserts
+                // speed / time-remap mutes on the next tick, so we don't need
+                // to restore any prior state here.
+                self.is_scrubbing = false;
+                if !self.scrub_audio_enabled {
+                    for active in &self.audio_sources {
+                        active.source.muted().store(false, Ordering::Release);
+                    }
+                }
             }
 
             AppCommand::SetLoopPlayback(enabled) => {
@@ -962,6 +986,19 @@ impl PlaybackEngine {
                 if !enabled {
                     self.pre_seek_generation += 1;
                     self.pre_seek_started = false;
+                }
+            }
+
+            AppCommand::SetScrubAudioEnabled(enabled) => {
+                self.scrub_audio_enabled = enabled;
+                // Apply immediately if the user toggles mid-scrub. The per-tick
+                // update_playback re-asserts the correct mute state so we only
+                // need to push the transition here; EndScrub's clear path also
+                // honours this flag.
+                if self.is_scrubbing && !enabled {
+                    for active in &self.audio_sources {
+                        active.source.muted().store(true, Ordering::Release);
+                    }
                 }
             }
 
@@ -1914,8 +1951,11 @@ impl PlaybackEngine {
                 active.source.muted().store(true, Ordering::Release);
             }
         } else {
-            // Constant-speed path: mute when clip_speed != 1.0.
-            let should_mute = (self.clip_speed - 1.0).abs() > 0.01;
+            // Constant-speed path: mute when clip_speed != 1.0, or when the
+            // user is scrubbing with audio-scrubbing disabled. Reasserted each
+            // tick so mid-scrub pref changes and EndScrub both self-correct.
+            let should_mute = (self.clip_speed - 1.0).abs() > 0.01
+                || (self.is_scrubbing && !self.scrub_audio_enabled);
             for active in &self.audio_sources {
                 active.source.muted().store(should_mute, Ordering::Release);
             }
@@ -3638,11 +3678,14 @@ impl PlaybackEngine {
 
             if !was_playing {
                 self.grab_single_frame_timeout(grab_timeout);
-                // Play scrub chirp (~40ms snippet at the seek position)
-                if let Some(active) = self.audio_sources.first() {
-                    active.source.chirp(source_secs, 0.04);
-                    if let Some(aout) = &self.audio_output {
-                        aout.0.start_chirp();
+                // Play scrub chirp (~40ms snippet at the seek position) unless
+                // the user has disabled audio during a scrub.
+                if !self.is_scrubbing || self.scrub_audio_enabled {
+                    if let Some(active) = self.audio_sources.first() {
+                        active.source.chirp(source_secs, 0.04);
+                        if let Some(aout) = &self.audio_output {
+                            aout.0.start_chirp();
+                        }
                     }
                 }
             }
@@ -3686,18 +3729,20 @@ impl PlaybackEngine {
                     self.master_clock.resume();
                 } else {
                     // Play scrub chirp for audio-only
-                    if let Some(active) = self.audio_sources.first() {
-                        let source_secs = {
-                            let seq = self.sequence.read().unwrap();
-                            seq.tracks.iter().find_map(|track| {
-                                let (_, clip) = track.clip_at_timecode(tc)?;
-                                Some(clip.source_in.to_secs_f64()
-                                    + (tc - clip.timeline_in).to_secs_f64() * clip.speed)
-                            }).unwrap_or(0.0)
-                        };
-                        active.source.chirp(source_secs, 0.04);
-                        if let Some(aout) = &self.audio_output {
-                            aout.0.start_chirp();
+                    if !self.is_scrubbing || self.scrub_audio_enabled {
+                        if let Some(active) = self.audio_sources.first() {
+                            let source_secs = {
+                                let seq = self.sequence.read().unwrap();
+                                seq.tracks.iter().find_map(|track| {
+                                    let (_, clip) = track.clip_at_timecode(tc)?;
+                                    Some(clip.source_in.to_secs_f64()
+                                        + (tc - clip.timeline_in).to_secs_f64() * clip.speed)
+                                }).unwrap_or(0.0)
+                            };
+                            active.source.chirp(source_secs, 0.04);
+                            if let Some(aout) = &self.audio_output {
+                                aout.0.start_chirp();
+                            }
                         }
                     }
                 }
@@ -3761,11 +3806,14 @@ impl PlaybackEngine {
                 let mut fb = self.frame_buffer.lock().unwrap();
                 fb.write_frame(rgba, w, h);
                 drop(fb);
-                // Frame step chirp (~20ms)
-                if let Some(active) = self.audio_sources.first() {
-                    active.source.chirp(chirp_pos, 0.02);
-                    if let Some(aout) = &self.audio_output {
-                        aout.0.start_chirp();
+                // Frame step chirp (~20ms). Chirps on a scrub are gated on
+                // the scrub-audio preference; non-scrub frame steps keep theirs.
+                if !self.is_scrubbing || self.scrub_audio_enabled {
+                    if let Some(active) = self.audio_sources.first() {
+                        active.source.chirp(chirp_pos, 0.02);
+                        if let Some(aout) = &self.audio_output {
+                            aout.0.start_chirp();
+                        }
                     }
                 }
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
@@ -3814,13 +3862,16 @@ impl PlaybackEngine {
                     let mut fb = self.frame_buffer.lock().unwrap();
                     fb.write_frame(rgba, w, h);
                     drop(fb);
-                    // Frame step chirp (~20ms)
-                    if let Some(active) = self.audio_sources.first() {
-                        if let Some(aout) = &self.audio_output {
-                            aout.0.notify_seek();
-                            aout.0.resume();
+                    // Frame step chirp (~20ms). Same gating as the primary
+                    // frame-step path above — skip during a silenced scrub.
+                    if !self.is_scrubbing || self.scrub_audio_enabled {
+                        if let Some(active) = self.audio_sources.first() {
+                            if let Some(aout) = &self.audio_output {
+                                aout.0.notify_seek();
+                                aout.0.resume();
+                            }
+                            active.source.chirp(chirp_pos, 0.02);
                         }
-                        active.source.chirp(chirp_pos, 0.02);
                     }
                     let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                     let _ = self.event_tx.send(AppEvent::FrameReady);

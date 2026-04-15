@@ -233,7 +233,7 @@ impl PreferencesPanel {
                         ui.add_space(8.0);
                         match self.active_tab {
                             PrefsTab::General => self.show_general(ui, prefs, prefs_dirty),
-                            PrefsTab::Playback => self.show_playback(ui, prefs, prefs_dirty),
+                            PrefsTab::Playback => self.show_playback(ui, prefs, prefs_dirty, &mut cmds),
                             PrefsTab::Editing => self.show_editing(ui, prefs, prefs_dirty, &mut cmds),
                             PrefsTab::FileBrowser => self.show_file_browser(ui, prefs, prefs_dirty),
                             PrefsTab::Audio => self.show_audio(ui, prefs, prefs_dirty),
@@ -575,6 +575,7 @@ impl PreferencesPanel {
         ui: &mut egui::Ui,
         prefs: &mut Preferences,
         dirty: &mut bool,
+        cmds: &mut Vec<AppCommand>,
     ) {
         // Page heading
         ui.horizontal(|ui| {
@@ -655,6 +656,20 @@ impl PreferencesPanel {
                 if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
                     prefs.playback.dim_ui_on_play = val;
                     *dirty = true;
+                }
+            },
+        );
+
+        Self::setting_row_with_subtitle(
+            ui,
+            "Audio scrubbing",
+            "Play audio while dragging the playhead",
+            |ui| {
+                let mut val = prefs.playback.scrub_audio;
+                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                    prefs.playback.scrub_audio = val;
+                    *dirty = true;
+                    cmds.push(AppCommand::SetScrubAudioEnabled(val));
                 }
             },
         );

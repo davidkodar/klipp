@@ -473,6 +473,9 @@ impl KlippApp {
         }
         // Sync anti-click fade to engine
         let _ = app.cmd_tx.send(AppCommand::SetAntiClickFade(app.state.audio_anti_click_fade));
+        // Sync scrub-audio preference to engine (default true; dispatch
+        // unconditionally so the engine reflects the user's saved choice).
+        let _ = app.cmd_tx.send(AppCommand::SetScrubAudioEnabled(app.prefs.playback.scrub_audio));
 
         // Discover system fonts for title clip font selector
         let font_registry = {
@@ -13559,6 +13562,16 @@ impl KlippApp {
             // Ctrl+Alt+B — Extract frame and import into the media bin.
             if kb.is_action_pressed("extract_frame_to_bin", i) {
                 cmds.push(AppCommand::ExtractFrameToBin);
+            }
+            // Shift+S — Toggle audio scrubbing. Flips the preference and
+            // immediately notifies the engine so the next scrub respects it.
+            if kb.is_action_pressed("toggle_scrub_audio", i) {
+                self.prefs.playback.scrub_audio = !self.prefs.playback.scrub_audio;
+                self.prefs_dirty = true;
+                let enabled = self.prefs.playback.scrub_audio;
+                let _ = self.cmd_tx.send(AppCommand::SetScrubAudioEnabled(enabled));
+                let msg = if enabled { "Audio scrubbing on" } else { "Audio scrubbing off" };
+                self.state.toast.show(msg.to_string());
             }
             // Cut clip
             if kb.is_action_pressed("cut_clip", i) {
