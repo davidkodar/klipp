@@ -133,7 +133,7 @@ fn show_modifier_stack(
                         // Remove button
                         let remove_resp = ui.add(
                             egui::Button::new(
-                                egui::RichText::new("\u{2715}").size(10.0).color(theme.text_dim),
+                                egui::RichText::new("\u{00D7}").size(10.0).color(theme.text_dim),
                             )
                             .fill(egui::Color32::TRANSPARENT)
                             .min_size(egui::vec2(16.0, 16.0)),

@@ -1871,7 +1871,7 @@ impl NodeInspectorPanel {
                     self.preset_save_name_tool.clear();
                     self.preset_saving_tool = None;
                 }
-                if ui.small_button("\u{2715}").clicked() {
+                if ui.small_button("\u{00D7}").clicked() {
                     self.preset_saving_tool = None;
                 }
             });

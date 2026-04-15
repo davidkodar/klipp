@@ -187,7 +187,7 @@ impl PreferencesPanel {
                             ("EDITING", &[(PrefsTab::Editing, "\u{2702}", "Editing"), (PrefsTab::Timeline, "\u{1F39E}", "Timeline"), (PrefsTab::Viewer, "\u{1F5B5}", "Viewer")]),
                             ("MEDIA & AUDIO", &[(PrefsTab::FileBrowser, "\u{1F4C2}", "File Browser"), (PrefsTab::Audio, "\u{1F3B5}", "Audio"), (PrefsTab::AudioHardware, "\u{1F50A}", "Audio HW"), (PrefsTab::Proxy, "\u{1F4F9}", "Proxy")]),
                             ("COLOR & EXPORT", &[(PrefsTab::Color, "\u{1F3A8}", "Color"), (PrefsTab::Export, "\u{2B07}", "Export")]),
-                            ("INTERFACE", &[(PrefsTab::Title, "\u{1D413}", "Titles"), (PrefsTab::Keyboard, "\u{2328}", "Keyboard"), (PrefsTab::Advanced, "\u{2699}", "Advanced")]),
+                            ("INTERFACE", &[(PrefsTab::Title, "T", "Titles"), (PrefsTab::Keyboard, "\u{2328}", "Keyboard"), (PrefsTab::Advanced, "\u{2699}", "Advanced")]),
                             ("ABOUT", &[(PrefsTab::About, "\u{2139}", "About Klipp")]),
                         ];
 

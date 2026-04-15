@@ -4961,7 +4961,7 @@ impl TimelinePanel {
                         // Font style submenu
                         let is_bold = matches!(td.font_style, klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic);
                         let is_italic = matches!(td.font_style, klipp_timeline::FontStyle::Italic | klipp_timeline::FontStyle::BoldItalic);
-                        ui.menu_button("\u{1D5D4} Font Style", |ui| {
+                        ui.menu_button("A Font Style", |ui| {
                             if ui.selectable_label(!is_bold && !is_italic, "Regular").clicked() {
                                 cmds.push(AppCommand::UpdateTitleData {
                                     clip_id, text: td.text.clone(), font_size: td.font_size,

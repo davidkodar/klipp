@@ -384,7 +384,7 @@ impl LaunchScreen {
             let icon = match *label {
                 "Account" => "\u{1F464} ",
                 "Settings" => "\u{2699} ",
-                "Help" => "\u{24D8} ",
+                "Help" => "\u{2139} ",
                 _ => "",
             };
             let footer_rect = egui::Rect::from_min_size(

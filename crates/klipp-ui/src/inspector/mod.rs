@@ -945,7 +945,7 @@ fn show_title_editor(
                     new_outlines[i].width = w_val;
                     outlines_changed = true;
                 }
-                if ui.small_button("\u{2715}").clicked() {
+                if ui.small_button("\u{00D7}").clicked() {
                     new_outlines.remove(i);
                     outlines_changed = true;
                 }

@@ -131,7 +131,7 @@ impl MarkersPanel {
                                 // Drag-to-adjust is deferred polish.
                                 if let Some(dur) = duration {
                                     if ui
-                                        .small_button("\u{2715}")
+                                        .small_button("\u{00D7}")
                                         .on_hover_text("Clear range (revert to point marker)")
                                         .clicked()
                                     {

@@ -155,7 +155,7 @@ pub fn show_content(
                         // Remove button
                         let rm_resp = ui.add(
                             egui::Label::new(
-                                egui::RichText::new("\u{2715}")
+                                egui::RichText::new("\u{00D7}")
                                     .size(11.0)
                                     .color(theme.text_dim),
                             )

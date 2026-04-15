@@ -678,7 +678,7 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             ui.separator();
-            let snap_check = if state.snap_enabled { "\u{2713} " } else { "  " };
+            let snap_check = if state.snap_enabled { "\u{2714} " } else { "  " };
             if ui.add(egui::Button::new(format!("{snap_check}Snapping")).shortcut_text("N")).clicked() { cmds.push(AppCommand::SetSnapEnabled(!state.snap_enabled)); ui.close_menu(); }
             if ui.add(egui::Button::new("Fit to Window").shortcut_text("Shift+Z")).clicked() { cmds.push(AppCommand::FitTimelineToWindow); ui.close_menu(); }
             if ui.button("Zoom to Selection").clicked() { cmds.push(AppCommand::FitTimelineToWindow); ui.close_menu(); }
@@ -749,17 +749,17 @@ impl ToolbarPanel {
             }
             ui.menu_button("Viewer Zoom", |ui| {
                 for (label, zoom) in [("Fit", 0.0f32), ("25%", 0.25), ("50%", 0.5), ("100%", 1.0), ("200%", 2.0)] {
-                    let check = if (state.viewer_zoom - zoom).abs() < 0.01 { "\u{2713} " } else { "  " };
+                    let check = if (state.viewer_zoom - zoom).abs() < 0.01 { "\u{2714} " } else { "  " };
                     if ui.button(format!("{check}{label}")).clicked() { state.viewer_zoom = zoom; ui.close_menu(); }
                 }
             });
             ui.separator();
-            let zebra_check = if state.viewer_overlays.zebras { "\u{2713} " } else { "  " };
+            let zebra_check = if state.viewer_overlays.zebras { "\u{2714} " } else { "  " };
             if ui.add(egui::Button::new(format!("{zebra_check}Zebras")).shortcut_text("Z")).clicked() {
                 state.viewer_overlays.zebras = !state.viewer_overlays.zebras;
                 ui.close_menu();
             }
-            let fc_check = if state.viewer_overlays.false_color { "\u{2713} " } else { "  " };
+            let fc_check = if state.viewer_overlays.false_color { "\u{2714} " } else { "  " };
             // Main button toggles false color on/off
             ui.horizontal(|ui| {
                 if ui.add(egui::Button::new(format!("{fc_check}False Color")).shortcut_text("Alt+F")).clicked() {
@@ -772,7 +772,7 @@ impl ToolbarPanel {
                     for preset in &built_ins {
                         let is_current = state.pending_false_color_palette.is_none()
                             && state.false_color_lut == preset.build_lut();
-                        let check = if is_current { "\u{2713} " } else { "  " };
+                        let check = if is_current { "\u{2714} " } else { "  " };
                         if ui.button(format!("{check}{}", preset.name)).clicked() {
                             state.pending_false_color_palette = Some(preset.clone());
                             state.viewer_overlays.false_color = true;
@@ -786,29 +786,29 @@ impl ToolbarPanel {
                     }
                 });
             });
-            let peak_check = if state.viewer_overlays.focus_peaking { "\u{2713} " } else { "  " };
+            let peak_check = if state.viewer_overlays.focus_peaking { "\u{2714} " } else { "  " };
             if ui.add(egui::Button::new(format!("{peak_check}Focus Peaking")).shortcut_text("Ctrl+P")).clicked() {
                 state.viewer_overlays.focus_peaking = !state.viewer_overlays.focus_peaking;
                 ui.close_menu();
             }
             ui.separator();
-            let safe_check = if state.viewer_overlays.safe_areas { "\u{2713} " } else { "  " };
+            let safe_check = if state.viewer_overlays.safe_areas { "\u{2714} " } else { "  " };
             if ui.add(egui::Button::new(format!("{safe_check}Safe Areas")).shortcut_text("Alt+S")).clicked() {
                 state.viewer_overlays.safe_areas = !state.viewer_overlays.safe_areas;
                 ui.close_menu();
             }
-            let grid_check = if state.viewer_overlays.grid { "\u{2713} " } else { "  " };
+            let grid_check = if state.viewer_overlays.grid { "\u{2714} " } else { "  " };
             if ui.add(egui::Button::new(format!("{grid_check}Grid Overlay")).shortcut_text("Alt+G")).clicked() {
                 state.viewer_overlays.grid = !state.viewer_overlays.grid;
                 ui.close_menu();
             }
-            let checker_check = if state.viewer_overlays.checkerboard { "\u{2713} " } else { "  " };
+            let checker_check = if state.viewer_overlays.checkerboard { "\u{2714} " } else { "  " };
             if ui.button(format!("{checker_check}Checkerboard")).clicked() {
                 state.viewer_overlays.checkerboard = !state.viewer_overlays.checkerboard;
                 ui.close_menu();
             }
             ui.separator();
-            let scopes_check = if state.show_scopes { "\u{2713} " } else { "  " };
+            let scopes_check = if state.show_scopes { "\u{2714} " } else { "  " };
             ui.menu_button(format!("{scopes_check}Scopes"), |ui| {
                 // Toggle scopes panel + select scope type
                 if ui.button("Waveform").clicked() { state.show_scopes = true; ui.close_menu(); }
@@ -818,10 +818,10 @@ impl ToolbarPanel {
                 ui.separator();
                 if ui.button("Hide Scopes").clicked() { state.show_scopes = false; ui.close_menu(); }
                 ui.separator();
-                let overlay_check = if state.scope_overlay_mode { "\u{2713} " } else { "  " };
+                let overlay_check = if state.scope_overlay_mode { "\u{2714} " } else { "  " };
                 if ui.button(format!("{overlay_check}Overlay on Viewer")).clicked() { state.scope_overlay_mode = !state.scope_overlay_mode; ui.close_menu(); }
             });
-            let color_check = if state.show_color_panel { "\u{2713} " } else { "  " };
+            let color_check = if state.show_color_panel { "\u{2714} " } else { "  " };
             if ui.add(egui::Button::new(format!("{color_check}Color Panel")).shortcut_text("C")).clicked() {
                 state.show_color_panel = !state.show_color_panel;
                 ui.close_menu();
@@ -836,7 +836,7 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             ui.separator();
-            let perf_check = if state.show_perf_overlay { "\u{2713} " } else { "  " };
+            let perf_check = if state.show_perf_overlay { "\u{2714} " } else { "  " };
             if ui.button(format!("{perf_check}Performance Overlay")).clicked() { state.show_perf_overlay = !state.show_perf_overlay; ui.close_menu(); }
         });
     }
@@ -846,7 +846,7 @@ impl ToolbarPanel {
             // Workspaces
             ui.label(egui::RichText::new("WORKSPACES").size(9.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
             for (ws, label) in &[(Workspace::Edit, "Default"), (Workspace::Color, "Color Grading"), (Workspace::Export, "Audio Mixing")] {
-                let c = if state.active_workspace == *ws { "\u{2713} " } else { "  " };
+                let c = if state.active_workspace == *ws { "\u{2714} " } else { "  " };
                 if ui.button(format!("{c}{label}")).clicked() { state.active_workspace = *ws; ui.close_menu(); }
             }
             // Show user-saved workspaces
@@ -871,7 +871,7 @@ impl ToolbarPanel {
             ui.separator();
             // Panels
             ui.label(egui::RichText::new("PANELS").size(9.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
-            let toggle_label = |active: bool, name: &str| if active { format!("\u{2713} {name}") } else { format!("  {name}") };
+            let toggle_label = |active: bool, name: &str| if active { format!("\u{2714} {name}") } else { format!("  {name}") };
             if ui.add(egui::Button::new(toggle_label(state.show_inspector_panel, "Inspector")).shortcut_text("Ctrl+Shift+I")).clicked() { state.show_inspector_panel = !state.show_inspector_panel; ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.show_browser_panel, "Effects Browser")).shortcut_text("Ctrl+Shift+E")).clicked() { state.show_browser_panel = !state.show_browser_panel; ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.show_curve_editor, "Curve Editor")).shortcut_text("Shift+K")).clicked() { state.show_curve_editor = !state.show_curve_editor; ui.close_menu(); }
