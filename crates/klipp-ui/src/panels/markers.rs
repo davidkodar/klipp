@@ -1,6 +1,6 @@
 use crate::icons::Icon;
 use crate::state::AppState;
-use klipp_core::{AppCommand, MarkerColor, MarkerId};
+use klipp_core::{AppCommand, MarkerColor, MarkerId, RationalTime};
 
 #[derive(Default)]
 pub struct MarkersPanel {
@@ -54,11 +54,12 @@ impl MarkersPanel {
                 // Marker list
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let mut remove_id = None;
+                    let fps_rate = state.sequence().fps.rate();
                     let markers: Vec<_> = state.sequence().markers.iter().map(|m| {
-                        (m.id, m.position, m.label.clone(), m.color)
+                        (m.id, m.position, m.label.clone(), m.color, m.duration)
                     }).collect();
 
-                    for (id, position, label, color) in &markers {
+                    for (id, position, label, color, duration) in &markers {
                         ui.horizontal(|ui| {
                             // Color button
                             let (r, g, b) = color.to_rgb();
@@ -117,10 +118,45 @@ impl MarkersPanel {
                                 }
                             }
 
-                            // Delete button
+                            // Right-side controls: delete, duration editor.
+                            // Items are added right-to-left; visual order is
+                            // [duration editor] [✕ delete].
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.add(egui::Button::image(Icon::X.image(10.0).tint(egui::Color32::from_rgb(220, 220, 230)))).clicked() {
                                     remove_id = Some(*id);
+                                }
+                                // Range-duration control — + Range promotes a
+                                // point marker to a 5s range; an existing
+                                // range shows its duration and a ✕ to clear.
+                                // Drag-to-adjust is deferred polish.
+                                if let Some(dur) = duration {
+                                    if ui
+                                        .small_button("\u{2715}")
+                                        .on_hover_text("Clear range (revert to point marker)")
+                                        .clicked()
+                                    {
+                                        cmds.push(AppCommand::SetMarkerDuration {
+                                            marker_id: *id,
+                                            duration: None,
+                                        });
+                                    }
+                                    let secs = dur.to_secs_f64();
+                                    ui.label(
+                                        egui::RichText::new(format!("{secs:.1}s"))
+                                            .size(10.5)
+                                            .monospace()
+                                            .color(egui::Color32::from_rgb(160, 170, 190)),
+                                    );
+                                } else if ui
+                                    .small_button("+ Range")
+                                    .on_hover_text("Convert to range marker (5s default)")
+                                    .clicked()
+                                {
+                                    let default_dur = RationalTime::from_secs_f64(5.0, fps_rate);
+                                    cmds.push(AppCommand::SetMarkerDuration {
+                                        marker_id: *id,
+                                        duration: Some(default_dur),
+                                    });
                                 }
                             });
                         });

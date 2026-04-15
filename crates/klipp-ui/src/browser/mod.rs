@@ -513,7 +513,9 @@ fn sort_file_entries(entries: &mut [FileEntry], by: FileSortBy, ascending: bool)
     });
 }
 
-/// Smart bin filter criteria for auto-filtering media.
+/// Smart bin filter criteria for auto-filtering media. The rating filter
+/// lives separately on `BrowserPanel.min_rating_filter` so the two
+/// dropdowns combine with AND semantics (e.g. "Video Only" + "3+ stars").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SmartBinFilter {
     None,
@@ -521,7 +523,6 @@ pub enum SmartBinFilter {
     VideoOnly,
     AudioOnly,
     StillsOnly,
-    HighRating, // 4+ stars
 }
 
 /// Thumbnail size for the Files tab. Controls row height, thumb box size,
@@ -560,6 +561,9 @@ pub struct BrowserPanel {
     pub media_sort_ascending: bool,
     pub media_selected_bin: Option<String>,
     pub smart_bin_filter: SmartBinFilter,
+    /// Minimum star rating the bin filters to. `None` = show all ratings.
+    /// Session state only — deliberately not persisted to prefs for MVP.
+    pub min_rating_filter: Option<u8>,
     pub browser_view_mode: media_tab::BrowserViewMode,
     // Bin management state
     pub renaming_bin: Option<(String, String)>,  // (old_name, current_edit_text)
@@ -730,6 +734,7 @@ impl Default for BrowserPanel {
             media_sort_ascending: true,
             media_selected_bin: None,
             smart_bin_filter: SmartBinFilter::None,
+            min_rating_filter: None,
             browser_view_mode: media_tab::BrowserViewMode::List,
             renaming_bin: None,
             creating_bin: None,
@@ -1143,7 +1148,10 @@ impl BrowserPanel {
                 ui.set_clip_rect(right_rect);
                 match active_tab {
                     BrowserTab::Media => {
-                        // Smart bin filter selector
+                        // Smart bin filter + granular rating filter. Both are
+                        // AND-combined in the filter closure, so e.g.
+                        // "Video Only" + "3+ stars" shows only video clips
+                        // rated at least 3.
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("Filter:").size(10.0).color(theme.text_dim));
                             let filter_label = match self.smart_bin_filter {
@@ -1152,7 +1160,6 @@ impl BrowserPanel {
                                 SmartBinFilter::VideoOnly => "Video Only",
                                 SmartBinFilter::AudioOnly => "Audio Only",
                                 SmartBinFilter::StillsOnly => "Stills Only",
-                                SmartBinFilter::HighRating => "4+ Stars",
                             };
                             egui::ComboBox::from_id_salt("smart_bin")
                                 .selected_text(filter_label)
@@ -1164,7 +1171,33 @@ impl BrowserPanel {
                                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::VideoOnly, "Video Only");
                                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::AudioOnly, "Audio Only");
                                     ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::StillsOnly, "Stills Only");
-                                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::HighRating, "4+ Stars");
+                                });
+
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new("Rating:").size(10.0).color(theme.text_dim));
+                            let rating_label = match self.min_rating_filter {
+                                None => "Any".to_string(),
+                                Some(1) => "1+ \u{2605}".to_string(),
+                                Some(2) => "2+ \u{2605}\u{2605}".to_string(),
+                                Some(3) => "3+ \u{2605}\u{2605}\u{2605}".to_string(),
+                                Some(4) => "4+ \u{2605}\u{2605}\u{2605}\u{2605}".to_string(),
+                                Some(5) => "5 \u{2605}\u{2605}\u{2605}\u{2605}\u{2605}".to_string(),
+                                _ => "Any".to_string(),
+                            };
+                            egui::ComboBox::from_id_salt("rating_filter")
+                                .selected_text(rating_label)
+                                .width(110.0)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut self.min_rating_filter, None, "Any");
+                                    for stars in 1u8..=5 {
+                                        let glyphs = "\u{2605}".repeat(stars as usize);
+                                        let label = if stars == 5 {
+                                            format!("5 {glyphs}")
+                                        } else {
+                                            format!("{stars}+ {glyphs}")
+                                        };
+                                        ui.selectable_value(&mut self.min_rating_filter, Some(stars), label);
+                                    }
                                 });
                         });
                         let tab_cmds = media_tab::show(
@@ -1180,6 +1213,7 @@ impl BrowserPanel {
                             &mut self.creating_bin,
                             &mut self.scroll_to_media_id,
                             self.smart_bin_filter,
+                            self.min_rating_filter,
                         );
                         cmds.extend(tab_cmds);
                     }
@@ -1211,6 +1245,7 @@ impl BrowserPanel {
                         &mut self.creating_bin,
                         &mut self.scroll_to_media_id,
                         self.smart_bin_filter,
+                        self.min_rating_filter,
                     );
                     cmds.extend(tab_cmds);
                 }

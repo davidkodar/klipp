@@ -1264,7 +1264,8 @@ impl MagneticEditor {
             }
         }
 
-        // Check markers
+        // Check markers — both the start position and, for range markers,
+        // the end position (position + duration) become snap targets.
         for marker in &sequence.markers {
             let diff = (raw_time - marker.position).abs();
             if diff <= threshold {
@@ -1272,6 +1273,16 @@ impl MagneticEditor {
                     time: marker.position,
                     kind: SnapKind::Marker,
                 });
+            }
+            if let Some(dur) = marker.duration {
+                let end = marker.position + dur;
+                let diff_end = (raw_time - end).abs();
+                if diff_end <= threshold {
+                    points.push(SnapPoint {
+                        time: end,
+                        kind: SnapKind::Marker,
+                    });
+                }
             }
         }
 
@@ -2446,6 +2457,7 @@ mod tests {
             position: tc(36),
             label: "Mark".to_string(),
             color: MarkerColor::Blue,
+            duration: None,
         });
 
         let snapped = MagneticEditor::snap_to_boundary(&seq, tc(33), None);

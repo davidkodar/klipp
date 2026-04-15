@@ -226,6 +226,20 @@ pub enum EditCommand {
         old_name: String,
         new_name: String,
     },
+    /// Batch rename of media-item display names. `changes` is
+    /// `(media_id, old_filename, new_filename)` so undo and redo are
+    /// simple map-and-assign loops. Used for single-item rename too —
+    /// the Vec just has one entry.
+    BatchRenameMediaItems {
+        changes: Vec<(MediaId, String, String)>,
+    },
+    /// Subclip created from a zone on `parent_id`. Undo drops the subclip
+    /// from the pool by id. Redo is not wired for MVP — users recreate via
+    /// the source-viewer button.
+    CreateSubclip {
+        subclip_id: MediaId,
+        parent_id: MediaId,
+    },
 
     // === RANGE SELECTION ===
     SetRange {
@@ -330,6 +344,10 @@ impl EditCommand {
             EditCommand::SetMediaRating { .. } => "Set Rating",
             EditCommand::SetMediaColorLabel { .. } => "Set Color Label",
             EditCommand::RenameBin { .. } => "Rename Bin",
+            EditCommand::BatchRenameMediaItems { changes } => {
+                if changes.len() == 1 { "Rename Media Item" } else { "Batch Rename Media Items" }
+            }
+            EditCommand::CreateSubclip { .. } => "Create Subclip",
             EditCommand::SetRange { .. } => "Set Range",
             EditCommand::SetNodeGraph { .. } => "Color Grade",
             EditCommand::EditKeyframes { description, .. } => description,
@@ -570,6 +588,7 @@ mod bin_undo_tests {
             user_notes: String::new(),
             bin: None,
             bin_id: None,
+            parent_media_id: None,
             added_at: 0,
             fingerprint: None,
             file_modified_at: None,

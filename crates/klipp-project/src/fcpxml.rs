@@ -172,12 +172,17 @@ pub fn generate_fcpxml(seq: &Sequence, media_pool: &MediaPool) -> String {
 
     xml.push_str("          </spine>\n");
 
-    // Sequence markers
+    // Sequence markers. Range markers emit their real duration; point
+    // markers fall back to the synthetic 1-frame value FCP expects.
     for marker in &seq.markers {
         let pos = tc_str(marker.position, fps);
+        let dur_str = match marker.duration {
+            Some(d) if d.value > 0 => format!("{}/{}s", d.value, d.rate),
+            _ => format!("1/{}s", fps.num),
+        };
         xml.push_str(&format!(
-            "          <marker start=\"{}\" duration=\"1/{}s\" value=\"{}\"/>\n",
-            pos, fps.num, escape_xml(&marker.label)
+            "          <marker start=\"{}\" duration=\"{}\" value=\"{}\"/>\n",
+            pos, dur_str, escape_xml(&marker.label)
         ));
     }
 
@@ -609,12 +614,14 @@ mod tests {
             position: RationalTime { value: 48, rate: 24 },
             label: "Scene 2".into(),
             color: MarkerColor::Green,
+            duration: None,
         });
         seq.markers.push(Marker {
             id: MarkerId::new(),
             position: RationalTime { value: 120, rate: 24 },
             label: "End".into(),
             color: MarkerColor::Red,
+            duration: None,
         });
 
         let xml = generate_fcpxml(&seq, &pool);

@@ -149,6 +149,13 @@ pub struct MediaItem {
     /// Bin ID reference (None = root/unassigned). Used for nested bin hierarchy.
     #[serde(default)]
     pub bin_id: Option<BinId>,
+    /// Subclip parent — `Some(id)` marks this item as a subclip of another
+    /// MediaItem. The subclip reuses the parent's `path` and inherits codec /
+    /// fps / resolution; its `default_source_in/out` describe the zone
+    /// within the parent's source. `None` for normal items. Old `.klipp`
+    /// files without this field deserialize to `None`.
+    #[serde(default)]
+    pub parent_media_id: Option<MediaId>,
     /// Unix epoch seconds when item was added to the project (0 for pre-existing items)
     #[serde(default)]
     pub added_at: u64,
@@ -221,6 +228,13 @@ pub struct MediaItem {
 }
 
 impl MediaItem {
+    /// True when this item is a subclip — a zone-within-parent virtual
+    /// reference. Subclips share the parent's `path` but carry their own
+    /// `default_source_in/out` describing the zone.
+    pub fn is_subclip(&self) -> bool {
+        self.parent_media_id.is_some()
+    }
+
     /// Detect the likely log format from metadata (color_transfer, camera, bit depth, pixel format).
     pub fn detect_log_format(&self) -> klipp_core::LogFormat {
         use klipp_core::LogFormat;
@@ -293,5 +307,175 @@ impl MediaItem {
         }
 
         LogFormat::Srgb
+    }
+}
+
+#[cfg(test)]
+mod subclip_tests {
+    //! Data-layer coverage for the subclip feature. The full handler lives
+    //! on KlippApp and is tested via app-level tests; these exercise the
+    //! MediaItem + MediaPool shapes that the handler relies on.
+    use super::*;
+    use crate::MediaPool;
+    use klipp_core::{Fps, MediaId, RationalTime, Resolution};
+    use std::path::PathBuf;
+
+    fn make_parent() -> MediaItem {
+        MediaItem {
+            id: MediaId::new(),
+            path: PathBuf::from("/tmp/parent.mp4"),
+            filename: "parent.mp4".into(),
+            duration: RationalTime { value: 240, rate: 24 }, // 10 seconds at 24fps
+            fps: Fps::film_24(),
+            resolution: Resolution { width: 1920, height: 1080 },
+            video_codec: "h264".into(),
+            audio_codec: "aac".into(),
+            has_audio: true,
+            file_size_bytes: 1_000_000,
+            sample_rate: Some(48000),
+            audio_channels: Some(2),
+            offline: false,
+            is_still: false,
+            proxy_path: None,
+            proxy_ready: false,
+            default_source_in: Some(RationalTime { value: 48, rate: 24 }),   // 2s
+            default_source_out: Some(RationalTime { value: 168, rate: 24 }), // 7s
+            rating: 0,
+            tags: Vec::new(),
+            user_notes: String::new(),
+            bin: None,
+            bin_id: None,
+            parent_media_id: None,
+            added_at: 0,
+            fingerprint: None,
+            file_modified_at: None,
+            media_created_at: None,
+            color_label: ColorLabel::default(),
+            colour_space: ColourSpace::default(),
+            log_format: klipp_core::LogFormat::default(),
+            source_rotation: 0,
+            camera_make: None,
+            camera_model: None,
+            encoder: None,
+            bit_depth: None,
+            video_bitrate_kbps: None,
+            audio_bitrate_kbps: None,
+            color_primaries: None,
+            color_transfer: None,
+            pixel_format: None,
+            detected_log_format: klipp_core::LogFormat::default(),
+            skim_file: None,
+            needs_reprobe: false,
+            waveform_data: None,
+            audio_cache: None,
+        }
+    }
+
+    /// Replicates the core of `create_subclip_from_zone`'s data work so the
+    /// data invariants are covered without spinning up a KlippApp.
+    fn build_subclip(parent: &MediaItem, name: &str) -> MediaItem {
+        let zone_in = parent.default_source_in.unwrap();
+        let zone_out = parent.default_source_out.unwrap();
+        let mut s = parent.clone();
+        s.id = MediaId::new();
+        s.filename = name.into();
+        s.duration = zone_out - zone_in;
+        s.default_source_in = Some(zone_in);
+        s.default_source_out = Some(zone_out);
+        s.parent_media_id = Some(parent.id);
+        s.file_size_bytes = 0;
+        s
+    }
+
+    #[test]
+    fn subclip_inherits_parent_fps_and_codec() {
+        let parent = make_parent();
+        let sub = build_subclip(&parent, "parent_sub1");
+        assert_eq!(sub.fps, parent.fps);
+        assert_eq!(sub.video_codec, parent.video_codec);
+        assert_eq!(sub.audio_codec, parent.audio_codec);
+        assert_eq!(sub.has_audio, parent.has_audio);
+        assert_eq!(sub.resolution.width, parent.resolution.width);
+    }
+
+    #[test]
+    fn subclip_duration_matches_zone() {
+        let parent = make_parent();
+        let sub = build_subclip(&parent, "parent_sub1");
+        // zone = 48..168 @ 24fps = 120 frames = 5s.
+        assert_eq!(sub.duration.value, 120);
+        assert_eq!(sub.duration.rate, 24);
+    }
+
+    #[test]
+    fn subclip_is_subclip_flag_true() {
+        let parent = make_parent();
+        let sub = build_subclip(&parent, "parent_sub1");
+        assert!(!parent.is_subclip());
+        assert!(sub.is_subclip());
+        assert_eq!(sub.parent_media_id, Some(parent.id));
+    }
+
+    #[test]
+    fn auto_naming_counter_logic() {
+        // Mirrors the counter increment inside the handler.
+        let parent = make_parent();
+        let mut pool = MediaPool::default();
+        let parent_id = parent.id;
+        pool.add(parent);
+
+        let n1 = pool.all().filter(|i| i.parent_media_id == Some(parent_id)).count() + 1;
+        assert_eq!(n1, 1);
+        let parent_ref = pool.get(&parent_id).cloned().unwrap();
+        let sub1 = build_subclip(&parent_ref, &format!("parent_sub{n1}"));
+        pool.add(sub1);
+
+        let n2 = pool.all().filter(|i| i.parent_media_id == Some(parent_id)).count() + 1;
+        assert_eq!(n2, 2);
+        let sub2 = build_subclip(&parent_ref, &format!("parent_sub{n2}"));
+        pool.add(sub2);
+
+        let names: Vec<String> = pool
+            .all()
+            .filter(|i| i.parent_media_id == Some(parent_id))
+            .map(|i| i.filename.clone())
+            .collect();
+        assert!(names.contains(&"parent_sub1".to_string()));
+        assert!(names.contains(&"parent_sub2".to_string()));
+    }
+
+    #[test]
+    fn cascade_delete_removes_subclips() {
+        // Mirrors the cascade pass in the RemoveFromPool handler.
+        let parent = make_parent();
+        let parent_id = parent.id;
+        let mut pool = MediaPool::default();
+        pool.add(parent);
+        let p_ref = pool.get(&parent_id).cloned().unwrap();
+        pool.add(build_subclip(&p_ref, "parent_sub1"));
+        pool.add(build_subclip(&p_ref, "parent_sub2"));
+        assert_eq!(pool.all().count(), 3);
+
+        let child_ids: Vec<MediaId> = pool
+            .all()
+            .filter(|i| i.parent_media_id == Some(parent_id))
+            .map(|i| i.id)
+            .collect();
+        for cid in &child_ids {
+            pool.remove(cid);
+        }
+        pool.remove(&parent_id);
+        assert_eq!(pool.all().count(), 0);
+    }
+
+    #[test]
+    fn subclip_of_subclip_is_rejected_by_flag() {
+        // The handler early-exits when `parent.is_subclip()` is true. This
+        // test asserts that flag, which is the decision point.
+        let parent = make_parent();
+        let sub = build_subclip(&parent, "parent_sub1");
+        assert!(sub.is_subclip());
+        // A real handler call with source_media_id == sub.id would hit the
+        // "Cannot create a subclip from a subclip." branch.
     }
 }

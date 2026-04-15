@@ -722,6 +722,7 @@ impl KlippApp {
                         user_notes: String::new(),
                         bin: None,
                         bin_id: None,
+                        parent_media_id: None,
                         added_at: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_secs())
@@ -3277,6 +3278,10 @@ impl KlippApp {
                     }
                     return true;
                 }
+                AppCommand::CreateSubclipFromZone { source_media_id, name } => {
+                    self.create_subclip_from_zone(*source_media_id, name.clone());
+                    return true;
+                }
                 AppCommand::InsertSourceAtPlayhead | AppCommand::OverwriteEdit => {
                     if let Some(mid) = self.state.source_media_id {
                         if let Some(item) = self.state.media_pool.get(&mid).cloned() {
@@ -3741,6 +3746,88 @@ impl KlippApp {
     /// the playhead. If a clip is under the playhead it is bladed first so
     /// the freeze slots cleanly between the two halves; downstream clips on
     /// the same track are rippled by `duration_secs` to make room.
+    /// Create a subclip MediaItem from a parent's marked IN/OUT zone.
+    /// Validates that the parent is not itself a subclip, that both IN and
+    /// OUT are set, and that OUT > IN. Clones the parent's codec/fps/etc.,
+    /// overrides `duration` to the zone length, and points the subclip at
+    /// the same file with its own `default_source_in/out`. Pushes a
+    /// `CreateSubclip` undo entry.
+    fn create_subclip_from_zone(&mut self, source_media_id: klipp_core::MediaId, name: Option<String>) {
+        // Clone the parent so we can release the immutable borrow before mutating.
+        let parent = match self.state.media_pool.get(&source_media_id).cloned() {
+            Some(p) => p,
+            None => return,
+        };
+        if parent.is_subclip() {
+            self.state.toast.show("Cannot create a subclip from a subclip.".to_string());
+            return;
+        }
+        let zone_in = match parent.default_source_in {
+            Some(tc) => tc,
+            None => {
+                self.state.toast.show(
+                    "Set an IN point first (press I in the source viewer).".to_string(),
+                );
+                return;
+            }
+        };
+        let zone_out = match parent.default_source_out {
+            Some(tc) => tc,
+            None => {
+                self.state.toast.show(
+                    "Set an OUT point first (press O in the source viewer).".to_string(),
+                );
+                return;
+            }
+        };
+        if zone_out <= zone_in {
+            self.state.toast.show("OUT point must be after IN point.".to_string());
+            return;
+        }
+
+        // Auto-name: count existing subclips of this parent, suffix N+1.
+        let n = self
+            .state
+            .media_pool
+            .all()
+            .filter(|i| i.parent_media_id == Some(source_media_id))
+            .count()
+            + 1;
+        let parent_stem = split_stem_ext(&parent.filename).0;
+        let auto_name = format!("{}_sub{}", parent_stem, n);
+        let display_name = name.unwrap_or(auto_name);
+
+        // Clone parent, then override the subclip-specific fields.
+        let mut subclip = parent.clone();
+        subclip.id = klipp_core::MediaId::new();
+        subclip.filename = display_name.clone();
+        subclip.duration = zone_out - zone_in;
+        subclip.default_source_in = Some(zone_in);
+        subclip.default_source_out = Some(zone_out);
+        subclip.parent_media_id = Some(source_media_id);
+        // Subclips are virtual — no standalone file footprint.
+        subclip.file_size_bytes = 0;
+        // Reset caches derived from the source file; they'll regenerate.
+        subclip.proxy_path = None;
+        subclip.proxy_ready = false;
+        subclip.skim_file = None;
+        subclip.needs_reprobe = false;
+        subclip.waveform_data = None;
+        subclip.audio_cache = None;
+
+        let subclip_id = subclip.id;
+        self.state.media_pool.add(subclip);
+        self.state.history.push(HistoryEntry {
+            sequence_idx: self.state.active_sequence_idx,
+            command: crate::history::EditCommand::CreateSubclip {
+                subclip_id,
+                parent_id: source_media_id,
+            },
+        });
+        self.state.dirty = true;
+        self.state.toast.show(format!("Subclip created: {display_name}"));
+    }
+
     fn insert_freeze_frame(&mut self, duration_secs: f64) {
         // 1. Snapshot the viewer frame.
         let (rgba, width, height) = {
@@ -7605,6 +7692,18 @@ impl KlippApp {
                     if usage > 0 {
                         self.state.show_remove_media_confirm = Some(*media_id);
                     } else if let Some(item) = self.state.media_pool.get(media_id).cloned() {
+                        // Cascade: drop any subclips pointing at this parent.
+                        // Subclips are virtual (no files on disk), so removing
+                        // them doesn't require confirmation even if the
+                        // parent prompt would otherwise have fired.
+                        let child_ids: Vec<klipp_core::MediaId> = self.state.media_pool
+                            .all()
+                            .filter(|i| i.parent_media_id == Some(*media_id))
+                            .map(|i| i.id)
+                            .collect();
+                        for child_id in &child_ids {
+                            self.state.media_pool.remove(child_id);
+                        }
                         self.state.history.push(crate::history::HistoryEntry {
                             sequence_idx: self.state.active_sequence_idx,
                             command: crate::history::EditCommand::RemoveMediaFromPool {
@@ -7613,6 +7712,13 @@ impl KlippApp {
                             },
                         });
                         self.state.media_pool.remove(media_id);
+                        if !child_ids.is_empty() {
+                            let n = child_ids.len();
+                            self.state.toast.show(format!(
+                                "Removed clip and {n} subclip{}.",
+                                if n == 1 { "" } else { "s" }
+                            ));
+                        }
                         self.state.dirty = true;
                         self.sync_media_pool_to_engine();
                     }
@@ -7629,6 +7735,16 @@ impl KlippApp {
                         self.state.skim_audio_session = None;
                     }
                     let clip_count = media_usage_count(*media_id, &self.state.sequences);
+                    // Cascade: drop any subclips pointing at this parent
+                    // before we push the parent's history entry.
+                    let child_ids: Vec<klipp_core::MediaId> = self.state.media_pool
+                        .all()
+                        .filter(|i| i.parent_media_id == Some(*media_id))
+                        .map(|i| i.id)
+                        .collect();
+                    for child_id in &child_ids {
+                        self.state.media_pool.remove(child_id);
+                    }
                     if let Some(item) = self.state.media_pool.get(media_id).cloned() {
                         self.state.history.push(crate::history::HistoryEntry {
                             sequence_idx: self.state.active_sequence_idx,
@@ -7639,6 +7755,13 @@ impl KlippApp {
                         });
                     }
                     self.state.media_pool.remove(media_id);
+                    if !child_ids.is_empty() {
+                        let n = child_ids.len();
+                        self.state.toast.show(format!(
+                            "Removed clip and {n} subclip{}.",
+                            if n == 1 { "" } else { "s" }
+                        ));
+                    }
                     self.state.show_remove_media_confirm = None;
                     self.state.dirty = true;
                     self.sync_media_pool_to_engine();
@@ -7782,6 +7905,7 @@ impl KlippApp {
                         user_notes: format!("{frame_count} frames, start #{start_frame}"),
                         bin: None,
                         bin_id: None,
+                        parent_media_id: None,
                         added_at: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_secs())
@@ -7883,6 +8007,58 @@ impl KlippApp {
                         }
                     }
                     true
+                }
+                AppCommand::OpenBatchRenameDialog { media_ids } => {
+                    self.state.batch_rename_ids = media_ids.clone();
+                    self.state.show_batch_rename_dialog = true;
+                    return true;
+                }
+                AppCommand::RenameMediaItem { media_id, new_filename } => {
+                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                        let old = item.filename.clone();
+                        if old != *new_filename {
+                            item.filename = new_filename.clone();
+                            self.state.history.push(HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: crate::history::EditCommand::BatchRenameMediaItems {
+                                    changes: vec![(*media_id, old, new_filename.clone())],
+                                },
+                            });
+                            self.state.dirty = true;
+                        }
+                    }
+                    return true;
+                }
+                AppCommand::BatchRenameMediaItems { changes } => {
+                    // Snapshot old names, apply new ones, push a single undo
+                    // entry. Items whose new name matches the old are skipped
+                    // entirely so undo only captures real changes.
+                    let mut undo_changes: Vec<(MediaId, String, String)> = Vec::new();
+                    for (media_id, new_filename) in changes {
+                        if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                            let old = item.filename.clone();
+                            if old != *new_filename {
+                                item.filename = new_filename.clone();
+                                undo_changes.push((*media_id, old, new_filename.clone()));
+                            }
+                        }
+                    }
+                    if !undo_changes.is_empty() {
+                        let count = undo_changes.len();
+                        self.state.history.push(HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: crate::history::EditCommand::BatchRenameMediaItems {
+                                changes: undo_changes,
+                            },
+                        });
+                        self.state.toast.show(format!(
+                            "Renamed {} item{}.",
+                            count,
+                            if count == 1 { "" } else { "s" }
+                        ));
+                        self.state.dirty = true;
+                    }
+                    return true;
                 }
                 AppCommand::RenameBin { old_name, new_name } => {
                     // Rename the Bin record itself
@@ -11215,42 +11391,24 @@ impl KlippApp {
         let seq = &self.state.sequences[self.state.active_sequence_idx];
         let fps = seq.fps.as_f64();
 
-        // Sort markers by frame position so adjacent-pair iteration is correct.
-        let mut markers: Vec<&klipp_timeline::Marker> = seq.markers.iter().collect();
-        markers.sort_by_key(|m| timecode_to_frame(&m.position, fps));
+        // Explicit-range mode: if any marker carries a `duration`, the user
+        // has drawn explicit regions and we export one file per region,
+        // ignoring boundary-inference entirely. This is the more predictable
+        // shape — point markers scattered next to explicit ranges would
+        // otherwise produce surprising extra segments.
+        let has_range_markers = seq.markers.iter().any(|m| m.duration.is_some());
 
-        let seq_end_frame = timecode_to_frame(&seq.total_duration(), fps);
-
-        // Boundary points = (frame, label_for_segment_ENDING_here).
-        // A segment is named after its ending marker — Kdenlive's convention
-        // ("the marker tells you what just played"). The synthetic "start"
-        // and "end" pseudo-labels are recognised below and trigger the
-        // numeric segment_N fallback.
-        let mut boundaries: Vec<(u64, String)> = Vec::new();
-        if self.export_dialog.include_pre_marker_segment {
-            boundaries.push((0, "start".to_string()));
-        } else if let Some(first) = markers.first() {
-            // Without the pre-segment we still need a starting boundary
-            // — use the first marker as the segment kickoff.
-            boundaries.push((timecode_to_frame(&first.position, fps), first.label.clone()));
-        }
-        for m in markers.iter().skip(if self.export_dialog.include_pre_marker_segment { 0 } else { 1 }) {
-            boundaries.push((timecode_to_frame(&m.position, fps), m.label.clone()));
-        }
-        if self.export_dialog.include_post_marker_segment {
-            boundaries.push((seq_end_frame, "end".to_string()));
-        }
-
-        // Build segments between consecutive boundaries.
-        let mut segments: Vec<(u64, u64, String)> = Vec::new();
-        for i in 0..boundaries.len().saturating_sub(1) {
-            let (start, _) = &boundaries[i];
-            let (end, label) = &boundaries[i + 1];
-            if *end <= *start {
-                continue; // skip zero-length (two markers same frame)
-            }
-            segments.push((*start, *end, label.clone()));
-        }
+        let segments: Vec<(u64, u64, String)> = if has_range_markers {
+            build_range_marker_segments(&seq.markers, fps)
+        } else {
+            build_inferred_marker_segments(
+                &seq.markers,
+                fps,
+                timecode_to_frame(&seq.total_duration(), fps),
+                self.export_dialog.include_pre_marker_segment,
+                self.export_dialog.include_post_marker_segment,
+            )
+        };
 
         if segments.is_empty() {
             self.state.toast.show("No valid segments to export.");
@@ -11583,6 +11741,7 @@ impl KlippApp {
                     position: *position,
                     label: label.clone(),
                     color: *color,
+                    duration: None,
                 });
                 self.state.sequences[self.state.active_sequence_idx].markers.sort_by(|a, b| {
                     a.position.to_secs_f64().partial_cmp(&b.position.to_secs_f64()).unwrap()
@@ -11607,6 +11766,14 @@ impl KlippApp {
                     m.color = *color;
                 }
                 self.state.dirty = true;
+                true
+            }
+            AppCommand::SetMarkerDuration { marker_id, duration } => {
+                if let Some(m) = self.state.sequences[self.state.active_sequence_idx].markers.iter_mut().find(|m| m.id == *marker_id) {
+                    m.duration = *duration;
+                }
+                self.state.dirty = true;
+                self.sync_sequence_to_engine();
                 true
             }
             AppCommand::JumpToMarker { marker_id } => {
@@ -12035,6 +12202,19 @@ impl KlippApp {
                     }
                 }
             }
+            EditCommand::BatchRenameMediaItems { changes } => {
+                // Undo: restore every old filename.
+                for (media_id, old_filename, _new) in changes {
+                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                        item.filename = old_filename.clone();
+                    }
+                }
+            }
+            EditCommand::CreateSubclip { subclip_id, parent_id: _ } => {
+                // Undo: drop the subclip from the pool. Redo isn't wired for
+                // MVP — the user recreates via the source-viewer button.
+                self.state.media_pool.remove(subclip_id);
+            }
             EditCommand::SetRange { old_in, old_out, .. } => {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 seq.in_point = *old_in;
@@ -12397,6 +12577,20 @@ impl KlippApp {
                         // bin_id intentionally unchanged — rename doesn't change identity
                     }
                 }
+            }
+            EditCommand::BatchRenameMediaItems { changes } => {
+                // Redo: re-apply every new filename.
+                for (media_id, _old, new_filename) in changes {
+                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
+                        item.filename = new_filename.clone();
+                    }
+                }
+            }
+            EditCommand::CreateSubclip { .. } => {
+                // Redo is not wired for subclip creation in MVP — the
+                // subclip's MediaItem is not stored in the history entry
+                // so we can't recreate it. `label()` surfaces "Create
+                // Subclip" but redo is a no-op.
             }
             EditCommand::SetRange { new_in, new_out, .. } => {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
@@ -14384,6 +14578,180 @@ fn unique_export_path(
 /// helper in `klipp-render/src/snapshot.rs:693` (private there).
 fn timecode_to_frame(rt: &klipp_core::RationalTime, fps: f64) -> u64 {
     (rt.to_secs_f64() * fps).round() as u64
+}
+
+/// Multi-export helper: build one segment per range marker. Point markers
+/// (`duration == None`) are skipped when explicit ranges are present. Used
+/// by `enqueue_marker_segments` when at least one marker has a duration.
+fn build_range_marker_segments(
+    markers: &[klipp_timeline::Marker],
+    fps: f64,
+) -> Vec<(u64, u64, String)> {
+    let mut out = Vec::new();
+    let mut sorted: Vec<&klipp_timeline::Marker> = markers.iter().collect();
+    sorted.sort_by_key(|m| timecode_to_frame(&m.position, fps));
+    for m in sorted {
+        let Some(dur) = m.duration else { continue };
+        let start = timecode_to_frame(&m.position, fps);
+        let end = timecode_to_frame(&(m.position + dur), fps);
+        if end <= start {
+            continue; // zero-length or negative — skip
+        }
+        out.push((start, end, m.label.clone()));
+    }
+    out
+}
+
+/// Multi-export helper: treat consecutive point markers as segment
+/// boundaries (Kdenlive convention — each segment is named after the
+/// marker that ends it). The synthetic "start"/"end" pseudo-labels are
+/// recognised by the caller and trigger the numeric segment_N fallback.
+fn build_inferred_marker_segments(
+    markers: &[klipp_timeline::Marker],
+    fps: f64,
+    seq_end_frame: u64,
+    include_pre: bool,
+    include_post: bool,
+) -> Vec<(u64, u64, String)> {
+    let mut sorted: Vec<&klipp_timeline::Marker> = markers.iter().collect();
+    sorted.sort_by_key(|m| timecode_to_frame(&m.position, fps));
+
+    let mut boundaries: Vec<(u64, String)> = Vec::new();
+    if include_pre {
+        boundaries.push((0, "start".to_string()));
+    } else if let Some(first) = sorted.first() {
+        boundaries.push((timecode_to_frame(&first.position, fps), first.label.clone()));
+    }
+    for m in sorted.iter().skip(if include_pre { 0 } else { 1 }) {
+        boundaries.push((timecode_to_frame(&m.position, fps), m.label.clone()));
+    }
+    if include_post {
+        boundaries.push((seq_end_frame, "end".to_string()));
+    }
+
+    let mut segments = Vec::new();
+    for i in 0..boundaries.len().saturating_sub(1) {
+        let (start, _) = &boundaries[i];
+        let (end, label) = &boundaries[i + 1];
+        if *end <= *start {
+            continue;
+        }
+        segments.push((*start, *end, label.clone()));
+    }
+    segments
+}
+
+/// Rename mode for the batch-rename dialog. `FindReplace` substitutes a
+/// literal substring in the clip's stem; `Sequential` rebuilds the stem as
+/// `{prefix}{counter}{suffix}` with zero padding. File extensions are
+/// always preserved.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum BatchRenameMode {
+    #[default]
+    FindReplace,
+    Sequential,
+}
+
+/// Split `"name.ext"` into `("name", ".ext")` at the LAST dot. Returns
+/// `(full, "")` for names without an extension — so `"noext"` survives
+/// intact and filenames like `"my.file.name.mp4"` keep the full stem.
+fn split_stem_ext(filename: &str) -> (&str, &str) {
+    if let Some(pos) = filename.rfind('.') {
+        (&filename[..pos], &filename[pos..])
+    } else {
+        (filename, "")
+    }
+}
+
+/// Compute the new filename for one item given the current dialog state.
+/// Pure — no egui, no AppState access. Tested directly.
+#[allow(clippy::too_many_arguments)]
+pub fn compute_new_filename(
+    old: &str,
+    mode: &BatchRenameMode,
+    find: &str,
+    replace: &str,
+    match_case: bool,
+    prefix: &str,
+    suffix: &str,
+    counter: u32,
+    padding: u8,
+) -> String {
+    let (stem, ext) = split_stem_ext(old);
+    match mode {
+        BatchRenameMode::FindReplace => {
+            if find.is_empty() {
+                return old.to_string();
+            }
+            let new_stem = if match_case {
+                stem.replace(find, replace)
+            } else {
+                // Case-insensitive literal replace — find spans in the
+                // lowercased copy, splice `replace` into the original to
+                // preserve the untouched portions verbatim.
+                let lower_stem = stem.to_lowercase();
+                let lower_find = find.to_lowercase();
+                let mut result = stem.to_string();
+                let mut search_start = 0;
+                while let Some(pos) = lower_stem[search_start..].find(&lower_find) {
+                    let abs_pos = search_start + pos;
+                    result.replace_range(abs_pos..abs_pos + find.len(), replace);
+                    search_start = abs_pos + replace.len();
+                    if search_start >= result.len() {
+                        break;
+                    }
+                }
+                result
+            };
+            format!("{}{}", new_stem, ext)
+        }
+        BatchRenameMode::Sequential => {
+            let pad = padding as usize;
+            format!(
+                "{}{:0>width$}{}{}",
+                prefix,
+                counter,
+                suffix,
+                ext,
+                width = pad,
+            )
+        }
+    }
+}
+
+/// Build the full preview for the batch-rename dialog. Returns one
+/// `(MediaId, old, new)` per input item, counter starts at `start` and
+/// increments by 1 per item (in iterator order).
+#[allow(clippy::too_many_arguments)]
+pub fn preview_batch_rename(
+    items: &[(klipp_core::MediaId, String)],
+    mode: &BatchRenameMode,
+    find: &str,
+    replace: &str,
+    match_case: bool,
+    prefix: &str,
+    suffix: &str,
+    start: u32,
+    padding: u8,
+) -> Vec<(klipp_core::MediaId, String, String)> {
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, (id, old))| {
+            let new = compute_new_filename(
+                old,
+                mode,
+                find,
+                replace,
+                match_case,
+                prefix,
+                suffix,
+                start + i as u32,
+                padding,
+            );
+            (*id, old.clone(), new)
+        })
+        .collect()
 }
 
 /// Which edge `trim_to_playhead_dispatch` should move — Out for Q, In for W.
@@ -17019,6 +17387,23 @@ impl KlippApp {
             ) {
                 cmds.push(cmd);
             }
+        }
+
+        // 4c1b. Batch Rename dialog. Resolve the selected ids to
+        // `(id, current filename)` pairs up-front so the dialog can borrow
+        // `state` mutably without a conflicting read of `media_pool`.
+        if self.state.show_batch_rename_dialog {
+            let items: Vec<(klipp_core::MediaId, String)> = self.state
+                .batch_rename_ids
+                .iter()
+                .filter_map(|id| self.state.media_pool.get(id).map(|m| (*id, m.filename.clone())))
+                .collect();
+            let dialog_cmds = crate::panels::batch_rename_dialog::show_batch_rename_dialog(
+                ctx,
+                &mut self.state,
+                &items,
+            );
+            cmds.extend(dialog_cmds);
         }
 
         // 4c2. Consolidate Project dialog
@@ -19771,6 +20156,186 @@ mod youtube_chapter_tests {
         ];
         let expected = "0:00:00 Intro\n0:01:23 Main Content\n0:04:47 Outro";
         assert_eq!(generate_youtube_chapters(&entries), expected);
+    }
+}
+
+#[cfg(test)]
+mod batch_rename_tests {
+    use super::*;
+    use klipp_core::MediaId;
+
+    #[test]
+    fn find_replace_basic() {
+        let result = compute_new_filename(
+            "Interview_Raw.mp4",
+            &BatchRenameMode::FindReplace,
+            "Raw", "Edit", true, "", "", 1, 2,
+        );
+        assert_eq!(result, "Interview_Edit.mp4");
+    }
+
+    #[test]
+    fn find_replace_preserves_extension() {
+        let result = compute_new_filename(
+            "clip.mov",
+            &BatchRenameMode::FindReplace,
+            "clip", "scene", true, "", "", 1, 2,
+        );
+        assert_eq!(result, "scene.mov");
+    }
+
+    #[test]
+    fn find_replace_empty_find_is_noop() {
+        let result = compute_new_filename(
+            "clip.mov",
+            &BatchRenameMode::FindReplace,
+            "", "anything", true, "", "", 1, 2,
+        );
+        assert_eq!(result, "clip.mov");
+    }
+
+    #[test]
+    fn find_replace_case_insensitive() {
+        let result = compute_new_filename(
+            "Interview_RAW.mp4",
+            &BatchRenameMode::FindReplace,
+            "raw", "edit", false, "", "", 1, 2,
+        );
+        // Case-insensitive match on "RAW" with replacement "edit".
+        assert_eq!(result, "Interview_edit.mp4");
+    }
+
+    #[test]
+    fn sequential_numbering_with_padding() {
+        let result = compute_new_filename(
+            "clip.mov",
+            &BatchRenameMode::Sequential,
+            "", "", true, "Scene_", "", 1, 3,
+        );
+        assert_eq!(result, "Scene_001.mov");
+    }
+
+    #[test]
+    fn sequential_numbering_counter_increments() {
+        let items = vec![
+            (MediaId::new(), "a.mp4".to_string()),
+            (MediaId::new(), "b.mp4".to_string()),
+            (MediaId::new(), "c.mp4".to_string()),
+        ];
+        let result = preview_batch_rename(
+            &items, &BatchRenameMode::Sequential,
+            "", "", true, "Clip_", "", 1, 2,
+        );
+        assert_eq!(result[0].2, "Clip_01.mp4");
+        assert_eq!(result[1].2, "Clip_02.mp4");
+        assert_eq!(result[2].2, "Clip_03.mp4");
+    }
+
+    #[test]
+    fn split_stem_ext_last_dot() {
+        assert_eq!(split_stem_ext("my.file.name.mp4"), ("my.file.name", ".mp4"));
+        assert_eq!(split_stem_ext("noext"), ("noext", ""));
+        assert_eq!(split_stem_ext(""), ("", ""));
+    }
+
+    #[test]
+    fn sequential_with_suffix() {
+        let result = compute_new_filename(
+            "src.avi",
+            &BatchRenameMode::Sequential,
+            "", "", true, "Take_", "_final", 7, 2,
+        );
+        assert_eq!(result, "Take_07_final.avi");
+    }
+}
+
+#[cfg(test)]
+mod range_marker_segment_tests {
+    use super::*;
+    use klipp_core::{MarkerColor, MarkerId, RationalTime};
+
+    fn mk(position_secs: f64, dur_secs: Option<f64>, label: &str) -> klipp_timeline::Marker {
+        klipp_timeline::Marker {
+            id: MarkerId::new(),
+            position: RationalTime::from_secs_f64(position_secs, 24),
+            label: label.into(),
+            color: MarkerColor::Blue,
+            duration: dur_secs.map(|s| RationalTime::from_secs_f64(s, 24)),
+        }
+    }
+
+    #[test]
+    fn range_segments_use_explicit_duration() {
+        let markers = vec![
+            mk(1.0, Some(2.0), "Act 1"),
+            mk(5.0, Some(3.0), "Act 2"),
+        ];
+        let segs = build_range_marker_segments(&markers, 24.0);
+        assert_eq!(segs.len(), 2, "got {segs:?}");
+        // Act 1: 1s..3s at 24fps = frames 24..72.
+        assert_eq!(segs[0].0, 24);
+        assert_eq!(segs[0].1, 72);
+        assert_eq!(segs[0].2, "Act 1");
+        // Act 2: 5s..8s at 24fps = frames 120..192.
+        assert_eq!(segs[1].0, 120);
+        assert_eq!(segs[1].1, 192);
+        assert_eq!(segs[1].2, "Act 2");
+    }
+
+    #[test]
+    fn range_segments_skip_point_markers() {
+        // Point marker sandwiched between two ranges — it's dropped because
+        // the "any-range" mode ignores points entirely.
+        let markers = vec![
+            mk(1.0, Some(2.0), "Act 1"),
+            mk(4.0, None, "Chapter Point"),
+            mk(6.0, Some(2.0), "Act 2"),
+        ];
+        let segs = build_range_marker_segments(&markers, 24.0);
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].2, "Act 1");
+        assert_eq!(segs[1].2, "Act 2");
+    }
+
+    #[test]
+    fn inferred_segments_infer_from_consecutive_points() {
+        // Three point markers at 1s, 3s, 5s with seq length 10s.
+        // No pre/post — boundaries are the three markers, segments:
+        //   [1s..3s] ending at "Two"
+        //   [3s..5s] ending at "Three"
+        let markers = vec![
+            mk(1.0, None, "One"),
+            mk(3.0, None, "Two"),
+            mk(5.0, None, "Three"),
+        ];
+        let segs = build_inferred_marker_segments(&markers, 24.0, 240, false, false);
+        assert_eq!(segs.len(), 2);
+        // 1s..3s = frames 24..72
+        assert_eq!(segs[0].0, 24);
+        assert_eq!(segs[0].1, 72);
+        assert_eq!(segs[0].2, "Two");
+        // 3s..5s = frames 72..120
+        assert_eq!(segs[1].0, 72);
+        assert_eq!(segs[1].1, 120);
+        assert_eq!(segs[1].2, "Three");
+    }
+
+    #[test]
+    fn inferred_segments_include_pre_post() {
+        // Same markers, but with pre and post segments — we get 4 segments.
+        let markers = vec![
+            mk(1.0, None, "One"),
+            mk(3.0, None, "Two"),
+            mk(5.0, None, "Three"),
+        ];
+        let segs = build_inferred_marker_segments(&markers, 24.0, 240, true, true);
+        assert_eq!(segs.len(), 4);
+        // Pre: 0..24, ends at "One"
+        assert_eq!(segs[0].0, 0);
+        assert_eq!(segs[0].2, "One");
+        // Last: 120..240, ends at "end" (synthetic)
+        assert_eq!(segs[3].1, 240);
+        assert_eq!(segs[3].2, "end");
     }
 }
 

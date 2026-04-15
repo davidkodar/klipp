@@ -727,6 +727,17 @@ pub struct AppState {
 
     // New Project dialog
     pub show_new_project_dialog: bool,
+    // Batch rename dialog (for bin media items).
+    pub show_batch_rename_dialog: bool,
+    pub batch_rename_ids: Vec<MediaId>,
+    pub batch_rename_mode: crate::app::BatchRenameMode,
+    pub batch_rename_find: String,
+    pub batch_rename_replace: String,
+    pub batch_rename_match_case: bool,
+    pub batch_rename_prefix: String,
+    pub batch_rename_suffix: String,
+    pub batch_rename_start: u32,
+    pub batch_rename_padding: u8,
     // Project Info window
     pub show_project_info: bool,
     /// File Info window — Some(path) when open, None when closed.
@@ -1743,6 +1754,16 @@ impl Default for AppState {
             media_usage_cache: std::collections::HashMap::new(),
             media_usage_cache_dirty: true,
             show_new_project_dialog: false,
+            show_batch_rename_dialog: false,
+            batch_rename_ids: Vec::new(),
+            batch_rename_mode: crate::app::BatchRenameMode::FindReplace,
+            batch_rename_find: String::new(),
+            batch_rename_replace: String::new(),
+            batch_rename_match_case: true,
+            batch_rename_prefix: String::new(),
+            batch_rename_suffix: String::new(),
+            batch_rename_start: 1,
+            batch_rename_padding: 2,
             show_project_info: false,
             file_info: None,
             file_info_thumb: None,

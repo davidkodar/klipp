@@ -128,6 +128,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             user_notes: item_json.user_notes.clone(),
             bin: item_json.bin.clone(),
             bin_id: item_json.bin_id.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::BinId)),
+            parent_media_id: item_json.parent_media_id.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::MediaId)),
             added_at: item_json.added_at.unwrap_or(0),
             fingerprint: None, // recomputed if needed
             file_modified_at: item_json.file_modified_at,
@@ -389,6 +390,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                 position: RationalTime { value: m.position.value, rate: m.position.rate },
                 label: m.label.clone(),
                 color,
+                duration: m.duration.as_ref().map(|d| RationalTime { value: d.value, rate: d.rate }),
             })
         }).collect(),
         last_playhead: seq_json.last_playhead.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),

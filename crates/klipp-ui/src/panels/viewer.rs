@@ -2624,18 +2624,26 @@ impl ViewerPanel {
             // Graphical IN/OUT markers on the viewer rect
             Self::draw_source_in_out_markers(ui, &viewer_rect, media);
 
-            // Edit buttons
+            // Edit buttons. Subclip is enabled only when the source clip has
+            // an IN and OUT set AND is not itself a subclip — creating a
+            // subclip of a subclip is rejected in the handler anyway.
             let has_in_out = state.sequence().in_point.is_some() && state.sequence().out_point.is_some();
+            let subclip_enabled = media
+                .default_source_in.is_some()
+                && media.default_source_out.is_some()
+                && !media.is_subclip();
             let edit_buttons: &[(&str, AppCommand, bool)] = &[
                 ("Insert (,)", AppCommand::InsertEdit, true),
                 ("Overwrite (.)", AppCommand::OverwriteEdit, true),
                 ("Lift (;)", AppCommand::LiftEdit, has_in_out),
                 ("Extract (')", AppCommand::ExtractEdit, has_in_out),
+                ("Subclip", AppCommand::CreateSubclipFromZone { source_media_id: media.id, name: None }, subclip_enabled),
             ];
 
             let btn_w = 90.0;
             let btn_gap = 6.0;
-            let total_w = btn_w * 4.0 + btn_gap * 3.0;
+            let btn_count = edit_buttons.len() as f32;
+            let total_w = btn_w * btn_count + btn_gap * (btn_count - 1.0);
             let btn_y = cy + 34.0;
             let btn_x_start = cx - total_w / 2.0;
 

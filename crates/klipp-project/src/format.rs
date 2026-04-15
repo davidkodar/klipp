@@ -449,6 +449,10 @@ pub struct MediaItemJson {
     pub bin: Option<String>,
     #[serde(default)]
     pub bin_id: Option<String>,
+    /// Subclip parent MediaId as a UUID string. None for normal items.
+    /// Missing from legacy `.klipp` files — serde default gives us `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_media_id: Option<String>,
     #[serde(default)]
     pub added_at: Option<u64>,
     #[serde(default)]
@@ -470,6 +474,10 @@ pub struct MarkerJson {
     pub label: String,
     #[serde(default = "default_marker_color_str")]
     pub color: String,
+    /// Optional range-marker duration. `None` serializes as absent; legacy
+    /// files without the field deserialize to `None` via the serde default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<TimecodeJson>,
 }
 
 fn default_marker_color_str() -> String {

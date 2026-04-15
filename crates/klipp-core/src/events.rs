@@ -529,6 +529,11 @@ pub enum AppCommand {
     SetSourceInPoint(RationalTime),
     SetSourceOutPoint(RationalTime),
     InsertSourceAtPlayhead,
+    /// Create a subclip from the source media's current IN/OUT zone. The new
+    /// MediaItem inherits codec/fps/resolution from the parent, reuses the
+    /// parent's path, and carries its own default_source_in/out matching the
+    /// zone. `name: None` → auto-generated as "{parent_stem}_sub{N}".
+    CreateSubclipFromZone { source_media_id: MediaId, name: Option<String> },
 
     // Sequence markers
     SetSequenceInPoint(RationalTime),
@@ -744,6 +749,10 @@ pub enum AppCommand {
     RemoveMarker { marker_id: MarkerId },
     UpdateMarkerLabel { marker_id: MarkerId, label: String },
     UpdateMarkerColor { marker_id: MarkerId, color: MarkerColor },
+    /// Set a sequence marker's range duration. `None` converts the marker
+    /// back to a point marker; `Some(dur)` promotes it to a range spanning
+    /// `position..position + dur`.
+    SetMarkerDuration { marker_id: MarkerId, duration: Option<Timecode> },
     JumpToMarker { marker_id: MarkerId },
 
     // Per-clip markers
@@ -790,6 +799,18 @@ pub enum AppCommand {
     DeleteBin { name: String },
     MoveItemToBin { media_id: MediaId, bin: Option<String> },
     RenameBin { old_name: String, new_name: String },
+    /// Rename a single MediaItem — updates `MediaItem.filename` only. The
+    /// source file on disk (`MediaItem.path`) is never touched.
+    RenameMediaItem { media_id: MediaId, new_filename: String },
+    /// Apply a set of filename changes atomically as one undo step. The UI
+    /// computes `(id, new_filename)` pairs from the preview; the handler
+    /// snapshots the old names from the current pool to build the undo
+    /// record.
+    BatchRenameMediaItems { changes: Vec<(MediaId, String)> },
+    /// Open the batch-rename modal seeded with the given media ids.
+    /// Dispatched from the bin context menus where `AppState` is not
+    /// directly accessible.
+    OpenBatchRenameDialog { media_ids: Vec<MediaId> },
 
     // Browser skimming
     StartSkimTranscode { media_id: MediaId },

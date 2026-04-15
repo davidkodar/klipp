@@ -1841,6 +1841,46 @@ impl TimelinePanel {
                 if x >= ruler_rect.left() - 6.0 && x <= ruler_rect.right() + 6.0 {
                     let (r, g, b) = marker.color.to_rgb();
                     let color = egui::Color32::from_rgb(r, g, b);
+                    // Range markers: shaded fill across the ruler from start
+                    // to end + thin end-tick line. The triangle at the start
+                    // is still drawn below so the position stays recognisable.
+                    if let Some(dur) = marker.duration {
+                        let end_secs = marker.position.to_secs_f64() + dur.to_secs_f64();
+                        let x_end_raw = content_rect.left() + end_secs as f32 * zoom - scroll;
+                        let x_end = x_end_raw.min(ruler_rect.right());
+                        if x_end > x {
+                            let fill_rect = egui::Rect::from_min_max(
+                                egui::pos2(x.max(ruler_rect.left()), ruler_rect.top()),
+                                egui::pos2(x_end, ruler_rect.bottom()),
+                            );
+                            painter.rect_filled(
+                                fill_rect,
+                                0.0,
+                                egui::Color32::from_rgba_unmultiplied(r, g, b, 50),
+                            );
+                            painter.line_segment(
+                                [
+                                    egui::pos2(x_end, ruler_rect.top()),
+                                    egui::pos2(x_end, ruler_rect.bottom()),
+                                ],
+                                egui::Stroke::new(
+                                    1.0,
+                                    egui::Color32::from_rgba_unmultiplied(r, g, b, 160),
+                                ),
+                            );
+                            // Hover tooltip on the shaded band.
+                            let hit_id = ui.id().with(("range_marker", marker.id.0));
+                            let hit = ui.interact(fill_rect, hit_id, egui::Sense::hover());
+                            if hit.hovered() {
+                                let lbl = if marker.label.is_empty() {
+                                    "(no label)"
+                                } else {
+                                    marker.label.as_str()
+                                };
+                                hit.on_hover_text(format!("{lbl} — {:.2}s", dur.to_secs_f64()));
+                            }
+                        }
+                    }
                     let top = ruler_rect.bottom() - 10.0;
                     let bot = ruler_rect.bottom() - 1.0;
                     let half_w = 4.0;

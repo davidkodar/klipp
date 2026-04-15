@@ -291,6 +291,7 @@ fn make_otio_media_item(path: PathBuf, filename: String, fps: Fps, offline: bool
         user_notes: String::new(),
         bin: None,
         bin_id: None,
+        parent_media_id: None,
         added_at: 0,
         fingerprint: None,
         file_modified_at: None,
@@ -740,11 +741,16 @@ pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
     let mut sequence_markers: Vec<Marker> = Vec::new();
     for rm in parse_markers(&doc.tracks.markers, "Timeline", &mut warnings) {
         let position = rt_from_otio(&rm.marked_range.start_time, fps_rate);
+        // OTIO markers always carry a duration. Import anything > 0 frames
+        // as a range marker; zero-duration stays a point marker.
+        let duration = rt_from_otio(&rm.marked_range.duration, fps_rate);
+        let duration = if duration.value > 0 { Some(duration) } else { None };
         sequence_markers.push(Marker {
             id: MarkerId::new(),
             position,
             label: rm.name.unwrap_or_default(),
             color: otio_color_to_klipp(rm.color.as_deref()),
+            duration,
         });
     }
 

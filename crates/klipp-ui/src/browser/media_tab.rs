@@ -21,6 +21,16 @@ pub enum BrowserViewMode {
     Grid,
 }
 
+/// Returns true when an item with the given rating should pass the minimum
+/// rating filter. `None` disables the filter (all ratings pass). Pure —
+/// testable without egui.
+pub fn passes_rating_filter(rating: u8, min: Option<u8>) -> bool {
+    match min {
+        None => true,
+        Some(min_r) => rating >= min_r,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
@@ -35,6 +45,7 @@ pub fn show(
     creating_bin: &mut Option<String>,
     scroll_to_media_id: &mut Option<MediaId>,
     smart_filter: super::SmartBinFilter,
+    min_rating_filter: Option<u8>,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
 
@@ -56,7 +67,7 @@ pub fn show(
                     return false;
                 }
             }
-            // Smart bin filter
+            // Smart bin filter (AND-combined with the rating filter below).
             match smart_filter {
                 super::SmartBinFilter::None => {}
                 super::SmartBinFilter::Unused => {
@@ -71,9 +82,10 @@ pub fn show(
                 super::SmartBinFilter::StillsOnly => {
                     if !m.is_still { return false; }
                 }
-                super::SmartBinFilter::HighRating => {
-                    if m.rating < 4 { return false; }
-                }
+            }
+            // Minimum star rating filter.
+            if !passes_rating_filter(m.rating, min_rating_filter) {
+                return false;
             }
             if !search_lower.is_empty() {
                 return m.filename.to_lowercase().contains(&search_lower)
@@ -112,6 +124,8 @@ pub fn show(
             pixel_format: m.pixel_format.clone(),
             video_bitrate_kbps: m.video_bitrate_kbps,
             offline: m.offline,
+            parent_media_id: m.parent_media_id,
+            has_zone: m.default_source_in.is_some() && m.default_source_out.is_some(),
         })
         .collect();
 
@@ -422,7 +436,42 @@ fn render_list_view(
             }
         }
 
+        // Render order: parents first, each followed immediately by its
+        // subclips (in their natural order). Subclips whose parent is not
+        // in this bin (rare — bin_id usually inherits) render as orphans
+        // at the end. This keeps subclips visually adjacent to their
+        // parent without needing expand/collapse UI for MVP.
+        let bin_items: Vec<&MediaRow> = {
+            let mut parents: Vec<&MediaRow> = Vec::new();
+            let mut children_by_parent: std::collections::HashMap<MediaId, Vec<&MediaRow>> =
+                std::collections::HashMap::new();
+            for it in &bin_items {
+                match it.parent_media_id {
+                    Some(pid) => children_by_parent.entry(pid).or_default().push(*it),
+                    None => parents.push(*it),
+                }
+            }
+            let mut ordered: Vec<&MediaRow> = Vec::with_capacity(parents.len() + children_by_parent.values().map(Vec::len).sum::<usize>());
+            for p in &parents {
+                ordered.push(p);
+                if let Some(children) = children_by_parent.remove(&p.id) {
+                    for c in children {
+                        ordered.push(c);
+                    }
+                }
+            }
+            // Orphan subclips (parent in a different bin / already deleted).
+            for (_, leftover) in children_by_parent {
+                for c in leftover {
+                    ordered.push(c);
+                }
+            }
+            ordered
+        };
+
         for item in &bin_items {
+            let is_subclip_row = item.parent_media_id.is_some();
+            let indent = if is_subclip_row { 20.0_f32 } else { 0.0 };
             let is_selected = state.selected_media_ids.contains(&item.id)
                 || (state.selected_media_ids.is_empty() && state.source_media_id == Some(item.id));
 
@@ -474,8 +523,10 @@ fn render_list_view(
                 );
             }
 
-            // Thumbnail (80x45), vertically centred in the row
-            let thumb_x = row_rect.min.x + 12.0;
+            // Thumbnail (80x45), vertically centred in the row. Subclips
+            // render at a 20px indent — everything to the right shifts with
+            // it so the ↳ prefix on the filename reads naturally.
+            let thumb_x = row_rect.min.x + 12.0 + indent;
             let thumb_y = row_rect.min.y + (row_h - 45.0) / 2.0;
             let thumb_rect = egui::Rect::from_min_size(
                 egui::pos2(thumb_x, thumb_y),
@@ -514,9 +565,15 @@ fn render_list_view(
             let text_x = thumb_rect.max.x + 8.0;
             let text_max_w = row_rect.max.x - text_x - 24.0; // leave space for used dot
 
-            // Filename — truncate to fit
+            // Filename — truncate to fit. Subclips are prefixed with "↳ "
+            // so they read as a child of the item above them.
+            let raw_name = if is_subclip_row {
+                format!("\u{21B3} {}", item.filename)
+            } else {
+                item.filename.clone()
+            };
             let display_name = truncate_to_width(
-                &item.filename,
+                &raw_name,
                 egui::FontId::proportional(13.0),
                 text_max_w,
                 ui,
@@ -538,12 +595,37 @@ fn render_list_view(
             } else {
                 format!("{:.1}MB", size_mb)
             };
+            // Metadata line. When the clip is rated, paint the stars in
+            // amber first so they pop against the dim grey of the rest of
+            // the metadata. `painter().text()` returns the rendered rect,
+            // which we use to advance the x cursor for the grey text.
+            let meta_y = row_rect.min.y + 30.0;
+            let mut meta_x = text_x;
+            if item.rating > 0 {
+                let stars = "\u{2605}".repeat(item.rating as usize);
+                let stars_rect = ui.painter().text(
+                    egui::pos2(meta_x, meta_y),
+                    egui::Align2::LEFT_TOP,
+                    &stars,
+                    egui::FontId::monospace(10.0),
+                    egui::Color32::from_rgb(232, 160, 32),
+                );
+                meta_x = stars_rect.max.x;
+                let sep_rect = ui.painter().text(
+                    egui::pos2(meta_x, meta_y),
+                    egui::Align2::LEFT_TOP,
+                    " \u{00b7} ",
+                    egui::FontId::monospace(10.0),
+                    theme.text_dim,
+                );
+                meta_x = sep_rect.max.x;
+            }
             let meta = format!(
                 "{} \u{00b7} {}fps \u{00b7} {} \u{00b7} {}",
                 dur_str, fps_str, item.codec, size_str
             );
             ui.painter().text(
-                egui::pos2(text_x, row_rect.min.y + 30.0),
+                egui::pos2(meta_x, meta_y),
                 egui::Align2::LEFT_TOP,
                 &meta,
                 egui::FontId::monospace(10.0),
@@ -562,6 +644,15 @@ fn render_list_view(
             // Tooltip with extended metadata on hover
             resp.clone().on_hover_ui(|ui| {
                 ui.label(egui::RichText::new(&item.filename).strong());
+                if item.rating > 0 {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Rating: {}",
+                            "\u{2605}".repeat(item.rating as usize)
+                        ))
+                        .color(egui::Color32::from_rgb(232, 160, 32)),
+                    );
+                }
                 ui.label(format!("{} x {}", item.resolution.width, item.resolution.height));
                 if let Some(ref cam) = item.camera { ui.label(format!("Camera: {cam}")); }
                 if let Some(bd) = item.bit_depth { ui.label(format!("Bit depth: {bd}-bit")); }
@@ -601,7 +692,7 @@ fn render_list_view(
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
                     show_multi_context_menu(ui, &state.selected_media_ids, cmds);
                 } else {
-                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, cmds);
+                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), cmds);
                 }
             });
         }
@@ -811,12 +902,34 @@ fn render_grid_view(
                 );
             }
 
-            // Metadata line
+            // Metadata line — stars first (amber) when rated, then dim grey
+            // duration · fps.
             let dur_str = format_duration(&item.duration);
             let fps_str = format_fps(&item.fps);
+            let meta_y = info_y + 16.0;
+            let mut meta_x = card_pos.x + 6.0;
+            if item.rating > 0 {
+                let stars = "\u{2605}".repeat(item.rating as usize);
+                let stars_rect = ui.painter().text(
+                    egui::pos2(meta_x, meta_y),
+                    egui::Align2::LEFT_TOP,
+                    &stars,
+                    egui::FontId::monospace(9.0),
+                    egui::Color32::from_rgb(232, 160, 32),
+                );
+                meta_x = stars_rect.max.x;
+                let sep_rect = ui.painter().text(
+                    egui::pos2(meta_x, meta_y),
+                    egui::Align2::LEFT_TOP,
+                    " \u{00b7} ",
+                    egui::FontId::monospace(9.0),
+                    theme.text_dim,
+                );
+                meta_x = sep_rect.max.x;
+            }
             let meta_str = format!("{} \u{00b7} {}fps", dur_str, fps_str);
             ui.painter().text(
-                egui::pos2(card_pos.x + 6.0, info_y + 16.0),
+                egui::pos2(meta_x, meta_y),
                 egui::Align2::LEFT_TOP,
                 &meta_str,
                 egui::FontId::monospace(9.0),
@@ -909,7 +1022,7 @@ fn render_grid_view(
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
                     show_multi_context_menu(ui, &state.selected_media_ids, cmds);
                 } else {
-                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, cmds);
+                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), cmds);
                 }
             });
 
@@ -1159,6 +1272,12 @@ struct MediaRow {
     /// Source file no longer exists at `path`. Drives the OFFLINE badge and
     /// the right-click "Relink…" entry.
     offline: bool,
+    /// `Some(parent_id)` for subclip rows, `None` for normal items. Drives
+    /// indentation in the list and the Create-Subclip gate in the menu.
+    parent_media_id: Option<MediaId>,
+    /// Cached `has_zone` flag — true when `default_source_in/out` are both
+    /// set, for the right-click "Create Subclip from Zone" gate.
+    has_zone: bool,
 }
 
 fn show_context_menu(
@@ -1167,6 +1286,8 @@ fn show_context_menu(
     path: &std::path::Path,
     offline: bool,
     filename: &str,
+    has_zone: bool,
+    is_subclip: bool,
     cmds: &mut Vec<AppCommand>,
 ) {
     // Relink — only shown for offline items, sits at the top so it's
@@ -1191,6 +1312,24 @@ fn show_context_menu(
         ui.separator();
     }
 
+    if ui.button("Rename\u{2026}").clicked() {
+        ui.close_menu();
+        // Single-item rename reuses the batch dialog (count 1 is supported).
+        cmds.push(AppCommand::OpenBatchRenameDialog { media_ids: vec![media_id] });
+    }
+    // Create Subclip from Zone — only for non-subclips with a zone set.
+    // The handler rejects subclip-of-subclip defensively; this gate just
+    // avoids offering it when it would toast an error.
+    if !is_subclip && has_zone {
+        if ui.button("Create Subclip from Zone").clicked() {
+            ui.close_menu();
+            cmds.push(AppCommand::CreateSubclipFromZone {
+                source_media_id: media_id,
+                name: None,
+            });
+        }
+    }
+    ui.separator();
     if ui.button("Load in Source").clicked() {
         cmds.push(AppCommand::LoadSourceMedia { media_id });
         ui.close_menu();
@@ -1299,6 +1438,13 @@ fn show_multi_context_menu(
     let count = selected_ids.len();
     ui.label(egui::RichText::new(format!("{count} items selected")).strong());
     ui.separator();
+    if ui.button("Rename\u{2026}").clicked() {
+        ui.close_menu();
+        cmds.push(AppCommand::OpenBatchRenameDialog {
+            media_ids: selected_ids.iter().copied().collect(),
+        });
+    }
+    ui.separator();
     ui.menu_button("Move to bin", |ui| {
         if ui.button("Root (no bin)").clicked() {
             for &id in selected_ids {
@@ -1341,5 +1487,41 @@ fn show_multi_context_menu(
             cmds.push(AppCommand::RemoveFromPool { media_id: id });
         }
         ui.close_menu();
+    }
+}
+
+#[cfg(test)]
+mod rating_filter_tests {
+    use super::passes_rating_filter;
+
+    #[test]
+    fn rating_filter_none_passes_all() {
+        assert!(passes_rating_filter(0, None));
+        assert!(passes_rating_filter(3, None));
+        assert!(passes_rating_filter(5, None));
+    }
+
+    #[test]
+    fn rating_filter_min_3_excludes_below() {
+        assert!(!passes_rating_filter(0, Some(3)));
+        assert!(!passes_rating_filter(2, Some(3)));
+        assert!(passes_rating_filter(3, Some(3)));
+        assert!(passes_rating_filter(4, Some(3)));
+        assert!(passes_rating_filter(5, Some(3)));
+    }
+
+    #[test]
+    fn rating_filter_min_5_only_allows_5() {
+        assert!(!passes_rating_filter(0, Some(5)));
+        assert!(!passes_rating_filter(3, Some(5)));
+        assert!(!passes_rating_filter(4, Some(5)));
+        assert!(passes_rating_filter(5, Some(5)));
+    }
+
+    #[test]
+    fn rating_filter_min_1_excludes_unrated() {
+        assert!(!passes_rating_filter(0, Some(1)));
+        assert!(passes_rating_filter(1, Some(1)));
+        assert!(passes_rating_filter(5, Some(1)));
     }
 }

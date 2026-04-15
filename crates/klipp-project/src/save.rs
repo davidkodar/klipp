@@ -153,6 +153,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 position: timecode_to_json(&m.position),
                 label: m.label.clone(),
                 color: format!("{:?}", m.color),
+                duration: m.duration.as_ref().map(timecode_to_json),
             }
         }).collect(),
         tracks: seq.tracks.iter().map(|t| {
@@ -388,6 +389,7 @@ fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
         user_notes: item.user_notes.clone(),
         bin: item.bin.clone(),
         bin_id: item.bin_id.map(|id| id.to_string()),
+        parent_media_id: item.parent_media_id.map(|id| id.to_string()),
         added_at: if item.added_at > 0 { Some(item.added_at) } else { None },
         file_modified_at: item.file_modified_at,
         media_created_at: item.media_created_at,
