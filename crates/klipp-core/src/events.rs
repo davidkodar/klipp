@@ -430,8 +430,12 @@ pub enum AppCommand {
     SelectClipsForward,
     /// Select all clips that end before or at the playhead.
     SelectClipsBackward,
-    /// Save current viewer frame as PNG.
+    /// Save current viewer frame as PNG via a file dialog.
     FrameGrab,
+    /// Save the current viewer frame as a PNG under `<project>/media/stills/`
+    /// (or a temp directory when the project is unsaved) and import it into
+    /// the media bin as a still MediaItem. No file dialog.
+    ExtractFrameToBin,
     /// Import SRT/VTT subtitle file onto a subtitle track.
     ImportSubtitles { path: PathBuf },
     /// Import a Kdenlive MLT XML project as a new sequence.

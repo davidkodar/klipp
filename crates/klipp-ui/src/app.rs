@@ -4729,10 +4729,16 @@ impl KlippApp {
                             .flat_map(|px| [px[0], px[1], px[2]])
                             .collect();
                         drop(fb);
+                        // Default filename from playhead timecode (colons are
+                        // illegal on Windows paths, so swap them for hyphens).
+                        let default_name = format!(
+                            "frame_{}.png",
+                            self.state.playhead.to_timecode_string().replace(':', "-")
+                        );
                         if let Some(path) = rfd::FileDialog::new()
                             .set_title("Save Frame As")
                             .add_filter("PNG Image", &["png"])
-                            .set_file_name("frame.png")
+                            .set_file_name(&default_name)
                             .save_file()
                         {
                             if save_rgb_as_png(&rgb, w, h, &path) {
@@ -4743,6 +4749,55 @@ impl KlippApp {
                         }
                     } else {
                         self.state.toast.show("No frame available".to_string());
+                    }
+                    return true;
+                }
+                // Extract frame to bin: save PNG + import as still — no file dialog.
+                AppCommand::ExtractFrameToBin => {
+                    let (rgba, w, h) = {
+                        let fb = self.frame_buffer.lock().unwrap();
+                        if fb.data.is_empty() || fb.width == 0 || fb.height == 0 {
+                            drop(fb);
+                            self.state.toast.show("No frame available".to_string());
+                            return true;
+                        }
+                        (fb.data.clone(), fb.width, fb.height)
+                    };
+
+                    // Output directory: the saved project's .klipp dir, or a
+                    // temp fallback so the feature still works in an unsaved
+                    // project. save_freeze_frame_png appends media/stills/.
+                    let stills_root: std::path::PathBuf = match self.state.project_path.clone() {
+                        Some(dir) => dir,
+                        None => std::env::temp_dir().join("klipp_extracts"),
+                    };
+
+                    // Timecode-based filename + nanos suffix for uniqueness
+                    // when extracting the same frame more than once.
+                    let tc_str = self.state.playhead.to_timecode_string().replace(':', "-");
+                    let nanos = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.subsec_nanos())
+                        .unwrap_or(0);
+                    let filename = format!("frame_{tc_str}_{nanos}.png");
+
+                    match klipp_project::save_freeze_frame_png(&stills_root, &filename, &rgba, w, h) {
+                        Ok(png_path) => {
+                            // Route straight to the engine — LoadMediaFile will
+                            // probe the PNG, detect it as a still, and push a
+                            // MediaLoaded event that the UI handler turns into
+                            // a MediaItem with is_still = true.
+                            let media_id = klipp_core::MediaId::new();
+                            let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
+                                path: png_path.clone(),
+                                media_id,
+                            });
+                            self.state.toast.show("Frame extracted to bin".to_string());
+                        }
+                        Err(e) => {
+                            tracing::warn!("extract frame: {e}");
+                            self.state.toast.show(format!("Failed to extract frame: {e}"));
+                        }
                     }
                     return true;
                 }
@@ -13496,6 +13551,14 @@ impl KlippApp {
             // W — Trim IN to playhead (no selection required).
             if kb.is_action_pressed("trim_in_to_playhead", i) {
                 cmds.push(AppCommand::TrimInToPlayhead);
+            }
+            // Ctrl+Alt+S — Extract frame to file (dialog).
+            if kb.is_action_pressed("extract_frame_to_file", i) {
+                cmds.push(AppCommand::FrameGrab);
+            }
+            // Ctrl+Alt+B — Extract frame and import into the media bin.
+            if kb.is_action_pressed("extract_frame_to_bin", i) {
+                cmds.push(AppCommand::ExtractFrameToBin);
             }
             // Cut clip
             if kb.is_action_pressed("cut_clip", i) {

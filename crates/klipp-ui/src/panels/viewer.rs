@@ -1461,6 +1461,38 @@ impl ViewerPanel {
             state.show_transform_controls = !state.show_transform_controls;
         }
         xform_resp.on_hover_text("Toggle transform controls");
+
+        // Camera / extract-frame button — sits left of the transform toggle.
+        // Click: extract the current viewer frame into the media bin as a
+        // still (dispatches AppCommand::ExtractFrameToBin). Custom painted
+        // to match the transform toggle's style since the Phosphor set in
+        // use does not include a camera glyph.
+        let cam_x = xform_x - 26.0;
+        let cam_rect = egui::Rect::from_center_size(
+            egui::pos2(cam_x, cy),
+            egui::vec2(20.0, 20.0),
+        );
+        let cam_resp = ui.allocate_rect(cam_rect, egui::Sense::click());
+        let cam_color = if cam_resp.hovered() {
+            theme.accent
+        } else {
+            egui::Color32::from_rgb(160, 160, 170)
+        };
+        // Camera body: rounded rectangle.
+        let body = cam_rect.shrink2(egui::vec2(3.0, 5.0));
+        ui.painter().rect_stroke(body, 2.0, egui::Stroke::new(1.2, cam_color));
+        // Small viewfinder bump on top.
+        let bump = egui::Rect::from_center_size(
+            egui::pos2(cam_rect.center().x - 3.0, body.min.y - 1.5),
+            egui::vec2(5.0, 3.0),
+        );
+        ui.painter().rect_stroke(bump, 1.0, egui::Stroke::new(1.2, cam_color));
+        // Lens.
+        ui.painter().circle_stroke(body.center(), 3.2, egui::Stroke::new(1.2, cam_color));
+        if cam_resp.clicked() {
+            cmds.push(AppCommand::ExtractFrameToBin);
+        }
+        cam_resp.on_hover_text("Extract frame to bin (Ctrl+Alt+B)");
     }
 
     /// Helper for playbar navigation buttons. Returns advance width (btn_size + spacing).

@@ -816,7 +816,14 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             ui.separator();
-            if ui.button("Grab Frame").clicked() { cmds.push(AppCommand::FrameGrab); ui.close_menu(); }
+            if ui.add(egui::Button::new("Extract Frame to File\u{2026}").shortcut_text("Ctrl+Alt+S")).clicked() {
+                cmds.push(AppCommand::FrameGrab);
+                ui.close_menu();
+            }
+            if ui.add(egui::Button::new("Extract Frame to Bin").shortcut_text("Ctrl+Alt+B")).clicked() {
+                cmds.push(AppCommand::ExtractFrameToBin);
+                ui.close_menu();
+            }
             ui.separator();
             let perf_check = if state.show_perf_overlay { "\u{2713} " } else { "  " };
             if ui.button(format!("{perf_check}Performance Overlay")).clicked() { state.show_perf_overlay = !state.show_perf_overlay; ui.close_menu(); }

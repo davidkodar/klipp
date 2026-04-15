@@ -32,6 +32,9 @@ impl KeyCombo {
     pub fn ctrl_shift(key: &str) -> Self {
         Self { ctrl: true, shift: true, alt: false, key: key.into() }
     }
+    pub fn ctrl_alt(key: &str) -> Self {
+        Self { ctrl: true, shift: false, alt: true, key: key.into() }
+    }
 
     /// Format for display in menus and tooltips.
     pub fn display(&self) -> String {
@@ -137,6 +140,8 @@ impl KeyBindings {
         bind(&mut b, "ripple_trim_tail", vec![KeyCombo::alt("]")]);
         bind(&mut b, "trim_out_to_playhead", vec![KeyCombo::new("Q")]);
         bind(&mut b, "trim_in_to_playhead", vec![KeyCombo::new("W")]);
+        bind(&mut b, "extract_frame_to_file", vec![KeyCombo::ctrl_alt("S")]);
+        bind(&mut b, "extract_frame_to_bin", vec![KeyCombo::ctrl_alt("B")]);
 
         // Navigation
         bind(&mut b, "next_edit_point", vec![KeyCombo::new("ArrowDown")]);
@@ -321,6 +326,8 @@ impl KeyBindings {
             "ripple_trim_tail" => "Ripple Trim Tail",
             "trim_out_to_playhead" => "Trim Out to Playhead",
             "trim_in_to_playhead" => "Trim In to Playhead",
+            "extract_frame_to_file" => "Extract Frame to File",
+            "extract_frame_to_bin" => "Extract Frame to Bin",
             "next_edit_point" => "Next Edit Point",
             "prev_edit_point" => "Previous Edit Point",
             "set_in_point" => "Set In Point",
@@ -390,7 +397,7 @@ impl KeyBindings {
             ("Timeline", &["insert_edit", "overwrite_edit", "lift_edit", "extract_edit", "toggle_edit_mode", "ripple_trim_head", "ripple_trim_tail", "trim_out_to_playhead", "trim_in_to_playhead", "freeze_frame"]),
             ("Navigation", &["next_edit_point", "prev_edit_point", "set_in_point", "set_out_point", "clear_in_point", "clear_out_point", "clear_in_out", "set_range_to_clip"]),
             ("Transport", &["play_pause", "step_forward", "step_backward", "go_to_start", "go_to_end", "shuttle_reverse", "shuttle_pause", "shuttle_forward", "toggle_loop"]),
-            ("Viewer", &["toggle_fullscreen", "toggle_before_after", "toggle_color_panel", "toggle_scopes", "toggle_zebra", "toggle_false_color", "toggle_perf_overlay", "toggle_matte_preview"]),
+            ("Viewer", &["toggle_fullscreen", "toggle_before_after", "toggle_color_panel", "toggle_scopes", "toggle_zebra", "toggle_false_color", "toggle_perf_overlay", "toggle_matte_preview", "extract_frame_to_file", "extract_frame_to_bin"]),
             ("Window", &["toggle_project_notes"]),
             ("Display", &["toggle_snap", "toggle_skimming", "fit_to_window", "zoom_to_selection", "zoom_in", "zoom_out"]),
             ("Markers", &["add_marker", "add_clip_marker", "toggle_keyframe", "toggle_keyframe_editor", "prev_keyframe", "next_keyframe"]),
