@@ -449,6 +449,13 @@ pub struct AppState {
     pub scene_detect_in_progress: std::collections::HashSet<klipp_core::ClipId>,
     pub scene_detect_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
 
+    // Audio spectrum analyser — shared PCM ring fed by the mix thread,
+    // plus the latest FFT magnitude bins (dBFS, log-frequency) rendered by
+    // the audio-spectrum scope. Sample rate is set from the engine once.
+    pub spectrum_ring: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>,
+    pub spectrum_bins: Vec<f32>,
+    pub spectrum_sample_rate: u32,
+
     // Point tracking state
     /// Whether the viewer is in tracking placement mode (click to place tracker).
     pub tracking_mode: bool,
@@ -1070,6 +1077,7 @@ pub enum ScopeType {
     Vectorscope,
     Histogram,
     CIEChromaticity,
+    AudioSpectrum,
 }
 
 impl From<ScopeMode> for ScopeType {
@@ -1091,14 +1099,15 @@ impl ScopeType {
             Self::Vectorscope => "Vectorscope",
             Self::Histogram => "Histogram",
             Self::CIEChromaticity => "CIE Chromaticity",
+            Self::AudioSpectrum => "Audio Spectrum",
         }
     }
 
-    pub const ALL: [ScopeType; 5] = [
-        Self::Waveform, Self::Parade, Self::Vectorscope, Self::Histogram, Self::CIEChromaticity,
+    pub const ALL: [ScopeType; 6] = [
+        Self::Waveform, Self::Parade, Self::Vectorscope, Self::Histogram, Self::CIEChromaticity, Self::AudioSpectrum,
     ];
 
-    /// Convert to ScopeMode for the existing render pipeline (CIE has no render mode).
+    /// Convert to ScopeMode for the existing render pipeline (CIE/AudioSpectrum have no video render mode).
     pub fn to_scope_mode(&self) -> Option<ScopeMode> {
         match self {
             Self::Waveform => Some(ScopeMode::Waveform),
@@ -1106,6 +1115,7 @@ impl ScopeType {
             Self::Vectorscope => Some(ScopeMode::Vectorscope),
             Self::Histogram => Some(ScopeMode::Histogram),
             Self::CIEChromaticity => None,
+            Self::AudioSpectrum => None,
         }
     }
 }
@@ -1587,6 +1597,9 @@ impl Default for AppState {
             stabilization_progress: std::collections::HashMap::new(),
             scene_detect_in_progress: std::collections::HashSet::new(),
             scene_detect_progress: std::collections::HashMap::new(),
+            spectrum_ring: std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            spectrum_bins: vec![-96.0f32; 256],
+            spectrum_sample_rate: 48000,
             tracking_mode: false,
             active_track_point: None,
             tracking_in_progress: std::collections::HashSet::new(),

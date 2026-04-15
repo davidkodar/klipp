@@ -1404,3 +1404,57 @@ mod tests {
         assert!(rings[0].radius < rings[1].radius, "Low range ring should have smaller radius");
     }
 }
+
+/// Render an audio spectrum (frequency-magnitude) scope from pre-computed
+/// log-frequency dBFS bins (`bins[i]` clamped to −96..0). Produces the same
+/// kind of amber-on-dark ColorImage as the video scopes so it drops into the
+/// existing texture pipeline with no special casing.
+///
+/// Each column maps to one output bin (nearest-neighbour); bars rise from
+/// the bottom with a gradient from the grid amber at the base to near-white
+/// at the peak. Horizontal guide lines mark −12, −24, −48 and −72 dBFS.
+pub(crate) fn render_audio_spectrum(bins: &[f32], rw: usize, rh: usize) -> egui::ColorImage {
+    use egui::Color32;
+    let w = rw.max(1);
+    let h = rh.max(1);
+    let mut pixels = vec![Color32::from_rgb(4, 4, 7); w * h];
+
+    // Helper to index into the pixels buffer.
+    let idx = |x: usize, y: usize| y * w + x;
+
+    // Background gridlines at fixed dB thresholds, faint amber.
+    let grid_color = Color32::from_rgba_unmultiplied(245, 180, 60, 32);
+    let label_db = [-12.0f32, -24.0, -48.0, -72.0];
+    for &db in &label_db {
+        let t = ((db + 96.0) / 96.0).clamp(0.0, 1.0);
+        let y = (h - 1).saturating_sub((t * (h - 1) as f32) as usize);
+        if y < h {
+            for x in 0..w {
+                pixels[idx(x, y)] = grid_color;
+            }
+        }
+    }
+
+    // Bars.
+    let num_bins = bins.len().max(1);
+    for x in 0..w {
+        let bin_i = (x * num_bins / w).min(num_bins - 1);
+        let db = bins[bin_i].clamp(-96.0, 0.0);
+        let t = (db + 96.0) / 96.0;
+        let bar_h = (t * h as f32) as usize;
+        if bar_h == 0 { continue; }
+        for y_from_bottom in 0..bar_h {
+            let y = h - 1 - y_from_bottom;
+            // Gradient: amber near the base → warm white at the peak. `k` is
+            // distance from the clip column base to the pixel, normalised by
+            // bar height.
+            let k = (y_from_bottom as f32 / bar_h as f32).clamp(0.0, 1.0);
+            let r = (180.0 * (1.0 - k) + 245.0 * k) as u8;
+            let g = (140.0 * (1.0 - k) + 220.0 * k) as u8;
+            let b = (40.0 * (1.0 - k) + 180.0 * k) as u8;
+            pixels[idx(x, y)] = Color32::from_rgb(r, g, b);
+        }
+    }
+
+    egui::ColorImage { size: [w, h], pixels }
+}

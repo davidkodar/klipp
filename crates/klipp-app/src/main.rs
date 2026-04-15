@@ -96,6 +96,12 @@ fn main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to create playback engine: {e}"))?
     };
 
+    // Grab the spectrum PCM handle BEFORE `engine` is moved into the engine
+    // thread. The mix thread is already running inside the engine struct at
+    // this point, so this is safe.
+    let spectrum_buf = engine.spectrum_buf();
+    let spectrum_sample_rate = engine.spectrum_sample_rate();
+
     let engine_handle = std::thread::Builder::new()
         .name("klipp-engine".into())
         .spawn(move || engine.run())?;
@@ -159,6 +165,8 @@ fn main() -> Result<()> {
                 seq_clone,
                 pool_clone,
                 skim_clone,
+                spectrum_buf,
+                spectrum_sample_rate,
             )))
         }),
     )

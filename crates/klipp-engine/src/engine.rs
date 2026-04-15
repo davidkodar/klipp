@@ -242,6 +242,8 @@ pub struct PlaybackEngine {
     mixer: std::sync::Arc<std::sync::Mutex<klipp_audio::AudioMixer>>,
     lufs_readings: Option<std::sync::Arc<std::sync::Mutex<klipp_audio::LufsReadings>>>,
     lufs_reset: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    spectrum_buf: Option<std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>>,
+    spectrum_sample_rate: u32,
     cpal_sample_rate: u32,
     /// Fingerprint of audio-relevant state. Prevents redundant audio teardown+rebuild
     /// when SequenceUpdated fires for non-audio changes (title edits, color changes).
@@ -350,6 +352,19 @@ pub struct PlaybackEngine {
 }
 
 impl PlaybackEngine {
+    /// Handle to the shared spectrum PCM ring fed by the mix thread — clone
+    /// and stash on the UI side so the audio-spectrum scope can drain samples
+    /// each frame without going through the event channel. Returns `None` if
+    /// the mix thread failed to initialise (extremely unusual).
+    pub fn spectrum_buf(&self) -> Option<std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>> {
+        self.spectrum_buf.clone()
+    }
+
+    /// Sample rate of the samples being pushed into `spectrum_buf`.
+    pub fn spectrum_sample_rate(&self) -> u32 {
+        self.spectrum_sample_rate
+    }
+
     pub fn new(
         cmd_rx: Receiver<AppCommand>,
         event_tx: Sender<AppEvent>,
@@ -392,6 +407,8 @@ impl PlaybackEngine {
         let (mix_thread, main_consumer) = MixThread::new(cpal_sample_rate, mixer.clone(), true);
         let lufs_readings = Some(mix_thread.lufs_readings());
         let lufs_reset = Some(mix_thread.lufs_reset_flag());
+        let spectrum_buf = Some(mix_thread.spectrum_buf());
+        let spectrum_sample_rate = mix_thread.spectrum_sample_rate();
         let preferred_device = crate::audio_output::PREFERRED_DEVICE.lock().ok().and_then(|g| g.clone());
         let audio_output = {
             let _t = klipp_core::startup_timer::LogTimer::new("engine: AudioOutput::new (cpal stream open)");
@@ -455,6 +472,8 @@ impl PlaybackEngine {
             mixer,
             lufs_readings,
             lufs_reset,
+            spectrum_buf,
+            spectrum_sample_rate,
             cpal_sample_rate,
             last_audio_fingerprint: 0,
             master_clock: Arc::new(MasterClock::new()),
@@ -1675,6 +1694,8 @@ impl PlaybackEngine {
                 MixThread::new(self.cpal_sample_rate, self.mixer.clone(), true);
             self.lufs_readings = Some(mt.lufs_readings());
             self.lufs_reset = Some(mt.lufs_reset_flag());
+            self.spectrum_buf = Some(mt.spectrum_buf());
+            self.spectrum_sample_rate = mt.spectrum_sample_rate();
             match AudioOutput::new(main_consumer, self.skim_consumer.clone()) {
                 Ok(output) => {
                     self.audio_output = Some(SendAudioOutput(output));

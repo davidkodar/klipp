@@ -217,6 +217,8 @@ impl KlippApp {
         sequence: Arc<RwLock<Sequence>>,
         media_pool_shared: Arc<RwLock<klipp_media::MediaPool>>,
         skim_consumer: klipp_engine::audio_output::SkimConsumer,
+        spectrum_buf: Option<Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>>,
+        spectrum_sample_rate: u32,
     ) -> Self {
         use klipp_core::startup_timer::LogTimer;
 
@@ -280,7 +282,14 @@ impl KlippApp {
             frame_buffer,
             sequence,
             media_pool_shared,
-            state: AppState::default(),
+            state: {
+                let mut s = AppState::default();
+                if let Some(buf) = spectrum_buf {
+                    s.spectrum_ring = buf;
+                }
+                s.spectrum_sample_rate = spectrum_sample_rate.max(1);
+                s
+            },
             toolbar: ToolbarPanel { logo_texture: None },
             viewer: ViewerPanel::default(),
             title_renderer: title_renderer_ui,
@@ -882,6 +891,47 @@ impl KlippApp {
                 | AppEvent::SceneDetectProgress { .. }
                 | AppEvent::SceneDetectComplete { .. }
                 | AppEvent::SceneDetectFailed { .. } => {}
+            }
+        }
+
+        // ── Audio spectrum: refresh FFT bins once per UI frame ──
+        //
+        // Runs after all events drain so the PCM ring has its latest samples.
+        // `try_lock` both on the ring (non-blocking vs. the mix thread) and
+        // on the computed bins so the UI never stalls behind the audio
+        // callback. When the ring is empty (silence / paused) the previous
+        // bins hold — giving a natural "freeze on pause" visual.
+        {
+            const FFT_SIZE: usize = 2048;
+            const NUM_BINS: usize = 256;
+            const SMOOTH: f32 = 0.25; // 0 = instant, 1 = frozen
+            // Scratch buffer — avoids allocating in hot path but keeps the
+            // spectrum module's signature ergonomic. Kept on the stack.
+            let mut new_bins = [0.0f32; NUM_BINS];
+            let have_samples = if let Ok(ring) = self.state.spectrum_ring.try_lock() {
+                if ring.len() >= 2 {
+                    klipp_audio::spectrum::compute_spectrum(
+                        &ring,
+                        self.state.spectrum_sample_rate,
+                        FFT_SIZE,
+                        NUM_BINS,
+                        &mut new_bins,
+                    );
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if have_samples {
+                // Ensure destination is sized correctly (bootstrap).
+                if self.state.spectrum_bins.len() != NUM_BINS {
+                    self.state.spectrum_bins = vec![-96.0f32; NUM_BINS];
+                }
+                for (old, new) in self.state.spectrum_bins.iter_mut().zip(new_bins.iter()) {
+                    *old = *old * (1.0 - SMOOTH) + *new * SMOOTH;
+                }
             }
         }
     }
@@ -14952,6 +15002,7 @@ impl eframe::App for KlippApp {
                 self.state.viewer_image_rect,
                 self.state.viewer_pointer_pos,
                 locked_data,
+                &self.state.spectrum_bins,
             );
         }
 

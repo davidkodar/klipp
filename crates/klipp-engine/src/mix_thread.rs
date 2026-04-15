@@ -3,6 +3,7 @@ use crossbeam_channel::{Receiver, Sender};
 use klipp_audio::{AudioMixer, LufsMeter, LufsReadings};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -31,6 +32,10 @@ pub struct MixThread {
     cmd_tx: Sender<MixCommand>,
     lufs_readings: Arc<Mutex<LufsReadings>>,
     lufs_reset: Arc<AtomicBool>,
+    /// Shared interleaved-stereo PCM ring feeding the UI spectrum analyser.
+    /// Capped to ~2 seconds of audio; older samples drop off the front.
+    spectrum_buf: Arc<Mutex<VecDeque<f32>>>,
+    spectrum_sample_rate: u32,
 }
 
 impl MixThread {
@@ -50,13 +55,15 @@ impl MixThread {
 
         let lufs_readings = Arc::new(Mutex::new(LufsReadings::default()));
         let lufs_reset = Arc::new(AtomicBool::new(false));
+        let spectrum_buf = Arc::new(Mutex::new(VecDeque::<f32>::new()));
         let lufs_readings_writer = lufs_readings.clone();
         let lufs_reset_reader = lufs_reset.clone();
+        let spectrum_writer = spectrum_buf.clone();
         let sr = sample_rate;
 
         let thread = std::thread::Builder::new()
             .name("klipp-mix".into())
-            .spawn(move || mix_loop(producer, cmd_rx, mixer, sr, lufs_readings_writer, lufs_reset_reader, tp_oversample))
+            .spawn(move || mix_loop(producer, cmd_rx, mixer, sr, lufs_readings_writer, lufs_reset_reader, spectrum_writer, tp_oversample))
             .expect("failed to spawn mix thread");
 
         (
@@ -65,6 +72,8 @@ impl MixThread {
                 cmd_tx,
                 lufs_readings,
                 lufs_reset,
+                spectrum_buf,
+                spectrum_sample_rate: sample_rate,
             },
             consumer,
         )
@@ -73,6 +82,17 @@ impl MixThread {
     /// Get a clone of the shared LUFS readings for the UI/engine to read.
     pub fn lufs_readings(&self) -> Arc<Mutex<LufsReadings>> {
         self.lufs_readings.clone()
+    }
+
+    /// Get a clone of the shared spectrum PCM ring for the UI FFT analyser.
+    pub fn spectrum_buf(&self) -> Arc<Mutex<VecDeque<f32>>> {
+        self.spectrum_buf.clone()
+    }
+
+    /// Sample rate the mix thread was started with — matches the data in
+    /// `spectrum_buf()`.
+    pub fn spectrum_sample_rate(&self) -> u32 {
+        self.spectrum_sample_rate
     }
 
     /// Get a clone of the reset flag so the UI can trigger a meter reset.
@@ -132,8 +152,12 @@ fn mix_loop(
     sample_rate: u32,
     lufs_readings: Arc<Mutex<LufsReadings>>,
     lufs_reset: Arc<AtomicBool>,
+    spectrum_buf: Arc<Mutex<VecDeque<f32>>>,
     tp_oversample: bool,
 ) {
+    // 2 seconds of interleaved-stereo audio is plenty for any realistic FFT
+    // window and leaves room for UI jitter. At 192 kHz that's ~1.5 MiB.
+    let spectrum_max_samples = (sample_rate as usize) * 2 * 2;
     debug!("Mix thread started");
 
     struct StagingEntry {
@@ -254,6 +278,15 @@ fn mix_loop(
             // Publish readings (try_lock to avoid blocking the mix thread)
             if let Ok(mut r) = lufs_readings.try_lock() {
                 *r = lufs_meter.readings();
+            }
+            // Feed the UI spectrum analyser. try_lock so the mix thread never
+            // blocks on UI contention — a dropped chunk just means a slightly
+            // older spectrum for one frame.
+            if let Ok(mut ring) = spectrum_buf.try_lock() {
+                ring.extend(mixed.iter().copied());
+                while ring.len() > spectrum_max_samples {
+                    ring.pop_front();
+                }
             }
         }
 

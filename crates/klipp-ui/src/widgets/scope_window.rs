@@ -94,6 +94,7 @@ pub fn show_scope_window(
     viewer_image_rect: Option<egui::Rect>,
     viewer_pointer_pos: Option<egui::Pos2>,
     locked_cursor_data: Option<crate::state::ScopeCursorData>,
+    spectrum_bins: &[f32],
 ) {
     if !state.open {
         return;
@@ -202,7 +203,7 @@ pub fn show_scope_window(
                                 ui.painter().rect_stroke(pane_rect, 0.0,
                                     egui::Stroke::new(0.5, egui::Color32::from_rgb(0x2a, 0x2a, 0x30)));
                                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
-                                draw_pane(&mut child, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor);
+                                draw_pane(&mut child, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins);
                             }
                         }
 
@@ -233,6 +234,7 @@ fn draw_pane(
     skin_tone_angle: f32,
     is_playing: bool,
     scope_cursor: Option<crate::state::ScopeCursorData>,
+    spectrum_bins: &[f32],
 ) {
     let pane_rect = ui.max_rect();
     let scope_type = state.panes[pane_idx].scope_type;
@@ -407,7 +409,7 @@ fn draw_pane(
         return;
     }
 
-    render_pane_scope(ui, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, content_rect, scope_cursor);
+    render_pane_scope(ui, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, content_rect, scope_cursor, spectrum_bins);
 }
 
 fn render_pane_scope(
@@ -420,11 +422,27 @@ fn render_pane_scope(
     is_playing: bool,
     content_rect: egui::Rect,
     scope_cursor: Option<crate::state::ScopeCursorData>,
+    spectrum_bins: &[f32],
 ) {
     let pane = &state.panes[pane_idx];
     let render_h: usize = 256; // Smaller for multi-pane to stay fast
 
-    let scope_image = {
+    // Audio-spectrum scope has no video-frame dependency — render it directly
+    // from the shared PCM-derived bins and short-circuit the fb lock/throttle.
+    // Bump generation every frame so the texture updates; throttle lightly so
+    // we don't re-upload on every repaint when audio is idle.
+    let scope_image = if pane.scope_type == ScopeType::AudioSpectrum {
+        let throttled = runtime.last_render[pane_idx]
+            .map_or(false, |t| t.elapsed().as_millis() < 33);
+        if throttled {
+            None
+        } else {
+            let render_w = 512usize;
+            let image = super::scopes::render_audio_spectrum(spectrum_bins, render_w, render_h);
+            let gen = runtime.frame_gens[pane_idx].wrapping_add(1);
+            Some((image, gen))
+        }
+    } else {
         let fb = frame_buffer.lock().unwrap();
         if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
             None
@@ -462,6 +480,9 @@ fn render_pane_scope(
                     ScopeType::CIEChromaticity => {
                         super::scopes::render_cie_chromaticity(src, w, h, step, render_w, render_h)
                     }
+                    ScopeType::AudioSpectrum => unreachable!(
+                        "AudioSpectrum is rendered before the frame-buffer match"
+                    ),
                 };
                 Some((image, gen))
             } else {
@@ -663,6 +684,11 @@ pub fn draw_scope_cursor_indicator(
                 draw_dot(painter, egui::pos2(px, py));
             }
         }
+        ScopeType::AudioSpectrum => {
+            // Audio scope has no colour-picker overlay — the cursor is a
+            // video-pixel sample and there is no video pixel under the
+            // spectrum. Intentionally do nothing.
+        }
     }
 }
 
@@ -677,6 +703,11 @@ fn draw_pane_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindo
         ScopeType::Histogram => draw_histogram_settings(ui, pane_idx, state),
         ScopeType::CIEChromaticity => {
             ui.label("No settings available.");
+        }
+        ScopeType::AudioSpectrum => {
+            ui.label("No settings available.");
+            ui.small("Frequency axis: 20 Hz … Nyquist, log-spaced.");
+            ui.small("Amplitude axis: −96 … 0 dBFS.");
         }
     }
 
