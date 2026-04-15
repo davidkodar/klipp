@@ -1,5 +1,5 @@
 use crate::prefs::Preferences;
-use klipp_core::{AppCommand, ProxyResolution};
+use klipp_core::{AppCommand, MarkerColor, ProxyResolution};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrefsTab {
@@ -800,6 +800,40 @@ impl PreferencesPanel {
             if ui.add(egui::DragValue::new(&mut v).range(5..=100).speed(1.0)).changed() {
                 prefs.editing.track_loss_threshold = v; *dirty = true;
             }
+        });
+
+        // ── SCENE DETECTION section ──
+        Self::section_header(ui, "SCENE DETECTION");
+
+        Self::setting_row_with_subtitle(ui, "Sensitivity",
+            "Higher = more sensitive, more false positives", |ui| {
+            let mut v = prefs.editing.scene_detect_sensitivity;
+            if ui.add(egui::Slider::new(&mut v, 0.1..=1.0).step_by(0.05).fixed_decimals(2)).changed() {
+                prefs.editing.scene_detect_sensitivity = v; *dirty = true;
+            }
+        });
+
+        Self::setting_row_with_subtitle(ui, "Minimum gap",
+            "Minimum seconds between detected cuts", |ui| {
+            let mut v = prefs.editing.scene_detect_min_gap_secs;
+            if ui.add(egui::Slider::new(&mut v, 0.1..=5.0).step_by(0.1).suffix(" s").fixed_decimals(1)).changed() {
+                prefs.editing.scene_detect_min_gap_secs = v; *dirty = true;
+            }
+        });
+
+        Self::setting_row_with_subtitle(ui, "Marker colour",
+            "Colour applied to markers from scene detection", |ui| {
+            let current = prefs.editing.scene_detect_marker_color;
+            egui::ComboBox::from_id_salt("scene_detect_marker_color")
+                .selected_text(current.label())
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    for &c in MarkerColor::all() {
+                        if ui.selectable_value(&mut prefs.editing.scene_detect_marker_color, c, c.label()).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
         });
 
         let _ = cmds; // suppress unused warning

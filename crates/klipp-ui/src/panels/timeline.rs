@@ -5039,6 +5039,35 @@ impl TimelinePanel {
                     ui.close_menu();
                 }
 
+                // Scene detection: only valid on Media clips whose source file
+                // exists. Suppressed for title/compound/sequence clips and for
+                // offline media.
+                let scene_detect_target = state.sequence().tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == clip_id)
+                    .and_then(|c| {
+                        if !matches!(c.kind, klipp_timeline::ClipKind::Media { .. }) {
+                            return None;
+                        }
+                        let mid = c.media_id()?;
+                        let item = state.media_pool.get(&mid)?;
+                        if item.path.exists() { Some(()) } else { None }
+                    });
+                if scene_detect_target.is_some() {
+                    if state.scene_detect_in_progress.contains(&clip_id) {
+                        let pct = (state.scene_detect_progress
+                            .get(&clip_id).copied().unwrap_or(0.0) * 100.0) as u32;
+                        ui.label(format!("Detecting scenes\u{2026} {}%", pct));
+                        if ui.small_button("Cancel").clicked() {
+                            cmds.push(AppCommand::CancelSceneDetect { clip_id });
+                            ui.close_menu();
+                        }
+                    } else if ui.button("Detect Scenes\u{2026}").clicked() {
+                        cmds.push(AppCommand::DetectScenes { clip_id });
+                        ui.close_menu();
+                    }
+                }
+
                 // Link/Unlink
                 let clip_info = state.sequence().tracks.iter()
                     .flat_map(|t| t.clips.iter())

@@ -7,6 +7,7 @@ mod light;
 pub mod nv12_gpu;
 mod opacity;
 pub mod rolling_shutter;
+pub mod scene_detect;
 pub mod stabilization;
 mod sharpen;
 pub mod transform;

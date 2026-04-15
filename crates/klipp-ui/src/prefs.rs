@@ -506,6 +506,16 @@ pub struct EditingPrefs {
     /// SAD threshold for tracking loss detection.
     #[serde(default = "default_track_threshold")]
     pub track_loss_threshold: u32,
+
+    /// Scene-detection sensitivity, 0.1..=1.0. Threshold = value * 0.4.
+    #[serde(default = "default_scene_sensitivity")]
+    pub scene_detect_sensitivity: f32,
+    /// Minimum seconds between detected scene cuts.
+    #[serde(default = "default_scene_min_gap")]
+    pub scene_detect_min_gap_secs: f32,
+    /// Colour applied to markers created by scene detection.
+    #[serde(default = "default_scene_marker_color")]
+    pub scene_detect_marker_color: klipp_core::MarkerColor,
 }
 
 fn default_undo_limit() -> usize {
@@ -525,6 +535,9 @@ fn default_backup_count() -> u32 { 5 }
 fn default_track_search_radius() -> u32 { 32 }
 fn default_track_patch_size() -> u32 { 6 }
 fn default_track_threshold() -> u32 { 25 }
+fn default_scene_sensitivity() -> f32 { 0.4 }
+fn default_scene_min_gap() -> f32 { 0.5 }
+fn default_scene_marker_color() -> klipp_core::MarkerColor { klipp_core::MarkerColor::Yellow }
 
 impl Default for EditingPrefs {
     fn default() -> Self {
@@ -549,6 +562,9 @@ impl Default for EditingPrefs {
             track_search_radius: default_track_search_radius(),
             track_patch_size: default_track_patch_size(),
             track_loss_threshold: default_track_threshold(),
+            scene_detect_sensitivity: default_scene_sensitivity(),
+            scene_detect_min_gap_secs: default_scene_min_gap(),
+            scene_detect_marker_color: default_scene_marker_color(),
         }
     }
 }

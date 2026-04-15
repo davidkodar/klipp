@@ -966,6 +966,10 @@ pub enum AppCommand {
     // Video stabilization
     AnalyzeStabilization { clip_id: ClipId },
     CancelStabilization { clip_id: ClipId },
+
+    // Scene (shot-boundary) detection
+    DetectScenes { clip_id: ClipId },
+    CancelSceneDetect { clip_id: ClipId },
     /// Re-run smoothing on existing stabilization_data with the current smoothing
     /// slider value. Cheap (microseconds) — no decode, just gaussian over the
     /// already-baked trajectory. Used for live slider updates.
@@ -1174,6 +1178,11 @@ pub enum AppEvent {
     StabilizationProgress { clip_id: ClipId, progress: f32 },
     StabilizationComplete { clip_id: ClipId },
     StabilizationFailed { clip_id: ClipId, error: String },
+
+    // Scene (shot-boundary) detection
+    SceneDetectProgress { clip_id: ClipId, progress: f32 },
+    SceneDetectComplete { clip_id: ClipId, cut_times: Vec<f64> },
+    SceneDetectFailed { clip_id: ClipId, error: String },
 
     // Point tracking
     TrackingProgress { clip_id: ClipId, progress: f32 },

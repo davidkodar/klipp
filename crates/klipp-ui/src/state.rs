@@ -445,6 +445,10 @@ pub struct AppState {
     pub stabilization_in_progress: std::collections::HashSet<klipp_core::ClipId>,
     pub stabilization_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
 
+    // Scene (shot-boundary) detection state
+    pub scene_detect_in_progress: std::collections::HashSet<klipp_core::ClipId>,
+    pub scene_detect_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
+
     // Point tracking state
     /// Whether the viewer is in tracking placement mode (click to place tracker).
     pub tracking_mode: bool,
@@ -1581,6 +1585,8 @@ impl Default for AppState {
             skim_last_audio_dispatch: std::time::Instant::now(),
             stabilization_in_progress: std::collections::HashSet::new(),
             stabilization_progress: std::collections::HashMap::new(),
+            scene_detect_in_progress: std::collections::HashSet::new(),
+            scene_detect_progress: std::collections::HashMap::new(),
             tracking_mode: false,
             active_track_point: None,
             tracking_in_progress: std::collections::HashSet::new(),

@@ -878,7 +878,10 @@ impl KlippApp {
                 | AppEvent::StabilizationFailed { .. }
                 | AppEvent::TrackingProgress { .. }
                 | AppEvent::TrackingComplete { .. }
-                | AppEvent::TrackingFailed { .. } => {}
+                | AppEvent::TrackingFailed { .. }
+                | AppEvent::SceneDetectProgress { .. }
+                | AppEvent::SceneDetectComplete { .. }
+                | AppEvent::SceneDetectFailed { .. } => {}
             }
         }
     }
@@ -9677,6 +9680,85 @@ impl KlippApp {
                 self.state.stabilization_progress.remove(clip_id);
                 true
             }
+            AppCommand::DetectScenes { clip_id } => {
+                // Pipelined decode + histogram analysis — same shape as
+                // AnalyzeStabilization, but calling scene_detect::detect_scenes
+                // on the consumer side and emitting cut times.
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let clip_info = seq.tracks.iter().flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == *clip_id)
+                    .and_then(|c| {
+                        let mid = c.media_id()?;
+                        let item = self.state.media_pool.get(&mid)?;
+                        let fps = item.fps.as_f64();
+                        let dur_secs = item.duration.to_secs_f64();
+                        let frame_count = (dur_secs * fps).round() as usize;
+                        let source_in_secs = c.source_in.to_secs_f64();
+                        let source_out_secs = c.source_out.to_secs_f64();
+                        Some((item.path.clone(), fps, frame_count, source_in_secs, source_out_secs))
+                    });
+
+                if let Some((path, fps, frame_count, source_in_secs, source_out_secs)) = clip_info {
+                    let clip_id = *clip_id;
+                    self.state.scene_detect_in_progress.insert(clip_id);
+                    self.state.scene_detect_progress.insert(clip_id, 0.0);
+                    let event_tx = self.proxy_event_tx.clone();
+                    let sensitivity = self.prefs.editing.scene_detect_sensitivity;
+                    let min_gap = self.prefs.editing.scene_detect_min_gap_secs;
+
+                    std::thread::spawn(move || {
+                        let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, u32, u32)>(3);
+                        let path_for_producer = path.clone();
+                        let event_tx_open = event_tx.clone();
+                        let producer = std::thread::Builder::new()
+                            .name("klipp-scene-detect".to_string())
+                            .spawn(move || {
+                                let mut walker = match klipp_engine::SequentialFrameDecoder::open(&path_for_producer, 240) {
+                                    Ok(w) => w,
+                                    Err(e) => {
+                                        let _ = event_tx_open.send(AppEvent::SceneDetectFailed { clip_id, error: format!("decoder open: {e}") });
+                                        return;
+                                    }
+                                };
+                                while let Some(f) = walker.next_frame() {
+                                    if frame_tx.send(f).is_err() {
+                                        break;
+                                    }
+                                }
+                            });
+                        let producer = match producer {
+                            Ok(h) => h,
+                            Err(e) => {
+                                let _ = event_tx.send(AppEvent::SceneDetectFailed { clip_id, error: format!("spawn producer: {e}") });
+                                return;
+                            }
+                        };
+
+                        let cuts = klipp_effects::scene_detect::detect_scenes(
+                            fps,
+                            sensitivity,
+                            min_gap,
+                            source_in_secs,
+                            source_out_secs,
+                            frame_count,
+                            &mut || frame_rx.recv().ok(),
+                            &|p| event_tx.send(AppEvent::SceneDetectProgress { clip_id, progress: p }).is_ok(),
+                        );
+                        drop(frame_rx);
+                        let _ = producer.join();
+                        let _ = event_tx.send(AppEvent::SceneDetectComplete { clip_id, cut_times: cuts });
+                    });
+                }
+                true
+            }
+            AppCommand::CancelSceneDetect { clip_id } => {
+                // The progress callback returning false stops the thread.
+                // Just remove from in_progress — the thread will exit on next
+                // frame when it can't send to the closed channel.
+                self.state.scene_detect_in_progress.remove(clip_id);
+                self.state.scene_detect_progress.remove(clip_id);
+                true
+            }
             AppCommand::ResmoothStabilization { clip_id } => {
                 // Re-run gaussian smoothing on the existing baked trajectory using
                 // the current smoothing slider value. Microseconds — safe to call
@@ -15250,6 +15332,41 @@ impl KlippApp {
                     self.state.stabilization_progress.remove(&clip_id);
                     tracing::warn!("Stabilization failed for {:?}: {}", clip_id, error);
                     self.state.toast.show(format!("Stabilization failed: {error}"));
+                }
+                AppEvent::SceneDetectProgress { clip_id, progress } => {
+                    self.state.scene_detect_progress.insert(clip_id, progress);
+                }
+                AppEvent::SceneDetectComplete { clip_id, cut_times } => {
+                    self.state.scene_detect_in_progress.remove(&clip_id);
+                    self.state.scene_detect_progress.remove(&clip_id);
+                    let color = self.prefs.editing.scene_detect_marker_color;
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(clip_id) {
+                            for (i, &cut_secs) in cut_times.iter().enumerate() {
+                                clip.clip_markers.push(klipp_timeline::ClipMarker {
+                                    time_secs: cut_secs,
+                                    name: format!("Scene {}", i + 1),
+                                    color,
+                                });
+                            }
+                            clip.clip_markers.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let count = cut_times.len();
+                    self.state.toast.show(format!(
+                        "Detected {} scene cut{}.",
+                        count,
+                        if count == 1 { "" } else { "s" }
+                    ));
+                    self.state.dirty = true;
+                }
+                AppEvent::SceneDetectFailed { clip_id, error } => {
+                    self.state.scene_detect_in_progress.remove(&clip_id);
+                    self.state.scene_detect_progress.remove(&clip_id);
+                    tracing::warn!("Scene detection failed for {:?}: {}", clip_id, error);
+                    self.state.toast.show(format!("Scene detection failed: {error}"));
                 }
                 AppEvent::TrackingProgress { clip_id, progress } => {
                     self.state.tracking_progress.insert(clip_id, progress);
