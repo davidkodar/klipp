@@ -261,7 +261,8 @@ impl ToolbarPanel {
                             EditTool::Select => Tool::Select,
                             EditTool::Blade => Tool::Blade,
                             EditTool::Range => Tool::Range,
-                            EditTool::Trim | EditTool::Zoom => Tool::Select,
+                            EditTool::Trim => Tool::Trim,
+                            EditTool::Zoom => Tool::Select,
                         };
                         cmds.push(AppCommand::SetActiveTool(engine_tool));
                     }

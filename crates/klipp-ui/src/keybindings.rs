@@ -124,6 +124,7 @@ impl KeyBindings {
         bind(&mut b, "select_tool", vec![KeyCombo::new("V")]);
         bind(&mut b, "blade_tool", vec![KeyCombo::new("B")]);
         bind(&mut b, "range_tool", vec![KeyCombo::new("R")]);
+        bind(&mut b, "trim_tool", vec![KeyCombo::new("T")]);
 
         // Timeline editing
         bind(&mut b, "insert_edit", vec![KeyCombo::new(","), KeyCombo::new("F10")]);
@@ -303,6 +304,7 @@ impl KeyBindings {
             "select_tool" => "Select Tool",
             "blade_tool" => "Blade Tool",
             "range_tool" => "Range Tool",
+            "trim_tool" => "Trim Tool",
             "insert_edit" => "Insert Edit",
             "overwrite_edit" => "Overwrite Edit",
             "lift_edit" => "Lift Edit",
@@ -374,7 +376,7 @@ impl KeyBindings {
         &[
             ("File", &["save_project", "save_project_as", "open_project", "import_media", "export", "preferences"]),
             ("Edit", &["undo", "redo", "cut_clip", "copy_clip", "paste_clip", "copy_attributes", "paste_attributes", "duplicate_clip", "select_all", "deselect_all", "delete_clip", "lift_clip", "split_at_playhead", "group_clips", "ungroup_clips"]),
-            ("Tools", &["select_tool", "blade_tool", "range_tool"]),
+            ("Tools", &["select_tool", "blade_tool", "range_tool", "trim_tool"]),
             ("Timeline", &["insert_edit", "overwrite_edit", "lift_edit", "extract_edit", "toggle_edit_mode", "ripple_trim_head", "ripple_trim_tail"]),
             ("Navigation", &["next_edit_point", "prev_edit_point", "set_in_point", "set_out_point", "clear_in_point", "clear_out_point", "clear_in_out", "set_range_to_clip"]),
             ("Transport", &["play_pause", "step_forward", "step_backward", "go_to_start", "go_to_end", "shuttle_reverse", "shuttle_pause", "shuttle_forward", "toggle_loop"]),

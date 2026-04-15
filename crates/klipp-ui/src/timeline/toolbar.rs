@@ -14,7 +14,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
         let tool_defs: &[(klipp_core::Tool, &str, &str, fn(&egui::Painter, egui::Rect, egui::Color32))] = &[
             (klipp_core::Tool::Select, "Select Tool", "V", draw_tl_select_icon),
             (klipp_core::Tool::Blade, "Blade Tool", "B", draw_tl_blade_icon),
-            (klipp_core::Tool::Select, "Trim Tool", "T", draw_tl_trim_icon),
+            (klipp_core::Tool::Trim, "Trim Tool", "T", draw_tl_trim_icon),
             (klipp_core::Tool::Range, "Range Tool", "R", draw_tl_range_icon),
         ];
         for (tool, tip, key, draw_fn) in tool_defs {

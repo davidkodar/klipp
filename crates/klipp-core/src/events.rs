@@ -1017,6 +1017,10 @@ pub enum Tool {
     Select,
     Blade,
     Range,
+    /// Trim tool — modifier-free access to Slip (clip body) and Roll
+    /// (junction). Shift+drag on clip body triggers Slide. Alt/Alt+Shift
+    /// modifiers continue to work in Tool::Select for power-user access.
+    Trim,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]

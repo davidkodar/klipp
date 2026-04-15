@@ -4483,9 +4483,12 @@ impl TimelinePanel {
                         }
                     }
                 }
-                // Check for roll trim junction before regular trim
+                // Check for roll trim junction before regular trim (Select or Trim tool)
                 let mut started_roll_trim = false;
-                if !started_fade_drag && state.active_tool == Tool::Select && clips.len() >= 2 {
+                if !started_fade_drag
+                    && (state.active_tool == Tool::Select || state.active_tool == Tool::Trim)
+                    && clips.len() >= 2
+                {
                     let roll_threshold = 4.0_f32;
                     for i in 0..clips.len() - 1 {
                         if clips[i].kind.is_gap() || clips[i + 1].kind.is_gap() { continue; }
@@ -4553,12 +4556,21 @@ impl TimelinePanel {
                 }
                 // Second: check if pointer is inside a clip body (drag/move or slip/slide)
                 else if let Some((_cr, hit_clip)) = self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
-                    if state.active_tool == Tool::Select {
+                    if state.active_tool == Tool::Select || state.active_tool == Tool::Trim {
                         let alt_held = ui.input(|i| i.modifiers.alt);
                         let shift_held = ui.input(|i| i.modifiers.shift);
+                        let is_select = state.active_tool == Tool::Select;
+                        let is_trim = state.active_tool == Tool::Trim;
+                        // Gesture priority (modifier-aware):
+                        //   Select + Alt+Shift  OR  Trim + Shift  -> SLIDE
+                        //   Select + Alt         OR  Trim (no mod) -> SLIP
+                        //   Select (no mod)                        -> MOVE (Trim has no MOVE — clip body = SLIP)
+                        let do_slide = (is_select && alt_held && shift_held) || (is_trim && shift_held);
+                        let do_slip  = (is_select && alt_held && !shift_held) || (is_trim && !shift_held);
+                        let do_move  = is_select && !alt_held && !shift_held;
 
-                        if alt_held && shift_held {
-                            // ALT+SHIFT+drag on clip body = SLIDE
+                        if do_slide {
+                            // SLIDE gesture
                             tracing::debug!("drag_started SLIDE: clip={:?}", hit_clip.id);
                             // Find left and right neighbor clips on the same track
                             let clip_idx = clips.iter().position(|c| c.id == hit_clip.id);
@@ -4600,8 +4612,8 @@ impl TimelinePanel {
                                 linked_original_in: linked_orig_in,
                                 linked_original_out: linked_orig_out,
                             });
-                        } else if alt_held {
-                            // ALT+drag on clip body = SLIP
+                        } else if do_slip {
+                            // SLIP gesture
                             tracing::debug!("drag_started SLIP: clip={:?}", hit_clip.id);
                             let media_dur = hit_clip.media_id().and_then(|mid| {
                                 state.media_pool.get(&mid).map(|m| m.duration)
@@ -4627,8 +4639,8 @@ impl TimelinePanel {
                                 linked_original_source_in: linked_src_in,
                                 linked_original_source_out: linked_src_out,
                             });
-                        } else {
-                            // Normal drag/move
+                        } else if do_move {
+                            // Normal drag/move (Select with no modifier — never in Trim)
                             tracing::debug!("drag_started MOVE: clip={:?}", hit_clip.id);
                             let linked_id = hit_clip.linked_clip_id;
                             let linked_orig = linked_id.and_then(|lid| {
@@ -6979,8 +6991,12 @@ impl TimelinePanel {
         track_kind: klipp_timeline::TrackKind,
         _interactive: bool,
     ) {
-        // Trim handle hover highlight — edge-first detection + roll trim junction detection
-        if state.active_tool == Tool::Select && self.trimming_clip.is_none() && self.roll_trimming.is_none() && self.dragging_clip.is_none() {
+        // Trim handle hover highlight — edge-first detection + roll trim junction detection.
+        // Tool::Trim also uses this block so junction/edge cursors + highlights appear there too;
+        // it adds an extra branch below for modifier-free Slip on clip body.
+        if (state.active_tool == Tool::Select || state.active_tool == Tool::Trim)
+            && self.trimming_clip.is_none() && self.roll_trimming.is_none() && self.dragging_clip.is_none()
+        {
             if let Some(pos) = pointer_pos {
                 // First: check for roll trim junction (boundary between two adjacent clips)
                 let mut found_roll_junction = false;
@@ -7098,6 +7114,12 @@ impl TimelinePanel {
                                 egui::FontId::proportional(8.0),
                                 egui::Color32::from_rgba_premultiplied(255, 255, 255, 180),
                             );
+                        }
+                    } else if state.active_tool == Tool::Trim {
+                        // Tool::Trim: no junction, no edge — if pointer is over a clip body,
+                        // show horizontal resize cursor as a slip-available indicator.
+                        if self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos).is_some() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                         }
                     }
                 }

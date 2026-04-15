@@ -10577,6 +10577,7 @@ impl KlippApp {
                     Tool::Select => crate::layout_state::EditTool::Select,
                     Tool::Blade => crate::layout_state::EditTool::Blade,
                     Tool::Range => crate::layout_state::EditTool::Range,
+                    Tool::Trim => crate::layout_state::EditTool::Trim,
                 };
                 // Clear range drag state on tool change
                 self.state.range_drag = None;
@@ -12915,6 +12916,11 @@ impl KlippApp {
                 } else {
                     cmds.push(AppCommand::SetActiveTool(Tool::Range));
                 }
+            }
+            // T — Trim tool (bare T; Ctrl+T handled elsewhere for Create Title)
+            if !i.modifiers.ctrl && i.key_pressed(egui::Key::T) {
+                tracing::debug!("T key pressed -> Trim tool");
+                cmds.push(AppCommand::SetActiveTool(Tool::Trim));
             }
             // X — Set range to clip at playhead / Alt+X — Clear range
             if i.key_pressed(egui::Key::X) && !i.modifiers.ctrl {
