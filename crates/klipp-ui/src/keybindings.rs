@@ -166,6 +166,9 @@ impl KeyBindings {
         bind(&mut b, "toggle_perf_overlay", vec![KeyCombo::new("P")]);
         bind(&mut b, "toggle_matte_preview", vec![KeyCombo::alt("M")]);
 
+        // Window panels
+        bind(&mut b, "toggle_project_notes", vec![KeyCombo::ctrl_shift("N")]);
+
         // Timeline display
         bind(&mut b, "toggle_snap", vec![KeyCombo::new("N")]);
         bind(&mut b, "toggle_skimming", vec![KeyCombo::new("S")]);
@@ -337,6 +340,7 @@ impl KeyBindings {
             "toggle_false_color" => "Toggle False Color",
             "toggle_perf_overlay" => "Toggle Perf Overlay",
             "toggle_matte_preview" => "Toggle Matte Preview",
+            "toggle_project_notes" => "Toggle Project Notes",
             "toggle_snap" => "Toggle Snap",
             "toggle_skimming" => "Toggle Skimming",
             "fit_to_window" => "Fit to Window",
@@ -381,6 +385,7 @@ impl KeyBindings {
             ("Navigation", &["next_edit_point", "prev_edit_point", "set_in_point", "set_out_point", "clear_in_point", "clear_out_point", "clear_in_out", "set_range_to_clip"]),
             ("Transport", &["play_pause", "step_forward", "step_backward", "go_to_start", "go_to_end", "shuttle_reverse", "shuttle_pause", "shuttle_forward", "toggle_loop"]),
             ("Viewer", &["toggle_fullscreen", "toggle_before_after", "toggle_color_panel", "toggle_scopes", "toggle_zebra", "toggle_false_color", "toggle_perf_overlay", "toggle_matte_preview"]),
+            ("Window", &["toggle_project_notes"]),
             ("Display", &["toggle_snap", "toggle_skimming", "fit_to_window", "zoom_to_selection", "zoom_in", "zoom_out"]),
             ("Markers", &["add_marker", "add_clip_marker", "toggle_keyframe", "toggle_keyframe_editor", "prev_keyframe", "next_keyframe"]),
             ("Multicam", &["multicam_angle_1", "multicam_angle_2", "multicam_angle_3",

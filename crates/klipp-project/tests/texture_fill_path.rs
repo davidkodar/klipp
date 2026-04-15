@@ -55,10 +55,10 @@ fn texture_fill_path_round_trips_through_save_load() {
     let color = ColorSettings::default();
 
     // Save
-    save_project_with_color(&project_dir, &[seq], &pool, &color, None, None).unwrap();
+    save_project_with_color(&project_dir, &[seq], &pool, &color, None, None, "").unwrap();
 
     // Load back
-    let (sequences, _pool, _color, _active, _created) = load_project(&project_dir).unwrap();
+    let (sequences, _pool, _color, _active, _created, _notes) = load_project(&project_dir).unwrap();
     let loaded_seq = &sequences[0];
     let text_track = loaded_seq.tracks.iter()
         .find(|t| matches!(t.kind, TrackKind::Text))
@@ -104,13 +104,13 @@ fn texture_fill_path_survives_project_directory_move() {
 
     let seq = make_sequence_with_title(texture_orig.to_str().unwrap());
     let pool = MediaPool::new();
-    save_project_with_color(&original_dir, &[seq], &pool, &ColorSettings::default(), None, None).unwrap();
+    save_project_with_color(&original_dir, &[seq], &pool, &ColorSettings::default(), None, None, "").unwrap();
 
     // Move the entire project directory (texture travels inside it)
     std::fs::rename(&original_dir, &moved_dir).unwrap();
 
     // Load from the new location
-    let (sequences, _pool, _color, _active, _created) = load_project(&moved_dir).unwrap();
+    let (sequences, _pool, _color, _active, _created, _notes) = load_project(&moved_dir).unwrap();
     let text_track = sequences[0].tracks.iter()
         .find(|t| matches!(t.kind, TrackKind::Text))
         .expect("text track should exist");

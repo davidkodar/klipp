@@ -22,6 +22,9 @@ pub struct ProjectJson {
     /// Which sequence was active when the project was last saved.
     #[serde(default)]
     pub active_sequence_id: Option<String>,
+    /// Free-form project notes (shot list, delivery specs, etc.).
+    #[serde(default)]
+    pub notes: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

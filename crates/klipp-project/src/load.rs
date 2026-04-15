@@ -58,8 +58,9 @@ fn migrate_graph(graph: &mut NodeGraph) {
     }
 }
 
-/// Result of loading a project: sequences, media pool, color settings, active sequence ID, created_at.
-pub type LoadResult = (Vec<Sequence>, MediaPool, crate::save::ColorSettings, Option<String>, Option<String>);
+/// Result of loading a project: sequences, media pool, color settings,
+/// active sequence ID, created_at, free-form project notes.
+pub type LoadResult = (Vec<Sequence>, MediaPool, crate::save::ColorSettings, Option<String>, Option<String>, String);
 
 pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     let project_path = dir.join("project.json");
@@ -216,7 +217,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     };
 
     info!("Project loaded from {:?} ({} sequence(s))", dir, sequences.len());
-    Ok((sequences, media_pool, color_settings, project.active_sequence_id, project.created_at))
+    Ok((sequences, media_pool, color_settings, project.active_sequence_id, project.created_at, project.notes))
 }
 
 

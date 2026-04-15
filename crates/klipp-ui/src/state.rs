@@ -211,6 +211,12 @@ pub struct AppState {
     pub media_pool: MediaPool,
     pub project_path: Option<PathBuf>,
     pub created_at: Option<String>,
+    /// Free-form project notes — shot list, delivery specs, anything
+    /// the editor wants to keep alongside the project. Persisted to
+    /// project.json and edited via the Project Notes window.
+    pub project_notes: String,
+    /// Whether the Project Notes window is open.
+    pub show_project_notes: bool,
     pub dirty: bool,
     pub history: CommandHistory,
 
@@ -1689,6 +1695,8 @@ impl Default for AppState {
             confirm_remove_track: None,
             show_markers_panel: false,
             show_subtitle_editor: false,
+            show_project_notes: false,
+            project_notes: String::new(),
             subtitle_editor: SubtitleEditorState::default(),
             consolidate_progress: None,
             consolidate_dest_path: String::new(),

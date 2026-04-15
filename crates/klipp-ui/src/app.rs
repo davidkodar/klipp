@@ -10905,6 +10905,7 @@ impl KlippApp {
         self.state.active_sequence_idx = 0;
         self.state.media_pool = klipp_media::MediaPool::new();
         self.state.project_path = None;
+        self.state.project_notes = String::new();
         self.state.dirty = false;
 
         // 3. Clear undo/redo history — entries reference clip IDs that no
@@ -12063,7 +12064,7 @@ impl KlippApp {
             auto_generate_skim: self.state.project_auto_skim,
         };
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
-        match klipp_project::save_project_with_color_and_backups(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), self.prefs.editing.backup_count) {
+        match klipp_project::save_project_with_color_and_backups(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count) {
             Ok(()) => {
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
@@ -12129,7 +12130,7 @@ impl KlippApp {
 
     fn do_open_project_inner(&mut self, path: &std::path::Path) {
         match klipp_project::load_project(path) {
-            Ok((sequences, media_pool, color_settings, active_id, created_at)) => {
+            Ok((sequences, media_pool, color_settings, active_id, created_at, notes)) => {
                 self.state.fps = sequences.first().map(|s| s.fps).unwrap_or(klipp_core::Fps { num: 24, den: 1 });
                 let active_idx = active_id.as_deref()
                     .and_then(|id| sequences.iter().position(|s| s.id.to_string() == id))
@@ -12137,6 +12138,7 @@ impl KlippApp {
                 self.state.sequences = sequences;
                 self.state.active_sequence_idx = active_idx;
                 self.state.created_at = created_at;
+                self.state.project_notes = notes;
                 self.state.media_pool = media_pool;
 
                 // Fix media resolutions for rotated videos (phone portrait clips)
@@ -13312,6 +13314,10 @@ impl KlippApp {
             if i.key_pressed(egui::Key::T) && i.modifiers.ctrl && i.modifiers.shift && !i.modifiers.alt {
                 self.state.show_subtitle_editor = !self.state.show_subtitle_editor;
             }
+            // Ctrl+Shift+N — Toggle Project Notes panel
+            if i.key_pressed(egui::Key::N) && i.modifiers.ctrl && i.modifiers.shift && !i.modifiers.alt {
+                self.state.show_project_notes = !self.state.show_project_notes;
+            }
             // Alt+Left — Navigate to previous keyframe
             if i.modifiers.alt && !i.modifiers.ctrl && i.key_pressed(egui::Key::ArrowLeft) {
                 if let Some(clip_id) = self.state.selected_clip {
@@ -13973,7 +13979,7 @@ impl eframe::App for KlippApp {
                     auto_generate_skim: self.state.project_auto_skim,
                 };
                 let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
-                match klipp_project::save_project_with_color(&autosave_path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref()) {
+                match klipp_project::save_project_with_color(&autosave_path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes) {
                     Ok(()) => {
                         tracing::info!("Auto-saved to {:?}", autosave_path);
                         self.state.toast.show("Auto-saved");
@@ -14150,6 +14156,21 @@ impl eframe::App for KlippApp {
         if self.state.show_subtitle_editor {
             let cmds = crate::panels::subtitle_editor::show(ctx, &mut self.state);
             all_cmds.extend(cmds);
+        }
+
+        // Project Notes panel
+        if self.state.show_project_notes {
+            // Borrow split: take the open flag out of state so the panel
+            // can mutate state.project_notes + state.dirty without the
+            // borrow checker tripping over the &mut bool.
+            let mut open = self.state.show_project_notes;
+            crate::panels::project_notes::show_project_notes(
+                ctx,
+                &mut self.state,
+                &self.theme,
+                &mut open,
+            );
+            self.state.show_project_notes = open;
         }
 
         // Command palette (Ctrl+K)

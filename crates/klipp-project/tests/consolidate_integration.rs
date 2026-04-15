@@ -118,6 +118,7 @@ fn consolidate_round_trip() {
         &ColorSettings::default(),
         None,
         None,
+        "",
     )
     .unwrap();
 
@@ -144,7 +145,7 @@ fn consolidate_round_trip() {
     assert!(dest.join("media/clip_b.mp4").exists());
 
     // Consolidated project is loadable and its media items all resolve.
-    let (_seqs, loaded_pool, _color, _active, _created) = load_project(&dest).unwrap();
+    let (_seqs, loaded_pool, _color, _active, _created, _notes) = load_project(&dest).unwrap();
     for item in loaded_pool.all() {
         assert!(item.path.exists(), "media {:?} should exist", item.path);
         assert!(!item.offline);
@@ -167,6 +168,7 @@ fn consolidate_collision_rename() {
         &ColorSettings::default(),
         None,
         None,
+        "",
     )
     .unwrap();
 
@@ -213,6 +215,7 @@ fn consolidate_offline_skipped() {
         &ColorSettings::default(),
         None,
         None,
+        "",
     )
     .unwrap();
 
@@ -286,6 +289,7 @@ fn consolidate_rollback_when_source_file_missing_mid_copy() {
         &ColorSettings::default(),
         None,
         None,
+        "",
     )
     .unwrap();
 

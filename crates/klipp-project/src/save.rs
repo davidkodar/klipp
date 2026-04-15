@@ -47,7 +47,7 @@ pub fn save_project(
     sequences: &[Sequence],
     media_pool: &MediaPool,
 ) -> Result<(), String> {
-    save_project_with_color(dir, sequences, media_pool, &ColorSettings::default(), None, None)
+    save_project_with_color(dir, sequences, media_pool, &ColorSettings::default(), None, None, "")
 }
 
 pub fn save_project_with_color(
@@ -57,8 +57,9 @@ pub fn save_project_with_color(
     color: &ColorSettings,
     active_sequence_id: Option<&str>,
     created_at: Option<&str>,
+    notes: &str,
 ) -> Result<(), String> {
-    save_project_with_color_and_backups(dir, sequences, media_pool, color, active_sequence_id, created_at, 5)
+    save_project_with_color_and_backups(dir, sequences, media_pool, color, active_sequence_id, created_at, notes, 5)
 }
 
 /// Save with configurable backup count.
@@ -69,6 +70,7 @@ pub fn save_project_with_color_and_backups(
     color: &ColorSettings,
     active_sequence_id: Option<&str>,
     created_at: Option<&str>,
+    notes: &str,
     backup_count: u32,
 ) -> Result<(), String> {
     // Create directory structure
@@ -87,6 +89,7 @@ pub fn save_project_with_color_and_backups(
         platform: Some(format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)),
         sequences: sequences.iter().map(|s| sequence_to_json(s, color, dir)).collect(),
         active_sequence_id: active_sequence_id.map(|s| s.to_string()),
+        notes: notes.to_string(),
     };
 
     let project_json = serde_json::to_string_pretty(&project)

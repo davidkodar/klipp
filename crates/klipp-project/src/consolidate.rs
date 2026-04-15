@@ -436,6 +436,7 @@ pub fn consolidate_project(
         &new_color,
         None,
         None,
+        "",
         5,
     ) {
         let _ = std::fs::remove_dir_all(&options.dest_dir);
