@@ -3498,11 +3498,36 @@ impl KlippApp {
                                     &mut self.state.sequences[self.state.active_sequence_idx], *clip_id, new_timeline_in);
                                 self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::Magnetic(result.command) });
                             } else {
-                                // Non-magnetic: adjust clip in-place
-                                let clip = &mut self.state.sequences[self.state.active_sequence_idx].tracks[track_idx].clips[clip_idx];
-                                let delta = new_timeline_in - clip.timeline_in;
-                                clip.source_in += delta;
-                                clip.timeline_in = new_timeline_in;
+                                // Legacy track: route through Track::ripple_trim_left so downstream
+                                // clips shift correctly and capture their pre-shift positions for undo.
+                                let seq_idx = self.state.active_sequence_idx;
+                                let track = &mut self.state.sequences[seq_idx].tracks[track_idx];
+                                let old_source_in = track.clips[clip_idx].source_in;
+                                let old_source_out = track.clips[clip_idx].source_out;
+                                let old_timeline_in = track.clips[clip_idx].timeline_in;
+                                let old_timeline_out = track.clips[clip_idx].timeline_out;
+                                let delta = new_timeline_in - old_timeline_in;
+                                let new_source_in = old_source_in + delta;
+                                let shifted: Vec<_> = track.clips.iter()
+                                    .skip(clip_idx + 1)
+                                    .map(|c| (c.id, c.timeline_in, c.timeline_out))
+                                    .collect();
+                                track.ripple_trim_left(*clip_id, new_source_in, new_timeline_in);
+                                self.state.history.push(HistoryEntry {
+                                    sequence_idx: seq_idx,
+                                    command: EditCommand::LegacyRippleTrimClip {
+                                        clip_id: *clip_id,
+                                        old_source_in,
+                                        old_source_out,
+                                        old_timeline_in,
+                                        old_timeline_out,
+                                        new_source_in,
+                                        new_source_out: old_source_out,
+                                        new_timeline_in,
+                                        new_timeline_out: old_timeline_out,
+                                        shifted_clips: shifted,
+                                    },
+                                });
                             }
                             self.state.dirty = true;
                             self.sync_sequence_to_engine();
@@ -3525,16 +3550,51 @@ impl KlippApp {
                                     &mut self.state.sequences[self.state.active_sequence_idx], *clip_id, new_timeline_out);
                                 self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::Magnetic(result.command) });
                             } else {
-                                // Non-magnetic: adjust clip in-place
-                                let clip = &mut self.state.sequences[self.state.active_sequence_idx].tracks[track_idx].clips[clip_idx];
-                                let delta = new_timeline_out - clip.timeline_out;
-                                clip.source_out += delta;
-                                clip.timeline_out = new_timeline_out;
+                                // Legacy track: route through Track::ripple_trim_right so downstream
+                                // clips shift correctly and capture their pre-shift positions for undo.
+                                let seq_idx = self.state.active_sequence_idx;
+                                let track = &mut self.state.sequences[seq_idx].tracks[track_idx];
+                                let old_source_in = track.clips[clip_idx].source_in;
+                                let old_source_out = track.clips[clip_idx].source_out;
+                                let old_timeline_in = track.clips[clip_idx].timeline_in;
+                                let old_timeline_out = track.clips[clip_idx].timeline_out;
+                                let delta = new_timeline_out - old_timeline_out;
+                                let new_source_out = old_source_out + delta;
+                                let shifted: Vec<_> = track.clips.iter()
+                                    .skip(clip_idx + 1)
+                                    .map(|c| (c.id, c.timeline_in, c.timeline_out))
+                                    .collect();
+                                track.ripple_trim_right(*clip_id, new_source_out, new_timeline_out);
+                                self.state.history.push(HistoryEntry {
+                                    sequence_idx: seq_idx,
+                                    command: EditCommand::LegacyRippleTrimClip {
+                                        clip_id: *clip_id,
+                                        old_source_in,
+                                        old_source_out,
+                                        old_timeline_in,
+                                        old_timeline_out,
+                                        new_source_in: old_source_in,
+                                        new_source_out,
+                                        new_timeline_in: old_timeline_in,
+                                        new_timeline_out,
+                                        shifted_clips: shifted,
+                                    },
+                                });
                             }
                             self.state.dirty = true;
                             self.sync_sequence_to_engine();
                         }
                     }
+                    return true;
+                }
+                // Q — trim OUT edge of nearest clip at/before playhead.
+                AppCommand::TrimOutToPlayhead => {
+                    self.trim_to_playhead_dispatch(TrimToPlayheadDir::Out);
+                    return true;
+                }
+                // W — trim IN edge of nearest clip at/after playhead.
+                AppCommand::TrimInToPlayhead => {
+                    self.trim_to_playhead_dispatch(TrimToPlayheadDir::In);
                     return true;
                 }
                 // Magnetic: Insert 1-second gap at playhead
@@ -3622,6 +3682,56 @@ impl KlippApp {
                 self.state.dirty = true;
             }
         }
+    }
+
+    /// Pro-NLE Q/W: pick a target clip by playhead proximity (no selection
+    /// required) and ripple-trim its OUT (Q) or IN (W) edge to the playhead.
+    /// Target track: the track of the current selection if any, otherwise the
+    /// first video track, otherwise the first audio track.
+    fn trim_to_playhead_dispatch(&mut self, dir: TrimToPlayheadDir) {
+        let seq_idx = self.state.active_sequence_idx;
+        let playhead = self.state.playhead;
+        let seq = &self.state.sequences[seq_idx];
+
+        let track_idx = if let Some(sel) = self.state.selected_clip {
+            seq.tracks.iter().position(|t| t.find_clip(sel).is_some())
+        } else {
+            None
+        }
+        .or_else(|| seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video))
+        .or_else(|| seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Audio));
+
+        let Some(track_idx) = track_idx else {
+            self.state.toast.show("No track to trim".to_string());
+            return;
+        };
+
+        let target_clip = match dir {
+            TrimToPlayheadDir::Out => seq.tracks[track_idx]
+                .clip_with_out_at_or_before(&playhead)
+                .map(|(_, c)| c.id),
+            TrimToPlayheadDir::In => seq.tracks[track_idx]
+                .clip_with_in_at_or_after(&playhead)
+                .map(|(_, c)| c.id),
+        };
+
+        let Some(clip_id) = target_clip else {
+            let msg = match dir {
+                TrimToPlayheadDir::Out => "No clip to trim before playhead",
+                TrimToPlayheadDir::In => "No clip to trim after playhead",
+            };
+            self.state.toast.show(msg.to_string());
+            return;
+        };
+
+        // Reuse the existing handlers — they now correctly push undo and
+        // ripple on legacy tracks after Gap 2.
+        let cmd = match dir {
+            TrimToPlayheadDir::Out => AppCommand::RippleTrimTail { clip_id },
+            TrimToPlayheadDir::In => AppCommand::RippleTrimHead { clip_id },
+        };
+        let mut needs_refresh = false;
+        self.handle_timeline_editing(&cmd, &mut needs_refresh);
     }
 
     /// Freeze the current viewer frame and insert it as a generator clip at
@@ -13367,17 +13477,25 @@ impl KlippApp {
                     klipp_timeline::magnetic::EditMode::Overwrite => klipp_timeline::magnetic::EditMode::Insert,
                 };
             }
-            // Alt+[ — Ripple trim head to playhead
-            if i.modifiers.alt && i.key_pressed(egui::Key::OpenBracket) {
+            // Alt+[ — Ripple trim head to playhead (requires selection).
+            if kb.is_action_pressed("ripple_trim_head", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::RippleTrimHead { clip_id });
                 }
             }
-            // Alt+] — Ripple trim tail to playhead
-            if i.modifiers.alt && i.key_pressed(egui::Key::CloseBracket) {
+            // Alt+] — Ripple trim tail to playhead (requires selection).
+            if kb.is_action_pressed("ripple_trim_tail", i) {
                 if let Some(clip_id) = self.state.selected_clip {
                     cmds.push(AppCommand::RippleTrimTail { clip_id });
                 }
+            }
+            // Q — Trim OUT to playhead (no selection required).
+            if kb.is_action_pressed("trim_out_to_playhead", i) {
+                cmds.push(AppCommand::TrimOutToPlayhead);
+            }
+            // W — Trim IN to playhead (no selection required).
+            if kb.is_action_pressed("trim_in_to_playhead", i) {
+                cmds.push(AppCommand::TrimInToPlayhead);
             }
             // Cut clip
             if kb.is_action_pressed("cut_clip", i) {
@@ -14155,6 +14273,15 @@ fn unique_export_path(
 /// helper in `klipp-render/src/snapshot.rs:693` (private there).
 fn timecode_to_frame(rt: &klipp_core::RationalTime, fps: f64) -> u64 {
     (rt.to_secs_f64() * fps).round() as u64
+}
+
+/// Which edge `trim_to_playhead_dispatch` should move — Out for Q, In for W.
+#[derive(Debug, Clone, Copy)]
+enum TrimToPlayheadDir {
+    /// Q: trim the OUT edge of the clip ending at/before the playhead.
+    Out,
+    /// W: trim the IN edge of the clip starting at/after the playhead.
+    In,
 }
 
 /// Recompute `clip.timeline_out` so that its visible length on the timeline

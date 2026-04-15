@@ -485,6 +485,30 @@ impl Track {
         Some(clip)
     }
 
+    /// Returns the clip whose OUT edge is at or before `tc`, maximised.
+    /// When the playhead sits inside a clip, returns that clip. When it sits
+    /// on a gap, returns the clip immediately before. Used by "trim OUT to
+    /// playhead" (Q) to pick its target without requiring a selection.
+    pub fn clip_with_out_at_or_before(&self, tc: &Timecode) -> Option<(usize, &Clip)> {
+        self.clips
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| &c.timeline_out <= tc || (&c.timeline_in <= tc && tc < &c.timeline_out))
+            .max_by_key(|(_, c)| c.timeline_out)
+    }
+
+    /// Returns the clip whose IN edge is at or after `tc`, minimised.
+    /// When the playhead sits inside a clip, returns that clip. When it sits
+    /// on a gap, returns the clip immediately after. Used by "trim IN to
+    /// playhead" (W) to pick its target without requiring a selection.
+    pub fn clip_with_in_at_or_after(&self, tc: &Timecode) -> Option<(usize, &Clip)> {
+        self.clips
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| &c.timeline_in >= tc || (&c.timeline_in <= tc && tc < &c.timeline_out))
+            .min_by_key(|(_, c)| c.timeline_in)
+    }
+
     /// Ripple trim left edge: adjust source_in/timeline_in and shift downstream clips.
     pub fn ripple_trim_left(&mut self, clip_id: ClipId, new_source_in: Timecode, new_timeline_in: Timecode) {
         let pos = match self.clips.iter().position(|c| c.id == clip_id) {
@@ -1667,5 +1691,70 @@ mod tests {
         let t = effective_timeline_duration_for_keyframes(&kfs, source_dur, 60.0, 1.0);
         let back = speed_integral_keyframes(&kfs, t, 60.0, 1.0);
         assert!((back - source_dur).abs() < 0.05, "roundtrip {source_dur} → t={t} → src={back}");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Playhead-proximity clip lookup (Q/W trim-to-playhead helpers)
+    // ═══════════════════════════════════════════════════════════════
+
+    fn qw_track() -> Track {
+        // Three clips with a gap: [0..24], [24..48], gap, [72..96]
+        make_track(vec![
+            make_clip(0, 24, 0, 24),
+            make_clip(24, 48, 0, 24),
+            make_clip(72, 96, 0, 24),
+        ])
+    }
+
+    #[test]
+    fn clip_with_out_at_or_before_inside_clip() {
+        let t = qw_track();
+        // Playhead at frame 12 is inside clip 0 → returns clip 0.
+        let (idx, c) = t.clip_with_out_at_or_before(&tc(12)).expect("some");
+        assert_eq!(idx, 0);
+        assert_eq!(c.timeline_in, tc(0));
+    }
+
+    #[test]
+    fn clip_with_out_at_or_before_on_gap() {
+        let t = qw_track();
+        // Playhead at frame 60 is in the gap between clip 1 (ends at 48)
+        // and clip 2 (starts at 72) → returns clip 1 (the one before).
+        let (idx, c) = t.clip_with_out_at_or_before(&tc(60)).expect("some");
+        assert_eq!(idx, 1);
+        assert_eq!(c.timeline_out, tc(48));
+    }
+
+    #[test]
+    fn clip_with_out_at_or_before_before_first_clip() {
+        // Single-clip track starting at frame 24; nothing before.
+        let t = make_track(vec![make_clip(24, 48, 0, 24)]);
+        assert!(t.clip_with_out_at_or_before(&tc(0)).is_none());
+    }
+
+    #[test]
+    fn clip_with_in_at_or_after_inside_clip() {
+        let t = qw_track();
+        // Playhead at frame 30 is inside clip 1 → returns clip 1.
+        let (idx, c) = t.clip_with_in_at_or_after(&tc(30)).expect("some");
+        assert_eq!(idx, 1);
+        assert_eq!(c.timeline_in, tc(24));
+    }
+
+    #[test]
+    fn clip_with_in_at_or_after_on_gap() {
+        let t = qw_track();
+        // Playhead at frame 60 is in the gap between clip 1 and clip 2 →
+        // returns clip 2 (the one after).
+        let (idx, c) = t.clip_with_in_at_or_after(&tc(60)).expect("some");
+        assert_eq!(idx, 2);
+        assert_eq!(c.timeline_in, tc(72));
+    }
+
+    #[test]
+    fn clip_with_in_at_or_after_after_last_clip() {
+        let t = qw_track();
+        // Playhead well past the last clip (which ends at 96).
+        assert!(t.clip_with_in_at_or_after(&tc(200)).is_none());
     }
 }

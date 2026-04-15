@@ -132,9 +132,11 @@ impl KeyBindings {
         bind(&mut b, "overwrite_edit", vec![KeyCombo::new("."), KeyCombo::new("F11")]);
         bind(&mut b, "lift_edit", vec![KeyCombo::new(";")]);
         bind(&mut b, "extract_edit", vec![KeyCombo::new("'")]);
-        bind(&mut b, "toggle_edit_mode", vec![KeyCombo::new("W")]);
+        bind(&mut b, "toggle_edit_mode", vec![KeyCombo::shift("W")]);
         bind(&mut b, "ripple_trim_head", vec![KeyCombo::alt("[")]);
         bind(&mut b, "ripple_trim_tail", vec![KeyCombo::alt("]")]);
+        bind(&mut b, "trim_out_to_playhead", vec![KeyCombo::new("Q")]);
+        bind(&mut b, "trim_in_to_playhead", vec![KeyCombo::new("W")]);
 
         // Navigation
         bind(&mut b, "next_edit_point", vec![KeyCombo::new("ArrowDown")]);
@@ -317,6 +319,8 @@ impl KeyBindings {
             "toggle_edit_mode" => "Toggle Insert/Overwrite",
             "ripple_trim_head" => "Ripple Trim Head",
             "ripple_trim_tail" => "Ripple Trim Tail",
+            "trim_out_to_playhead" => "Trim Out to Playhead",
+            "trim_in_to_playhead" => "Trim In to Playhead",
             "next_edit_point" => "Next Edit Point",
             "prev_edit_point" => "Previous Edit Point",
             "set_in_point" => "Set In Point",
@@ -383,7 +387,7 @@ impl KeyBindings {
             ("File", &["save_project", "save_project_as", "open_project", "import_media", "export", "preferences"]),
             ("Edit", &["undo", "redo", "cut_clip", "copy_clip", "paste_clip", "copy_attributes", "paste_attributes", "duplicate_clip", "select_all", "deselect_all", "delete_clip", "lift_clip", "split_at_playhead", "group_clips", "ungroup_clips"]),
             ("Tools", &["select_tool", "blade_tool", "range_tool", "trim_tool"]),
-            ("Timeline", &["insert_edit", "overwrite_edit", "lift_edit", "extract_edit", "toggle_edit_mode", "ripple_trim_head", "ripple_trim_tail", "freeze_frame"]),
+            ("Timeline", &["insert_edit", "overwrite_edit", "lift_edit", "extract_edit", "toggle_edit_mode", "ripple_trim_head", "ripple_trim_tail", "trim_out_to_playhead", "trim_in_to_playhead", "freeze_frame"]),
             ("Navigation", &["next_edit_point", "prev_edit_point", "set_in_point", "set_out_point", "clear_in_point", "clear_out_point", "clear_in_out", "set_range_to_clip"]),
             ("Transport", &["play_pause", "step_forward", "step_backward", "go_to_start", "go_to_end", "shuttle_reverse", "shuttle_pause", "shuttle_forward", "toggle_loop"]),
             ("Viewer", &["toggle_fullscreen", "toggle_before_after", "toggle_color_panel", "toggle_scopes", "toggle_zebra", "toggle_false_color", "toggle_perf_overlay", "toggle_matte_preview"]),

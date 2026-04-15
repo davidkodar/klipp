@@ -944,6 +944,12 @@ pub enum AppCommand {
     RippleTrimHead { clip_id: ClipId },
     RippleTrimTail { clip_id: ClipId },
     InsertGapAtPlayhead,
+    /// Q — trim the OUT edge of the clip whose OUT is at or before the playhead
+    /// to the playhead position. Picks target by proximity; no selection required.
+    TrimOutToPlayhead,
+    /// W — trim the IN edge of the clip whose IN is at or after the playhead
+    /// to the playhead position. Picks target by proximity; no selection required.
+    TrimInToPlayhead,
 
     // Audio DSP effects
     AddAudioEffect { clip_id: ClipId, effect_type: String },
