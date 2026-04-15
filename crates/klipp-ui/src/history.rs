@@ -294,6 +294,20 @@ pub enum EditCommand {
         old_effect: klipp_effects::BuiltinEffect,
         new_effect: klipp_effects::BuiltinEffect,
     },
+    /// Per-effect enable/disable for builtin effects. Both undo and redo
+    /// simply flip the boolean at `index`, so only the index is stored.
+    ToggleBuiltinEffectEnabled {
+        clip_id: ClipId,
+        index: usize,
+    },
+    /// OFX effect enable/disable. `AppliedEffect.enabled` is an absolute
+    /// bool so we capture both old and new values for clean restoration.
+    SetOFXEffectEnabled {
+        clip_id: ClipId,
+        effect_index: usize,
+        old_enabled: bool,
+        new_enabled: bool,
+    },
 
     // === CLIP SPEED ===
     SetClipSpeed {
@@ -353,6 +367,8 @@ impl EditCommand {
             EditCommand::EditKeyframes { description, .. } => description,
             EditCommand::EditClipAudio { .. } => "Edit Audio",
             EditCommand::EditBuiltinEffect { .. } => "Edit Effect",
+            EditCommand::ToggleBuiltinEffectEnabled { .. } => "Toggle Effect",
+            EditCommand::SetOFXEffectEnabled { .. } => "Toggle Effect",
             EditCommand::SetClipSpeed { .. } => "Set Clip Speed",
             EditCommand::EditTitle { description, .. } => description,
             EditCommand::EditGenerator { .. } => "Edit Generator",

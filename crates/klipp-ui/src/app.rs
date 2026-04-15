@@ -6836,12 +6836,28 @@ impl KlippApp {
                 true
             }
             AppCommand::SetEffectEnabled { clip_id, effect_index, enabled } => {
+                let mut old_enabled: Option<bool> = None;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let Some(effect) = clip.effects.get_mut(*effect_index) {
+                            old_enabled = Some(effect.enabled);
                             effect.enabled = *enabled;
                         }
                         break;
+                    }
+                }
+                if let Some(prev) = old_enabled {
+                    if prev != *enabled {
+                        self.state.history.push(HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: crate::history::EditCommand::SetOFXEffectEnabled {
+                                clip_id: *clip_id,
+                                effect_index: *effect_index,
+                                old_enabled: prev,
+                                new_enabled: *enabled,
+                            },
+                        });
+                        self.state.dirty = true;
                     }
                 }
                 self.sync_sequence_to_engine();
@@ -6932,6 +6948,7 @@ impl KlippApp {
                 true
             }
             AppCommand::ToggleBuiltinEffectEnabled { clip_id, index } => {
+                let mut flipped = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         // Grow enabled vec if needed (default = all enabled)
@@ -6940,9 +6957,19 @@ impl KlippApp {
                         }
                         if let Some(val) = clip.builtin_effects_enabled.get_mut(*index) {
                             *val = !*val;
+                            flipped = true;
                         }
                         break;
                     }
+                }
+                if flipped {
+                    self.state.history.push(HistoryEntry {
+                        sequence_idx: self.state.active_sequence_idx,
+                        command: crate::history::EditCommand::ToggleBuiltinEffectEnabled {
+                            clip_id: *clip_id,
+                            index: *index,
+                        },
+                    });
                 }
                 self.state.dirty = true;
                 self.sync_sequence_to_engine();
@@ -12254,6 +12281,32 @@ impl KlippApp {
                     }
                 }
             }
+            EditCommand::ToggleBuiltinEffectEnabled { clip_id, index } => {
+                // Undo is the same action as the original: flip the bool. Growing
+                // the parallel vec mirrors the forward handler so undo from a
+                // missing-entry state still works.
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        while clip.builtin_effects_enabled.len() < clip.builtin_effects.len() {
+                            clip.builtin_effects_enabled.push(true);
+                        }
+                        if let Some(val) = clip.builtin_effects_enabled.get_mut(*index) {
+                            *val = !*val;
+                        }
+                        break;
+                    }
+                }
+            }
+            EditCommand::SetOFXEffectEnabled { clip_id, effect_index, old_enabled, .. } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        if let Some(effect) = clip.effects.get_mut(*effect_index) {
+                            effect.enabled = *old_enabled;
+                        }
+                        break;
+                    }
+                }
+            }
             EditCommand::EditClipAudio { clip_id, old_gain, old_volume, old_pan, old_fade_in, old_fade_out, old_channel_config, .. } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -12626,6 +12679,31 @@ impl KlippApp {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let Some(fx) = clip.builtin_effects.get_mut(*effect_index) {
                             *fx = new_effect.clone();
+                        }
+                        break;
+                    }
+                }
+            }
+            EditCommand::ToggleBuiltinEffectEnabled { clip_id, index } => {
+                // Redo flips again — restores the post-toggle state that the
+                // user originally produced.
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        while clip.builtin_effects_enabled.len() < clip.builtin_effects.len() {
+                            clip.builtin_effects_enabled.push(true);
+                        }
+                        if let Some(val) = clip.builtin_effects_enabled.get_mut(*index) {
+                            *val = !*val;
+                        }
+                        break;
+                    }
+                }
+            }
+            EditCommand::SetOFXEffectEnabled { clip_id, effect_index, new_enabled, .. } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        if let Some(effect) = clip.effects.get_mut(*effect_index) {
+                            effect.enabled = *new_enabled;
                         }
                         break;
                     }
@@ -20156,6 +20234,75 @@ mod youtube_chapter_tests {
         ];
         let expected = "0:00:00 Intro\n0:01:23 Main Content\n0:04:47 Outro";
         assert_eq!(generate_youtube_chapters(&entries), expected);
+    }
+}
+
+#[cfg(test)]
+mod effect_toggle_tests {
+    //! Pure-logic coverage for the per-effect enable/disable toggle. The
+    //! full handler runs on KlippApp and is hard to unit-test in isolation;
+    //! these tests exercise the parallel-vec flip/grow logic that both the
+    //! forward handler and the undo/redo arms share.
+
+    fn toggle_builtin_enabled(enabled: &mut Vec<bool>, effect_count: usize, index: usize) {
+        while enabled.len() < effect_count {
+            enabled.push(true);
+        }
+        if let Some(val) = enabled.get_mut(index) {
+            *val = !*val;
+        }
+    }
+
+    #[test]
+    fn builtin_effects_enabled_flip_logic() {
+        let mut enabled = vec![true, true];
+        toggle_builtin_enabled(&mut enabled, 2, 0);
+        assert_eq!(enabled, vec![false, true]);
+        // Simulate undo (flip again) — returns to original state.
+        toggle_builtin_enabled(&mut enabled, 2, 0);
+        assert_eq!(enabled, vec![true, true]);
+    }
+
+    #[test]
+    fn builtin_toggle_is_idempotent_across_undo_redo() {
+        // Three flips round-trips through enabled -> disabled -> enabled
+        // -> disabled, mirroring user action -> undo -> redo -> user again.
+        let mut enabled = vec![true];
+        for _ in 0..3 {
+            toggle_builtin_enabled(&mut enabled, 1, 0);
+        }
+        assert_eq!(enabled, vec![false]);
+        toggle_builtin_enabled(&mut enabled, 1, 0);
+        assert_eq!(enabled, vec![true]);
+    }
+
+    #[test]
+    fn builtin_toggle_grows_parallel_vec_lazily() {
+        // The parallel vec may be shorter than the effect list when projects
+        // load from old `.klipp` files. Both the forward handler and the
+        // undo arm grow it with `true` defaults so toggling the last effect
+        // still works.
+        let mut enabled: Vec<bool> = Vec::new();
+        toggle_builtin_enabled(&mut enabled, 3, 2);
+        assert_eq!(enabled.len(), 3);
+        assert_eq!(enabled, vec![true, true, false]);
+    }
+
+    #[test]
+    fn ofx_enabled_field_round_trip() {
+        // OFX flag is an absolute bool — undo restores old, redo restores new.
+        let mut enabled = true;
+        let old = enabled;
+        let new = false;
+        // Forward
+        enabled = new;
+        assert!(!enabled);
+        // Undo
+        enabled = old;
+        assert!(enabled);
+        // Redo
+        enabled = new;
+        assert!(!enabled);
     }
 }
 

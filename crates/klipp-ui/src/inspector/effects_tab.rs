@@ -201,22 +201,26 @@ pub fn show(
             builtin_remove = Some(i);
         }
 
-        // Enable/disable toggle switch
+        // Enable/disable eye-icon toggle. Matches the track-visibility icon
+        // in the timeline (panels/timeline.rs:2639): Icon::Eye when enabled,
+        // Icon::EyeSlash when disabled, with a muted neutral tint that dims
+        // further when off.
         let is_enabled = clip.builtin_effects_enabled.get(i).copied().unwrap_or(true);
-        let toggle_x = remove_x - 40.0;
-        let toggle_w = 30.0;
-        let toggle_h = 14.0;
         let toggle_rect = egui::Rect::from_min_size(
-            egui::pos2(toggle_x - toggle_w / 2.0, header_rect.center().y - toggle_h / 2.0),
-            egui::vec2(toggle_w, toggle_h),
+            egui::pos2(remove_x - 26.0, header_rect.center().y - 8.0),
+            egui::vec2(16.0, 16.0),
         );
-        let toggle_resp = ui.interact(toggle_rect, ui.id().with(("bfx_tog", i)), egui::Sense::click());
-        let track_color = if is_enabled { theme.accent } else { egui::Color32::from_rgb(60, 60, 65) };
-        ui.painter().rect_filled(toggle_rect, toggle_h / 2.0, track_color);
-        let thumb_r = toggle_h / 2.0 - 1.0;
-        let thumb_x = if is_enabled { toggle_rect.max.x - thumb_r - 2.0 } else { toggle_rect.min.x + thumb_r + 2.0 };
-        ui.painter().circle_filled(egui::pos2(thumb_x, toggle_rect.center().y), thumb_r, egui::Color32::WHITE);
-        let toggle_clicked = toggle_resp.on_hover_text(if is_enabled { "Disable effect" } else { "Enable effect" }).clicked();
+        let toggle_resp = ui
+            .interact(toggle_rect, ui.id().with(("bfx_tog", i)), egui::Sense::click())
+            .on_hover_text(if is_enabled { "Disable effect" } else { "Enable effect" });
+        let eye_icon = if is_enabled { Icon::Eye } else { Icon::EyeSlash };
+        let tint = if is_enabled {
+            egui::Color32::from_rgb(200, 200, 210)
+        } else {
+            egui::Color32::from_rgb(120, 120, 130)
+        };
+        eye_icon.image(14.0).tint(tint).paint_at(ui, toggle_rect);
+        let toggle_clicked = toggle_resp.clicked();
         if toggle_clicked {
             cmds.push(AppCommand::ToggleBuiltinEffectEnabled { clip_id, index: i });
         }
@@ -236,13 +240,17 @@ pub fn show(
                 .rounding(egui::Rounding { nw: 0.0, ne: 0.0, sw: card_rounding, se: card_rounding })
                 .inner_margin(egui::Margin { left: pad, right: pad, top: 8.0, bottom: 8.0 });
             body_frame.show(ui, |ui: &mut egui::Ui| {
-                if let Some(updated) = show_builtin_effect_params(ui, theme, effect, clip_id, i, cmds, clip, clip_time_secs, state) {
-                    cmds.push(AppCommand::UpdateBuiltinEffect {
-                        clip_id,
-                        index: i,
-                        effect: updated,
-                    });
-                }
+                // When disabled, dim and lock the params so the visual state
+                // matches the effect's actual bypassed behaviour on-engine.
+                ui.add_enabled_ui(is_enabled, |ui| {
+                    if let Some(updated) = show_builtin_effect_params(ui, theme, effect, clip_id, i, cmds, clip, clip_time_secs, state) {
+                        cmds.push(AppCommand::UpdateBuiltinEffect {
+                            clip_id,
+                            index: i,
+                            effect: updated,
+                        });
+                    }
+                });
             });
         }
 
@@ -414,26 +422,23 @@ pub fn show(
             ofx_remove = Some(i);
         }
 
-        // Enable/disable toggle switch (orange when on, gray when off)
-        let toggle_x = remove_x - 40.0;
-        let toggle_center_y = header_rect.center().y;
-        let toggle_w = 30.0;
-        let toggle_h = 16.0;
-        let toggle_rect = egui::Rect::from_min_size(
-            egui::pos2(toggle_x - toggle_w / 2.0, toggle_center_y - toggle_h / 2.0),
-            egui::vec2(toggle_w, toggle_h),
-        );
-        let toggle_resp = ui.interact(toggle_rect, ui.id().with(("ofx_tog", i)), egui::Sense::click());
+        // Enable/disable eye-icon toggle — same style as the builtin path.
         let enabled = effect.enabled;
-        let track_color = if enabled { theme.accent } else { egui::Color32::from_rgb(80, 80, 90) };
-        ui.painter().rect_filled(toggle_rect, toggle_h / 2.0, track_color);
-        let thumb_x = if enabled { toggle_rect.max.x - toggle_h / 2.0 } else { toggle_rect.min.x + toggle_h / 2.0 };
-        ui.painter().circle_filled(
-            egui::pos2(thumb_x, toggle_center_y),
-            toggle_h / 2.0 - 2.0,
-            egui::Color32::WHITE,
+        let toggle_rect = egui::Rect::from_min_size(
+            egui::pos2(remove_x - 26.0, header_rect.center().y - 8.0),
+            egui::vec2(16.0, 16.0),
         );
-        let toggle_clicked = toggle_resp.on_hover_text(if enabled { "Disable" } else { "Enable" }).clicked();
+        let toggle_resp = ui
+            .interact(toggle_rect, ui.id().with(("ofx_tog", i)), egui::Sense::click())
+            .on_hover_text(if enabled { "Disable effect" } else { "Enable effect" });
+        let eye_icon = if enabled { Icon::Eye } else { Icon::EyeSlash };
+        let tint = if enabled {
+            egui::Color32::from_rgb(200, 200, 210)
+        } else {
+            egui::Color32::from_rgb(120, 120, 130)
+        };
+        eye_icon.image(14.0).tint(tint).paint_at(ui, toggle_rect);
+        let toggle_clicked = toggle_resp.clicked();
         if toggle_clicked {
             cmds.push(AppCommand::SetEffectEnabled {
                 clip_id,
@@ -457,6 +462,9 @@ pub fn show(
                 .rounding(egui::Rounding { nw: 0.0, ne: 0.0, sw: card_rounding, se: card_rounding })
                 .inner_margin(egui::Margin { left: pad, right: pad, top: 8.0, bottom: 8.0 });
             body_frame.show(ui, |ui: &mut egui::Ui| {
+                // When disabled, dim and lock the params — mirrors the
+                // builtin path for consistency.
+                ui.add_enabled_ui(enabled, |ui| {
                 // CPU-only notice for float-only plugins (CImg, keyers, etc.)
                 let is_float_plugin = effect.plugin_name.contains("cimg")
                     || effect.plugin_name.contains("CImg")
@@ -526,6 +534,7 @@ pub fn show(
                         );
                     }
                 }
+                }); // end ui.add_enabled_ui
             });
         }
 
