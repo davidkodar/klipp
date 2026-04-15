@@ -293,6 +293,15 @@ pub struct PlaybackEngine {
     // (once with VideoStabilization, once without) so the viewer can split-view
     // the raw vs stabilized result. Cost: ~2× builtin chain when active.
     pub compare_stabilization: bool,
+    // Per-effect compare — mirrors compare_stabilization but targets a single
+    // effect picked in the inspector, identified by clip + index + is_ofx.
+    // When active on the current clip, the engine renders the chain twice
+    // (once normal, once with the target effect's enabled flag flipped to
+    // false) and writes the bypassed version to FrameBuffer.compare_effect_data.
+    pub compare_effect_active: bool,
+    pub compare_effect_clip_id: Option<klipp_core::ClipId>,
+    pub compare_effect_index: usize,
+    pub compare_effect_is_ofx: bool,
     // Matte preview — when true, show B&W qualifier/mask matte instead of graded frame
     matte_preview: bool,
     // Scope tap — which node's output to capture for scope display
@@ -521,6 +530,10 @@ impl PlaybackEngine {
             graph_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
             bypass_color_grade: false,
             compare_stabilization: false,
+            compare_effect_active: false,
+            compare_effect_clip_id: None,
+            compare_effect_index: 0,
+            compare_effect_is_ofx: false,
             matte_preview: false,
             scope_tap_node: None,
             scope_render_mode: 0,
@@ -1021,6 +1034,18 @@ impl PlaybackEngine {
             AppCommand::ToggleStabilizationCompare => {
                 self.compare_stabilization = !self.compare_stabilization;
                 debug!("StabilizationCompare: compare_stabilization = {}", self.compare_stabilization);
+            }
+
+            AppCommand::SetSplitCompareEffect { clip_id, effect_index, is_ofx } => {
+                self.compare_effect_active = clip_id.is_some();
+                self.compare_effect_clip_id = clip_id;
+                self.compare_effect_index = effect_index;
+                self.compare_effect_is_ofx = is_ofx;
+                debug!(
+                    "SetSplitCompareEffect: active={} clip={:?} index={} is_ofx={}",
+                    self.compare_effect_active, self.compare_effect_clip_id,
+                    self.compare_effect_index, self.compare_effect_is_ofx,
+                );
             }
 
             AppCommand::SetMattePreview(active) => {
@@ -4830,6 +4855,9 @@ impl PlaybackEngine {
         let seq = self.sequence.read().unwrap();
         let clip = seq.tracks.get(self.current_track_index)
             .and_then(|t| t.clips.get(self.current_clip_index));
+        // Capture the current clip's id for per-effect compare gating after
+        // the seq lock drops. Some() only when we actually have a clip.
+        let current_clip_id: Option<klipp_core::ClipId> = clip.map(|c| c.id);
         let ofx_effects = clip.map(|c| c.effects.clone()).unwrap_or_default();
         let node_graph = clip.map(|c| c.node_graph.clone());
         let rsc_clip_id_hash = clip.map(|c| c.id.0.as_u64_pair().0).unwrap_or(0);
@@ -4999,15 +5027,110 @@ impl PlaybackEngine {
                 }
             }
 
-            // Filter out disabled builtin effects
+            // Filter out disabled builtin effects. The iter-by-ref + clone
+            // shape (instead of into_iter) lets the per-effect compare path
+            // below filter the same `fx` a second time with a flipped bit.
             let enabled = &c.builtin_effects_enabled;
-            fx.into_iter().enumerate()
+            fx.iter().enumerate()
                 .filter(|(i, _)| enabled.get(*i).copied().unwrap_or(true))
-                .map(|(_, e)| e)
+                .map(|(_, e)| e.clone())
                 .collect()
         } else {
             Vec::new()
         };
+
+        // Per-effect compare: build a second builtin_fx that flips the
+        // target effect's enabled flag. Runs only when compare is active
+        // AND targets a builtin on the current clip. Uses the same
+        // post-keyframe `fx` list as the main path, refiltering with a
+        // cloned enabled vec whose target bit is toggled.
+        let compare_builtin_fx: Vec<klipp_effects::BuiltinEffect> =
+            if self.compare_effect_active
+                && !self.compare_effect_is_ofx
+                && current_clip_id.is_some()
+                && current_clip_id == self.compare_effect_clip_id
+            {
+                if let Some(c) = clip {
+                    let mut fx = c.builtin_effects.clone();
+                    // Re-run the same transform / keyframe evaluation loop so
+                    // the compare fx matches the main fx's animated state.
+                    // (The main path mutates a local `fx`; it's out of scope
+                    // here, so we just re-evaluate on our own clone — same
+                    // cost as one extra keyframe pass.)
+                    let target = self.compare_effect_index;
+                    let mut enabled_clone = c.builtin_effects_enabled.clone();
+                    while enabled_clone.len() <= target {
+                        enabled_clone.push(true);
+                    }
+                    if target < enabled_clone.len() {
+                        enabled_clone[target] = !enabled_clone[target];
+                    }
+                    // Evaluate effect keyframes against the clone (mirrors
+                    // the main path — only the filter differs).
+                    if let Some(ectx) = eval_ctx.as_ref() {
+                        for (i, effect) in fx.iter_mut().enumerate() {
+                            match effect {
+                                klipp_effects::BuiltinEffect::GaussianBlur { radius } => {
+                                    let key = format!("{}:radius", i);
+                                    let kfs = c.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
+                                    *radius = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, "radius", clip_relative_secs, *radius, ectx);
+                                }
+                                klipp_effects::BuiltinEffect::Sharpen { amount } => {
+                                    let key = format!("{}:amount", i);
+                                    let kfs = c.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
+                                    *amount = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, "amount", clip_relative_secs, *amount, ectx);
+                                }
+                                klipp_effects::BuiltinEffect::Crop { left, right, top, bottom, feather } => {
+                                    for (name, val) in [("left", left as &mut f32), ("right", right), ("top", top), ("bottom", bottom), ("feather", feather)] {
+                                        let key = format!("{}:{}", i, name);
+                                        let kfs = c.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
+                                        *val = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, name, clip_relative_secs, *val, ectx);
+                                    }
+                                }
+                                klipp_effects::BuiltinEffect::ChromaKey { tolerance, spill_suppression, .. } => {
+                                    for (name, val) in [("tolerance", tolerance as &mut f32), ("spill", spill_suppression)] {
+                                        let key = format!("{}:{}", i, name);
+                                        let kfs = c.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
+                                        *val = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, name, clip_relative_secs, *val, ectx);
+                                    }
+                                }
+                                klipp_effects::BuiltinEffect::Opacity { value } => {
+                                    let key = format!("{}:value", i);
+                                    let kfs = c.effect_keyframes.get(&key).map(|v| v.as_slice()).unwrap_or(&[]);
+                                    *value = eval_effect_with_modifiers(kfs, &c.param_modifiers, i, "value", clip_relative_secs, *value, ectx);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    fx.into_iter().enumerate()
+                        .filter(|(i, _)| enabled_clone.get(*i).copied().unwrap_or(true))
+                        .map(|(_, e)| e)
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+        // Per-effect compare (OFX): clone `ofx_effects` with the target
+        // effect's `enabled` flag flipped. Used by the second render pass
+        // further down.
+        let compare_ofx_effects: Vec<klipp_plugin::AppliedEffect> =
+            if self.compare_effect_active
+                && self.compare_effect_is_ofx
+                && current_clip_id.is_some()
+                && current_clip_id == self.compare_effect_clip_id
+            {
+                let mut clone = ofx_effects.clone();
+                if let Some(e) = clone.get_mut(self.compare_effect_index) {
+                    e.enabled = !e.enabled;
+                }
+                clone
+            } else {
+                Vec::new()
+            };
 
         // Extract stabilization homography while seq lock is held
         let stab_homography: Option<[f32; 12]> = if builtin_fx.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::VideoStabilization { .. })) {
@@ -5154,6 +5277,15 @@ impl PlaybackEngine {
             self.prev_blend_dims = (0, 0);
         }
 
+        // Per-effect compare (OFX branch): snapshot before the OFX chain
+        // runs so we can re-apply the chain with the target bypassed.
+        let effect_compare_ofx_active = self.compare_effect_active
+            && self.compare_effect_is_ofx
+            && current_clip_id == self.compare_effect_clip_id;
+        let pre_ofx_for_compare = if effect_compare_ofx_active {
+            Some(rgba.clone())
+        } else { None };
+
         // 2. OFX effects chain (with temporal clip access for Retime/SlitScan/etc.)
         let frame_time = self.playhead.to_secs_f64();
         let rgba = if !ofx_effects.is_empty() {
@@ -5284,7 +5416,15 @@ impl PlaybackEngine {
         // the builtin chain a second time with stab filtered out.
         let stab_compare_active = self.compare_stabilization
             && builtin_fx.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::VideoStabilization { .. }));
-        let pre_builtin_for_compare = if stab_compare_active { Some(rgba.clone()) } else { None };
+        // Per-effect compare (builtin branch): reuse the same pre-builtin
+        // snapshot so we can re-run the builtin chain with the target
+        // effect flipped. OFX compare snapshots earlier (before step 2).
+        let effect_compare_builtin_active = self.compare_effect_active
+            && !self.compare_effect_is_ofx
+            && current_clip_id == self.compare_effect_clip_id;
+        let pre_builtin_for_compare = if stab_compare_active || effect_compare_builtin_active {
+            Some(rgba.clone())
+        } else { None };
 
         // 3. Built-in effects (GPU-accelerated when available, CPU fallback)
         let rgba = if !builtin_fx.is_empty() {
@@ -5312,7 +5452,15 @@ impl PlaybackEngine {
         // VideoStabilization filtered out, producing the "raw" half of the split.
         // Mirrors steps 3 + 4 exactly so both halves are pixel-comparable except
         // for the stab warp.
-        let unstab_rgba = if let Some(pre_builtin) = pre_builtin_for_compare {
+        // Only the stab compare path actually consumes `pre_builtin_for_compare`
+        // directly; the per-effect compare path further down borrows it by
+        // reference via `.as_ref()`. To let both paths coexist when — in
+        // theory — both were ever active on the same frame, we clone into
+        // the stab path instead of moving out.
+        let unstab_rgba = if stab_compare_active {
+            let pre_builtin = pre_builtin_for_compare.as_ref()
+                .expect("stab compare path: pre_builtin snapshot must exist when stab_compare_active")
+                .clone();
             let no_stab: Vec<klipp_effects::BuiltinEffect> = builtin_fx.iter()
                 .filter(|e| !matches!(e, klipp_effects::BuiltinEffect::VideoStabilization { .. }))
                 .cloned()
@@ -5334,6 +5482,67 @@ impl PlaybackEngine {
             Some(r)
         } else { None };
 
+        // 4c. Per-effect compare second pass. Two branches: builtin (re-run
+        // builtin chain + LUT with the target's enabled flag flipped) and
+        // OFX (re-run OFX chain + builtin chain + LUT with the target's
+        // enabled flag flipped). The viewer composites the output onto the
+        // left half of the split; the right half is the normal `rgba`.
+        let compare_effect_rgba = if effect_compare_builtin_active {
+            pre_builtin_for_compare.as_ref().map(|pre| {
+                // Builtin path: re-run builtin chain with compare_builtin_fx.
+                let r = if !compare_builtin_fx.is_empty() {
+                    if let Some(gpu) = &mut self.gpu_effects {
+                        gpu.apply_effects(&compare_builtin_fx, pre.clone(), width, height)
+                    } else {
+                        klipp_effects::apply_effects(&compare_builtin_fx, pre.clone(), width, height)
+                    }
+                } else {
+                    pre.clone()
+                };
+                // Global color LUT — same pass as the main path so both
+                // halves are pixel-comparable.
+                if self.color_pipeline.enabled {
+                    if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
+                        gpu.apply_3d_lut_gpu(r, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
+                    } else {
+                        self.color_pipeline.process_frame(r, width, height)
+                    }
+                } else {
+                    r
+                }
+            })
+        } else if effect_compare_ofx_active {
+            pre_ofx_for_compare.as_ref().map(|pre| {
+                // OFX path: re-apply OFX chain with the target bypassed,
+                // then the full builtin chain and LUT.
+                let r = if !compare_ofx_effects.is_empty() {
+                    self.ofx_host.apply_effects_chain(&compare_ofx_effects, pre, width, height, frame_time)
+                } else {
+                    pre.clone()
+                };
+                let r = if !builtin_fx.is_empty() {
+                    if let Some(gpu) = &mut self.gpu_effects {
+                        gpu.apply_effects(&builtin_fx, r, width, height)
+                    } else {
+                        klipp_effects::apply_effects(&builtin_fx, r, width, height)
+                    }
+                } else {
+                    r
+                };
+                if self.color_pipeline.enabled {
+                    if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
+                        gpu.apply_3d_lut_gpu(r, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
+                    } else {
+                        self.color_pipeline.process_frame(r, width, height)
+                    }
+                } else {
+                    r
+                }
+            })
+        } else {
+            None
+        };
+
         // Store pre-grade frame in frame buffer for Before/After split
         if let Some(original) = pre_grade_rgba {
             let mut fb = self.frame_buffer.lock().unwrap();
@@ -5353,6 +5562,16 @@ impl PlaybackEngine {
                 fb.unstab_data = u;
             } else if !fb.unstab_data.is_empty() {
                 fb.unstab_data = Vec::new();
+            }
+        }
+
+        // Store per-effect compare frame (or clear when inactive).
+        {
+            let mut fb = self.frame_buffer.lock().unwrap();
+            if let Some(cmp) = compare_effect_rgba {
+                fb.compare_effect_data = cmp;
+            } else if !fb.compare_effect_data.is_empty() {
+                fb.compare_effect_data = Vec::new();
             }
         }
 

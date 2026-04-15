@@ -7,6 +7,12 @@ pub struct FrameBuffer {
     /// Frame rendered with VideoStabilization bypassed, for stabilization compare
     /// split view. Empty when compare mode is off.
     pub unstab_data: Vec<u8>,
+    /// Frame rendered with the user-selected effect bypassed, for the
+    /// per-effect split compare view. Same single-write pattern as
+    /// `unstab_data` — the engine writes it on each render when the
+    /// compare mode is active, and clears it to an empty Vec when
+    /// inactive to free memory.
+    pub compare_effect_data: Vec<u8>,
     /// Pre-grade decoded frame — used by UI thread to re-grade without engine round-trip.
     /// Shared via Arc to avoid expensive clones on the hot playback path.
     pub pregrade_data: Arc<Vec<u8>>,
@@ -45,6 +51,7 @@ impl FrameBuffer {
             data: vec![0u8; (width * height * 4) as usize],
             original_data: Vec::new(),
             unstab_data: Vec::new(),
+            compare_effect_data: Vec::new(),
             pregrade_data: Arc::new(Vec::new()),
             scope_data: Vec::new(),
             scope_preview: Vec::new(),

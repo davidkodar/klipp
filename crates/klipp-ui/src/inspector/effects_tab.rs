@@ -225,8 +225,53 @@ pub fn show(
             cmds.push(AppCommand::ToggleBuiltinEffectEnabled { clip_id, index: i });
         }
 
+        // Split-compare (A/B) toggle — sits left of the eye icon. When active
+        // for this effect, the viewer shows a draggable split divider with the
+        // effect bypassed on the left and applied on the right.
+        let compare_active = matches!(
+            state.split_compare_effect,
+            Some((cid, idx, false)) if cid == clip_id && idx == i
+        );
+        let compare_rect = egui::Rect::from_min_size(
+            egui::pos2(remove_x - 48.0, header_rect.center().y - 8.0),
+            egui::vec2(16.0, 16.0),
+        );
+        let compare_resp = ui
+            .interact(compare_rect, ui.id().with(("bfx_cmp", i)), egui::Sense::click())
+            .on_hover_text(if compare_active { "Stop A/B compare" } else { "A/B compare: bypass vs applied" });
+        let compare_tint = if compare_active {
+            egui::Color32::from_rgb(0xc8, 0x78, 0xff)
+        } else if compare_resp.hovered() {
+            egui::Color32::from_rgb(200, 200, 210)
+        } else {
+            egui::Color32::from_rgb(120, 120, 130)
+        };
+        ui.painter().text(
+            compare_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "\u{25D0}",
+            egui::FontId::proportional(14.0),
+            compare_tint,
+        );
+        let compare_clicked = compare_resp.clicked();
+        if compare_clicked {
+            if compare_active {
+                cmds.push(AppCommand::SetSplitCompareEffect {
+                    clip_id: None,
+                    effect_index: 0,
+                    is_ofx: false,
+                });
+            } else {
+                cmds.push(AppCommand::SetSplitCompareEffect {
+                    clip_id: Some(clip_id),
+                    effect_index: i,
+                    is_ofx: false,
+                });
+            }
+        }
+
         // Click header to toggle collapse (only if not on remove/toggle buttons)
-        if header_resp.clicked() && !remove_clicked && !toggle_clicked {
+        if header_resp.clicked() && !remove_clicked && !toggle_clicked && !compare_clicked {
             col_state.toggle(ui);
         }
 
@@ -447,8 +492,51 @@ pub fn show(
             });
         }
 
+        // Split-compare (A/B) toggle — mirrors the builtin path.
+        let compare_active = matches!(
+            state.split_compare_effect,
+            Some((cid, idx, true)) if cid == clip_id && idx == i
+        );
+        let compare_rect = egui::Rect::from_min_size(
+            egui::pos2(remove_x - 48.0, header_rect.center().y - 8.0),
+            egui::vec2(16.0, 16.0),
+        );
+        let compare_resp = ui
+            .interact(compare_rect, ui.id().with(("ofx_cmp", i)), egui::Sense::click())
+            .on_hover_text(if compare_active { "Stop A/B compare" } else { "A/B compare: bypass vs applied" });
+        let compare_tint = if compare_active {
+            egui::Color32::from_rgb(0xc8, 0x78, 0xff)
+        } else if compare_resp.hovered() {
+            egui::Color32::from_rgb(200, 200, 210)
+        } else {
+            egui::Color32::from_rgb(120, 120, 130)
+        };
+        ui.painter().text(
+            compare_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "\u{25D0}",
+            egui::FontId::proportional(14.0),
+            compare_tint,
+        );
+        let compare_clicked = compare_resp.clicked();
+        if compare_clicked {
+            if compare_active {
+                cmds.push(AppCommand::SetSplitCompareEffect {
+                    clip_id: None,
+                    effect_index: 0,
+                    is_ofx: false,
+                });
+            } else {
+                cmds.push(AppCommand::SetSplitCompareEffect {
+                    clip_id: Some(clip_id),
+                    effect_index: i,
+                    is_ofx: true,
+                });
+            }
+        }
+
         // Click header to toggle collapse
-        if header_resp.clicked() && !remove_clicked && !toggle_clicked {
+        if header_resp.clicked() && !remove_clicked && !toggle_clicked && !compare_clicked {
             col_state.toggle(ui);
         }
 

@@ -447,11 +447,14 @@ impl ViewerPanel {
         let image_rect = frame.image_rect;
         let grade_still_active = frame.grade_still_active;
         let stab_compare_active = state.stabilization_compare_active;
+        let effect_compare_active = state.split_compare_effect.is_some();
         let split_x = image_rect.min.x + state.split_position * image_rect.width();
         let divider_color = if grade_still_active {
             egui::Color32::from_rgb(0x40, 0xc0, 0xe0) // cyan for grade still compare
         } else if stab_compare_active {
             egui::Color32::from_rgb(0x60, 0xd0, 0x80) // green for stabilization compare
+        } else if effect_compare_active {
+            egui::Color32::from_rgb(0xc8, 0x78, 0xff) // purple for per-effect compare
         } else {
             egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
         };
@@ -471,6 +474,8 @@ impl ViewerPanel {
             (state.grade_stills[idx].name.as_str(), "Graded")
         } else if stab_compare_active {
             ("Raw", "Stabilized")
+        } else if effect_compare_active {
+            ("Without", "With")
         } else {
             ("Original", "Graded")
         };
@@ -1149,7 +1154,10 @@ impl ViewerPanel {
         }
 
         // ── Before/After or Grade Still split divider ──
-        let show_split_divider = state.before_after_active || frame.grade_still_active || state.stabilization_compare_active;
+        let show_split_divider = state.before_after_active
+            || frame.grade_still_active
+            || state.stabilization_compare_active
+            || state.split_compare_effect.is_some();
         if show_split_divider {
             self.draw_split_divider(ui, state, &frame);
             // Keyboard nudge: ←/→ move the split by 0.02. Only consumed

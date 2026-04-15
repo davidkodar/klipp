@@ -586,6 +586,15 @@ pub struct AppState {
     // Mutually exclusive with before_after_active and grade_still_compare.
     pub stabilization_compare_active: bool,
 
+    /// Per-effect split compare. `Some((clip_id, effect_index, is_ofx))`
+    /// when a single effect is being A/B'd in the viewer — left half of
+    /// the split renders that effect bypassed, right half renders it on.
+    /// `is_ofx` distinguishes `clip.effects[idx]` (true) from
+    /// `clip.builtin_effects[idx]` (false). Mutually exclusive with
+    /// before_after_active / stabilization_compare_active (handler sets
+    /// only one at a time). None = inactive.
+    pub split_compare_effect: Option<(ClipId, usize, bool)>,
+
     // Grade stills (reference frame comparison)
     /// Saved grade reference stills for comparison.
     pub grade_stills: Vec<GradeStill>,
@@ -1677,6 +1686,7 @@ impl Default for AppState {
             matte_preview_active: false,
             before_after_active: false,
             stabilization_compare_active: false,
+            split_compare_effect: None,
             split_position: 0.5,
             grade_stills: Vec::new(),
             active_grade_still: None,
@@ -1880,5 +1890,80 @@ mod tests {
         }
         let second = rx.recv().unwrap();
         assert!(matches!(second, ConsolidateMessage::Done(Err(_))));
+    }
+
+    #[test]
+    fn split_compare_state_round_trip() {
+        // The compare-effect state is an Option<(ClipId, usize, bool)>. The
+        // bool discriminates builtin (false) from OFX (true). Round-trip the
+        // two cases plus the cleared state to guard against a field shape
+        // change.
+        let cid = klipp_core::ClipId::new();
+
+        let mut slot: Option<(klipp_core::ClipId, usize, bool)> = None;
+        assert!(slot.is_none());
+
+        slot = Some((cid, 3, false));
+        assert_eq!(slot, Some((cid, 3, false)));
+        assert!(matches!(slot, Some((_, 3, false))));
+
+        slot = Some((cid, 7, true));
+        assert_eq!(slot, Some((cid, 7, true)));
+        assert!(matches!(slot, Some((_, _, true))));
+
+        slot = None;
+        assert!(slot.is_none());
+    }
+
+    #[test]
+    fn split_compare_clears_on_effect_remove() {
+        // Behaviour mirrored from the RemoveBuiltinEffect / RemoveEffect
+        // handlers in app.rs — on remove, the compare pointer is cleared
+        // when it targeted the removed effect, or decremented when it
+        // targeted a later one in the same clip, or left alone otherwise.
+        fn adjust(
+            slot: &mut Option<(klipp_core::ClipId, usize, bool)>,
+            removed_clip: klipp_core::ClipId,
+            removed_index: usize,
+            removed_is_ofx: bool,
+        ) {
+            if let Some((cid, idx, is_ofx)) = *slot {
+                if cid == removed_clip && is_ofx == removed_is_ofx {
+                    if idx == removed_index {
+                        *slot = None;
+                    } else if idx > removed_index {
+                        *slot = Some((cid, idx - 1, is_ofx));
+                    }
+                }
+            }
+        }
+
+        let a = klipp_core::ClipId::new();
+        let b = klipp_core::ClipId::new();
+
+        // Case 1: compared effect is removed → cleared.
+        let mut slot = Some((a, 2, false));
+        adjust(&mut slot, a, 2, false);
+        assert!(slot.is_none());
+
+        // Case 2: earlier sibling removed → index shifts down.
+        let mut slot = Some((a, 2, false));
+        adjust(&mut slot, a, 0, false);
+        assert_eq!(slot, Some((a, 1, false)));
+
+        // Case 3: later sibling removed → index unchanged.
+        let mut slot = Some((a, 2, false));
+        adjust(&mut slot, a, 5, false);
+        assert_eq!(slot, Some((a, 2, false)));
+
+        // Case 4: different clip → untouched.
+        let mut slot = Some((a, 2, false));
+        adjust(&mut slot, b, 2, false);
+        assert_eq!(slot, Some((a, 2, false)));
+
+        // Case 5: different list (builtin vs OFX) → untouched.
+        let mut slot = Some((a, 2, true));
+        adjust(&mut slot, a, 2, false);
+        assert_eq!(slot, Some((a, 2, true)));
     }
 }

@@ -1642,10 +1642,11 @@ impl KlippApp {
             let rgba = std::mem::take(&mut fb.data);
             let original = std::mem::take(&mut fb.original_data);
             let unstab = std::mem::take(&mut fb.unstab_data);
-            (rgba, original, unstab, fw, fh, w, h)
+            let compare_effect = std::mem::take(&mut fb.compare_effect_data);
+            (rgba, original, unstab, compare_effect, fw, fh, w, h)
             // lock released immediately — fb.data is now empty
         };
-        let (mut rgba_bytes, original_bytes, unstab_bytes, fb_width, fb_height, w, h) = frame_data;
+        let (mut rgba_bytes, original_bytes, unstab_bytes, compare_effect_bytes, fb_width, fb_height, w, h) = frame_data;
 
         // Full-res frame arrived — clear preview flags
         self.state.showing_thumbnail_preview = false;
@@ -1762,6 +1763,22 @@ impl KlippApp {
                 let copy_end = (split_x * 4).min(w * 4);
                 rgba_bytes[row_start..row_start + copy_end]
                     .copy_from_slice(&unstab_bytes[row_start..row_start + copy_end]);
+            }
+        }
+
+        // Per-effect compare split: left = without the selected effect,
+        // right = with it. Same byte-row copy as the other compare modes;
+        // the engine has already produced compare_effect_data at the same
+        // dimensions as the main frame.
+        if self.state.split_compare_effect.is_some() && !compare_effect_bytes.is_empty()
+            && compare_effect_bytes.len() == rgba_bytes.len()
+        {
+            let split_x = (self.state.split_position * w as f32) as usize;
+            for y in 0..h {
+                let row_start = y * w * 4;
+                let copy_end = (split_x * 4).min(w * 4);
+                rgba_bytes[row_start..row_start + copy_end]
+                    .copy_from_slice(&compare_effect_bytes[row_start..row_start + copy_end]);
             }
         }
 
@@ -1910,6 +1927,7 @@ impl KlippApp {
                 fb.data = rgba_bytes;
                 fb.original_data = original_bytes;
                 fb.unstab_data = unstab_bytes;
+                fb.compare_effect_data = compare_effect_bytes;
             }
         }
     }
@@ -6832,6 +6850,25 @@ impl KlippApp {
                         break;
                     }
                 }
+                if let Some((cid, idx, true)) = self.state.split_compare_effect {
+                    if cid == *clip_id {
+                        if idx == *effect_index {
+                            self.state.split_compare_effect = None;
+                            let _ = self.cmd_tx.send(AppCommand::SetSplitCompareEffect {
+                                clip_id: None,
+                                effect_index: 0,
+                                is_ofx: false,
+                            });
+                        } else if idx > *effect_index {
+                            self.state.split_compare_effect = Some((cid, idx - 1, true));
+                            let _ = self.cmd_tx.send(AppCommand::SetSplitCompareEffect {
+                                clip_id: Some(cid),
+                                effect_index: idx - 1,
+                                is_ofx: true,
+                            });
+                        }
+                    }
+                }
                 self.sync_sequence_to_engine();
                 true
             }
@@ -6937,6 +6974,25 @@ impl KlippApp {
                             clip.timeline_out = clip.timeline_in + new_duration;
                         }
                         break;
+                    }
+                }
+                if let Some((cid, idx, false)) = self.state.split_compare_effect {
+                    if cid == *clip_id {
+                        if idx == *index {
+                            self.state.split_compare_effect = None;
+                            let _ = self.cmd_tx.send(AppCommand::SetSplitCompareEffect {
+                                clip_id: None,
+                                effect_index: 0,
+                                is_ofx: false,
+                            });
+                        } else if idx > *index {
+                            self.state.split_compare_effect = Some((cid, idx - 1, false));
+                            let _ = self.cmd_tx.send(AppCommand::SetSplitCompareEffect {
+                                clip_id: Some(cid),
+                                effect_index: idx - 1,
+                                is_ofx: false,
+                            });
+                        }
                     }
                 }
                 self.sync_sequence_to_engine();
@@ -8703,6 +8759,34 @@ impl KlippApp {
                     if self.state.before_after_active {
                         self.state.before_after_active = false;
                         let _ = self.cmd_tx.send(AppCommand::ToggleBeforeAfter);
+                    }
+                    self.state.grade_still_compare = false;
+                    if self.state.split_compare_effect.is_some() {
+                        self.state.split_compare_effect = None;
+                        let _ = self.cmd_tx.send(AppCommand::SetSplitCompareEffect {
+                            clip_id: None,
+                            effect_index: 0,
+                            is_ofx: false,
+                        });
+                    }
+                }
+                let _ = self.cmd_tx.send(cmd.clone());
+                true
+            }
+            AppCommand::SetSplitCompareEffect { clip_id, effect_index, is_ofx } => {
+                // Mutate UI state and mirror the command to the engine. The
+                // engine reads clip_id.is_some() as the activation signal.
+                let activating = clip_id.is_some();
+                self.state.split_compare_effect = clip_id.map(|id| (id, *effect_index, *is_ofx));
+                if activating {
+                    // Mutually exclusive with the other compare modes.
+                    if self.state.before_after_active {
+                        self.state.before_after_active = false;
+                        let _ = self.cmd_tx.send(AppCommand::ToggleBeforeAfter);
+                    }
+                    if self.state.stabilization_compare_active {
+                        self.state.stabilization_compare_active = false;
+                        let _ = self.cmd_tx.send(AppCommand::ToggleStabilizationCompare);
                     }
                     self.state.grade_still_compare = false;
                 }
