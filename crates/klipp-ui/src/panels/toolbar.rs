@@ -638,6 +638,10 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new("Overwrite Edit").shortcut_text("D")).clicked() { cmds.push(AppCommand::OverwriteEdit); ui.close_menu(); }
             if ui.button("Lift Edit").clicked() { cmds.push(AppCommand::LiftEdit); ui.close_menu(); }
             if ui.button("Extract Edit").clicked() { cmds.push(AppCommand::ExtractEdit); ui.close_menu(); }
+            if ui.add(egui::Button::new("Freeze Frame").shortcut_text("Shift+F")).clicked() {
+                cmds.push(AppCommand::InsertFreezeFrame { duration_secs: 2.0 });
+                ui.close_menu();
+            }
             ui.separator();
             if ui.button("Add Adjustment Layer").clicked() { cmds.push(AppCommand::CreateAdjustmentLayer); ui.close_menu(); }
             ui.menu_button("Add Generator", |ui| {

@@ -3616,5 +3616,18 @@ fn show_generator_editor(
             ui.add_space(2.0);
             ui.label(egui::RichText::new("Duration determined by clip length.").size(10.0).color(theme.text_dim));
         }
+
+        klipp_core::GeneratorData::StillFrame { png_path, width, height } => {
+            ui.label(egui::RichText::new("Freeze Frame").size(11.0).color(theme.text_secondary));
+            ui.add_space(2.0);
+            ui.label(egui::RichText::new(format!("{}×{}", width, height)).size(10.0).color(theme.text_dim));
+            ui.label(
+                egui::RichText::new(
+                    png_path.file_name().and_then(|n| n.to_str()).unwrap_or("<unknown>"),
+                )
+                .size(10.0)
+                .color(theme.text_dim),
+            );
+        }
     }
 }

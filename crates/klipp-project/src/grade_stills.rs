@@ -142,3 +142,36 @@ pub fn delete_grade_still_file(project_dir: &Path, filename: &str) {
         }
     }
 }
+
+/// Encode an RGBA8 buffer as PNG and write it atomically to
+/// `<project_dir>/media/stills/<filename>`. Returns the absolute path on
+/// success — the caller stores that path inside `GeneratorData::StillFrame`.
+/// Shares the atomic-write pattern with `save_grade_stills` so freeze frames
+/// and grade stills live side-by-side under the same directory.
+pub fn save_freeze_frame_png(
+    project_dir: &Path,
+    filename: &str,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<PathBuf, String> {
+    let dir = stills_dir(project_dir);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create stills directory: {e}"))?;
+    let img = image::RgbaImage::from_raw(width, height, rgba.to_vec()).ok_or_else(|| {
+        format!(
+            "Freeze frame rgba length {} does not match {}x{}x4",
+            rgba.len(),
+            width,
+            height
+        )
+    })?;
+    let mut png_bytes: Vec<u8> = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+        .map_err(|e| format!("Failed to encode freeze frame: {e}"))?;
+    let png_path = dir.join(filename);
+    atomic_write(&png_path, &png_bytes)
+        .map_err(|e| format!("Failed to write freeze frame: {e}"))?;
+    info!("Saved freeze frame to {:?}", png_path);
+    Ok(png_path)
+}

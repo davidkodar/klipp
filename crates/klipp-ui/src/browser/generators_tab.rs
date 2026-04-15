@@ -212,6 +212,19 @@ fn paint_generator_preview(
                 egui::Color32::WHITE,
             );
         }
+
+        GeneratorData::StillFrame { .. } => {
+            // Freeze frames live on the timeline only, not in the generator
+            // browser — render a neutral placeholder if one ever shows up.
+            painter.rect_filled(rect, rounding, egui::Color32::from_gray(60));
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "❄",
+                egui::FontId::proportional(24.0),
+                egui::Color32::WHITE,
+            );
+        }
     }
 }
 

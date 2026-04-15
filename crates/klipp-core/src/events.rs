@@ -493,6 +493,10 @@ pub enum AppCommand {
     CreateGeneratorClip { track_index: Option<usize>, data: crate::GeneratorData },
     /// Update a generator clip's data (color, gradient, etc.).
     UpdateGeneratorData { clip_id: ClipId, data: crate::GeneratorData },
+    /// Capture the current viewer frame and insert a freeze-frame generator
+    /// clip at the playhead. Blades any clip under the playhead so the freeze
+    /// lands cleanly between the two halves.
+    InsertFreezeFrame { duration_secs: f64 },
     /// Open (drill into) a compound clip for editing.
     OpenCompoundClip { clip_id: ClipId },
     /// Navigate back from a nested sequence to the parent.

@@ -117,6 +117,7 @@ impl KeyBindings {
         bind(&mut b, "delete_clip", vec![KeyCombo::new("Delete"), KeyCombo::new("Backspace")]);
         bind(&mut b, "lift_clip", vec![KeyCombo::shift("Delete"), KeyCombo::shift("Backspace")]);
         bind(&mut b, "split_at_playhead", vec![KeyCombo::ctrl("B")]);
+        bind(&mut b, "freeze_frame", vec![KeyCombo::shift("F")]);
         bind(&mut b, "group_clips", vec![KeyCombo::ctrl("G")]);
         bind(&mut b, "ungroup_clips", vec![KeyCombo::ctrl_shift("G")]);
 
@@ -302,6 +303,7 @@ impl KeyBindings {
             "delete_clip" => "Delete Clip",
             "lift_clip" => "Lift Clip (Leave Gap)",
             "split_at_playhead" => "Split at Playhead",
+            "freeze_frame" => "Freeze Frame",
             "group_clips" => "Group Clips",
             "ungroup_clips" => "Ungroup Clips",
             "select_tool" => "Select Tool",
@@ -381,7 +383,7 @@ impl KeyBindings {
             ("File", &["save_project", "save_project_as", "open_project", "import_media", "export", "preferences"]),
             ("Edit", &["undo", "redo", "cut_clip", "copy_clip", "paste_clip", "copy_attributes", "paste_attributes", "duplicate_clip", "select_all", "deselect_all", "delete_clip", "lift_clip", "split_at_playhead", "group_clips", "ungroup_clips"]),
             ("Tools", &["select_tool", "blade_tool", "range_tool", "trim_tool"]),
-            ("Timeline", &["insert_edit", "overwrite_edit", "lift_edit", "extract_edit", "toggle_edit_mode", "ripple_trim_head", "ripple_trim_tail"]),
+            ("Timeline", &["insert_edit", "overwrite_edit", "lift_edit", "extract_edit", "toggle_edit_mode", "ripple_trim_head", "ripple_trim_tail", "freeze_frame"]),
             ("Navigation", &["next_edit_point", "prev_edit_point", "set_in_point", "set_out_point", "clear_in_point", "clear_out_point", "clear_in_out", "set_range_to_clip"]),
             ("Transport", &["play_pause", "step_forward", "step_backward", "go_to_start", "go_to_end", "shuttle_reverse", "shuttle_pause", "shuttle_forward", "toggle_loop"]),
             ("Viewer", &["toggle_fullscreen", "toggle_before_after", "toggle_color_panel", "toggle_scopes", "toggle_zebra", "toggle_false_color", "toggle_perf_overlay", "toggle_matte_preview"]),

@@ -2884,6 +2884,10 @@ impl KlippApp {
                     self.sync_sequence_to_engine();
                     return true;
                 }
+                AppCommand::InsertFreezeFrame { duration_secs } => {
+                    self.insert_freeze_frame(*duration_secs);
+                    return true;
+                }
                 AppCommand::CreateGeneratorClip { track_index, data } => {
                     let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
                     let ph = self.state.playhead.rescale_to(fps_rate);
@@ -2894,6 +2898,7 @@ impl KlippApp {
                         klipp_core::GeneratorData::Gradient { .. } => "Gradient",
                         klipp_core::GeneratorData::ColorBars => "Color Bars",
                         klipp_core::GeneratorData::Countdown => "Countdown",
+                        klipp_core::GeneratorData::StillFrame { .. } => "Freeze Frame",
                     };
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                     let track_idx = track_index.unwrap_or_else(|| {
@@ -3617,6 +3622,137 @@ impl KlippApp {
                 self.state.dirty = true;
             }
         }
+    }
+
+    /// Freeze the current viewer frame and insert it as a generator clip at
+    /// the playhead. If a clip is under the playhead it is bladed first so
+    /// the freeze slots cleanly between the two halves; downstream clips on
+    /// the same track are rippled by `duration_secs` to make room.
+    fn insert_freeze_frame(&mut self, duration_secs: f64) {
+        // 1. Snapshot the viewer frame.
+        let (rgba, width, height) = {
+            let fb = self.frame_buffer.lock().unwrap();
+            if fb.data.is_empty() || fb.width == 0 || fb.height == 0 {
+                drop(fb);
+                self.state.toast.show("No frame to freeze yet".to_string());
+                return;
+            }
+            (fb.data.clone(), fb.width, fb.height)
+        };
+
+        // 2. Work out the sidecar directory (saved project or temp fallback).
+        let stills_root: std::path::PathBuf = match self.state.project_path.clone() {
+            Some(dir) => dir,
+            None => std::env::temp_dir().join("klipp_freeze"),
+        };
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let filename = format!("freeze_{nanos}.png");
+
+        // 3. Atomic-write the PNG. Bail out with a toast on error.
+        let png_path = match klipp_project::save_freeze_frame_png(
+            &stills_root,
+            &filename,
+            &rgba,
+            width,
+            height,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("freeze frame: {e}");
+                self.state.toast.show(format!("Freeze frame failed: {e}"));
+                return;
+            }
+        };
+
+        // 4. Pick target track + playhead snapped to sequence fps.
+        let seq_idx = self.state.active_sequence_idx;
+        let fps_rate = self.state.sequences[seq_idx].fps.rate();
+        let ph = self.state.playhead.rescale_to(fps_rate);
+        let duration_frames = (duration_secs * fps_rate as f64).round() as i64;
+        let duration = klipp_core::RationalTime::from_frames(duration_frames.max(1), fps_rate);
+        let track_idx = {
+            let seq = &mut self.state.sequences[seq_idx];
+            match seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video) {
+                Some(i) => i,
+                None => {
+                    seq.tracks.insert(0, klipp_timeline::Track::new("Freeze", klipp_timeline::TrackKind::Video));
+                    0
+                }
+            }
+        };
+
+        // 5. Blade any clip under the playhead on that track so the freeze
+        //    inserts cleanly between halves. blade_clip_at pushes its own
+        //    undo entry.
+        let clip_under_ph = self.state.sequences[seq_idx].tracks[track_idx]
+            .clip_at_timecode(ph)
+            .map(|(_, c)| c.id);
+        if let Some(cid) = clip_under_ph {
+            // Only blade when the cut is interior — skip if the playhead sits
+            // exactly on the clip's in or out edge (blade_at rejects edge cuts).
+            let clip = self.state.sequences[seq_idx].tracks[track_idx]
+                .find_clip(cid).cloned();
+            if let Some(c) = clip {
+                if c.timeline_in < ph && c.timeline_out > ph {
+                    self.blade_clip_at(track_idx, cid, ph);
+                }
+            }
+        }
+
+        // 6. Ripple: shift every clip on the target track that starts at or
+        //    after the playhead by +duration so the freeze has a gap to land
+        //    in. Using a direct mutation rather than the magnetic editor so
+        //    we don't touch other tracks.
+        {
+            let seq = &mut self.state.sequences[seq_idx];
+            for c in seq.tracks[track_idx].clips.iter_mut() {
+                if c.timeline_in >= ph {
+                    c.timeline_in = c.timeline_in + duration;
+                    c.timeline_out = c.timeline_out + duration;
+                }
+            }
+        }
+
+        // 7. Build and insert the freeze clip.
+        let timeline_out = ph + duration;
+        let clip = klipp_timeline::Clip {
+            id: klipp_core::ClipId::new(),
+            kind: klipp_timeline::ClipKind::Generator(klipp_core::GeneratorData::StillFrame {
+                png_path: png_path.clone(),
+                width,
+                height,
+            }),
+            timeline_in: ph,
+            timeline_out,
+            source_in: klipp_core::RationalTime::from_secs_f64(0.0, fps_rate),
+            source_out: duration,
+            ..klipp_timeline::Clip::gap(ph, timeline_out)
+        };
+        let clip_id = clip.id;
+        let clip_for_history = clip.clone();
+        {
+            let seq = &mut self.state.sequences[seq_idx];
+            seq.tracks[track_idx].clips.push(clip);
+            seq.tracks[track_idx].sort_clips();
+        }
+
+        // 8. Undo entry for the insertion. The blade already pushed its own.
+        self.state.history.push(HistoryEntry {
+            sequence_idx: seq_idx,
+            command: EditCommand::LegacyAppendClip {
+                clip: clip_for_history,
+                track_index: track_idx,
+            },
+        });
+
+        // 9. Finalize.
+        self.state.selected_clip = Some(clip_id);
+        self.state.toast.show(format!("Freeze frame inserted ({duration_secs:.1}s)"));
+        self.state.dirty = true;
+        self.sync_sequence_to_engine();
     }
 
     fn blade_clip_at(&mut self, track_index: usize, clip_id: klipp_core::ClipId, cut_at: klipp_core::RationalTime) {
@@ -13396,6 +13532,10 @@ impl KlippApp {
                         });
                     }
                 }
+            }
+            // Freeze frame at playhead (default 2s duration).
+            if kb.is_action_pressed("freeze_frame", i) {
+                cmds.push(AppCommand::InsertFreezeFrame { duration_secs: 2.0 });
             }
             // Toggle loop playback
             if kb.is_action_pressed("toggle_loop", i) {

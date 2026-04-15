@@ -266,7 +266,7 @@ impl TransitionUserParams {
     }
 }
 
-/// Data for a generator clip (solid color, gradient, bars, countdown).
+/// Data for a generator clip (solid color, gradient, bars, countdown, still).
 /// Lives in klipp-core so AppCommand can carry it directly.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum GeneratorData {
@@ -278,6 +278,16 @@ pub enum GeneratorData {
     ColorBars,
     /// Countdown timer (seconds remaining overlaid on black).
     Countdown,
+    /// Freeze frame: a still RGBA image persisted to a sidecar PNG on disk.
+    /// The renderer re-decodes the PNG on demand. `png_path` is absolute at
+    /// runtime; project save/load should translate to/from a relative path
+    /// under `<project>/media/stills/` the same way MediaPool handles media
+    /// paths. TODO: relative-path serialization.
+    StillFrame {
+        png_path: std::path::PathBuf,
+        width: u32,
+        height: u32,
+    },
 }
 
 impl Default for GeneratorData {

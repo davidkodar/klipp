@@ -16,6 +16,27 @@ pub fn render_generator(
         GeneratorData::Gradient { top, bottom } => render_gradient(*top, *bottom, width, height),
         GeneratorData::ColorBars => render_color_bars(width, height),
         GeneratorData::Countdown => render_countdown(width, height, elapsed_secs, total_secs),
+        GeneratorData::StillFrame { png_path, .. } => render_still_frame(png_path, width, height),
+    }
+}
+
+/// Decode the sidecar PNG at `png_path` and resize to `(width, height)`.
+/// Missing/corrupt file → solid magenta so the error is visibly obvious
+/// rather than silently substituting black.
+pub fn render_still_frame(png_path: &std::path::Path, width: u32, height: u32) -> Vec<u8> {
+    match image::open(png_path) {
+        Ok(img) => img
+            .resize_exact(width, height, image::imageops::FilterType::Lanczos3)
+            .to_rgba8()
+            .into_raw(),
+        Err(_) => {
+            let pixel_count = (width as usize) * (height as usize);
+            let mut buf = Vec::with_capacity(pixel_count * 4);
+            for _ in 0..pixel_count {
+                buf.extend_from_slice(&[255u8, 0, 255, 255]);
+            }
+            buf
+        }
     }
 }
 
@@ -273,5 +294,25 @@ mod tests {
         assert_eq!(render_gradient([0, 0, 0, 255], [255, 255, 255, 255], 640, 480).len(), expected);
         assert_eq!(render_color_bars(640, 480).len(), expected);
         assert_eq!(render_countdown(640, 480, 2.0, 10.0).len(), expected);
+    }
+
+    #[test]
+    fn still_frame_missing_file_returns_magenta() {
+        let result = render_generator(
+            &GeneratorData::StillFrame {
+                png_path: std::path::PathBuf::from("/nonexistent/freeze.png"),
+                width: 4,
+                height: 4,
+            },
+            4,
+            4,
+            0.0,
+            1.0,
+        );
+        assert_eq!(result.len(), 4 * 4 * 4);
+        // Every pixel should be magenta.
+        for pixel in result.chunks_exact(4) {
+            assert_eq!(pixel, &[255u8, 0, 255, 255]);
+        }
     }
 }

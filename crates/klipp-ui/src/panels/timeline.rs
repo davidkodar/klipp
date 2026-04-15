@@ -2193,6 +2193,8 @@ impl TimelinePanel {
                         egui::Color32::from_rgba_unmultiplied(128, 128, 128, 220),
                     klipp_core::GeneratorData::Countdown =>
                         egui::Color32::from_rgba_unmultiplied(40, 40, 40, 220),
+                    klipp_core::GeneratorData::StillFrame { .. } =>
+                        egui::Color32::from_rgba_unmultiplied(80, 140, 200, 220),
                 };
                 let lum = 0.299 * pill_color.r() as f32 + 0.587 * pill_color.g() as f32 + 0.114 * pill_color.b() as f32;
                 let text_color = if lum > 140.0 { egui::Color32::BLACK } else { egui::Color32::WHITE };
@@ -5037,6 +5039,25 @@ impl TimelinePanel {
                 if ui.button(enable_label).clicked() {
                     cmds.push(AppCommand::SetClipEnabled { clip_id, enabled: !clip_enabled });
                     ui.close_menu();
+                }
+
+                // Freeze Frame Here — capture the current viewer frame and
+                // insert a 2s freeze as a generator clip at the playhead.
+                // Only offered when the clip under the mouse is ClipKind::Media
+                // and the playhead sits inside that clip (so blading makes sense).
+                let can_freeze = state.sequence().tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == clip_id)
+                    .is_some_and(|c| {
+                        matches!(c.kind, klipp_timeline::ClipKind::Media { .. })
+                            && state.playhead > c.timeline_in
+                            && state.playhead < c.timeline_out
+                    });
+                if can_freeze {
+                    if ui.button("Freeze Frame Here").clicked() {
+                        cmds.push(AppCommand::InsertFreezeFrame { duration_secs: 2.0 });
+                        ui.close_menu();
+                    }
                 }
 
                 // Scene detection: only valid on Media clips whose source file
