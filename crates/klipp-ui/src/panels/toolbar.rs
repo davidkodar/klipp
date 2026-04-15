@@ -388,6 +388,17 @@ impl ToolbarPanel {
             ui.separator();
             if ui.add(egui::Button::new("Export...").shortcut_text("Ctrl+E")).clicked() { cmds.push(AppCommand::ShowExportDialog); ui.close_menu(); }
             if ui.button("Export Subtitles...").clicked() { ui.close_menu(); if let Some(path) = rfd::FileDialog::new().set_title("Export Subtitles").add_filter("SRT", &["srt"]).add_filter("WebVTT", &["vtt"]).add_filter("ASS", &["ass"]).add_filter("SSA", &["ssa"]).set_file_name("subtitles.srt").save_file() { cmds.push(AppCommand::ExportSubtitles { path }); } }
+            if ui.button("YouTube Chapters\u{2026}").clicked() {
+                ui.close_menu();
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_title("Export YouTube Chapters")
+                    .add_filter("Text file", &["txt"])
+                    .set_file_name("chapters.txt")
+                    .save_file()
+                {
+                    cmds.push(AppCommand::ExportYouTubeChapters { path });
+                }
+            }
             // Timeline-format exports (current Sequence → interchange format).
             ui.menu_button("Export Timeline", |ui| {
                 if ui.button("FCPXML...").clicked() {

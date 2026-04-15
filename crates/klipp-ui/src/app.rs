@@ -11150,6 +11150,41 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::ExportYouTubeChapters { path } => {
+                // TODO: add clipboard copy variant (AppCommand::CopyYouTubeChapters)
+                //       once an `arboard`-style helper lives in the workspace.
+                let path = path.clone();
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                // Sequence markers only — auto-sorted by position on add.
+                let mut entries: Vec<(f64, String)> = seq.markers.iter()
+                    .map(|m| (m.position.to_secs_f64(), m.label.clone()))
+                    .collect();
+                // YouTube requires the first chapter at 0:00. If the earliest
+                // marker is more than half a second in (or there are no
+                // markers at all), prepend a synthetic "Intro" at 0:00.
+                let needs_intro = entries.first().map(|(s, _)| *s > 0.5).unwrap_or(true);
+                if needs_intro {
+                    entries.insert(0, (0.0, "Intro".to_string()));
+                }
+                let content = generate_youtube_chapters(&entries);
+                match std::fs::write(&path, &content) {
+                    Ok(_) => {
+                        let chapter_count = entries.len();
+                        let plural = if chapter_count == 1 { "" } else { "s" };
+                        let mut msg = format!("Exported {chapter_count} chapter{plural}.");
+                        if chapter_count < 3 {
+                            msg.push_str(
+                                " Note: YouTube requires at least 3 chapters to display the chapter list.",
+                            );
+                        }
+                        self.state.toast.show(msg);
+                    }
+                    Err(e) => {
+                        self.state.toast.show(format!("Failed to export chapters: {e}"));
+                    }
+                }
+                true
+            }
             AppCommand::ExportFcpxml { path } => {
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                 match klipp_project::fcpxml::export_fcpxml(seq, &self.state.media_pool, path) {
@@ -19344,6 +19379,38 @@ fn format_srt_time(secs: f64) -> String {
     format!("{:02}:{:02}:{:02},{:03}", h, m, s, ms)
 }
 
+/// Format an absolute time for YouTube chapter lines. YouTube accepts both
+/// `M:SS` and `H:MM:SS`; we always emit `H:MM:SS` for consistency regardless
+/// of sequence length. Negative inputs are clamped to zero.
+fn format_youtube_chapter_time(total_secs: f64) -> String {
+    let secs = total_secs.max(0.0) as u64;
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    format!("{}:{:02}:{:02}", h, m, s)
+}
+
+/// Render a sorted `(position_secs, label)` list as YouTube chapter text.
+/// Blank labels are substituted with `Chapter N` (1-indexed across all
+/// entries, including any synthetic "Intro" the caller prepends). No trailing
+/// newline — callers choose whether to append one.
+fn generate_youtube_chapters(entries: &[(f64, String)]) -> String {
+    entries
+        .iter()
+        .enumerate()
+        .map(|(i, (secs, label))| {
+            let tc = format_youtube_chapter_time(*secs);
+            let display_label = if label.trim().is_empty() {
+                format!("Chapter {}", i + 1)
+            } else {
+                label.clone()
+            };
+            format!("{} {}", tc, display_label)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Generate WebVTT format string from subtitle entries.
 fn generate_vtt(subs: &[SubtitleEntry]) -> String {
     let mut out = String::from("WEBVTT\n\n");
@@ -19664,6 +19731,46 @@ This is valid
         assert!((parsed[1].start_secs - 5.0).abs() < 0.001);
         assert!((parsed[1].end_secs - 7.25).abs() < 0.001);
         assert_eq!(parsed[1].text, "Second cue");
+    }
+}
+
+#[cfg(test)]
+mod youtube_chapter_tests {
+    use super::*;
+
+    #[test]
+    fn format_youtube_chapter_time_under_one_hour() {
+        assert_eq!(format_youtube_chapter_time(0.0),   "0:00:00");
+        assert_eq!(format_youtube_chapter_time(83.0),  "0:01:23");
+        assert_eq!(format_youtube_chapter_time(287.0), "0:04:47");
+    }
+
+    #[test]
+    fn format_youtube_chapter_time_over_one_hour() {
+        assert_eq!(format_youtube_chapter_time(3661.0), "1:01:01");
+    }
+
+    #[test]
+    fn generate_youtube_chapters_blank_label_substituted() {
+        let entries = vec![
+            (0.0, "Intro".to_string()),
+            (83.0, "".to_string()),
+        ];
+        let out = generate_youtube_chapters(&entries);
+        assert!(out.contains("Chapter 2"), "expected blank label → 'Chapter 2' in: {out}");
+        // "Intro" is not blank, so "Chapter 1" should NOT appear.
+        assert!(!out.contains("Chapter 1"), "unexpected 'Chapter 1' in: {out}");
+    }
+
+    #[test]
+    fn generate_youtube_chapters_format() {
+        let entries = vec![
+            (0.0, "Intro".to_string()),
+            (83.0, "Main Content".to_string()),
+            (287.0, "Outro".to_string()),
+        ];
+        let expected = "0:00:00 Intro\n0:01:23 Main Content\n0:04:47 Outro";
+        assert_eq!(generate_youtube_chapters(&entries), expected);
     }
 }
 

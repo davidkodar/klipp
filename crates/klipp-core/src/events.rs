@@ -474,6 +474,10 @@ pub enum AppCommand {
     ExportFcpxml { path: PathBuf },
     /// Export sequence as CMX 3600 EDL for broad NLE interchange.
     ExportEdl { path: PathBuf },
+    /// Export sequence markers as YouTube-compatible chapter text
+    /// ("H:MM:SS Label" per line, with a synthetic "Intro" at 0:00 when
+    /// the first marker is after the start).
+    ExportYouTubeChapters { path: PathBuf },
     /// Create a compound clip (nested sequence) from selected clips.
     CreateCompoundClip { name: String },
     /// Create a multicam clip from clips on different tracks at the playhead.

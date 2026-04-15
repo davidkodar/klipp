@@ -19,7 +19,7 @@ impl MarkersPanel {
             .default_height(300.0)
             .resizable(true)
             .show(ctx, |ui| {
-                // Add marker button
+                // Add marker button + export.
                 ui.horizontal(|ui| {
                     if ui.button("+ Add Marker").clicked() {
                         cmds.push(AppCommand::AddMarker {
@@ -28,6 +28,25 @@ impl MarkersPanel {
                             color: MarkerColor::Blue,
                         });
                     }
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if ui
+                                .small_button("\u{2B07} YouTube Chapters")
+                                .on_hover_text("Export markers as YouTube chapter timestamps")
+                                .clicked()
+                            {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .set_title("Export YouTube Chapters")
+                                    .add_filter("Text file", &["txt"])
+                                    .set_file_name("chapters.txt")
+                                    .save_file()
+                                {
+                                    cmds.push(AppCommand::ExportYouTubeChapters { path });
+                                }
+                            }
+                        },
+                    );
                 });
 
                 ui.separator();
