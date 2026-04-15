@@ -14374,10 +14374,19 @@ impl eframe::App for KlippApp {
                                             .color(egui::Color32::from_rgb(120, 120, 130)),
                                     );
                                     if ui.small_button("Browse...").clicked() {
-                                        if let Some(new_path) = rfd::FileDialog::new()
-                                            .set_title(&format!("Locate {}", filename))
-                                            .pick_file()
-                                        {
+                                        // Filter the file picker to the original extension when
+                                        // we have one — reduces accidental mis-relinks.
+                                        let ext = path
+                                            .extension()
+                                            .and_then(|e| e.to_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        let mut dialog = rfd::FileDialog::new()
+                                            .set_title(&format!("Locate {}", filename));
+                                        if !ext.is_empty() {
+                                            dialog = dialog.add_filter(&ext.to_uppercase(), &[ext.as_str()]);
+                                        }
+                                        if let Some(new_path) = dialog.pick_file() {
                                             all_cmds.push(AppCommand::RelinkMedia {
                                                 media_id: *id,
                                                 new_path,
@@ -14903,10 +14912,19 @@ impl KlippApp {
                     // Find media item(s) matching this path
                     if let Some(item) = self.state.media_pool.find_by_path(&path) {
                         let id = item.id;
+                        let filename = item.filename.clone();
                         if deleted || !path.exists() {
                             if let Some(item) = self.state.media_pool.get_mut(&id) {
                                 item.offline = true;
                             }
+                            // Track and surface — toast points at File menu rather than
+                            // popping a modal mid-edit, which would interrupt the user.
+                            if !self.state.offline_media_ids.contains(&id) {
+                                self.state.offline_media_ids.push(id);
+                            }
+                            self.state.toast.show(format!(
+                                "Media file offline: {filename}. Use File \u{2192} Relink Media\u{2026}"
+                            ));
                             tracing::warn!("Media file deleted externally: {:?}", path);
                         } else {
                             if let Some(item) = self.state.media_pool.get_mut(&id) {

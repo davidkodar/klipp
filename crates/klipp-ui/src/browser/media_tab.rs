@@ -111,6 +111,7 @@ pub fn show(
             bit_depth: m.bit_depth,
             pixel_format: m.pixel_format.clone(),
             video_bitrate_kbps: m.video_bitrate_kbps,
+            offline: m.offline,
         })
         .collect();
 
@@ -299,6 +300,36 @@ fn is_media_used(state: &AppState, media_id: MediaId) -> bool {
     state.media_usage_cache.get(&media_id).copied().unwrap_or(0) > 0
 }
 
+/// Dim a thumbnail and overlay an OFFLINE pill in the top-left corner.
+/// Used by both list and grid views to flag media whose source file is
+/// no longer present at the stored path.
+fn paint_offline_badge(painter: &egui::Painter, thumb_rect: egui::Rect) {
+    // Darken the thumbnail with a semi-transparent black overlay.
+    painter.rect_filled(
+        thumb_rect,
+        3.0,
+        egui::Color32::from_rgba_premultiplied(0, 0, 0, 160),
+    );
+
+    // OFFLINE pill in the top-left corner.
+    let label = "OFFLINE";
+    let font = egui::FontId::proportional(10.0);
+    let galley = painter.layout_no_wrap(label.into(), font.clone(), egui::Color32::WHITE);
+    let pad_x = 5.0;
+    let pad_y = 2.0;
+    let pill_size = egui::vec2(galley.size().x + pad_x * 2.0, galley.size().y + pad_y * 2.0);
+    let pill_pos = egui::pos2(thumb_rect.min.x + 4.0, thumb_rect.min.y + 4.0);
+    let pill_rect = egui::Rect::from_min_size(pill_pos, pill_size);
+    painter.rect_filled(pill_rect, 2.0, egui::Color32::from_rgb(220, 60, 60));
+    painter.text(
+        pill_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        font,
+        egui::Color32::WHITE,
+    );
+}
+
 // ── List View ──
 
 #[allow(clippy::too_many_arguments)]
@@ -471,6 +502,11 @@ fn render_list_view(
                 ui.painter().rect_filled(thumb_rect, 3.0, theme.bg_raised);
             }
 
+            // Offline badge: dim the thumbnail and overlay an OFFLINE pill.
+            if item.offline {
+                paint_offline_badge(ui.painter(), thumb_rect);
+            }
+
             // Hover skim (list view: use whole row as skim area)
             handle_hover_skim(ui, state, &row_rect, item, cmds, false);
 
@@ -565,7 +601,7 @@ fn render_list_view(
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
                     show_multi_context_menu(ui, &state.selected_media_ids, cmds);
                 } else {
-                    show_context_menu(ui, item.id, &item.path, cmds);
+                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, cmds);
                 }
             });
         }
@@ -739,6 +775,11 @@ fn render_grid_view(
             };
             ui.painter().rect_stroke(card_rect, 4.0, egui::Stroke::new(1.0, border_color));
 
+            // Offline badge: dim the thumbnail and overlay an OFFLINE pill.
+            if item.offline {
+                paint_offline_badge(ui.painter(), thumb_rect);
+            }
+
             // Hover skim (grid view: white scrubber line over thumbnail)
             handle_hover_skim(ui, state, &thumb_rect, item, cmds, true);
 
@@ -868,7 +909,7 @@ fn render_grid_view(
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
                     show_multi_context_menu(ui, &state.selected_media_ids, cmds);
                 } else {
-                    show_context_menu(ui, item.id, &item.path, cmds);
+                    show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, cmds);
                 }
             });
 
@@ -1115,14 +1156,41 @@ struct MediaRow {
     bit_depth: Option<u8>,
     pixel_format: Option<String>,
     video_bitrate_kbps: Option<u32>,
+    /// Source file no longer exists at `path`. Drives the OFFLINE badge and
+    /// the right-click "Relink…" entry.
+    offline: bool,
 }
 
 fn show_context_menu(
     ui: &mut egui::Ui,
     media_id: MediaId,
     path: &std::path::Path,
+    offline: bool,
+    filename: &str,
     cmds: &mut Vec<AppCommand>,
 ) {
+    // Relink — only shown for offline items, sits at the top so it's
+    // the first action a user sees when reaching for a missing clip.
+    if offline {
+        if ui.button("Relink\u{2026}").clicked() {
+            ui.close_menu();
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_string();
+            let mut dialog = rfd::FileDialog::new()
+                .set_title(format!("Locate {}", filename));
+            if !ext.is_empty() {
+                dialog = dialog.add_filter(&ext.to_uppercase(), &[ext.as_str()]);
+            }
+            if let Some(new_path) = dialog.pick_file() {
+                cmds.push(AppCommand::RelinkMedia { media_id, new_path });
+            }
+        }
+        ui.separator();
+    }
+
     if ui.button("Load in Source").clicked() {
         cmds.push(AppCommand::LoadSourceMedia { media_id });
         ui.close_menu();
