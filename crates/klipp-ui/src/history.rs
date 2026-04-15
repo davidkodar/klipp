@@ -140,6 +140,14 @@ pub enum EditCommand {
         clip_b: Clip,
         position: usize,
     },
+    /// Atomic multi-way split at N scene markers. Replaces `original_clip`
+    /// at `position` with `new_clips` (ordered left→right). Single undo step.
+    LegacySplitAtSceneMarkers {
+        track_index: usize,
+        original_clip: Clip,
+        position: usize,
+        new_clips: Vec<Clip>,
+    },
     LegacyCutClip {
         clip: Clip,
         media_item: klipp_media::MediaItem,
@@ -311,6 +319,7 @@ impl EditCommand {
             EditCommand::LegacySlipClip { .. } => "Slip Clip",
             EditCommand::LegacySlideClip { .. } => "Slide Clip",
             EditCommand::LegacyBladeClip { .. } => "Blade Clip",
+            EditCommand::LegacySplitAtSceneMarkers { .. } => "Split at Scene Markers",
             EditCommand::LegacyCutClip { .. } => "Cut Clip",
             EditCommand::LegacyPasteClip { .. } => "Paste Clip",
             EditCommand::Magnetic(cmd) => cmd.label(),

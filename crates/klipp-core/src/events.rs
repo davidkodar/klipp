@@ -970,6 +970,9 @@ pub enum AppCommand {
     // Scene (shot-boundary) detection
     DetectScenes { clip_id: ClipId },
     CancelSceneDetect { clip_id: ClipId },
+    /// Razor-split a clip at every scene marker it carries, atomically.
+    /// Undo restores the original single clip in one step.
+    SplitAtSceneMarkers { clip_id: ClipId },
     /// Re-run smoothing on existing stabilization_data with the current smoothing
     /// slider value. Cheap (microseconds) — no decode, just gaussian over the
     /// already-baked trajectory. Used for live slider updates.

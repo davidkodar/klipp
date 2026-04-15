@@ -37,7 +37,17 @@ pub fn detect_scenes(
     if fps <= 0.0 {
         return cuts;
     }
-    let threshold = (sensitivity.clamp(0.0, 1.0) as f64) * 0.4;
+    // Sensitivity is a user-facing knob where *higher = more cuts*. Map it to
+    // a distance threshold: sensitivity 0.0 → threshold 0.45 (strict, only
+    // strong shot boundaries survive), sensitivity 1.0 → threshold 0.05
+    // (very liberal, catches small changes). For reference, natural motion
+    // and pans on a well-lit shot produce L1 ≈ 0.02..0.10, while hard cuts
+    // in similar-looking content (e.g. the same subject from a different
+    // angle) often sit around 0.18..0.30, and cuts between different scenes
+    // can exceed 1.0. Default sensitivity 0.4 ⇒ threshold 0.29, which lands
+    // above motion noise but below most shot boundaries.
+    let s = sensitivity.clamp(0.0, 1.0) as f64;
+    let threshold = 0.45 - s * 0.40;
     let min_gap = min_gap_secs.max(0.0) as f64;
 
     let mut prev: Option<[f32; BINS]> = None;

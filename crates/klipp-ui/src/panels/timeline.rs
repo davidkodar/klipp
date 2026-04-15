@@ -5066,6 +5066,24 @@ impl TimelinePanel {
                         cmds.push(AppCommand::DetectScenes { clip_id });
                         ui.close_menu();
                     }
+                    // Offer the razor-split once markers exist. One atomic
+                    // undo step restores the original clip.
+                    let marker_count = state.sequence().tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == clip_id)
+                        .map(|c| c.clip_markers.len())
+                        .unwrap_or(0);
+                    if marker_count > 0 && !state.scene_detect_in_progress.contains(&clip_id) {
+                        let label = format!(
+                            "Split at Scene Markers ({} cut{})",
+                            marker_count,
+                            if marker_count == 1 { "" } else { "s" }
+                        );
+                        if ui.button(label).clicked() {
+                            cmds.push(AppCommand::SplitAtSceneMarkers { clip_id });
+                            ui.close_menu();
+                        }
+                    }
                 }
 
                 // Link/Unlink
@@ -7476,6 +7494,21 @@ impl TimelinePanel {
         if clip_dur <= 0.0 {
             return;
         }
+        // Render-path diagnostic: fires only for clips that actually carry
+        // markers, and only when the tracing subscriber is set to DEBUG or
+        // below. Keeps a paper trail if markers ever "disappear" again.
+        tracing::debug!(
+            "draw_clip_markers: clip={:?} markers={} rect=({:.0},{:.0})–({:.0},{:.0}) clip_dur={:.3}",
+            clip.id, clip.clip_markers.len(),
+            clip_rect.min.x, clip_rect.min.y, clip_rect.max.x, clip_rect.max.y,
+            clip_dur
+        );
+        for (i, m) in clip.clip_markers.iter().enumerate() {
+            tracing::debug!(
+                "  marker {}: t={:.3}s ({:.1}%) color={:?}",
+                i, m.time_secs, (m.time_secs / clip_dur) * 100.0, m.color
+            );
+        }
         let marker_painter = painter.with_clip_rect(clip_rect);
         for m in &clip.clip_markers {
             let frac = (m.time_secs / clip_dur) as f32;
@@ -7484,18 +7517,24 @@ impl TimelinePanel {
                 let (r, g, b) = m.color.to_rgb();
                 let color = egui::Color32::from_rgb(r, g, b);
                 let dark = egui::Color32::from_rgba_premultiplied(0, 0, 0, 160);
-                // Small downward-pointing triangle at top edge
-                let half_w = 3.0;
-                let tick_h = 6.0;
+                // Thin translucent vertical line spanning the full clip height —
+                // makes the marker position legible at any zoom level without
+                // obscuring the clip body.
+                let line_color = egui::Color32::from_rgba_unmultiplied(r, g, b, 180);
+                marker_painter.line_segment(
+                    [egui::pos2(x, clip_rect.top()), egui::pos2(x, clip_rect.bottom())],
+                    egui::Stroke::new(1.5, line_color),
+                );
+                // Downward-pointing triangle at top edge (solid colour anchor).
+                let half_w = 4.0;
+                let tick_h = 7.0;
                 let top = clip_rect.top();
-                // Dark outline
                 let outline = vec![
                     egui::pos2(x - half_w - 0.5, top),
                     egui::pos2(x + half_w + 0.5, top),
                     egui::pos2(x, top + tick_h + 0.5),
                 ];
                 marker_painter.add(egui::Shape::convex_polygon(outline, dark, egui::Stroke::NONE));
-                // Colored fill
                 let tri = vec![
                     egui::pos2(x - half_w, top),
                     egui::pos2(x + half_w, top),
@@ -10490,12 +10529,15 @@ impl TimelinePanel {
 fn truncate_text(text: &str, max_width: f32, font_size: f32) -> String {
     let char_width = font_size * 0.6;
     let max_chars = (max_width / char_width) as usize;
-    if text.len() <= max_chars {
+    let total_chars = text.chars().count();
+    if total_chars <= max_chars {
         text.to_string()
     } else if max_chars > 3 {
-        format!("{}...", &text[..max_chars - 3])
+        let take = max_chars - 3;
+        let head: String = text.chars().take(take).collect();
+        format!("{head}...")
     } else {
-        text[..max_chars.min(text.len())].to_string()
+        text.chars().take(max_chars).collect()
     }
 }
 

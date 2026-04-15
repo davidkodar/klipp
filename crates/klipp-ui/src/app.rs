@@ -9771,6 +9771,132 @@ impl KlippApp {
                 self.state.scene_detect_progress.remove(clip_id);
                 true
             }
+            AppCommand::SplitAtSceneMarkers { clip_id } => {
+                // Razor the clip at every scene marker it carries. Pushes a
+                // single compound history entry so Ctrl+Z undoes the whole
+                // split at once.
+                let cid = *clip_id;
+                let active = self.state.active_sequence_idx;
+                // Find the track index holding the clip.
+                let track_idx = match self.state.sequences[active].tracks.iter()
+                    .position(|t| t.find_clip(cid).is_some())
+                {
+                    Some(i) => i,
+                    None => { return true; }
+                };
+                if self.state.sequences[active].tracks[track_idx].locked { return true; }
+                // Snapshot the original clip + its source fps so we can
+                // convert marker times (clip-relative seconds) into timeline
+                // RationalTimes at the correct rate.
+                let (original, position, marker_times_secs, source_in_secs, fps) = {
+                    let track = &self.state.sequences[active].tracks[track_idx];
+                    let clip = match track.find_clip(cid) {
+                        Some(c) => c.clone(),
+                        None => { return true; }
+                    };
+                    let pos = match track.clips.iter().position(|c| c.id == cid) {
+                        Some(p) => p,
+                        None => { return true; }
+                    };
+                    let mut times: Vec<f64> = clip.clip_markers.iter()
+                        .map(|m| m.time_secs).collect();
+                    times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    let fps = clip.timeline_in.rate.max(1);
+                    let source_in_secs = clip.source_in.to_secs_f64();
+                    (clip, pos, times, source_in_secs, fps)
+                };
+                let _ = source_in_secs; // marker.time_secs is already clip-relative
+                if marker_times_secs.is_empty() {
+                    self.state.toast.show("No scene markers on this clip — run Detect Scenes first".to_string());
+                    return true;
+                }
+                // Convert clip-relative marker seconds → absolute timeline times
+                // at the clip's rate. Guard against markers too close to clip
+                // edges or to each other (< 1 frame apart).
+                let clip_dur_secs = original.duration().to_secs_f64();
+                let min_piece_secs = 1.0 / fps as f64;
+                let timeline_in_secs = original.timeline_in.to_secs_f64();
+                let mut cuts: Vec<klipp_core::RationalTime> = Vec::new();
+                let mut last_secs = 0.0f64;
+                for t in &marker_times_secs {
+                    if *t <= min_piece_secs || *t >= (clip_dur_secs - min_piece_secs) { continue; }
+                    if (t - last_secs) < min_piece_secs { continue; }
+                    last_secs = *t;
+                    let abs_secs = timeline_in_secs + *t;
+                    cuts.push(klipp_core::RationalTime::from_secs_f64(abs_secs, fps));
+                }
+                if cuts.is_empty() {
+                    self.state.toast.show("Scene markers are too close to clip edges to split".to_string());
+                    return true;
+                }
+
+                // Progressive blade: each blade replaces the current right-hand
+                // piece with two new pieces. Collect all resulting clips in
+                // left-to-right order for the compound history entry.
+                let mut new_clips: Vec<klipp_timeline::Clip> = Vec::new();
+                let mut current_id = cid;
+                {
+                    let track = &mut self.state.sequences[active].tracks[track_idx];
+                    for cut in &cuts {
+                        match track.blade_at(current_id, *cut) {
+                            Some((clip_a, clip_b)) => {
+                                new_clips.push(clip_a);
+                                current_id = clip_b.id;
+                            }
+                            None => {
+                                tracing::warn!("SplitAtSceneMarkers: blade_at returned None at cut {:?} on clip {:?}", cut, current_id);
+                                break;
+                            }
+                        }
+                    }
+                    // Capture the final right-hand piece.
+                    if let Some(final_clip) = track.find_clip(current_id).cloned() {
+                        new_clips.push(final_clip);
+                    }
+                    // Scene markers on the split pieces would now sit exactly
+                    // at the clip boundaries (each cut consumed its marker) —
+                    // clear them so the result looks clean. Markers on the
+                    // original (pre-split) clip are preserved in the history
+                    // entry for undo.
+                    for c in track.clips.iter_mut() {
+                        if new_clips.iter().any(|nc| nc.id == c.id) {
+                            c.clip_markers.clear();
+                        }
+                    }
+                    for c in new_clips.iter_mut() {
+                        c.clip_markers.clear();
+                    }
+                }
+
+                if new_clips.len() < 2 {
+                    // Nothing meaningfully changed — rollback by restoring original.
+                    let track = &mut self.state.sequences[active].tracks[track_idx];
+                    track.clips.retain(|c| c.id != current_id);
+                    track.clips.insert(position.min(track.clips.len()), original.clone());
+                    track.sort_clips();
+                    self.state.toast.show("Split failed — markers did not produce valid pieces".to_string());
+                    return true;
+                }
+
+                let n_pieces = new_clips.len();
+                self.state.history.push(HistoryEntry {
+                    sequence_idx: active,
+                    command: EditCommand::LegacySplitAtSceneMarkers {
+                        track_index: track_idx,
+                        original_clip: original,
+                        position,
+                        new_clips,
+                    },
+                });
+                self.sync_sequence_to_engine();
+                self.state.dirty = true;
+                self.state.toast.show(format!(
+                    "Split clip into {} pieces at {} scene marker{}",
+                    n_pieces, cuts.len(),
+                    if cuts.len() == 1 { "" } else { "s" }
+                ));
+                true
+            }
             AppCommand::ResmoothStabilization { clip_id } => {
                 // Re-run gaussian smoothing on the existing baked trajectory using
                 // the current smoothing slider value. Microseconds — safe to call
@@ -11404,6 +11530,15 @@ impl KlippApp {
                     track.sort_clips();
                 }
             }
+            EditCommand::LegacySplitAtSceneMarkers { track_index, original_clip, position, new_clips } => {
+                if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
+                    let new_ids: std::collections::HashSet<_> = new_clips.iter().map(|c| c.id).collect();
+                    track.clips.retain(|c| !new_ids.contains(&c.id));
+                    let pos = (*position).min(track.clips.len());
+                    track.clips.insert(pos, original_clip.clone());
+                    track.sort_clips();
+                }
+            }
             EditCommand::LegacyCutClip { clip, track_index, position, shifted_clips, .. } => {
                 // Undo cut = re-insert clip + restore shifted positions
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
@@ -11758,6 +11893,16 @@ impl KlippApp {
                     track.remove_clip(original_clip.id);
                     track.clips.push(clip_a.clone());
                     track.clips.push(clip_b.clone());
+                    track.sort_clips();
+                }
+            }
+            EditCommand::LegacySplitAtSceneMarkers { track_index, original_clip, new_clips, .. } => {
+                // Redo: remove the original, re-insert every piece.
+                if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*track_index) {
+                    track.remove_clip(original_clip.id);
+                    for c in new_clips {
+                        track.clips.push(c.clone());
+                    }
                     track.sort_clips();
                 }
             }
@@ -15352,26 +15497,44 @@ impl KlippApp {
                     self.state.scene_detect_in_progress.remove(&clip_id);
                     self.state.scene_detect_progress.remove(&clip_id);
                     let color = self.prefs.editing.scene_detect_marker_color;
+                    let mut added = 0usize;
+                    let mut found_clip = false;
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(clip_id) {
+                            found_clip = true;
+                            // detect_scenes emits source-media time; ClipMarker.time_secs
+                            // is clip-relative (see sequence.rs split logic at line 584).
+                            let source_in_secs = clip.source_in.to_secs_f64();
+                            let clip_dur = clip.duration().to_secs_f64().max(1e-9);
                             for (i, &cut_secs) in cut_times.iter().enumerate() {
-                                clip.clip_markers.push(klipp_timeline::ClipMarker {
-                                    time_secs: cut_secs,
-                                    name: format!("Scene {}", i + 1),
-                                    color,
-                                });
+                                let rel = cut_secs - source_in_secs;
+                                if rel > 0.0 && rel < clip_dur {
+                                    clip.clip_markers.push(klipp_timeline::ClipMarker {
+                                        time_secs: rel,
+                                        name: format!("Scene {}", i + 1),
+                                        color,
+                                    });
+                                    added += 1;
+                                }
                             }
                             clip.clip_markers.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
                             break;
                         }
                     }
                     self.sync_sequence_to_engine();
-                    let count = cut_times.len();
-                    self.state.toast.show(format!(
-                        "Detected {} scene cut{}.",
-                        count,
-                        if count == 1 { "" } else { "s" }
-                    ));
+                    if !found_clip {
+                        self.state.toast.show("Scene detection: clip no longer exists (was it split?)".to_string());
+                    } else {
+                        self.state.toast.show(format!(
+                            "Detected {} scene cut{}.",
+                            added,
+                            if added == 1 { "" } else { "s" }
+                        ));
+                    }
+                    tracing::info!(
+                        "Scene detect: added {} marker(s) to clip={:?} (from {} raw cuts)",
+                        added, clip_id, cut_times.len()
+                    );
                     self.state.dirty = true;
                 }
                 AppEvent::SceneDetectFailed { clip_id, error } => {
