@@ -843,10 +843,16 @@ pub struct AppState {
     pub viewer_text_cursor_color: Option<[u8; 4]>,
 }
 
-/// A saved reference frame for grading comparison.
+/// A saved reference frame for grading comparison. Persistence is via
+/// PNG sidecars in `<project>/media/stills/` indexed by `filename`;
+/// only `name + filename` survive in JSON, the rgba pixels are loaded
+/// from disk on project open.
 #[derive(Clone)]
 pub struct GradeStill {
     pub name: String,
+    /// Sidecar PNG filename (e.g. `still_1700000000.png`). Empty until
+    /// the still is saved or attached to a project on disk.
+    pub filename: String,
     pub rgba: Vec<u8>,
     pub width: u32,
     pub height: u32,
@@ -857,6 +863,7 @@ impl std::fmt::Debug for GradeStill {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GradeStill")
             .field("name", &self.name)
+            .field("filename", &self.filename)
             .field("rgba_len", &self.rgba.len())
             .field("width", &self.width)
             .field("height", &self.height)

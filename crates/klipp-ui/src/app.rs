@@ -7761,6 +7761,16 @@ impl KlippApp {
                         }
                     }
                 }
+                // Auto-capture a "Before" reference still the first time the
+                // user touches grade params on a saved project. Cheap gate
+                // (is_empty) avoids re-capturing on subsequent edits.
+                if self.state.grade_stills.is_empty() && self.state.project_path.is_some() {
+                    if let Some(still) = self.capture_grade_still("Before".to_string()) {
+                        self.state.grade_stills.push(still);
+                        self.persist_grade_stills();
+                        tracing::info!("Auto-captured 'Before' grade still for first edit");
+                    }
+                }
                 true
             }
             AppCommand::EndNodeParamEdit { clip_id } => {
@@ -8125,42 +8135,16 @@ impl KlippApp {
         match cmd {
             // Grade stills (reference frame comparison)
             AppCommand::CaptureGradeStill { ref name } => {
-                let fb = self.frame_buffer.lock().unwrap();
-                if !fb.data.is_empty() && fb.width > 0 {
-                    let src_w = fb.width;
-                    let src_h = fb.height;
-                    // Downscale to 480px wide for memory efficiency
-                    let scale = (480.0 / src_w as f32).min(1.0);
-                    let tw = (src_w as f32 * scale) as u32;
-                    let th = (src_h as f32 * scale) as u32;
-                    // Simple nearest-neighbor downscale
-                    let mut rgba = vec![0u8; (tw * th * 4) as usize];
-                    for y in 0..th {
-                        for x in 0..tw {
-                            let sx = (x as f32 / scale) as u32;
-                            let sy = (y as f32 / scale) as u32;
-                            let si = ((sy * src_w + sx) * 4) as usize;
-                            let di = ((y * tw + x) * 4) as usize;
-                            if si + 3 < fb.data.len() && di + 3 < rgba.len() {
-                                rgba[di..di + 4].copy_from_slice(&fb.data[si..si + 4]);
-                            }
-                        }
-                    }
-                    let still_name = name.clone();
-                    drop(fb);
-                    self.state.grade_stills.push(crate::state::GradeStill {
-                        name: still_name.clone(),
-                        rgba,
-                        width: tw,
-                        height: th,
-                        texture: None,
-                    });
-                    self.state.toast.show(format!("Grade still '{}' captured", still_name));
+                if let Some(still) = self.capture_grade_still(name.clone()) {
+                    self.state.grade_stills.push(still);
+                    self.state.toast.show(format!("Grade still '{}' captured", name));
+                    self.persist_grade_stills();
                 }
                 true
             }
             AppCommand::DeleteGradeStill { index } => {
                 if *index < self.state.grade_stills.len() {
+                    let removed_filename = self.state.grade_stills[*index].filename.clone();
                     self.state.grade_stills.remove(*index);
                     if self.state.active_grade_still == Some(*index) {
                         self.state.active_grade_still = None;
@@ -8169,6 +8153,14 @@ impl KlippApp {
                         if active > *index {
                             self.state.active_grade_still = Some(active - 1);
                         }
+                    }
+                    // Best-effort PNG cleanup. Re-write the index so the load
+                    // path doesn't try to read a now-missing file.
+                    if let Some(project_dir) = self.state.project_path.clone() {
+                        if !removed_filename.is_empty() {
+                            klipp_project::delete_grade_still_file(&project_dir, &removed_filename);
+                        }
+                        self.persist_grade_stills();
                     }
                 }
                 true
@@ -8182,6 +8174,76 @@ impl KlippApp {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Snapshot the current viewer frame into a `GradeStill` value.
+    /// Returns `None` if the frame buffer is empty. Pure capture — does
+    /// not mutate `self.state`; caller is responsible for pushing the
+    /// result and persisting.
+    fn capture_grade_still(&self, name: String) -> Option<crate::state::GradeStill> {
+        let fb = self.frame_buffer.lock().unwrap();
+        if fb.data.is_empty() || fb.width == 0 {
+            return None;
+        }
+        let src_w = fb.width;
+        let src_h = fb.height;
+        // Downscale to 480 px wide for memory efficiency (matches the
+        // pre-existing CaptureGradeStill behaviour).
+        let scale = (480.0 / src_w as f32).min(1.0);
+        let tw = (src_w as f32 * scale) as u32;
+        let th = (src_h as f32 * scale) as u32;
+        let mut rgba = vec![0u8; (tw * th * 4) as usize];
+        for y in 0..th {
+            for x in 0..tw {
+                let sx = (x as f32 / scale) as u32;
+                let sy = (y as f32 / scale) as u32;
+                let si = ((sy * src_w + sx) * 4) as usize;
+                let di = ((y * tw + x) * 4) as usize;
+                if si + 3 < fb.data.len() && di + 3 < rgba.len() {
+                    rgba[di..di + 4].copy_from_slice(&fb.data[si..si + 4]);
+                }
+            }
+        }
+        // Filename is stable for the lifetime of the still — derived from
+        // the OS time so reopening the project finds the right PNG.
+        let filename = format!(
+            "still_{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        Some(crate::state::GradeStill {
+            name,
+            filename,
+            rgba,
+            width: tw,
+            height: th,
+            texture: None,
+        })
+    }
+
+    /// Write all current grade stills (PNG sidecars + index) to the
+    /// project directory. No-op if the project hasn't been saved yet.
+    fn persist_grade_stills(&self) {
+        let Some(project_dir) = self.state.project_path.clone() else {
+            return;
+        };
+        let stills: Vec<klipp_project::GradeStillData> = self
+            .state
+            .grade_stills
+            .iter()
+            .map(|s| klipp_project::GradeStillData {
+                name: s.name.clone(),
+                filename: s.filename.clone(),
+                rgba: s.rgba.clone(),
+                width: s.width,
+                height: s.height,
+            })
+            .collect();
+        if let Err(e) = klipp_project::save_grade_stills(&project_dir, &stills) {
+            tracing::warn!("Failed to persist grade stills: {e}");
         }
     }
 
@@ -12211,6 +12273,23 @@ impl KlippApp {
                 if !self.state.offline_media_ids.is_empty() {
                     self.state.show_relink_dialog = true;
                 }
+
+                // Load grade stills (PNG sidecars in <project>/media/stills/).
+                // Reset comparison state — the previous project's selection is
+                // meaningless for the new project's still list.
+                self.state.grade_stills = klipp_project::load_grade_stills(path)
+                    .into_iter()
+                    .map(|d| crate::state::GradeStill {
+                        name: d.name,
+                        filename: d.filename,
+                        rgba: d.rgba,
+                        width: d.width,
+                        height: d.height,
+                        texture: None,
+                    })
+                    .collect();
+                self.state.active_grade_still = None;
+                self.state.grade_still_compare = false;
 
                 // Reload media files into the engine and trigger thumbnails/filmstrips/audio/skim
                 let media_items: Vec<_> = self

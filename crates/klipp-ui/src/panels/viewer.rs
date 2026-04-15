@@ -1148,6 +1148,17 @@ impl ViewerPanel {
         let show_split_divider = state.before_after_active || frame.grade_still_active || state.stabilization_compare_active;
         if show_split_divider {
             self.draw_split_divider(ui, state, &frame);
+            // Keyboard nudge: ←/→ move the split by 0.02. Only consumed
+            // while a compare mode is active so the same keys remain free
+            // for transport / track navigation in normal viewer mode.
+            ui.input(|i| {
+                if i.key_pressed(egui::Key::ArrowRight) {
+                    state.split_position = (state.split_position + 0.02).clamp(0.05, 0.95);
+                }
+                if i.key_pressed(egui::Key::ArrowLeft) {
+                    state.split_position = (state.split_position - 0.02).clamp(0.05, 0.95);
+                }
+            });
         }
 
         self.draw_letterbox(ui, viewer_rect, lb_h);
