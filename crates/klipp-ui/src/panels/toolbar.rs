@@ -793,12 +793,12 @@ impl ToolbarPanel {
             }
             ui.separator();
             let safe_check = if state.viewer_overlays.safe_areas { "\u{2713} " } else { "  " };
-            if ui.button(format!("{safe_check}Safe Areas")).clicked() {
+            if ui.add(egui::Button::new(format!("{safe_check}Safe Areas")).shortcut_text("Alt+S")).clicked() {
                 state.viewer_overlays.safe_areas = !state.viewer_overlays.safe_areas;
                 ui.close_menu();
             }
             let grid_check = if state.viewer_overlays.grid { "\u{2713} " } else { "  " };
-            if ui.button(format!("{grid_check}Grid Overlay")).clicked() {
+            if ui.add(egui::Button::new(format!("{grid_check}Grid Overlay")).shortcut_text("Alt+G")).clicked() {
                 state.viewer_overlays.grid = !state.viewer_overlays.grid;
                 ui.close_menu();
             }

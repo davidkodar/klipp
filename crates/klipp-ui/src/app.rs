@@ -13922,6 +13922,14 @@ impl KlippApp {
             {
                 self.state.show_scopes = !self.state.show_scopes;
             }
+            // Alt+S — toggle safe-areas overlay (action + title).
+            if kb.is_action_pressed("toggle_safe_areas", i) {
+                self.state.viewer_overlays.safe_areas = !self.state.viewer_overlays.safe_areas;
+            }
+            // Alt+G — toggle rule-of-thirds grid + centre crosshair overlay.
+            if kb.is_action_pressed("toggle_grid_overlay", i) {
+                self.state.viewer_overlays.grid = !self.state.viewer_overlays.grid;
+            }
             // Shift+V — cycle scope mode
             if kb.is_action_pressed("cycle_scope_mode", i) {
                 use crate::state::ScopeMode;

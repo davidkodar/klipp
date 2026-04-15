@@ -619,10 +619,14 @@ impl ViewerPanel {
             let y = image_rect.top() + h * i as f32 / 3.0;
             painter.line_segment([egui::pos2(image_rect.left(), y), egui::pos2(image_rect.right(), y)], stroke);
         }
-        // Center crosshair
+        // Center crosshair — reuses the grid_color pref with boosted alpha
+        // so it remains visible against bright frames where the faint grid
+        // would normally disappear. Clamped to u8.
         let cx = image_rect.center().x;
         let cy = image_rect.center().y;
-        let cross = egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(255, 100, 100, 100));
+        let cross_alpha = ((gc[3] as u16) * 2).min(255) as u8;
+        let cross_color = egui::Color32::from_rgba_premultiplied(gc[0], gc[1], gc[2], cross_alpha);
+        let cross = egui::Stroke::new(0.5, cross_color);
         painter.line_segment([egui::pos2(cx - 12.0, cy), egui::pos2(cx + 12.0, cy)], cross);
         painter.line_segment([egui::pos2(cx, cy - 12.0), egui::pos2(cx, cy + 12.0)], cross);
     }
