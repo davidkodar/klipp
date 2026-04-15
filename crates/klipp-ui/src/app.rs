@@ -9705,8 +9705,16 @@ impl KlippApp {
                     let event_tx = self.proxy_event_tx.clone();
                     let sensitivity = self.prefs.editing.scene_detect_sensitivity;
                     let min_gap = self.prefs.editing.scene_detect_min_gap_secs;
+                    self.state.toast.show(format!(
+                        "Analysing scenes\u{2026} ({} frames)", frame_count
+                    ));
+                    tracing::info!(
+                        "Scene detect: starting clip={:?} fps={} frames={} sens={} gap={}s src=[{:.3},{:.3})",
+                        clip_id, fps, frame_count, sensitivity, min_gap, source_in_secs, source_out_secs
+                    );
 
                     std::thread::spawn(move || {
+                        let t0 = std::time::Instant::now();
                         let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, u32, u32)>(3);
                         let path_for_producer = path.clone();
                         let event_tx_open = event_tx.clone();
@@ -9746,6 +9754,10 @@ impl KlippApp {
                         );
                         drop(frame_rx);
                         let _ = producer.join();
+                        tracing::info!(
+                            "Scene detect: finished clip={:?} cuts={} elapsed={:.2}s",
+                            clip_id, cuts.len(), t0.elapsed().as_secs_f64()
+                        );
                         let _ = event_tx.send(AppEvent::SceneDetectComplete { clip_id, cut_times: cuts });
                     });
                 }
