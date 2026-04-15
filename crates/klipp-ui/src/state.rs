@@ -217,6 +217,10 @@ pub struct AppState {
     pub project_notes: String,
     /// Whether the Project Notes window is open.
     pub show_project_notes: bool,
+    /// Mirrored from `prefs.audio.tp_oversample`. Drives the meter
+    /// tooltip wording so users know whether they're seeing real
+    /// 4× true-peak or sample-hold.
+    pub tp_oversample: bool,
     pub dirty: bool,
     pub history: CommandHistory,
 
@@ -1696,6 +1700,7 @@ impl Default for AppState {
             show_markers_panel: false,
             show_subtitle_editor: false,
             show_project_notes: false,
+            tp_oversample: true,
             project_notes: String::new(),
             subtitle_editor: SubtitleEditorState::default(),
             consolidate_progress: None,

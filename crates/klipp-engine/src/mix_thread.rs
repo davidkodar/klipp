@@ -36,7 +36,11 @@ pub struct MixThread {
 impl MixThread {
     /// Create the mix thread and the main output ring buffer.
     /// Returns `(MixThread, AudioConsumer)` — pass the consumer to `AudioOutput::new()`.
-    pub fn new(sample_rate: u32, mixer: Arc<Mutex<AudioMixer>>) -> (Self, AudioConsumer) {
+    pub fn new(
+        sample_rate: u32,
+        mixer: Arc<Mutex<AudioMixer>>,
+        tp_oversample: bool,
+    ) -> (Self, AudioConsumer) {
         // Main ring buffer: ~200ms stereo f32 at device sample rate
         // Small buffer = low latency for volume/pan/mute changes
         let buf_size = (sample_rate as usize) * 2 / 5;
@@ -52,7 +56,7 @@ impl MixThread {
 
         let thread = std::thread::Builder::new()
             .name("klipp-mix".into())
-            .spawn(move || mix_loop(producer, cmd_rx, mixer, sr, lufs_readings_writer, lufs_reset_reader))
+            .spawn(move || mix_loop(producer, cmd_rx, mixer, sr, lufs_readings_writer, lufs_reset_reader, tp_oversample))
             .expect("failed to spawn mix thread");
 
         (
@@ -128,6 +132,7 @@ fn mix_loop(
     sample_rate: u32,
     lufs_readings: Arc<Mutex<LufsReadings>>,
     lufs_reset: Arc<AtomicBool>,
+    tp_oversample: bool,
 ) {
     debug!("Mix thread started");
 
@@ -137,7 +142,7 @@ fn mix_loop(
         consumer: AudioConsumer,
     }
 
-    let mut lufs_meter = LufsMeter::new(sample_rate as f32);
+    let mut lufs_meter = LufsMeter::new(sample_rate as f32, tp_oversample);
     let mut stagings: Vec<StagingEntry> = Vec::new();
     // Per-track temporary buffer for reading from staging
     let chunk_samples = 1024; // 512 stereo frames ≈ 10.7ms at 48kHz

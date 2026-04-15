@@ -26,7 +26,9 @@ impl Normalize {
             target_lufs: -14.0,
             mode: 1.0,
             current_gain: 1.0,
-            lufs_meter: LufsMeter::new(sr),
+            // Normalize is a DSP effect that runs offline-ish — always
+            // request the more accurate 4× true-peak detection here.
+            lufs_meter: LufsMeter::new(sr, true),
         }
     }
 }

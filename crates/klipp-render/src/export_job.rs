@@ -153,18 +153,16 @@ impl ExportJob {
         let loudness_gain_linear = if let Some(target_lufs) = self.settings.target_lufs {
             Self::set_stage(&self.render_stage, "Measuring loudness\u{2026}");
             let mut measure_mixdown = AudioMixdown::new(&self.snapshot)?;
-            let mut meter = klipp_audio::LufsMeter::new(self.snapshot.sample_rate as f32);
-            let mut peak: f32 = 0.0;
+            // Always request 4× true-peak oversampling for export — the
+            // peak-ceiling check below relies on detecting inter-sample
+            // peaks so the rendered file stays within -1 dBFS true-peak.
+            let mut meter = klipp_audio::LufsMeter::new(self.snapshot.sample_rate as f32, true);
             let measure_total = end_frame - start_frame;
             for (i, frame_num) in (start_frame..end_frame).enumerate() {
                 if self.cancel.load(Ordering::Relaxed) {
                     return Err(RenderError::Cancelled);
                 }
                 let audio = measure_mixdown.get_frame_audio(frame_num);
-                for &s in &audio {
-                    let abs = s.abs();
-                    if abs > peak { peak = abs; }
-                }
                 meter.process(&audio);
                 // Report measurement progress (roughly first ~10-15% of total work)
                 if i % 100 == 0 && measure_total > 0 {
@@ -172,7 +170,10 @@ impl ExportJob {
                 }
             }
             let readings = meter.readings();
-            let analysis = LoudnessAnalysis::compute(target_lufs, readings.integrated, peak);
+            // Use the meter's true-peak (oversampled) for the -1 dBFS gate
+            // — same units as the old hand-rolled sample peak (linear 0..1+),
+            // but catches inter-sample peaks the previous code missed.
+            let analysis = LoudnessAnalysis::compute(target_lufs, readings.integrated, readings.true_peak_linear);
             info!(
                 "ExportJob {}: loudness measurement complete — integrated={:.1} LUFS, peak={:.3}, \
                  requested_gain={:.1} dB, applied_gain={:.1} dB, achieved={:.1} LUFS, peak_limited={}",

@@ -250,6 +250,11 @@ pub struct AudioPrefs {
     /// Auto-duck default: sidechain threshold (0..1).
     #[serde(default = "default_duck_threshold")]
     pub duck_threshold: f32,
+    /// Use 4× polyphase FIR upsampling for true-peak metering
+    /// (BS.1770-4 Annex 2). Disable for a small CPU saving at the
+    /// cost of under-reading inter-sample peaks by up to ~3 dB.
+    #[serde(default = "default_true")]
+    pub tp_oversample: bool,
 }
 
 fn default_normalize_lufs() -> f32 { -23.0 }
@@ -278,6 +283,7 @@ impl Default for AudioPrefs {
             duck_attack_secs: default_duck_attack(),
             duck_release_secs: default_duck_release(),
             duck_threshold: default_duck_threshold(),
+            tp_oversample: true,
         }
     }
 }

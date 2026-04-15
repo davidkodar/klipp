@@ -386,7 +386,10 @@ impl PlaybackEngine {
 
         // Create audio output eagerly so skim audio works without playing a clip first.
         let mixer = std::sync::Arc::new(std::sync::Mutex::new(klipp_audio::AudioMixer::new(0)));
-        let (mix_thread, main_consumer) = MixThread::new(cpal_sample_rate, mixer.clone());
+        // True-peak oversampling defaults on (BS.1770-4 Annex 2 compliant).
+        // No live toggle from UI prefs yet — change requires next playback
+        // session. Matches `prefs.audio.tp_oversample` default in klipp-ui.
+        let (mix_thread, main_consumer) = MixThread::new(cpal_sample_rate, mixer.clone(), true);
         let lufs_readings = Some(mix_thread.lufs_readings());
         let lufs_reset = Some(mix_thread.lufs_reset_flag());
         let preferred_device = crate::audio_output::PREFERRED_DEVICE.lock().ok().and_then(|g| g.clone());
@@ -1669,7 +1672,7 @@ impl PlaybackEngine {
         // Create mix thread + audio output on first use
         if self.mix_thread.is_none() {
             let (mt, main_consumer) =
-                MixThread::new(self.cpal_sample_rate, self.mixer.clone());
+                MixThread::new(self.cpal_sample_rate, self.mixer.clone(), true);
             self.lufs_readings = Some(mt.lufs_readings());
             self.lufs_reset = Some(mt.lufs_reset_flag());
             match AudioOutput::new(main_consumer, self.skim_consumer.clone()) {

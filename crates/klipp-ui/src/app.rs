@@ -13925,6 +13925,7 @@ impl eframe::App for KlippApp {
                 klipp_core::LoudnessStandard::Off => -23.0,
             };
             self.state.peak_hold_time_secs = self.prefs.audio.peak_hold_time_secs;
+            self.state.tp_oversample = self.prefs.audio.tp_oversample;
             let _ = self.cmd_tx.send(AppCommand::SetAntiClickFade(self.state.audio_anti_click_fade));
             // Sync editing prefs
             if !self.prefs.editing.playhead_follows_playback {

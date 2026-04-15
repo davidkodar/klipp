@@ -518,6 +518,7 @@ fn fader_strip(
 // Master strip
 // ═══════════════════════════════════════════════════════════════════
 
+#[allow(clippy::too_many_arguments)]
 fn master_strip(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -530,6 +531,7 @@ fn master_strip(
     lufs_lra: f32,
     lufs_true_peak_dbfs: f32,
     lufs_target: f32,
+    tp_oversample: bool,
     clip_indicator: bool,
     cmds: &mut Vec<AppCommand>,
 ) {
@@ -698,11 +700,25 @@ fn master_strip(
     let tp_color = if lufs_true_peak_dbfs > -1.0 && lufs_true_peak_dbfs.is_finite() {
         egui::Color32::from_rgb(0xe0, 0x40, 0x40)
     } else { theme.text_dim };
+    let tp_text = format!("TP{}", format_lufs(lufs_true_peak_dbfs));
     painter.text(
         egui::pos2(col1_x, y + 4.0), egui::Align2::LEFT_CENTER,
-        &format!("TP{}", format_lufs(lufs_true_peak_dbfs)),
+        &tp_text,
         egui::FontId::monospace(7.0), tp_color,
     );
+    // Invisible hover rect over the TP label so the user gets a
+    // tooltip explaining whether 4× oversampling is engaged.
+    let tp_hover_rect = egui::Rect::from_min_size(
+        egui::pos2(col1_x - 2.0, y),
+        egui::vec2(60.0, 10.0),
+    );
+    let tp_hover_resp = ui.allocate_rect(tp_hover_rect, egui::Sense::hover());
+    let tp_tip = if tp_oversample {
+        "True peak (4\u{00d7} oversampled, BS.1770-4 compliant)"
+    } else {
+        "True peak (sample-accurate \u{2014} enable oversampling in Audio prefs for BS.1770-4 compliance)"
+    };
+    tp_hover_resp.on_hover_text(tp_tip);
     painter.text(
         egui::pos2(col2_x, y + 4.0), egui::Align2::LEFT_CENTER,
         &format!("M:{}", format_lufs(lufs_momentary)),
@@ -833,6 +849,7 @@ pub fn show(
                 state.lufs_lra,
                 state.lufs_true_peak_dbfs,
                 state.lufs_target,
+                state.tp_oversample,
                 state.clip_indicator,
                 &mut cmds,
             );

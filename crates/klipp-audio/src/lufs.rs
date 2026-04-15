@@ -5,8 +5,11 @@
 //! - 400ms measurement blocks with 75% overlap (100ms hop)
 //! - Absolute gate (-70 LUFS) and relative gate (-10 LU)
 //! - Momentary loudness (400ms), short-term (3s), and integrated (gated)
-//! - True peak tracking (sample-accurate; for inter-sample use 4x oversample externally)
+//! - True peak: sample-accurate by default; pass `oversample = true`
+//!   to enable BS.1770-4 Annex 2 4× polyphase FIR upsampling for
+//!   inter-sample peak detection.
 
+use crate::true_peak::TruePeakDetector;
 use std::collections::VecDeque;
 
 /// Shared LUFS readings published from the mix thread to the UI.
@@ -17,6 +20,11 @@ pub struct LufsReadings {
     pub integrated: f32,
     pub loudness_range: f32,
     pub true_peak_dbfs: f32,
+    /// Linear true-peak (max absolute amplitude) — same value as
+    /// `true_peak_dbfs` but in linear units. Useful for
+    /// loudness-normalisation peak-ceiling math without a dB
+    /// round-trip.
+    pub true_peak_linear: f32,
 }
 
 /// ITU-R BS.1770-4 compliant loudness meter for stereo audio.
@@ -37,6 +45,14 @@ pub struct LufsMeter {
     block_loudness_history: Vec<f32>,
     // True peak — maximum sample magnitude seen
     true_peak_linear: f32,
+    /// 4× upsampling true-peak detector (only consulted when
+    /// `oversample` is true; otherwise we fall back to sample-hold).
+    tp_detector: TruePeakDetector,
+    /// When true, true-peak is measured via 4× polyphase FIR upsampling
+    /// (BS.1770-4 Annex 2 compliant). When false, we use the simpler
+    /// sample-hold max(|s|) — slightly cheaper, but can under-read
+    /// inter-sample peaks by up to ~3 dB on near-Nyquist signals.
+    oversample: bool,
     // Short-term block history for LRA calculation (3s blocks)
     short_term_history: Vec<f32>,
     // Output values
@@ -128,7 +144,11 @@ fn ms_to_lufs(ms: f32) -> f32 {
 }
 
 impl LufsMeter {
-    pub fn new(sample_rate: f32) -> Self {
+    /// Build a meter at the given sample rate. `oversample` controls
+    /// the true-peak path: `true` enables 4× polyphase FIR upsampling
+    /// (BS.1770-4 Annex 2 compliant), `false` falls back to cheaper
+    /// sample-hold peak detection.
+    pub fn new(sample_rate: f32, oversample: bool) -> Self {
         let block_size = (sample_rate * 0.4) as usize; // 400 ms
         let hop_size = (sample_rate * 0.1) as usize; // 100 ms (75% overlap)
         Self {
@@ -149,6 +169,8 @@ impl LufsMeter {
             block_loudness_history: Vec::new(),
             short_term_history: Vec::new(),
             true_peak_linear: 0.0,
+            tp_detector: TruePeakDetector::new(),
+            oversample,
             momentary_lufs: f32::NEG_INFINITY,
             short_term_lufs: f32::NEG_INFINITY,
             integrated_lufs: f32::NEG_INFINITY,
@@ -173,8 +195,13 @@ impl LufsMeter {
             self.block_samples.push_back(ms);
             self.block_sum += ms as f64;
 
-            // True peak (sample-accurate)
-            let peak = (l.abs() as f32).max(r.abs() as f32);
+            // True peak — 4× oversampled when enabled (BS.1770-4
+            // Annex 2 compliant), sample-hold otherwise.
+            let peak = if self.oversample {
+                self.tp_detector.process(l as f32, r as f32)
+            } else {
+                (l.abs() as f32).max(r.abs() as f32)
+            };
             if peak > self.true_peak_linear {
                 self.true_peak_linear = peak;
                 self.true_peak_dbfs = if peak > 0.0 {
@@ -305,13 +332,17 @@ impl LufsMeter {
             integrated: self.integrated_lufs,
             loudness_range: self.loudness_range,
             true_peak_dbfs: self.true_peak_dbfs,
+            true_peak_linear: self.true_peak_linear,
         }
     }
 
     /// Reset all state (called when user presses reset or on seek).
+    /// Preserves the oversample mode — switching modes requires
+    /// reconstructing the meter via `Self::new(sr, oversample)`.
     pub fn reset(&mut self) {
         let sr = self.sample_rate;
-        *self = Self::new(sr);
+        let os = self.oversample;
+        *self = Self::new(sr, os);
     }
 }
 
@@ -333,7 +364,7 @@ mod tests {
 
     #[test]
     fn silence_reads_neg_infinity() {
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
         let silence = vec![0.0f32; 48000 * 2]; // 1 second stereo
         meter.process(&silence);
         assert!(meter.momentary_lufs.is_infinite() && meter.momentary_lufs < 0.0);
@@ -345,7 +376,7 @@ mod tests {
         // A 1 kHz full-scale sine at 0 dBFS should read approximately -3.01 LUFS
         // (since LUFS of a sine is ~-3 dB relative to square wave, plus K-weighting
         // is nearly flat at 1 kHz). Expected: roughly -3 to -4 LUFS.
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
         let samples = generate_sine(48000.0, 1000.0, 2.0, 1.0);
         meter.process(&samples);
 
@@ -358,7 +389,7 @@ mod tests {
     #[test]
     fn quiet_signal_gated_out() {
         // A very quiet signal should be below the -70 LUFS absolute gate
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
         let samples = generate_sine(48000.0, 1000.0, 2.0, 0.00001);
         meter.process(&samples);
         // Integrated should be -inf because all blocks are below absolute gate
@@ -367,7 +398,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
         let samples = generate_sine(48000.0, 1000.0, 1.0, 0.5);
         meter.process(&samples);
         assert!(meter.momentary_lufs.is_finite());
@@ -380,7 +411,7 @@ mod tests {
 
     #[test]
     fn short_term_uses_3s_window() {
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
         // Process 4 seconds of audio
         let samples = generate_sine(48000.0, 1000.0, 4.0, 0.5);
         meter.process(&samples);
@@ -395,8 +426,8 @@ mod tests {
     fn k_weighting_attenuates_low_frequencies() {
         // 50 Hz tone should measure lower than 1 kHz tone at same amplitude
         // because K-weighting RLB filter attenuates low frequencies
-        let mut meter_low = LufsMeter::new(48000.0);
-        let mut meter_mid = LufsMeter::new(48000.0);
+        let mut meter_low = LufsMeter::new(48000.0, true);
+        let mut meter_mid = LufsMeter::new(48000.0, true);
 
         let low = generate_sine(48000.0, 50.0, 2.0, 0.5);
         let mid = generate_sine(48000.0, 1000.0, 2.0, 0.5);
@@ -417,8 +448,8 @@ mod tests {
     fn k_weight_pre_filter_boosts_high_frequencies() {
         // Pre-filter is a high shelf +4dB at ~1.5kHz.
         // 4kHz tone should read higher than 200Hz tone at same amplitude.
-        let mut meter_hi = LufsMeter::new(48000.0);
-        let mut meter_lo = LufsMeter::new(48000.0);
+        let mut meter_hi = LufsMeter::new(48000.0, true);
+        let mut meter_lo = LufsMeter::new(48000.0, true);
 
         meter_hi.process(&generate_sine(48000.0, 4000.0, 2.0, 0.3));
         meter_lo.process(&generate_sine(48000.0, 200.0, 2.0, 0.3));
@@ -432,7 +463,7 @@ mod tests {
     fn k_weighting_flat_at_1khz() {
         // K-weighting should be approximately 0dB at 1kHz.
         // Compare K-weighted LUFS to what simple RMS would give.
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
         let amplitude = 0.5_f32;
         let samples = generate_sine(48000.0, 1000.0, 2.0, amplitude);
         meter.process(&samples);
@@ -452,7 +483,7 @@ mod tests {
 
     #[test]
     fn no_output_before_first_block() {
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
         // Process only 100ms (less than one 400ms block)
         let short = generate_sine(48000.0, 1000.0, 0.1, 0.5);
         meter.process(&short);
@@ -462,7 +493,7 @@ mod tests {
 
     #[test]
     fn first_block_at_400ms() {
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
         // Process exactly 400ms
         let block = generate_sine(48000.0, 1000.0, 0.4, 0.5);
         meter.process(&block);
@@ -484,10 +515,10 @@ mod tests {
         // Process 2s of audio in one call vs many small calls — results should match
         let samples = generate_sine(48000.0, 1000.0, 2.0, 0.5);
 
-        let mut bulk = LufsMeter::new(48000.0);
+        let mut bulk = LufsMeter::new(48000.0, true);
         bulk.process(&samples);
 
-        let mut incremental = LufsMeter::new(48000.0);
+        let mut incremental = LufsMeter::new(48000.0, true);
         // Process in 256-sample chunks (128 stereo frames)
         for chunk in samples.chunks(256) {
             incremental.process(chunk);
@@ -507,7 +538,7 @@ mod tests {
 
     #[test]
     fn relative_gate_excludes_quiet_sections() {
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
 
         // 2s of loud signal
         let loud = generate_sine(48000.0, 1000.0, 2.0, 0.5);
@@ -529,7 +560,7 @@ mod tests {
 
     #[test]
     fn integrated_accumulates_over_time() {
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
 
         // Process 1s — get first integrated reading
         meter.process(&generate_sine(48000.0, 1000.0, 1.0, 0.5));
@@ -550,7 +581,7 @@ mod tests {
 
     #[test]
     fn true_peak_tracks_maximum() {
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
 
         // Quiet signal first
         meter.process(&generate_sine(48000.0, 1000.0, 1.0, 0.1));
@@ -568,7 +599,7 @@ mod tests {
 
     #[test]
     fn true_peak_does_not_decrease() {
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
 
         // Loud then quiet
         meter.process(&generate_sine(48000.0, 1000.0, 1.0, 0.9));
@@ -581,13 +612,38 @@ mod tests {
             "True peak should hold: {:.2} vs {:.2}", peak_after_loud, peak_after_quiet);
     }
 
+    #[test]
+    fn oversample_true_peak_higher_than_sample_hold() {
+        // A near-Nyquist sine has inter-sample peaks that the simple
+        // sample-hold path misses but the 4× oversampled path catches.
+        use std::f32::consts::PI;
+        let sr = 48000.0_f32;
+        let freq = 0.45 * (sr / 2.0);
+        let mut meter_os = LufsMeter::new(sr, true);
+        let mut meter_sp = LufsMeter::new(sr, false);
+        let mut buf = Vec::new();
+        for i in 0..512 {
+            let t = i as f32 / sr;
+            let s = 0.5 * (2.0 * PI * freq * t).sin();
+            buf.push(s); buf.push(s); // stereo interleaved
+        }
+        meter_os.process(&buf);
+        meter_sp.process(&buf);
+        assert!(
+            meter_os.readings().true_peak_dbfs > meter_sp.readings().true_peak_dbfs,
+            "Oversampled TP ({:.3} dBFS) should exceed sample-hold TP ({:.3} dBFS) for near-Nyquist signal",
+            meter_os.readings().true_peak_dbfs,
+            meter_sp.readings().true_peak_dbfs,
+        );
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // LufsReadings snapshot
     // ═══════════════════════════════════════════════════════════════
 
     #[test]
     fn readings_snapshot_matches_fields() {
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
         meter.process(&generate_sine(48000.0, 1000.0, 2.0, 0.5));
 
         let r = meter.readings();
@@ -612,7 +668,7 @@ mod tests {
 
     #[test]
     fn works_at_44100hz() {
-        let mut meter = LufsMeter::new(44100.0);
+        let mut meter = LufsMeter::new(44100.0, true);
         let samples = generate_sine(44100.0, 1000.0, 2.0, 0.5);
         meter.process(&samples);
         assert!(meter.momentary_lufs.is_finite());
@@ -621,7 +677,7 @@ mod tests {
 
     #[test]
     fn works_at_96000hz() {
-        let mut meter = LufsMeter::new(96000.0);
+        let mut meter = LufsMeter::new(96000.0, true);
         let samples = generate_sine(96000.0, 1000.0, 2.0, 0.5);
         meter.process(&samples);
         assert!(meter.momentary_lufs.is_finite());
@@ -630,9 +686,9 @@ mod tests {
     #[test]
     fn consistent_across_sample_rates() {
         // Same signal at different sample rates should give similar LUFS
-        let mut m48 = LufsMeter::new(48000.0);
-        let mut m44 = LufsMeter::new(44100.0);
-        let mut m96 = LufsMeter::new(96000.0);
+        let mut m48 = LufsMeter::new(48000.0, true);
+        let mut m44 = LufsMeter::new(44100.0, true);
+        let mut m96 = LufsMeter::new(96000.0, true);
 
         m48.process(&generate_sine(48000.0, 1000.0, 2.0, 0.5));
         m44.process(&generate_sine(44100.0, 1000.0, 2.0, 0.5));
@@ -651,14 +707,14 @@ mod tests {
 
     #[test]
     fn empty_input_is_noop() {
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
         meter.process(&[]);
         assert!(meter.momentary_lufs.is_infinite());
     }
 
     #[test]
     fn single_sample_pair() {
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
         meter.process(&[0.5, -0.5]);
         // Not enough for a block — should still be -inf
         assert!(meter.momentary_lufs.is_infinite());
@@ -667,7 +723,7 @@ mod tests {
     #[test]
     fn dc_offset_handled() {
         // DC offset should be attenuated by the RLB high-pass filter
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
         let num_frames = 48000 * 2;
         let dc: Vec<f32> = vec![0.5; num_frames * 2]; // constant DC
         meter.process(&dc);
@@ -684,8 +740,8 @@ mod tests {
 
     #[test]
     fn halving_amplitude_drops_6db() {
-        let mut meter_full = LufsMeter::new(48000.0);
-        let mut meter_half = LufsMeter::new(48000.0);
+        let mut meter_full = LufsMeter::new(48000.0, true);
+        let mut meter_half = LufsMeter::new(48000.0, true);
 
         meter_full.process(&generate_sine(48000.0, 1000.0, 2.0, 0.5));
         meter_half.process(&generate_sine(48000.0, 1000.0, 2.0, 0.25));
@@ -703,7 +759,7 @@ mod tests {
 
     #[test]
     fn lra_zero_for_steady_signal() {
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
         let samples = generate_sine(48000.0, 1000.0, 5.0, 0.5);
         meter.process(&samples);
         // Steady-state signal: all short-term blocks should be similar → LRA near 0
@@ -713,7 +769,7 @@ mod tests {
 
     #[test]
     fn lra_nonzero_for_dynamic_signal() {
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
         // Alternate loud and quiet sections
         for _ in 0..3 {
             meter.process(&generate_sine(48000.0, 1000.0, 2.0, 0.8)); // loud
@@ -726,7 +782,7 @@ mod tests {
 
     #[test]
     fn lra_in_readings() {
-        let mut meter = LufsMeter::new(48000.0);
+        let mut meter = LufsMeter::new(48000.0, true);
         meter.process(&generate_sine(48000.0, 1000.0, 5.0, 0.5));
         let r = meter.readings();
         assert_eq!(r.loudness_range, meter.loudness_range);
