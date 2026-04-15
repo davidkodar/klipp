@@ -169,6 +169,21 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                         cmds.push(AppCommand::ImportSubtitles { path });
                     }
                 }
+
+                // Export (format selected by file extension)
+                if ui.button("\u{2193} Export\u{2026}").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title("Export Subtitles")
+                        .add_filter("SRT", &["srt"])
+                        .add_filter("WebVTT", &["vtt"])
+                        .add_filter("ASS", &["ass"])
+                        .add_filter("SSA", &["ssa"])
+                        .set_file_name("subtitles.srt")
+                        .save_file()
+                    {
+                        cmds.push(AppCommand::ExportSubtitles { path });
+                    }
+                }
             });
 
             ui.separator();

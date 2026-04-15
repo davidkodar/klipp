@@ -1232,6 +1232,37 @@ impl PreferencesPanel {
                 prefs.audio.peak_hold_time_secs = v; *dirty = true;
             }
         });
+
+        // ── AUTO-DUCK DEFAULTS section ──
+        Self::section_header(ui, "AUTO-DUCK DEFAULTS");
+
+        Self::setting_row_with_subtitle(ui, "Duck level", "Target volume while ducking (0 = silence, 1 = unchanged)", |ui| {
+            let mut v = prefs.audio.duck_level;
+            if ui.add(egui::DragValue::new(&mut v).range(0.0..=1.0).speed(0.01).fixed_decimals(2)).changed() {
+                prefs.audio.duck_level = v; *dirty = true;
+            }
+        });
+
+        Self::setting_row(ui, "Attack", |ui| {
+            let mut v = prefs.audio.duck_attack_secs;
+            if ui.add(egui::DragValue::new(&mut v).range(0.01..=2.0).speed(0.01).suffix(" s").fixed_decimals(2)).changed() {
+                prefs.audio.duck_attack_secs = v; *dirty = true;
+            }
+        });
+
+        Self::setting_row(ui, "Release", |ui| {
+            let mut v = prefs.audio.duck_release_secs;
+            if ui.add(egui::DragValue::new(&mut v).range(0.01..=2.0).speed(0.01).suffix(" s").fixed_decimals(2)).changed() {
+                prefs.audio.duck_release_secs = v; *dirty = true;
+            }
+        });
+
+        Self::setting_row_with_subtitle(ui, "Threshold", "Sidechain level above which ducking activates", |ui| {
+            let mut v = prefs.audio.duck_threshold;
+            if ui.add(egui::DragValue::new(&mut v).range(0.0..=1.0).speed(0.01).fixed_decimals(2)).changed() {
+                prefs.audio.duck_threshold = v; *dirty = true;
+            }
+        });
     }
 
     fn show_export(

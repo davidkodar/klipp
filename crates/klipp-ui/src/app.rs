@@ -10458,8 +10458,15 @@ impl KlippApp {
                     }
                 }
                 subs.sort_by(|a, b| a.start_secs.partial_cmp(&b.start_secs).unwrap_or(std::cmp::Ordering::Equal));
-                let is_vtt = path.extension().map_or(false, |ext| ext.eq_ignore_ascii_case("vtt"));
-                let content = if is_vtt { generate_vtt(&subs) } else { generate_srt(&subs) };
+                let ext = path.extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let content = match ext.as_str() {
+                    "vtt" => generate_vtt(&subs),
+                    "ass" | "ssa" => generate_ass(&subs),
+                    _ => generate_srt(&subs),
+                };
                 match std::fs::write(&path, &content) {
                     Ok(_) => self.state.toast.show(format!("Exported {} subtitles to {}", subs.len(), path.display())),
                     Err(e) => self.state.toast.show(format!("Failed to write: {e}")),
@@ -16728,7 +16735,7 @@ impl KlippApp {
                 }
             } else {
                 let panel_cmds = self.new_inspector.show(
-                    ui, &self.state, &self.theme,
+                    ui, &self.state, &self.prefs, &self.theme,
                     &mut self.layout.active_inspector_tab,
                 );
                 all_cmds.extend(panel_cmds);
@@ -18289,6 +18296,65 @@ fn format_vtt_time(secs: f64) -> String {
     format!("{:02}:{:02}:{:02}.{:03}", h, m, s, ms)
 }
 
+/// Generate ASS v4+ subtitle file from entries. Used for both .ass and
+/// .ssa extensions — modern players accept v4+ content under either name.
+fn generate_ass(subs: &[SubtitleEntry]) -> String {
+    let mut out = String::new();
+
+    // [Script Info]
+    out.push_str("[Script Info]\n");
+    out.push_str("Title: Klipp Subtitles\n");
+    out.push_str("ScriptType: v4.00+\n");
+    out.push_str("WrapStyle: 0\n");
+    out.push_str("ScaledBorderAndShadow: yes\n");
+    out.push_str("PlayResX: 1920\n");
+    out.push_str("PlayResY: 1080\n");
+    out.push_str("\n");
+
+    // [V4+ Styles]
+    out.push_str("[V4+ Styles]\n");
+    out.push_str("Format: Name, Fontname, Fontsize, PrimaryColour, \
+SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, \
+StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, \
+Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
+    out.push_str("Style: Default,Arial,48,&H00FFFFFF,&H000000FF,\
+&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,20,1\n");
+    out.push_str("\n");
+
+    // [Events]
+    out.push_str("[Events]\n");
+    out.push_str("Format: Layer, Start, End, Style, Name, \
+MarginL, MarginR, MarginV, Effect, Text\n");
+
+    for sub in subs {
+        // Escape text: \n → \N, strip { } style overrides
+        let text = sub.text
+            .replace('\n', "\\N")
+            .replace('{', "(")
+            .replace('}', ")");
+        out.push_str(&format!(
+            "Dialogue: 0,{},{},Default,,0,0,0,,{}\n",
+            format_ass_time(sub.start_secs),
+            format_ass_time(sub.end_secs),
+            text
+        ));
+    }
+
+    out
+}
+
+fn format_ass_time(secs: f64) -> String {
+    // ASS timestamp format: H:MM:SS.cc (centiseconds, single-digit hour)
+    let total_cs = (secs * 100.0).round() as u64;
+    let cs = total_cs % 100;
+    let total_s = total_cs / 100;
+    let s = total_s % 60;
+    let total_m = total_s / 60;
+    let m = total_m % 60;
+    let h = total_m / 60;
+    format!("{}:{:02}:{:02}.{:02}", h, m, s, cs)
+}
+
 #[cfg(test)]
 mod subtitle_tests {
     use super::*;
@@ -18454,6 +18520,64 @@ This is valid
     #[test]
     fn format_srt_time_3661() {
         assert_eq!(format_srt_time(3661.0), "01:01:01,000");
+    }
+
+    // ── format_ass_time tests ──
+
+    #[test]
+    fn format_ass_time_zero() {
+        assert_eq!(format_ass_time(0.0), "0:00:00.00");
+    }
+
+    #[test]
+    fn format_ass_time_62_5() {
+        assert_eq!(format_ass_time(62.5), "0:01:02.50");
+    }
+
+    #[test]
+    fn format_ass_time_3661_99() {
+        assert_eq!(format_ass_time(3661.99), "1:01:01.99");
+    }
+
+    // ── generate_ass tests ──
+
+    #[test]
+    fn generate_ass_single_entry() {
+        let subs = vec![SubtitleEntry {
+            start_secs: 1.0,
+            end_secs: 4.0,
+            text: "Hello".to_string(),
+        }];
+        let output = generate_ass(&subs);
+        assert!(output.contains("[Script Info]"));
+        assert!(output.contains("ScriptType: v4.00+"));
+        assert!(output.contains("[V4+ Styles]"));
+        assert!(output.contains("[Events]"));
+        assert!(output.contains(
+            "Dialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,0,,Hello"
+        ));
+    }
+
+    #[test]
+    fn generate_ass_newline_escaped() {
+        let subs = vec![SubtitleEntry {
+            start_secs: 0.0,
+            end_secs: 2.0,
+            text: "Line one\nLine two".to_string(),
+        }];
+        let output = generate_ass(&subs);
+        assert!(output.contains("Line one\\NLine two"));
+    }
+
+    #[test]
+    fn generate_ass_braces_escaped() {
+        let subs = vec![SubtitleEntry {
+            start_secs: 0.0,
+            end_secs: 2.0,
+            text: "{bold} text".to_string(),
+        }];
+        let output = generate_ass(&subs);
+        assert!(output.contains("(bold) text"));
     }
 
     // ── Roundtrip test ──

@@ -238,10 +238,26 @@ pub struct AudioPrefs {
     /// Peak hold time in seconds for audio meters.
     #[serde(default = "default_peak_hold")]
     pub peak_hold_time_secs: f32,
+    /// Auto-duck default: duck target level (0.0 = silence, 1.0 = unchanged).
+    #[serde(default = "default_duck_level")]
+    pub duck_level: f32,
+    /// Auto-duck default: attack time in seconds.
+    #[serde(default = "default_duck_attack")]
+    pub duck_attack_secs: f32,
+    /// Auto-duck default: release time in seconds.
+    #[serde(default = "default_duck_release")]
+    pub duck_release_secs: f32,
+    /// Auto-duck default: sidechain threshold (0..1).
+    #[serde(default = "default_duck_threshold")]
+    pub duck_threshold: f32,
 }
 
 fn default_normalize_lufs() -> f32 { -23.0 }
 fn default_peak_hold() -> f32 { 3.0 }
+fn default_duck_level() -> f32 { 0.2 }
+fn default_duck_attack() -> f32 { 0.1 }
+fn default_duck_release() -> f32 { 0.3 }
+fn default_duck_threshold() -> f32 { 0.1 }
 
 impl Default for AudioPrefs {
     fn default() -> Self {
@@ -258,6 +274,10 @@ impl Default for AudioPrefs {
             loudness_standard: Default::default(),
             normalize_target_lufs: default_normalize_lufs(),
             peak_hold_time_secs: default_peak_hold(),
+            duck_level: default_duck_level(),
+            duck_attack_secs: default_duck_attack(),
+            duck_release_secs: default_duck_release(),
+            duck_threshold: default_duck_threshold(),
         }
     }
 }

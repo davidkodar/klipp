@@ -46,6 +46,21 @@ impl Default for DuckSettings {
     }
 }
 
+impl DuckSettings {
+    /// Build a fresh DuckSettings seeded from the user's audio prefs.
+    /// Caller is responsible for overriding `sidechain_track` afterwards
+    /// (role-aware track selection lives in the inspector dispatcher).
+    pub fn from_prefs(prefs: &crate::prefs::AudioPrefs) -> Self {
+        Self {
+            sidechain_track: 0,
+            level: prefs.duck_level,
+            attack: prefs.duck_attack_secs,
+            release: prefs.duck_release_secs,
+            threshold: prefs.duck_threshold,
+        }
+    }
+}
+
 pub struct TrackInfo {
     pub index: usize,
     pub name: String,
@@ -567,7 +582,7 @@ fn show_clip_audio(
     theme: &KlippTheme,
     _state: &AppState,
     clip: &Clip,
-    _track_idx: usize,
+    track_idx: usize,
     is_timeline: bool,
     cmds: &mut Vec<AppCommand>,
     peak: (f32, f32),
@@ -1015,15 +1030,18 @@ fn show_clip_audio(
             slider_row(ui, theme, "duck_threshold", "Threshold", &mut duck.threshold, 0.0..=1.0, 0.1, 0.005, 2, "", empty_ks, false);
 
             ui.add_space(4.0);
+            // Self-ducking guard — target track cannot be its own sidechain source.
+            let is_self_duck = duck.sidechain_track == track_idx;
             ui.horizontal(|ui| {
                 ui.add_space(14.0);
-                let btn = ui.add_sized(
-                    [ui.available_width() - 14.0, 24.0],
+                let btn = ui.add_enabled(
+                    !is_self_duck,
                     egui::Button::new(
                         egui::RichText::new("Apply Auto Duck").size(11.0).color(theme.text_primary),
                     )
                     .fill(theme.accent.linear_multiply(0.3))
-                    .stroke(egui::Stroke::new(1.0, theme.accent)),
+                    .stroke(egui::Stroke::new(1.0, theme.accent))
+                    .min_size(egui::vec2(ui.available_width() - 14.0, 24.0)),
                 );
                 if btn.clicked() {
                     cmds.push(AppCommand::AutoDuckAudio {
@@ -1036,6 +1054,17 @@ fn show_clip_audio(
                     });
                 }
             });
+            if is_self_duck {
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    ui.label(
+                        egui::RichText::new("Sidechain source cannot be the same track as the target.")
+                            .size(10.0)
+                            .color(theme.role_sfx),
+                    );
+                });
+            }
             ui.add_space(4.0);
         });
     }

@@ -16,6 +16,11 @@ pub struct NewInspectorPanel {
     show_add_ofx: bool,
     pub tag_input: String,
     pub duck: audio_tab::DuckSettings,
+    /// Clip id for which `duck` was last initialised. When the selection
+    /// changes, we re-seed `duck` (prefs defaults + role-aware sidechain
+    /// choice) so every new clip gets sensible starting values without
+    /// overriding the user's in-session adjustments on the current clip.
+    pub last_duck_clip: Option<klipp_core::ClipId>,
 }
 
 
@@ -24,6 +29,7 @@ impl NewInspectorPanel {
         &mut self,
         ui: &mut egui::Ui,
         state: &AppState,
+        prefs: &crate::prefs::Preferences,
         theme: &KlippTheme,
         active_tab: &mut InspectorTab,
     ) -> Vec<AppCommand> {
@@ -270,17 +276,34 @@ impl NewInspectorPanel {
                             .and_then(|item| item.audio_channels);
                         let clip_time_secs = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
                         let track_infos: Vec<audio_tab::TrackInfo> = state.sequence().tracks.iter().enumerate()
+                            .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Audio)
                             .map(|(i, t)| audio_tab::TrackInfo {
                                 index: i,
                                 name: if t.name.is_empty() { format!("Track {}", i + 1) } else { t.name.clone() },
                             })
                             .collect();
+                        // Re-seed DuckSettings when the selected clip changes: pull
+                        // defaults from prefs and pick the first Dialogue-bearing audio
+                        // track as the sidechain source (falls back to first audio track).
+                        if self.last_duck_clip != Some(clip.id) {
+                            self.duck = audio_tab::DuckSettings::from_prefs(&prefs.audio);
+                            let dialogue_track = state.sequence().tracks.iter().enumerate()
+                                .find(|(_, t)| {
+                                    t.kind == klipp_timeline::TrackKind::Audio
+                                        && t.clips.iter().any(|c| c.role == klipp_core::ClipRole::Dialogue)
+                                })
+                                .map(|(i, _)| i);
+                            let first_audio = track_infos.first().map(|ti| ti.index);
+                            self.duck.sidechain_track = dialogue_track.or(first_audio).unwrap_or(0);
+                            self.last_duck_clip = Some(clip.id);
+                        }
                         let is_timeline = true; // clip_info comes from timeline selection
                         audio_tab::show(ui, theme, state, Some((clip, track_idx, is_timeline)), &mut cmds, peak, peaks_slice, source_channels, clip_time_secs, &mut self.duck, &track_infos);
                     } else if let Some(bm) = bin_media {
                         // Bin media selected — show audio info for the media item
                         let source_channels = bm.audio_channels;
                         let track_infos: Vec<audio_tab::TrackInfo> = state.sequence().tracks.iter().enumerate()
+                            .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Audio)
                             .map(|(i, t)| audio_tab::TrackInfo {
                                 index: i,
                                 name: if t.name.is_empty() { format!("Track {}", i + 1) } else { t.name.clone() },
