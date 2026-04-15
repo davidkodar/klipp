@@ -896,6 +896,13 @@ impl Clip {
         }
     }
 
+    /// Integrate the speed curve from 0 to `timeline_elapsed_secs` and return
+    /// the source-time offset that a constant-speed clip would reach in the
+    /// same interval. Uses `dt = 1/fps` Riemann sum clamped to [0.1, 16.0].
+    pub fn speed_integral(&self, timeline_elapsed_secs: f64, fps: f64) -> f64 {
+        speed_integral_keyframes(&self.speed_keyframes, timeline_elapsed_secs, fps, self.speed)
+    }
+
     /// Set the InputTransform node's log_format on this clip's node graph.
     /// If the format is Srgb (default), does nothing.
     pub fn set_input_log_format(&mut self, format: klipp_core::LogFormat) {
@@ -1084,6 +1091,110 @@ impl Clip {
             track_points: Vec::new(),
         }
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Time Remap — free helpers
+// ═══════════════════════════════════════════════════════════════════
+
+/// Speed clamp used by the time-remap integrator. Matches the UI graph range
+/// (0.1× – 16×) and the `SetClipSpeed` handler clamp. Prevents zero/negative
+/// step sizes from stalling integration or producing NaN source times.
+pub const SPEED_MIN: f64 = 0.1;
+pub const SPEED_MAX: f64 = 16.0;
+
+/// Evaluate the keyframed speed curve at `clip_time_secs`. Returns `default_speed`
+/// if there are no keyframes, otherwise interpolates via `klipp_core::keyframe::evaluate`.
+/// Does NOT clamp — callers that feed this into the clock must clamp themselves.
+pub fn speed_at_keyframes(
+    keyframes: &[klipp_core::Keyframe],
+    clip_time_secs: f64,
+    default_speed: f64,
+) -> f64 {
+    if keyframes.is_empty() {
+        default_speed
+    } else {
+        klipp_core::keyframe::evaluate(keyframes, clip_time_secs, default_speed as f32) as f64
+    }
+}
+
+/// Integrate the (clamped) speed curve from 0 to `timeline_elapsed_secs` using
+/// `dt = 1/fps` Riemann sums with a partial-step correction on the tail.
+///
+/// Returns the corresponding source-time offset: for constant speed=1.0 this is
+/// just `timeline_elapsed_secs`; for a 2× ramp this returns ~2× the elapsed.
+///
+/// Falls back to `default_speed * timeline_elapsed_secs` when keyframes is empty.
+pub fn speed_integral_keyframes(
+    keyframes: &[klipp_core::Keyframe],
+    timeline_elapsed_secs: f64,
+    fps: f64,
+    default_speed: f64,
+) -> f64 {
+    if timeline_elapsed_secs <= 0.0 {
+        return 0.0;
+    }
+    if keyframes.is_empty() {
+        return default_speed.clamp(SPEED_MIN, SPEED_MAX) * timeline_elapsed_secs;
+    }
+    let dt = 1.0 / fps.max(1.0);
+    // Number of full steps; the last partial step gets a separate correction.
+    let full_steps = (timeline_elapsed_secs / dt).floor() as usize;
+    let mut source_offset = 0.0f64;
+    for i in 0..full_steps {
+        let t = i as f64 * dt;
+        let spd = speed_at_keyframes(keyframes, t, default_speed).clamp(SPEED_MIN, SPEED_MAX);
+        source_offset += spd * dt;
+    }
+    // Tail: the fractional step between full_steps*dt and timeline_elapsed_secs.
+    let tail_start = full_steps as f64 * dt;
+    let tail_len = (timeline_elapsed_secs - tail_start).max(0.0);
+    if tail_len > 0.0 {
+        let spd = speed_at_keyframes(keyframes, tail_start, default_speed).clamp(SPEED_MIN, SPEED_MAX);
+        source_offset += spd * tail_len;
+    }
+    source_offset
+}
+
+/// Given a clip's source duration and speed envelope, compute the timeline-space
+/// duration that exhausts the source: i.e. find T such that
+/// `speed_integral_keyframes(keyframes, T, fps, default) == source_duration_secs`.
+///
+/// Uses forward Riemann integration with `dt = 1/fps`. Falls back to
+/// `source_duration_secs / default_speed` for the no-keyframes case.
+///
+/// Caps at 20× the source duration as a safety valve against a curve that
+/// dwells near `SPEED_MIN` forever.
+pub fn effective_timeline_duration_for_keyframes(
+    keyframes: &[klipp_core::Keyframe],
+    source_duration_secs: f64,
+    fps: f64,
+    default_speed: f64,
+) -> f64 {
+    if source_duration_secs <= 0.0 {
+        return 0.0;
+    }
+    if keyframes.is_empty() {
+        let spd = default_speed.clamp(SPEED_MIN, SPEED_MAX);
+        return source_duration_secs / spd;
+    }
+    let dt = 1.0 / fps.max(1.0);
+    let safety_cap = source_duration_secs * 20.0;
+    let mut source_offset = 0.0f64;
+    let mut timeline_t = 0.0f64;
+    while source_offset < source_duration_secs && timeline_t < safety_cap {
+        let spd = speed_at_keyframes(keyframes, timeline_t, default_speed).clamp(SPEED_MIN, SPEED_MAX);
+        let step_source = spd * dt;
+        if source_offset + step_source >= source_duration_secs {
+            // Partial final step: only use the fraction needed to hit the target.
+            let remaining = source_duration_secs - source_offset;
+            timeline_t += remaining / spd;
+            break;
+        }
+        source_offset += step_source;
+        timeline_t += dt;
+    }
+    timeline_t
 }
 
 #[cfg(test)]
@@ -1477,5 +1588,84 @@ mod tests {
         assert_eq!(track.clip_at_timecode(tc(12)).unwrap().1.id, id0);
         assert_eq!(track.clip_at_timecode(tc(24)).unwrap().1.id, id1);
         assert!(track.clip_at_timecode(tc(48)).is_none()); // past end
+    }
+
+    // ─── Time Remap helpers ────────────────────────────────────────
+
+    fn kf(t: f64, v: f32) -> klipp_core::Keyframe {
+        klipp_core::Keyframe {
+            time_secs: t,
+            value: v,
+            interpolation: klipp_core::keyframe::Interpolation::Linear,
+            tangent_out: (0.0, 0.0),
+            tangent_in: (0.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn constant_speed_no_keyframes_returns_base_speed() {
+        // No keyframes → speed_at_keyframes returns the default.
+        assert_eq!(speed_at_keyframes(&[], 0.0, 1.0), 1.0);
+        assert_eq!(speed_at_keyframes(&[], 5.0, 1.0), 1.0);
+        assert_eq!(speed_at_keyframes(&[], 5.0, 2.5), 2.5);
+
+        // And the integral is just speed * duration.
+        let src = speed_integral_keyframes(&[], 4.0, 60.0, 2.0);
+        assert!((src - 8.0).abs() < 1e-9, "got {src}");
+    }
+
+    #[test]
+    fn ramp_up_integrates_correctly() {
+        // Linear ramp from 0.5× at t=0 to 2.0× at t=10.
+        // Integral from 0 to 5 must be between the min-constant and max-constant
+        // bounds (0.5*5 = 2.5 and 2.0*5 = 10) and close to the exact value for
+        // a linear ramp: mean speed over [0,5] is (0.5 + 1.25)/2 = 0.875,
+        // giving an integral of 4.375.
+        let kfs = vec![kf(0.0, 0.5), kf(10.0, 2.0)];
+        let src = speed_integral_keyframes(&kfs, 5.0, 60.0, 1.0);
+        assert!(src > 2.5, "expected > min-constant; got {src}");
+        assert!(src < 10.0, "expected < max-constant; got {src}");
+        assert!((src - 4.375).abs() < 0.05, "expected ~4.375, got {src}");
+    }
+
+    #[test]
+    fn speed_clamped_to_minimum() {
+        // A keyframe at 0.0× would stall the clock; the integrator must clamp to SPEED_MIN.
+        let kfs = vec![kf(0.0, 0.0), kf(10.0, 0.0)];
+        let src = speed_integral_keyframes(&kfs, 10.0, 60.0, 1.0);
+        // Expected: SPEED_MIN * 10.0
+        let expected = SPEED_MIN * 10.0;
+        assert!((src - expected).abs() < 1e-6, "expected {expected}, got {src}");
+    }
+
+    #[test]
+    fn speed_clamped_to_maximum() {
+        // A keyframe at 999× must clamp to SPEED_MAX.
+        let kfs = vec![kf(0.0, 999.0), kf(10.0, 999.0)];
+        let src = speed_integral_keyframes(&kfs, 1.0, 60.0, 1.0);
+        let expected = SPEED_MAX * 1.0;
+        assert!((src - expected).abs() < 1e-6, "expected {expected}, got {src}");
+    }
+
+    #[test]
+    fn effective_timeline_duration_constant_speed() {
+        // 10s of source at 2× plays back in 5s of timeline.
+        let t = effective_timeline_duration_for_keyframes(&[], 10.0, 60.0, 2.0);
+        assert!((t - 5.0).abs() < 1e-6, "got {t}");
+
+        // 10s of source at 0.5× takes 20s of timeline.
+        let t = effective_timeline_duration_for_keyframes(&[], 10.0, 60.0, 0.5);
+        assert!((t - 20.0).abs() < 1e-6, "got {t}");
+    }
+
+    #[test]
+    fn effective_timeline_duration_roundtrips_integral() {
+        // For any curve: integrating over the computed timeline duration should
+        // recover the source duration we started with (within integrator error).
+        let kfs = vec![kf(0.0, 0.5), kf(10.0, 2.0)];
+        let source_dur = 12.0;
+        let t = effective_timeline_duration_for_keyframes(&kfs, source_dur, 60.0, 1.0);
+        let back = speed_integral_keyframes(&kfs, t, 60.0, 1.0);
+        assert!((back - source_dur).abs() < 0.05, "roundtrip {source_dur} → t={t} → src={back}");
     }
 }

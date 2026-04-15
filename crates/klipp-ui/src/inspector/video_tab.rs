@@ -1529,7 +1529,9 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
 
                 ui.add_space(4.0);
 
-                // Direction row
+                // Direction row — toggle between Forward and Reverse by flipping
+                // the sign of clip.speed. The engine does not yet decode
+                // backwards; this stores the user's intent for a follow-up.
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("Direction")
@@ -1537,12 +1539,17 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                             .color(theme.text_secondary),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(
-                            egui::RichText::new("Forward")
-                                .size(11.0)
-                                .monospace()
-                                .color(theme.text_primary),
-                        );
+                        let is_reversed = clip.speed < 0.0;
+                        let label = if is_reversed { "⇄ Reverse" } else { "⇄ Forward" };
+                        if ui
+                            .selectable_label(is_reversed, egui::RichText::new(label).size(11.0))
+                            .on_hover_text("Toggle reverse playback (negates clip speed)")
+                            .clicked()
+                        {
+                            let abs = clip.speed.abs().max(0.1);
+                            let new_speed = if is_reversed { abs } else { -abs };
+                            cmds.push(AppCommand::SetClipSpeed { clip_id, speed: new_speed });
+                        }
                     });
                 });
 

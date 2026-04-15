@@ -6193,15 +6193,25 @@ impl KlippApp {
     fn handle_speed_keyframe_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
                 AppCommand::SetClipSpeed { clip_id, speed } => {
-                    let speed = speed.clamp(0.1, 16.0);
+                    // Accept negative speeds so the Direction toggle in the
+                    // inspector can store reverse intent. Magnitude is still
+                    // clamped to [0.1, 16.0] — zero would stall playback and
+                    // keeps timeline duration math well-defined.
+                    let speed = if *speed < 0.0 {
+                        -(speed.abs().clamp(0.1, 16.0))
+                    } else {
+                        speed.clamp(0.1, 16.0)
+                    };
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                     if let Some((ti, ci)) = seq.find_clip(* clip_id) {
                         let clip = &mut seq.tracks[ti].clips[ci];
                         let old_speed = clip.speed;
                         clip.speed = speed;
-                        // Adjust timeline duration: new_duration = source_duration / speed
+                        // Adjust timeline duration: new_duration = source_duration / |speed|.
+                        // Reverse (negative speed) plays the same amount of source
+                        // in the same timeline span — the sign only flips direction.
                         let source_dur_secs = clip.source_duration().to_secs_f64();
-                        let new_dur_secs = source_dur_secs / speed;
+                        let new_dur_secs = source_dur_secs / speed.abs().max(0.1);
                         let new_duration = klipp_core::RationalTime::from_secs_f64(new_dur_secs, clip.timeline_in.rate);
                         let old_timeline_out = clip.timeline_out;
                         clip.timeline_out = clip.timeline_in + new_duration;
@@ -6235,7 +6245,9 @@ impl KlippApp {
                             tangent_in: (0.0, 0.0),
                         });
                         clip.speed_keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap());
+                        recalc_timeline_out_from_speed(clip);
                     }
+                    self.sync_sequence_to_engine();
                     self.state.dirty = true;
                     true
                 }
@@ -6246,7 +6258,9 @@ impl KlippApp {
                         if *index < clip.speed_keyframes.len() {
                             clip.speed_keyframes.remove(*index);
                         }
+                        recalc_timeline_out_from_speed(clip);
                     }
+                    self.sync_sequence_to_engine();
                     self.state.dirty = true;
                     true
                 }
@@ -6259,7 +6273,9 @@ impl KlippApp {
                             clip.speed_keyframes[*index].value = *speed as f32;
                             clip.speed_keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap());
                         }
+                        recalc_timeline_out_from_speed(clip);
                     }
+                    self.sync_sequence_to_engine();
                     self.state.dirty = true;
                     true
                 }
@@ -6268,7 +6284,9 @@ impl KlippApp {
                     if let Some((ti, ci)) = seq.find_clip(*clip_id) {
                         let clip = &mut seq.tracks[ti].clips[ci];
                         clip.speed_keyframes = keyframes.clone();
+                        recalc_timeline_out_from_speed(clip);
                     }
+                    self.sync_sequence_to_engine();
                     self.state.dirty = true;
                     true
                 }
@@ -13997,6 +14015,27 @@ fn unique_export_path(
 /// helper in `klipp-render/src/snapshot.rs:693` (private there).
 fn timecode_to_frame(rt: &klipp_core::RationalTime, fps: f64) -> u64 {
     (rt.to_secs_f64() * fps).round() as u64
+}
+
+/// Recompute `clip.timeline_out` so that its visible length on the timeline
+/// matches the time it takes the speed curve to exhaust the clip's source range.
+/// Uses the constant `clip.speed` when there are no keyframes; integrates the
+/// curve otherwise. Called from the speed-keyframe command handlers so the UI
+/// and engine see a consistent clip length after a ramp edit.
+fn recalc_timeline_out_from_speed(clip: &mut klipp_timeline::Clip) {
+    let source_dur_secs = clip.source_duration().to_secs_f64();
+    if source_dur_secs <= 0.0 {
+        return;
+    }
+    let rate = clip.timeline_in.rate;
+    let new_dur_secs = klipp_timeline::effective_timeline_duration_for_keyframes(
+        &clip.speed_keyframes,
+        source_dur_secs,
+        rate as f64,
+        clip.speed,
+    );
+    let new_duration = klipp_core::RationalTime::from_secs_f64(new_dur_secs, rate);
+    clip.timeline_out = clip.timeline_in + new_duration;
 }
 
 fn selected_clips_frame_range(

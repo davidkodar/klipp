@@ -254,6 +254,24 @@ pub struct PlaybackEngine {
     clip_source_start: f64, // source seconds at which playback started for current clip
     clip_timeline_start: Timecode, // timeline position of clip_source_start
     clip_speed: f64, // per-clip speed multiplier (1.0 = normal)
+    // Variable-speed (time remap): per-clip speed envelope. When non-empty,
+    // the master clock's speed is updated per tick from speed_at_keyframes(clip_relative).
+    speed_keyframes: Vec<klipp_core::Keyframe>,
+    speed_ramp_enabled: bool,
+    // Ramp anchor: clip-relative timeline seconds at the moment `ramp_anchor_wall`
+    // was set. `update_playback` advances `ramp_timeline_anchor_secs + wall_elapsed`
+    // to get the current clip-relative timeline position, then samples the speed
+    // curve and re-anchors master_clock when the instantaneous speed drifts >1%.
+    ramp_timeline_anchor_secs: f64,
+    ramp_timeline_anchor_wall: std::time::Instant,
+    // Last speed we pushed to master_clock via the ramp path. Tracked here because
+    // MasterClock has no getter; we use it to decide whether to re-anchor.
+    ramp_last_clock_speed: f64,
+    // Previous post-effects RGBA frame, kept for linear frame blending on the
+    // SpeedRamp effect's `blend_mode == 1` path (slow-mo only). Dimensions are
+    // stored alongside so we can safely skip blending after a resolution change.
+    prev_blend_frame: Option<Vec<u8>>,
+    prev_blend_dims: (u32, u32),
     current_source_rotation: i32, // source rotation in degrees (0, 90, 180, 270)
     /// Last sequence-frame number rendered by the synthetic playback path.
     /// Avoids re-rendering the same generator/title frame ~1000x per second.
@@ -480,6 +498,13 @@ impl PlaybackEngine {
             clip_source_start: 0.0,
             clip_timeline_start: Timecode::zero(),
             clip_speed: 1.0,
+            speed_keyframes: Vec::new(),
+            speed_ramp_enabled: false,
+            ramp_timeline_anchor_secs: 0.0,
+            ramp_timeline_anchor_wall: std::time::Instant::now(),
+            ramp_last_clock_speed: 1.0,
+            prev_blend_frame: None,
+            prev_blend_dims: (0, 0),
             current_source_rotation: 0,
             last_synth_frame_rendered: None,
             expected_audio_generation: 0,
@@ -639,9 +664,23 @@ impl PlaybackEngine {
                 if self.state == PlaybackState::Paused
                     && (self.v1_decoder.is_some() || !self.audio_sources.is_empty())
                 {
-                    // Compute current source position from playhead
-                    let source_secs = self.clip_source_start
-                        + (self.playhead - self.clip_timeline_start).to_secs_f64() * self.clip_speed;
+                    // Compute current source position from playhead. With a
+                    // speed ramp, integrate the curve from clip start to the
+                    // playhead rather than multiplying by the constant speed.
+                    let timeline_elapsed = (self.playhead - self.clip_timeline_start)
+                        .to_secs_f64()
+                        .max(0.0);
+                    let source_offset = if !self.speed_keyframes.is_empty() {
+                        klipp_timeline::speed_integral_keyframes(
+                            &self.speed_keyframes,
+                            timeline_elapsed,
+                            self.fps.rate() as f64,
+                            self.clip_speed,
+                        )
+                    } else {
+                        timeline_elapsed * self.clip_speed
+                    };
+                    let source_secs = self.clip_source_start + source_offset;
                     debug!(
                         "Play resume: playhead={:.3}s clip_source_start={:.3}s clip_timeline_start={:.3}s speed={:.2}x → source={:.3}s",
                         self.playhead.to_secs_f64(), self.clip_source_start,
@@ -692,6 +731,9 @@ impl PlaybackEngine {
                     self.master_clock.resume();
                     self.state = PlaybackState::Playing;
                     self.last_frame_time = std::time::Instant::now();
+                    // Re-anchor the ramp integrator at the current playhead so
+                    // the first update_playback tick samples the correct speed.
+                    self.reset_ramp_anchor();
                     let _ = self.event_tx.send(AppEvent::PlaybackStarted);
                     (self.repaint_cb)();
                 } else if self.state == PlaybackState::Paused
@@ -986,14 +1028,30 @@ impl PlaybackEngine {
                 // Re-read clip speed in case SpeedRamp changed it during playback
                 if self.state == PlaybackState::Playing {
                     let seq = self.sequence.read().unwrap();
+                    let mut speed_state_changed = false;
                     if let Some(clip) = seq.tracks.get(self.current_track_index)
                         .and_then(|t| t.clips.get(self.current_clip_index))
                     {
+                        // Keep speed_keyframes in sync with the sequence.
+                        let new_keyframes = clip.speed_keyframes.clone();
+                        let new_ramp_enabled = !new_keyframes.is_empty();
+                        if new_ramp_enabled != self.speed_ramp_enabled
+                            || new_keyframes.len() != self.speed_keyframes.len()
+                        {
+                            speed_state_changed = true;
+                        }
+                        self.speed_keyframes = new_keyframes;
+                        self.speed_ramp_enabled = new_ramp_enabled;
                         let new_speed = clip.speed.max(0.001);
                         if (self.clip_speed - new_speed).abs() > 0.001 {
                             tracing::debug!("SequenceUpdated: clip_speed {} → {}", self.clip_speed, new_speed);
                             self.clip_speed = new_speed;
-                            self.master_clock.set_speed(new_speed);
+                            // Only hard-set the clock's constant speed when no
+                            // ramp is active. Ramp mode drives the clock per tick.
+                            if !self.speed_ramp_enabled {
+                                self.master_clock.set_speed(new_speed);
+                            }
+                            speed_state_changed = true;
                             // Mute audio at non-normal speeds
                             for active in &self.audio_sources {
                                 active.source.muted().store((new_speed - 1.0).abs() > 0.01, Ordering::Release);
@@ -1001,6 +1059,9 @@ impl PlaybackEngine {
                         }
                     }
                     drop(seq);
+                    if speed_state_changed {
+                        self.reset_ramp_anchor();
+                    }
                 } else {
                     // Re-render overlays and re-grade cached frame when paused —
                     // instant parameter feedback for title/generator edits.
@@ -1251,6 +1312,7 @@ impl PlaybackEngine {
                 self.current_clip_index = clip_idx;
                 self.current_track_index = track_idx;
                 self.current_file = Some(path);
+                self.refresh_speed_keyframes();
                 self.state = PlaybackState::Playing;
 
                 // Open overlay decoders for all non-primary video tracks at the playhead
@@ -1314,6 +1376,8 @@ impl PlaybackEngine {
         self.clip_source_start = self.playhead.to_secs_f64();
         self.clip_timeline_start = self.playhead;
         self.clip_speed = 1.0; // audio-only: no per-clip speed for now
+        self.speed_keyframes.clear();
+        self.speed_ramp_enabled = false;
         self.state = PlaybackState::Playing;
         self.dropped_frames = 0;
         self.frames_consumed = 0;
@@ -1540,6 +1604,8 @@ impl PlaybackEngine {
         self.clip_source_start = 0.0;
         self.clip_timeline_start = RationalTime::from_frames(0, self.fps.rate());
         self.clip_speed = 1.0;
+        self.speed_keyframes.clear();
+        self.speed_ramp_enabled = false;
         self.current_source_rotation = 0;
         self.master_clock.set_speed(1.0);
 
@@ -1780,13 +1846,79 @@ impl PlaybackEngine {
         }
     }
 
+    /// Re-read speed_keyframes from the current clip into the engine's local copy.
+    /// Call after any `self.clip_speed = ...` or after advancing current_clip_index
+    /// so the time-remap path has up-to-date keyframes. Also resets the ramp
+    /// anchor so the next tick integrates from the current playhead.
+    fn refresh_speed_keyframes(&mut self) {
+        let seq = self.sequence.read().unwrap();
+        if let Some(clip) = seq.tracks.get(self.current_track_index)
+            .and_then(|t| t.clips.get(self.current_clip_index))
+        {
+            self.speed_keyframes = clip.speed_keyframes.clone();
+            self.speed_ramp_enabled = !clip.speed_keyframes.is_empty();
+        } else {
+            self.speed_keyframes.clear();
+            self.speed_ramp_enabled = false;
+        }
+        drop(seq);
+        self.reset_ramp_anchor();
+    }
+
+    /// Re-anchor the ramp integrator to the current playhead. Called after any
+    /// seek, clip change, or play/resume so the wall-clock-based timeline_t
+    /// computation starts from a known good spot.
+    fn reset_ramp_anchor(&mut self) {
+        let clip_rel = (self.playhead - self.clip_timeline_start).to_secs_f64().max(0.0);
+        self.ramp_timeline_anchor_secs = clip_rel;
+        self.ramp_timeline_anchor_wall = std::time::Instant::now();
+        self.ramp_last_clock_speed = self.clip_speed;
+    }
+
+    /// Current clip-relative timeline seconds when a speed ramp is active.
+    /// Returns `None` for constant speed — callers fall back to their own math.
+    fn ramp_clip_relative_secs(&self) -> Option<f64> {
+        if self.speed_ramp_enabled && self.state == PlaybackState::Playing {
+            Some(self.ramp_timeline_anchor_secs + self.ramp_timeline_anchor_wall.elapsed().as_secs_f64())
+        } else {
+            None
+        }
+    }
+
     fn update_playback(&mut self) {
         let t_update = std::time::Instant::now();
 
-        // Mute audio when clip speed is not 1.0 (speed ramp, slow-mo, etc.)
-        let should_mute = (self.clip_speed - 1.0).abs() > 0.01;
-        for active in &self.audio_sources {
-            active.source.muted().store(should_mute, Ordering::Release);
+        // Time-remap: sample the instantaneous speed curve and re-anchor the
+        // master clock when the curve has drifted from what the clock is using.
+        // The wall-clock elapsed since `ramp_timeline_anchor_wall` gives us the
+        // timeline position within the clip (time advances 1:1 with wall time
+        // in timeline space). We sample speed_at(timeline_t) and push it to the
+        // master clock so source-time integrates the curve piecewise-constantly.
+        if self.speed_ramp_enabled && self.state == PlaybackState::Playing {
+            let clip_t = self.ramp_timeline_anchor_secs
+                + self.ramp_timeline_anchor_wall.elapsed().as_secs_f64();
+            let instant_speed = klipp_timeline::speed_at_keyframes(
+                &self.speed_keyframes,
+                clip_t,
+                self.clip_speed,
+            )
+            .clamp(klipp_timeline::SPEED_MIN, klipp_timeline::SPEED_MAX);
+            // Re-anchor master_clock when drift exceeds 1% to avoid churn.
+            if (self.ramp_last_clock_speed - instant_speed).abs() / self.ramp_last_clock_speed.abs().max(1e-6) > 0.01 {
+                self.master_clock.set_speed(instant_speed);
+                self.ramp_last_clock_speed = instant_speed;
+            }
+            // Mute audio whenever the time remap is active — pitch is wrong at
+            // any non-1.0 speed and the UI warns about this.
+            for active in &self.audio_sources {
+                active.source.muted().store(true, Ordering::Release);
+            }
+        } else {
+            // Constant-speed path: mute when clip_speed != 1.0.
+            let should_mute = (self.clip_speed - 1.0).abs() > 0.01;
+            for active in &self.audio_sources {
+                active.source.muted().store(should_mute, Ordering::Release);
+            }
         }
 
         // Master clock is the single source of truth.
@@ -1812,10 +1944,15 @@ impl PlaybackEngine {
             drop(seq);
 
             if let Some(clip) = synth_clip {
-                // Update playhead from clock
-                let elapsed_secs = current_source_secs - self.clip_source_start;
-                let speed = self.clip_speed.max(0.001);
-                let elapsed_tc = RationalTime::from_secs_f64((elapsed_secs / speed).max(0.0), self.fps.rate());
+                // Update playhead from clock — honour a speed ramp if active.
+                let elapsed_timeline_secs = if let Some(r) = self.ramp_clip_relative_secs() {
+                    r
+                } else {
+                    let elapsed_secs = current_source_secs - self.clip_source_start;
+                    let speed = self.clip_speed.max(0.001);
+                    (elapsed_secs / speed).max(0.0)
+                };
+                let elapsed_tc = RationalTime::from_secs_f64(elapsed_timeline_secs.max(0.0), self.fps.rate());
                 self.playhead = clip.timeline_in + elapsed_tc;
 
                 // Check if past end of clip
@@ -1942,9 +2079,14 @@ impl PlaybackEngine {
 
                 // No new frame this tick — still update playhead from clock
                 // so the timeline playhead stays smooth during slow-mo
-                let speed = self.clip_speed.max(0.001);
-                let elapsed_secs = current_source_secs - self.clip_source_start;
-                let elapsed_tc = RationalTime::from_secs_f64((elapsed_secs / speed).max(0.0), self.fps.rate());
+                let elapsed_timeline_secs = if let Some(r) = self.ramp_clip_relative_secs() {
+                    r
+                } else {
+                    let speed = self.clip_speed.max(0.001);
+                    let elapsed_secs = current_source_secs - self.clip_source_start;
+                    (elapsed_secs / speed).max(0.0)
+                };
+                let elapsed_tc = RationalTime::from_secs_f64(elapsed_timeline_secs.max(0.0), self.fps.rate());
                 self.playhead = self.clip_timeline_start + elapsed_tc;
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                 (self.repaint_cb)();
@@ -1974,9 +2116,15 @@ impl PlaybackEngine {
         }
         if let Some(clip) = found_clip {
             let source_elapsed_secs = frame.pts_secs() - clip.source_in.to_secs_f64();
-            // Convert source elapsed time to timeline elapsed time (divide by speed)
-            let speed = clip.speed.max(0.001);
-            let timeline_elapsed_secs = source_elapsed_secs / speed;
+            // Convert source elapsed time to timeline elapsed time. With a ramp
+            // active, we trust the wall-clock anchor rather than trying to
+            // invert the integral from the frame PTS.
+            let timeline_elapsed_secs = if let Some(r) = self.ramp_clip_relative_secs() {
+                r
+            } else {
+                let speed = clip.speed.max(0.001);
+                source_elapsed_secs / speed
+            };
             let elapsed_tc = RationalTime::from_secs_f64(
                 timeline_elapsed_secs.max(0.0),
                 self.fps.rate(),
@@ -2331,6 +2479,7 @@ impl PlaybackEngine {
             self.clip_source_start = 0.0;
             self.clip_timeline_start = timeline_in;
             self.clip_speed = next_clip_speed;
+            self.refresh_speed_keyframes();
             self.last_frame_time = std::time::Instant::now();
 
             // Seek clock to timeline position so update_playback's synthetic path picks up
@@ -2377,6 +2526,7 @@ impl PlaybackEngine {
             self.clip_source_start = source_in_secs;
             self.clip_timeline_start = timeline_in;
             self.clip_speed = next_clip_speed;
+            self.refresh_speed_keyframes();
             self.current_source_rotation = source_rotation;
             self.contiguous_audio.store(true, std::sync::atomic::Ordering::Relaxed);
             self.last_frame_time = std::time::Instant::now();
@@ -2435,6 +2585,7 @@ impl PlaybackEngine {
                 self.clip_source_start = source_in_secs;
                 self.clip_timeline_start = timeline_in;
                 self.clip_speed = next_clip_speed;
+                self.refresh_speed_keyframes();
                 self.current_source_rotation = source_rotation;
                 self.last_frame_time = std::time::Instant::now();
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
@@ -2470,6 +2621,7 @@ impl PlaybackEngine {
                 self.clip_source_start = source_in_secs;
                 self.clip_timeline_start = timeline_in;
                 self.clip_speed = next_clip_speed;
+                self.refresh_speed_keyframes();
                 self.current_source_rotation = source_rotation;
                 self.last_frame_time = std::time::Instant::now();
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
@@ -2526,6 +2678,7 @@ impl PlaybackEngine {
             self.clip_source_start = source_in_secs;
             self.clip_timeline_start = timeline_in;
             self.clip_speed = next_clip_speed;
+            self.refresh_speed_keyframes();
             self.current_source_rotation = source_rotation;
             self.last_frame_time = std::time::Instant::now();
             let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
@@ -3089,6 +3242,7 @@ impl PlaybackEngine {
                                 self.clip_source_start = clip_source_in;
                                 self.clip_timeline_start = timeline_in;
                                 self.clip_speed = spd;
+                                self.refresh_speed_keyframes();
                                 self.current_source_rotation = rot;
                             }
                         }
@@ -3098,6 +3252,7 @@ impl PlaybackEngine {
                         self.clip_source_start = clip_source_in;
                         self.clip_timeline_start = timeline_in;
                         self.clip_speed = spd;
+                        self.refresh_speed_keyframes();
                     }
                     source_secs
                 } else {
@@ -3220,6 +3375,7 @@ impl PlaybackEngine {
                             self.clip_source_start = clip_source_in;
                             self.clip_timeline_start = timeline_in;
                             self.clip_speed = spd;
+                            self.refresh_speed_keyframes();
                             self.current_source_rotation = rot;
                         }
                         Err(e) => {
@@ -3237,6 +3393,7 @@ impl PlaybackEngine {
                 self.clip_source_start = clip_source_in;
                 self.clip_timeline_start = timeline_in;
                 self.clip_speed = spd;
+                self.refresh_speed_keyframes();
             }
 
             // 1. Pause clock + cpal
@@ -3422,6 +3579,7 @@ impl PlaybackEngine {
                             self.clip_source_start = clip_source_in;
                             self.clip_timeline_start = timeline_in;
                             self.clip_speed = spd;
+                            self.refresh_speed_keyframes();
                             self.current_source_rotation = rot;
                         }
                         Err(e) => {
@@ -3439,6 +3597,7 @@ impl PlaybackEngine {
                 self.clip_source_start = clip_source_in;
                 self.clip_timeline_start = timeline_in;
                 self.clip_speed = spd;
+                self.refresh_speed_keyframes();
             }
 
             let was_playing = self.state == PlaybackState::Playing;
@@ -4893,22 +5052,56 @@ impl PlaybackEngine {
             if freeze {
                 // Freeze frame: keep using the current frame (no speed change needed)
                 rgba
-            } else {
-                // Speed modification is handled by the clip.speed property.
-                // Here we apply frame blending for smooth interpolation.
-                // blend_mode: 0=nearest (pass-through), 1=linear (blend adjacent frames)
-                if blend_mode >= 1 && speed != 1.0 {
-                    // For frame blending, we'd need the next frame from the queue.
-                    // For now, apply a slight motion blur to simulate smooth motion.
-                    // Full frame blending requires access to adjacent decoded frames.
-                    rgba
+            } else if blend_mode == 1
+                && speed > 0.0
+                && speed < 1.0
+                && self.prev_blend_frame.is_some()
+                && self.prev_blend_dims == (width, height)
+                && rgba.len() == width as usize * height as usize * 4
+            {
+                // Linear frame blending for slow-motion (blend_mode == 1).
+                // Fractional frame position = frac(source_secs * fps) — moves
+                // smoothly through 0..1 when frames are held across multiple
+                // display ticks, giving a smooth crossfade between the previous
+                // and current decoded frames. blend_mode == 2 (optical flow) is
+                // intentionally not implemented here.
+                let source_secs = self.master_clock.current_secs();
+                let frac = (source_secs * self.fps.rate() as f64).fract();
+                let alpha = frac.clamp(0.0, 1.0) as f32;
+                let inv_alpha = 1.0 - alpha;
+                // Safe: prev_blend_frame.is_some() checked above.
+                let prev = self.prev_blend_frame.as_ref().unwrap();
+                if prev.len() == rgba.len() {
+                    let mut out = rgba;
+                    for (o, p) in out.iter_mut().zip(prev.iter()) {
+                        *o = (*p as f32 * inv_alpha + *o as f32 * alpha).clamp(0.0, 255.0) as u8;
+                    }
+                    out
                 } else {
+                    // Length mismatch (e.g. stride) — skip blend defensively.
                     rgba
                 }
+            } else {
+                // blend_mode == 0 (nearest), speed >= 1.0, or no prev frame yet —
+                // pass through. SpeedRamp's effective speed is applied by the
+                // clip.speed / speed_keyframes pipeline, not here.
+                rgba
             }
         } else {
             rgba
         };
+
+        // Cache this frame as the blend source for the next tick. Only track
+        // when the SpeedRamp effect is present — avoids a per-frame clone cost
+        // on clips with no time-remap work to do.
+        if speed_ramp.is_some() && rgba.len() == width as usize * height as usize * 4 {
+            self.prev_blend_frame = Some(rgba.clone());
+            self.prev_blend_dims = (width, height);
+        } else if speed_ramp.is_none() && self.prev_blend_frame.is_some() {
+            // Free memory when the effect is removed.
+            self.prev_blend_frame = None;
+            self.prev_blend_dims = (0, 0);
+        }
 
         // 2. OFX effects chain (with temporal clip access for Retime/SlitScan/etc.)
         let frame_time = self.playhead.to_secs_f64();
