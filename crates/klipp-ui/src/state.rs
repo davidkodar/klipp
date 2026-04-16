@@ -386,6 +386,14 @@ pub struct AppState {
     /// survives re-opens of the dialog within the same session.
     pub preset_manager_selected: Option<String>,
 
+    // Cache manager dialog (#78)
+    /// Whether the Cache Manager modal is visible.
+    pub show_cache_manager: bool,
+    /// Sized snapshot of on-disk cache categories for the Cache Manager
+    /// dialog. Re-populated via `RefreshCacheManager` when opened or after
+    /// a clear action.
+    pub cache_categories: Vec<crate::cache_manager::CacheCategory>,
+
     // Clip properties dialog (#47)
     /// Whether the Clip Properties modal is visible.
     pub show_clip_properties: bool,
@@ -1773,6 +1781,8 @@ impl Default for AppState {
             jog_wheel_state: crate::widgets::jog_wheel::JogWheelState::new(),
             show_preset_manager: false,
             preset_manager_selected: None,
+            show_cache_manager: false,
+            cache_categories: Vec::new(),
             show_clip_properties: false,
             clip_properties_media_id: None,
             clip_properties_tab: ClipPropertiesTab::default(),

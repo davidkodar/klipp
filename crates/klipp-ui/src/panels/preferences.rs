@@ -239,7 +239,7 @@ impl PreferencesPanel {
                             PrefsTab::FileBrowser => self.show_file_browser(ui, prefs, prefs_dirty),
                             PrefsTab::Audio => self.show_audio(ui, prefs, prefs_dirty),
                             PrefsTab::Export => self.show_export(ui, prefs, prefs_dirty, &mut cmds),
-                            PrefsTab::Proxy => self.show_proxy(ui, prefs, prefs_dirty),
+                            PrefsTab::Proxy => self.show_proxy(ui, prefs, prefs_dirty, &mut cmds),
                             PrefsTab::ExternalTools => self.show_external_tools(ui, prefs, prefs_dirty),
                             PrefsTab::System => self.show_system(ui, prefs, prefs_dirty),
                             PrefsTab::Appearance => self.show_appearance(ui, prefs, prefs_dirty),
@@ -1468,6 +1468,7 @@ impl PreferencesPanel {
         ui: &mut egui::Ui,
         prefs: &mut Preferences,
         dirty: &mut bool,
+        cmds: &mut Vec<AppCommand>,
     ) {
         // Page heading
         ui.horizontal(|ui| {
@@ -1564,47 +1565,53 @@ impl PreferencesPanel {
         // ── MANAGEMENT section ──
         Self::section_header(ui, "MANAGEMENT");
 
-        // Calculate proxy cache usage
+        // Aggregate proxy cache size for the subtitle. We compute this
+        // cheaply inline rather than snapshotting cache_categories so the
+        // number stays accurate even if the preferences window is opened
+        // before the cache manager has been opened once.
         let cache_dir = prefs.proxy.proxy_cache_dir.clone()
             .unwrap_or_else(|| dirs::cache_dir().unwrap_or_default().join("klipp/proxies"));
-        let (file_count, total_bytes) = if cache_dir.exists() {
-            std::fs::read_dir(&cache_dir)
-                .map(|entries| {
-                    let mut count = 0u64;
-                    let mut bytes = 0u64;
-                    for entry in entries.flatten() {
-                        if let Ok(meta) = entry.metadata() {
-                            if meta.is_file() { count += 1; bytes += meta.len(); }
-                        }
-                    }
-                    (count, bytes)
-                })
-                .unwrap_or((0, 0))
-        } else {
-            (0, 0)
-        };
-        let size_label = if total_bytes >= 1_073_741_824 {
-            format!("{:.1} GB", total_bytes as f64 / 1_073_741_824.0)
-        } else {
-            format!("{} MB", total_bytes / 1_048_576)
-        };
+        let (total_bytes, file_count) = crate::cache_manager::scan_dir_size(&cache_dir);
+        let size_label = crate::cache_manager::format_cache_size(total_bytes);
 
-        Self::setting_row_with_subtitle(ui, "Clear proxy cache", &format!("{} files \u{2014} {}", file_count, size_label), |ui| {
-            let btn_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(56.0, 24.0));
-            let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
-            let bg = if resp.hovered() { egui::Color32::from_rgb(0x40, 0x28, 0x18) } else { egui::Color32::from_rgb(0x30, 0x20, 0x10) };
-            ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, Self::ACCENT));
-            // CONTRAST RULE: accent-bordered button uses accent text on dark bg
-            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear", egui::FontId::proportional(11.0), Self::ACCENT);
-            if resp.clicked() && cache_dir.exists() {
-                if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
-                    tracing::warn!("Failed to clear proxy cache: {e}");
+        // Single "Open Cache Manager…" button replaces the old inline clear
+        // button — the new dialog shows all four cache categories (proxy,
+        // filmstrips, audio peaks, render) with a pie chart and per-
+        // category clear. Subtitle still shows proxy totals for quick
+        // context without opening the modal.
+        Self::setting_row_with_subtitle(
+            ui,
+            "Proxy cache",
+            &format!("{} files \u{2014} {}", file_count, size_label),
+            |ui| {
+                let btn_rect = egui::Rect::from_min_size(
+                    ui.cursor().min,
+                    egui::vec2(150.0, 24.0),
+                );
+                let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+                let bg = if resp.hovered() {
+                    egui::Color32::from_rgb(0x30, 0x30, 0x38)
                 } else {
-                    tracing::info!("Proxy cache cleared: {}", cache_dir.display());
+                    egui::Color32::from_rgb(0x24, 0x24, 0x2c)
+                };
+                ui.painter().rect_filled(btn_rect, 4.0, bg);
+                ui.painter().rect_stroke(
+                    btn_rect,
+                    4.0,
+                    egui::Stroke::new(1.0, egui::Color32::from_rgb(0x38, 0x38, 0x42)),
+                );
+                ui.painter().text(
+                    btn_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Open Cache Manager\u{2026}",
+                    egui::FontId::proportional(11.0),
+                    Self::NORMAL_TEXT,
+                );
+                if resp.clicked() {
+                    cmds.push(AppCommand::OpenCacheManager);
                 }
-            }
-        });
+            },
+        );
     }
 
     fn show_external_tools(
