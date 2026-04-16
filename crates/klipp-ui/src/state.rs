@@ -1371,6 +1371,32 @@ impl WaveformChannel {
 /// Skin tone indicator angle (degrees) — standard vectorscope convention.
 pub const SKIN_TONE_ANGLE_DEGREES: f32 = 123.0;
 
+/// Histogram Y-axis scaling mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum HistogramScale {
+    /// Square-root compression — emphasises low counts, default NLE style.
+    #[default]
+    Sqrt,
+    /// Linear count — raw proportion, tall peaks dominate.
+    Linear,
+    /// Natural log — heaviest low-count emphasis, for spotting sparse outliers.
+    Log,
+}
+
+/// Waveform trace base colour (monochrome mode only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum WaveformPaintMode {
+    /// Classic green phosphor (default).
+    #[default]
+    Green,
+    /// Warm yellow trace.
+    Yellow,
+    /// Neutral white trace.
+    White,
+    /// Per-channel RGB — R channel red, G channel green, B channel blue.
+    Classic,
+}
+
 /// Per-pane scope settings — unified struct with all per-type fields.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PaneScopeSettings {
@@ -1406,6 +1432,17 @@ pub struct PaneScopeSettings {
     pub show_scope_cursor: bool,
     /// Half-size of the sample box (0 = 1×1 single pixel, 2 = 5×5, up to 7 = 15×15).
     pub scope_cursor_sample_radius: u32,
+
+    // ── Additional reference / display options (serde-defaulted for backward compat) ──
+    /// Vectorscope: draw the NTSC I/Q axes (I = skin tone, Q = perpendicular).
+    #[serde(default)]
+    pub show_iq_lines: bool,
+    /// Histogram: Y-axis scaling mode (Sqrt/Linear/Log).
+    #[serde(default)]
+    pub histogram_scale: HistogramScale,
+    /// Waveform: base trace colour in monochrome mode (Green/Yellow/White/Classic).
+    #[serde(default)]
+    pub waveform_paint_mode: WaveformPaintMode,
 }
 
 impl Default for PaneScopeSettings {
@@ -1437,6 +1474,10 @@ impl Default for PaneScopeSettings {
             // Scope cursor
             show_scope_cursor: true,
             scope_cursor_sample_radius: 2,
+            // Additional reference / display options
+            show_iq_lines: false,
+            histogram_scale: HistogramScale::Sqrt,
+            waveform_paint_mode: WaveformPaintMode::Green,
         }
     }
 }

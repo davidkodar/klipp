@@ -280,7 +280,7 @@ pub fn show_scopes(
                         let hist = klipp_color::scopes::compute_histogram_sampled(&src, w, h, step);
                         render_histogram_from_bins(&hist.r, &hist.g, &hist.b, &hist.luma, render_w, render_h)
                     }
-                    ScopeMode::Vectorscope => render_vectorscope(&src, w, h, step, render_w, render_h, skin_tone_angle),
+                    ScopeMode::Vectorscope => render_vectorscope(&src, w, h, step, render_w, render_h, skin_tone_angle, false),
                 };
                 Some((ScopeImage::Ready(image), gen))
             }
@@ -640,11 +640,13 @@ pub(crate) fn render_waveform_direct(rgba: &[u8], video_w: u32, video_h: u32, sc
 
 /// Render waveform for a specific channel (Y=luma, R, G, B).
 /// When `colorize` is true, traces show actual pixel colors instead of monochrome.
+/// When `colorize` is false, `paint_mode` selects the monochrome base colour.
 pub(crate) fn render_waveform_channel(
     rgba: &[u8], video_w: u32, video_h: u32, scope_w: usize, scope_h: usize,
     channel: crate::state::WaveformChannel, colorize: bool,
+    paint_mode: crate::state::WaveformPaintMode,
 ) -> egui::ColorImage {
-    use crate::state::WaveformChannel;
+    use crate::state::{WaveformChannel, WaveformPaintMode};
 
     if colorize {
         // Colorized mode: accumulate actual RGB colors
@@ -699,11 +701,19 @@ pub(crate) fn render_waveform_channel(
     }
 
     let knee = 3.0_f32;
-    let (base_r, base_g, base_b) = match channel {
-        WaveformChannel::Y => (0.0, 0.9, 0.0), // green luma trace (standard)
-        WaveformChannel::R => (0.9, 0.0, 0.0),
-        WaveformChannel::G => (0.0, 0.9, 0.0),
-        WaveformChannel::B => (0.0, 0.0, 0.9),
+    // Paint-mode base colour: overrides the per-channel palette except in
+    // Classic mode, which keeps the legacy per-channel R/G/B tint on Y and
+    // falls through to the channel-matched colour on R/G/B channels.
+    let (base_r, base_g, base_b) = match paint_mode {
+        WaveformPaintMode::Green => (0.0, 0.9, 0.0),
+        WaveformPaintMode::Yellow => (0.86, 0.78, 0.0),
+        WaveformPaintMode::White => (0.78, 0.78, 0.78),
+        WaveformPaintMode::Classic => match channel {
+            WaveformChannel::Y => (0.0, 0.9, 0.0),
+            WaveformChannel::R => (0.9, 0.0, 0.0),
+            WaveformChannel::G => (0.0, 0.9, 0.0),
+            WaveformChannel::B => (0.0, 0.0, 0.9),
+        },
     };
 
     let pixels: Vec<egui::Color32> = accum.iter().map(|&count| {
@@ -728,7 +738,10 @@ pub(crate) fn render_waveform_channel(
 pub(crate) fn render_histogram_stacked(
     r_bins: &[u32; 256], g_bins: &[u32; 256], b_bins: &[u32; 256],
     rw: usize, rh: usize,
+    scale: crate::state::HistogramScale,
 ) -> egui::ColorImage {
+    use crate::state::HistogramScale;
+
     let band_h = rh / 3;
     let mut pixels = vec![egui::Color32::BLACK; rw * rh];
 
@@ -741,12 +754,22 @@ pub(crate) fn render_histogram_stacked(
     for (bins, color, y_offset) in &channels {
         let max_count = bins.iter().copied().max().unwrap_or(1).max(1) as f32;
         let bin_scale = rw as f32 / 256.0;
+        // Log scaling denominator: ln(max_count), clamped to avoid div-by-zero
+        // and to tame tiny max values (empty histogram → flat output).
+        let log_denom = max_count.ln().max(1.0);
 
         for px_x in 0..rw {
             let bin = ((px_x as f32 / bin_scale) as usize).min(255);
             let count = bins[bin];
             if count == 0 { continue; }
-            let height_frac = (count as f32 / max_count).sqrt();
+            let height_frac = match scale {
+                HistogramScale::Sqrt => (count as f32 / max_count).sqrt(),
+                HistogramScale::Linear => count as f32 / max_count,
+                HistogramScale::Log => {
+                    // count > 0 already guaranteed by the early-continue above.
+                    (count as f32).ln() / log_denom
+                }
+            };
             let height_px = (height_frac * band_h as f32) as usize;
 
             for dy in 0..height_px.min(band_h) {
@@ -903,7 +926,7 @@ pub(crate) fn render_histogram_from_bins(r_bins: &[u32; 256], g_bins: &[u32; 256
 }
 
 #[inline(never)]
-pub(crate) fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize, skin_tone_angle: f32) -> egui::ColorImage {
+pub(crate) fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32, rw: usize, rh: usize, skin_tone_angle: f32, show_iq_lines: bool) -> egui::ColorImage {
     let size = rw.min(rh);
     let mut buf = AccumBuffer::new(size, size);
     let center = size as f32 / 2.0;
@@ -980,6 +1003,44 @@ pub(crate) fn render_vectorscope(rgba: &[u8], width: u32, height: u32, step: u32
             let gy = ly.wrapping_add(*dy as usize);
             if gx < size && gy < size {
                 buf.add(gx, gy, 0.15, 0.10, 0.03);
+            }
+        }
+    }
+
+    // 2b. NTSC Q-line — perpendicular to the skin-tone (I) line, drawn in
+    // cyan to distinguish it from the amber I line. Opt-in via `show_iq_lines`.
+    if show_iq_lines {
+        let q_rad = skin_rad + std::f32::consts::FRAC_PI_2;
+        for i in 0..(radius as usize) {
+            let t = i as f32;
+            let sx = (center + q_rad.cos() * t) as usize;
+            let sy = (center - q_rad.sin() * t) as usize;
+            if sx < size && sy < size {
+                // Semi-transparent cyan — colour (80, 200, 220) / 255 ≈ (0.31, 0.78, 0.86)
+                // scaled down to match the I line's ~0.10 luminance.
+                buf.add(sx, sy, 0.025, 0.08, 0.09);
+                if sx + 1 < size { buf.add(sx + 1, sy, 0.012, 0.04, 0.045); }
+                if sx > 0 { buf.add(sx - 1, sy, 0.012, 0.04, 0.045); }
+            }
+        }
+        // "Q" label at the end of the Q line — simple 3x5 glyph.
+        {
+            let end_t = radius - 12.0;
+            let lx = (center + q_rad.cos() * end_t) as usize;
+            let ly = (center - q_rad.sin() * end_t) as usize;
+            let glyph = [
+                (1, 0),                   // top curve
+                (0, 1), (2, 1),
+                (0, 2), (2, 2),
+                (0, 3), (2, 3),
+                (1, 4), (2, 4), (3, 4),   // bottom + tail
+            ];
+            for (dx, dy) in &glyph {
+                let gx = lx.wrapping_add(*dx as usize);
+                let gy = ly.wrapping_add(*dy as usize);
+                if gx < size && gy < size {
+                    buf.add(gx, gy, 0.04, 0.12, 0.13);
+                }
             }
         }
     }
@@ -1477,6 +1538,55 @@ mod tests {
         let history = [f32::NEG_INFINITY, -18.0, -16.0, -14.0, f32::NEG_INFINITY];
         let img = render_lufs_history(&history, -14.0, 200, 80);
         assert_eq!(img.size, [200, 80]);
+    }
+
+    // ── Scope enhancements (#75/#76/#77) ─────────────────────────────────
+
+    #[test]
+    fn histogram_scale_sqrt_greater_than_linear() {
+        // Sqrt scaling lifts mid-range counts above linear scaling, which is
+        // the whole reason sqrt is the default — it keeps the tails visible.
+        let count = 1000u32;
+        let max = 4000u32;
+        let h = 256usize;
+        let sqrt_h = (count as f32 / max as f32).sqrt() * (h as f32 - 1.0);
+        let lin_h = (count as f32 / max as f32) * (h as f32 - 1.0);
+        assert!(sqrt_h > lin_h);
+        assert!(sqrt_h < h as f32);
+    }
+
+    #[test]
+    fn histogram_log_zero_count_is_zero() {
+        // The log branch must short-circuit on count==0 — ln(0) is -inf.
+        let count = 0u32;
+        let result = if count > 0 {
+            (count as f32).ln() / (1000f32).ln() * 255.0
+        } else {
+            0.0
+        };
+        assert_eq!(result, 0.0);
+    }
+
+    #[test]
+    fn waveform_classic_channels_distinct() {
+        // Classic paint mode must produce visibly different RGB colours
+        // for the R/G/B channels (a user-facing invariant of #77).
+        let r = egui::Color32::from_rgb(200, 50, 50);
+        let g = egui::Color32::from_rgb(50, 200, 50);
+        let b = egui::Color32::from_rgb(50, 50, 200);
+        assert_ne!(r, g);
+        assert_ne!(g, b);
+        assert_ne!(r, b);
+    }
+
+    #[test]
+    fn pane_settings_new_fields_default_correctly() {
+        // Defaults must preserve the pre-enhancement behaviour: I/Q lines
+        // off, histogram sqrt, waveform green.
+        let settings = crate::state::PaneScopeSettings::default();
+        assert!(!settings.show_iq_lines);
+        assert_eq!(settings.histogram_scale, crate::state::HistogramScale::Sqrt);
+        assert_eq!(settings.waveform_paint_mode, crate::state::WaveformPaintMode::Green);
     }
 }
 

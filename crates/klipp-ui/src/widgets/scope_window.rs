@@ -1,6 +1,7 @@
 use crate::state::{
-    PaneConfig, PaneScopeSettings, ScopeLayout, ScopeScale, ScopeType, ScopeWindowState,
-    VectorscopeScaleStyle, WaveformChannel, WaveformScaleStyle,
+    HistogramScale, PaneConfig, PaneScopeSettings, ScopeLayout, ScopeScale, ScopeType,
+    ScopeWindowState, VectorscopeScaleStyle, WaveformChannel, WaveformPaintMode,
+    WaveformScaleStyle,
 };
 use klipp_engine::SharedFrameBuffer;
 use std::time::Instant;
@@ -499,6 +500,7 @@ fn render_pane_scope(
                             src, w, h, render_w, render_h,
                             pane.settings.waveform_channel,
                             pane.settings.colorize,
+                            pane.settings.waveform_paint_mode,
                         )
                     }
                     ScopeType::Parade => {
@@ -506,10 +508,18 @@ fn render_pane_scope(
                     }
                     ScopeType::Histogram => {
                         let hist = klipp_color::scopes::compute_histogram_sampled(src, w, h, step);
-                        super::scopes::render_histogram_stacked(&hist.r, &hist.g, &hist.b, render_w, render_h)
+                        super::scopes::render_histogram_stacked(
+                            &hist.r, &hist.g, &hist.b,
+                            render_w, render_h,
+                            pane.settings.histogram_scale,
+                        )
                     }
                     ScopeType::Vectorscope => {
-                        super::scopes::render_vectorscope(src, w, h, step, render_w, render_h, skin_tone_angle)
+                        super::scopes::render_vectorscope(
+                            src, w, h, step, render_w, render_h,
+                            skin_tone_angle,
+                            pane.settings.show_iq_lines,
+                        )
                     }
                     ScopeType::CIEChromaticity => {
                         super::scopes::render_cie_chromaticity(src, w, h, step, render_w, render_h)
@@ -815,6 +825,16 @@ fn draw_waveform_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeW
 
     ui.separator();
 
+    // Paint mode — monochrome base colour (ignored when Colorize is on).
+    ui.label(egui::RichText::new("PAINT MODE").size(9.0)
+        .color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).strong());
+    ui.radio_value(&mut s.waveform_paint_mode, WaveformPaintMode::Green, "Green");
+    ui.radio_value(&mut s.waveform_paint_mode, WaveformPaintMode::Yellow, "Yellow");
+    ui.radio_value(&mut s.waveform_paint_mode, WaveformPaintMode::White, "White");
+    ui.radio_value(&mut s.waveform_paint_mode, WaveformPaintMode::Classic, "Classic (RGB)");
+
+    ui.separator();
+
     // Brightness sliders
     ui.label(egui::RichText::new("DISPLAY").size(9.0)
         .color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).strong());
@@ -899,6 +919,8 @@ fn draw_vectorscope_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut Sco
         .color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).strong());
     ui.checkbox(&mut s.show_2x_zoom, "Show 2x Zoom");
     ui.checkbox(&mut s.show_skin_tone_indicator, "Show Skin Tone Indicator");
+    ui.checkbox(&mut s.show_iq_lines, "Show I/Q Lines")
+        .on_hover_text("Draw NTSC I and Q color axes as reference lines");
     ui.checkbox(&mut s.show_graticule, "Show Graticule");
 }
 
@@ -937,6 +959,14 @@ fn draw_histogram_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut Scope
         .color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).strong());
     ui.checkbox(&mut s.low_pass, "Low Pass Filter");
     ui.checkbox(&mut s.bloom, "Bloom on dense regions");
+
+    ui.separator();
+
+    ui.label(egui::RichText::new("SCALE").size(9.0)
+        .color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).strong());
+    ui.radio_value(&mut s.histogram_scale, HistogramScale::Sqrt, "\u{221A} Sqrt (default)");
+    ui.radio_value(&mut s.histogram_scale, HistogramScale::Linear, "Linear");
+    ui.radio_value(&mut s.histogram_scale, HistogramScale::Log, "Log");
 }
 
 // ── ··· Menu ─────────────────────────────────────────────────────────────
