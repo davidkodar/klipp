@@ -181,6 +181,20 @@ impl SequenceSnapshot {
         let fps = seq.fps.as_f64();
         let burn_in = settings.burn_in_subtitles;
 
+        // With both flags on, subtitles are composited into the video AND
+        // emitted as a separate soft-subtitle stream — the viewer sees them
+        // twice. The default ExportSettings in older code paths has both
+        // true, so flag it loudly so the user (or the caller building the
+        // settings) can turn one off.
+        if burn_in && settings.embed_subtitles {
+            tracing::warn!(
+                "Export settings have burn_in_subtitles and embed_subtitles \
+                 both enabled — subtitles will be rendered into the video \
+                 AND emitted as a separate soft-subtitle stream (double \
+                 render). Disable one of the two in the export settings."
+            );
+        }
+
         let export_range = if use_marked_range {
             match (&seq.in_point, &seq.out_point) {
                 (Some(in_pt), Some(out_pt)) => {
