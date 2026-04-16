@@ -212,6 +212,7 @@ mod tests {
             needs_reprobe: false,
             waveform_data: None,
             audio_cache: None,
+            parent_media_id: None,
         }
     }
 
