@@ -60,7 +60,7 @@ pub fn safe_resolve(project_dir: &Path, stored: &Path) -> Option<PathBuf> {
 /// for paths that don't exist on disk. A leading `..` that can't be
 /// collapsed (no parent to pop) is preserved — the caller's prefix check
 /// catches any remaining escape.
-fn normalize_path(path: &Path) -> PathBuf {
+pub(crate) fn normalize_path(path: &Path) -> PathBuf {
     let mut parts: Vec<Component<'_>> = Vec::new();
     for comp in path.components() {
         match comp {

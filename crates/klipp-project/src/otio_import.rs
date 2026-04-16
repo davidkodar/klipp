@@ -250,16 +250,11 @@ fn active_media_ref(clip: &RawClip) -> Option<&serde_json::Value> {
 ///   - `file://host/path` (rare; dropped to `/path` since we're local-only)
 ///   - plain absolute path `/foo/bar.mp4`
 ///   - plain relative path `media/foo.mp4` (resolved against `project_dir`)
-fn resolve_target_url(url: &str, project_dir: &Path) -> PathBuf {
+fn resolve_target_url(url: &str, project_dir: &Path) -> Option<PathBuf> {
     let url = url.trim();
     let raw = url.strip_prefix("file://").unwrap_or(url);
     let raw = raw.strip_prefix('/').map(|s| format!("/{s}")).unwrap_or_else(|| raw.to_string());
-    let p = PathBuf::from(raw);
-    if p.is_absolute() {
-        p
-    } else {
-        project_dir.join(p)
-    }
+    crate::path_util::safe_resolve(project_dir, &PathBuf::from(raw))
 }
 
 /// Build a fully-defaulted `MediaItem` for OTIO imports. Fields beyond the
@@ -344,7 +339,14 @@ fn register_otio_media_ref(
             let name = clip_name.unwrap_or("<missing>").to_string();
             return media_pool.add(make_otio_media_item(PathBuf::new(), name, fps, true));
         }
-        let path = resolve_target_url(target_url, project_dir);
+        let Some(path) = resolve_target_url(target_url, project_dir) else {
+            warnings.push(format!(
+                "Path traversal blocked for media: {} — imported as offline",
+                target_url,
+            ));
+            let name = clip_name.unwrap_or("<missing>").to_string();
+            return media_pool.add(make_otio_media_item(PathBuf::new(), name, fps, true));
+        };
         if path.exists() {
             if let Some(existing) = media_pool.find_by_path(&path) {
                 return existing.id;
@@ -1020,16 +1022,24 @@ mod tests {
         let dir = Path::new("/proj");
         assert_eq!(
             resolve_target_url("/abs/clip.mp4", dir),
-            PathBuf::from("/abs/clip.mp4")
+            Some(PathBuf::from("/abs/clip.mp4"))
         );
         assert_eq!(
             resolve_target_url("media/clip.mp4", dir),
-            PathBuf::from("/proj/media/clip.mp4")
+            Some(PathBuf::from("/proj/media/clip.mp4"))
         );
         assert_eq!(
             resolve_target_url("file:///abs/clip.mp4", dir),
-            PathBuf::from("/abs/clip.mp4"),
+            Some(PathBuf::from("/abs/clip.mp4")),
             "file:// prefix must be stripped"
+        );
+    }
+
+    #[test]
+    fn resolve_target_url_traversal_blocked() {
+        assert_eq!(
+            resolve_target_url("../../etc/passwd", Path::new("/proj")),
+            None,
         );
     }
 

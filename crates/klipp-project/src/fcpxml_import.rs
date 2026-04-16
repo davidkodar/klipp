@@ -178,7 +178,11 @@ fn decode_file_url(src: &str, warnings: &mut Vec<String>) -> PathBuf {
             "Asset src '{src}' contains percent-encoded characters that were not decoded — path may be wrong"
         ));
     }
-    PathBuf::from(decoded)
+    // Normalize to collapse any ".." components. FCPXML paths are typically
+    // absolute file:// URLs so there's no project-dir escape to guard
+    // against, but normalising keeps the stored path clean and prevents
+    // unexpected traversals if a crafted FCPXML happens to use relative refs.
+    crate::path_util::normalize_path(&PathBuf::from(decoded))
 }
 
 /// Index `<resources>` children into format + asset tables.

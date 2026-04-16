@@ -381,8 +381,10 @@ fn classify_producer(node: roxmltree::Node<'_, '_>, project_dir: &Path) -> Produ
         // on open); semantically identical to "avformat" for import purposes.
         "avformat" | "avformat-novalidate" => {
             let resource = get_property(node, "resource").unwrap_or("");
-            let path = resolve_resource_path(resource, project_dir);
-            ProducerKind::AvFormat { path }
+            match resolve_resource_path(resource, project_dir) {
+                Some(path) => ProducerKind::AvFormat { path },
+                None => ProducerKind::Unknown { service: format!("blocked-path:{resource}") },
+            }
         }
         "blank" => ProducerKind::Blank,
         "color" => {
@@ -400,15 +402,11 @@ fn classify_producer(node: roxmltree::Node<'_, '_>, project_dir: &Path) -> Produ
     }
 }
 
-/// Resolve an MLT `resource` attribute to an absolute path. Relative paths
-/// are interpreted relative to the directory containing the .kdenlive file.
-fn resolve_resource_path(resource: &str, project_dir: &Path) -> PathBuf {
-    let p = Path::new(resource);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        project_dir.join(p)
-    }
+/// Resolve an MLT `resource` attribute to an absolute path, guarded against
+/// path-traversal attacks. Returns None for relative paths with `..` that
+/// escape the project directory; the caller marks the media offline.
+fn resolve_resource_path(resource: &str, project_dir: &Path) -> Option<PathBuf> {
+    crate::path_util::safe_resolve(project_dir, Path::new(resource))
 }
 
 /// Parse an MLT color string of form `0xRRGGBBAA` (hex RGBA) into `[u8; 4]`.
@@ -1847,13 +1845,19 @@ mod tests {
     #[test]
     fn relative_resource_path_resolves_against_project_dir() {
         let resolved = resolve_resource_path("clip.mp4", Path::new("/home/user/project"));
-        assert_eq!(resolved, PathBuf::from("/home/user/project/clip.mp4"));
+        assert_eq!(resolved, Some(PathBuf::from("/home/user/project/clip.mp4")));
     }
 
     #[test]
     fn absolute_resource_path_unchanged() {
         let resolved = resolve_resource_path("/media/clip.mp4", Path::new("/home/user"));
-        assert_eq!(resolved, PathBuf::from("/media/clip.mp4"));
+        assert_eq!(resolved, Some(PathBuf::from("/media/clip.mp4")));
+    }
+
+    #[test]
+    fn traversal_resource_path_rejected() {
+        let resolved = resolve_resource_path("../../etc/passwd", Path::new("/home/user/project"));
+        assert_eq!(resolved, None);
     }
 
     // ── Playlist / track mapping ────────────────────────────────────
