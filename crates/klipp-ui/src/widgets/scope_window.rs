@@ -95,6 +95,14 @@ pub fn show_scope_window(
     viewer_pointer_pos: Option<egui::Pos2>,
     locked_cursor_data: Option<crate::state::ScopeCursorData>,
     spectrum_bins: &[f32],
+    // `correlation_samples`: interleaved stereo PCM (LRLR…) for the
+    // correlation scope. Collected at the call site from the last ~4k
+    // samples of the shared spectrum ring.
+    // `lufs_history`: oldest-first short-term LUFS for the loudness-history
+    // scope. `lufs_target` is drawn as the reference line.
+    correlation_samples: &[f32],
+    lufs_history: &[f32],
+    lufs_target: f32,
 ) {
     if !state.open {
         return;
@@ -203,7 +211,7 @@ pub fn show_scope_window(
                                 ui.painter().rect_stroke(pane_rect, 0.0,
                                     egui::Stroke::new(0.5, egui::Color32::from_rgb(0x2a, 0x2a, 0x30)));
                                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
-                                draw_pane(&mut child, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins);
+                                draw_pane(&mut child, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target);
                             }
                         }
 
@@ -235,6 +243,9 @@ fn draw_pane(
     is_playing: bool,
     scope_cursor: Option<crate::state::ScopeCursorData>,
     spectrum_bins: &[f32],
+    correlation_samples: &[f32],
+    lufs_history: &[f32],
+    lufs_target: f32,
 ) {
     let pane_rect = ui.max_rect();
     let scope_type = state.panes[pane_idx].scope_type;
@@ -409,7 +420,7 @@ fn draw_pane(
         return;
     }
 
-    render_pane_scope(ui, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, content_rect, scope_cursor, spectrum_bins);
+    render_pane_scope(ui, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, content_rect, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target);
 }
 
 fn render_pane_scope(
@@ -423,22 +434,45 @@ fn render_pane_scope(
     content_rect: egui::Rect,
     scope_cursor: Option<crate::state::ScopeCursorData>,
     spectrum_bins: &[f32],
+    correlation_samples: &[f32],
+    lufs_history: &[f32],
+    lufs_target: f32,
 ) {
     let pane = &state.panes[pane_idx];
     let render_h: usize = 256; // Smaller for multi-pane to stay fast
 
-    // Audio-spectrum scope has no video-frame dependency — render it directly
-    // from the shared PCM-derived bins and short-circuit the fb lock/throttle.
-    // Bump generation every frame so the texture updates; throttle lightly so
-    // we don't re-upload on every repaint when audio is idle.
-    let scope_image = if pane.scope_type == ScopeType::AudioSpectrum {
+    // Audio-only scopes (spectrum, correlation, loudness history) have no
+    // video-frame dependency — render them directly from shared audio
+    // state and short-circuit the fb lock/throttle. Bump generation every
+    // frame so the texture updates; throttle lightly so we don't re-upload
+    // on every repaint when audio is idle.
+    let is_audio_only = matches!(
+        pane.scope_type,
+        ScopeType::AudioSpectrum | ScopeType::AudioCorrelation | ScopeType::LoudnessHistory
+    );
+    let scope_image = if is_audio_only {
         let throttled = runtime.last_render[pane_idx]
             .map_or(false, |t| t.elapsed().as_millis() < 33);
         if throttled {
             None
         } else {
             let render_w = 512usize;
-            let image = super::scopes::render_audio_spectrum(spectrum_bins, render_w, render_h);
+            let image = match pane.scope_type {
+                ScopeType::AudioSpectrum => {
+                    super::scopes::render_audio_spectrum(spectrum_bins, render_w, render_h)
+                }
+                ScopeType::AudioCorrelation => {
+                    // Correlation is a square scope — render square so the
+                    // Lissajous figure isn't visually stretched. The outer
+                    // paint layer will letterbox if the pane isn't square.
+                    let side = render_h;
+                    super::scopes::render_audio_correlation(correlation_samples, side, side)
+                }
+                ScopeType::LoudnessHistory => {
+                    super::scopes::render_lufs_history(lufs_history, lufs_target, render_w, render_h)
+                }
+                _ => unreachable!("is_audio_only gates this match"),
+            };
             let gen = runtime.frame_gens[pane_idx].wrapping_add(1);
             Some((image, gen))
         }
@@ -480,8 +514,10 @@ fn render_pane_scope(
                     ScopeType::CIEChromaticity => {
                         super::scopes::render_cie_chromaticity(src, w, h, step, render_w, render_h)
                     }
-                    ScopeType::AudioSpectrum => unreachable!(
-                        "AudioSpectrum is rendered before the frame-buffer match"
+                    ScopeType::AudioSpectrum
+                    | ScopeType::AudioCorrelation
+                    | ScopeType::LoudnessHistory => unreachable!(
+                        "audio-only scopes are rendered before the frame-buffer match"
                     ),
                 };
                 Some((image, gen))
@@ -684,10 +720,12 @@ pub fn draw_scope_cursor_indicator(
                 draw_dot(painter, egui::pos2(px, py));
             }
         }
-        ScopeType::AudioSpectrum => {
-            // Audio scope has no colour-picker overlay — the cursor is a
-            // video-pixel sample and there is no video pixel under the
-            // spectrum. Intentionally do nothing.
+        ScopeType::AudioSpectrum
+        | ScopeType::AudioCorrelation
+        | ScopeType::LoudnessHistory => {
+            // Audio-only scopes have no colour-picker overlay — the cursor
+            // is a video-pixel sample and there is no video pixel under
+            // these scopes. Intentionally do nothing.
         }
     }
 }
@@ -708,6 +746,16 @@ fn draw_pane_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindo
             ui.label("No settings available.");
             ui.small("Frequency axis: 20 Hz … Nyquist, log-spaced.");
             ui.small("Amplitude axis: −96 … 0 dBFS.");
+        }
+        ScopeType::AudioCorrelation => {
+            ui.label("No settings available.");
+            ui.small("Lissajous of L vs R (45° rotated).");
+            ui.small("Bottom strip: Pearson correlation \u{2212}1 … +1.");
+        }
+        ScopeType::LoudnessHistory => {
+            ui.label("No settings available.");
+            ui.small("Short-term LUFS over the last ~60 s.");
+            ui.small("Green band = \u{00B1}1 LU around the loudness target.");
         }
     }
 

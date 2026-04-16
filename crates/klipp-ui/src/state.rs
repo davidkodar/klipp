@@ -666,6 +666,11 @@ pub struct AppState {
     pub lufs_true_peak_dbfs: f32,
     /// Loudness range (EBU R128 LRA)
     pub lufs_lra: f32,
+    /// Rolling short-term LUFS history for the loudness-history scope.
+    /// Capacity: 600 samples @ ~10 Hz = ~60 seconds of timeline. Pushed
+    /// once per `LufsReadings` event (see app.rs handler) and popped from
+    /// the front when the cap is exceeded.
+    pub lufs_short_term_history: std::collections::VecDeque<f32>,
     /// Smoothed display values (EMA-filtered for stable visual)
     pub lufs_momentary_smooth: f32,
     pub lufs_short_term_smooth: f32,
@@ -1098,6 +1103,13 @@ pub enum ScopeType {
     Histogram,
     CIEChromaticity,
     AudioSpectrum,
+    /// Audio phase/correlation goniometer — Lissajous plot of L vs R plus
+    /// a Pearson-correlation strip meter. Audio-only (skips the video
+    /// frame-buffer lock, same as `AudioSpectrum`).
+    AudioCorrelation,
+    /// Rolling LUFS history graph — short-term LUFS over the last ~60s
+    /// with the user's loudness target drawn as a horizontal line.
+    LoudnessHistory,
 }
 
 impl From<ScopeMode> for ScopeType {
@@ -1120,14 +1132,17 @@ impl ScopeType {
             Self::Histogram => "Histogram",
             Self::CIEChromaticity => "CIE Chromaticity",
             Self::AudioSpectrum => "Audio Spectrum",
+            Self::AudioCorrelation => "Audio Correlation",
+            Self::LoudnessHistory => "Loudness History",
         }
     }
 
-    pub const ALL: [ScopeType; 6] = [
+    pub const ALL: [ScopeType; 8] = [
         Self::Waveform, Self::Parade, Self::Vectorscope, Self::Histogram, Self::CIEChromaticity, Self::AudioSpectrum,
+        Self::AudioCorrelation, Self::LoudnessHistory,
     ];
 
-    /// Convert to ScopeMode for the existing render pipeline (CIE/AudioSpectrum have no video render mode).
+    /// Convert to ScopeMode for the existing render pipeline (CIE/Audio scopes have no video render mode).
     pub fn to_scope_mode(&self) -> Option<ScopeMode> {
         match self {
             Self::Waveform => Some(ScopeMode::Waveform),
@@ -1136,6 +1151,8 @@ impl ScopeType {
             Self::Histogram => Some(ScopeMode::Histogram),
             Self::CIEChromaticity => None,
             Self::AudioSpectrum => None,
+            Self::AudioCorrelation => None,
+            Self::LoudnessHistory => None,
         }
     }
 }
@@ -1730,6 +1747,11 @@ impl Default for AppState {
             lufs_integrated: f32::NEG_INFINITY,
             lufs_true_peak_dbfs: f32::NEG_INFINITY,
             lufs_lra: 0.0,
+            lufs_short_term_history: {
+                let mut v = std::collections::VecDeque::new();
+                v.reserve(600);
+                v
+            },
             lufs_momentary_smooth: f32::NEG_INFINITY,
             lufs_short_term_smooth: f32::NEG_INFINITY,
             clip_indicator: false,

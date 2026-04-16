@@ -880,6 +880,13 @@ impl KlippApp {
                     self.state.lufs_integrated = integrated;
                     self.state.lufs_lra = loudness_range;
                     self.state.lufs_true_peak_dbfs = true_peak_dbfs;
+                    // Append to the rolling history ring for the loudness
+                    // history scope. Cap at 600 = ~60s at 10Hz; the LUFS
+                    // meter hops every 100ms so the cadence is stable.
+                    self.state.lufs_short_term_history.push_back(short_term);
+                    if self.state.lufs_short_term_history.len() > 600 {
+                        self.state.lufs_short_term_history.pop_front();
+                    }
                     // Latch clip indicator if true peak exceeds 0 dBFS
                     if true_peak_dbfs > 0.0 {
                         self.state.clip_indicator = true;
@@ -15981,6 +15988,27 @@ impl eframe::App for KlippApp {
             } else {
                 None
             };
+            // Collect audio-scope inputs. Both are snapshotted under
+            // `try_lock` so the UI never stalls behind the mix thread —
+            // a missed frame just means the scope holds its previous
+            // texture, which naturally reads as "frozen on pause."
+            let correlation_samples: Vec<f32> = if let Ok(ring) =
+                self.state.spectrum_ring.try_lock()
+            {
+                // Last 4096 interleaved stereo samples = 2048 stereo pairs
+                // ≈ 43 ms at 48 kHz. Enough trace density for a stable
+                // Lissajous figure, small enough to fit on the stack
+                // of the render path.
+                const N: usize = 4096;
+                let len = ring.len();
+                let start = len.saturating_sub(N);
+                ring.iter().copied().skip(start).collect()
+            } else {
+                Vec::new()
+            };
+            let lufs_history: Vec<f32> =
+                self.state.lufs_short_term_history.iter().copied().collect();
+            let lufs_target = self.state.lufs_target;
             crate::widgets::scope_window::show_scope_window(
                 ctx,
                 &mut self.state.scope_window,
@@ -15992,6 +16020,9 @@ impl eframe::App for KlippApp {
                 self.state.viewer_pointer_pos,
                 locked_data,
                 &self.state.spectrum_bins,
+                &correlation_samples,
+                &lufs_history,
+                lufs_target,
             );
         }
 

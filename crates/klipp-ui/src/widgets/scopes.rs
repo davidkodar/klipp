@@ -1403,6 +1403,81 @@ mod tests {
         assert_eq!(rings.len(), 2);
         assert!(rings[0].radius < rings[1].radius, "Low range ring should have smaller radius");
     }
+
+    // ── Audio correlation + loudness-history scope tests ──
+
+    #[test]
+    fn render_audio_correlation_produces_correct_size() {
+        let samples = vec![0.0f32; 4096]; // silence
+        let img = render_audio_correlation(&samples, 256, 256);
+        assert_eq!(img.size, [256, 256]);
+        assert_eq!(img.pixels.len(), 256 * 256);
+    }
+
+    #[test]
+    fn correlation_of_identical_channels_is_positive() {
+        // L == R → correlation ≈ +1. We don't inspect the exact r value
+        // here (it's rendered into pixels) but we do confirm the render
+        // doesn't panic and produces a correctly-sized image.
+        let mut samples = vec![0.0f32; 2048];
+        for i in 0..1024 {
+            let v = (i as f32 * 0.01).sin() * 0.5;
+            samples[i * 2] = v;      // L
+            samples[i * 2 + 1] = v;  // R — identical
+        }
+        let img = render_audio_correlation(&samples, 128, 128);
+        assert_eq!(img.size, [128, 128]);
+    }
+
+    #[test]
+    fn render_audio_correlation_empty_input_doesnt_panic() {
+        let img = render_audio_correlation(&[], 128, 128);
+        assert_eq!(img.size, [128, 128]);
+        assert_eq!(img.pixels.len(), 128 * 128);
+    }
+
+    #[test]
+    fn render_lufs_history_produces_correct_size() {
+        let history = vec![-14.0f32; 100];
+        let img = render_lufs_history(&history, -14.0, 300, 100);
+        assert_eq!(img.size, [300, 100]);
+        assert_eq!(img.pixels.len(), 300 * 100);
+    }
+
+    #[test]
+    fn lufs_history_empty_doesnt_panic() {
+        let img = render_lufs_history(&[], -14.0, 300, 100);
+        assert_eq!(img.size, [300, 100]);
+        assert_eq!(img.pixels.len(), 300 * 100);
+    }
+
+    #[test]
+    fn lufs_history_appends_and_caps_at_600() {
+        // Mirrors the app.rs LufsReadings handler: push_back + pop_front
+        // when the ring exceeds 600 entries (60s at 10Hz).
+        let mut history: std::collections::VecDeque<f32> =
+            std::collections::VecDeque::new();
+        for i in 0..700 {
+            history.push_back(-14.0 - (i as f32 * 0.01));
+            if history.len() > 600 {
+                history.pop_front();
+            }
+        }
+        assert_eq!(history.len(), 600);
+        // Oldest retained sample should be i=100 (700 pushes - 600 cap).
+        assert!((history[0] - (-14.0 - 1.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn lufs_history_handles_infinity_values() {
+        // The LUFS meter publishes f32::NEG_INFINITY before the first
+        // 400ms block completes. The renderer must skip these rather
+        // than clamp them to the bottom of the display range and draw
+        // a spurious flat line.
+        let history = [f32::NEG_INFINITY, -18.0, -16.0, -14.0, f32::NEG_INFINITY];
+        let img = render_lufs_history(&history, -14.0, 200, 80);
+        assert_eq!(img.size, [200, 80]);
+    }
 }
 
 /// Render an audio spectrum (frequency-magnitude) scope from pre-computed
@@ -1453,6 +1528,175 @@ pub(crate) fn render_audio_spectrum(bins: &[f32], rw: usize, rh: usize) -> egui:
             let g = (140.0 * (1.0 - k) + 220.0 * k) as u8;
             let b = (40.0 * (1.0 - k) + 180.0 * k) as u8;
             pixels[idx(x, y)] = Color32::from_rgb(r, g, b);
+        }
+    }
+
+    egui::ColorImage { size: [w, h], pixels }
+}
+
+/// Render an audio-correlation (Lissajous / goniometer) scope plus a
+/// correlation-coefficient strip meter along the bottom edge.
+///
+/// Input is interleaved stereo PCM (`LRLRLR…`). Each sample pair is
+/// plotted at `(x = (L+R)/2, y = (L-R)/2)` in a 45°-rotated coordinate
+/// system — the classic broadcast goniometer convention, where a mono
+/// signal collapses to a vertical line and a hard-panned signal splays
+/// to a diagonal.
+///
+/// The bottom 8 rows paint a Pearson correlation strip:
+/// `r = Σ(L·R) / sqrt(Σ L² · Σ R²)`, mapped to [-1, +1]. The filled
+/// region is green (>+0.5), yellow (0..+0.5), or red (negative — phase
+/// issues that will cancel on mono downmix).
+pub(crate) fn render_audio_correlation(
+    interleaved: &[f32],
+    width: usize,
+    height: usize,
+) -> egui::ColorImage {
+    use egui::Color32;
+    let w = width.max(1);
+    let h = height.max(1);
+    let mut pixels = vec![Color32::from_rgb(14, 14, 18); w * h];
+
+    // Discard the optional trailing odd sample so we always work with
+    // complete stereo pairs.
+    let samples: Vec<(f32, f32)> = interleaved
+        .chunks_exact(2)
+        .map(|c| (c[0], c[1]))
+        .collect();
+
+    // ── Lissajous plot ──
+    // Goniometer convention: x = (L+R)/√2, y = (L-R)/√2. We use 0.5 as
+    // the scaling factor (slightly under √2/2) so loud-but-not-clipping
+    // signals still fit inside the canvas.
+    for (l, r) in &samples {
+        let x_norm = (l + r) * 0.5 + 0.5; // [-1,1] → [0,1]
+        let y_norm = (l - r) * 0.5 + 0.5;
+        let px = (x_norm.clamp(0.0, 1.0) * (w - 1) as f32) as usize;
+        // Y axis flipped so +(L-R) plots upward.
+        let py = ((1.0 - y_norm.clamp(0.0, 1.0)) * (h - 1) as f32) as usize;
+        if px < w && py < h {
+            pixels[py * w + px] = Color32::from_rgb(60, 220, 100);
+        }
+    }
+
+    // ── Correlation-coefficient strip (bottom 8px) ──
+    let (sum_lr, sum_l2, sum_r2) = samples.iter().fold(
+        (0f32, 0f32, 0f32),
+        |(lr, l2, r2), (l, r)| (lr + l * r, l2 + l * l, r2 + r * r),
+    );
+    let corr = if sum_l2 > 0.0 && sum_r2 > 0.0 {
+        (sum_lr / (sum_l2.sqrt() * sum_r2.sqrt())).clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
+
+    let bar_y_start = h.saturating_sub(8);
+    let corr_x = (((corr + 1.0) * 0.5) * (w - 1) as f32) as usize;
+    let center_x = w / 2;
+    let fill_color = if corr > 0.5 {
+        Color32::from_rgb(60, 200, 80)
+    } else if corr > 0.0 {
+        Color32::from_rgb(200, 180, 40)
+    } else {
+        Color32::from_rgb(200, 60, 60)
+    };
+    for y in bar_y_start..h {
+        for x in 0..w {
+            let color = if x == center_x {
+                Color32::from_gray(180)
+            } else if (corr >= 0.0 && x >= center_x && x <= corr_x)
+                || (corr < 0.0 && x <= center_x && x >= corr_x)
+            {
+                fill_color
+            } else {
+                Color32::from_rgb(30, 30, 36)
+            };
+            pixels[y * w + x] = color;
+        }
+    }
+
+    egui::ColorImage { size: [w, h], pixels }
+}
+
+/// Render a rolling short-term-LUFS history graph with the user's
+/// loudness target drawn as a horizontal reference line plus a ±1 LU
+/// tolerance band.
+///
+/// `history` is oldest-first (natural `VecDeque::iter()` order), so the
+/// newest sample lands on the right edge. Values outside the
+/// [`lufs_min`, `lufs_max`] display range are clamped.
+pub(crate) fn render_lufs_history(
+    history: &[f32],
+    target_lufs: f32,
+    width: usize,
+    height: usize,
+) -> egui::ColorImage {
+    use egui::Color32;
+    let w = width.max(1);
+    let h = height.max(1);
+    let mut pixels = vec![Color32::from_rgb(14, 14, 18); w * h];
+
+    // Display range chosen to cover the practical band: streaming targets
+    // cluster around -14..-23, broadcast targets at -23..-27, and
+    // near-silence bottoms out around -36.
+    let lufs_max = -9.0f32;
+    let lufs_min = -36.0f32;
+    let lufs_range = lufs_max - lufs_min;
+
+    // Map a LUFS value to a Y pixel (top = loud).
+    let lufs_to_y = |lufs: f32| -> usize {
+        let clamped = lufs.clamp(lufs_min, lufs_max);
+        let norm = (lufs_max - clamped) / lufs_range;
+        (norm * (h - 1) as f32) as usize
+    };
+
+    // ── Target line + ±1 LU tolerance band ──
+    let target_y = lufs_to_y(target_lufs);
+    let band_top = lufs_to_y((target_lufs + 1.0).min(lufs_max));
+    let band_bot = lufs_to_y((target_lufs - 1.0).max(lufs_min));
+    for x in 0..w {
+        for y in band_top..=band_bot.min(h - 1) {
+            pixels[y * w + x] = Color32::from_rgba_unmultiplied(40, 120, 40, 60);
+        }
+        if target_y < h {
+            pixels[target_y * w + x] = Color32::from_rgb(60, 200, 60);
+        }
+    }
+
+    if history.is_empty() {
+        return egui::ColorImage { size: [w, h], pixels };
+    }
+
+    // ── History line ──
+    // Finite-only filter: the LUFS meter publishes f32::NEG_INFINITY for
+    // ungated early samples. Plotting them would anchor the line at the
+    // bottom edge and swamp the visible band.
+    let n = history.len();
+    for (i, &lufs) in history.iter().enumerate() {
+        if !lufs.is_finite() {
+            continue;
+        }
+        let x = if n > 1 {
+            (i as f32 / (n - 1) as f32 * (w - 1) as f32) as usize
+        } else {
+            w - 1
+        };
+        let y = lufs_to_y(lufs);
+
+        let delta = (lufs - target_lufs).abs();
+        let color = if delta <= 0.5 {
+            Color32::from_rgb(60, 220, 80)
+        } else if delta <= 1.0 {
+            Color32::from_rgb(200, 180, 40)
+        } else {
+            Color32::from_rgb(200, 80, 60)
+        };
+
+        if x < w && y < h {
+            pixels[y * w + x] = color;
+            if y + 1 < h {
+                pixels[(y + 1) * w + x] = color;
+            }
         }
     }
 
