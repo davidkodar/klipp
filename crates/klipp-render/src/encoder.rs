@@ -884,10 +884,10 @@ impl Encoder {
             let channels = 2usize;
             if !self.audio_buffer.is_empty() {
                 let floats_per_frame = frame_size * channels;
+                // Zero-pad the trailing partial frame up to the codec's
+                // required block size. The encoder below reads directly
+                // from `self.audio_buffer`, so no copy is needed.
                 self.audio_buffer.resize(floats_per_frame, 0.0);
-                // Re-use encode_audio_samples logic by draining buffer through it
-                let remaining: Vec<f32> = self.audio_buffer.drain(..).collect();
-                self.audio_buffer.extend_from_slice(&remaining);
                 // Encode the padded frame
                 let enc_fmt = self.audio_sample_format.unwrap_or(
                     ffmpeg_next::format::Sample::F32(ffmpeg_next::format::sample::Type::Packed),
