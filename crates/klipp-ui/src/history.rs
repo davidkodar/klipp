@@ -571,8 +571,25 @@ fn combine_old_new(old_entry: HistoryEntry, new_entry: HistoryEntry) -> HistoryE
             old_linked_state: old_linked_state.clone(),
             new_linked_state: new_linked_state.clone(),
         },
-        // For any other type, just use the new entry as-is
-        _ => new_entry.command.clone(),
+        // Unmatched pair: the pre-drag and post-drag commands are different
+        // variants, or this is a coalesce-eligible variant someone wired up
+        // without extending combine_old_new. Loudly flag in debug, fall back
+        // to the pre-drag command in release so undo at least rolls back to
+        // the last known-good state (the pre-drag snapshot).
+        (old_cmd, new_cmd) => {
+            debug_assert!(
+                false,
+                "combine_old_new: unhandled variant pair {:?} / {:?} — extend this match when adding a coalesce-eligible variant",
+                std::mem::discriminant(old_cmd),
+                std::mem::discriminant(new_cmd),
+            );
+            tracing::warn!(
+                "history: drag coalesce missing handler for {:?} / {:?} — falling back to pre-drag state",
+                std::mem::discriminant(old_cmd),
+                std::mem::discriminant(new_cmd),
+            );
+            old_entry.command.clone()
+        }
     };
     HistoryEntry {
         sequence_idx: new_entry.sequence_idx,
