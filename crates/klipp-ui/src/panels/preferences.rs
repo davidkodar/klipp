@@ -2102,6 +2102,53 @@ impl PreferencesPanel {
                 });
         });
 
+        // ── INPUT DEVICE section (for audio recording, #60) ──
+        Self::section_header(ui, "RECORDING INPUT");
+        Self::setting_row_with_subtitle(
+            ui,
+            "Input device",
+            "Used when arming a track and pressing Record.",
+            |ui| {
+                let input_devices = klipp_engine::audio_input::enumerate_input_devices();
+                let current_text = if prefs.audio_hardware.input_device.is_empty() {
+                    // Pair "Default" with the actual OS default name so users
+                    // can see what cpal will pick — mirrors the output picker.
+                    input_devices
+                        .iter()
+                        .find(|(_, is_default)| *is_default)
+                        .map(|(n, _)| format!("Default ({n})"))
+                        .unwrap_or_else(|| "Default (auto)".to_string())
+                } else {
+                    prefs.audio_hardware.input_device.clone()
+                };
+                egui::ComboBox::from_id_salt("input_device")
+                    .selected_text(current_text)
+                    .width(220.0)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(
+                                prefs.audio_hardware.input_device.is_empty(),
+                                "Default",
+                            )
+                            .clicked()
+                        {
+                            prefs.audio_hardware.input_device.clear();
+                            *dirty = true;
+                        }
+                        if !input_devices.is_empty() {
+                            ui.separator();
+                        }
+                        for (name, _is_default) in &input_devices {
+                            let selected = prefs.audio_hardware.input_device == *name;
+                            if ui.selectable_label(selected, name).clicked() {
+                                prefs.audio_hardware.input_device = name.clone();
+                                *dirty = true;
+                            }
+                        }
+                    });
+            },
+        );
+
         Self::setting_row_with_subtitle(
             ui,
             "System mute reminder",

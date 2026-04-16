@@ -353,6 +353,11 @@ pub struct Track {
     /// the subtitle editor as a "Source: foo.srt" label.
     #[serde(default)]
     pub source_file: Option<std::path::PathBuf>,
+    /// True when this audio track is "record-armed" — the Record button in
+    /// the transport bar will capture to this track on stop.
+    /// Only one track is armed at a time in the MVP (see #60 tier 2b).
+    #[serde(default)]
+    pub record_armed: bool,
 }
 
 fn default_opacity() -> f32 { 1.0 }
@@ -382,6 +387,7 @@ impl Track {
             custom_height: None,
             pre_collapse_height: None,
             source_file: None,
+            record_armed: false,
         }
     }
 

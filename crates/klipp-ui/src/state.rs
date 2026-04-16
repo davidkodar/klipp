@@ -791,6 +791,23 @@ pub struct AppState {
     /// Audio backend sample rate (probed at startup).
     pub audio_sample_rate: u32,
 
+    // ── Audio recording (#60 tier 2a/2b) ──────────────────────────────
+    // None of these serialize — recording state is transient per app run.
+    // AppState itself is not Serialize, so no serde annotations needed.
+    /// True while a recording is in progress.
+    pub is_recording: bool,
+    /// Track to place the recorded clip on when recording stops.
+    pub recording_track_id: Option<klipp_core::TrackId>,
+    /// Destination WAV path of the active recording.
+    pub recording_path: Option<std::path::PathBuf>,
+    /// Stop-signal sender for the WAV writer thread. Sending `()` tells it
+    /// to drain the final ring-buffer tail, patch the WAV header sizes, and
+    /// exit cleanly.
+    pub recording_stop_tx: Option<std::sync::mpsc::Sender<()>>,
+    /// Live cpal input stream. Dropping halts capture; kept here so the
+    /// stream lives as long as the recording session.
+    pub recording_audio_input: Option<klipp_engine::audio_input::AudioInput>,
+
     // Phase 6B: VU metering
     /// Per-track peak levels (display values with decay)
     pub track_peak_levels: Vec<(f32, f32)>,
@@ -1993,6 +2010,11 @@ impl Default for AppState {
             remember_inspector_layout: true,
             audio_backend_ok: false,
             audio_sample_rate: 48000,
+            is_recording: false,
+            recording_track_id: None,
+            recording_path: None,
+            recording_stop_tx: None,
+            recording_audio_input: None,
             track_peak_levels: Vec::new(),
             master_peak_left: 0.0,
             master_peak_right: 0.0,

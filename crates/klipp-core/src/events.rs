@@ -912,6 +912,16 @@ pub enum AppCommand {
     /// and shift its timeline position to align them.
     AlignToAudioReference { clip_id: ClipId },
 
+    // Audio recording (#60)
+    /// Arm / un-arm a track for recording. Only one track is armed at a time
+    /// for the MVP — arming track X un-arms all others.
+    ArmTrack { track_id: TrackId, armed: bool },
+    /// Begin capturing audio from the configured input device into a WAV file
+    /// in the proxy cache. Does nothing if no track is armed.
+    StartRecording,
+    /// Stop the active recording, close the WAV file, and auto-import it.
+    StopRecording,
+
     // Media pool management
     RemoveFromPool { media_id: MediaId },
     ConfirmRemoveFromPool { media_id: MediaId },
