@@ -555,7 +555,14 @@ impl FileThumbSize {
 }
 
 pub struct BrowserPanel {
+    /// Search query for the Media and Library tabs (the "right pane" in
+    /// split view). Deliberately NOT shared with Files — typing effects
+    /// queries here must not filter the file list rendered alongside.
     pub search_query: String,
+    /// Search query for the Files tab only. Kept separate from
+    /// `search_query` so effects searches don't leak into the files
+    /// panel when it's pinned as the split-view left pane.
+    pub files_search_query: String,
     // Media tab state (migrated from MediaPanel)
     pub media_sort_by: media_tab::SortBy,
     pub media_sort_ascending: bool,
@@ -741,6 +748,7 @@ impl Default for BrowserPanel {
         let (file_audio_tx, file_audio_rx) = crossbeam_channel::unbounded();
         Self {
             search_query: String::new(),
+            files_search_query: String::new(),
             media_sort_by: media_tab::SortBy::Name,
             media_sort_ascending: true,
             media_selected_bin: None,
@@ -1090,6 +1098,11 @@ impl BrowserPanel {
             // pane so it visually sits above the content it searches. At
             // full-panel widths the top-level bar is still the right
             // place for it.
+            //
+            // The bar binds to the tab-specific query string: Files uses
+            // `files_search_query`, every other tab uses `search_query`.
+            // This keeps effects queries from leaking into the Files
+            // filter in split view.
             if !show_split {
                 egui::Frame::none()
                     .fill(theme.bg_raised)
@@ -1097,7 +1110,12 @@ impl BrowserPanel {
                     .rounding(5.0)
                     .inner_margin(egui::Margin::symmetric(9.0, 5.0))
                     .show(ui, |ui| {
-                        let search = egui::TextEdit::singleline(&mut self.search_query)
+                        let query_buf: &mut String = if *active_tab == BrowserTab::Files {
+                            &mut self.files_search_query
+                        } else {
+                            &mut self.search_query
+                        };
+                        let search = egui::TextEdit::singleline(query_buf)
                             .hint_text(search_placeholder)
                             .desired_width(ui.available_width() - 4.0)
                             .font(egui::FontId::proportional(12.0))
@@ -2152,7 +2170,10 @@ impl BrowserPanel {
         ui.add_space(2.0);
 
         // ── File listing ──
-        let search = self.search_query.to_lowercase();
+        // Uses `files_search_query` (Files-only) rather than the shared
+        // `search_query` so text typed into the effects/media search bar
+        // in the adjacent right pane doesn't filter the file list here.
+        let search = self.files_search_query.to_lowercase();
         let type_filter = self.files_type_filter;
         let filtered: Vec<&FileEntry> = self.files_entries.iter()
             .filter(|e| type_filter.matches(e))
