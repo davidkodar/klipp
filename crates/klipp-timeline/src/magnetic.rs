@@ -975,15 +975,27 @@ impl MagneticEditor {
         track_index: usize,
         anchor_clip_id: ClipId,
     ) -> MagneticResult {
+        // Resolve the anchor clip first so we know the rate to use for the
+        // empty-track fallback below. RationalTime::ZERO has rate=1, and
+        // subtracting (anchor rate N) from (rate 1) rescales the anchor to
+        // whole seconds — losing sub-second precision in the storyline
+        // offset. Taking the rate from the anchor clip keeps the math honest
+        // even when the track being promoted happens to be empty.
+        let anchor_in = sequence
+            .find_clip(anchor_clip_id)
+            .map(|(ti, ci)| sequence.tracks[ti].clips[ci].timeline_in)
+            .expect("promote_to_storyline: anchor clip not found");
+
         let track = &mut sequence.tracks[track_index];
         let old_role = track.magnetic_role.clone();
 
-        // Save first clip's absolute position
+        // Save first clip's absolute position (zero at the anchor's rate when
+        // the track is empty — see comment above).
         let first_clip_absolute_pos = track
             .clips
             .first()
             .map(|c| c.timeline_in)
-            .unwrap_or(RationalTime::ZERO);
+            .unwrap_or_else(|| RationalTime::from_frames(0, anchor_in.rate));
 
         // Save and clear individual clip anchors
         let old_clip_anchors: Vec<Option<MagneticAnchor>> = track
@@ -994,12 +1006,6 @@ impl MagneticEditor {
         for clip in &mut track.clips {
             clip.magnetic_anchor = None;
         }
-
-        // Find anchor clip to compute storyline offset
-        let anchor_in = sequence
-            .find_clip(anchor_clip_id)
-            .map(|(ti, ci)| sequence.tracks[ti].clips[ci].timeline_in)
-            .expect("promote_to_storyline: anchor clip not found");
 
         let offset = first_clip_absolute_pos - anchor_in;
 
@@ -1051,11 +1057,14 @@ impl MagneticEditor {
             .take()
             .expect("break_apart_storyline: no storyline anchor");
 
+        // Zero at the anchor's rate rather than RationalTime::ZERO (rate=1)
+        // so the stored start round-trips correctly through promote's undo
+        // path when the track is empty.
         let storyline_start = track
             .clips
             .first()
             .map(|c| c.timeline_in)
-            .unwrap_or(RationalTime::ZERO);
+            .unwrap_or_else(|| RationalTime::from_frames(0, old_anchor.offset.rate));
 
         // Set role to Connected, positions stay absolute
         track.magnetic_role = TrackRole::Connected;
