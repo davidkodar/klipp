@@ -6,6 +6,9 @@ use klipp_core::AppCommand;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EffectCategory {
+    /// UI-only pseudo-category: shows only effects the user has starred.
+    /// Not stored on `EffectEntry`; the filter reads from prefs.
+    Favourites,
     All,
     Blur,
     Color,
@@ -28,6 +31,7 @@ pub fn show(
     theme: &KlippTheme,
     search_query: &str,
     active_category: &mut EffectCategory,
+    favorite_effects: &mut Vec<String>,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
     let avail = ui.available_rect_before_wrap();
@@ -61,6 +65,69 @@ pub fn show(
                 ui.spacing_mut().indent = 8.0; // left padding from window edge
                 ui.indent("cat_indent", |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
+
+                // ── FAVOURITES pseudo-category ──
+                // Pinned at the top (Kdenlive convention). Filters the grid
+                // to only effects the user has starred. Count read from the
+                // favorites list directly — no registry scan needed.
+                {
+                    let is_active = *active_category == EffectCategory::Favourites;
+                    let count = favorite_effects.len();
+                    let row_resp = ui.horizontal(|ui| {
+                        let hovered = ui.rect_contains_pointer(ui.max_rect());
+                        let text_color = if is_active {
+                            theme.accent
+                        } else if hovered {
+                            theme.text_primary
+                        } else {
+                            theme.text_secondary
+                        };
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new("\u{2605} Favourites")
+                                    .size(11.0)
+                                    .color(text_color),
+                            )
+                            .selectable(false),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(12.0);
+                            let badge_color = if is_active {
+                                egui::Color32::from_rgb(60, 60, 65)
+                            } else {
+                                egui::Color32::from_rgb(45, 45, 50)
+                            };
+                            let badge = egui::Button::new(
+                                egui::RichText::new(format!("{}", count))
+                                    .size(9.0)
+                                    .color(theme.text_dim),
+                            )
+                            .fill(badge_color)
+                            .rounding(8.0)
+                            .min_size(egui::vec2(24.0, 16.0));
+                            ui.add(badge);
+                        });
+                    });
+                    let row_rect = row_resp.response.rect;
+                    let click_resp = ui.interact(
+                        row_rect,
+                        ui.id().with("cat_click_favourites"),
+                        egui::Sense::click(),
+                    );
+                    if is_active {
+                        let bar_rect = egui::Rect::from_min_size(
+                            egui::pos2(row_rect.min.x - 4.0, row_rect.min.y + 2.0),
+                            egui::vec2(2.0, row_rect.height() - 4.0),
+                        );
+                        ui.painter().rect_filled(bar_rect, 1.0, theme.accent);
+                    }
+                    if click_resp.clicked() {
+                        *active_category = EffectCategory::Favourites;
+                    }
+                }
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(4.0);
 
                 // ── VIDEO section ──
                 ui.label(
@@ -214,7 +281,7 @@ pub fn show(
                 if resp.clicked() { *active = !*active; }
             };
             // Count effects by type
-            let all_effects = state.effect_registry.filtered(*active_category, search_query);
+            let all_effects = state.effect_registry.filtered_with_favorites(*active_category, search_query, favorite_effects);
             let builtin_count = all_effects.iter().filter(|fx| matches!(fx.source, crate::browser::effect_registry::EffectSource::Builtin(_) | crate::browser::effect_registry::EffectSource::Audio(_))).count();
             let ofx_count = all_effects.iter().filter(|fx| matches!(fx.source, crate::browser::effect_registry::EffectSource::Ofx(_))).count();
 
@@ -227,7 +294,7 @@ pub fn show(
         ui.add_space(2.0);
 
         // Apply filters
-        let filtered: Vec<&_> = state.effect_registry.filtered(*active_category, search_query)
+        let filtered: Vec<&_> = state.effect_registry.filtered_with_favorites(*active_category, search_query, favorite_effects)
             .into_iter()
             .filter(|fx| {
                 let is_builtin = matches!(fx.source, crate::browser::effect_registry::EffectSource::Builtin(_) | crate::browser::effect_registry::EffectSource::Audio(_));
@@ -273,6 +340,13 @@ pub fn show(
                 let preview_h = (card_w * 9.0 / 16.0).round();
                 let card_h = preview_h + 36.0; // preview + name + category subtitle
 
+                // Favourite toggles are collected into this local during the
+                // card loop and applied afterwards — same snapshot-then-mutate
+                // pattern as folder favourites (mod.rs:2086). Avoids a
+                // borrow conflict between `favorite_effects.contains(...)`
+                // in the loop body and the push/retain we'd otherwise do
+                // in the same expression.
+                let mut pending_fav_toggle: Option<String> = None;
                 egui::Grid::new("effects_grid")
                     .num_columns(2)
                     .spacing([spacing, spacing])
@@ -282,6 +356,60 @@ pub fn show(
                             let thumb = state.effect_thumbnails.get_texture(&fx.name);
                             let is_pending = state.effect_thumbnails.is_ofx_pending(&fx.name);
                             let resp = effect_card(ui, theme, fx, card_w, card_h, preview_h, thumb, is_pending);
+
+                            // ── Favourite star overlay (top-right of card) ──
+                            let is_fav = favorite_effects.iter().any(|n| n == &fx.name);
+                            let star_rect = egui::Rect::from_min_size(
+                                egui::pos2(resp.rect.max.x - 20.0, resp.rect.min.y + 2.0),
+                                egui::vec2(18.0, 18.0),
+                            );
+                            let star_resp = ui.interact(
+                                star_rect,
+                                ui.id().with(("fav_star", &fx.name)),
+                                egui::Sense::click(),
+                            );
+                            let star_glyph = if is_fav { "\u{2605}" } else { "\u{2606}" };
+                            let star_color = if is_fav {
+                                // Matches the amber/gold used by the media-bin
+                                // clip rating stars — one visual vocabulary for
+                                // "starred" across the app.
+                                egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
+                            } else if star_resp.hovered() {
+                                egui::Color32::from_rgb(220, 220, 230)
+                            } else {
+                                // Dim when not hovered and not starred — avoids
+                                // visual clutter on the grid.
+                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 140)
+                            };
+                            ui.painter().text(
+                                star_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                star_glyph,
+                                egui::FontId::proportional(14.0),
+                                star_color,
+                            );
+                            let star_resp = star_resp.on_hover_text(if is_fav {
+                                "Remove from favourites"
+                            } else {
+                                "Add to favourites"
+                            });
+                            if star_resp.clicked() {
+                                pending_fav_toggle = Some(fx.name.clone());
+                            }
+
+                            // Right-click menu on the card — same Add/Remove
+                            // toggle entry as the star button for discoverability.
+                            resp.context_menu(|ui| {
+                                let label = if is_fav {
+                                    "Remove from Favourites"
+                                } else {
+                                    "Add to Favourites"
+                                };
+                                if ui.button(label).clicked() {
+                                    pending_fav_toggle = Some(fx.name.clone());
+                                    ui.close_menu();
+                                }
+                            });
 
                             if resp.hovered() {
                                 if let EffectSource::Ofx(ref plugin_id) = fx.source {
@@ -351,6 +479,18 @@ pub fn show(
                             }
                         }
                     });
+
+                // Apply the deferred favourite toggle (star click or
+                // right-click menu). One toggle per frame is enough — egui
+                // only fires one click per repaint, so Option<String> is
+                // sufficient.
+                if let Some(name) = pending_fav_toggle {
+                    if let Some(idx) = favorite_effects.iter().position(|n| n == &name) {
+                        favorite_effects.remove(idx);
+                    } else {
+                        favorite_effects.push(name);
+                    }
+                }
 
                 // Status bar at bottom
                 ui.add_space(8.0);
@@ -521,6 +661,10 @@ fn effect_card(
 
 fn category_color(cat: EffectCategory, theme: &KlippTheme) -> egui::Color32 {
     match cat {
+        // Favourites is a pseudo-category for filtering only; cards still
+        // paint using their real category colour via `EffectEntry.category`.
+        // Use a generic dim tint here as a harmless fallback.
+        EffectCategory::Favourites => theme.text_dim,
         EffectCategory::All => theme.text_dim,
         EffectCategory::Blur => egui::Color32::from_rgb(0x4a, 0x9a, 0xde),
         EffectCategory::Color => theme.accent,

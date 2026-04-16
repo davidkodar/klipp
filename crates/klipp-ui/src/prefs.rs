@@ -13,6 +13,8 @@ pub struct Preferences {
     #[serde(default)]
     pub file_browser: FileBrowserPrefs,
     #[serde(default)]
+    pub effects_browser: EffectsBrowserPrefs,
+    #[serde(default)]
     pub audio: AudioPrefs,
     pub export: ExportPrefs,
     pub proxy: ProxyPrefs,
@@ -440,6 +442,18 @@ impl FileBrowserPrefs {
         self.recent_files.insert(0, path);
         self.recent_files.truncate(MAX_RECENT_FILES);
     }
+}
+
+/// Preferences for the effects side of the Library browser tab. Kept
+/// separate from `FileBrowserPrefs` because effects aren't files and
+/// the two sets of knobs have no overlap.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EffectsBrowserPrefs {
+    /// Effect names the user has starred. Keyed by `EffectEntry.name`
+    /// (the display name — stable across runs for built-ins; OFX names
+    /// remain stable as long as the plugin identifier doesn't change).
+    #[serde(default)]
+    pub favorite_effects: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -471,6 +471,7 @@ impl KlippApp {
         app.browser.visible_columns = app.prefs.file_browser.visible_columns.clone();
         app.browser.files_type_filter = app.prefs.file_browser.file_type_filter;
         app.browser.pinned_folders = app.prefs.file_browser.pinned_folders.clone();
+        app.browser.favorite_effects = app.prefs.effects_browser.favorite_effects.clone();
         // Sync loop state to engine (engine defaults to loop_enabled=false)
         if app.state.loop_playback_enabled {
             let _ = app.cmd_tx.send(AppCommand::SetLoopPlayback(true));
@@ -18501,6 +18502,9 @@ impl KlippApp {
         if self.browser.pinned_folders != self.prefs.file_browser.pinned_folders {
             self.browser.pinned_folders = self.prefs.file_browser.pinned_folders.clone();
         }
+        if self.browser.favorite_effects != self.prefs.effects_browser.favorite_effects {
+            self.browser.favorite_effects = self.prefs.effects_browser.favorite_effects.clone();
+        }
 
         let bg_panel = self.theme.bg_panel;
         crate::ui_util::allocate_clipped_ui(ui, browser_rect, |ui| {
@@ -18551,6 +18555,10 @@ impl KlippApp {
             }
             if self.browser.pinned_folders != self.prefs.file_browser.pinned_folders {
                 self.prefs.file_browser.pinned_folders = self.browser.pinned_folders.clone();
+                let _ = self.prefs.save();
+            }
+            if self.browser.favorite_effects != self.prefs.effects_browser.favorite_effects {
+                self.prefs.effects_browser.favorite_effects = self.browser.favorite_effects.clone();
                 let _ = self.prefs.save();
             }
             // Save file-ratings cache to disk if changed.

@@ -612,6 +612,12 @@ pub struct BrowserPanel {
     /// User-pinned favorite folders, rendered after the XDG bookmarks bar.
     /// Persisted via `EditingPrefs::pinned_folders`.
     pub pinned_folders: Vec<std::path::PathBuf>,
+    /// User-starred effects in the Library browser. Keyed by
+    /// `EffectEntry.name`. Persisted via
+    /// `prefs.effects_browser.favorite_effects` — mirrored into the
+    /// browser at render-time and diffed back at the end of
+    /// `render_browser_panel` (same pattern as `pinned_folders`).
+    pub favorite_effects: Vec<String>,
     /// System file-manager bookmarks read once at startup from KDE Places
     /// (`~/.local/share/user-places.xbel`) and GTK plain-text bookmarks
     /// (`~/.config/gtk-{3,4}.0/bookmarks`). Read-only at runtime.
@@ -762,6 +768,7 @@ impl Default for BrowserPanel {
             visible_columns: vec![ColumnId::Size, ColumnId::Date],
             files_type_filter: FileTypeFilter::default(),
             pinned_folders: Vec::new(),
+            favorite_effects: Vec::new(),
             system_bookmarks: read_system_bookmarks(),
             files_panel_focused: false,
             type_ahead_buffer: String::new(),
@@ -919,6 +926,13 @@ impl BrowserPanel {
             },
         };
 
+        // Compute the split-view flag up front so the toolbar/search row
+        // below can avoid rendering when the search would end up spanning
+        // both panes (confusing — the search only applies to the active
+        // right-pane tab). In split mode we render a per-pane search bar
+        // inside the right pane instead.
+        let show_split = *files_pinned && *active_tab != BrowserTab::Files;
+
         // Styled search input + view mode toggle (for Media tab)
         ui.horizontal(|ui| {
             ui.add_space(8.0);
@@ -1066,33 +1080,41 @@ impl BrowserPanel {
                 ui.add_space(4.0);
             }
 
-            egui::Frame::none()
-                .fill(theme.bg_raised)
-                .stroke(egui::Stroke::new(1.0, theme.border))
-                .rounding(5.0)
-                .inner_margin(egui::Margin::symmetric(9.0, 5.0))
-                .show(ui, |ui| {
-                    let search = egui::TextEdit::singleline(&mut self.search_query)
-                        .hint_text(search_placeholder)
-                        .desired_width(ui.available_width() - 4.0)
-                        .font(egui::FontId::proportional(12.0))
-                        .text_color(theme.text_primary)
-                        .frame(false);
-                    let resp = ui.add(search);
-                    if resp.has_focus() {
-                        let frame_rect = resp.rect.expand2(egui::vec2(9.0, 5.0));
-                        ui.painter().rect_stroke(
-                            frame_rect,
-                            5.0,
-                            egui::Stroke::new(1.0, theme.accent_dim),
-                        );
-                    }
-                });
+            // In split view the search bar is rendered inside the right
+            // pane so it visually sits above the content it searches. At
+            // full-panel widths the top-level bar is still the right
+            // place for it.
+            if !show_split {
+                egui::Frame::none()
+                    .fill(theme.bg_raised)
+                    .stroke(egui::Stroke::new(1.0, theme.border))
+                    .rounding(5.0)
+                    .inner_margin(egui::Margin::symmetric(9.0, 5.0))
+                    .show(ui, |ui| {
+                        let search = egui::TextEdit::singleline(&mut self.search_query)
+                            .hint_text(search_placeholder)
+                            .desired_width(ui.available_width() - 4.0)
+                            .font(egui::FontId::proportional(12.0))
+                            .text_color(theme.text_primary)
+                            .frame(false);
+                        let resp = ui.add(search);
+                        if resp.has_focus() {
+                            let frame_rect = resp.rect.expand2(egui::vec2(9.0, 5.0));
+                            ui.painter().rect_stroke(
+                                frame_rect,
+                                5.0,
+                                egui::Stroke::new(1.0, theme.accent_dim),
+                            );
+                        }
+                    });
+            }
         });
         ui.add_space(4.0);
 
         // ── Tab content ──
-        let show_split = *files_pinned && *active_tab != BrowserTab::Files;
+        // `show_split` was computed earlier (before the top-level toolbar
+        // row) so the search bar could decide whether to render at top
+        // level or defer into the right pane.
 
         if show_split {
             // Split view: left pane (MEDIA/LIBRARY) + divider + right pane (FILES)
@@ -1146,6 +1168,36 @@ impl BrowserPanel {
             // Right pane: current tab content (Media or Library)
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(right_rect), |ui| {
                 ui.set_clip_rect(right_rect);
+
+                // Per-pane search bar (split view only). Visually anchors
+                // the search to the content it filters, rather than
+                // spanning both panes at the top of the browser where
+                // users mistake it for a global search.
+                ui.add_space(2.0);
+                egui::Frame::none()
+                    .fill(theme.bg_raised)
+                    .stroke(egui::Stroke::new(1.0, theme.border))
+                    .rounding(5.0)
+                    .inner_margin(egui::Margin::symmetric(9.0, 5.0))
+                    .show(ui, |ui| {
+                        let search = egui::TextEdit::singleline(&mut self.search_query)
+                            .hint_text(search_placeholder)
+                            .desired_width(ui.available_width() - 4.0)
+                            .font(egui::FontId::proportional(12.0))
+                            .text_color(theme.text_primary)
+                            .frame(false);
+                        let resp = ui.add(search);
+                        if resp.has_focus() {
+                            let frame_rect = resp.rect.expand2(egui::vec2(9.0, 5.0));
+                            ui.painter().rect_stroke(
+                                frame_rect,
+                                5.0,
+                                egui::Stroke::new(1.0, theme.accent_dim),
+                            );
+                        }
+                    });
+                ui.add_space(4.0);
+
                 match active_tab {
                     BrowserTab::Media => {
                         // Smart bin filter + granular rating filter. Both are
@@ -3815,6 +3867,7 @@ impl BrowserPanel {
                     theme,
                     &self.search_query,
                     &mut self.effects_category,
+                    &mut self.favorite_effects,
                 )
             }
             LibraryCategory::AudioFx => {

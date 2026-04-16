@@ -576,14 +576,42 @@ impl EffectRegistry {
     }
 
     /// Filter effects by category and search query, sorted alphabetically.
+    /// `favorite_names` backs the `EffectCategory::Favourites` pseudo-category
+    /// — when the caller doesn't need it (sidebar count queries, most tests)
+    /// an empty slice is fine.
     pub fn filtered(&self, category: EffectCategory, search: &str) -> Vec<&EffectEntry> {
+        self.filtered_with_favorites(category, search, &[])
+    }
+
+    pub fn filtered_with_favorites(
+        &self,
+        category: EffectCategory,
+        search: &str,
+        favorite_names: &[String],
+    ) -> Vec<&EffectEntry> {
         let search_lower = search.to_lowercase();
-        let _is_audio_cat = matches!(category, EffectCategory::AudioAll | EffectCategory::AudioEQ | EffectCategory::AudioDynamics | EffectCategory::AudioReverb);
-        let mut result: Vec<&EffectEntry> = self.effects
+        let _is_audio_cat = matches!(
+            category,
+            EffectCategory::AudioAll
+                | EffectCategory::AudioEQ
+                | EffectCategory::AudioDynamics
+                | EffectCategory::AudioReverb
+        );
+        let mut result: Vec<&EffectEntry> = self
+            .effects
             .iter()
             .filter(|e| {
-                let e_is_audio = matches!(e.category, EffectCategory::AudioEQ | EffectCategory::AudioDynamics | EffectCategory::AudioReverb);
+                let e_is_audio = matches!(
+                    e.category,
+                    EffectCategory::AudioEQ
+                        | EffectCategory::AudioDynamics
+                        | EffectCategory::AudioReverb
+                );
                 let cat_match = match category {
+                    // Favourites: show every effect the user has starred,
+                    // video or audio alike. Empty favorites list → empty
+                    // grid (handled naturally by the contains() check).
+                    EffectCategory::Favourites => favorite_names.contains(&e.name),
                     EffectCategory::All => !e_is_audio, // All = all video effects
                     EffectCategory::AudioAll => e_is_audio, // AudioAll = all audio effects
                     _ => e.category == category,
@@ -637,5 +665,112 @@ fn category_from_grouping(grouping: &str) -> EffectCategory {
         EffectCategory::Light
     } else {
         EffectCategory::Stylize
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal registry with three distinct entries so tests don't
+    /// depend on the real (large, evolving) registry content.
+    fn test_registry() -> EffectRegistry {
+        EffectRegistry {
+            effects: vec![
+                EffectEntry {
+                    name: "Blur".into(),
+                    category: EffectCategory::Blur,
+                    source: EffectSource::Builtin(
+                        klipp_effects::BuiltinEffect::GaussianBlur { radius: 0.0 },
+                    ),
+                    source_label: "Built-in",
+                    description: String::new(),
+                    grouping: "Blur".into(),
+                },
+                EffectEntry {
+                    name: "Sharpen".into(),
+                    category: EffectCategory::Blur,
+                    source: EffectSource::Builtin(
+                        klipp_effects::BuiltinEffect::Sharpen { amount: 0.0 },
+                    ),
+                    source_label: "Built-in",
+                    description: String::new(),
+                    grouping: "Blur".into(),
+                },
+                EffectEntry {
+                    name: "Opacity".into(),
+                    category: EffectCategory::Color,
+                    source: EffectSource::Builtin(
+                        klipp_effects::BuiltinEffect::Opacity { value: 1.0 },
+                    ),
+                    source_label: "Built-in",
+                    description: String::new(),
+                    grouping: "Color".into(),
+                },
+            ],
+            reference_frame: None,
+        }
+    }
+
+    #[test]
+    fn favourites_filter_returns_only_starred() {
+        let reg = test_registry();
+        let favs = vec!["Blur".to_string()];
+        let out = reg.filtered_with_favorites(EffectCategory::Favourites, "", &favs);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "Blur");
+    }
+
+    #[test]
+    fn favourites_filter_with_search_narrows_further() {
+        let reg = test_registry();
+        let favs = vec!["Blur".to_string(), "Opacity".to_string()];
+        // Both starred — search "opac" uniquely hits Opacity by name, so the
+        // starred Blur entry is filtered out even though it's a favourite.
+        let out = reg.filtered_with_favorites(EffectCategory::Favourites, "opac", &favs);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].name, "Opacity");
+    }
+
+    #[test]
+    fn favourites_filter_empty_when_no_stars() {
+        let reg = test_registry();
+        let out = reg.filtered_with_favorites(EffectCategory::Favourites, "", &[]);
+        assert!(out.is_empty(), "no stars → empty grid");
+    }
+
+    #[test]
+    fn star_toggle_adds_and_removes() {
+        // Mirrors the `pending_fav_toggle` apply logic in effects_tab.rs.
+        let mut favs: Vec<String> = Vec::new();
+        let name = "Blur".to_string();
+
+        // First toggle → add.
+        if let Some(i) = favs.iter().position(|n| n == &name) {
+            favs.remove(i);
+        } else {
+            favs.push(name.clone());
+        }
+        assert_eq!(favs, vec!["Blur".to_string()]);
+
+        // Second toggle → remove.
+        if let Some(i) = favs.iter().position(|n| n == &name) {
+            favs.remove(i);
+        } else {
+            favs.push(name.clone());
+        }
+        assert!(favs.is_empty());
+    }
+
+    #[test]
+    fn filtered_backwards_compat_no_favorites() {
+        // The old `filtered()` helper (no favorites slice) must still return
+        // non-favorite categories identically to the new variant.
+        let reg = test_registry();
+        let old = reg.filtered(EffectCategory::Blur, "");
+        let new = reg.filtered_with_favorites(EffectCategory::Blur, "", &[]);
+        let old_names: Vec<_> = old.iter().map(|e| e.name.as_str()).collect();
+        let new_names: Vec<_> = new.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(old_names, new_names);
     }
 }
