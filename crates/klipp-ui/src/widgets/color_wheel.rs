@@ -98,7 +98,7 @@ pub fn color_wheel_sized(
 
     // ── Guide lines ──
     let guide_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20);
-    let guide_stroke = egui::Stroke::new(0.5, guide_color);
+    let guide_stroke = egui::Stroke::new(0.5_f32, guide_color);
     let wc = wheel_rect.center();
     // Concentric circles at 33% and 66% radius
     painter.circle_stroke(wc, wheel_radius * 0.33, guide_stroke);
@@ -163,7 +163,7 @@ pub fn color_wheel_sized(
     );
     // Puck body
     painter.circle_filled(puck_center, puck_r, egui::Color32::WHITE);
-    painter.circle_stroke(puck_center, puck_r, egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140)));
+    painter.circle_stroke(puck_center, puck_r, egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140)));
 
     // ── RGB readout ──
     let rgb_top = wheel_rect.max.y + spacing;
@@ -192,7 +192,7 @@ pub fn color_wheel_sized(
         let border = if is_zero { egui::Color32::from_rgb(0x2a, 0x2a, 0x32) } else { border_c };
         let text = if is_zero { neutral_text } else { text_c };
         painter.rect_filled(pill_rect, 3.0, bg);
-        painter.rect_stroke(pill_rect, 3.0, egui::Stroke::new(0.5, border));
+        painter.rect_stroke(pill_rect, 3.0, egui::Stroke::new(0.5_f32, border));
         painter.text(
             pill_rect.center(),
             egui::Align2::CENTER_CENTER,

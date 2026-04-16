@@ -77,7 +77,7 @@ impl NewInspectorPanel {
             ui.painter().hline(
                 header_rect.x_range(),
                 header_rect.max.y,
-                egui::Stroke::new(1.0, theme.border),
+                egui::Stroke::new(1.0_f32, theme.border),
             );
             ui.add_space(9.0);
             ui.vertical(|ui| {
@@ -129,7 +129,7 @@ impl NewInspectorPanel {
                 ui.painter().rect_filled(banner_rect, 0.0,
                     egui::Color32::from_rgba_premultiplied(232, 160, 32, 30));
                 ui.painter().hline(banner_rect.x_range(), banner_rect.max.y,
-                    egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(232, 160, 32, 60)));
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(232, 160, 32, 60)));
 
                 // Color bar on left
                 let bar_rect = egui::Rect::from_min_size(
@@ -169,7 +169,7 @@ impl NewInspectorPanel {
             ui.painter().hline(
                 tab_rect.x_range(),
                 tab_rect.max.y,
-                egui::Stroke::new(1.0, theme.border),
+                egui::Stroke::new(1.0_f32, theme.border),
             );
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
@@ -227,7 +227,7 @@ impl NewInspectorPanel {
                         ui.painter().hline(
                             tab_rect.x_range(),
                             tab_rect.max.y - 1.0,
-                            egui::Stroke::new(2.0, theme.accent),
+                            egui::Stroke::new(2.0_f32, theme.accent),
                         );
                     }
                     if resp.clicked() {
@@ -1636,7 +1636,7 @@ fn show_transition_inspector(
         ui.painter().hline(
             header_rect.x_range(),
             header_rect.max.y,
-            egui::Stroke::new(1.0, theme.border),
+            egui::Stroke::new(1.0_f32, theme.border),
         );
         ui.add_space(9.0);
         ui.vertical(|ui| {

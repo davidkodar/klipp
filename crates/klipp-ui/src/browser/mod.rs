@@ -855,7 +855,7 @@ impl BrowserPanel {
                 ui.painter().hline(
                     ui.max_rect().x_range(),
                     ui.max_rect().max.y,
-                    egui::Stroke::new(1.0, theme.border),
+                    egui::Stroke::new(1.0_f32, theme.border),
                 );
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
@@ -901,7 +901,7 @@ impl BrowserPanel {
                             ui.painter().hline(
                                 tab_rect.x_range(),
                                 tab_rect.max.y - 1.0,
-                                egui::Stroke::new(2.0, theme.accent),
+                                egui::Stroke::new(2.0_f32, theme.accent),
                             );
                         }
 
@@ -1106,7 +1106,7 @@ impl BrowserPanel {
             if !show_split {
                 egui::Frame::none()
                     .fill(theme.bg_raised)
-                    .stroke(egui::Stroke::new(1.0, theme.border))
+                    .stroke(egui::Stroke::new(1.0_f32, theme.border))
                     .rounding(5.0)
                     .inner_margin(egui::Margin::symmetric(9.0, 5.0))
                     .show(ui, |ui| {
@@ -1127,7 +1127,7 @@ impl BrowserPanel {
                             ui.painter().rect_stroke(
                                 frame_rect,
                                 5.0,
-                                egui::Stroke::new(1.0, theme.accent_dim),
+                                egui::Stroke::new(1.0_f32, theme.accent_dim),
                             );
                         }
                     });
@@ -1200,7 +1200,7 @@ impl BrowserPanel {
                 ui.add_space(2.0);
                 egui::Frame::none()
                     .fill(theme.bg_raised)
-                    .stroke(egui::Stroke::new(1.0, theme.border))
+                    .stroke(egui::Stroke::new(1.0_f32, theme.border))
                     .rounding(5.0)
                     .inner_margin(egui::Margin::symmetric(9.0, 5.0))
                     .show(ui, |ui| {
@@ -1216,7 +1216,7 @@ impl BrowserPanel {
                             ui.painter().rect_stroke(
                                 frame_rect,
                                 5.0,
-                                egui::Stroke::new(1.0, theme.accent_dim),
+                                egui::Stroke::new(1.0_f32, theme.accent_dim),
                             );
                         }
                     });
@@ -1897,7 +1897,7 @@ impl BrowserPanel {
                 } else {
                     (theme.bg_raised, theme.border)
                 };
-                ui.painter().rect(rect, 3.0, bg, egui::Stroke::new(0.5, border));
+                ui.painter().rect(rect, 3.0, bg, egui::Stroke::new(0.5_f32, border));
                 let gw = glyph_w(size);
                 let gh = gw * 9.0 / 16.0;
                 let glyph_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(gw, gh));
@@ -1939,7 +1939,7 @@ impl BrowserPanel {
                         egui::RichText::new("G").size(11.0).strong().color(text_color),
                     )
                     .fill(bg)
-                    .stroke(egui::Stroke::new(0.5, border_color))
+                    .stroke(egui::Stroke::new(0.5_f32, border_color))
                     .rounding(3.0)
                     .min_size(egui::vec2(22.0, 20.0)),
                 )
@@ -2040,7 +2040,7 @@ impl BrowserPanel {
                                 .color(if is_current { egui::Color32::from_rgb(30, 30, 34) } else { theme.text_secondary })
                         )
                         .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
-                        .stroke(egui::Stroke::new(0.5, if is_current { theme.accent } else { theme.border }))
+                        .stroke(egui::Stroke::new(0.5_f32, if is_current { theme.accent } else { theme.border }))
                         .rounding(3.0),
                     )
                     .on_hover_text(path.to_string_lossy().to_string());
@@ -2062,7 +2062,7 @@ impl BrowserPanel {
                             .color(if is_current { egui::Color32::from_rgb(30, 30, 34) } else { theme.text_secondary })
                     )
                     .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
-                    .stroke(egui::Stroke::new(0.5, if is_current { theme.accent } else { theme.border }))
+                    .stroke(egui::Stroke::new(0.5_f32, if is_current { theme.accent } else { theme.border }))
                     .rounding(3.0),
                 )
                 .on_hover_text("Recently imported files");
@@ -2101,7 +2101,7 @@ impl BrowserPanel {
                             .color(if is_current { egui::Color32::from_rgb(30, 30, 34) } else { theme.text_secondary })
                     )
                     .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
-                    .stroke(egui::Stroke::new(0.5, if is_current { theme.accent } else { theme.border }))
+                    .stroke(egui::Stroke::new(0.5_f32, if is_current { theme.accent } else { theme.border }))
                     .rounding(3.0),
                 )
                 .on_hover_text(path.to_string_lossy().to_string());
@@ -2151,7 +2151,7 @@ impl BrowserPanel {
                             .color(if is_current { egui::Color32::from_rgb(30, 30, 34) } else { theme.text_secondary })
                     )
                     .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
-                    .stroke(egui::Stroke::new(0.5, if is_current { theme.accent } else { theme.border }))
+                    .stroke(egui::Stroke::new(0.5_f32, if is_current { theme.accent } else { theme.border }))
                     .rounding(3.0),
                 )
                 .on_hover_text(path.to_string_lossy().to_string());
@@ -2165,7 +2165,7 @@ impl BrowserPanel {
         ui.painter().hline(
             ui.max_rect().x_range(),
             ui.cursor().min.y,
-            egui::Stroke::new(0.5, theme.border),
+            egui::Stroke::new(0.5_f32, theme.border),
         );
         ui.add_space(2.0);
 
@@ -2583,7 +2583,7 @@ impl BrowserPanel {
                     ui.painter().hline(
                         hdr_rect.min.x + pad..=hdr_rect.max.x - pad,
                         hdr_rect.max.y,
-                        egui::Stroke::new(0.5, theme.border),
+                        egui::Stroke::new(0.5_f32, theme.border),
                     );
                 }
 
@@ -2711,7 +2711,7 @@ impl BrowserPanel {
                                 ui.painter().vline(
                                     tile_rect.min.x,
                                     tile_rect.y_range(),
-                                    egui::Stroke::new(0.5, egui::Color32::from_rgb(10, 10, 10)),
+                                    egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(10, 10, 10)),
                                 );
                             }
                         }
@@ -2724,7 +2724,7 @@ impl BrowserPanel {
                             ui.painter().rect_stroke(
                                 active_rect,
                                 0.0,
-                                egui::Stroke::new(1.5, egui::Color32::from_rgb(0xe8, 0xa0, 0x20)),
+                                egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(0xe8, 0xa0, 0x20)),
                             );
 
                             // Large preview popup — shows the active tile
@@ -2764,7 +2764,7 @@ impl BrowserPanel {
                                         preview_rect,
                                         4.0,
                                         egui::Color32::from_rgb(18, 18, 18),
-                                        egui::Stroke::new(1.0, egui::Color32::from_rgb(0xe8, 0xa0, 0x20)),
+                                        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0xe8, 0xa0, 0x20)),
                                     );
                                     ui.painter().image(
                                         tex.id(),
@@ -3120,7 +3120,7 @@ impl BrowserPanel {
                 ui.painter().hline(
                     rect.min.x + pad..=rect.max.x - pad,
                     rect.max.y,
-                    egui::Stroke::new(0.3, theme.border),
+                    egui::Stroke::new(0.3_f32, theme.border),
                 );
 
                 // ── Interactions ──
@@ -3416,7 +3416,7 @@ impl BrowserPanel {
         ui.painter().hline(
             status_rect.x_range(),
             status_rect.min.y,
-            egui::Stroke::new(0.5, theme.border),
+            egui::Stroke::new(0.5_f32, theme.border),
         );
 
         // Build status text. Format follows Finder/Files conventions:
@@ -3881,13 +3881,13 @@ impl BrowserPanel {
                     ui.painter().circle_stroke(
                         dot_rect.center(),
                         7.0,
-                        egui::Stroke::new(1.5, egui::Color32::WHITE),
+                        egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
                     );
                 } else if dot_resp.hovered() {
                     ui.painter().circle_stroke(
                         dot_rect.center(),
                         6.5,
-                        egui::Stroke::new(1.0, egui::Color32::from_gray(180)),
+                        egui::Stroke::new(1.0_f32, egui::Color32::from_gray(180)),
                     );
                 }
                 let tooltip = match label {
@@ -3947,9 +3947,9 @@ impl BrowserPanel {
                     .rounding(12.0)
                     .min_size(egui::vec2(0.0, 22.0))
                     .stroke(if is_active {
-                        egui::Stroke::new(1.0, theme.accent)
+                        egui::Stroke::new(1.0_f32, theme.accent)
                     } else {
-                        egui::Stroke::new(1.0, theme.border)
+                        egui::Stroke::new(1.0_f32, theme.border)
                     }),
                 );
                 if resp.clicked() {

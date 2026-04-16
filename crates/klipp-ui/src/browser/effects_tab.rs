@@ -55,7 +55,7 @@ pub fn show(
         ui.painter().vline(
             sidebar_rect.max.x,
             sidebar_rect.y_range(),
-            egui::Stroke::new(1.0, theme.border),
+            egui::Stroke::new(1.0_f32, theme.border),
         );
 
         egui::ScrollArea::vertical()
@@ -572,11 +572,11 @@ fn effect_card(
     painter.rect_filled(preview_rect, rounding, theme.bg_panel);
 
     // Subtle dark frame around the card (always visible)
-    painter.rect_stroke(preview_rect, rounding, egui::Stroke::new(1.0, egui::Color32::from_rgb(45, 45, 50)));
+    painter.rect_stroke(preview_rect, rounding, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(45, 45, 50)));
 
     // Brighter border on hover
     if hovered {
-        painter.rect_stroke(preview_rect, rounding, egui::Stroke::new(1.5, theme.accent_dim));
+        painter.rect_stroke(preview_rect, rounding, egui::Stroke::new(1.5_f32, theme.accent_dim));
     }
 
     if let Some(tex) = thumbnail {
@@ -757,7 +757,7 @@ fn paint_effect_preview(
                 let x = rect.min.x + (i as f32 / 5.0) * rect.width();
                 painter.line_segment(
                     [egui::pos2(x, rect.min.y), egui::pos2(x + 10.0, rect.max.y)],
-                    egui::Stroke::new(1.0, cat_color.linear_multiply(0.3)),
+                    egui::Stroke::new(1.0_f32, cat_color.linear_multiply(0.3)),
                 );
             }
         }
@@ -790,11 +790,11 @@ fn paint_effect_preview(
                     // Grid lines
                     for i in 1..4 {
                         let y = rect.min.y + i as f32 * h / 4.0;
-                        painter.line_segment([egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)], egui::Stroke::new(0.5, dim_line));
+                        painter.line_segment([egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)], egui::Stroke::new(0.5_f32, dim_line));
                     }
                     // Curve
                     for pair in points.windows(2) {
-                        painter.line_segment([pair[0], pair[1]], egui::Stroke::new(2.0, accent));
+                        painter.line_segment([pair[0], pair[1]], egui::Stroke::new(2.0_f32, accent));
                     }
                 }
                 "compressor" => {
@@ -802,7 +802,7 @@ fn paint_effect_preview(
                     let margin = 8.0;
                     let plot = rect.shrink(margin);
                     // Diagonal reference line
-                    painter.line_segment([plot.min, plot.max], egui::Stroke::new(0.5, dim_line));
+                    painter.line_segment([plot.min, plot.max], egui::Stroke::new(0.5_f32, dim_line));
                     // Compression knee curve
                     let n = 30;
                     let points: Vec<egui::Pos2> = (0..=n).map(|i| {
@@ -814,16 +814,16 @@ fn paint_effect_preview(
                         egui::pos2(plot.min.x + t * plot.width(), plot.max.y - output * plot.height())
                     }).collect();
                     for pair in points.windows(2) {
-                        painter.line_segment([pair[0], pair[1]], egui::Stroke::new(2.0, accent));
+                        painter.line_segment([pair[0], pair[1]], egui::Stroke::new(2.0_f32, accent));
                     }
                     // Threshold marker
                     let tx = plot.min.x + 0.5 * plot.width();
-                    painter.line_segment([egui::pos2(tx, plot.min.y), egui::pos2(tx, plot.max.y)], egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(255, 180, 60, 80)));
+                    painter.line_segment([egui::pos2(tx, plot.min.y), egui::pos2(tx, plot.max.y)], egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_unmultiplied(255, 180, 60, 80)));
                 }
                 "limiter" => {
                     // Limiter: hard ceiling line with clipped waveform
                     let ceiling_y = rect.min.y + h * 0.3;
-                    painter.line_segment([egui::pos2(rect.min.x, ceiling_y), egui::pos2(rect.max.x, ceiling_y)], egui::Stroke::new(1.5, egui::Color32::from_rgb(220, 80, 60)));
+                    painter.line_segment([egui::pos2(rect.min.x, ceiling_y), egui::pos2(rect.max.x, ceiling_y)], egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(220, 80, 60)));
                     // Waveform hitting the ceiling
                     let n = 50;
                     for i in 0..n {
@@ -831,7 +831,7 @@ fn paint_effect_preview(
                         let x = rect.min.x + t * w;
                         let amp = (t * 8.0 * std::f32::consts::PI).sin() * (0.3 + t * 0.5);
                         let bar_h = (amp.abs() * h * 0.45).min(cy - ceiling_y);
-                        painter.line_segment([egui::pos2(x, cy + bar_h), egui::pos2(x, cy - bar_h)], egui::Stroke::new(1.5, accent));
+                        painter.line_segment([egui::pos2(x, cy + bar_h), egui::pos2(x, cy - bar_h)], egui::Stroke::new(1.5_f32, accent));
                     }
                 }
                 "gate" => {
@@ -843,9 +843,9 @@ fn paint_effect_preview(
                         let amp = (t * 12.0 * std::f32::consts::PI).sin() * ((t * 3.0).sin().abs() * 0.8 + 0.1);
                         let gated = amp.abs() > 0.35;
                         if gated {
-                            painter.line_segment([egui::pos2(x, cy - amp * h * 0.35), egui::pos2(x, cy + amp * h * 0.35)], egui::Stroke::new(1.5, accent));
+                            painter.line_segment([egui::pos2(x, cy - amp * h * 0.35), egui::pos2(x, cy + amp * h * 0.35)], egui::Stroke::new(1.5_f32, accent));
                         } else {
-                            painter.line_segment([egui::pos2(x, cy - 0.5), egui::pos2(x, cy + 0.5)], egui::Stroke::new(0.5, dim_line));
+                            painter.line_segment([egui::pos2(x, cy - 0.5), egui::pos2(x, cy + 0.5)], egui::Stroke::new(0.5_f32, dim_line));
                         }
                     }
                 }
@@ -860,7 +860,7 @@ fn paint_effect_preview(
                         let bar_h = noise.abs() * h * 0.4;
                         let alpha = (envelope * 200.0).min(255.0) as u8;
                         let color = egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), alpha);
-                        painter.line_segment([egui::pos2(x, cy - bar_h), egui::pos2(x, cy + bar_h)], egui::Stroke::new(1.5, color));
+                        painter.line_segment([egui::pos2(x, cy - bar_h), egui::pos2(x, cy + bar_h)], egui::Stroke::new(1.5_f32, color));
                     }
                 }
                 "delay" => {
@@ -876,7 +876,7 @@ fn paint_effect_preview(
                             let t = i as f32 / 7.0;
                             let x = ex + t * bar_w;
                             let wave = (t * 4.0 * std::f32::consts::PI).sin() * amp * h * 0.3;
-                            painter.line_segment([egui::pos2(x, cy - wave), egui::pos2(x, cy + wave)], egui::Stroke::new(1.5, color));
+                            painter.line_segment([egui::pos2(x, cy - wave), egui::pos2(x, cy + wave)], egui::Stroke::new(1.5_f32, color));
                         }
                     }
                 }
@@ -895,7 +895,7 @@ fn paint_effect_preview(
                             egui::pos2(x, y)
                         }).collect();
                         for pair in points.windows(2) {
-                            painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5, color));
+                            painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5_f32, color));
                         }
                     }
                 }
@@ -912,7 +912,7 @@ fn paint_effect_preview(
                         egui::pos2(x, y)
                     }).collect();
                     for pair in points.windows(2) {
-                        painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5, accent));
+                        painter.line_segment([pair[0], pair[1]], egui::Stroke::new(1.5_f32, accent));
                     }
                     // Suppression zone
                     let zone = egui::Rect::from_min_max(
@@ -929,18 +929,18 @@ fn paint_effect_preview(
                         let t = i as f32 / (n as f32 / 2.0);
                         let x = rect.min.x + t * w * 0.45;
                         let amp = (t * 10.0 * std::f32::consts::PI).sin() * 0.15;
-                        painter.line_segment([egui::pos2(x, cy - amp * h), egui::pos2(x, cy + amp * h)], egui::Stroke::new(1.0, dim_line.linear_multiply(1.5)));
+                        painter.line_segment([egui::pos2(x, cy - amp * h), egui::pos2(x, cy + amp * h)], egui::Stroke::new(1.0_f32, dim_line.linear_multiply(1.5)));
                     }
                     // Arrow
-                    painter.line_segment([egui::pos2(cx - 4.0, cy), egui::pos2(cx + 4.0, cy)], egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 200, 200)));
-                    painter.line_segment([egui::pos2(cx + 1.0, cy - 3.0), egui::pos2(cx + 4.0, cy)], egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 200, 200)));
-                    painter.line_segment([egui::pos2(cx + 1.0, cy + 3.0), egui::pos2(cx + 4.0, cy)], egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 200, 200)));
+                    painter.line_segment([egui::pos2(cx - 4.0, cy), egui::pos2(cx + 4.0, cy)], egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(200, 200, 200)));
+                    painter.line_segment([egui::pos2(cx + 1.0, cy - 3.0), egui::pos2(cx + 4.0, cy)], egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(200, 200, 200)));
+                    painter.line_segment([egui::pos2(cx + 1.0, cy + 3.0), egui::pos2(cx + 4.0, cy)], egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(200, 200, 200)));
                     // After (full)
                     for i in 0..n/2 {
                         let t = i as f32 / (n as f32 / 2.0);
                         let x = rect.min.x + 0.55 * w + t * w * 0.45;
                         let amp = (t * 10.0 * std::f32::consts::PI).sin() * 0.4;
-                        painter.line_segment([egui::pos2(x, cy - amp * h), egui::pos2(x, cy + amp * h)], egui::Stroke::new(1.5, accent));
+                        painter.line_segment([egui::pos2(x, cy - amp * h), egui::pos2(x, cy + amp * h)], egui::Stroke::new(1.5_f32, accent));
                     }
                 }
                 "pitch_shift" => {
@@ -954,7 +954,7 @@ fn paint_effect_preview(
                         egui::pos2(x, y)
                     }).collect();
                     for pair in points.windows(2) {
-                        painter.line_segment([pair[0], pair[1]], egui::Stroke::new(2.0, accent));
+                        painter.line_segment([pair[0], pair[1]], egui::Stroke::new(2.0_f32, accent));
                     }
                 }
                 "noise_reduction" | "declick" => {
@@ -966,16 +966,16 @@ fn paint_effect_preview(
                         let x = rect.min.x + t * w * 0.45;
                         let signal = (t * 8.0 * std::f32::consts::PI).sin() * 0.25;
                         let noise = ((t * 50.0).sin() * (t * 73.0).cos()) * 0.12;
-                        painter.line_segment([egui::pos2(x, cy - (signal + noise) * h), egui::pos2(x, cy + (signal + noise).abs() * h * 0.3)], egui::Stroke::new(1.0, dim_line.linear_multiply(1.5)));
+                        painter.line_segment([egui::pos2(x, cy - (signal + noise) * h), egui::pos2(x, cy + (signal + noise).abs() * h * 0.3)], egui::Stroke::new(1.0_f32, dim_line.linear_multiply(1.5)));
                     }
                     // Arrow
-                    painter.line_segment([egui::pos2(cx - 4.0, cy), egui::pos2(cx + 4.0, cy)], egui::Stroke::new(1.5, egui::Color32::from_rgb(200, 200, 200)));
+                    painter.line_segment([egui::pos2(cx - 4.0, cy), egui::pos2(cx + 4.0, cy)], egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(200, 200, 200)));
                     // Clean (right half)
                     for i in 0..n/2 {
                         let t = i as f32 / (n as f32 / 2.0);
                         let x = rect.min.x + 0.55 * w + t * w * 0.45;
                         let signal = (t * 8.0 * std::f32::consts::PI).sin() * 0.25;
-                        painter.line_segment([egui::pos2(x, cy - signal * h), egui::pos2(x, cy + signal.abs() * h * 0.3)], egui::Stroke::new(1.5, accent));
+                        painter.line_segment([egui::pos2(x, cy - signal * h), egui::pos2(x, cy + signal.abs() * h * 0.3)], egui::Stroke::new(1.5_f32, accent));
                     }
                 }
                 _ => {
@@ -985,7 +985,7 @@ fn paint_effect_preview(
                         let t = i as f32 / n as f32;
                         let x = rect.min.x + t * w;
                         let amp = (t * 8.0 * std::f32::consts::PI).sin() * 0.3;
-                        painter.line_segment([egui::pos2(x, cy - amp * h), egui::pos2(x, cy + amp * h)], egui::Stroke::new(1.5, accent));
+                        painter.line_segment([egui::pos2(x, cy - amp * h), egui::pos2(x, cy + amp * h)], egui::Stroke::new(1.5_f32, accent));
                     }
                 }
             }

@@ -154,7 +154,7 @@ pub fn color_slider_with_edit(
     let thumb_center = egui::pos2(thumb_x, track_y);
     painter.circle_filled(thumb_center, 6.0, glow_color);
     painter.circle_filled(thumb_center, 4.5, thumb_fill);
-    painter.circle_stroke(thumb_center, 4.5, egui::Stroke::new(1.5, text_accent));
+    painter.circle_stroke(thumb_center, 4.5, egui::Stroke::new(1.5_f32, text_accent));
 
     // Value display / edit area
     let value_rect = egui::Rect::from_min_size(
@@ -172,7 +172,7 @@ pub fn color_slider_with_edit(
 
             // Background for edit field
             painter.rect_filled(edit_rect, 2.0, egui::Color32::from_rgb(0x1a, 0x1a, 0x22));
-            painter.rect_stroke(edit_rect, 2.0, egui::Stroke::new(1.0, text_accent));
+            painter.rect_stroke(edit_rect, 2.0, egui::Stroke::new(1.0_f32, text_accent));
 
             let edit_resp = ui.allocate_new_ui(
                 egui::UiBuilder::new().max_rect(edit_rect),

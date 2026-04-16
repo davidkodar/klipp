@@ -545,7 +545,7 @@ fn draw_loop_icon(painter: &egui::Painter, center: egui::Pos2, radius: f32, colo
         })
         .collect();
 
-    painter.add(egui::Shape::line(pts, egui::Stroke::new(1.5, color)));
+    painter.add(egui::Shape::line(pts, egui::Stroke::new(1.5_f32, color)));
 
     // Arrowhead at the end of the arc (pointing clockwise)
     let end_angle = start_angle + sweep;

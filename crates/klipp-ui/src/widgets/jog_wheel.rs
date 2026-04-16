@@ -62,7 +62,7 @@ pub fn jog_wheel(
     } else {
         egui::Color32::from_gray(80)
     };
-    painter.circle_stroke(center, radius, egui::Stroke::new(2.0, ring_color));
+    painter.circle_stroke(center, radius, egui::Stroke::new(2.0_f32, ring_color));
 
     // Inner fill — dark disc so the tick marks show up cleanly.
     painter.circle_filled(center, radius - 3.0, egui::Color32::from_gray(30));
@@ -75,7 +75,7 @@ pub fn jog_wheel(
         let dir = egui::vec2(angle.sin(), -angle.cos());
         painter.line_segment(
             [center + dir * inner, center + dir * outer],
-            egui::Stroke::new(1.0, egui::Color32::from_gray(100)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_gray(100)),
         );
     }
 

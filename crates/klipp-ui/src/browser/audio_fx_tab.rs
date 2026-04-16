@@ -35,7 +35,7 @@ pub fn show(
     // Live preview waveform (decorative)
     egui::Frame::none()
         .fill(theme.bg_raised)
-        .stroke(egui::Stroke::new(1.0, theme.border))
+        .stroke(egui::Stroke::new(1.0_f32, theme.border))
         .rounding(6.0)
         .inner_margin(egui::Margin::symmetric(10.0, 8.0))
         .outer_margin(egui::Margin::symmetric(8.0, 4.0))
@@ -79,7 +79,7 @@ pub fn show(
 
             let resp = egui::Frame::none()
                 .fill(theme.bg_raised)
-                .stroke(egui::Stroke::new(1.0, theme.border))
+                .stroke(egui::Stroke::new(1.0_f32, theme.border))
                 .rounding(6.0)
                 .inner_margin(egui::Margin::symmetric(10.0, 8.0))
                 .outer_margin(egui::Margin::symmetric(8.0, 2.0))
@@ -102,7 +102,7 @@ pub fn show(
                             ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
                         ui.painter().rect_filled(icon_rect, 6.0, icon_bg);
                         ui.painter()
-                            .rect_stroke(icon_rect, 6.0, egui::Stroke::new(1.0, icon_border));
+                            .rect_stroke(icon_rect, 6.0, egui::Stroke::new(1.0_f32, icon_border));
                         // Waveform icon
                         let wf_rect = egui::Rect::from_center_size(icon_rect.center(), egui::vec2(14.0, 14.0));
                         Icon::Waveform.image(14.0).tint(fx.color).paint_at(ui, wf_rect);

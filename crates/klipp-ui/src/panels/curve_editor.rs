@@ -113,7 +113,7 @@ impl CurveEditorPanel {
         ui.painter().hline(
             full_rect.x_range(),
             full_rect.min.y,
-            Stroke::new(1.0, theme.border),
+            Stroke::new(1.0_f32, theme.border),
         );
 
         // ── Header (28px) ──
@@ -129,7 +129,7 @@ impl CurveEditorPanel {
         ui.painter().hline(
             header_rect.x_range(),
             header_rect.max.y,
-            Stroke::new(0.5, theme.border),
+            Stroke::new(0.5_f32, theme.border),
         );
 
         // Find selected clip and its track kind
@@ -519,8 +519,8 @@ impl CurveEditorPanel {
         theme: &KlippTheme,
     ) {
         let painter = ui.painter();
-        let grid_stroke = Stroke::new(0.5, Color32::from_rgba_premultiplied(40, 40, 50, 128));
-        let grid_stroke_major = Stroke::new(0.8, Color32::from_rgba_premultiplied(50, 50, 65, 180));
+        let grid_stroke = Stroke::new(0.5_f32, Color32::from_rgba_premultiplied(40, 40, 50, 128));
+        let grid_stroke_major = Stroke::new(0.8_f32, Color32::from_rgba_premultiplied(50, 50, 65, 180));
         let label_font = egui::FontId::proportional(9.0);
 
         // Clip the painter to graph rect
@@ -583,7 +583,7 @@ impl CurveEditorPanel {
         }
 
         // ── Border ──
-        painter.rect_stroke(clip_rect, 0.0, Stroke::new(0.5, theme.border));
+        painter.rect_stroke(clip_rect, 0.0, Stroke::new(0.5_f32, theme.border));
     }
 
     fn compute_time_step(&self) -> f64 {
@@ -624,7 +624,7 @@ impl CurveEditorPanel {
             if x >= graph_rect.left() && x <= graph_rect.right() {
                 ui.painter().line_segment(
                     [pos2(x, graph_rect.top()), pos2(x, graph_rect.bottom())],
-                    Stroke::new(1.5, theme.accent),
+                    Stroke::new(1.5_f32, theme.accent),
                 );
                 // Small triangle at top
                 let tri_size = 5.0;
@@ -661,7 +661,7 @@ impl CurveEditorPanel {
 
         let painter = ui.painter();
         let curve_color = theme.accent;
-        let curve_stroke = Stroke::new(1.8, curve_color);
+        let curve_stroke = Stroke::new(1.8_f32, curve_color);
 
         if keyframes.is_empty() {
             // Draw flat line at default value
@@ -669,7 +669,7 @@ impl CurveEditorPanel {
             if y >= graph_rect.top() && y <= graph_rect.bottom() {
                 painter.line_segment(
                     [pos2(graph_rect.left(), y), pos2(graph_rect.right(), y)],
-                    Stroke::new(1.0, Color32::from_rgba_premultiplied(
+                    Stroke::new(1.0_f32, Color32::from_rgba_premultiplied(
                         curve_color.r(), curve_color.g(), curve_color.b(), 80,
                     )),
                 );
@@ -755,7 +755,7 @@ impl CurveEditorPanel {
             // Draw bezier tangent handles if this keyframe is selected
             if Some(i) == selected_kf_idx {
                 let handle_color = Color32::from_rgb(0x60, 0xa0, 0xe0);
-                let handle_stroke = Stroke::new(1.0, handle_color);
+                let handle_stroke = Stroke::new(1.0_f32, handle_color);
 
                 // In-tangent
                 if kf.tangent_in != (0.0, 0.0) || kf.interpolation == klipp_core::keyframe::Interpolation::Bezier {
@@ -793,7 +793,7 @@ impl CurveEditorPanel {
             painter.add(egui::Shape::convex_polygon(
                 diamond,
                 diamond_color,
-                Stroke::new(0.8, Color32::from_rgb(0x40, 0x40, 0x40)),
+                Stroke::new(0.8_f32, Color32::from_rgb(0x40, 0x40, 0x40)),
             ));
         }
 

@@ -23,7 +23,7 @@ pub fn vertical_resizer(ui: &mut Ui, rect: Rect, theme: &KlippTheme) -> f32 {
         let center_x = rect.center().x;
         painter.line_segment(
             [egui::pos2(center_x, rect.top()), egui::pos2(center_x, rect.bottom())],
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(16, 16, 20)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(16, 16, 20)),
         );
     }
 
@@ -49,7 +49,7 @@ pub fn horizontal_resizer(ui: &mut Ui, rect: Rect, theme: &KlippTheme) -> f32 {
         let center_y = rect.center().y;
         painter.line_segment(
             [egui::pos2(rect.left(), center_y), egui::pos2(rect.right(), center_y)],
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(16, 16, 20)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(16, 16, 20)),
         );
     }
 

@@ -22,7 +22,7 @@ pub fn show(
     ui.painter().hline(
         rect.x_range(),
         rect.max.y,
-        egui::Stroke::new(1.0, theme.border),
+        egui::Stroke::new(1.0_f32, theme.border),
     );
 
     let mut x = rect.min.x + 4.0;
@@ -66,7 +66,7 @@ pub fn show(
             ui.painter().hline(
                 tab_rect.x_range(),
                 tab_rect.max.y - 1.0,
-                egui::Stroke::new(2.0, theme.accent),
+                egui::Stroke::new(2.0_f32, theme.accent),
             );
         }
 
@@ -103,11 +103,11 @@ pub fn show(
             let s = 3.5;
             ui.painter().line_segment(
                 [egui::pos2(cx.x - s, cx.y - s), egui::pos2(cx.x + s, cx.y + s)],
-                egui::Stroke::new(1.2, close_color),
+                egui::Stroke::new(1.2_f32, close_color),
             );
             ui.painter().line_segment(
                 [egui::pos2(cx.x + s, cx.y - s), egui::pos2(cx.x - s, cx.y + s)],
-                egui::Stroke::new(1.2, close_color),
+                egui::Stroke::new(1.2_f32, close_color),
             );
         }
 

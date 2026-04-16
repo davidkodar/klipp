@@ -56,7 +56,7 @@ pub fn vertical_slider(
     let mid_y = track_top + track_height / 2.0;
     painter.line_segment(
         [egui::pos2(cx - 4.0, mid_y), egui::pos2(cx + 4.0, mid_y)],
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x48, 0x48, 0x55)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x48, 0x48, 0x55)),
     );
 
     // Compute thumb position: range maps to track_top..track_top+track_height (inverted: top=max, bottom=min)
@@ -79,7 +79,7 @@ pub fn vertical_slider(
     // Thumb (8px diameter)
     let thumb_center = egui::pos2(cx, thumb_y);
     painter.circle_filled(thumb_center, 4.0, egui::Color32::from_rgb(0xe0, 0xe0, 0xe8));
-    painter.circle_stroke(thumb_center, 4.0, egui::Stroke::new(1.5, text_accent));
+    painter.circle_stroke(thumb_center, 4.0, egui::Stroke::new(1.5_f32, text_accent));
 
     // Value label below (compact: show 1 decimal for small sliders)
     let val_text = if track_height < 50.0 {

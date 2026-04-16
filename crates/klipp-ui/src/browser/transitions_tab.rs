@@ -185,7 +185,7 @@ const TRANSITIONS: &[TransitionDef] = &[
             p.arrow(
                 egui::pos2(cx.x + 8.0, cx.y),
                 egui::vec2(-16.0, 0.0),
-                egui::Stroke::new(2.0, egui::Color32::WHITE),
+                egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
             );
         },
     },
@@ -203,7 +203,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 let x = r.min.x + r.width() * (i as f32 + 1.0) / 5.0;
                 p.line_segment(
                     [egui::pos2(x - 2.0, r.min.y), egui::pos2(x + 2.0, r.max.y)],
-                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(40)),
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(40)),
                 );
             }
         },
@@ -269,7 +269,7 @@ const TRANSITIONS: &[TransitionDef] = &[
             );
             p.line_segment(
                 [egui::pos2(r.center().x, r.min.y), egui::pos2(r.center().x, r.max.y)],
-                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(60)),
+                egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(60)),
             );
         },
     },
@@ -299,7 +299,7 @@ const TRANSITIONS: &[TransitionDef] = &[
             p.arrow(
                 egui::pos2(r.center().x + 10.0, r.center().y),
                 egui::vec2(-20.0, 0.0),
-                egui::Stroke::new(2.0, egui::Color32::WHITE),
+                egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
             );
         },
     },
@@ -311,7 +311,7 @@ const TRANSITIONS: &[TransitionDef] = &[
             p.arrow(
                 egui::pos2(r.center().x - 10.0, r.center().y),
                 egui::vec2(20.0, 0.0),
-                egui::Stroke::new(2.0, egui::Color32::WHITE),
+                egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
             );
         },
     },
@@ -323,7 +323,7 @@ const TRANSITIONS: &[TransitionDef] = &[
             p.arrow(
                 egui::pos2(r.center().x, r.center().y + 10.0),
                 egui::vec2(0.0, -20.0),
-                egui::Stroke::new(2.0, egui::Color32::WHITE),
+                egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
             );
         },
     },
@@ -335,7 +335,7 @@ const TRANSITIONS: &[TransitionDef] = &[
             p.arrow(
                 egui::pos2(r.center().x, r.center().y - 10.0),
                 egui::vec2(0.0, 20.0),
-                egui::Stroke::new(2.0, egui::Color32::WHITE),
+                egui::Stroke::new(2.0_f32, egui::Color32::WHITE),
             );
         },
     },
@@ -417,12 +417,12 @@ const TRANSITIONS: &[TransitionDef] = &[
             p.arrow(
                 egui::pos2(r.center().x - squeeze_w * 0.5 - 8.0, r.center().y),
                 egui::vec2(8.0, 0.0),
-                egui::Stroke::new(1.5, egui::Color32::WHITE),
+                egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
             );
             p.arrow(
                 egui::pos2(r.center().x + squeeze_w * 0.5 + 8.0, r.center().y),
                 egui::vec2(-8.0, 0.0),
-                egui::Stroke::new(1.5, egui::Color32::WHITE),
+                egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
             );
         },
     },
@@ -440,12 +440,12 @@ const TRANSITIONS: &[TransitionDef] = &[
             p.arrow(
                 egui::pos2(r.center().x, r.center().y - squeeze_h * 0.5 - 8.0),
                 egui::vec2(0.0, 8.0),
-                egui::Stroke::new(1.5, egui::Color32::WHITE),
+                egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
             );
             p.arrow(
                 egui::pos2(r.center().x, r.center().y + squeeze_h * 0.5 + 8.0),
                 egui::vec2(0.0, -8.0),
-                egui::Stroke::new(1.5, egui::Color32::WHITE),
+                egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
             );
         },
     },
@@ -476,7 +476,7 @@ const TRANSITIONS: &[TransitionDef] = &[
             p.add(egui::Shape::convex_polygon(pts, PREVIEW_A, egui::Stroke::NONE));
             p.line_segment(
                 [egui::pos2(r.max.x, r.min.y), egui::pos2(r.min.x, r.max.y)],
-                egui::Stroke::new(1.5, egui::Color32::from_white_alpha(100)),
+                egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(100)),
             );
         },
     },
@@ -489,7 +489,7 @@ const TRANSITIONS: &[TransitionDef] = &[
             p.add(egui::Shape::convex_polygon(pts, PREVIEW_A, egui::Stroke::NONE));
             p.line_segment(
                 [r.min, r.max],
-                egui::Stroke::new(1.5, egui::Color32::from_white_alpha(100)),
+                egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(100)),
             );
         },
     },
@@ -574,14 +574,14 @@ const TRANSITIONS: &[TransitionDef] = &[
                     egui::pos2(r.center().x - center_w * 0.5, r.min.y),
                     egui::pos2(r.center().x - center_w * 0.5, r.max.y),
                 ],
-                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(80)),
+                egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(80)),
             );
             p.line_segment(
                 [
                     egui::pos2(r.center().x + center_w * 0.5, r.min.y),
                     egui::pos2(r.center().x + center_w * 0.5, r.max.y),
                 ],
-                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(80)),
+                egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(80)),
             );
         },
     },
@@ -601,14 +601,14 @@ const TRANSITIONS: &[TransitionDef] = &[
                     egui::pos2(r.min.x, r.center().y - center_h * 0.5),
                     egui::pos2(r.max.x, r.center().y - center_h * 0.5),
                 ],
-                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(80)),
+                egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(80)),
             );
             p.line_segment(
                 [
                     egui::pos2(r.min.x, r.center().y + center_h * 0.5),
                     egui::pos2(r.max.x, r.center().y + center_h * 0.5),
                 ],
-                egui::Stroke::new(1.0, egui::Color32::from_white_alpha(80)),
+                egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(80)),
             );
         },
     },
@@ -659,7 +659,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 cx.x + hand_angle.cos() * radius,
                 cx.y + hand_angle.sin() * radius,
             );
-            p.line_segment([cx, hand_end], egui::Stroke::new(2.0, egui::Color32::WHITE));
+            p.line_segment([cx, hand_end], egui::Stroke::new(2.0_f32, egui::Color32::WHITE));
         },
     },
     TransitionDef {
@@ -685,7 +685,7 @@ const TRANSITIONS: &[TransitionDef] = &[
             ));
             p.line_segment(
                 [egui::pos2(fold, r.min.y), egui::pos2(fold, r.max.y)],
-                egui::Stroke::new(2.0, egui::Color32::from_black_alpha(120)),
+                egui::Stroke::new(2.0_f32, egui::Color32::from_black_alpha(120)),
             );
         },
     },
@@ -712,7 +712,7 @@ const TRANSITIONS: &[TransitionDef] = &[
             ));
             p.line_segment(
                 [egui::pos2(fold, r.min.y), egui::pos2(fold, r.max.y)],
-                egui::Stroke::new(2.0, egui::Color32::from_black_alpha(120)),
+                egui::Stroke::new(2.0_f32, egui::Color32::from_black_alpha(120)),
             );
         },
     },
@@ -737,7 +737,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 pa.arrow(
                     egui::pos2(c.x + dx * 8.0, c.y + dy * 8.0),
                     egui::vec2(dx * 10.0, dy * 10.0),
-                    egui::Stroke::new(1.5, egui::Color32::from_white_alpha(160)),
+                    egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(160)),
                 );
             }
         },
@@ -773,7 +773,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 pa.arrow(
                     egui::pos2(c.x + dx * 18.0, c.y + dy * 18.0),
                     egui::vec2(-dx * 10.0, -dy * 10.0),
-                    egui::Stroke::new(1.5, egui::Color32::from_white_alpha(160)),
+                    egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(160)),
                 );
             }
         },
@@ -788,14 +788,14 @@ const TRANSITIONS: &[TransitionDef] = &[
             pa.arrow(
                 egui::pos2(left.center().x, left.center().y),
                 egui::vec2(12.0, 0.0),
-                egui::Stroke::new(1.5, egui::Color32::from_white_alpha(180)),
+                egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(180)),
             );
             let right = egui::Rect::from_min_max(egui::pos2(mid, r.min.y), r.max);
             pa.rect_filled(right, 0.0, PREVIEW_B);
             pa.arrow(
                 egui::pos2(right.center().x, right.center().y),
                 egui::vec2(-12.0, 0.0),
-                egui::Stroke::new(1.5, egui::Color32::from_white_alpha(180)),
+                egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(180)),
             );
         },
     },
@@ -818,7 +818,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                     egui::pos2(cx, cy),
                     radius,
                     egui::Stroke::new(
-                        1.5,
+                        1.5_f32,
                         egui::Color32::from_rgba_unmultiplied(255, 240, 200, alpha),
                     ),
                 );
@@ -918,7 +918,7 @@ const TRANSITIONS: &[TransitionDef] = &[
             pa.line_segment(
                 [egui::pos2(sx, r.min.y), egui::pos2(sx + 1.0, r.max.y)],
                 egui::Stroke::new(
-                    1.0,
+                    1.0_f32,
                     egui::Color32::from_rgba_unmultiplied(255, 255, 200, 120),
                 ),
             );
@@ -1069,7 +1069,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 pa.line_segment(
                     [pts[i], pts[i + 1]],
                     egui::Stroke::new(
-                        2.0,
+                        2.0_f32,
                         egui::Color32::from_rgba_unmultiplied(
                             PREVIEW_B.r(),
                             PREVIEW_B.g(),
@@ -1096,7 +1096,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 let next = egui::pos2(x, y);
                 pa.line_segment(
                     [prev, next],
-                    egui::Stroke::new(1.5, egui::Color32::from_white_alpha(180)),
+                    egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(180)),
                 );
                 prev = next;
             }
@@ -1381,7 +1381,7 @@ const TRANSITIONS: &[TransitionDef] = &[
                 p.circle_stroke(
                     cx,
                     radius,
-                    egui::Stroke::new(1.0, egui::Color32::from_white_alpha(alpha)),
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(alpha)),
                 );
             }
         },
@@ -1609,7 +1609,7 @@ fn transition_card(
 
         let painter = ui.painter();
         painter.rect_filled(rect, 6.0, bg);
-        painter.rect_stroke(rect, 6.0, egui::Stroke::new(1.0, border_color));
+        painter.rect_stroke(rect, 6.0, egui::Stroke::new(1.0_f32, border_color));
 
         // Preview area — black backdrop then inline preview, clipped to preview rect.
         let preview_rect = egui::Rect::from_min_size(rect.min, egui::vec2(width, preview_h));

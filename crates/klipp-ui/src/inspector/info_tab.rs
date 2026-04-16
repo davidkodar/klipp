@@ -369,7 +369,7 @@ pub fn show_bin_media(
                 let galley = ui.painter().layout_no_wrap(codec.clone(), egui::FontId::monospace(11.0), theme.text_primary);
                 let pw = galley.size().x + 12.0;
                 let pr = egui::Rect::from_min_size(egui::pos2(x - pw, cy - pill_h / 2.0), egui::vec2(pw, pill_h));
-                ui.painter().rect(pr, 4.0, pill_bg, egui::Stroke::new(1.0, pill_border));
+                ui.painter().rect(pr, 4.0, pill_bg, egui::Stroke::new(1.0_f32, pill_border));
                 ui.painter().text(pr.center(), egui::Align2::CENTER_CENTER, codec, egui::FontId::monospace(11.0), theme.text_primary);
                 x -= pw + 6.0;
             }
@@ -378,7 +378,7 @@ pub fn show_bin_media(
                 let galley = ui.painter().layout_no_wrap(codec.clone(), egui::FontId::monospace(11.0), theme.text_primary);
                 let pw = galley.size().x + 12.0;
                 let pr = egui::Rect::from_min_size(egui::pos2(x - pw, cy - pill_h / 2.0), egui::vec2(pw, pill_h));
-                ui.painter().rect(pr, 4.0, pill_bg, egui::Stroke::new(1.0, pill_border));
+                ui.painter().rect(pr, 4.0, pill_bg, egui::Stroke::new(1.0_f32, pill_border));
                 ui.painter().text(pr.center(), egui::Align2::CENTER_CENTER, codec, egui::FontId::monospace(11.0), theme.text_primary);
             }
         });
@@ -624,7 +624,7 @@ pub fn show_bin_media(
             ui.add_space(4.0);
             for (track_name, range) in &usages {
                 let (usage_rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h), egui::Sense::hover());
-                ui.painter().hline(usage_rect.min.x + pad..=usage_rect.max.x - pad, usage_rect.max.y, egui::Stroke::new(0.5, theme.border));
+                ui.painter().hline(usage_rect.min.x + pad..=usage_rect.max.x - pad, usage_rect.max.y, egui::Stroke::new(0.5_f32, theme.border));
                 // Colored dot
                 ui.painter().circle_filled(egui::pos2(usage_rect.min.x + pad + 4.0, usage_rect.center().y), 3.5, accent);
                 // Track name + range
@@ -717,7 +717,7 @@ pub fn show_clip(
                     egui::pos2(x - pw, cy - pill_h / 2.0),
                     egui::vec2(pw, pill_h),
                 );
-                ui.painter().rect(pill_rect, 4.0, pill_bg, egui::Stroke::new(1.0, pill_border));
+                ui.painter().rect(pill_rect, 4.0, pill_bg, egui::Stroke::new(1.0_f32, pill_border));
                 ui.painter().text(
                     pill_rect.center(), egui::Align2::CENTER_CENTER,
                     codec, egui::FontId::monospace(11.0), value_color,
@@ -736,7 +736,7 @@ pub fn show_clip(
                     egui::pos2(x - pw, cy - pill_h / 2.0),
                     egui::vec2(pw, pill_h),
                 );
-                ui.painter().rect(pill_rect, 4.0, pill_bg, egui::Stroke::new(1.0, pill_border));
+                ui.painter().rect(pill_rect, 4.0, pill_bg, egui::Stroke::new(1.0_f32, pill_border));
                 ui.painter().text(
                     pill_rect.center(), egui::Align2::CENTER_CENTER,
                     codec, egui::FontId::monospace(11.0), value_color,
@@ -1246,7 +1246,7 @@ fn info_row_custom(
     ui.painter().hline(
         rect.min.x + pad..=rect.max.x - pad,
         rect.max.y,
-        egui::Stroke::new(0.5, theme.border),
+        egui::Stroke::new(0.5_f32, theme.border),
     );
 
     // Label

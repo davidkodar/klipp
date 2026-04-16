@@ -92,7 +92,7 @@ impl LaunchScreen {
             ui.painter().vline(
                 sidebar_rect.max.x,
                 sidebar_rect.y_range(),
-                egui::Stroke::new(1.0, theme.border),
+                egui::Stroke::new(1.0_f32, theme.border),
             );
 
             self.draw_sidebar(ui, recent, theme, &mut cmds);
@@ -226,7 +226,7 @@ impl LaunchScreen {
         let open_resp = ui.allocate_rect(open_rect, egui::Sense::click());
         let open_bg = if open_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
         ui.painter().rect_filled(open_rect, 6.0, open_bg);
-        ui.painter().rect_stroke(open_rect, 6.0, egui::Stroke::new(1.0, theme.border_light));
+        ui.painter().rect_stroke(open_rect, 6.0, egui::Stroke::new(1.0_f32, theme.border_light));
         ui.painter().text(
             open_rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -251,7 +251,7 @@ impl LaunchScreen {
         let import_resp = ui.allocate_rect(import_rect, egui::Sense::click());
         let import_bg = if import_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
         ui.painter().rect_filled(import_rect, 6.0, import_bg);
-        ui.painter().rect_stroke(import_rect, 6.0, egui::Stroke::new(1.0, theme.border_light));
+        ui.painter().rect_stroke(import_rect, 6.0, egui::Stroke::new(1.0_f32, theme.border_light));
         ui.painter().text(
             import_rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -460,7 +460,7 @@ impl LaunchScreen {
             ui.painter().hline(
                 list_rect.min.x + 4.0..=list_rect.max.x - 4.0,
                 ly,
-                egui::Stroke::new(2.0, list_color),
+                egui::Stroke::new(2.0_f32, list_color),
             );
         }
         if list_resp.clicked() {
@@ -502,7 +502,7 @@ impl LaunchScreen {
         let sort_resp = ui.allocate_rect(sort_rect, egui::Sense::click());
         let sort_bg = if sort_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
         ui.painter().rect_filled(sort_rect, 4.0, sort_bg);
-        ui.painter().rect_stroke(sort_rect, 4.0, egui::Stroke::new(1.0, theme.border));
+        ui.painter().rect_stroke(sort_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border));
         ui.painter().text(
             egui::pos2(sort_rect.center().x - 4.0, sort_rect.center().y),
             egui::Align2::CENTER_CENTER,
@@ -859,7 +859,7 @@ impl LaunchScreen {
                     ui.painter().hline(
                         rect.min.x + pad..=rect.max.x - pad,
                         sep_y,
-                        egui::Stroke::new(0.5, theme.border),
+                        egui::Stroke::new(0.5_f32, theme.border),
                     );
                 }
 
@@ -908,18 +908,18 @@ impl LaunchScreen {
         let center = egui::pos2(rect.center().x, rect.center().y - 16.0);
         let icon_r = 22.0;
         let icon_color = if hovered { theme.accent } else { theme.text_dim };
-        ui.painter().circle_stroke(center, icon_r, egui::Stroke::new(1.5, icon_color));
+        ui.painter().circle_stroke(center, icon_r, egui::Stroke::new(1.5_f32, icon_color));
         // Horizontal bar
         ui.painter().hline(
             center.x - 8.0..=center.x + 8.0,
             center.y,
-            egui::Stroke::new(2.0, icon_color),
+            egui::Stroke::new(2.0_f32, icon_color),
         );
         // Vertical bar
         ui.painter().vline(
             center.x,
             center.y - 8.0..=center.y + 8.0,
-            egui::Stroke::new(2.0, icon_color),
+            egui::Stroke::new(2.0_f32, icon_color),
         );
 
         // "New Project" text
@@ -951,9 +951,9 @@ impl LaunchScreen {
         // Card background
         let bg = if hovered { theme.bg_hover } else { theme.bg_raised };
         let stroke = if hovered {
-            egui::Stroke::new(1.5, theme.accent)
+            egui::Stroke::new(1.5_f32, theme.accent)
         } else {
-            egui::Stroke::new(1.0, theme.border)
+            egui::Stroke::new(1.0_f32, theme.border)
         };
         ui.painter().rect(rect, 8.0, bg, stroke);
 
@@ -1055,7 +1055,7 @@ impl LaunchScreen {
         ui.painter().vline(
             playhead_x,
             strip_rect.y_range(),
-            egui::Stroke::new(1.5, egui::Color32::WHITE),
+            egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
         );
 
         // Missing media warning badge (top-right of thumbnail)
@@ -1243,16 +1243,16 @@ fn draw_missing_media_badge(ui: &egui::Ui, top_right: egui::Pos2) {
 fn draw_clock_icon(painter: &egui::Painter, center: egui::Pos2, size: f32, color: egui::Color32) {
     let r = size / 2.0;
     // Circle outline
-    painter.circle_stroke(center, r, egui::Stroke::new(1.0, color));
+    painter.circle_stroke(center, r, egui::Stroke::new(1.0_f32, color));
     // Hour hand (pointing up-right, ~2 o'clock)
     painter.line_segment(
         [center, egui::pos2(center.x + r * 0.4, center.y - r * 0.35)],
-        egui::Stroke::new(1.0, color),
+        egui::Stroke::new(1.0_f32, color),
     );
     // Minute hand (pointing up)
     painter.line_segment(
         [center, egui::pos2(center.x, center.y - r * 0.55)],
-        egui::Stroke::new(1.0, color),
+        egui::Stroke::new(1.0_f32, color),
     );
 }
 

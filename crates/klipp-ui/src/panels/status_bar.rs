@@ -94,7 +94,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             ui.painter().rect_stroke(
                 badge_rect,
                 3.0,
-                egui::Stroke::new(1.0, mode_color.linear_multiply(0.4)),
+                egui::Stroke::new(1.0_f32, mode_color.linear_multiply(0.4)),
             );
             ui.painter().text(
                 badge_rect.center(),

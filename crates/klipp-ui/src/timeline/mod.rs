@@ -40,7 +40,7 @@ impl NewTimelinePanel {
             ui.painter().hline(
                 toolbar_rect.x_range(),
                 toolbar_rect.max.y,
-                egui::Stroke::new(1.0, theme.border),
+                egui::Stroke::new(1.0_f32, theme.border),
             );
             toolbar::show(ui, state, theme, &mut cmds);
         });
@@ -96,7 +96,7 @@ impl NewTimelinePanel {
             ui.painter().vline(
                 header_rect.max.x,
                 header_rect.y_range(),
-                egui::Stroke::new(1.0, theme.border),
+                egui::Stroke::new(1.0_f32, theme.border),
             );
             let header_cmds = track_headers::show(ui, state, theme, header_rect);
             cmds.extend(header_cmds);

@@ -149,7 +149,7 @@ pub fn show_scope_window(
         .show(ctx, |ui| {
             let panel_frame = egui::Frame::none()
                 .fill(egui::Color32::from_rgb(0x1c, 0x1c, 0x20))
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x3a, 0x3a, 0x40)))
+                .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x3a, 0x3a, 0x40)))
                 .rounding(4.0)
                 .inner_margin(0.0)
                 .shadow(egui::Shadow { offset: egui::vec2(0.0, 2.0), blur: 12.0, spread: 0.0, color: egui::Color32::from_black_alpha(100) });
@@ -214,7 +214,7 @@ pub fn show_scope_window(
                                 let y = cursor.y + row as f32 * (pane_h + gap);
                                 let pane_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(pane_w, pane_h));
                                 ui.painter().rect_stroke(pane_rect, 0.0,
-                                    egui::Stroke::new(0.5, egui::Color32::from_rgb(0x2a, 0x2a, 0x30)));
+                                    egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x2a, 0x2a, 0x30)));
                                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
                                 draw_pane(&mut child, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history);
                             }
@@ -592,7 +592,7 @@ fn render_pane_scope(
             let ring_alpha = crate::state::graticule_alpha(pane.settings.vectorscope_graticule_brightness);
             let ring_color = egui::Color32::from_rgba_unmultiplied(0xf5, 0xb4, 0x3c, (ring_alpha * 80.0) as u8);
             for ring in &rings {
-                painter.circle_stroke(img_rect.center(), ring.radius, egui::Stroke::new(0.5, ring_color));
+                painter.circle_stroke(img_rect.center(), ring.radius, egui::Stroke::new(0.5_f32, ring_color));
             }
 
             // Vectorscope color target labels (R, Mg, B, Cy, G, Yl)
@@ -642,7 +642,7 @@ fn render_pane_scope(
                     while x < x1 {
                         painter.line_segment(
                             [egui::pos2(x, y), egui::pos2((x + 6.0).min(x1), y)],
-                            egui::Stroke::new(1.0, amber_ref),
+                            egui::Stroke::new(1.0_f32, amber_ref),
                         );
                         x += 10.0;
                     }
@@ -676,8 +676,8 @@ pub fn draw_scope_cursor_indicator(
     // Helper: draw a visible indicator dot at a position
     let draw_dot = |p: &egui::Painter, pos: egui::Pos2| {
         p.circle_filled(pos, 2.0, amber);
-        p.circle_stroke(pos, radius, egui::Stroke::new(1.5, outline_color));
-        p.circle_stroke(pos, radius, egui::Stroke::new(1.0, cursor_color));
+        p.circle_stroke(pos, radius, egui::Stroke::new(1.5_f32, outline_color));
+        p.circle_stroke(pos, radius, egui::Stroke::new(1.0_f32, cursor_color));
     };
 
     match scope_type {
@@ -709,14 +709,14 @@ pub fn draw_scope_cursor_indicator(
             draw_dot(painter, egui::pos2(x, y));
             // Crosshair
             let ch_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 120);
-            painter.line_segment([egui::pos2(x - 10.0, y), egui::pos2(x + 10.0, y)], egui::Stroke::new(0.5, ch_color));
-            painter.line_segment([egui::pos2(x, y - 10.0), egui::pos2(x, y + 10.0)], egui::Stroke::new(0.5, ch_color));
+            painter.line_segment([egui::pos2(x - 10.0, y), egui::pos2(x + 10.0, y)], egui::Stroke::new(0.5_f32, ch_color));
+            painter.line_segment([egui::pos2(x, y - 10.0), egui::pos2(x, y + 10.0)], egui::Stroke::new(0.5_f32, ch_color));
         }
         ScopeType::Histogram => {
             let x = rect.min.x + cur.luma * rect.width();
             painter.line_segment(
                 [egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)],
-                egui::Stroke::new(1.0, amber),
+                egui::Stroke::new(1.0_f32, amber),
             );
         }
         ScopeType::CIEChromaticity => {

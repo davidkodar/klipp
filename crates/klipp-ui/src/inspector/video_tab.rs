@@ -405,7 +405,7 @@ fn show_clip_video(
                 // Separator before opacity
                 let sep_w = ui.available_width();
                 let (sep_rect, _) = ui.allocate_exact_size(egui::vec2(sep_w, 1.0), egui::Sense::hover());
-                ui.painter().hline(sep_rect.x_range(), sep_rect.center().y, egui::Stroke::new(0.5, theme.border));
+                ui.painter().hline(sep_rect.x_range(), sep_rect.center().y, egui::Stroke::new(0.5_f32, theme.border));
                 ui.add_space(2.0);
 
                 r_op_out = Some(scrubby_param_row(ui, "Opacity", &mut opacity, 0.0..=1.0, 1.0, 0.005, 2, "", Some(opacity_ks)));
@@ -417,9 +417,9 @@ fn show_clip_video(
                 0.0, theme.border,
             );
             let full_rect = egui::Rect::from_min_max(header_rect.min, egui::pos2(header_rect.max.x, body_end_y));
-            ui.painter().rect_stroke(full_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5, theme.border));
+            ui.painter().rect_stroke(full_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5_f32, theme.border));
         } else {
-            ui.painter().rect_stroke(header_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5, theme.border));
+            ui.painter().rect_stroke(header_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5_f32, theme.border));
         }
 
         col_state.store(ui.ctx());
@@ -785,7 +785,7 @@ fn show_clip_video(
 
                     // Background
                     gp.rect_filled(graph_rect, 4.0, egui::Color32::from_rgb(0x12, 0x12, 0x16));
-                    gp.rect_stroke(graph_rect, 4.0, egui::Stroke::new(1.0, theme.border));
+                    gp.rect_stroke(graph_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border));
 
                     let clip_dur = clip.duration().to_secs_f64();
                     if clip_dur > 0.0 {
@@ -816,7 +816,7 @@ fn show_clip_video(
                             let alpha = if (speed_line - 1.0).abs() < 0.01 { 50 } else { 20 };
                             gp.line_segment(
                                 [egui::pos2(inner.left(), y), egui::pos2(inner.right(), y)],
-                                egui::Stroke::new(0.5, egui::Color32::from_white_alpha(alpha)),
+                                egui::Stroke::new(0.5_f32, egui::Color32::from_white_alpha(alpha)),
                             );
                             gp.text(
                                 egui::pos2(inner.left() + 2.0, y - 9.0),
@@ -853,7 +853,7 @@ fn show_clip_video(
                         for pair in curve_pts.windows(2) {
                             gp.line_segment(
                                 [pair[0], pair[1]],
-                                egui::Stroke::new(1.5, spd_color),
+                                egui::Stroke::new(1.5_f32, spd_color),
                             );
                         }
 
@@ -875,7 +875,7 @@ fn show_clip_video(
 
                             let dot_r = if is_hovered { 5.0 } else { 4.0 };
                             gp.circle_filled(kf_pos, dot_r, spd_color);
-                            gp.circle_stroke(kf_pos, dot_r, egui::Stroke::new(1.0, egui::Color32::WHITE));
+                            gp.circle_stroke(kf_pos, dot_r, egui::Stroke::new(1.0_f32, egui::Color32::WHITE));
 
                             // Tooltip on hover
                             if is_hovered {
@@ -983,7 +983,7 @@ fn show_clip_video(
                     // Separator
                     let sep_w = ui.available_width();
                     let (sep_rect, _) = ui.allocate_exact_size(egui::vec2(sep_w, 1.0), egui::Sense::hover());
-                    ui.painter().hline(sep_rect.x_range(), sep_rect.center().y, egui::Stroke::new(0.5, theme.border));
+                    ui.painter().hline(sep_rect.x_range(), sep_rect.center().y, egui::Stroke::new(0.5_f32, theme.border));
                     ui.add_space(4.0);
 
                     // Preset ramp buttons
@@ -993,7 +993,7 @@ fn show_clip_video(
                         let btn = |label: &str| egui::RichText::new(label).size(10.0);
 
                         if ui.add(egui::Button::new(btn("Ramp Up"))
-                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
                             .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("0.5x to 2x over clip duration").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
@@ -1006,7 +1006,7 @@ fn show_clip_video(
                         }
 
                         if ui.add(egui::Button::new(btn("Ramp Down"))
-                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
                             .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("2x to 0.5x over clip duration").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
@@ -1019,7 +1019,7 @@ fn show_clip_video(
                         }
 
                         if ui.add(egui::Button::new(btn("Slow-Mo"))
-                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
                             .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("1x -> 0.25x -> 1x (center slow-mo)").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
@@ -1034,7 +1034,7 @@ fn show_clip_video(
                         }
 
                         if ui.add(egui::Button::new(btn("Speed Burst"))
-                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
                             .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("1x -> 3x -> 1x (center speed burst)").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
@@ -1049,7 +1049,7 @@ fn show_clip_video(
                         }
 
                         if ui.add(egui::Button::new(btn("Reset"))
-                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, egui::Color32::from_rgb(180, 80, 80)))
+                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(180, 80, 80)))
                             .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("Clear all speed keyframes").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
@@ -1146,7 +1146,7 @@ fn show_clip_video(
                         let input_rect = egui::Rect::from_min_size(
                             egui::pos2(rx - 20.0 - input_w, cy - 13.0), egui::vec2(input_w, 26.0),
                         );
-                        ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0, theme.border));
+                        ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0_f32, theme.border));
                         ui.painter().text(
                             input_rect.center(), egui::Align2::CENTER_CENTER,
                             "100 %", egui::FontId::monospace(12.0), theme.text_primary,
@@ -1163,7 +1163,7 @@ fn show_clip_video(
                         let input_rect = egui::Rect::from_min_size(
                             egui::pos2(rx - 20.0 - input_w, cy - 13.0), egui::vec2(input_w, 26.0),
                         );
-                        ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0, theme.border));
+                        ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0_f32, theme.border));
                         ui.painter().text(
                             input_rect.center(), egui::Align2::CENTER_CENTER,
                             "100 %", egui::FontId::monospace(12.0), theme.text_primary,
@@ -1176,7 +1176,7 @@ fn show_clip_video(
                     // Ease dropdown
                     {
                         let (row_rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h + 4.0), egui::Sense::hover());
-                        ui.painter().hline(row_rect.min.x + pad..=row_rect.max.x - pad, row_rect.max.y, egui::Stroke::new(0.5, theme.border));
+                        ui.painter().hline(row_rect.min.x + pad..=row_rect.max.x - pad, row_rect.max.y, egui::Stroke::new(0.5_f32, theme.border));
                         ui.painter().text(
                             egui::pos2(row_rect.min.x + pad, row_rect.center().y),
                             egui::Align2::LEFT_CENTER, "Ease",
@@ -1187,7 +1187,7 @@ fn show_clip_video(
                             egui::pos2(row_rect.max.x - pad - combo_w, row_rect.center().y - 13.0),
                             egui::vec2(combo_w, 26.0),
                         );
-                        ui.painter().rect(combo_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0, theme.border));
+                        ui.painter().rect(combo_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0_f32, theme.border));
                         ui.painter().text(
                             egui::pos2(combo_rect.min.x + 10.0, combo_rect.center().y),
                             egui::Align2::LEFT_CENTER,
@@ -1208,9 +1208,9 @@ fn show_clip_video(
                     0.0, theme.border,
                 );
                 let full_rect = egui::Rect::from_min_max(header_rect.min, egui::pos2(header_rect.max.x, body_end_y));
-                ui.painter().rect_stroke(full_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5, theme.border));
+                ui.painter().rect_stroke(full_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5_f32, theme.border));
             } else {
-                ui.painter().rect_stroke(header_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5, theme.border));
+                ui.painter().rect_stroke(header_rect.shrink(0.25), 6.0, egui::Stroke::new(0.5_f32, theme.border));
             }
             col_state.store(ui.ctx());
         }
@@ -1433,7 +1433,7 @@ fn show_color_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, c
                                 .color(theme.text_primary),
                         )
                         .fill(theme.bg_raised)
-                        .stroke(egui::Stroke::new(0.5, theme.border))
+                        .stroke(egui::Stroke::new(0.5_f32, theme.border))
                         .rounding(6.0),
                     ).clicked() {
                         cmds.push(AppCommand::ToggleColorPanel);
@@ -1441,7 +1441,7 @@ fn show_color_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, c
 
                     // C shortcut badge
                     let (badge_rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
-                    ui.painter().rect(badge_rect, 4.0, theme.bg_deep, egui::Stroke::new(0.5, theme.border));
+                    ui.painter().rect(badge_rect, 4.0, theme.bg_deep, egui::Stroke::new(0.5_f32, theme.border));
                     ui.painter().text(
                         badge_rect.center(), egui::Align2::CENTER_CENTER,
                         "C", egui::FontId::monospace(10.0), theme.text_dim,
@@ -1467,7 +1467,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                     ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                     let btn_text = |label: &str| egui::RichText::new(label).size(10.5);
                     if ui.add(egui::Button::new(btn_text("Zoom In"))
-                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
                         .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Scale 1.0 to 1.3, centered").clicked() {
                         cmds.push(AppCommand::ApplyKenBurns {
@@ -1476,7 +1476,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                         });
                     }
                     if ui.add(egui::Button::new(btn_text("Zoom Out"))
-                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
                         .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Scale 1.3 to 1.0, centered").clicked() {
                         cmds.push(AppCommand::ApplyKenBurns {
@@ -1485,7 +1485,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                         });
                     }
                     if ui.add(egui::Button::new(btn_text("Pan L>R"))
-                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
                         .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Pan left to right, 1.2\u{00d7} zoom").clicked() {
                         cmds.push(AppCommand::ApplyKenBurns {
@@ -1494,7 +1494,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                         });
                     }
                     if ui.add(egui::Button::new(btn_text("Pan R>L"))
-                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5, theme.border))
+                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
                         .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Pan right to left, 1.2\u{00d7} zoom").clicked() {
                         cmds.push(AppCommand::ApplyKenBurns {
@@ -1503,7 +1503,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                         });
                     }
                     if has_transform_kfs && ui.add(egui::Button::new(btn_text("Remove"))
-                        .fill(egui::Color32::from_rgb(60, 30, 30)).stroke(egui::Stroke::new(0.5, theme.border))
+                        .fill(egui::Color32::from_rgb(60, 30, 30)).stroke(egui::Stroke::new(0.5_f32, theme.border))
                         .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Clear all transform keyframes").clicked() {
                         cmds.push(AppCommand::ClearTransformKeyframes { clip_id });
@@ -1557,7 +1557,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                 ui.add_space(4.0);
                 let sep_w = ui.available_width();
                 let (sep_rect, _) = ui.allocate_exact_size(egui::vec2(sep_w, 1.0), egui::Sense::hover());
-                ui.painter().hline(sep_rect.x_range(), sep_rect.center().y, egui::Stroke::new(0.5, theme.border));
+                ui.painter().hline(sep_rect.x_range(), sep_rect.center().y, egui::Stroke::new(0.5_f32, theme.border));
                 ui.add_space(4.0);
 
                 // Speed preset buttons
@@ -1568,9 +1568,9 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                         let is_active = (clip.speed - speed_val).abs() < 0.001;
                         let fill = if is_active { theme.accent.linear_multiply(0.25) } else { theme.bg_raised };
                         let stroke = if is_active {
-                            egui::Stroke::new(1.0, theme.accent)
+                            egui::Stroke::new(1.0_f32, theme.accent)
                         } else {
-                            egui::Stroke::new(0.5, theme.border)
+                            egui::Stroke::new(0.5_f32, theme.border)
                         };
                         if ui.add(egui::Button::new(btn_text(label))
                             .fill(fill).stroke(stroke)
@@ -1946,7 +1946,7 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
                 egui::vec2(swatch_size, swatch_size),
             );
             ui.painter().rect_filled(swatch_rect, 2.0, egui::Color32::BLACK);
-            ui.painter().rect_stroke(swatch_rect, 2.0, egui::Stroke::new(0.5, theme.border_light));
+            ui.painter().rect_stroke(swatch_rect, 2.0, egui::Stroke::new(0.5_f32, theme.border_light));
             ui.painter().text(
                 egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
                 "#000000", egui::FontId::monospace(12.0), theme.text_secondary,
@@ -2163,7 +2163,7 @@ fn info_row(
     label: &str, draw_value: impl FnOnce(&mut egui::Ui, f32, f32),
 ) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(total_w, row_h), egui::Sense::hover());
-    ui.painter().hline(rect.min.x + pad..=rect.max.x - pad, rect.max.y, egui::Stroke::new(0.5, theme.border));
+    ui.painter().hline(rect.min.x + pad..=rect.max.x - pad, rect.max.y, egui::Stroke::new(0.5_f32, theme.border));
     ui.painter().text(
         egui::pos2(rect.min.x + pad, rect.center().y), egui::Align2::LEFT_CENTER,
         label, egui::FontId::proportional(13.0), theme.text_secondary,
@@ -2182,7 +2182,7 @@ fn draw_keyframe_diamond(ui: &mut egui::Ui, center: egui::Pos2, color: egui::Col
     if filled {
         ui.painter().add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
     } else {
-        ui.painter().add(egui::Shape::convex_polygon(pts, egui::Color32::TRANSPARENT, egui::Stroke::new(1.5, color)));
+        ui.painter().add(egui::Shape::convex_polygon(pts, egui::Color32::TRANSPARENT, egui::Stroke::new(1.5_f32, color)));
     }
 }
 

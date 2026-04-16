@@ -11,7 +11,7 @@ pub fn styled_tooltip(
     response.clone().on_hover_ui_at_pointer(|ui| {
         egui::Frame::none()
             .fill(egui::Color32::from_rgb(0x1e, 0x1e, 0x26))
-            .stroke(egui::Stroke::new(1.0, theme.border_light))
+            .stroke(egui::Stroke::new(1.0_f32, theme.border_light))
             .rounding(5.0)
             .inner_margin(egui::Margin::symmetric(10.0, 5.0))
             .show(ui, |ui| {
@@ -25,7 +25,7 @@ pub fn styled_tooltip(
                     if let Some(key) = shortcut {
                         egui::Frame::none()
                             .fill(theme.bg_raised)
-                            .stroke(egui::Stroke::new(1.0, theme.border_light))
+                            .stroke(egui::Stroke::new(1.0_f32, theme.border_light))
                             .rounding(3.0)
                             .inner_margin(egui::Margin::symmetric(4.0, 1.0))
                             .show(ui, |ui| {

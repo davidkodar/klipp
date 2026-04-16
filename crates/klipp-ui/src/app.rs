@@ -16080,7 +16080,7 @@ impl eframe::App for KlippApp {
                 .show(ctx, |ui| {
                     let (rect, _) = ui.allocate_exact_size(screen.size(), egui::Sense::hover());
                     ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 20));
-                    ui.painter().rect_stroke(rect.shrink(4.0), 8.0, egui::Stroke::new(2.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 120)));
+                    ui.painter().rect_stroke(rect.shrink(4.0), 8.0, egui::Stroke::new(2.0_f32, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 120)));
                     ui.painter().text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
@@ -16595,7 +16595,7 @@ impl eframe::App for KlippApp {
                 .show(ctx, |ui| {
                     egui::Frame::window(ui.style())
                         .fill(egui::Color32::from_rgb(0x1a, 0x1a, 0x20))
-                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(0x40, 0x40, 0x50)))
+                        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x40, 0x40, 0x50)))
                         .rounding(8.0)
                         .inner_margin(8.0)
                         .show(ui, |ui| {
@@ -16999,7 +16999,7 @@ impl eframe::App for KlippApp {
                     .show(ctx, |ui| {
                         egui::Frame::none()
                             .fill(theme.bg_raised)
-                            .stroke(egui::Stroke::new(1.0, theme.accent))
+                            .stroke(egui::Stroke::new(1.0_f32, theme.accent))
                             .rounding(4.0)
                             .inner_margin(egui::Margin::symmetric(8.0, 4.0))
                             .show(ui, |ui| {
@@ -17071,7 +17071,7 @@ impl eframe::App for KlippApp {
                         .show(ctx, |ui| {
                             egui::Frame::popup(ui.style())
                                 .fill(egui::Color32::from_rgb(35, 35, 42))
-                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 70, 85)))
+                                .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(70, 70, 85)))
                                 .rounding(6.0)
                                 .inner_margin(egui::Margin::symmetric(16.0, 10.0))
                                 .show(ui, |ui| {
@@ -19284,7 +19284,7 @@ impl KlippApp {
             ui.painter().hline(
                 toolbar_rect.x_range(),
                 toolbar_rect.max.y,
-                egui::Stroke::new(1.0, border),
+                egui::Stroke::new(1.0_f32, border),
             );
             let recent = self.prefs.general.recent_projects.clone();
             let panel_cmds = self.toolbar.show(
@@ -19350,7 +19350,7 @@ impl KlippApp {
             }
             let frame = egui::Frame::none()
                 .fill(self.theme.bg_viewer)
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(18)))
+                .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(18)))
                 .inner_margin(egui::Margin { left: 12.0, right: 0.0, top: 12.0, bottom: 12.0 })
                 .rounding(rounding);
             frame.show(ui, |ui| {
@@ -19519,9 +19519,9 @@ impl KlippApp {
                                     );
                                 }
                                 if is_active {
-                                    ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(1.5, self.theme.text_accent));
+                                    ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(1.5_f32, self.theme.text_accent));
                                 } else {
-                                    ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(0.5, self.theme.border));
+                                    ui.painter().rect_stroke(rect, 1.0, egui::Stroke::new(0.5_f32, self.theme.border));
                                 }
                                 if resp.clicked() {
                                     all_cmds.push(AppCommand::SetActiveGradeStill {
@@ -19934,7 +19934,7 @@ impl KlippApp {
             ui.painter().hline(
                 statusbar_rect.x_range(),
                 statusbar_rect.min.y,
-                egui::Stroke::new(1.0, border),
+                egui::Stroke::new(1.0_f32, border),
             );
             crate::panels::status_bar::show(ui, &self.state, &self.theme);
         });
@@ -20019,7 +20019,7 @@ impl KlippApp {
             ui.painter().hline(
                 toggle_bar_rect.x_range(),
                 toggle_bar_rect.min.y,
-                egui::Stroke::new(0.5, theme.border),
+                egui::Stroke::new(0.5_f32, theme.border),
             );
             ui.horizontal_centered(|ui| {
                 ui.add_space(8.0);

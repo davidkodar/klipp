@@ -111,7 +111,7 @@ fn show_modifier_stack(
         let mod_id = format!("{id_salt}_{idx}");
         egui::Frame::none()
             .fill(theme.bg_raised)
-            .stroke(egui::Stroke::new(0.5, theme.border))
+            .stroke(egui::Stroke::new(0.5_f32, theme.border))
             .rounding(3.0)
             .inner_margin(egui::Margin::symmetric(6.0, 4.0))
             .show(ui, |ui| {

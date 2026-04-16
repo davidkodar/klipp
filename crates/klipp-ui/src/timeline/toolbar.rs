@@ -98,7 +98,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
                 ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::click());
             ui.painter().circle_filled(dot_rect.center(), 3.5, dot_color);
             if !visible {
-                ui.painter().circle_stroke(dot_rect.center(), 3.5, egui::Stroke::new(1.0, *color));
+                ui.painter().circle_stroke(dot_rect.center(), 3.5, egui::Stroke::new(1.0_f32, *color));
             }
             styled_tooltip(&dot_resp, theme, tip, None);
         }
@@ -118,7 +118,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
                 .min_size(egui::vec2(26.0, 16.0))
                 .rounding(3.0)
                 .fill(egui::Color32::TRANSPARENT)
-                .stroke(egui::Stroke::new(0.5, theme.border)),
+                .stroke(egui::Stroke::new(0.5_f32, theme.border)),
             );
             styled_tooltip(&fit_resp, theme, "Fit timeline to window", Some("Shift+Z"));
             if fit_resp.clicked() {
@@ -167,7 +167,7 @@ fn draw_tl_select_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color3
 
 fn draw_tl_blade_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
     let ir = icon_area(btn);
-    let s = egui::Stroke::new(1.3, c);
+    let s = egui::Stroke::new(1.3_f32, c);
     // Diagonal razor line
     painter.line_segment([egui::pos2(ir.min.x + 1.0, ir.max.y - 1.0), egui::pos2(ir.max.x - 1.0, ir.min.y + 1.0)], s);
     // Small triangle tip
@@ -180,7 +180,7 @@ fn draw_tl_blade_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32
 
 fn draw_tl_trim_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
     let ir = icon_area(btn);
-    let s = egui::Stroke::new(1.3, c);
+    let s = egui::Stroke::new(1.3_f32, c);
     // Two vertical bars with inward ticks
     painter.line_segment([egui::pos2(ir.min.x + 2.0, ir.min.y + 1.0), egui::pos2(ir.min.x + 2.0, ir.max.y - 1.0)], s);
     painter.line_segment([egui::pos2(ir.max.x - 2.0, ir.min.y + 1.0), egui::pos2(ir.max.x - 2.0, ir.max.y - 1.0)], s);
@@ -190,7 +190,7 @@ fn draw_tl_trim_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32)
 
 fn draw_tl_range_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
     let ir = icon_area(btn);
-    let s = egui::Stroke::new(1.3, c);
+    let s = egui::Stroke::new(1.3_f32, c);
     // Left bracket bar
     painter.line_segment([egui::pos2(ir.min.x + 2.0, ir.min.y + 1.0), egui::pos2(ir.min.x + 2.0, ir.max.y - 1.0)], s);
     // Right bracket bar
@@ -210,7 +210,7 @@ fn draw_tl_range_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32
 
 fn draw_tl_snap_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
     let ir = icon_area(btn);
-    let s = egui::Stroke::new(1.3, c);
+    let s = egui::Stroke::new(1.3_f32, c);
     // Crosshair / magnet shape
     let cx = ir.center().x;
     let cy = ir.center().y;
@@ -222,7 +222,7 @@ fn draw_tl_snap_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32)
 
 fn draw_tl_skim_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
     let ir = icon_area(btn);
-    let s = egui::Stroke::new(1.3, c);
+    let s = egui::Stroke::new(1.3_f32, c);
     let cx = ir.center().x;
     // Vertical line with upward arrow
     painter.line_segment([egui::pos2(cx, ir.min.y + 4.0), egui::pos2(cx, ir.max.y - 1.0)], s);
@@ -239,7 +239,7 @@ fn draw_tl_marker_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color3
     // Downward triangle (flag) + vertical line
     painter.line_segment(
         [egui::pos2(cx, ir.min.y + 1.0), egui::pos2(cx, ir.max.y - 1.0)],
-        egui::Stroke::new(1.3, c),
+        egui::Stroke::new(1.3_f32, c),
     );
     painter.add(egui::Shape::convex_polygon(vec![
         egui::pos2(cx - 3.5, ir.min.y + 1.0),

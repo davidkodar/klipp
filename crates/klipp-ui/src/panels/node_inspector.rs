@@ -144,7 +144,7 @@ impl NodeInspectorPanel {
             let painter = ui.painter().clone();
             painter.line_segment(
                 [egui::pos2(tab_rect.min.x, tab_rect.max.y), egui::pos2(tab_rect.max.x, tab_rect.max.y)],
-                egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(255, 255, 255, 18)),
+                egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 18)),
             );
 
             for (i, (tab, label)) in [
@@ -165,7 +165,7 @@ impl NodeInspectorPanel {
                 if active {
                     painter.line_segment(
                         [egui::pos2(rect.min.x + 4.0, rect.max.y), egui::pos2(rect.max.x - 4.0, rect.max.y)],
-                        egui::Stroke::new(1.5, theme.text_accent),
+                        egui::Stroke::new(1.5_f32, theme.text_accent),
                     );
                 }
             }
@@ -1088,7 +1088,7 @@ impl NodeInspectorPanel {
                         let bg = if active { color } else { egui::Color32::from_rgba_premultiplied(255, 255, 255, 18) };
                         let text_color = if active { egui::Color32::from_rgb(0x1a, 0x1a, 0x1c) } else { color };
                         ui.painter().rect_filled(rect, 4.0, bg);
-                        ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(0.5,
+                        ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(0.5_f32,
                             egui::Color32::from_rgba_premultiplied(255, 255, 255, 30)));
                         ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER,
                             label, egui::FontId::proportional(11.0), text_color);
@@ -1586,21 +1586,21 @@ impl NodeInspectorPanel {
 
         // Background circle
         painter.circle_filled(center, radius + 4.0, egui::Color32::from_rgb(0x18, 0x18, 0x20));
-        painter.circle_stroke(center, radius, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
+        painter.circle_stroke(center, radius, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
 
         // Crosshair lines
         painter.line_segment(
             [egui::pos2(center.x - radius, center.y), egui::pos2(center.x + radius, center.y)],
-            egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(255, 255, 255, 15)),
+            egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 15)),
         );
         painter.line_segment(
             [egui::pos2(center.x, center.y - radius), egui::pos2(center.x, center.y + radius)],
-            egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(255, 255, 255, 15)),
+            egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 15)),
         );
 
         // Inner reference circles at 33% and 66% radius
-        painter.circle_stroke(center, radius * 0.33, egui::Stroke::new(0.3, egui::Color32::from_rgba_premultiplied(255, 255, 255, 10)));
-        painter.circle_stroke(center, radius * 0.66, egui::Stroke::new(0.3, egui::Color32::from_rgba_premultiplied(255, 255, 255, 10)));
+        painter.circle_stroke(center, radius * 0.33, egui::Stroke::new(0.3_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 10)));
+        painter.circle_stroke(center, radius * 0.66, egui::Stroke::new(0.3_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 10)));
 
         let sector_labels = ["R", "O", "Y", "YG", "G", "CG", "C", "CB", "B", "BM", "M", "MR"];
         let neutral_r = radius * 0.7;
@@ -1619,7 +1619,7 @@ impl NodeInspectorPanel {
             let ly1 = center.y - line_angle.sin() * radius;
             painter.line_segment(
                 [egui::pos2(lx0, ly0), egui::pos2(lx1, ly1)],
-                egui::Stroke::new(0.3, egui::Color32::from_rgba_premultiplied(255, 255, 255, 12)),
+                egui::Stroke::new(0.3_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 12)),
             );
 
             // Subtle hue dot at center of each sector
@@ -1674,7 +1674,7 @@ impl NodeInspectorPanel {
             if warper.hue_shifts[i].abs() > 0.1 || warper.sat_shifts[i].abs() > 0.01 {
                 painter.line_segment(
                     [egui::pos2(nx, ny), egui::pos2(px, py)],
-                    egui::Stroke::new(1.5, egui::Color32::from_rgba_premultiplied(
+                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgba_premultiplied(
                         (hr * 200.0) as u8, (hg * 200.0) as u8, (hb * 200.0) as u8, 100
                     )),
                 );
@@ -1685,7 +1685,7 @@ impl NodeInspectorPanel {
                 (hr * 255.0) as u8, (hg * 255.0) as u8, (hb * 255.0) as u8
             );
             painter.circle_filled(egui::pos2(px, py), 5.0, point_color);
-            painter.circle_stroke(egui::pos2(px, py), 5.0, egui::Stroke::new(1.5, egui::Color32::WHITE));
+            painter.circle_stroke(egui::pos2(px, py), 5.0, egui::Stroke::new(1.5_f32, egui::Color32::WHITE));
         }
 
         // Drag begin/end for undo coalescing.

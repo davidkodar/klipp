@@ -137,7 +137,7 @@ fn render_category_row(
             swatch_rect,
             3.0,
             egui::Stroke::new(
-                1.0,
+                1.0_f32,
                 egui::Color32::from_black_alpha(60),
             ),
         );
@@ -196,7 +196,7 @@ fn draw_pie_chart(
     let centre = rect.center();
     let radius = PIE_DIAMETER * 0.5 - 4.0;
     let bg = egui::Color32::from_gray(58);
-    let stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(30));
+    let stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_gray(30));
 
     let total: u64 = cats.iter().map(|c| c.size_bytes).sum();
     if total == 0 {

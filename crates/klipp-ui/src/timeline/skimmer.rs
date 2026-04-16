@@ -10,7 +10,7 @@ pub fn draw(
         x,
         top..=bottom,
         egui::Stroke::new(
-            1.0,
+            1.0_f32,
             egui::Color32::from_rgba_premultiplied(255, 255, 255, 89), // ~35%
         ),
     );

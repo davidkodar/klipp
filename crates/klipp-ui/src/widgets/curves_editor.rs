@@ -51,7 +51,7 @@ pub fn curves_editor_sized(
 
     // Background
     painter.rect_filled(rect, 4.0, bg_color);
-    painter.rect_stroke(rect, 4.0, egui::Stroke::new(0.5, border_color));
+    painter.rect_stroke(rect, 4.0, egui::Stroke::new(0.5_f32, border_color));
 
     // Histogram background (if provided)
     if let Some(bins) = histogram_bins {
@@ -82,11 +82,11 @@ pub fn curves_editor_sized(
         let y = rect.min.y + t * rect.height();
         painter.line_segment(
             [egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)],
-            egui::Stroke::new(0.5, grid_color),
+            egui::Stroke::new(0.5_f32, grid_color),
         );
         painter.line_segment(
             [egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)],
-            egui::Stroke::new(0.5, grid_color),
+            egui::Stroke::new(0.5_f32, grid_color),
         );
     }
 
@@ -94,7 +94,7 @@ pub fn curves_editor_sized(
     // This is the unmodified straight line so user can see deviation
     painter.line_segment(
         [egui::pos2(rect.min.x, rect.max.y), egui::pos2(rect.max.x, rect.min.y)],
-        egui::Stroke::new(1.2, egui::Color32::from_rgba_premultiplied(255, 255, 255, 50)),
+        egui::Stroke::new(1.2_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 50)),
     );
 
     // Ensure minimum identity endpoints exist — empty curves get [0,0] and [1,1]
@@ -148,7 +148,7 @@ pub fn curves_editor_sized(
 
     // Draw curve line on top
     for window in curve_points.windows(2) {
-        painter.line_segment([window[0], window[1]], egui::Stroke::new(2.0, curve_color));
+        painter.line_segment([window[0], window[1]], egui::Stroke::new(2.0_f32, curve_color));
     }
 
     // ── Point interaction — fast, locked drag, no re-search per frame ──
@@ -235,7 +235,7 @@ pub fn curves_editor_sized(
         let py = rect.max.y - pt[1] * rect.height();
         let center = egui::pos2(px, py);
         painter.circle_filled(center, 5.0, egui::Color32::from_rgb(0x14, 0x14, 0x1a));
-        painter.circle_stroke(center, 5.0, egui::Stroke::new(1.5, curve_color));
+        painter.circle_stroke(center, 5.0, egui::Stroke::new(1.5_f32, curve_color));
     }
 
     CurvesResponse {

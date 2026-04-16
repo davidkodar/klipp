@@ -158,36 +158,36 @@ impl KlippTheme {
 
         visuals.widgets.noninteractive.bg_fill = self.bg_panel;
         visuals.widgets.noninteractive.fg_stroke =
-            egui::Stroke::new(1.0, self.text_secondary);
+            egui::Stroke::new(1.0_f32, self.text_secondary);
         visuals.widgets.noninteractive.bg_stroke =
-            egui::Stroke::new(1.0, self.border);
+            egui::Stroke::new(1.0_f32, self.border);
 
         visuals.widgets.inactive.bg_fill = self.bg_raised;
         visuals.widgets.inactive.fg_stroke =
-            egui::Stroke::new(1.0, self.text_secondary);
+            egui::Stroke::new(1.0_f32, self.text_secondary);
         visuals.widgets.inactive.bg_stroke =
-            egui::Stroke::new(1.0, self.border);
+            egui::Stroke::new(1.0_f32, self.border);
 
         visuals.widgets.hovered.bg_fill = self.bg_hover;
         visuals.widgets.hovered.fg_stroke =
-            egui::Stroke::new(1.0, self.text_primary);
+            egui::Stroke::new(1.0_f32, self.text_primary);
         visuals.widgets.hovered.bg_stroke =
-            egui::Stroke::new(1.0, self.border_light);
+            egui::Stroke::new(1.0_f32, self.border_light);
 
         visuals.widgets.active.bg_fill = self.bg_hover;
         visuals.widgets.active.fg_stroke =
-            egui::Stroke::new(1.0, self.accent);
+            egui::Stroke::new(1.0_f32, self.accent);
         visuals.widgets.active.bg_stroke =
-            egui::Stroke::new(1.0, self.accent_dim);
+            egui::Stroke::new(1.0_f32, self.accent_dim);
 
         // CONTRAST RULE: selection.bg_fill is used for selected dropdown items,
         // text selections, etc. egui renders TEXT on this background using fg_stroke
         // (light text). Therefore this MUST be a dark color — never solid amber/gold.
         // Use a dark warm tint so light text stays readable.
         visuals.selection.bg_fill = Color32::from_rgb(0x38, 0x2c, 0x14);
-        visuals.selection.stroke = egui::Stroke::new(1.0, self.accent);
+        visuals.selection.stroke = egui::Stroke::new(1.0_f32, self.accent);
 
-        visuals.window_stroke = egui::Stroke::new(1.0, self.border);
+        visuals.window_stroke = egui::Stroke::new(1.0_f32, self.border);
         visuals.window_shadow = egui::Shadow::NONE;
 
         ctx.set_visuals(visuals);

@@ -14,7 +14,7 @@ pub fn show_empty(ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppComma
         // Centered + icon in a rounded square
         let icon_size = 40.0;
         let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(icon_size, icon_size), egui::Sense::hover());
-        ui.painter().rect(icon_rect, 8.0, theme.bg_raised, egui::Stroke::new(1.0, theme.border));
+        ui.painter().rect(icon_rect, 8.0, theme.bg_raised, egui::Stroke::new(1.0_f32, theme.border));
         ui.painter().text(
             icon_rect.center(), egui::Align2::CENTER_CENTER,
             "+", egui::FontId::proportional(20.0), theme.text_dim,
@@ -60,7 +60,7 @@ pub fn show_empty(ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppComma
                 egui::vec2(btn_w, 30.0),
                 egui::Button::new(job)
                     .fill(theme.bg_raised)
-                    .stroke(egui::Stroke::new(1.0, theme.border))
+                    .stroke(egui::Stroke::new(1.0_f32, theme.border))
                     .rounding(6.0),
             ).clicked() {
                 cmds.push(AppCommand::ShowEffectsBrowser);
@@ -68,7 +68,7 @@ pub fn show_empty(ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppComma
 
             // "E" shortcut badge
             let (badge_rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
-            ui.painter().rect(badge_rect, 4.0, theme.bg_deep, egui::Stroke::new(0.5, theme.border));
+            ui.painter().rect(badge_rect, 4.0, theme.bg_deep, egui::Stroke::new(0.5_f32, theme.border));
             ui.painter().text(
                 badge_rect.center(), egui::Align2::CENTER_CENTER,
                 "E", egui::FontId::monospace(10.0), theme.text_dim,
@@ -147,7 +147,7 @@ pub fn show(
         // Border on header — shrink by 0.25 so the 0.5px centered stroke fits
         // entirely inside header_rect. Prevents the stroke's outer half (0.25px)
         // from bleeding left of inspector_rect.min.x into the adjacent resizer.
-        ui.painter().rect_stroke(header_rect.shrink(0.25), header_rounding, egui::Stroke::new(0.5, theme.border));
+        ui.painter().rect_stroke(header_rect.shrink(0.25), header_rounding, egui::Stroke::new(0.5_f32, theme.border));
 
         // Collapse caret (SVG icon, not unicode)
         let caret_x = header_rect.min.x + pad;
@@ -180,7 +180,7 @@ pub fn show(
             egui::pos2(badge_x, header_rect.center().y - badge_h / 2.0),
             egui::vec2(badge_w, badge_h),
         );
-        ui.painter().rect_stroke(badge_rect, badge_h / 2.0, egui::Stroke::new(0.8, badge_green));
+        ui.painter().rect_stroke(badge_rect, badge_h / 2.0, egui::Stroke::new(0.8_f32, badge_green));
         ui.painter().text(
             badge_rect.center(), egui::Align2::CENTER_CENTER,
             badge_text, badge_font, badge_green,
@@ -281,7 +281,7 @@ pub fn show(
         if is_open {
             let body_frame = egui::Frame::none()
                 .fill(card_bg)
-                .stroke(egui::Stroke::new(0.5, theme.border))
+                .stroke(egui::Stroke::new(0.5_f32, theme.border))
                 .rounding(egui::Rounding { nw: 0.0, ne: 0.0, sw: card_rounding, se: card_rounding })
                 .inner_margin(egui::Margin { left: pad, right: pad, top: 8.0, bottom: 8.0 });
             body_frame.show(ui, |ui: &mut egui::Ui| {
@@ -307,7 +307,7 @@ pub fn show(
             ui.painter().rect_stroke(
                 header_rect,
                 if is_open { egui::Rounding { nw: card_rounding, ne: card_rounding, sw: 0.0, se: 0.0 } } else { egui::Rounding::same(card_rounding) },
-                egui::Stroke::new(2.0, theme.accent),
+                egui::Stroke::new(2.0_f32, theme.accent),
             );
             let drag_dy = header_resp.drag_delta().y;
             let total_drag: f32 = ui.ctx().data_mut(|d| {
@@ -382,7 +382,7 @@ pub fn show(
                 } else {
                     0.0..=0.0
                 };
-                ui.painter().hline(x_range, line_y, egui::Stroke::new(2.5, theme.accent));
+                ui.painter().hline(x_range, line_y, egui::Stroke::new(2.5_f32, theme.accent));
             }
         }
     }
@@ -415,7 +415,7 @@ pub fn show(
             egui::Rounding::same(card_rounding)
         };
         ui.painter().rect_filled(header_rect, header_rounding, card_header_bg);
-        ui.painter().rect_stroke(header_rect.shrink(0.25), header_rounding, egui::Stroke::new(0.5, theme.border));
+        ui.painter().rect_stroke(header_rect.shrink(0.25), header_rounding, egui::Stroke::new(0.5_f32, theme.border));
 
         // Collapse caret (SVG icon)
         let caret_x = header_rect.min.x + pad;
@@ -446,7 +446,7 @@ pub fn show(
             egui::pos2(badge_x, header_rect.center().y - badge_h / 2.0),
             egui::vec2(badge_w, badge_h),
         );
-        ui.painter().rect_stroke(badge_rect, badge_h / 2.0, egui::Stroke::new(0.8, badge_gray));
+        ui.painter().rect_stroke(badge_rect, badge_h / 2.0, egui::Stroke::new(0.8_f32, badge_gray));
         ui.painter().text(
             badge_rect.center(), egui::Align2::CENTER_CENTER,
             badge_text, badge_font, badge_gray,
@@ -546,7 +546,7 @@ pub fn show(
         if is_open {
             let body_frame = egui::Frame::none()
                 .fill(card_bg)
-                .stroke(egui::Stroke::new(0.5, theme.border))
+                .stroke(egui::Stroke::new(0.5_f32, theme.border))
                 .rounding(egui::Rounding { nw: 0.0, ne: 0.0, sw: card_rounding, se: card_rounding })
                 .inner_margin(egui::Margin { left: pad, right: pad, top: 8.0, bottom: 8.0 });
             body_frame.show(ui, |ui: &mut egui::Ui| {
@@ -631,7 +631,7 @@ pub fn show(
             ui.painter().rect_stroke(
                 header_rect,
                 if is_open { egui::Rounding { nw: card_rounding, ne: card_rounding, sw: 0.0, se: 0.0 } } else { egui::Rounding::same(card_rounding) },
-                egui::Stroke::new(2.0, theme.accent),
+                egui::Stroke::new(2.0_f32, theme.accent),
             );
             let drag_dy = header_resp.drag_delta().y;
             let total_drag: f32 = ui.ctx().data_mut(|d| {
@@ -641,10 +641,10 @@ pub fn show(
                 *accum
             });
             if total_drag < -15.0 && i > 0 {
-                ui.painter().hline(header_rect.x_range(), header_rect.min.y - 2.0, egui::Stroke::new(2.0, theme.accent));
+                ui.painter().hline(header_rect.x_range(), header_rect.min.y - 2.0, egui::Stroke::new(2.0_f32, theme.accent));
             } else if total_drag > 15.0 && i + 1 < clip.effects.len() {
                 let line_y = if is_open { ui.cursor().min.y + 2.0 } else { header_rect.max.y + 2.0 };
-                ui.painter().hline(header_rect.x_range(), line_y, egui::Stroke::new(2.0, theme.accent));
+                ui.painter().hline(header_rect.x_range(), line_y, egui::Stroke::new(2.0_f32, theme.accent));
             }
             ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
         }
@@ -790,7 +790,7 @@ fn show_add_effect_button(ui: &mut egui::Ui, theme: &KlippTheme, _clip: &Clip, c
         // so we use a dotted-looking light stroke)
         let btn = egui::Button::new(job)
             .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::new(1.0, theme.border_light))
+            .stroke(egui::Stroke::new(1.0_f32, theme.border_light))
             .rounding(6.0);
 
         let resp = ui.add_sized(egui::vec2(btn_w, 32.0), btn);
@@ -807,7 +807,7 @@ fn show_add_effect_button(ui: &mut egui::Ui, theme: &KlippTheme, _clip: &Clip, c
                 let end_x = (x + dash_len).min(btn_rect.max.x - card_rounding);
                 ui.painter().line_segment(
                     [egui::pos2(x, y), egui::pos2(end_x, y)],
-                    egui::Stroke::new(1.0, dash_color),
+                    egui::Stroke::new(1.0_f32, dash_color),
                 );
                 x += dash_len + gap_len;
             }
@@ -819,7 +819,7 @@ fn show_add_effect_button(ui: &mut egui::Ui, theme: &KlippTheme, _clip: &Clip, c
 
         // "E" shortcut badge
         let (badge_rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
-        ui.painter().rect(badge_rect, 4.0, theme.bg_deep, egui::Stroke::new(0.5, theme.border));
+        ui.painter().rect(badge_rect, 4.0, theme.bg_deep, egui::Stroke::new(0.5_f32, theme.border));
         ui.painter().text(
             badge_rect.center(), egui::Align2::CENTER_CENTER,
             "E", egui::FontId::monospace(10.0), theme.text_dim,
@@ -1842,7 +1842,7 @@ fn show_builtin_effect_params(
                             let p = ui.painter_at(rect);
                             // Background
                             p.rect_filled(rect, 3.0, egui::Color32::from_rgb(22, 22, 26));
-                            p.rect_stroke(rect, 3.0, egui::Stroke::new(0.5, egui::Color32::from_rgb(50, 50, 58)));
+                            p.rect_stroke(rect, 3.0, egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(50, 50, 58)));
 
                             // Y range covers both lines with small padding.
                             let mut lo = f32::INFINITY;
@@ -1867,15 +1867,15 @@ fn show_builtin_effect_params(
                             let mid_y = inner.bottom() - ((mid - lo) / span) * inner.height();
                             p.line_segment(
                                 [egui::pos2(inner.left(), mid_y), egui::pos2(inner.right(), mid_y)],
-                                egui::Stroke::new(0.5, egui::Color32::from_rgb(45, 45, 52)),
+                                egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(45, 45, 52)),
                             );
 
                             let raw_pts: Vec<egui::Pos2> = raw.iter().enumerate().map(|(i, &v)| to_pt(i, v)).collect();
                             let smooth_pts: Vec<egui::Pos2> = smooth.iter().enumerate().map(|(i, &v)| to_pt(i, v)).collect();
                             // Raw trajectory: dim, thin
-                            p.add(egui::Shape::line(raw_pts, egui::Stroke::new(1.0, egui::Color32::from_rgb(120, 120, 135))));
+                            p.add(egui::Shape::line(raw_pts, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(120, 120, 135))));
                             // Smoothed trajectory: bright accent, thicker
-                            p.add(egui::Shape::line(smooth_pts, egui::Stroke::new(1.6, theme.accent)));
+                            p.add(egui::Shape::line(smooth_pts, egui::Stroke::new(1.6_f32, theme.accent)));
 
                             // Tiny legend
                             p.text(

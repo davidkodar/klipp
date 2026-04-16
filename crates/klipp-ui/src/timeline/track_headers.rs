@@ -23,7 +23,7 @@ pub fn show(
     ui.painter().hline(
         spacer_rect.x_range(),
         spacer_rect.max.y,
-        egui::Stroke::new(1.0, theme.border),
+        egui::Stroke::new(1.0_f32, theme.border),
     );
     ui.painter().text(
         egui::pos2(spacer_rect.min.x + 6.0, spacer_rect.center().y),
@@ -83,7 +83,7 @@ pub fn show(
         ui.painter().hline(
             track_rect.x_range(),
             track_rect.max.y,
-            egui::Stroke::new(1.0, theme.border),
+            egui::Stroke::new(1.0_f32, theme.border),
         );
 
         // Role color bar (3px left edge)
@@ -475,7 +475,7 @@ pub fn show(
                     egui::pos2(track_rect.left(), track_rect.max.y - 1.0),
                     egui::pos2(track_rect.right(), track_rect.max.y - 1.0),
                 ],
-                egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 80, 100)),
+                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(80, 80, 100)),
             );
         }
 

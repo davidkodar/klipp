@@ -49,9 +49,9 @@ pub fn role_pill(
     };
 
     let stroke = if active {
-        egui::Stroke::new(1.5, egui::Color32::from_rgb(230, 230, 235))
+        egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(230, 230, 235))
     } else {
-        egui::Stroke::new(1.0, border)
+        egui::Stroke::new(1.0_f32, border)
     };
 
     let btn = egui::Button::new(

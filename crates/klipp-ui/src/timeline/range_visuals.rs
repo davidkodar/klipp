@@ -149,7 +149,7 @@ fn draw_ruler_fill(
     painter.line_segment(
         [fill_rect.left_top(), fill_rect.right_top()],
         egui::Stroke::new(
-            1.0,
+            1.0_f32,
             egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), TOP_EDGE_ALPHA),
         ),
     );
@@ -311,7 +311,7 @@ pub fn draw_clip_overlay(painter: &egui::Painter, overlay_rect: egui::Rect, them
     painter.line_segment(
         [overlay_rect.left_top(), overlay_rect.right_top()],
         egui::Stroke::new(
-            2.0,
+            2.0_f32,
             egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), CLIP_OVERLAY_EDGE_ALPHA),
         ),
     );
@@ -329,7 +329,7 @@ pub fn draw_guide_line(
     painter.line_segment(
         [egui::pos2(x, top), egui::pos2(x, bottom)],
         egui::Stroke::new(
-            1.0,
+            1.0_f32,
             egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), GUIDE_LINE_ALPHA),
         ),
     );
@@ -415,13 +415,13 @@ pub fn draw_snap_line(
     // Thick amber line
     painter.line_segment(
         [egui::pos2(x, top), egui::pos2(x, bottom)],
-        egui::Stroke::new(2.0, snap_color),
+        egui::Stroke::new(2.0_f32, snap_color),
     );
     // Glow
     let c = theme.accent;
     painter.line_segment(
         [egui::pos2(x, top), egui::pos2(x, bottom)],
-        egui::Stroke::new(6.0, egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 50)),
+        egui::Stroke::new(6.0_f32, egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 50)),
     );
     // Timecode pill label
     let label = format_handle_timecode(secs, rate);

@@ -107,7 +107,7 @@ impl PreferencesPanel {
                 if close_resp.hovered() {
                     // Draw X with two crossing lines instead of a font glyph
                     let s = 3.0; // half-size of the X
-                    let stroke = egui::Stroke::new(1.5, egui::Color32::BLACK);
+                    let stroke = egui::Stroke::new(1.5_f32, egui::Color32::BLACK);
                     ui.painter().line_segment([egui::pos2(close_center.x - s, close_center.y - s), egui::pos2(close_center.x + s, close_center.y + s)], stroke);
                     ui.painter().line_segment([egui::pos2(close_center.x + s, close_center.y - s), egui::pos2(close_center.x - s, close_center.y + s)], stroke);
                 }
@@ -122,7 +122,7 @@ impl PreferencesPanel {
                     egui::vec2(win_rect.width() - 24.0, search_h),
                 );
                 ui.painter().rect_filled(search_rect, 6.0, egui::Color32::from_rgb(0x20, 0x20, 0x26));
-                ui.painter().rect_stroke(search_rect, 6.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
+                ui.painter().rect_stroke(search_rect, 6.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
                 // Interactive search input — vertically centered in the bar
                 let text_h = 18.0;
                 let text_rect = egui::Rect::from_min_max(
@@ -168,7 +168,7 @@ impl PreferencesPanel {
                 // Draw sidebar divider
                 ui.painter().line_segment(
                     [egui::pos2(sidebar_rect.right(), sidebar_rect.top()), egui::pos2(sidebar_rect.right(), sidebar_rect.bottom())],
-                    egui::Stroke::new(1.0, egui::Color32::from_rgb(0x28, 0x28, 0x30)),
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x28, 0x28, 0x30)),
                 );
 
                 // ── Sidebar navigation ──
@@ -268,7 +268,7 @@ impl PreferencesPanel {
                 // Separator line
                 bottom_painter.line_segment(
                     [egui::pos2(bottom_rect.left(), bottom_rect.top()), egui::pos2(bottom_rect.right(), bottom_rect.top())],
-                    egui::Stroke::new(1.0, egui::Color32::from_rgb(0x28, 0x28, 0x30)),
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x28, 0x28, 0x30)),
                 );
                 // "Changes saved automatically" text
                 bottom_painter.text(
@@ -296,7 +296,7 @@ impl PreferencesPanel {
                 let reset_resp = ui.allocate_rect(reset_rect, egui::Sense::click());
                 let reset_bg = if reset_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
                 bottom_painter.rect_filled(reset_rect, 6.0, reset_bg);
-                bottom_painter.rect_stroke(reset_rect, 6.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x40, 0x40, 0x48)));
+                bottom_painter.rect_stroke(reset_rect, 6.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x40, 0x40, 0x48)));
                 bottom_painter.text(reset_rect.center(), egui::Align2::CENTER_CENTER, "Reset to defaults", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
                 if reset_resp.clicked() {
                     *prefs = Preferences::default();
@@ -422,7 +422,7 @@ impl PreferencesPanel {
         // Subtle separator
         ui.painter().line_segment(
             [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-            egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+            egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
         );
         // Label (+ optional subtitle)
         if let Some(sub) = subtitle {
@@ -1391,7 +1391,7 @@ impl PreferencesPanel {
             ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
             ui.painter().line_segment(
                 [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
             );
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.center().y),
@@ -1407,7 +1407,7 @@ impl PreferencesPanel {
             let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let btn_bg = if btn_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
             ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Browse...", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
             let display = prefs.export.default_output_dir.as_ref()
                 .map(|p| p.to_string_lossy().to_string())
@@ -1551,7 +1551,7 @@ impl PreferencesPanel {
             ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
             ui.painter().line_segment(
                 [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
             );
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.center().y),
@@ -1568,7 +1568,7 @@ impl PreferencesPanel {
             let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let btn_bg = if btn_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
             ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Browse...", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
             // Path display
             let display = prefs.proxy.proxy_cache_dir.as_ref()
@@ -1625,7 +1625,7 @@ impl PreferencesPanel {
                 ui.painter().rect_stroke(
                     btn_rect,
                     4.0,
-                    egui::Stroke::new(1.0, egui::Color32::from_rgb(0x38, 0x38, 0x42)),
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x38, 0x38, 0x42)),
                 );
                 ui.painter().text(
                     btn_rect.center(),
@@ -1735,7 +1735,7 @@ impl PreferencesPanel {
             let text_galley = ui.painter().layout_no_wrap(badge_text.to_string(), badge_font.clone(), Self::ACCENT);
             let badge_size = egui::vec2(text_galley.size().x + 12.0, 20.0);
             let (badge_rect, _) = ui.allocate_exact_size(badge_size, egui::Sense::hover());
-            ui.painter().rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0, Self::ACCENT));
+            ui.painter().rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, Self::ACCENT));
             ui.painter().text(badge_rect.center(), egui::Align2::CENTER_CENTER, badge_text, badge_font, Self::ACCENT);
         });
         ui.add_space(4.0);
@@ -1878,7 +1878,7 @@ impl PreferencesPanel {
             ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
             ui.painter().line_segment(
                 [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
             );
             // Label + subtitle
             ui.painter().text(
@@ -1917,7 +1917,7 @@ impl PreferencesPanel {
                 let resp = ui.allocate_rect(click_rect, egui::Sense::click());
                 ui.painter().circle_filled(egui::pos2(cx, cy), circle_r, c);
                 if is_selected {
-                    ui.painter().circle_stroke(egui::pos2(cx, cy), circle_r + 2.0, egui::Stroke::new(2.0, egui::Color32::WHITE));
+                    ui.painter().circle_stroke(egui::pos2(cx, cy), circle_r + 2.0, egui::Stroke::new(2.0_f32, egui::Color32::WHITE));
                 }
                 if resp.clicked() {
                     prefs.appearance.accent_color = *color;
@@ -1937,7 +1937,7 @@ impl PreferencesPanel {
             ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
             ui.painter().line_segment(
                 [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
             );
             // Label
             ui.painter().text(
@@ -1955,7 +1955,7 @@ impl PreferencesPanel {
             let edit_resp = ui.allocate_rect(edit_rect, egui::Sense::click());
             let edit_bg = if edit_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
             ui.painter().rect_filled(edit_rect, 4.0, edit_bg);
-            ui.painter().rect_stroke(edit_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
+            ui.painter().rect_stroke(edit_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
             ui.painter().text(edit_rect.center(), egui::Align2::CENTER_CENTER, "Edit...", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
             // Color swatch (before Edit button)
             let swatch_center = egui::pos2(edit_rect.left() - 18.0, rect.center().y);
@@ -2303,7 +2303,7 @@ impl PreferencesPanel {
             ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
             ui.painter().line_segment(
                 [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
             );
             // Label
             ui.painter().text(
@@ -2321,7 +2321,7 @@ impl PreferencesPanel {
             let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let btn_bg = if btn_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
             ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Browse...", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
             // Path display (dim, before button)
             let display = path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| default_display.to_string());
@@ -2441,7 +2441,7 @@ impl PreferencesPanel {
             let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let bg = if resp.hovered() { egui::Color32::from_rgb(0x40, 0x28, 0x18) } else { egui::Color32::from_rgb(0x30, 0x20, 0x10) };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, Self::ACCENT));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, Self::ACCENT));
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(11.0), Self::ACCENT);
             if resp.clicked() {
                 let _ = std::fs::remove_dir_all(dir);
@@ -2475,7 +2475,7 @@ impl PreferencesPanel {
             let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let bg = if resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, Self::ACCENT));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, Self::ACCENT));
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Scan & Clean", egui::FontId::proportional(11.0), Self::ACCENT);
             if resp.clicked() {
                 cmds.push(AppCommand::CleanOrphanedCaches);
@@ -2490,7 +2490,7 @@ impl PreferencesPanel {
             let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let bg = if resp.hovered() { egui::Color32::from_rgb(0x50, 0x20, 0x10) } else { egui::Color32::from_rgb(0x40, 0x18, 0x08) };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0xe0, 0x60, 0x30)));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0xe0, 0x60, 0x30)));
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear all", egui::FontId::proportional(11.0), egui::Color32::from_rgb(0xe0, 0x60, 0x30));
             if resp.clicked() {
                 for d in [&render_dir, &thumb_dir, &wave_dir, &skim_dir, &proxy_dir] {
@@ -3071,7 +3071,7 @@ impl PreferencesPanel {
             let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let bg = if resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset layout", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
             if resp.clicked() {
                 // Reset egui memory (window positions, sizes)
@@ -3084,7 +3084,7 @@ impl PreferencesPanel {
             let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let bg = if resp.hovered() { egui::Color32::from_rgb(0x40, 0x28, 0x18) } else { egui::Color32::from_rgb(0x30, 0x20, 0x10) };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, Self::ACCENT));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, Self::ACCENT));
             // CONTRAST RULE: accent-bordered button uses accent text on dark bg
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear", egui::FontId::proportional(11.0), Self::ACCENT);
             if resp.clicked() {
@@ -3098,7 +3098,7 @@ impl PreferencesPanel {
             let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let bg = if resp.hovered() { egui::Color32::from_rgb(0x40, 0x28, 0x18) } else { egui::Color32::from_rgb(0x30, 0x20, 0x10) };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, Self::ACCENT));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, Self::ACCENT));
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset everything", egui::FontId::proportional(11.0), Self::ACCENT);
             if resp.clicked() {
                 *prefs = crate::prefs::Preferences::default();
@@ -3136,7 +3136,7 @@ impl PreferencesPanel {
             let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let btn_bg = if btn_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
             ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset all to defaults", egui::FontId::proportional(10.0), Self::NORMAL_TEXT);
             if btn_resp.clicked() {
                 *key_bindings = KeyBindings::defaults();
@@ -3230,7 +3230,7 @@ impl PreferencesPanel {
                 ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
                 ui.painter().line_segment(
                     [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                    egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                    egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
                 );
 
                 // Action label
@@ -3252,7 +3252,7 @@ impl PreferencesPanel {
                     else if set_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) }
                     else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
                 ui.painter().rect_filled(set_rect, 4.0, set_bg);
-                ui.painter().rect_stroke(set_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
+                ui.painter().rect_stroke(set_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
                 let set_label = if is_remapping { "..." } else { "Set" };
                 ui.painter().text(set_rect.center(), egui::Align2::CENTER_CENTER, set_label, egui::FontId::proportional(10.0), Self::NORMAL_TEXT);
                 if set_resp.clicked() && !is_remapping {
@@ -3284,7 +3284,7 @@ impl PreferencesPanel {
                                 egui::vec2(pill_w, pill_h),
                             );
                             ui.painter().rect_filled(pill_rect, 4.0, egui::Color32::from_rgb(0x28, 0x28, 0x30));
-                            ui.painter().rect_stroke(pill_rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x3a, 0x3a, 0x44)));
+                            ui.painter().rect_stroke(pill_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x3a, 0x3a, 0x44)));
                             ui.painter().text(pill_rect.center(), egui::Align2::CENTER_CENTER, *part, font, Self::NORMAL_TEXT);
                             x = pill_rect.left() - 3.0;
                         }
@@ -3458,7 +3458,7 @@ impl PreferencesPanel {
             ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
             ui.painter().line_segment(
                 [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
             );
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.center().y),
@@ -3494,7 +3494,7 @@ impl PreferencesPanel {
             ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
             ui.painter().line_segment(
                 [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
             );
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.center().y),

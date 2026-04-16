@@ -199,7 +199,7 @@ pub fn show_color_and_luts(
                                         egui::Color32::WHITE,
                                     );
                                     // Subtle border around thumbnail
-                                    ui.painter().rect_stroke(thumb_rect, 1.0, egui::Stroke::new(0.5, egui::Color32::from_rgb(60, 60, 65)));
+                                    ui.painter().rect_stroke(thumb_rect, 1.0, egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(60, 60, 65)));
                                 }
                             }
                             // Text: white for active, dim for others

@@ -1111,7 +1111,7 @@ fn title_card(ui: &mut egui::Ui, theme: &KlippTheme, title: &TitleTemplate, widt
     // Card background
     ui.painter().rect_filled(rect, 6.0, theme.bg_raised);
     ui.painter()
-        .rect_stroke(rect, 6.0, egui::Stroke::new(1.0, border_color));
+        .rect_stroke(rect, 6.0, egui::Stroke::new(1.0_f32, border_color));
 
     // Preview area (top 56px, black background)
     let preview_rect = egui::Rect::from_min_size(rect.min, egui::vec2(width, 56.0));
@@ -1284,11 +1284,11 @@ fn paint_title_preview(
             let alpha = 40u8;
             painter.line_segment(
                 [egui::pos2(rect.min.x + 4.0, mid_y - 12.0), egui::pos2(rect.min.x + 16.0, mid_y - 12.0)],
-                egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(100, 60, 200, alpha)),
+                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(100, 60, 200, alpha)),
             );
             painter.line_segment(
                 [egui::pos2(rect.min.x + 4.0, mid_y + 12.0), egui::pos2(rect.min.x + 12.0, mid_y + 12.0)],
-                egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(100, 60, 200, alpha)),
+                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(100, 60, 200, alpha)),
             );
         }
         "Social Media" => {
@@ -1312,7 +1312,7 @@ fn paint_title_preview(
             while x < rect.max.x + rect.height() {
                 let p0 = egui::pos2((x).max(rect.min.x), rect.min.y);
                 let p1 = egui::pos2((x - rect.height()).max(rect.min.x), rect.max.y);
-                painter.line_segment([p0, p1], egui::Stroke::new(0.5, egui::Color32::from_rgb(60, 60, 80)));
+                painter.line_segment([p0, p1], egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(60, 60, 80)));
                 x += step;
             }
             let text_color = egui::Color32::from_rgba_premultiplied(200, 200, 220, 255);

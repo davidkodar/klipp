@@ -45,7 +45,7 @@ pub fn show_keyframe_editor(
         let x = plot_rect.min.x + t * plot_rect.width();
         painter.line_segment(
             [egui::pos2(x, plot_rect.min.y), egui::pos2(x, plot_rect.max.y)],
-            egui::Stroke::new(0.5, grid_color),
+            egui::Stroke::new(0.5_f32, grid_color),
         );
         let secs = t as f64 * duration;
         let label = format!("{:.1}s", secs);
@@ -60,7 +60,7 @@ pub fn show_keyframe_editor(
         let y = plot_rect.min.y + t * plot_rect.height();
         painter.line_segment(
             [egui::pos2(plot_rect.min.x, y), egui::pos2(plot_rect.max.x, y)],
-            egui::Stroke::new(0.5, grid_color),
+            egui::Stroke::new(0.5_f32, grid_color),
         );
     }
 
@@ -69,7 +69,7 @@ pub fn show_keyframe_editor(
     if playhead_x >= plot_rect.min.x && playhead_x <= plot_rect.max.x {
         painter.line_segment(
             [egui::pos2(playhead_x, plot_rect.min.y), egui::pos2(playhead_x, plot_rect.max.y)],
-            egui::Stroke::new(1.5, playhead_color),
+            egui::Stroke::new(1.5_f32, playhead_color),
         );
     }
 

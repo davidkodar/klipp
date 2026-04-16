@@ -208,7 +208,7 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         // Knob circle
         let knob_center = egui::pos2(knob_row.min.x + pad + 24.0, knob_row.center().y);
         let knob_r = 20.0;
-        ui.painter().circle_stroke(knob_center, knob_r, egui::Stroke::new(2.0, theme.border_light));
+        ui.painter().circle_stroke(knob_center, knob_r, egui::Stroke::new(2.0_f32, theme.border_light));
         // Knob indicator — maps master_volume (0.0–2.0) to angle range
         let vol_frac = (state.master_volume / 2.0).clamp(0.0, 1.0);
         // Sweep from 225° (min, bottom-left) to -45° (max, bottom-right) = 270° range
@@ -217,7 +217,7 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
             knob_center.x + knob_r * 0.7 * angle.cos(),
             knob_center.y - knob_r * 0.7 * angle.sin(),
         );
-        ui.painter().line_segment([knob_center, ind_end], egui::Stroke::new(2.5, theme.accent));
+        ui.painter().line_segment([knob_center, ind_end], egui::Stroke::new(2.5_f32, theme.accent));
         // Label
         ui.painter().text(
             egui::pos2(knob_center.x + knob_r + 12.0, knob_row.center().y - 10.0),
@@ -449,7 +449,7 @@ fn slider_row(
     );
 
     // Draw the bordered input box background
-    ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0, theme.border));
+    ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0_f32, theme.border));
 
     // Place DragValue inside the input rect
     let dv_resp = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(input_rect.shrink(2.0)), |ui| {
@@ -547,7 +547,7 @@ fn slider_row(
         egui::pos2(thumb_x, thumb_y), thumb_r, egui::Color32::from_rgb(220, 220, 225),
     );
     ui.painter().circle_stroke(
-        egui::pos2(thumb_x, thumb_y), thumb_r, egui::Stroke::new(1.0, theme.border),
+        egui::pos2(thumb_x, thumb_y), thumb_r, egui::Stroke::new(1.0_f32, theme.border),
     );
 
     // Track interaction — wider hit area
@@ -734,7 +734,7 @@ fn show_clip_audio(
         {
             let prev = channel_config;
             let (row_rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h + 4.0), egui::Sense::hover());
-            ui.painter().hline(row_rect.min.x + pad..=row_rect.max.x - pad, row_rect.max.y, egui::Stroke::new(0.5, theme.border));
+            ui.painter().hline(row_rect.min.x + pad..=row_rect.max.x - pad, row_rect.max.y, egui::Stroke::new(0.5_f32, theme.border));
             ui.painter().text(
                 egui::pos2(row_rect.min.x + pad, row_rect.center().y),
                 egui::Align2::LEFT_CENTER, "Channel",
@@ -936,7 +936,7 @@ fn show_clip_audio(
         let wf_rect_size = egui::vec2(ui.available_width(), 48.0);
         egui::Frame::default()
             .fill(theme.bg_raised)
-            .stroke(egui::Stroke::new(1.0, theme.border))
+            .stroke(egui::Stroke::new(1.0_f32, theme.border))
             .rounding(4.0)
             .inner_margin(egui::Margin::symmetric(4.0, 4.0))
             .show(ui, |ui| {
@@ -986,7 +986,7 @@ fn show_clip_audio(
             // Sidechain dropdown — right-aligned to match slider value boxes
             {
                 let (row_rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h + 4.0), egui::Sense::hover());
-                ui.painter().hline(row_rect.min.x + pad..=row_rect.max.x - pad, row_rect.max.y, egui::Stroke::new(0.5, theme.border));
+                ui.painter().hline(row_rect.min.x + pad..=row_rect.max.x - pad, row_rect.max.y, egui::Stroke::new(0.5_f32, theme.border));
                 ui.painter().text(
                     egui::pos2(row_rect.min.x + pad, row_rect.center().y),
                     egui::Align2::LEFT_CENTER, "Sidechain",
@@ -1040,7 +1040,7 @@ fn show_clip_audio(
                         egui::RichText::new("Apply Auto Duck").size(11.0).color(theme.text_primary),
                     )
                     .fill(theme.accent.linear_multiply(0.3))
-                    .stroke(egui::Stroke::new(1.0, theme.accent))
+                    .stroke(egui::Stroke::new(1.0_f32, theme.accent))
                     .min_size(egui::vec2(ui.available_width() - 14.0, 24.0)),
                 );
                 if btn.clicked() {
@@ -1285,7 +1285,7 @@ fn info_row(
     label: &str, draw_value: impl FnOnce(&mut egui::Ui, f32, f32),
 ) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(total_w, row_h), egui::Sense::hover());
-    ui.painter().hline(rect.min.x + pad..=rect.max.x - pad, rect.max.y, egui::Stroke::new(0.5, theme.border));
+    ui.painter().hline(rect.min.x + pad..=rect.max.x - pad, rect.max.y, egui::Stroke::new(0.5_f32, theme.border));
     ui.painter().text(
         egui::pos2(rect.min.x + pad, rect.center().y), egui::Align2::LEFT_CENTER,
         label, egui::FontId::proportional(13.0), theme.text_secondary,
@@ -1299,7 +1299,7 @@ fn padded_separator(ui: &mut egui::Ui, w: f32, pad: f32, theme: &KlippTheme) {
     ui.painter().hline(
         rect.min.x + pad..=rect.max.x - pad,
         rect.center().y,
-        egui::Stroke::new(0.5, theme.border),
+        egui::Stroke::new(0.5_f32, theme.border),
     );
 }
 
@@ -1314,7 +1314,7 @@ fn draw_keyframe_diamond(ui: &mut egui::Ui, center: egui::Pos2, color: egui::Col
     if filled {
         ui.painter().add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
     } else {
-        ui.painter().add(egui::Shape::convex_polygon(pts, egui::Color32::TRANSPARENT, egui::Stroke::new(1.5, color)));
+        ui.painter().add(egui::Shape::convex_polygon(pts, egui::Color32::TRANSPARENT, egui::Stroke::new(1.5_f32, color)));
     }
 }
 

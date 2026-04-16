@@ -119,7 +119,7 @@ fn generator_card(
 
     // Card background
     ui.painter().rect_filled(rect, 6.0, theme.bg_raised);
-    ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(1.0, border_color));
+    ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(1.0_f32, border_color));
 
     // Preview area (top 56px)
     let preview_rect = egui::Rect::from_min_size(rect.min, egui::vec2(width, 56.0));

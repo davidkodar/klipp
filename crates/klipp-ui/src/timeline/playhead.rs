@@ -13,7 +13,7 @@ pub fn draw(
     painter.vline(
         x,
         top..=bottom,
-        egui::Stroke::new(1.0, theme.accent),
+        egui::Stroke::new(1.0_f32, theme.accent),
     );
 
     // Triangle cap (9x8px, pointing down)

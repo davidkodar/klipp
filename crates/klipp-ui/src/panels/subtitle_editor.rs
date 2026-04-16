@@ -264,7 +264,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                                     })
                                     .inner_margin(egui::Margin::same(4.0))
                                     .stroke(egui::Stroke::new(
-                                        1.0,
+                                        1.0_f32,
                                         egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 10),
                                     ));
                                 row_frame.show(ui, |ui| {
@@ -336,7 +336,7 @@ fn render_track_header(
         .fill(egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 6))
         .inner_margin(egui::Margin::symmetric(4.0, 3.0))
         .stroke(egui::Stroke::new(
-            1.0,
+            1.0_f32,
             egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 16),
         ));
     hdr_frame.show(ui, |ui| {

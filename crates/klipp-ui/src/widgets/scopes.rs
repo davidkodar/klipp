@@ -109,12 +109,12 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
         if !major_vals.iter().any(|&mv| (mv - v).abs() < 0.1) {
             painter.line_segment(
                 [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x, y)],
-                egui::Stroke::new(0.5, amber(10)),
+                egui::Stroke::new(0.5_f32, amber(10)),
             );
             // 3px tick on axis
             painter.line_segment(
                 [egui::pos2(rect.min.x + AXIS_W - 3.0, y), egui::pos2(rect.min.x + AXIS_W, y)],
-                egui::Stroke::new(0.5, amber(64)),
+                egui::Stroke::new(0.5_f32, amber(64)),
             );
         }
         v += minor_step;
@@ -125,12 +125,12 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
         let y = val_to_y(val, &rect, scale);
         painter.line_segment(
             [egui::pos2(rect.min.x + AXIS_W, y), egui::pos2(rect.max.x, y)],
-            egui::Stroke::new(0.5, amber(51)),
+            egui::Stroke::new(0.5_f32, amber(51)),
         );
         // 6px tick on axis
         painter.line_segment(
             [egui::pos2(rect.min.x + AXIS_W - 6.0, y), egui::pos2(rect.min.x + AXIS_W, y)],
-            egui::Stroke::new(0.5, amber(153)),
+            egui::Stroke::new(0.5_f32, amber(153)),
         );
         // Label — right-aligned to axis, 0 sits BELOW (TOP baseline), others sit ABOVE (BOTTOM baseline)
         let label = format!("{}", val as u32);
@@ -141,14 +141,14 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
     // Axis separator — 1px vertical at x=AXIS_W, rgba(255,255,255,0.08)
     painter.line_segment(
         [egui::pos2(rect.min.x + AXIS_W, rect.min.y), egui::pos2(rect.min.x + AXIS_W, rect.max.y - PAD_BOTTOM)],
-        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)),
     );
 
     // Bottom baseline — horizontal at y=(height-PAD_BOTTOM), rgba(255,255,255,0.08)
     let bottom_y = rect.max.y - PAD_BOTTOM;
     painter.line_segment(
         [egui::pos2(rect.min.x + AXIS_W, bottom_y), egui::pos2(rect.max.x, bottom_y)],
-        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)),
     );
 
     // Bottom ticks — major every 25% (6px, amber 0.40), minor between (3px, amber 0.15)
@@ -161,7 +161,7 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
         let color = if is_major { amber(102) } else { amber(38) };
         painter.line_segment(
             [egui::pos2(x, bottom_y), egui::pos2(x, bottom_y + tick_h)],
-            egui::Stroke::new(0.5, color),
+            egui::Stroke::new(0.5_f32, color),
         );
     }
 
@@ -172,7 +172,7 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
             let x = rect.min.x + AXIS_W + third * i as f32;
             painter.line_segment(
                 [egui::pos2(x, rect.min.y + PAD_TOP), egui::pos2(x, bottom_y)],
-                egui::Stroke::new(0.5, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 13)),
+                egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 13)),
             );
         }
     }

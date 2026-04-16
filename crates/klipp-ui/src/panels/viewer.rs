@@ -95,9 +95,9 @@ impl ViewerPanel {
 
             // Underline active tab
             if prog_active {
-                ui.painter().hline(prog_rect.x_range(), prog_rect.max.y, egui::Stroke::new(2.0, theme.accent));
+                ui.painter().hline(prog_rect.x_range(), prog_rect.max.y, egui::Stroke::new(2.0_f32, theme.accent));
             } else {
-                ui.painter().hline(src_rect.x_range(), src_rect.max.y, egui::Stroke::new(2.0, theme.accent));
+                ui.painter().hline(src_rect.x_range(), src_rect.max.y, egui::Stroke::new(2.0_f32, theme.accent));
             }
         }
 
@@ -444,7 +444,7 @@ impl ViewerPanel {
         ui.painter().vline(
             split_x,
             image_rect.y_range(),
-            egui::Stroke::new(2.0, divider_color),
+            egui::Stroke::new(2.0_f32, divider_color),
         );
 
         // Labels
@@ -566,7 +566,7 @@ impl ViewerPanel {
         let h = image_rect.height();
         // 90% action safe
         let action_rect = egui::Rect::from_center_size(center, egui::vec2(w * state.viewer_prefs.action_safe_pct, h * state.viewer_prefs.action_safe_pct));
-        painter.rect_stroke(action_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 200, 0, 120)));
+        painter.rect_stroke(action_rect, 0.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(255, 200, 0, 120)));
         painter.text(
             egui::pos2(action_rect.left() + 4.0, action_rect.top() + 2.0),
             egui::Align2::LEFT_TOP, "Action Safe",
@@ -575,7 +575,7 @@ impl ViewerPanel {
         );
         // 80% title safe
         let title_rect = egui::Rect::from_center_size(center, egui::vec2(w * state.viewer_prefs.title_safe_pct, h * state.viewer_prefs.title_safe_pct));
-        painter.rect_stroke(title_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(0, 180, 255, 120)));
+        painter.rect_stroke(title_rect, 0.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(0, 180, 255, 120)));
         painter.text(
             egui::pos2(title_rect.left() + 4.0, title_rect.top() + 2.0),
             egui::Align2::LEFT_TOP, "Title Safe",
@@ -594,7 +594,7 @@ impl ViewerPanel {
         let w = image_rect.width();
         let h = image_rect.height();
         let gc = state.viewer_prefs.grid_color;
-        let stroke = egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(gc[0], gc[1], gc[2], gc[3]));
+        let stroke = egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_premultiplied(gc[0], gc[1], gc[2], gc[3]));
         // Rule of thirds: vertical lines
         for i in 1..=2 {
             let x = image_rect.left() + w * i as f32 / 3.0;
@@ -612,7 +612,7 @@ impl ViewerPanel {
         let cy = image_rect.center().y;
         let cross_alpha = ((gc[3] as u16) * 2).min(255) as u8;
         let cross_color = egui::Color32::from_rgba_premultiplied(gc[0], gc[1], gc[2], cross_alpha);
-        let cross = egui::Stroke::new(0.5, cross_color);
+        let cross = egui::Stroke::new(0.5_f32, cross_color);
         painter.line_segment([egui::pos2(cx - 12.0, cy), egui::pos2(cx + 12.0, cy)], cross);
         painter.line_segment([egui::pos2(cx, cy - 12.0), egui::pos2(cx, cy + 12.0)], cross);
     }
@@ -819,15 +819,15 @@ impl ViewerPanel {
                     egui::Color32::from_rgba_unmultiplied(255, 200, 50, 200)
                 };
                 let box_rect = egui::Rect::from_center_size(pos, egui::vec2(box_w, box_h));
-                painter.rect_stroke(box_rect, 0.0, egui::Stroke::new(1.0, cursor_color));
+                painter.rect_stroke(box_rect, 0.0, egui::Stroke::new(1.0_f32, cursor_color));
                 // Center crosshair
                 painter.line_segment(
                     [egui::pos2(pos.x - 4.0, pos.y), egui::pos2(pos.x + 4.0, pos.y)],
-                    egui::Stroke::new(1.0, cursor_color),
+                    egui::Stroke::new(1.0_f32, cursor_color),
                 );
                 painter.line_segment(
                     [egui::pos2(pos.x, pos.y - 4.0), egui::pos2(pos.x, pos.y + 4.0)],
-                    egui::Stroke::new(1.0, cursor_color),
+                    egui::Stroke::new(1.0_f32, cursor_color),
                 );
                 // "LOCKED" label
                 if state.scope_cursor_locked {
@@ -943,7 +943,7 @@ impl ViewerPanel {
 
             // Accent border
             fg_painter.rect_stroke(image_rect.shrink(1.0), 0.0,
-                egui::Stroke::new(2.0, egui::Color32::from_rgba_unmultiplied(56, 132, 244, 180)));
+                egui::Stroke::new(2.0_f32, egui::Color32::from_rgba_unmultiplied(56, 132, 244, 180)));
 
             // Edit mode badge
             let badge_galley = ui.painter().layout_no_wrap(
@@ -1441,7 +1441,7 @@ impl ViewerPanel {
         };
         // Draw a small bounding-box icon (square with corner handles)
         let ir = xform_rect.shrink(4.0);
-        ui.painter().rect_stroke(ir, 0.0, egui::Stroke::new(1.2, xform_color));
+        ui.painter().rect_stroke(ir, 0.0, egui::Stroke::new(1.2_f32, xform_color));
         let cs = 2.0; // corner square half-size
         for corner in [ir.left_top(), ir.right_top(), ir.left_bottom(), ir.right_bottom()] {
             ui.painter().rect_filled(
@@ -1473,15 +1473,15 @@ impl ViewerPanel {
         };
         // Camera body: rounded rectangle.
         let body = cam_rect.shrink2(egui::vec2(3.0, 5.0));
-        ui.painter().rect_stroke(body, 2.0, egui::Stroke::new(1.2, cam_color));
+        ui.painter().rect_stroke(body, 2.0, egui::Stroke::new(1.2_f32, cam_color));
         // Small viewfinder bump on top.
         let bump = egui::Rect::from_center_size(
             egui::pos2(cam_rect.center().x - 3.0, body.min.y - 1.5),
             egui::vec2(5.0, 3.0),
         );
-        ui.painter().rect_stroke(bump, 1.0, egui::Stroke::new(1.2, cam_color));
+        ui.painter().rect_stroke(bump, 1.0, egui::Stroke::new(1.2_f32, cam_color));
         // Lens.
-        ui.painter().circle_stroke(body.center(), 3.2, egui::Stroke::new(1.2, cam_color));
+        ui.painter().circle_stroke(body.center(), 3.2, egui::Stroke::new(1.2_f32, cam_color));
         if cam_resp.clicked() {
             cmds.push(AppCommand::ExtractFrameToBin);
         }
@@ -1600,7 +1600,7 @@ impl ViewerPanel {
         // Tracking placement mode: amber border + click to place
         if state.tracking_mode {
             // Amber border
-            let border_stroke = egui::Stroke::new(2.0, egui::Color32::from_rgb(0xe8, 0xa0, 0x20));
+            let border_stroke = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(0xe8, 0xa0, 0x20));
             ui.painter().rect_stroke(image_rect.shrink(1.0), 0.0, border_stroke);
 
             // "TRACKING" label top-left
@@ -1681,15 +1681,15 @@ impl ViewerPanel {
                         // Crosshair lines
                         ui.painter().line_segment(
                             [egui::pos2(sx - arm, sy), egui::pos2(sx + arm, sy)],
-                            egui::Stroke::new(1.5, color),
+                            egui::Stroke::new(1.5_f32, color),
                         );
                         ui.painter().line_segment(
                             [egui::pos2(sx, sy - arm), egui::pos2(sx, sy + arm)],
-                            egui::Stroke::new(1.5, color),
+                            egui::Stroke::new(1.5_f32, color),
                         );
 
                         // Center circle
-                        ui.painter().circle_stroke(center, 3.0, egui::Stroke::new(1.5, color));
+                        ui.painter().circle_stroke(center, 3.0, egui::Stroke::new(1.5_f32, color));
 
                         // Search region rectangle (dim)
                         let sr_px = tp.search_radius as f32 * 2.0;
@@ -1700,7 +1700,7 @@ impl ViewerPanel {
                             center,
                             egui::vec2(sr_screen_w, sr_screen_h),
                         );
-                        ui.painter().rect_stroke(sr_rect, 0.0, egui::Stroke::new(0.5, dim_color));
+                        ui.painter().rect_stroke(sr_rect, 0.0, egui::Stroke::new(0.5_f32, dim_color));
 
                         // Name label
                         let label = if tp.name.is_empty() {
@@ -1718,7 +1718,7 @@ impl ViewerPanel {
 
                         // Highlight active track point
                         if state.active_track_point == Some(idx) {
-                            ui.painter().circle_stroke(center, 6.0, egui::Stroke::new(1.0, color));
+                            ui.painter().circle_stroke(center, 6.0, egui::Stroke::new(1.0_f32, color));
                         }
                     }
                 }
@@ -1786,7 +1786,7 @@ impl ViewerPanel {
                     let r_px = radius * iw;
 
                     // Draw outline ellipse (approximate with circle)
-                    ui.painter().circle_stroke(center, r_px, egui::Stroke::new(1.5, outline_color));
+                    ui.painter().circle_stroke(center, r_px, egui::Stroke::new(1.5_f32, outline_color));
 
                     // Center handle
                     let center_handle = egui::Rect::from_center_size(center, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
@@ -1840,7 +1840,7 @@ impl ViewerPanel {
 
                     // Draw outline rectangle (ignoring rotation for simplicity in handles)
                     let rect = egui::Rect::from_center_size(center, egui::vec2(hw * 2.0, hh * 2.0));
-                    ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.5, outline_color));
+                    ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.5_f32, outline_color));
 
                     // Center handle
                     let center_handle = egui::Rect::from_center_size(center, egui::vec2(handle_radius * 2.0, handle_radius * 2.0));
@@ -1890,7 +1890,7 @@ impl ViewerPanel {
                     // Draw a line from start to end
                     let start = to_screen(*start_x, *start_y);
                     let end = to_screen(*end_x, *end_y);
-                    ui.painter().line_segment([start, end], egui::Stroke::new(1.5, outline_color));
+                    ui.painter().line_segment([start, end], egui::Stroke::new(1.5_f32, outline_color));
                     ui.painter().circle_filled(start, handle_radius, handle_color);
                     ui.painter().circle_filled(end, handle_radius, handle_color);
                     // Linear gradient handles: use Center for start, EdgeRight for end
@@ -1933,7 +1933,7 @@ impl ViewerPanel {
                         for i in 0..screen_pts.len() {
                             let a = screen_pts[i];
                             let b = screen_pts[(i + 1) % screen_pts.len()];
-                            ui.painter().line_segment([a, b], egui::Stroke::new(1.5, outline_color));
+                            ui.painter().line_segment([a, b], egui::Stroke::new(1.5_f32, outline_color));
                         }
                         // Draw control point handles
                         if state.viewer_mask_drag.is_none() {
@@ -2156,14 +2156,14 @@ impl ViewerPanel {
 
         // Draw bounding box outline
         let outline_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 180);
-        let outline_stroke = egui::Stroke::new(1.5, outline_color);
+        let outline_stroke = egui::Stroke::new(1.5_f32, outline_color);
         for i in 0..4 {
             painter.line_segment([corners[i], corners[(i + 1) % 4]], outline_stroke);
         }
 
         // Draw diagonal crosshairs through center (subtle)
         let cross_color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 60);
-        let cross_stroke = egui::Stroke::new(0.5, cross_color);
+        let cross_stroke = egui::Stroke::new(0.5_f32, cross_color);
         let mid_top = egui::pos2(
             (corners[0].x + corners[1].x) * 0.5,
             (corners[0].y + corners[1].y) * 0.5,
@@ -2189,22 +2189,22 @@ impl ViewerPanel {
         for corner in &corners {
             let handle_rect = egui::Rect::from_center_size(*corner, egui::vec2(handle_size, handle_size));
             painter.rect_filled(handle_rect, 0.0, egui::Color32::WHITE);
-            painter.rect_stroke(handle_rect, 0.0, egui::Stroke::new(1.0, egui::Color32::BLACK));
+            painter.rect_stroke(handle_rect, 0.0, egui::Stroke::new(1.0_f32, egui::Color32::BLACK));
         }
 
         // Center handle (position) — circle
         let center_radius = 6.0;
         painter.circle_filled(pos_screen, center_radius, egui::Color32::WHITE);
-        painter.circle_stroke(pos_screen, center_radius, egui::Stroke::new(1.0, egui::Color32::BLACK));
+        painter.circle_stroke(pos_screen, center_radius, egui::Stroke::new(1.0_f32, egui::Color32::BLACK));
         // Small crosshair inside center handle
         let ch = 3.0;
         painter.line_segment(
             [egui::pos2(pos_screen.x - ch, pos_screen.y), egui::pos2(pos_screen.x + ch, pos_screen.y)],
-            egui::Stroke::new(1.0, egui::Color32::BLACK),
+            egui::Stroke::new(1.0_f32, egui::Color32::BLACK),
         );
         painter.line_segment(
             [egui::pos2(pos_screen.x, pos_screen.y - ch), egui::pos2(pos_screen.x, pos_screen.y + ch)],
-            egui::Stroke::new(1.0, egui::Color32::BLACK),
+            egui::Stroke::new(1.0_f32, egui::Color32::BLACK),
         );
 
         // Anchor point indicator — small diamond at the pivot
@@ -2219,7 +2219,7 @@ impl ViewerPanel {
         for i in 0..4 {
             painter.line_segment(
                 [anchor_pts[i], anchor_pts[(i + 1) % 4]],
-                egui::Stroke::new(1.5, anchor_color),
+                egui::Stroke::new(1.5_f32, anchor_color),
             );
         }
 
@@ -2233,11 +2233,11 @@ impl ViewerPanel {
         let rot_connector_base = mid_top;
         painter.line_segment(
             [rot_connector_base, rot_handle_pos],
-            egui::Stroke::new(1.5, outline_color),
+            egui::Stroke::new(1.5_f32, outline_color),
         );
         let rot_radius = 5.0;
         painter.circle_filled(rot_handle_pos, rot_radius, egui::Color32::WHITE);
-        painter.circle_stroke(rot_handle_pos, rot_radius, egui::Stroke::new(1.0, egui::Color32::BLACK));
+        painter.circle_stroke(rot_handle_pos, rot_radius, egui::Stroke::new(1.0_f32, egui::Color32::BLACK));
         // Small arc icon inside rotation handle
         let arc_r = 2.5;
         painter.line_segment(
@@ -2245,14 +2245,14 @@ impl ViewerPanel {
                 egui::pos2(rot_handle_pos.x - arc_r, rot_handle_pos.y),
                 egui::pos2(rot_handle_pos.x, rot_handle_pos.y - arc_r),
             ],
-            egui::Stroke::new(0.8, egui::Color32::BLACK),
+            egui::Stroke::new(0.8_f32, egui::Color32::BLACK),
         );
         painter.line_segment(
             [
                 egui::pos2(rot_handle_pos.x, rot_handle_pos.y - arc_r),
                 egui::pos2(rot_handle_pos.x + arc_r, rot_handle_pos.y),
             ],
-            egui::Stroke::new(0.8, egui::Color32::BLACK),
+            egui::Stroke::new(0.8_f32, egui::Color32::BLACK),
         );
 
         // ── Interaction ──

@@ -115,7 +115,7 @@ impl NodeGraphPanel {
 
                     // Selection border
                     let border_color = if is_selected { theme.accent } else { theme.border };
-                    let border_width = if is_selected { 2.0 } else { 0.5 };
+                    let border_width = if is_selected { 2.0_f32 } else { 0.5_f32 };
                     painter.rect_stroke(node_rect, 3.0, egui::Stroke::new(border_width, border_color));
 
                     // Label
@@ -180,7 +180,7 @@ impl NodeGraphPanel {
                         if to_x > from_x + 1.0 {
                             painter.line_segment(
                                 [egui::pos2(from_x, y), egui::pos2(to_x, y)],
-                                egui::Stroke::new(1.5, theme.accent_dim),
+                                egui::Stroke::new(1.5_f32, theme.accent_dim),
                             );
                         }
                     }

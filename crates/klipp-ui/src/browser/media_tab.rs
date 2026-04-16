@@ -287,7 +287,7 @@ pub fn show(
                 ui.painter().rect_stroke(
                     panel_rect,
                     0.0,
-                    egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 180, 255)),
+                    egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(100, 180, 255)),
                 );
                 if !any_down {
                     state.drag_drop.end();
@@ -443,7 +443,7 @@ fn render_list_view(
                 ui.painter().rect_stroke(
                     header_resp.rect,
                     2.0,
-                    egui::Stroke::new(2.0, egui::Color32::from_rgb(232, 160, 32)),
+                    egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(232, 160, 32)),
                 );
                 if !ui.ctx().input(|i| i.pointer.primary_down()) {
                     // Released over bin header — move item
@@ -884,7 +884,7 @@ fn render_grid_view(
             } else {
                 theme.border
             };
-            ui.painter().rect_stroke(card_rect, 4.0, egui::Stroke::new(1.0, border_color));
+            ui.painter().rect_stroke(card_rect, 4.0, egui::Stroke::new(1.0_f32, border_color));
 
             // Offline badge: dim the thumbnail and overlay an OFFLINE pill.
             if item.offline {
@@ -1230,7 +1230,7 @@ fn handle_hover_skim(
                 egui::Pos2::new(hover_pos.x, skim_rect.min.y),
                 egui::Pos2::new(hover_pos.x, skim_rect.max.y),
             ],
-            egui::Stroke::new(1.5, egui::Color32::WHITE),
+            egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
         );
     }
 
@@ -1240,7 +1240,7 @@ fn handle_hover_skim(
             egui::Pos2::new(hover_pos.x, skim_rect.min.y),
             egui::Pos2::new(hover_pos.x, skim_rect.max.y),
         ],
-        egui::Stroke::new(1.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)),
     );
 
     // Audio skimming: dispatch Start or Update (throttled)

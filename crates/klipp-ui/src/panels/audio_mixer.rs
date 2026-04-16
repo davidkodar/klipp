@@ -107,7 +107,7 @@ fn draw_peak_bar(
     let bar_rect = egui::Rect::from_min_size(egui::pos2(x, top), egui::vec2(bar_w, h));
     // Dark fill + visible border so empty meters are still visible
     painter.rect_filled(bar_rect, 1.0, egui::Color32::from_rgb(0x14, 0x14, 0x18));
-    painter.rect_stroke(bar_rect, 1.0, egui::Stroke::new(0.5, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
+    painter.rect_stroke(bar_rect, 1.0, egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
 
     let db = vol_to_db(peak_linear);
     let t = db_to_t(db);
@@ -136,7 +136,7 @@ fn draw_peak_bar(
     let hold_y = bottom - t * h;
     painter.line_segment(
         [egui::pos2(x, hold_y), egui::pos2(x + bar_w, hold_y)],
-        egui::Stroke::new(1.0, egui::Color32::WHITE),
+        egui::Stroke::new(1.0_f32, egui::Color32::WHITE),
     );
 }
 
@@ -160,7 +160,7 @@ fn draw_lufs_bar(
     let h = bottom - top;
     let bar_rect = egui::Rect::from_min_size(egui::pos2(x, top), egui::vec2(bar_w, h));
     painter.rect_filled(bar_rect, 1.0, egui::Color32::from_rgb(0x14, 0x14, 0x18));
-    painter.rect_stroke(bar_rect, 1.0, egui::Stroke::new(0.5, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
+    painter.rect_stroke(bar_rect, 1.0, egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
 
     // Green target zone (subtle background)
     let on_lo = lufs_to_t(target - 2.0);
@@ -214,7 +214,7 @@ fn draw_lufs_bar(
         let ty = bottom - target_t * h;
         painter.line_segment(
             [egui::pos2(x - 1.0, ty), egui::pos2(x + bar_w + 1.0, ty)],
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(0x50, 0xd0, 0x50)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x50, 0xd0, 0x50)),
         );
     }
 
@@ -228,7 +228,7 @@ fn draw_lufs_bar(
             } else { theme.text_secondary };
             painter.line_segment(
                 [egui::pos2(x + bar_w, tp_y), egui::pos2(x + bar_w + 3.0, tp_y)],
-                egui::Stroke::new(2.0, tp_color),
+                egui::Stroke::new(2.0_f32, tp_color),
             );
         }
     }
@@ -239,7 +239,7 @@ fn draw_lufs_bar(
         let tick_y = bottom - tick_t * h;
         painter.line_segment(
             [egui::pos2(x - 2.0, tick_y), egui::pos2(x, tick_y)],
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(0x50, 0x50, 0x58)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x50, 0x50, 0x58)),
         );
     }
 }
@@ -273,7 +273,7 @@ fn fader_strip(
     let painter = ui.painter_at(rect);
     // Strip background + border (consistent with master)
     painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x1a, 0x1a, 0x22));
-    painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x2a, 0x2a, 0x36)));
+    painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x2a, 0x2a, 0x36)));
 
     let inner_left = rect.min.x + STRIP_PAD;
     let inner_right = rect.max.x - STRIP_PAD;
@@ -332,12 +332,12 @@ fn fader_strip(
         egui::vec2(pan_w, 4.0),
     );
     painter.rect_filled(groove, 2.0, theme.bg_raised);
-    painter.rect_stroke(groove, 2.0, egui::Stroke::new(0.5, theme.border_light));
+    painter.rect_stroke(groove, 2.0, egui::Stroke::new(0.5_f32, theme.border_light));
     // Center tick
     painter.line_segment(
         [egui::pos2(pan_rect.center().x, pan_rect.center().y - 5.0),
          egui::pos2(pan_rect.center().x, pan_rect.center().y + 5.0)],
-        egui::Stroke::new(1.0, theme.border_light),
+        egui::Stroke::new(1.0_f32, theme.border_light),
     );
     // Fill from center to thumb
     let pan_t = (*pan + 1.0) / 2.0;
@@ -362,7 +362,7 @@ fn fader_strip(
         egui::vec2(thumb_w, thumb_h),
     );
     painter.rect_filled(thumb_rect, 3.0, egui::Color32::from_rgb(0xc0, 0xc0, 0xc8));
-    painter.rect_stroke(thumb_rect, 3.0, egui::Stroke::new(0.5, theme.border));
+    painter.rect_stroke(thumb_rect, 3.0, egui::Stroke::new(0.5_f32, theme.border));
     // Pan interaction
     let pan_resp = ui.allocate_rect(pan_rect.expand(2.0), egui::Sense::click_and_drag());
     if pan_resp.dragged() {
@@ -397,7 +397,7 @@ fn fader_strip(
         let mark_y = fader_bottom - t * FADER_TRACK_H;
         painter.line_segment(
             [egui::pos2(fader_cx - 6.0, mark_y), egui::pos2(fader_cx - 2.0, mark_y)],
-            egui::Stroke::new(1.0, theme.border_light),
+            egui::Stroke::new(1.0_f32, theme.border_light),
         );
         painter.text(
             egui::pos2(fader_cx - 8.0, mark_y), egui::Align2::RIGHT_CENTER,
@@ -409,7 +409,7 @@ fn fader_strip(
     let unity_y = fader_bottom - 0.5 * FADER_TRACK_H;
     painter.line_segment(
         [egui::pos2(fader_cx - 8.0, unity_y), egui::pos2(fader_cx + 8.0, unity_y)],
-        egui::Stroke::new(1.0, theme.accent_dim),
+        egui::Stroke::new(1.0_f32, theme.accent_dim),
     );
 
     // Fill + thumb
@@ -426,10 +426,10 @@ fn fader_strip(
     }
     let thumb_rect = egui::Rect::from_center_size(egui::pos2(fader_cx, thumb_y), egui::vec2(16.0, 8.0));
     painter.rect_filled(thumb_rect, 2.0, egui::Color32::from_rgb(0xd0, 0xd0, 0xd8));
-    painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(1.0, fill_color));
+    painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(1.0_f32, fill_color));
     painter.line_segment(
         [egui::pos2(fader_cx - 5.0, thumb_y), egui::pos2(fader_cx + 5.0, thumb_y)],
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x60, 0x60, 0x68)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x60, 0x60, 0x68)),
     );
 
     // Fader interaction
@@ -466,7 +466,7 @@ fn fader_strip(
         let tick_y = fader_bottom - tick_t * FADER_TRACK_H;
         painter.line_segment(
             [egui::pos2(tick_x - 2.0, tick_y), egui::pos2(tick_x, tick_y)],
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(0x50, 0x50, 0x58)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x50, 0x50, 0x58)),
         );
     }
 
@@ -492,7 +492,7 @@ fn fader_strip(
     let mute_bg = if *muted { egui::Color32::from_rgb(0xc0, 0x30, 0x30) } else { theme.bg_raised };
     let mute_tc = if *muted { egui::Color32::WHITE } else { theme.text_secondary };
     painter.rect_filled(mute_rect, 3.0, mute_bg);
-    painter.rect_stroke(mute_rect, 3.0, egui::Stroke::new(1.0, theme.border));
+    painter.rect_stroke(mute_rect, 3.0, egui::Stroke::new(1.0_f32, theme.border));
     painter.text(mute_rect.center(), egui::Align2::CENTER_CENTER, "M", egui::FontId::proportional(9.0), mute_tc);
     let mute_resp = ui.allocate_rect(mute_rect, egui::Sense::click());
     if mute_resp.clicked() {
@@ -505,7 +505,7 @@ fn fader_strip(
     let solo_bg = if *solo { theme.accent } else { theme.bg_raised };
     let solo_tc = if *solo { theme.text_on_accent } else { theme.text_secondary };
     painter.rect_filled(solo_rect, 3.0, solo_bg);
-    painter.rect_stroke(solo_rect, 3.0, egui::Stroke::new(1.0, theme.border));
+    painter.rect_stroke(solo_rect, 3.0, egui::Stroke::new(1.0_f32, theme.border));
     painter.text(solo_rect.center(), egui::Align2::CENTER_CENTER, "S", egui::FontId::proportional(9.0), solo_tc);
     let solo_resp = ui.allocate_rect(solo_rect, egui::Sense::click());
     if solo_resp.clicked() {
@@ -546,7 +546,7 @@ fn master_strip(
 
     // Master background — just slightly lighter than track strips for subtle distinction
     painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x1e, 0x1e, 0x28));
-    painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(0x2a, 0x2a, 0x36)));
+    painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x2a, 0x2a, 0x36)));
 
     let mut y = rect.min.y + 10.0;
 
@@ -610,7 +610,7 @@ fn master_strip(
     let unity_y = fader_bottom - 0.5 * FADER_TRACK_H;
     painter.line_segment(
         [egui::pos2(fader_cx - 8.0, unity_y), egui::pos2(fader_cx + 8.0, unity_y)],
-        egui::Stroke::new(1.0, theme.accent_dim),
+        egui::Stroke::new(1.0_f32, theme.accent_dim),
     );
 
     let vol_t = (*master_volume / 2.0).clamp(0.0, 1.0);
@@ -626,10 +626,10 @@ fn master_strip(
     }
     let thumb_rect = egui::Rect::from_center_size(egui::pos2(fader_cx, thumb_y), egui::vec2(18.0, 8.0));
     painter.rect_filled(thumb_rect, 2.0, egui::Color32::from_rgb(0xd0, 0xd0, 0xd8));
-    painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(1.0, fill_color));
+    painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(1.0_f32, fill_color));
     painter.line_segment(
         [egui::pos2(fader_cx - 6.0, thumb_y), egui::pos2(fader_cx + 6.0, thumb_y)],
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(0x60, 0x60, 0x68)),
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x60, 0x60, 0x68)),
     );
 
     let fader_hit = egui::Rect::from_min_max(
@@ -737,7 +737,7 @@ fn master_strip(
     // Reset button
     let btn_rect = egui::Rect::from_min_size(egui::pos2(rect.center().x - 16.0, y), egui::vec2(32.0, 14.0));
     painter.rect_filled(btn_rect, 2.0, theme.bg_raised);
-    painter.rect_stroke(btn_rect, 2.0, egui::Stroke::new(1.0, theme.border));
+    painter.rect_stroke(btn_rect, 2.0, egui::Stroke::new(1.0_f32, theme.border));
     painter.text(btn_rect.center(), egui::Align2::CENTER_CENTER, "RST",
         egui::FontId::monospace(7.0), theme.text_secondary);
     let rst_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
@@ -763,7 +763,7 @@ pub fn show(
 
     // Background + header
     ui.painter().rect_filled(full_rect, 0.0, theme.bg_deep);
-    ui.painter().hline(full_rect.x_range(), full_rect.min.y, egui::Stroke::new(1.0, theme.border));
+    ui.painter().hline(full_rect.x_range(), full_rect.min.y, egui::Stroke::new(1.0_f32, theme.border));
 
     let header_h = 20.0;
     let header_rect = egui::Rect::from_min_size(full_rect.min, egui::vec2(full_rect.width(), header_h));
@@ -773,7 +773,7 @@ pub fn show(
         egui::Align2::LEFT_CENTER, "Audio Mixer",
         egui::FontId::proportional(10.0), theme.text_secondary,
     );
-    ui.painter().hline(full_rect.x_range(), header_rect.max.y, egui::Stroke::new(1.0, theme.border));
+    ui.painter().hline(full_rect.x_range(), header_rect.max.y, egui::Stroke::new(1.0_f32, theme.border));
 
     let content_rect = egui::Rect::from_min_max(
         egui::pos2(full_rect.min.x, header_rect.max.y), full_rect.max,

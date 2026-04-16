@@ -274,17 +274,17 @@ pub fn scrubby_param_row(
             let hovered = diamond_btn_resp.hovered();
             if ks.has_keyframe_at_playhead {
                 let c = if hovered { egui::Color32::from_rgb(255, 200, 60) } else { egui::Color32::from_rgb(240, 180, 40) };
-                (c, true, 0.0) // filled — stroke width unused
+                (c, true, 0.0_f32) // filled — stroke width unused
             } else if ks.has_any_keyframes {
                 // Full-alpha yellow with thicker stroke — clearly "active but not here"
                 let c = if hovered { egui::Color32::from_rgb(255, 200, 60) } else { egui::Color32::from_rgb(240, 180, 40) };
-                (c, false, 1.8)
+                (c, false, 1.8_f32)
             } else {
                 let c = if hovered { egui::Color32::from_rgb(180, 180, 185) } else { egui::Color32::from_rgb(100, 100, 105) };
-                (c, false, 1.2)
+                (c, false, 1.2_f32)
             }
         } else {
-            (egui::Color32::from_rgb(50, 50, 55), false, 1.2)
+            (egui::Color32::from_rgb(50, 50, 55), false, 1.2_f32)
         };
 
         // Draw diamond shape over the button rect

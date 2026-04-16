@@ -100,7 +100,7 @@ pub fn draw_ruler(
             Pos2::new(ruler_rect.min.x, ruler_rect.max.y),
             Pos2::new(ruler_rect.max.x, ruler_rect.max.y),
         ],
-        Stroke::new(1.0, theme.border),
+        Stroke::new(1.0_f32, theme.border),
     );
 
     let major_interval = choose_major_interval(pps);
@@ -151,7 +151,7 @@ pub fn draw_ruler(
                 Pos2::new(x, ruler_rect.max.y - tick_h),
                 Pos2::new(x, ruler_rect.max.y),
             ],
-            Stroke::new(1.0, tick_color),
+            Stroke::new(1.0_f32, tick_color),
         );
 
         // Label on major ticks with collision prevention

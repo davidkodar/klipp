@@ -26,7 +26,7 @@ impl ToolbarPanel {
         ui.painter().hline(
             toolbar_rect.x_range(),
             toolbar_rect.max.y,
-            egui::Stroke::new(1.0, theme.border),
+            egui::Stroke::new(1.0_f32, theme.border),
         );
 
         let cy = toolbar_rect.center().y;
@@ -275,7 +275,7 @@ impl ToolbarPanel {
                     };
                     let border = mode_color.linear_multiply(0.6);
                     ui.painter().rect_filled(rect, 3.0, bg);
-                    ui.painter().rect_stroke(rect, 3.0, egui::Stroke::new(1.0, border));
+                    ui.painter().rect_stroke(rect, 3.0, egui::Stroke::new(1.0_f32, border));
                     ui.painter().text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
@@ -1018,7 +1018,7 @@ fn draw_select_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) 
 
 fn draw_trim_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
     let ir = icon_rect(btn);
-    let s = egui::Stroke::new(1.5, c);
+    let s = egui::Stroke::new(1.5_f32, c);
     painter.line_segment([egui::pos2(ir.min.x + 3.0, ir.min.y + 2.0), egui::pos2(ir.min.x + 3.0, ir.max.y - 2.0)], s);
     painter.line_segment([egui::pos2(ir.max.x - 3.0, ir.min.y + 2.0), egui::pos2(ir.max.x - 3.0, ir.max.y - 2.0)], s);
     painter.line_segment([egui::pos2(ir.min.x + 3.0, ir.center().y), egui::pos2(ir.min.x + 6.0, ir.center().y)], s);
@@ -1027,7 +1027,7 @@ fn draw_trim_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
 
 fn draw_blade_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
     let ir = icon_rect(btn);
-    let s = egui::Stroke::new(1.5, c);
+    let s = egui::Stroke::new(1.5_f32, c);
     painter.line_segment([egui::pos2(ir.min.x + 2.0, ir.max.y - 2.0), egui::pos2(ir.max.x - 2.0, ir.min.y + 2.0)], s);
     let pts = vec![
         egui::pos2(ir.max.x - 2.0, ir.min.y + 2.0),
@@ -1039,7 +1039,7 @@ fn draw_blade_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
 
 fn draw_zoom_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
     let ir = icon_rect(btn);
-    let s = egui::Stroke::new(1.5, c);
+    let s = egui::Stroke::new(1.5_f32, c);
     let center = egui::pos2(ir.min.x + 6.0, ir.min.y + 6.0);
     painter.circle_stroke(center, 5.0, s);
     painter.line_segment([egui::pos2(center.x + 3.5, center.y + 3.5), egui::pos2(ir.max.x - 2.0, ir.max.y - 2.0)], s);
@@ -1061,7 +1061,7 @@ fn draw_roles_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
 
 fn draw_scopes_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
     let ir = icon_rect(btn);
-    painter.rect_stroke(ir, 2.0, egui::Stroke::new(1.2, c));
+    painter.rect_stroke(ir, 2.0, egui::Stroke::new(1.2_f32, c));
     let pts = vec![
         egui::pos2(ir.min.x + 2.0, ir.center().y + 3.0),
         egui::pos2(ir.min.x + 5.0, ir.center().y - 4.0),
@@ -1069,13 +1069,13 @@ fn draw_scopes_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) 
         egui::pos2(ir.min.x + 11.0, ir.center().y - 5.0),
         egui::pos2(ir.min.x + 14.0, ir.center().y + 1.0),
     ];
-    painter.add(egui::Shape::line(pts, egui::Stroke::new(1.3, c)));
+    painter.add(egui::Shape::line(pts, egui::Stroke::new(1.3_f32, c)));
 }
 
 fn draw_color_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
     let center = btn.center();
     let radius = 6.7;
-    painter.circle_stroke(center, radius, egui::Stroke::new(1.3, c));
+    painter.circle_stroke(center, radius, egui::Stroke::new(1.3_f32, c));
     let mut pts = vec![center];
     for i in 0..=20 {
         let angle = std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * (i as f32 / 20.0);
@@ -1091,11 +1091,11 @@ fn draw_skimming_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32
     let top = ir.min.y + 1.0;
     let bot = ir.max.y - 1.0;
     let mid = ir.center().y;
-    painter.line_segment([egui::pos2(cx, top + 5.0), egui::pos2(cx, bot)], egui::Stroke::new(1.5, c));
+    painter.line_segment([egui::pos2(cx, top + 5.0), egui::pos2(cx, bot)], egui::Stroke::new(1.5_f32, c));
     painter.add(egui::Shape::convex_polygon(vec![
         egui::pos2(cx, top), egui::pos2(cx - 4.0, top + 6.0), egui::pos2(cx + 4.0, top + 6.0),
     ], c, egui::Stroke::NONE));
-    painter.line_segment([egui::pos2(cx - 5.0, mid + 3.0), egui::pos2(cx + 5.0, mid + 3.0)], egui::Stroke::new(1.5, c));
+    painter.line_segment([egui::pos2(cx - 5.0, mid + 3.0), egui::pos2(cx + 5.0, mid + 3.0)], egui::Stroke::new(1.5_f32, c));
 }
 
 fn draw_render_queue_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
@@ -1117,7 +1117,7 @@ fn draw_render_queue_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Col
 
 fn draw_range_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
     let ir = icon_rect(btn);
-    let s = egui::Stroke::new(1.5, c);
+    let s = egui::Stroke::new(1.5_f32, c);
     // Left bracket bar
     painter.line_segment([egui::pos2(ir.min.x + 3.0, ir.min.y + 1.0), egui::pos2(ir.min.x + 3.0, ir.max.y - 1.0)], s);
     // Right bracket bar
@@ -1142,8 +1142,8 @@ fn draw_export_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) 
     let bot = ir.max.y - 2.0;
     let baseline_y = bot - 2.0;
     let arrow_base = baseline_y - 3.0;
-    painter.line_segment([egui::pos2(ir.min.x + 1.0, baseline_y), egui::pos2(ir.max.x - 1.0, baseline_y)], egui::Stroke::new(1.5, c));
-    painter.line_segment([egui::pos2(cx, arrow_base), egui::pos2(cx, top + 5.0)], egui::Stroke::new(1.5, c));
+    painter.line_segment([egui::pos2(ir.min.x + 1.0, baseline_y), egui::pos2(ir.max.x - 1.0, baseline_y)], egui::Stroke::new(1.5_f32, c));
+    painter.line_segment([egui::pos2(cx, arrow_base), egui::pos2(cx, top + 5.0)], egui::Stroke::new(1.5_f32, c));
     painter.add(egui::Shape::convex_polygon(vec![
         egui::pos2(cx, top), egui::pos2(cx - 4.0, top + 5.5), egui::pos2(cx + 4.0, top + 5.5),
     ], c, egui::Stroke::NONE));
