@@ -1,7 +1,6 @@
 use crate::history::{EditCommand, HistoryEntry, KeyframeSnapshot};
 use crate::icons::Icon;
 use crate::layout_state::LayoutState;
-use crate::panels::inspector::InspectorPanel;
 use crate::panels::markers::MarkersPanel;
 use crate::browser::BrowserPanel;
 use crate::inspector::NewInspectorPanel;
@@ -148,8 +147,6 @@ pub struct KlippApp {
     toolbar: ToolbarPanel,
     viewer: ViewerPanel,
     title_renderer: klipp_title::TitleRenderer,
-    #[allow(dead_code)]
-    inspector: InspectorPanel, // kept for potential fallback; old code fully superseded by new_inspector
     markers: MarkersPanel,
     preferences_panel: PreferencesPanel,
     transport: TransportBar,
@@ -304,7 +301,6 @@ impl KlippApp {
             toolbar: ToolbarPanel { logo_texture: None },
             viewer: ViewerPanel::default(),
             title_renderer: title_renderer_ui,
-            inspector: InspectorPanel::default(),
             markers: MarkersPanel::default(),
             preferences_panel: PreferencesPanel::default(),
             transport: TransportBar,
@@ -20714,16 +20710,6 @@ fn save_rgb_as_png(rgb: &[u8], width: u32, height: u32, path: &std::path::Path) 
 
 fn is_video_ext(path: &std::path::Path) -> bool {
     klipp_core::media_extensions::path_is_video(path)
-}
-
-pub(crate) fn format_size_brief(bytes: u64) -> String {
-    if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else if bytes < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    } else {
-        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
-    }
 }
 
 fn ensure_klipp_extension(mut path: PathBuf) -> PathBuf {
