@@ -107,9 +107,12 @@ pub struct OfxPlugin {
     pub supports_opencl: bool,
     /// Whether this plugin supports OpenGL rendering.
     pub supports_opengl: bool,
-    /// Raw plugin pointer — valid for the lifetime of _lib.
+    /// Raw plugin pointer — valid for the lifetime of `_lib` when the plugin
+    /// comes from a dynamically-loaded `.ofx` bundle. `None` for plugins
+    /// registered directly via `register_raw_plugin` (test injection), where
+    /// the raw pointer owns itself via `Box::into_raw`.
     raw: *const ffi::OfxPluginRaw,
-    _lib: Arc<libloading::Library>,
+    _lib: Option<Arc<libloading::Library>>,
     /// Whether Load+Describe have been called.
     initialized: bool,
     /// Descriptor-phase effect handle (used during Describe).
@@ -371,7 +374,7 @@ impl OfxHostRuntime {
                 supports_opencl: false,
                 supports_opengl: false,
                 raw,
-                _lib: lib.clone(),
+                _lib: Some(lib.clone()),
                 initialized: false,
                 descriptor_handle: std::ptr::null_mut(),
                 descriptor_param_set: std::ptr::null_mut(),
@@ -391,13 +394,9 @@ impl OfxHostRuntime {
             .to_string_lossy()
             .to_string();
 
-        // Create a dummy library handle — test plugins don't need one
-        // We use a leaked empty library substitute
-        let lib = Arc::new(unsafe {
-            // Load libc as a harmless library to satisfy the Arc<Library> requirement
-            libloading::Library::new("libc.so.6").expect("libc must be loadable")
-        });
-
+        // Test-injected plugins own their raw pointer through `Box::into_raw`
+        // above, so no backing library is required. Real plugins coming from
+        // `load_plugin` carry a `Some(Arc<Library>)`; this path stays `None`.
         let idx = self.plugins.len();
         self.plugins.push(OfxPlugin {
             name,
@@ -413,7 +412,7 @@ impl OfxHostRuntime {
             supports_opencl: false,
             supports_opengl: false,
             raw: raw_ptr,
-            _lib: lib,
+            _lib: None,
             initialized: false,
             descriptor_handle: std::ptr::null_mut(),
             descriptor_param_set: std::ptr::null_mut(),
