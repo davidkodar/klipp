@@ -1,5 +1,6 @@
 pub mod app;
 pub mod browser;
+pub mod cache_manager;
 pub mod drag_drop;
 pub mod history;
 pub mod icons;

@@ -600,6 +600,16 @@ pub enum AppCommand {
     SetRenderCacheEnabled(bool),
     /// Scan cache directories and remove files not referenced by any media in the pool.
     CleanOrphanedCaches,
+    /// Cache Manager (feature #78): clear a single cache category by wiping
+    /// its directory then recreating the empty folder so later writes don't
+    /// fail. Followed by an implicit refresh of the cache-manager snapshot.
+    ClearCacheCategory { path: PathBuf },
+    /// Re-scan all cache categories and update `AppState::cache_categories`.
+    RefreshCacheManager,
+    /// Open the Cache Manager modal. Dispatched from Preferences → Proxy.
+    /// Handled by flipping `AppState::show_cache_manager` to true after
+    /// calling `refresh_cache_categories`.
+    OpenCacheManager,
     BeginScrub,
     /// End timeline scrubbing — engine restores full-res decode.
     EndScrub,

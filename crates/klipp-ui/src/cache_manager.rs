@@ -1,0 +1,191 @@
+//! Cache manager helpers — scans the on-disk cache categories that Klipp
+//! populates during editing so the user can inspect / clear them.
+//!
+//! Categories (feature #78):
+//!   - Proxy clips     — `<proxy_cache_dir>` or `~/.cache/klipp/proxies`
+//!   - Filmstrips      — `~/.cache/klipp/filmstrips`
+//!   - Audio peaks     — `~/.cache/klipp/audio-peaks` + `~/.cache/klipp/audio-cache`
+//!   - Render cache    — `~/.cache/klipp/render`
+//!
+//! `scan_dir_size` is intentionally **non-recursive** for MVP — these four
+//! directories are flat (each category writes files directly, no nested
+//! subdirs). Deferred: recursive walk if any category ever starts nesting.
+
+use std::path::{Path, PathBuf};
+
+/// A single tracked cache directory.
+#[derive(Debug, Clone)]
+pub struct CacheCategory {
+    pub name: &'static str,
+    pub path: PathBuf,
+    pub size_bytes: u64,
+    pub file_count: u64,
+    pub color: egui::Color32,
+}
+
+/// Scan a single directory (non-recursive) and return `(total_bytes, file_count)`.
+/// Returns `(0, 0)` for missing directories.
+pub fn scan_dir_size(path: &Path) -> (u64, u64) {
+    if !path.exists() {
+        return (0, 0);
+    }
+    let mut total = 0u64;
+    let mut count = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    total += meta.len();
+                    count += 1;
+                }
+            }
+        }
+    }
+    (total, count)
+}
+
+/// Sum sizes for a set of directories into a single `(total_bytes, file_count)`.
+/// Used by categories whose storage spans more than one on-disk folder
+/// (e.g. audio has both `audio-peaks` and `audio-cache`).
+fn scan_dirs_combined(paths: &[PathBuf]) -> (u64, u64) {
+    let mut total = 0u64;
+    let mut count = 0u64;
+    for p in paths {
+        let (b, c) = scan_dir_size(p);
+        total += b;
+        count += c;
+    }
+    (total, count)
+}
+
+/// Returns the four tracked cache categories, sized against the current
+/// on-disk state. `cache_root` is the base `~/.cache/klipp/` directory; the
+/// optional `proxy_override` lets the user redirect proxy storage via prefs.
+pub fn scan_cache_categories(
+    cache_root: &Path,
+    proxy_override: Option<&Path>,
+) -> Vec<CacheCategory> {
+    let proxy_path = proxy_override
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| cache_root.join("proxies"));
+    let filmstrip_path = cache_root.join("filmstrips");
+    let audio_peaks_path = cache_root.join("audio-peaks");
+    let audio_cache_path = cache_root.join("audio-cache");
+    let render_path = cache_root.join("render");
+
+    let (proxy_bytes, proxy_count) = scan_dir_size(&proxy_path);
+    let (strip_bytes, strip_count) = scan_dir_size(&filmstrip_path);
+    let (audio_bytes, audio_count) =
+        scan_dirs_combined(&[audio_peaks_path.clone(), audio_cache_path.clone()]);
+    let (render_bytes, render_count) = scan_dir_size(&render_path);
+
+    vec![
+        CacheCategory {
+            name: "Proxy clips",
+            path: proxy_path,
+            size_bytes: proxy_bytes,
+            file_count: proxy_count,
+            // Blue
+            color: egui::Color32::from_rgb(0x4a, 0x90, 0xe2),
+        },
+        CacheCategory {
+            name: "Filmstrips",
+            path: filmstrip_path,
+            size_bytes: strip_bytes,
+            file_count: strip_count,
+            // Amber
+            color: egui::Color32::from_rgb(0xe0, 0xa8, 0x30),
+        },
+        CacheCategory {
+            name: "Audio peaks",
+            // Primary path — "Clear" will also wipe audio-cache alongside.
+            path: audio_peaks_path,
+            size_bytes: audio_bytes,
+            file_count: audio_count,
+            // Green
+            color: egui::Color32::from_rgb(0x50, 0xb0, 0x60),
+        },
+        CacheCategory {
+            name: "Render cache",
+            path: render_path,
+            size_bytes: render_bytes,
+            file_count: render_count,
+            // Red
+            color: egui::Color32::from_rgb(0xd0, 0x50, 0x50),
+        },
+    ]
+}
+
+/// Sibling path for the "Audio peaks" category — the heavy PCM conform cache
+/// lives in a second directory and should be cleared alongside peaks so the
+/// UI category stays consistent with what the user sees on disk.
+pub fn audio_cache_sibling(cache_root: &Path) -> PathBuf {
+    cache_root.join("audio-cache")
+}
+
+/// Format a byte count into a human string (B / KB / MB / GB).
+pub fn format_cache_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_cache_size_bytes() {
+        assert_eq!(format_cache_size(512), "512 B");
+        assert_eq!(format_cache_size(1024), "1.0 KB");
+        assert_eq!(format_cache_size(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn format_cache_size_megabytes() {
+        assert_eq!(format_cache_size(1024 * 1024), "1.0 MB");
+        assert_eq!(format_cache_size((1.5 * 1024.0 * 1024.0) as u64), "1.5 MB");
+    }
+
+    #[test]
+    fn format_cache_size_gigabytes() {
+        assert_eq!(format_cache_size(1024 * 1024 * 1024), "1.00 GB");
+    }
+
+    #[test]
+    fn scan_nonexistent_dir_returns_zero() {
+        let result = scan_dir_size(std::path::Path::new("/nonexistent/path/xyz"));
+        assert_eq!(result, (0, 0));
+    }
+
+    #[test]
+    fn scan_categories_handles_missing_root() {
+        let cats =
+            scan_cache_categories(std::path::Path::new("/nonexistent/path/xyz"), None);
+        assert_eq!(cats.len(), 4);
+        for c in &cats {
+            assert_eq!(c.size_bytes, 0);
+            assert_eq!(c.file_count, 0);
+        }
+        assert_eq!(cats[0].name, "Proxy clips");
+        assert_eq!(cats[1].name, "Filmstrips");
+        assert_eq!(cats[2].name, "Audio peaks");
+        assert_eq!(cats[3].name, "Render cache");
+    }
+
+    #[test]
+    fn scan_categories_respects_proxy_override() {
+        let override_path = std::path::Path::new("/tmp/klipp-override-xyz");
+        let cats = scan_cache_categories(
+            std::path::Path::new("/nonexistent/root"),
+            Some(override_path),
+        );
+        assert_eq!(cats[0].path, override_path);
+    }
+}

@@ -2243,6 +2243,17 @@ impl KlippApp {
     }
 
     /// Scan all cache directories and remove files not referenced by current media pool.
+    /// Cache Manager (feature #78): refresh the sized snapshot of on-disk
+    /// cache categories. Called when the dialog opens and after every
+    /// `ClearCacheCategory` so the pie chart / size list always reflect
+    /// current disk state.
+    fn refresh_cache_categories(&mut self) {
+        let cache_root = dirs::cache_dir().unwrap_or_default().join("klipp");
+        let proxy_override = self.prefs.proxy.proxy_cache_dir.as_deref();
+        self.state.cache_categories =
+            crate::cache_manager::scan_cache_categories(&cache_root, proxy_override);
+    }
+
     fn clean_orphaned_caches(&self) -> String {
         let klipp_cache = dirs::cache_dir().unwrap_or_default().join("klipp");
 
@@ -7710,6 +7721,67 @@ impl KlippApp {
                 AppCommand::CleanOrphanedCaches => {
                     let cleaned = self.clean_orphaned_caches();
                     self.state.toast.show(cleaned);
+                    true
+                }
+                AppCommand::ClearCacheCategory { path } => {
+                    // Wipe the directory then recreate it so later writes
+                    // (proxy encoder, filmstrip writer, audio peaks writer,
+                    // render cache) don't fail on a missing parent.
+                    //
+                    // Audio peaks lives in `audio-peaks` AND the heavy PCM
+                    // cache lives in `audio-cache`. When the user clears
+                    // the audio category the panel passes `audio-peaks` as
+                    // the primary path; we also wipe the sibling here so
+                    // the UI size stays honest with what's on disk.
+                    let is_audio_peaks = path.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|s| s == "audio-peaks")
+                        .unwrap_or(false);
+
+                    let wipe = |p: &std::path::Path| -> std::io::Result<()> {
+                        if p.exists() {
+                            std::fs::remove_dir_all(p)?;
+                        }
+                        std::fs::create_dir_all(p)?;
+                        Ok(())
+                    };
+
+                    match wipe(path) {
+                        Ok(()) => {
+                            if is_audio_peaks {
+                                if let Some(parent) = path.parent() {
+                                    let sibling = parent.join("audio-cache");
+                                    if let Err(e) = wipe(&sibling) {
+                                        tracing::warn!(
+                                            "Failed to wipe sibling audio-cache at {}: {e}",
+                                            sibling.display()
+                                        );
+                                    }
+                                }
+                            }
+                            tracing::info!("Cleared cache directory: {}", path.display());
+                            self.state.toast.show(format!(
+                                "Cleared {}",
+                                path.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("cache")
+                            ));
+                            self.refresh_cache_categories();
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to clear {}: {e}", path.display());
+                            self.state.toast.show(format!("Clear failed: {e}"));
+                        }
+                    }
+                    true
+                }
+                AppCommand::RefreshCacheManager => {
+                    self.refresh_cache_categories();
+                    true
+                }
+                AppCommand::OpenCacheManager => {
+                    self.refresh_cache_categories();
+                    self.state.show_cache_manager = true;
                     true
                 }
                 AppCommand::RelinkMedia { media_id, new_path } => {
@@ -18016,6 +18088,16 @@ impl KlippApp {
             let dialog_cmds = crate::panels::workspace_manager::show_workspace_manager_dialog(
                 ctx,
                 &mut self.state,
+            );
+            cmds.extend(dialog_cmds);
+        }
+
+        // Cache Manager modal (#78)
+        if self.state.show_cache_manager {
+            let dialog_cmds = crate::panels::cache_manager::show_cache_manager_dialog(
+                ctx,
+                &mut self.state,
+                &self.prefs,
             );
             cmds.extend(dialog_cmds);
         }
