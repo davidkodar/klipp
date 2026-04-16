@@ -1,5 +1,5 @@
 use crate::format::*;
-use crate::path_util::{resolve_media_path, safe_resolve, read_to_string_capped, MAX_INPUT_FILE_BYTES};
+use crate::path_util::{resolve_media_path, read_to_string_capped, MAX_INPUT_FILE_BYTES};
 use klipp_core::*;
 use klipp_media::{MediaItem, MediaPool};
 use klipp_timeline::{
@@ -94,13 +94,10 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     let mut media_pool = MediaPool::new();
     for item_json in &manifest.items {
         let stored_path = Path::new(&item_json.path);
-        let (path, forced_offline) = match safe_resolve(dir, stored_path) {
-            Some(p) => (p, false),
-            None => (resolve_media_path(dir, stored_path), true),
-        };
-        let offline = forced_offline || !path.exists();
+        let path = resolve_media_path(dir, stored_path);
+        let offline = !path.exists();
         if offline {
-            warn!("Media file not found or path-traversal blocked, marking offline: {:?}", path);
+            warn!("Media file not found, marking offline: {:?}", path);
         }
         let media_item = MediaItem {
             id: MediaId(parse_uuid(&item_json.id)?),
@@ -120,8 +117,8 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             audio_channels: item_json.audio_channels,
             offline,
             is_still: item_json.is_still,
-            proxy_path: item_json.proxy_path.as_ref().and_then(|p| {
-                safe_resolve(dir, Path::new(p))
+            proxy_path: item_json.proxy_path.as_ref().map(|p| {
+                resolve_media_path(dir, Path::new(p))
             }),
             proxy_ready: item_json.proxy_ready,
             default_source_in: item_json.default_source_in.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
@@ -210,8 +207,8 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     // Use color settings from the first sequence (global LUT is project-wide)
     let first = &project.sequences[0];
     let color_settings = crate::save::ColorSettings {
-        global_lut_path: first.global_lut_path.as_ref().and_then(|p| {
-            safe_resolve(dir, Path::new(p))
+        global_lut_path: first.global_lut_path.as_ref().map(|p| {
+            resolve_media_path(dir, Path::new(p))
         }),
         global_lut_opacity: first.global_lut_opacity,
         global_lut_enabled: first.global_lut_enabled,
@@ -490,9 +487,10 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     char_animation: ca,
                     // texture_fill_path stored relative for portability —
                     // resolve against the project directory on load.
-                    texture_fill_path: texture_fill_path.as_ref().and_then(|p| {
-                        crate::path_util::safe_resolve(project_dir, Path::new(p))
-                            .map(|resolved| resolved.to_string_lossy().to_string())
+                    texture_fill_path: texture_fill_path.as_ref().map(|p| {
+                        crate::path_util::resolve_media_path(project_dir, Path::new(p))
+                            .to_string_lossy()
+                            .to_string()
                     }),
                     motion_blur: mb,
                     style_runs: sr,
