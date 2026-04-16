@@ -680,7 +680,7 @@ fn project_name_from_tree(root: roxmltree::Node<'_, '_>) -> String {
 /// Parse an FCPXML file from disk.
 pub fn load_fcpxml(path: &Path) -> Result<ImportResult, FcpxmlImportError> {
     tracing::info!(path = %path.display(), "FCPXML import: starting");
-    let xml_text = std::fs::read_to_string(path)?;
+    let xml_text = crate::path_util::read_to_string_capped(path, crate::path_util::MAX_INPUT_FILE_BYTES)?;
     let mut result = parse_fcpxml(&xml_text)?;
 
     // Inherit the filename as the sequence name if the XML didn't carry one.

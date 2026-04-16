@@ -1,5 +1,5 @@
 use crate::format::*;
-use crate::path_util::resolve_media_path;
+use crate::path_util::{resolve_media_path, read_to_string_capped, MAX_INPUT_FILE_BYTES};
 use klipp_core::*;
 use klipp_media::{MediaItem, MediaPool};
 use klipp_timeline::{
@@ -66,7 +66,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     let project_path = dir.join("project.json");
     let manifest_path = dir.join("media").join("manifest.json");
 
-    let project_str = std::fs::read_to_string(&project_path)
+    let project_str = read_to_string_capped(&project_path, MAX_INPUT_FILE_BYTES)
         .map_err(|e| format!("Failed to read project.json: {e}"))?;
 
     // Two-step deserialization: handle old singular "sequence" vs new plural "sequences"
@@ -85,7 +85,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     let project: ProjectJson = serde_json::from_value(value)
         .map_err(|e| format!("Failed to deserialize project: {e}"))?;
 
-    let manifest_str = std::fs::read_to_string(&manifest_path)
+    let manifest_str = read_to_string_capped(&manifest_path, MAX_INPUT_FILE_BYTES)
         .map_err(|e| format!("Failed to read manifest.json: {e}"))?;
     let manifest: MediaManifestJson = serde_json::from_str(&manifest_str)
         .map_err(|e| format!("Failed to parse manifest.json: {e}"))?;

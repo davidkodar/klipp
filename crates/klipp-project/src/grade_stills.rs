@@ -94,7 +94,7 @@ pub fn load_grade_stills(project_dir: &Path) -> Vec<GradeStillData> {
         return Vec::new();
     }
 
-    let index_str = match std::fs::read_to_string(&index_path) {
+    let index_str = match crate::path_util::read_to_string_capped(&index_path, crate::path_util::MAX_INPUT_FILE_BYTES) {
         Ok(s) => s,
         Err(e) => {
             warn!("Failed to read stills index: {e}");

@@ -1324,7 +1324,7 @@ fn walk_container_tractor(
 /// are collected in `ImportResult::warnings` for the caller to report.
 pub fn load_kdenlive(path: &Path) -> Result<ImportResult, MltImportError> {
     tracing::info!(path = %path.display(), "MLT import: starting");
-    let xml_text = std::fs::read_to_string(path)?;
+    let xml_text = crate::path_util::read_to_string_capped(path, crate::path_util::MAX_INPUT_FILE_BYTES)?;
     let doc = roxmltree::Document::parse(&xml_text)
         .map_err(|e| MltImportError::Xml(e.to_string()))?;
 

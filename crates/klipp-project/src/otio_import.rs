@@ -668,7 +668,7 @@ fn build_clip(
 /// `ImportResult::warnings` for the caller to surface.
 pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
     tracing::info!(path = %path.display(), "OTIO import: starting");
-    let bytes = std::fs::read(path)?;
+    let bytes = crate::path_util::read_capped(path, crate::path_util::MAX_INPUT_FILE_BYTES)?;
     let doc: RawTimeline = serde_json::from_slice(&bytes)?;
     if !doc.schema.starts_with("Timeline.") {
         return Err(OtioImportError::Schema(format!(

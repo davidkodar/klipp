@@ -26,7 +26,7 @@ pub fn is_project(path: &Path) -> bool {
 /// Load workspace metadata from a directory.
 pub fn load_workspace(path: &Path) -> Option<WorkspaceJson> {
     let json_path = path.join("workspace.json");
-    let contents = std::fs::read_to_string(json_path).ok()?;
+    let contents = crate::path_util::read_to_string_capped(&json_path, crate::path_util::MAX_INPUT_FILE_BYTES).ok()?;
     serde_json::from_str(&contents).ok()
 }
 
