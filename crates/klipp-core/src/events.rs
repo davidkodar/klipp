@@ -45,6 +45,19 @@ pub struct ExportSettings {
     /// Target integrated loudness in LUFS for EBU R128 normalization.
     /// None = no normalization (pass audio through unchanged).
     pub target_lufs: Option<f32>,
+    /// Embed sequence markers as chapter metadata in the output container.
+    /// Only honoured for MP4/MKV/MOV — WebM has no chapter concept.
+    pub embed_chapters: bool,
+}
+
+/// A single chapter entry frozen at export time. Timebase is milliseconds
+/// (start_ms/end_ms). `title` is the marker label; empty is allowed and the
+/// player displays a default label.
+#[derive(Debug, Clone)]
+pub struct ChapterSnapshot {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub title: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -478,6 +491,9 @@ pub enum AppCommand {
     /// ("H:MM:SS Label" per line, with a synthetic "Intro" at 0:00 when
     /// the first marker is after the start).
     ExportYouTubeChapters { path: PathBuf },
+    /// Export sequence markers as a DVDStyler / dvdauthor chapter list
+    /// (one `HH:MM:SS.mmm` per line, labels dropped).
+    ExportDvdChapters { path: PathBuf },
     /// Create a compound clip (nested sequence) from selected clips.
     CreateCompoundClip { name: String },
     /// Create a multicam clip from clips on different tracks at the playhead.

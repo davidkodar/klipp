@@ -32,6 +32,20 @@ impl MarkersPanel {
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
                             if ui
+                                .small_button("\u{2B07} DVD")
+                                .on_hover_text("Export markers as a DVDStyler chapter list (HH:MM:SS.mmm per line)")
+                                .clicked()
+                            {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .set_title("Export DVD Chapters")
+                                    .add_filter("Text file", &["txt"])
+                                    .set_file_name("chapters.txt")
+                                    .save_file()
+                                {
+                                    cmds.push(AppCommand::ExportDvdChapters { path });
+                                }
+                            }
+                            if ui
                                 .small_button("\u{2B07} YouTube Chapters")
                                 .on_hover_text("Export markers as YouTube chapter timestamps")
                                 .clicked()

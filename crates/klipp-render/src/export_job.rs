@@ -653,7 +653,7 @@ mod tests {
             video_tracks: vec![],
             audio_tracks: vec![],
             global_lut_path: None,
-            subtitle_tracks: vec![],
+            subtitle_tracks: vec![], chapters: vec![],
         }
     }
 
@@ -679,7 +679,7 @@ mod tests {
                 preset: klipp_core::EncoderPreset::Fast,
                 audio_codec: klipp_core::ExportAudioCodec::Copy,
                 audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
-                burn_in_subtitles: true, embed_subtitles: false, target_lufs: None },
+                burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, embed_chapters: false },
             snapshot: make_test_snapshot(),
             cancel: cancel.clone(),
             progress: Arc::new(AtomicU64::new(0)),

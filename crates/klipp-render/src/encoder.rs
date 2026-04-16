@@ -2,7 +2,7 @@ use crate::error::RenderError;
 use crate::snapshot::SequenceSnapshot;
 use klipp_core::{ExportSettings, ExportVideoCodec};
 use std::path::Path;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// In-process encoder using ffmpeg-next (replaces the ffmpeg CLI subprocess).
 ///
@@ -569,6 +569,55 @@ impl Encoder {
         }
 
         // ═══════════════════════════════════════════════════════════
+        // CHAPTERS (optional — MP4/MKV/MOV only; WebM has no chapters)
+        // ═══════════════════════════════════════════════════════════
+        //
+        // Must be added BEFORE write_header() — the muxer freezes the
+        // chapter list into the container's opening metadata box.
+        // ffmpeg-next 8.1 exposes the safe `Output::add_chapter(id, tb,
+        // start, end, title)` helper (format/context/output.rs:112-170),
+        // which wraps the av_mallocz + av_dynarray_add + set_metadata
+        // dance internally. No unsafe needed here.
+        if !snapshot.chapters.is_empty() {
+            let supports_chapters = matches!(
+                settings.format,
+                klipp_core::ExportFormat::Mp4
+                    | klipp_core::ExportFormat::Mkv
+                    | klipp_core::ExportFormat::Mov
+            );
+            if supports_chapters {
+                let tb = ffmpeg_next::Rational::new(1, 1000);
+                for (i, ch) in snapshot.chapters.iter().enumerate() {
+                    if let Err(e) = output_ctx.add_chapter(
+                        i as i64,
+                        tb,
+                        ch.start_ms as i64,
+                        ch.end_ms as i64,
+                        ch.title.as_str(),
+                    ) {
+                        warn!(
+                            "Encoder: add_chapter {}/{} failed ({}), skipping",
+                            i + 1,
+                            snapshot.chapters.len(),
+                            e
+                        );
+                    }
+                }
+                info!(
+                    "Encoder: embedded {} chapter{}",
+                    snapshot.chapters.len(),
+                    if snapshot.chapters.len() == 1 { "" } else { "s" }
+                );
+            } else {
+                debug!(
+                    "Encoder: {:?} does not support chapters — skipping {} entries",
+                    settings.format,
+                    snapshot.chapters.len()
+                );
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════
         // WRITE HEADER
         // ═══════════════════════════════════════════════════════════
 
@@ -916,7 +965,7 @@ mod tests {
             preset: EncoderPreset::Fast,
             audio_codec: ExportAudioCodec::Aac,
             audio_bitrate_kbps: Some(128), video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
-            burn_in_subtitles: true, embed_subtitles: false, target_lufs: None }
+            burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, embed_chapters: false }
     }
 
     fn make_snapshot() -> SequenceSnapshot {
@@ -932,7 +981,7 @@ mod tests {
             video_tracks: vec![],
             audio_tracks: vec![],
             global_lut_path: None,
-            subtitle_tracks: vec![],
+            subtitle_tracks: vec![], chapters: vec![],
         }
     }
 

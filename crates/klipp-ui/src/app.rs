@@ -89,6 +89,9 @@ struct ExportDialogState {
     video_bitrate_kbps: u32,
     burn_in_subtitles: bool,
     embed_subtitles: bool,
+    /// Write sequence markers as chapter metadata in the output container
+    /// (MP4/MKV/MOV only — ignored for WebM). Opt-in; default false.
+    embed_chapters: bool,
     normalize_loudness: bool,
     /// 0=YouTube/Spotify (-14), 1=Podcast (-16), 2=EBU R128 (-23), 3=ATSC A/85 (-24), 4=Custom
     loudness_preset: u8,
@@ -120,6 +123,7 @@ impl Default for ExportDialogState {
             video_bitrate_kbps: 10000,
             burn_in_subtitles: true,
             embed_subtitles: false,
+            embed_chapters: false,
             normalize_loudness: false,
             loudness_preset: 0,
             custom_lufs: -14.0,
@@ -11437,6 +11441,34 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::ExportDvdChapters { path } => {
+                let path = path.clone();
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                // Sequence markers — generate_dvd_chapters handles its own
+                // leading 00:00:00.000 when the earliest marker isn't near
+                // zero, so we don't prepend an "Intro" here.
+                let entries: Vec<(f64, String)> = seq.markers.iter()
+                    .map(|m| (m.position.to_secs_f64(), m.label.clone()))
+                    .collect();
+                let content = generate_dvd_chapters(&entries);
+                match std::fs::write(&path, &content) {
+                    Ok(_) => {
+                        let chapter_count = content.lines().count();
+                        let plural = if chapter_count == 1 { "" } else { "s" };
+                        let mut msg = format!("DVD chapters exported ({chapter_count} chapter{plural}).");
+                        if chapter_count < 2 {
+                            msg.push_str(
+                                " Note: DVDStyler requires at least 2 chapters.",
+                            );
+                        }
+                        self.state.toast.show(msg);
+                    }
+                    Err(e) => {
+                        self.state.toast.show(format!("Failed to export DVD chapters: {e}"));
+                    }
+                }
+                true
+            }
             AppCommand::ExportYouTubeChapters { path } => {
                 // TODO: add clipboard copy variant (AppCommand::CopyYouTubeChapters)
                 //       once an `arboard`-style helper lives in the workspace.
@@ -15017,6 +15049,7 @@ fn build_export_settings(dialog: &ExportDialogState) -> ExportSettings {
         burn_in_subtitles: dialog.burn_in_subtitles,
         embed_subtitles: dialog.embed_subtitles,
         target_lufs: dialog_target_lufs(dialog),
+        embed_chapters: dialog.embed_chapters,
     }
 }
 
@@ -17010,6 +17043,37 @@ impl KlippApp {
                                 .color(egui::Color32::from_rgb(0xc0, 0x90, 0x30))
                                 .size(11.0),
                         );
+                    }
+                }
+
+                // Chapters — only show for formats that carry chapter metadata
+                // (MP4/MKV/MOV). WebM has no chapter concept, so we hide the
+                // option entirely rather than render a checkbox that silently
+                // does nothing on export.
+                let format_supports_chapters = matches!(
+                    self.export_dialog.format,
+                    klipp_core::ExportFormat::Mp4
+                        | klipp_core::ExportFormat::Mkv
+                        | klipp_core::ExportFormat::Mov
+                );
+                if format_supports_chapters {
+                    ui.add_space(4.0);
+                    ui.checkbox(
+                        &mut self.export_dialog.embed_chapters,
+                        "Embed chapters from markers",
+                    ).on_hover_text(
+                        "Write sequence markers as chapter metadata in the output file",
+                    );
+                    if self.export_dialog.embed_chapters
+                        && self.state.sequences[self.state.active_sequence_idx].markers.is_empty()
+                    {
+                        ui.indent("chapters_hint", |ui| {
+                            ui.label(
+                                egui::RichText::new("\u{26A0} No markers in sequence")
+                                    .color(egui::Color32::from_rgb(0xb4, 0x8c, 0x3c))
+                                    .size(11.0),
+                            );
+                        });
                     }
                 }
 
@@ -19934,6 +19998,20 @@ fn format_srt_time(secs: f64) -> String {
     format!("{:02}:{:02}:{:02},{:03}", h, m, s, ms)
 }
 
+/// Format an absolute time for a DVD chapter line. DVDStyler / dvdauthor
+/// expect `HH:MM:SS.mmm` with a dot separator and millisecond precision.
+/// Mirrors `format_srt_time` structurally; only the separator differs and
+/// milliseconds are rounded (not truncated) to avoid cumulative drift on
+/// sub-frame positions.
+fn format_dvd_chapter_time(total_secs: f64) -> String {
+    let secs = total_secs.max(0.0);
+    let h = (secs / 3600.0) as u64;
+    let m = ((secs % 3600.0) / 60.0) as u64;
+    let s = (secs % 60.0) as u64;
+    let ms = ((secs % 1.0) * 1000.0).round() as u64;
+    format!("{:02}:{:02}:{:02}.{:03}", h, m, s, ms)
+}
+
 /// Format an absolute time for YouTube chapter lines. YouTube accepts both
 /// `M:SS` and `H:MM:SS`; we always emit `H:MM:SS` for consistency regardless
 /// of sequence length. Negative inputs are clamped to zero.
@@ -19964,6 +20042,23 @@ fn generate_youtube_chapters(entries: &[(f64, String)]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Render marker positions as a DVDStyler / dvdauthor chapter list.
+/// The format is one `HH:MM:SS.mmm` timecode per line — labels are ignored
+/// by the DVD tooling, so we drop them. DVDStyler expects the very first
+/// chapter at `00:00:00.000`; if the earliest marker isn't within 0.1s of
+/// zero (or there are no markers), a leading `00:00:00.000` line is
+/// prepended.
+fn generate_dvd_chapters(entries: &[(f64, String)]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    if entries.first().map(|(s, _)| *s > 0.1).unwrap_or(true) {
+        lines.push("00:00:00.000".to_string());
+    }
+    for (secs, _label) in entries {
+        lines.push(format_dvd_chapter_time(*secs));
+    }
+    lines.join("\n")
 }
 
 /// Generate WebVTT format string from subtitle entries.
@@ -20326,6 +20421,36 @@ mod youtube_chapter_tests {
         ];
         let expected = "0:00:00 Intro\n0:01:23 Main Content\n0:04:47 Outro";
         assert_eq!(generate_youtube_chapters(&entries), expected);
+    }
+
+    #[test]
+    fn format_dvd_chapter_time_precision() {
+        assert_eq!(format_dvd_chapter_time(0.0), "00:00:00.000");
+        assert_eq!(format_dvd_chapter_time(83.456), "00:01:23.456");
+        assert_eq!(format_dvd_chapter_time(3661.001), "01:01:01.001");
+    }
+
+    #[test]
+    fn generate_dvd_chapters_prepends_zero() {
+        // entries starting at non-zero → 00:00:00.000 prepended
+        let entries = vec![(83.456, "Scene 1".to_string())];
+        let out = generate_dvd_chapters(&entries);
+        assert!(out.starts_with("00:00:00.000"));
+        assert!(out.contains("00:01:23.456"));
+    }
+
+    #[test]
+    fn generate_dvd_chapters_no_duplicate_zero() {
+        // entries starting at 0 → no double zero
+        let entries = vec![
+            (0.0, "Intro".to_string()),
+            (83.0, "Act 1".to_string()),
+        ];
+        let out = generate_dvd_chapters(&entries);
+        let zero_count = out.lines()
+            .filter(|l| l.starts_with("00:00:00"))
+            .count();
+        assert_eq!(zero_count, 1);
     }
 }
 

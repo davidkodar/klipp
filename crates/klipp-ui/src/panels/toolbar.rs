@@ -399,6 +399,17 @@ impl ToolbarPanel {
                     cmds.push(AppCommand::ExportYouTubeChapters { path });
                 }
             }
+            if ui.button("DVD Chapters\u{2026}").clicked() {
+                ui.close_menu();
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_title("Export DVD Chapters")
+                    .add_filter("Text file", &["txt"])
+                    .set_file_name("chapters.txt")
+                    .save_file()
+                {
+                    cmds.push(AppCommand::ExportDvdChapters { path });
+                }
+            }
             // Timeline-format exports (current Sequence → interchange format).
             ui.menu_button("Export Timeline", |ui| {
                 if ui.button("FCPXML...").clicked() {

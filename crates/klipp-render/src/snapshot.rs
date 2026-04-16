@@ -38,6 +38,11 @@ pub struct SequenceSnapshot {
     pub global_lut_path: Option<PathBuf>,
     /// Subtitle tracks (text content + timing, independent of burn-in).
     pub subtitle_tracks: Vec<SubtitleTrackSnapshot>,
+    /// Frozen chapter entries (millisecond time base). Populated from
+    /// `seq.markers` only when `ExportSettings.embed_chapters` is true;
+    /// already shifted into export-range-relative coordinates when a
+    /// zone export is active, and markers outside the range are dropped.
+    pub chapters: Vec<klipp_core::ChapterSnapshot>,
 }
 
 #[derive(Clone)]
@@ -237,6 +242,61 @@ impl SequenceSnapshot {
             }
         }
 
+        // Chapter snapshot — sequence markers frozen as (start_ms, end_ms, title)
+        // pairs. Chapter N ends at chapter N+1's start; the last chapter ends at
+        // the export duration. When a zone export is active, timestamps are
+        // shifted relative to the zone start and markers outside the zone are
+        // skipped.
+        let chapters = if settings.embed_chapters {
+            let total_duration_secs = total_duration.to_secs_f64();
+            let total_duration_ms = (total_duration_secs * 1000.0) as u64;
+            let (export_start_ms, export_end_ms) = if let Some((start_f, end_f)) = export_range {
+                let start_ms = (start_f as f64 * 1000.0 / fps) as u64;
+                let end_ms = (end_f as f64 * 1000.0 / fps) as u64;
+                (start_ms, end_ms)
+            } else {
+                (0u64, total_duration_ms)
+            };
+            let export_duration_ms = export_end_ms.saturating_sub(export_start_ms);
+
+            // Step 1: collect in-range markers as (shifted_ms, title).
+            let in_range: Vec<(u64, String)> = seq
+                .markers
+                .iter()
+                .filter_map(|m| {
+                    let ms = (m.position.to_secs_f64() * 1000.0) as u64;
+                    if ms < export_start_ms || ms >= export_end_ms {
+                        return None;
+                    }
+                    Some((ms - export_start_ms, m.label.clone()))
+                })
+                .collect();
+
+            // Step 2: pair each marker with the next marker's start (or export
+            // end for the last). Iter is already sorted by position because
+            // sequence markers are inserted in order.
+            let mut out: Vec<klipp_core::ChapterSnapshot> = Vec::with_capacity(in_range.len());
+            for i in 0..in_range.len() {
+                let (start, ref title) = in_range[i];
+                let end = if i + 1 < in_range.len() {
+                    in_range[i + 1].0
+                } else {
+                    export_duration_ms
+                };
+                if end <= start {
+                    continue;
+                }
+                out.push(klipp_core::ChapterSnapshot {
+                    start_ms: start,
+                    end_ms: end,
+                    title: title.clone(),
+                });
+            }
+            out
+        } else {
+            Vec::new()
+        };
+
         Ok(Self {
             fps,
             fps_num: seq.fps.num,
@@ -250,6 +310,7 @@ impl SequenceSnapshot {
             audio_tracks,
             global_lut_path,
             subtitle_tracks,
+            chapters,
         })
     }
 
@@ -769,6 +830,7 @@ mod tests {
             color_transfer: None,
             pixel_format: None,
             detected_log_format: klipp_core::LogFormat::default(),
+            parent_media_id: None,
         }
     }
 
@@ -783,7 +845,7 @@ mod tests {
             preset: EncoderPreset::Medium,
             audio_codec: ExportAudioCodec::Aac,
             audio_bitrate_kbps: Some(192), video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
-            burn_in_subtitles: true, embed_subtitles: false, target_lufs: None }
+            burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, embed_chapters: false }
     }
 
     #[test]
@@ -922,6 +984,112 @@ mod tests {
             }
             _ => panic!("expected Title clip"),
         }
+    }
+
+    // ── Chapter snapshot tests (#44) ──────────────────────────────────
+
+    fn make_marker_at_secs(secs: f64, label: &str) -> klipp_timeline::Marker {
+        klipp_timeline::Marker {
+            id: klipp_core::MarkerId::new(),
+            position: klipp_core::Timecode {
+                value: (secs * 24.0).round() as i64,
+                rate: 24,
+            },
+            label: label.to_string(),
+            color: klipp_core::MarkerColor::Blue,
+            duration: None,
+        }
+    }
+
+    fn make_sequence_with_length_secs(secs: f64) -> Sequence {
+        let mut seq = make_sequence();
+        let frames = (secs * 24.0).round() as i64;
+        let gap = Clip::gap(make_rational(0, 24), make_rational(frames, 24));
+        seq.tracks[0].clips.push(gap);
+        seq
+    }
+
+    #[test]
+    fn chapter_end_times_inferred_correctly() {
+        // Three markers at 0s, 10s, 30s inside a 60s sequence.
+        // Expected: chapter ends at 10000, 30000, 60000 ms.
+        let mut seq = make_sequence_with_length_secs(60.0);
+        seq.markers.push(make_marker_at_secs(0.0, "Intro"));
+        seq.markers.push(make_marker_at_secs(10.0, "Act 1"));
+        seq.markers.push(make_marker_at_secs(30.0, "Act 2"));
+
+        let mut settings = make_settings();
+        settings.embed_chapters = true;
+
+        let pool = MediaPool::new();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+
+        assert_eq!(snap.chapters.len(), 3, "three markers → three chapters");
+        assert_eq!(snap.chapters[0].start_ms, 0);
+        assert_eq!(snap.chapters[0].end_ms, 10_000);
+        assert_eq!(snap.chapters[0].title, "Intro");
+        assert_eq!(snap.chapters[1].start_ms, 10_000);
+        assert_eq!(snap.chapters[1].end_ms, 30_000);
+        assert_eq!(snap.chapters[2].start_ms, 30_000);
+        assert_eq!(snap.chapters[2].end_ms, 60_000);
+    }
+
+    #[test]
+    fn chapters_shifted_for_zone_export() {
+        // Markers at 5s and 15s; zone export covers [10s, 30s].
+        // The 5s marker is outside the zone and must be dropped; the
+        // 15s marker shifts to start_ms = 5000 (relative to zone start)
+        // and its end clamps to the zone duration 20000.
+        let mut seq = make_sequence_with_length_secs(60.0);
+        seq.markers.push(make_marker_at_secs(5.0, "Outside"));
+        seq.markers.push(make_marker_at_secs(15.0, "Inside"));
+        seq.in_point = Some(make_rational(240, 24));  // 10s
+        seq.out_point = Some(make_rational(720, 24)); // 30s
+
+        let mut settings = make_settings();
+        settings.embed_chapters = true;
+
+        let pool = MediaPool::new();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, true).unwrap();
+
+        assert_eq!(
+            snap.chapters.len(),
+            1,
+            "5s marker is outside the zone — only 15s marker survives"
+        );
+        assert_eq!(snap.chapters[0].start_ms, 5_000, "15s - 10s zone start = 5000ms");
+        assert_eq!(snap.chapters[0].end_ms, 20_000, "clamped to zone duration");
+        assert_eq!(snap.chapters[0].title, "Inside");
+    }
+
+    #[test]
+    fn chapters_empty_when_no_markers() {
+        // embed_chapters is true but sequence has no markers — should
+        // produce an empty chapters Vec, not an error or panic.
+        let seq = make_sequence_with_length_secs(60.0);
+
+        let mut settings = make_settings();
+        settings.embed_chapters = true;
+
+        let pool = MediaPool::new();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+
+        assert!(snap.chapters.is_empty());
+    }
+
+    #[test]
+    fn chapters_empty_when_embed_disabled() {
+        // Even with markers, embed_chapters=false → no snapshot entries.
+        let mut seq = make_sequence_with_length_secs(60.0);
+        seq.markers.push(make_marker_at_secs(10.0, "Act 1"));
+        seq.markers.push(make_marker_at_secs(30.0, "Act 2"));
+
+        let settings = make_settings(); // embed_chapters: false by default
+
+        let pool = MediaPool::new();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+
+        assert!(snap.chapters.is_empty());
     }
 
     #[test]

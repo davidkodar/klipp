@@ -25,7 +25,7 @@ fn make_export_settings(path: &std::path::Path) -> ExportSettings {
         preset: EncoderPreset::Fast,
         audio_codec: ExportAudioCodec::Copy, // Skip audio for speed
         audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
-        burn_in_subtitles: true, embed_subtitles: false, target_lufs: None }
+        burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, embed_chapters: false }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -47,7 +47,7 @@ fn snapshot_to_pipeline_roundtrip() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![],
+        subtitle_tracks: vec![], chapters: vec![],
     };
 
     let mut pipeline = RenderPipeline::default_stages(None);
@@ -84,7 +84,7 @@ fn compositor_with_gap_produces_none() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![],
+        subtitle_tracks: vec![], chapters: vec![],
     };
 
     let mut compositor = FrameCompositor::new();
@@ -120,7 +120,7 @@ fn export_job_empty_sequence() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![],
+        subtitle_tracks: vec![], chapters: vec![],
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -171,7 +171,7 @@ fn export_job_cancellation_immediate() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![],
+        subtitle_tracks: vec![], chapters: vec![],
     };
 
     let cancel = Arc::new(AtomicBool::new(true)); // Cancel before start
@@ -213,7 +213,7 @@ fn export_job_cancellation_midway() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![],
+        subtitle_tracks: vec![], chapters: vec![],
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -283,7 +283,7 @@ fn export_job_progress_advances() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![],
+        subtitle_tracks: vec![], chapters: vec![],
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -378,7 +378,7 @@ fn export_real_media_h264() {
             }],
         }],
         global_lut_path: None,
-        subtitle_tracks: vec![],
+        subtitle_tracks: vec![], chapters: vec![],
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -482,7 +482,7 @@ fn export_real_media_with_color_grade() {
         }],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![],
+        subtitle_tracks: vec![], chapters: vec![],
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -580,7 +580,7 @@ fn export_with_title_and_gap() {
         }],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![],
+        subtitle_tracks: vec![], chapters: vec![],
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -672,7 +672,7 @@ fn export_with_keyframed_opacity() {
         }],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![],
+        subtitle_tracks: vec![], chapters: vec![],
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
