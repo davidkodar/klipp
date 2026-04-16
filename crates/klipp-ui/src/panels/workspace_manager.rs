@@ -25,16 +25,25 @@ pub fn show_workspace_manager_dialog(
 
     let built_ins = builtin_workspace_layouts();
 
+    let screen = ctx.screen_rect();
+    let win_w = 520.0_f32.min(screen.width() - 40.0);
+    let win_h = 420.0_f32.min(screen.height() - 40.0);
+    let min_w = 440.0_f32.min(screen.width() - 40.0);
+    let min_h = 320.0_f32.min(screen.height() - 40.0);
+
     let mut open = true;
     egui::Window::new("Workspace Layouts")
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_width(520.0)
-        .default_height(420.0)
-        .min_width(440.0)
-        .min_height(320.0)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .default_width(win_w)
+        .default_height(win_h)
+        .min_width(min_w)
+        .min_height(min_h)
+        .default_pos(egui::pos2(
+            screen.center().x - win_w / 2.0,
+            screen.center().y - win_h / 2.0,
+        ))
         .show(ctx, |ui| {
             let avail = ui.available_size();
             let left_w = (avail.x * 0.38).clamp(140.0, 220.0);
