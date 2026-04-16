@@ -160,6 +160,38 @@ fn mix_loop(
     let spectrum_max_samples = (sample_rate as usize) * 2 * 2;
     debug!("Mix thread started");
 
+    // Flush-to-zero + denormals-are-zero on the SSE control register. At very
+    // low sample magnitudes (silent input running through an EQ, reverb tail
+    // decaying past audibility, …) biquad state can drift into IEEE 754
+    // denormal range, where some x86 CPUs stall by ~100× per FLOP. FTZ+DAZ
+    // forces those values to zero with no audible impact — the threshold is
+    // ~10⁻³⁸, far below audio sample precision. This runs once per mix
+    // thread start and affects only this thread's FPU control word.
+    //
+    // We set the bits directly in MXCSR via stmxcsr/ldmxcsr because the DAZ
+    // intrinsic (`_MM_SET_DENORMALS_ZERO_MODE`) is not exposed in stable
+    // `std::arch`, and the `_mm_getcsr` / `_mm_setcsr` wrappers are
+    // deprecated in favour of inline asm. Bit 15 = FTZ, bit 6 = DAZ;
+    // available since SSE3 on effectively every x86_64 CPU shipped in the
+    // last ~20 years.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    unsafe {
+        let mut mxcsr: u32 = 0;
+        std::arch::asm!(
+            "stmxcsr [{0}]",
+            in(reg) &mut mxcsr,
+            options(nostack, preserves_flags),
+        );
+        const FTZ_BIT: u32 = 1 << 15;
+        const DAZ_BIT: u32 = 1 << 6;
+        mxcsr |= FTZ_BIT | DAZ_BIT;
+        std::arch::asm!(
+            "ldmxcsr [{0}]",
+            in(reg) &mxcsr,
+            options(nostack, preserves_flags),
+        );
+    }
+
     struct StagingEntry {
         #[allow(dead_code)]
         track_index: usize,
