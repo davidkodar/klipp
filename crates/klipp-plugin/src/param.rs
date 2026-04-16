@@ -167,30 +167,30 @@ pub fn register_param_set() -> OfxParamSetHandle {
         props_handle,
     };
     let key = props_handle as usize;
-    PARAM_SET_STORE.lock().unwrap().insert(key, data);
+    PARAM_SET_STORE.lock().unwrap_or_else(|e| e.into_inner()).insert(key, data);
     key as OfxParamSetHandle
 }
 
 pub fn with_param_set<R>(handle: OfxParamSetHandle, f: impl FnOnce(&mut ParamSetData) -> R) -> Option<R> {
     let key = handle as usize;
-    PARAM_SET_STORE.lock().unwrap().get_mut(&key).map(f)
+    PARAM_SET_STORE.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key).map(f)
 }
 
 pub fn with_param<R>(handle: OfxParamHandle, f: impl FnOnce(&mut ParamInstance) -> R) -> Option<R> {
     let key = handle as usize;
-    PARAM_STORE.lock().unwrap().get_mut(&key).map(f)
+    PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key).map(f)
 }
 
 /// Read all param descriptors from a param set (after Describe/DescribeInContext).
 /// Bridges property suite writes back into ParamDescriptor fields.
 pub fn read_param_descriptors(param_set_handle: OfxParamSetHandle) -> Vec<ParamDescriptor> {
     let key = param_set_handle as usize;
-    let store = PARAM_SET_STORE.lock().unwrap();
+    let store = PARAM_SET_STORE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(pset) = store.get(&key) else {
         return Vec::new();
     };
 
-    let mut param_store = PARAM_STORE.lock().unwrap();
+    let mut param_store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
     let mut descriptors = Vec::new();
 
     for name in &pset.param_names {
@@ -483,11 +483,11 @@ unsafe extern "C" fn param_define_fn(
         keyframes: Vec::new(),
     };
     let handle_key = props_handle as usize;
-    PARAM_STORE.lock().unwrap().insert(handle_key, pi);
+    PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner()).insert(handle_key, pi);
 
     // Register in the param set
     let pset_key = param_set as usize;
-    if let Some(pset) = PARAM_SET_STORE.lock().unwrap().get_mut(&pset_key) {
+    if let Some(pset) = PARAM_SET_STORE.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&pset_key) {
         pset.param_names.push(name_str.to_string());
         pset.param_handles.insert(name_str.to_string(), handle_key);
     }
@@ -509,7 +509,7 @@ unsafe extern "C" fn param_get_handle_fn(
     // plugin can opt out of either return value.
     let name_str = CStr::from_ptr(name).to_string_lossy();
     let pset_key = param_set as usize;
-    let store = PARAM_SET_STORE.lock().unwrap();
+    let store = PARAM_SET_STORE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(pset) = store.get(&pset_key) else {
         warn!("[OFX] paramGetHandle: BAD_HANDLE param_set={:?}", param_set);
         return K_OFX_STAT_ERR_BAD_HANDLE;
@@ -535,8 +535,8 @@ unsafe extern "C" fn param_get_handle_fn(
             props_handle,
             keyframes: Vec::new(),
         };
-        PARAM_STORE.lock().unwrap().insert(handle_key, pi);
-        let mut store = PARAM_SET_STORE.lock().unwrap();
+        PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner()).insert(handle_key, pi);
+        let mut store = PARAM_SET_STORE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(pset) = store.get_mut(&pset_key) {
             pset.param_names.push(name_str.to_string());
             pset.param_handles.insert(name_str.to_string(), handle_key);
@@ -548,7 +548,7 @@ unsafe extern "C" fn param_get_handle_fn(
         *handle_out = handle_key as OfxParamHandle;
     }
     if !props_out.is_null() {
-        let param_store = PARAM_STORE.lock().unwrap();
+        let param_store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(pi) = param_store.get(&handle_key) {
             *props_out = pi.props_handle;
         }
@@ -562,7 +562,7 @@ unsafe extern "C" fn param_set_get_property_set_fn(
 ) -> OfxStatus {
     check_non_null!(props_out);
     let key = param_set as usize;
-    let store = PARAM_SET_STORE.lock().unwrap();
+    let store = PARAM_SET_STORE.lock().unwrap_or_else(|e| e.into_inner());
     match store.get(&key) {
         Some(pset) => {
             *props_out = pset.props_handle;
@@ -592,7 +592,7 @@ unsafe extern "C" fn param_get_property_set_fn(
 unsafe extern "C" fn param_get_value_fn(handle: OfxParamHandle, out: *mut c_void) -> OfxStatus {
     check_non_null!(out);
     let key = handle as usize;
-    let store = PARAM_STORE.lock().unwrap();
+    let store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(pi) = store.get(&key) else {
         warn!("[OFX] paramGetValue: BAD_HANDLE param={:?}", handle);
         return K_OFX_STAT_ERR_BAD_HANDLE;
@@ -683,7 +683,7 @@ unsafe extern "C" fn param_get_value_at_time_fn(
 ) -> OfxStatus {
     check_non_null!(out);
     let key = handle as usize;
-    let store = PARAM_STORE.lock().unwrap();
+    let store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(pi) = store.get(&key) else {
         warn!("[OFX] paramGetValueAtTime: BAD_HANDLE param={:?}", handle);
         return K_OFX_STAT_ERR_BAD_HANDLE;
@@ -708,7 +708,7 @@ unsafe extern "C" fn param_get_derivative_fn(
 ) -> OfxStatus {
     check_non_null!(out);
     let key = handle as usize;
-    let store = PARAM_STORE.lock().unwrap();
+    let store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(pi) = store.get(&key) else {
         return K_OFX_STAT_ERR_BAD_HANDLE;
     };
@@ -751,7 +751,7 @@ unsafe extern "C" fn param_get_integral_fn(
 ) -> OfxStatus {
     check_non_null!(out);
     let key = handle as usize;
-    let store = PARAM_STORE.lock().unwrap();
+    let store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(pi) = store.get(&key) else {
         return K_OFX_STAT_ERR_BAD_HANDLE;
     };
@@ -796,7 +796,7 @@ unsafe extern "C" fn param_get_integral_fn(
 unsafe extern "C" fn param_set_value_fn(handle: OfxParamHandle, input: *const c_void) -> OfxStatus {
     check_non_null!(input);
     let key = handle as usize;
-    let mut store = PARAM_STORE.lock().unwrap();
+    let mut store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(pi) = store.get_mut(&key) else {
         return K_OFX_STAT_ERR_BAD_HANDLE;
     };
@@ -855,7 +855,7 @@ unsafe extern "C" fn param_set_value_at_time_fn(
 ) -> OfxStatus {
     check_non_null!(input);
     let key = handle as usize;
-    let mut store = PARAM_STORE.lock().unwrap();
+    let mut store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(pi) = store.get_mut(&key) else {
         return K_OFX_STAT_ERR_BAD_HANDLE;
     };
@@ -907,7 +907,7 @@ unsafe extern "C" fn param_get_num_keys_fn(
 ) -> OfxStatus {
     check_non_null!(n);
     let key = handle as usize;
-    let store = PARAM_STORE.lock().unwrap();
+    let store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
     match store.get(&key) {
         Some(pi) => {
             *n = pi.keyframes.len() as c_uint;
@@ -924,7 +924,7 @@ unsafe extern "C" fn param_get_key_time_fn(
 ) -> OfxStatus {
     check_non_null!(time);
     let key = handle as usize;
-    let store = PARAM_STORE.lock().unwrap();
+    let store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(pi) = store.get(&key) else {
         return K_OFX_STAT_ERR_BAD_HANDLE;
     };
@@ -945,7 +945,7 @@ unsafe extern "C" fn param_get_key_index_fn(
 ) -> OfxStatus {
     check_non_null!(index);
     let key = handle as usize;
-    let store = PARAM_STORE.lock().unwrap();
+    let store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(pi) = store.get(&key) else {
         return K_OFX_STAT_ERR_BAD_HANDLE;
     };
@@ -997,7 +997,7 @@ unsafe extern "C" fn param_delete_key_fn(
     time: c_double,
 ) -> OfxStatus {
     let key = handle as usize;
-    let mut store = PARAM_STORE.lock().unwrap();
+    let mut store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(pi) = store.get_mut(&key) else {
         return K_OFX_STAT_ERR_BAD_HANDLE;
     };
@@ -1014,7 +1014,7 @@ unsafe extern "C" fn param_delete_key_fn(
 
 unsafe extern "C" fn param_delete_all_keys_fn(handle: OfxParamHandle) -> OfxStatus {
     let key = handle as usize;
-    let mut store = PARAM_STORE.lock().unwrap();
+    let mut store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(pi) = store.get_mut(&key) else {
         return K_OFX_STAT_ERR_BAD_HANDLE;
     };
@@ -1030,7 +1030,7 @@ unsafe extern "C" fn param_copy_fn(
 ) -> OfxStatus {
     let src_key = src as usize;
     let dst_key = dst as usize;
-    let mut store = PARAM_STORE.lock().unwrap();
+    let mut store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
 
     // Extract source keyframes
     let Some(src_pi) = store.get(&src_key) else {

@@ -48,7 +48,7 @@ pub fn set_render_context(
     premult: &str,
     needs_float: bool,
 ) {
-    *RENDER_CONTEXT.lock().unwrap() = Some(RenderContext {
+    *RENDER_CONTEXT.lock().unwrap_or_else(|e| e.into_inner()) = Some(RenderContext {
         frame_provider,
         current_time,
         width,
@@ -61,7 +61,7 @@ pub fn set_render_context(
 
 /// Clear the render context and clean up temporal images.
 pub fn clear_render_context() {
-    if let Some(ctx) = RENDER_CONTEXT.lock().unwrap().take() {
+    if let Some(ctx) = RENDER_CONTEXT.lock().unwrap_or_else(|e| e.into_inner()).take() {
         // Clean up any temporally-fetched images
         for handle in ctx.temporal_images {
             release_image(handle);
@@ -191,7 +191,7 @@ static IMAGE_STORE: LazyLock<Mutex<HashMap<usize, OfxImage>>> =
 pub fn register_image(image: OfxImage) -> OfxPropertySetHandle {
     let handle = image.props_handle;
     let key = handle as usize;
-    let mut store = IMAGE_STORE.lock().unwrap();
+    let mut store = IMAGE_STORE.lock().unwrap_or_else(|e| e.into_inner());
     store.insert(key, image);
     // Update the data pointer AFTER insertion (the Vec has been moved into the HashMap)
     if let Some(img) = store.get_mut(&key) {
@@ -201,16 +201,16 @@ pub fn register_image(image: OfxImage) -> OfxPropertySetHandle {
 }
 
 pub fn take_image(handle: OfxPropertySetHandle) -> Option<OfxImage> {
-    IMAGE_STORE.lock().unwrap().remove(&(handle as usize))
+    IMAGE_STORE.lock().unwrap_or_else(|e| e.into_inner()).remove(&(handle as usize))
 }
 
 /// Access an image by handle for reading (without taking ownership).
 pub fn with_image<R>(handle: OfxPropertySetHandle, f: impl FnOnce(&OfxImage) -> R) -> Option<R> {
-    IMAGE_STORE.lock().unwrap().get(&(handle as usize)).map(f)
+    IMAGE_STORE.lock().unwrap_or_else(|e| e.into_inner()).get(&(handle as usize)).map(f)
 }
 
 pub fn release_image(handle: OfxPropertySetHandle) {
-    if let Some(img) = IMAGE_STORE.lock().unwrap().remove(&(handle as usize)) {
+    if let Some(img) = IMAGE_STORE.lock().unwrap_or_else(|e| e.into_inner()).remove(&(handle as usize)) {
         property::remove_propset(img.props_handle);
     }
 }
@@ -396,7 +396,7 @@ unsafe extern "C" fn clip_get_image_fn(
 
     if let Some(img_handle) = current_img {
         // Check if we need temporal access (plugin requesting a different time)
-        let mut ctx = RENDER_CONTEXT.lock().unwrap();
+        let mut ctx = RENDER_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
         let is_temporal = if let Some(ref ctx) = *ctx {
             (time - ctx.current_time).abs() > 0.001
         } else {
@@ -437,7 +437,7 @@ unsafe extern "C" fn clip_get_image_fn(
     } else {
         // Clip exists but has no image (disconnected)
         // Try temporal provider for disconnected clips too
-        let mut ctx = RENDER_CONTEXT.lock().unwrap();
+        let mut ctx = RENDER_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
         if clip_name == "Source" || clip_name == "SourceFrom" || clip_name == "SourceTo" {
             if let Some(ref mut ctx) = *ctx {
                 if let Some(ref provider) = ctx.frame_provider {
@@ -513,14 +513,14 @@ unsafe extern "C" fn image_memory_alloc_fn(
     let buf = vec![0u8; n_bytes];
     let key = IMG_MEM_NEXT_HANDLE
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    IMG_MEM_STORE.lock().unwrap().insert(key, buf);
+    IMG_MEM_STORE.lock().unwrap_or_else(|e| e.into_inner()).insert(key, buf);
     *handle = key as OfxImageMemoryHandle;
     K_OFX_STAT_OK
 }
 
 unsafe extern "C" fn image_memory_free_fn(handle: OfxImageMemoryHandle) -> OfxStatus {
     let key = handle as usize;
-    IMG_MEM_STORE.lock().unwrap().remove(&key);
+    IMG_MEM_STORE.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
     K_OFX_STAT_OK
 }
 
@@ -530,7 +530,7 @@ unsafe extern "C" fn image_memory_lock_fn(
 ) -> OfxStatus {
     check_non_null!(ptr);
     let key = handle as usize;
-    match IMG_MEM_STORE.lock().unwrap().get_mut(&key) {
+    match IMG_MEM_STORE.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key) {
         Some(buf) => {
             *ptr = buf.as_mut_ptr() as *mut c_void;
             K_OFX_STAT_OK

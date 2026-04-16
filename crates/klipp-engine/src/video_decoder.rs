@@ -481,7 +481,7 @@ fn decode_thread_main(
         Ok(ctx) => ctx,
         Err(e) => {
             warn!("decode_thread: failed to open {:?}: {e}", path);
-            frame_queue.lock().unwrap().push(DecodedFrame::eof());
+            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(DecodedFrame::eof());
             return;
         }
     };
@@ -490,7 +490,7 @@ fn decode_thread_main(
         Some(s) => s,
         None => {
             warn!("decode_thread: no video stream in {:?}", path);
-            frame_queue.lock().unwrap().push(DecodedFrame::eof());
+            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(DecodedFrame::eof());
             return;
         }
     };
@@ -506,7 +506,7 @@ fn decode_thread_main(
         Ok(ctx) => ctx,
         Err(e) => {
             warn!("decode_thread: codec context error: {e}");
-            frame_queue.lock().unwrap().push(DecodedFrame::eof());
+            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(DecodedFrame::eof());
             return;
         }
     };
@@ -534,7 +534,7 @@ fn decode_thread_main(
         Ok(d) => d,
         Err(e) => {
             warn!("decode_thread: video decoder error: {e}");
-            frame_queue.lock().unwrap().push(DecodedFrame::eof());
+            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(DecodedFrame::eof());
             return;
         }
     };
@@ -609,7 +609,7 @@ fn decode_thread_main(
                     let _ = format_ctx.seek(ts, ..ts);
                     packets = format_ctx.packets();
                     decoder.flush();
-                    frame_queue.lock().unwrap().clear();
+                    frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
                     seek_target = Some(secs);
                     eof_sent = false;
                     eof_from_demuxer = false;
@@ -649,7 +649,7 @@ fn decode_thread_main(
 
             // Wait if queue is full — but stay in the drain loop so we
             // retry receive_frame once a slot opens.
-            if frame_queue.lock().unwrap().is_full() {
+            if frame_queue.lock().unwrap_or_else(|e| e.into_inner()).is_full() {
                 std::thread::sleep(Duration::from_millis(1));
                 // Re-check commands (seek/stop) while waiting
                 if let Ok(cmd) = cmd_rx.try_recv() {
@@ -661,7 +661,7 @@ fn decode_thread_main(
                             let _ = format_ctx.seek(ts, ..ts);
                             packets = format_ctx.packets();
                             decoder.flush();
-                            frame_queue.lock().unwrap().clear();
+                            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
                             seek_target = Some(secs);
                             eof_sent = false;
                             eof_from_demuxer = false;
@@ -737,7 +737,7 @@ fn decode_thread_main(
             };
 
             let t_queue = std::time::Instant::now();
-            frame_queue.lock().unwrap().push(decoded);
+            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(decoded);
             perf_queue_us += t_queue.elapsed().as_micros() as u64;
             drained_any = true;
             perf_frame_count += 1;
@@ -803,7 +803,7 @@ fn decode_thread_main(
         } else if !drained_any {
             // EOF from demuxer and no frames drained — we're done
             debug!("decode_thread: EOF reached");
-            frame_queue.lock().unwrap().push(DecodedFrame::eof());
+            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(DecodedFrame::eof());
             eof_sent = true;
         }
     }

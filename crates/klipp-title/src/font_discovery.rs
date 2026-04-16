@@ -84,7 +84,7 @@ pub fn discover_system_fonts() -> FontRegistry {
 
     // Take the lock and decide whether to wait or run the scan ourselves.
     let (mu, cvar) = scan_state();
-    let mut state = mu.lock().unwrap();
+    let mut state = mu.lock().unwrap_or_else(|e| e.into_inner());
     if state.in_flight {
         // Someone else (typically the background prefetch) is already running
         // a scan. Park here until they fulfil REGISTRY.
@@ -111,7 +111,7 @@ pub fn discover_system_fonts_async() {
         return;
     }
     let (mu, _cvar) = scan_state();
-    let mut state = mu.lock().unwrap();
+    let mut state = mu.lock().unwrap_or_else(|e| e.into_inner());
     if state.in_flight {
         return;
     }
@@ -164,7 +164,7 @@ fn run_scan_and_publish() {
     // Publish + notify waiters under the lock so no one races between
     // `REGISTRY.set` and `cvar.notify_all`.
     let (mu, cvar) = scan_state();
-    let mut state = mu.lock().unwrap();
+    let mut state = mu.lock().unwrap_or_else(|e| e.into_inner());
     let _ = REGISTRY.set(registry);
     state.in_flight = false;
     cvar.notify_all();

@@ -125,7 +125,7 @@ pub fn show_scope_window(
 
         viewer_pointer_pos.and_then(|pos| {
             let image_rect = viewer_image_rect?;
-            let fb = frame_buffer.lock().unwrap();
+            let fb = frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             let result = sample_viewer_pixel(pos, image_rect, &fb, sample_radius);
             if result.is_some() {
                 ctx.request_repaint();
@@ -490,7 +490,7 @@ fn render_pane_scope(
             Some((image, gen))
         }
     } else {
-        let fb = frame_buffer.lock().unwrap();
+        let fb = frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
         if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
             None
         } else {

@@ -40,7 +40,7 @@ unsafe extern "C" fn memory_free_fn(ptr: *mut c_void) -> OfxStatus {
         return K_OFX_STAT_OK;
     }
     let key = ptr as usize;
-    if let Some(layout) = ALLOC_TRACKER.lock().unwrap().remove(&key) {
+    if let Some(layout) = ALLOC_TRACKER.lock().unwrap_or_else(|e| e.into_inner()).remove(&key) {
         std::alloc::dealloc(ptr as *mut u8, layout);
         K_OFX_STAT_OK
     } else {

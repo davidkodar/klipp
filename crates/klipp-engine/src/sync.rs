@@ -41,7 +41,7 @@ impl MasterClock {
         if !self.running.load(Ordering::Acquire) {
             return self.anchor_pts_us.load(Ordering::Acquire);
         }
-        let elapsed = self.anchor_wall.lock().unwrap().elapsed();
+        let elapsed = self.anchor_wall.lock().unwrap_or_else(|e| e.into_inner()).elapsed();
         let speed = f64::from_bits(self.speed.load(Ordering::Acquire));
         let anchor = self.anchor_pts_us.load(Ordering::Acquire);
         anchor + (elapsed.as_micros() as f64 * speed) as u64
@@ -54,7 +54,7 @@ impl MasterClock {
 
     /// Seek: set the clock to a new position and bump generation.
     pub fn seek(&self, target_pts_us: u64) {
-        *self.anchor_wall.lock().unwrap() = Instant::now();
+        *self.anchor_wall.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
         self.anchor_pts_us.store(target_pts_us, Ordering::Release);
         self.generation.fetch_add(1, Ordering::AcqRel);
     }
@@ -63,13 +63,13 @@ impl MasterClock {
     pub fn pause(&self) {
         let current = self.current_pts_us();
         self.anchor_pts_us.store(current, Ordering::Release);
-        *self.anchor_wall.lock().unwrap() = Instant::now();
+        *self.anchor_wall.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
         self.running.store(false, Ordering::Release);
     }
 
     /// Resume: start the clock ticking from the current anchor.
     pub fn resume(&self) {
-        *self.anchor_wall.lock().unwrap() = Instant::now();
+        *self.anchor_wall.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
         self.running.store(true, Ordering::Release);
     }
 
@@ -88,7 +88,7 @@ impl MasterClock {
         // Freeze at current position first, then change speed
         let current = self.current_pts_us();
         self.anchor_pts_us.store(current, Ordering::Release);
-        *self.anchor_wall.lock().unwrap() = Instant::now();
+        *self.anchor_wall.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
         self.speed.store(speed.to_bits(), Ordering::Release);
     }
 }

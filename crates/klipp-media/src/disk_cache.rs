@@ -48,8 +48,8 @@ static AUDIO_CACHE_DIR_OVERRIDE: std::sync::Mutex<Option<PathBuf>> = std::sync::
 
 /// Set cache directory overrides from preferences.
 pub fn set_cache_dir_overrides(filmstrip: Option<PathBuf>, audio: Option<PathBuf>) {
-    *FILMSTRIP_DIR_OVERRIDE.lock().unwrap() = filmstrip;
-    *AUDIO_CACHE_DIR_OVERRIDE.lock().unwrap() = audio;
+    *FILMSTRIP_DIR_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()) = filmstrip;
+    *AUDIO_CACHE_DIR_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()) = audio;
 }
 
 /// Base cache directory: `~/.cache/klipp/`.

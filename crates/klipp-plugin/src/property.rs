@@ -151,7 +151,7 @@ static PROP_STORE: LazyLock<Mutex<HashMap<usize, Box<PropertySet>>>> =
 pub fn register_propset(ps: PropertySet) -> OfxPropertySetHandle {
     let boxed = Box::new(ps);
     let key = &*boxed as *const PropertySet as usize;
-    PROP_STORE.lock().unwrap().insert(key, boxed);
+    PROP_STORE.lock().unwrap_or_else(|e| e.into_inner()).insert(key, boxed);
     key as OfxPropertySetHandle
 }
 
@@ -160,14 +160,14 @@ pub fn register_propset(ps: PropertySet) -> OfxPropertySetHandle {
 /// Returns the callback's return value, or None if the handle is invalid.
 pub fn with_propset<R>(handle: OfxPropertySetHandle, f: impl FnOnce(&mut PropertySet) -> R) -> Option<R> {
     let key = handle as usize;
-    let mut store = PROP_STORE.lock().unwrap();
+    let mut store = PROP_STORE.lock().unwrap_or_else(|e| e.into_inner());
     store.get_mut(&key).map(|ps| f(ps))
 }
 
 /// Remove a property set from the store.
 pub fn remove_propset(handle: OfxPropertySetHandle) {
     let key = handle as usize;
-    PROP_STORE.lock().unwrap().remove(&key);
+    PROP_STORE.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
 }
 
 // ── OfxPropertySuiteV1 implementation ────────────────────────────────

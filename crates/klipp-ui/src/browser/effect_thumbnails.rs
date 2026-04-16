@@ -175,7 +175,7 @@ impl ThumbnailRenderer {
         std::thread::spawn(move || {
             // Lazily initialize the OFX host (once, shared across all OFX renders)
             if !host_ready.load(std::sync::atomic::Ordering::Acquire) {
-                let mut guard = host_arc.lock().unwrap();
+                let mut guard = host_arc.lock().unwrap_or_else(|e| e.into_inner());
                 if guard.is_none() {
                     tracing::info!("OFX thumbnail: initializing separate OFX host for preview rendering");
                     let mut host = klipp_plugin::OfxHostRuntime::new();

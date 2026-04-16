@@ -563,7 +563,7 @@ struct GlTextureInfo {
 }
 
 pub fn register_gl_texture(props_handle: crate::ffi::OfxPropertySetHandle, tex_id: GLuint, target: GLenum, is_output: bool) {
-    GL_TEXTURE_STORE.lock().unwrap().insert(props_handle as usize, GlTextureInfo {
+    GL_TEXTURE_STORE.lock().unwrap_or_else(|e| e.into_inner()).insert(props_handle as usize, GlTextureInfo {
         texture_id: tex_id,
         target,
         is_output,
@@ -571,7 +571,7 @@ pub fn register_gl_texture(props_handle: crate::ffi::OfxPropertySetHandle, tex_i
 }
 
 pub fn release_gl_texture(props_handle: crate::ffi::OfxPropertySetHandle) -> Option<(GLuint, bool)> {
-    GL_TEXTURE_STORE.lock().unwrap().remove(&(props_handle as usize))
+    GL_TEXTURE_STORE.lock().unwrap_or_else(|e| e.into_inner()).remove(&(props_handle as usize))
         .map(|info| (info.texture_id, info.is_output))
 }
 
@@ -619,7 +619,7 @@ unsafe extern "C" fn clip_load_texture_fn(
     }
 
     // Access the GL runtime from the global store
-    let gl_store = GL_RUNTIME_STORE.lock().unwrap();
+    let gl_store = GL_RUNTIME_STORE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(gl) = gl_store.as_ref() else {
         warn!("[OFX GL] clipLoadTexture: no OpenGL runtime");
         return K_OFX_STAT_FAILED;
@@ -650,7 +650,7 @@ unsafe extern "C" fn clip_load_texture_fn(
         if let Some(fbo) = gl.create_fbo(tex_id) {
             gl.bind_fbo(fbo, width, height);
             // Store FBO for cleanup
-            GL_FBO_STORE.lock().unwrap().insert(tex_id, fbo);
+            GL_FBO_STORE.lock().unwrap_or_else(|e| e.into_inner()).insert(tex_id, fbo);
         }
     }
 
@@ -695,11 +695,11 @@ unsafe extern "C" fn clip_free_texture_fn(
     texture_handle: OfxPropertySetHandle,
 ) -> OfxStatus {
     if let Some((tex_id, is_output)) = release_gl_texture(texture_handle) {
-        let gl_store = GL_RUNTIME_STORE.lock().unwrap();
+        let gl_store = GL_RUNTIME_STORE.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(gl) = gl_store.as_ref() {
             // Clean up FBO if this was an output texture
             if is_output {
-                if let Some(fbo) = GL_FBO_STORE.lock().unwrap().remove(&tex_id) {
+                if let Some(fbo) = GL_FBO_STORE.lock().unwrap_or_else(|e| e.into_inner()).remove(&tex_id) {
                     gl.delete_fbo(fbo);
                 }
             }
@@ -734,12 +734,12 @@ static GL_FBO_STORE: LazyLock<Mutex<HashMap<GLuint, GLuint>>> =
 /// The reference must remain valid for the duration of the render.
 pub unsafe fn set_gl_runtime(rt: &OpenGlRuntime) {
     let ptr = rt as *const OpenGlRuntime;
-    *GL_RUNTIME_STORE.lock().unwrap() = Some(&*ptr);
+    *GL_RUNTIME_STORE.lock().unwrap_or_else(|e| e.into_inner()) = Some(&*ptr);
 }
 
 /// Clear the global GL runtime reference (called by host after GPU render).
 pub fn clear_gl_runtime() {
-    *GL_RUNTIME_STORE.lock().unwrap() = None;
+    *GL_RUNTIME_STORE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// Static OfxImageEffectOpenGLRenderSuiteV1 table.

@@ -763,7 +763,7 @@ impl OfxHostRuntime {
                     keyframes: Vec::new(),
                 };
                 {
-                    let mut store = crate::param::PARAM_STORE.lock().unwrap();
+                    let mut store = crate::param::PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
                     store.insert(handle_key, pi);
                 }
                 pset.param_names.push(desc.name.clone());
@@ -973,7 +973,7 @@ impl OfxHostRuntime {
                 let needs_float = self.plugins[idx].needs_float;
                 let premult = self.plugins[idx].premult_string.clone();
                 // Update context for this effect's float requirements
-                let mut ctx = image_effect::RENDER_CONTEXT.lock().unwrap();
+                let mut ctx = image_effect::RENDER_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(ref mut c) = *ctx {
                     c.needs_float = needs_float;
                     c.premult = premult;

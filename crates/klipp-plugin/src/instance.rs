@@ -107,7 +107,7 @@ static INSTANCE_STORE: LazyLock<Mutex<HashMap<usize, PluginInstance>>> =
 pub fn register_instance(instance: PluginInstance) -> OfxImageEffectHandle {
     let handle = instance.handle;
     let key = handle as usize;
-    INSTANCE_STORE.lock().unwrap().insert(key, instance);
+    INSTANCE_STORE.lock().unwrap_or_else(|e| e.into_inner()).insert(key, instance);
     handle
 }
 
@@ -116,12 +116,12 @@ pub fn with_instance<R>(
     f: impl FnOnce(&mut PluginInstance) -> R,
 ) -> Option<R> {
     let key = handle as usize;
-    INSTANCE_STORE.lock().unwrap().get_mut(&key).map(f)
+    INSTANCE_STORE.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key).map(f)
 }
 
 pub fn remove_instance(handle: OfxImageEffectHandle) {
     let key = handle as usize;
-    INSTANCE_STORE.lock().unwrap().remove(&key);
+    INSTANCE_STORE.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
 }
 
 /// Find an instance by plugin name. Returns the handle if found.
@@ -137,14 +137,14 @@ static CLIP_TO_INSTANCE: LazyLock<Mutex<HashMap<usize, (usize, String)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub fn register_clip_mapping(clip_handle: OfxImageClipHandle, instance_handle: OfxImageEffectHandle, clip_name: &str) {
-    CLIP_TO_INSTANCE.lock().unwrap().insert(
+    CLIP_TO_INSTANCE.lock().unwrap_or_else(|e| e.into_inner()).insert(
         clip_handle as usize,
         (instance_handle as usize, clip_name.to_string()),
     );
 }
 
 pub fn lookup_clip(clip_handle: OfxImageClipHandle) -> Option<(OfxImageEffectHandle, String)> {
-    CLIP_TO_INSTANCE.lock().unwrap().get(&(clip_handle as usize)).map(|(h, n)| {
+    CLIP_TO_INSTANCE.lock().unwrap_or_else(|e| e.into_inner()).get(&(clip_handle as usize)).map(|(h, n)| {
         (*h as OfxImageEffectHandle, n.clone())
     })
 }

@@ -227,7 +227,7 @@ pub fn show_scopes(
             CpuRender(Vec<u8>, u32, u32, u64),
         }
         let action = {
-            let fb = frame_buffer.lock().unwrap();
+            let fb = frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
                 ScopeAction::None
             } else {

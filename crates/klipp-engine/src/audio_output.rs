@@ -14,7 +14,7 @@ pub(crate) static PREFERRED_DEVICE: Mutex<Option<String>> = Mutex::new(None);
 /// Set the preferred audio output device name. Call before creating AudioOutput.
 /// If the device isn't found at runtime, silently falls back to the system default.
 pub fn set_preferred_device(name: Option<String>) {
-    *PREFERRED_DEVICE.lock().unwrap() = name;
+    *PREFERRED_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = name;
 }
 
 // TODO: monitoring_mode pref (Software vs Hardware direct monitoring).

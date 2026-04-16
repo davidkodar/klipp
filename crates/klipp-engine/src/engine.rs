@@ -733,7 +733,7 @@ impl PlaybackEngine {
                         // the decoder thread will also clear on seek, but we
                         // clear from here to discard any frames produced between
                         // our seek command and the decoder processing it.
-                        dec.frame_queue().lock().unwrap().clear();
+                        dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
                         dec.resume();
                     }
                     for dec in self.overlay_decoders.values() {
@@ -1108,7 +1108,7 @@ impl PlaybackEngine {
                 }
                 // Re-read clip speed in case SpeedRamp changed it during playback
                 if self.state == PlaybackState::Playing {
-                    let seq = self.sequence.read().unwrap();
+                    let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                     let mut speed_state_changed = false;
                     if let Some(clip) = seq.tracks.get(self.current_track_index)
                         .and_then(|t| t.clips.get(self.current_clip_index))
@@ -1166,13 +1166,13 @@ impl PlaybackEngine {
         // Without this, a generator-only timeline plays at the engine's default 24fps
         // because self.fps is only updated by load_file() and generators never trigger it.
         {
-            let seq = self.sequence.read().unwrap();
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             self.fps = seq.fps;
         }
 
         // Check if no media clip exists at playhead but a title or generator clip does
         {
-            let seq = self.sequence.read().unwrap();
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             let has_media_clip = seq.tracks.iter()
                 .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text))
                 .any(|track| {
@@ -1274,7 +1274,7 @@ impl PlaybackEngine {
                     total_secs,
                 );
                 let final_rgba = self.post_process_rgba(rgba, res.width, res.height);
-                let mut fb = self.frame_buffer.lock().unwrap();
+                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, res.width, res.height);
                 drop(fb);
 
@@ -1296,7 +1296,7 @@ impl PlaybackEngine {
             }
         }
 
-        let seq = self.sequence.read().unwrap();
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         // Search video tracks in reverse — the last video track (bottom of panel)
         // is the compositing primary, matching pro NLE convention.
         let clip_info = seq.tracks.iter().enumerate().rev()
@@ -1417,7 +1417,7 @@ impl PlaybackEngine {
     fn handle_play_audio_only(&mut self) {
         // Check if any audio track has a clip at the playhead
         let has_audio = {
-            let seq = self.sequence.read().unwrap();
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             seq.tracks.iter().any(|track| {
                 track.kind == klipp_timeline::TrackKind::Audio
                     && track.clip_at_timecode(self.playhead).is_some()
@@ -1478,8 +1478,8 @@ impl PlaybackEngine {
 
         // Collect (track_index, media_id, path, source_secs) for every track with audio at tc
         let track_audio: Vec<(usize, MediaId, PathBuf, f64, Vec<klipp_core::AudioEffectInstance>)> = {
-            let seq = self.sequence.read().unwrap();
-            let pool = self.media_pool.read().unwrap();
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
             seq.tracks
                 .iter()
                 .enumerate()
@@ -1531,7 +1531,7 @@ impl PlaybackEngine {
     /// Sync per-clip volume, pan, and fade from sequence data to the audio output.
     /// Called on start_all_audio and SequenceUpdated.
     fn sync_clip_volumes(&self) {
-        let seq = self.sequence.read().unwrap();
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let mut clip_volume = 1.0f32;
         let mut clip_pan = 0.0f32;
         let mut clip_gain_out = 1.0f32;
@@ -1703,7 +1703,7 @@ impl PlaybackEngine {
 
         // Blank the shared frame buffer so the viewer no longer shows old pixels
         {
-            let mut fb = self.frame_buffer.lock().unwrap();
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.clear();
             fb.pregrade_data = Arc::new(Vec::new());
             fb.original_data.clear();
@@ -1735,7 +1735,7 @@ impl PlaybackEngine {
     /// Includes: which media clips are active, their speed, and audio effect count.
     /// Title/generator clips are excluded (they don't produce audio).
     fn compute_audio_fingerprint(&self) -> u64 {
-        let seq = self.sequence.read().unwrap();
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let tc = self.playhead;
         let mut fp: u64 = 0;
         for track in &seq.tracks {
@@ -1881,7 +1881,7 @@ impl PlaybackEngine {
 
         // Compute per-track seek positions from the timeline
         let seek_positions: Vec<(usize, f64)> = {
-            let seq = self.sequence.read().unwrap();
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             self.audio_sources
                 .iter()
                 .filter_map(|active| {
@@ -1932,7 +1932,7 @@ impl PlaybackEngine {
     /// so the time-remap path has up-to-date keyframes. Also resets the ramp
     /// anchor so the next tick integrates from the current playhead.
     fn refresh_speed_keyframes(&mut self) {
-        let seq = self.sequence.read().unwrap();
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         if let Some(clip) = seq.tracks.get(self.current_track_index)
             .and_then(|t| t.clips.get(self.current_clip_index))
         {
@@ -2013,7 +2013,7 @@ impl PlaybackEngine {
 
         // Title / Generator clip path — standalone non-media clip on V1 (no decoder active)
         if self.v1_decoder.is_none() && self.current_file.is_none() {
-            let seq = self.sequence.read().unwrap();
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             let synth_clip = seq.tracks.get(self.current_track_index)
                 .and_then(|track| {
                     track.clips.get(self.current_clip_index).and_then(|clip| {
@@ -2077,7 +2077,7 @@ impl PlaybackEngine {
                 };
 
                 let final_rgba = self.post_process_rgba(rgba, w, h);
-                let mut fb = self.frame_buffer.lock().unwrap();
+                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, w, h);
                 drop(fb);
 
@@ -2093,7 +2093,7 @@ impl PlaybackEngine {
         let mut q_len = 0usize;
 
         if let Some(dec) = &self.v1_decoder {
-            let mut queue = dec.frame_queue().lock().unwrap();
+            let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
             q_len = queue.len();
 
             loop {
@@ -2189,7 +2189,7 @@ impl PlaybackEngine {
 
         // Update playhead from the frame's PTS relative to clip timeline
         // Search ALL video tracks for the current clip
-        let seq = self.sequence.read().unwrap();
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let found_clip = seq.tracks.get(self.current_track_index)
             .and_then(|track| track.clips.get(self.current_clip_index).cloned());
         drop(seq);
@@ -2220,7 +2220,7 @@ impl PlaybackEngine {
 
             // Loop out-point detection: if loop enabled and playhead crossed out_point, loop back
             if self.loop_enabled {
-                let seq = self.sequence.read().unwrap();
+                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 let out_pt = seq.out_point;
                 let in_pt = seq.in_point;
                 drop(seq);
@@ -2279,7 +2279,7 @@ impl PlaybackEngine {
         // the expected source time independently for each overlay decoder.
         let overlay_dec_indices: Vec<usize> = self.overlay_decoders.keys().copied().collect();
         {
-            let seq = self.sequence.read().unwrap();
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             for track_idx in overlay_dec_indices {
                 // Compute this overlay clip's source time from the current playhead
                 let overlay_source_secs = if let Some(clip_idx) = self.overlay_clips.get(&track_idx) {
@@ -2295,7 +2295,7 @@ impl PlaybackEngine {
                 };
 
                 if let Some(dec) = self.overlay_decoders.get(&track_idx) {
-                    let mut queue = dec.frame_queue().lock().unwrap();
+                    let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
                     let q_len = queue.len();
                     if q_len > 0 || self.overlay_frames.contains_key(&track_idx) {
                         debug!("OV track={} q={} has_frame={} src={:.3}s front_pts={:?}",
@@ -2345,7 +2345,7 @@ impl PlaybackEngine {
                     width: final_w,
                     height: final_h,
                     opacity: {
-                        let seq = self.sequence.read().unwrap();
+                        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                         seq.tracks.get(self.current_track_index).map(|t| t.opacity).unwrap_or(1.0)
                     },
                     blend_mode: klipp_core::BlendMode::Normal,
@@ -2355,7 +2355,7 @@ impl PlaybackEngine {
             // Gather overlay clip data while holding the sequence lock, then drop
             // the lock before calling apply_clip_effects (which needs &mut self).
             let overlay_clip_data: Vec<(usize, f32, Option<klipp_timeline::Clip>)> = {
-                let seq = self.sequence.read().unwrap();
+                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 let fps_f64 = self.fps.as_f64();
                 let overlay_tracks = seq.overlay_video_tracks(self.current_track_index);
                 overlay_tracks.iter().filter_map(|(track_idx, track)| {
@@ -2448,7 +2448,7 @@ impl PlaybackEngine {
 
         let composite_ms = t_composite.elapsed().as_secs_f64() * 1000.0;
         let overlay_count = {
-            let seq = self.sequence.read().unwrap();
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             seq.overlay_video_tracks(self.current_track_index).len()
         };
         if composite_ms > 2.0 {
@@ -2475,7 +2475,7 @@ impl PlaybackEngine {
         // This eliminates the 8-33 MB per-frame allocation that used to be
         // `vec![0u8; pixel_count * 4]` at the top of the composite block.
         {
-            let mut fb = self.frame_buffer.lock().unwrap();
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame_swap(&mut final_rgba, final_w, final_h);
         }
         // Return the stale buffer (formerly pending_data) to the pool.
@@ -2510,7 +2510,7 @@ impl PlaybackEngine {
     }
 
     fn advance_to_next_clip(&mut self) {
-        let seq = self.sequence.read().unwrap();
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
 
         // Find the track that contains the current clip (by index + is_playable),
         // then look for the next playable clip on the SAME track.
@@ -2621,7 +2621,7 @@ impl PlaybackEngine {
 
             // CRITICAL: Immediately update fade parameters on audio sources
             {
-                let seq = self.sequence.read().unwrap();
+                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 for active_src in &self.audio_sources {
                     if let Some(track) = seq.tracks.get(active_src.track_index) {
                         if let Some((_idx, new_clip)) = track.clip_at_timecode(self.playhead) {
@@ -2694,7 +2694,7 @@ impl PlaybackEngine {
                 info!("CUT-DIAG SAME-FILE seek: idx={} source_in={:.4}s (reusing decoder)", actual_idx, source_in_secs);
                 if let Some(dec) = &self.v1_decoder {
                     dec.seek(source_in_secs);
-                    dec.frame_queue().lock().unwrap().clear();
+                    dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
                 }
 
                 self.master_clock.pause();
@@ -2779,7 +2779,7 @@ impl PlaybackEngine {
 
     /// Start pre-decoding the next clip so frames are ready when the cut arrives.
     fn start_preroll_for_next_clip(&mut self) {
-        let seq = self.sequence.read().unwrap();
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let next_idx = self.current_clip_index + 1;
 
         // Find next non-gap clip on the SAME track as the current clip
@@ -2831,7 +2831,7 @@ impl PlaybackEngine {
     /// Check if Video 2 has a clip at the given playhead position.
     /// Opens/closes the V2 decoder as needed.
     fn update_overlay_decoders(&mut self, playhead: Timecode) {
-        let seq = self.sequence.read().unwrap();
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         // Collect overlay info for all overlay tracks (not just the first one).
         let overlay_tracks = seq.overlay_video_tracks(self.current_track_index);
         let mut active_overlays: Vec<(usize, usize, klipp_timeline::Clip)> = Vec::new();
@@ -3109,7 +3109,7 @@ impl PlaybackEngine {
             self.loop_enabled, self.playhead.to_secs_f64());
         // Loop: if enabled, seek back to in_point (or start)
         if self.loop_enabled {
-            let seq = self.sequence.read().unwrap();
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             let in_pt = seq.in_point;
             drop(seq);
             let target = in_pt.unwrap_or_else(|| RationalTime { value: 0, rate: self.fps.rate() });
@@ -3304,7 +3304,7 @@ impl PlaybackEngine {
                 }
 
                 // 3. Seek video decoder (still needed — video wasn't pre-seeked)
-                let seq = self.sequence.read().unwrap();
+                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 let clip_info = seq.tracks.iter()
                     .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
                     .find_map(|track| {
@@ -3338,7 +3338,7 @@ impl PlaybackEngine {
                         }
                     } else if let Some(dec) = &self.v1_decoder {
                         dec.seek(source_secs);
-                        dec.frame_queue().lock().unwrap().clear();
+                        dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
                         self.clip_source_start = clip_source_in;
                         self.clip_timeline_start = timeline_in;
                         self.clip_speed = spd;
@@ -3381,7 +3381,7 @@ impl PlaybackEngine {
         // Cold seek fallback (no pre-seek available)
 
         // Find video clip at target position
-        let seq = self.sequence.read().unwrap();
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let clip_info = seq.tracks.iter()
             .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
             .find_map(|track| {
@@ -3424,7 +3424,7 @@ impl PlaybackEngine {
                 let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
             let rgba = self.title_renderer.render_with_gpu(td_for_render, res.width, res.height, gpu);
             let final_rgba = self.post_process_rgba(rgba, res.width, res.height);
-            let mut fb = self.frame_buffer.lock().unwrap();
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame(final_rgba, res.width, res.height);
             drop(fb);
 
@@ -3479,7 +3479,7 @@ impl PlaybackEngine {
                 }
             } else if let Some(dec) = &self.v1_decoder {
                 dec.seek(source_secs);
-                dec.frame_queue().lock().unwrap().clear();
+                dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
                 if self.state != PlaybackState::Playing {
                     dec.resume();
                 }
@@ -3554,7 +3554,7 @@ impl PlaybackEngine {
         self.last_synth_frame_rendered = None;
         // Check for standalone title clip (no media clip at this timecode on any track)
         {
-            let seq = self.sequence.read().unwrap();
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             let has_media_clip = seq.tracks.iter()
                 .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
                 .any(|track| {
@@ -3593,7 +3593,7 @@ impl PlaybackEngine {
                 let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
                 let rgba = self.title_renderer.render_with_gpu(td_for_render, res.width, res.height, gpu);
                 let final_rgba = self.post_process_rgba(rgba, res.width, res.height);
-                let mut fb = self.frame_buffer.lock().unwrap();
+                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, res.width, res.height);
                 drop(fb);
 
@@ -3605,7 +3605,7 @@ impl PlaybackEngine {
 
             // Check for standalone generator clip at this timecode
             if !has_media_clip {
-                let seq = self.sequence.read().unwrap();
+                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 let gen_info = seq.tracks.iter()
                     .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
                     .find_map(|track| {
@@ -3630,7 +3630,7 @@ impl PlaybackEngine {
                         &gen_data, res2.width, res2.height, elapsed_secs, total_secs,
                     );
                     let final_rgba = self.post_process_rgba(rgba, res2.width, res2.height);
-                    let mut fb = self.frame_buffer.lock().unwrap();
+                    let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                     fb.write_frame(final_rgba, res2.width, res2.height);
                     drop(fb);
 
@@ -3642,7 +3642,7 @@ impl PlaybackEngine {
             }
         }
 
-        let seq = self.sequence.read().unwrap();
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         // Search video tracks in reverse — last video track (bottom of panel) is primary.
         let clip_info = seq.tracks.iter().enumerate().rev()
             .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Video)
@@ -3686,7 +3686,7 @@ impl PlaybackEngine {
             } else if let Some(dec) = &self.v1_decoder {
                 dec.seek(source_secs);
                 // Clear stale frames from queue
-                dec.frame_queue().lock().unwrap().clear();
+                dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
                 if self.state != PlaybackState::Playing {
                     dec.resume();
                 }
@@ -3752,7 +3752,7 @@ impl PlaybackEngine {
 
             // Check if any audio track has a clip here
             let has_audio = {
-                let seq = self.sequence.read().unwrap();
+                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 seq.tracks.iter().any(|track| {
                     track.kind == klipp_timeline::TrackKind::Audio
                         && track.clip_at_timecode(tc).is_some()
@@ -3788,7 +3788,7 @@ impl PlaybackEngine {
                     if !self.is_scrubbing || self.scrub_audio_enabled {
                         if let Some(active) = self.audio_sources.first() {
                             let source_secs = {
-                                let seq = self.sequence.read().unwrap();
+                                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                                 seq.tracks.iter().find_map(|track| {
                                     let (_, clip) = track.clip_at_timecode(tc)?;
                                     Some(clip.source_in.to_secs_f64()
@@ -3821,7 +3821,7 @@ impl PlaybackEngine {
             let rgba = rgba_arc.as_ref().clone();
             self.playhead = RationalTime { value: target_frame, rate: self.playhead.rate };
             let rgba = self.post_process_rgba(rgba, w, h);
-            let mut fb = self.frame_buffer.lock().unwrap();
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame(rgba, w, h);
             drop(fb);
             let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
@@ -3835,12 +3835,12 @@ impl PlaybackEngine {
         if direction >= 0 {
             // Forward: pop ONE frame from decoder queue (don't drain all)
             let next_frame = self.v1_decoder.as_ref().and_then(|dec| {
-                dec.frame_queue().lock().unwrap().pop()
+                dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop()
             }).filter(|f| !f.is_eof);
 
             if let Some(frame) = next_frame {
                 let chirp_pos = frame.pts_secs();
-                let seq = self.sequence.read().unwrap();
+                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 if let Some(clip) = seq.tracks.get(self.current_track_index)
                     .and_then(|t| t.clips.get(self.current_clip_index))
                 {
@@ -3859,7 +3859,7 @@ impl PlaybackEngine {
                 // Cache pre-grade frame for backward stepping
                 self.frame_cache.insert(self.playhead.value, Arc::new(rgba.clone()), w, h);
                 let rgba = self.post_process_rgba(rgba, w, h);
-                let mut fb = self.frame_buffer.lock().unwrap();
+                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(rgba, w, h);
                 drop(fb);
                 // Frame step chirp (~20ms). Chirps on a scrub are gated on
@@ -3887,7 +3887,7 @@ impl PlaybackEngine {
             while std::time::Instant::now() < deadline {
                 // Pop frame in a limited scope to avoid borrowing self across post_process
                 let popped = self.v1_decoder.as_ref()
-                    .and_then(|dec| dec.frame_queue().lock().unwrap().pop());
+                    .and_then(|dec| dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop());
                 if let Some(frame) = popped {
                     if frame.is_eof {
                         if let Some(dec) = &self.v1_decoder { dec.pause(); }
@@ -3895,7 +3895,7 @@ impl PlaybackEngine {
                     }
                     // Update playhead from frame PTS
                     let chirp_pos = frame.pts_secs();
-                    let seq = self.sequence.read().unwrap();
+                    let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                     if let Some(clip) = seq.tracks.get(self.current_track_index)
                         .and_then(|t| t.clips.get(self.current_clip_index))
                     {
@@ -3915,7 +3915,7 @@ impl PlaybackEngine {
                     // Cache pre-grade frame for backward stepping
                     self.frame_cache.insert(self.playhead.value, Arc::new(rgba.clone()), w, h);
                     let rgba = self.post_process_rgba(rgba, w, h);
-                    let mut fb = self.frame_buffer.lock().unwrap();
+                    let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                     fb.write_frame(rgba, w, h);
                     drop(fb);
                     // Frame step chirp (~20ms). Same gating as the primary
@@ -3954,7 +3954,7 @@ impl PlaybackEngine {
             // Seek decoder to prefetch start position
             if let Some(dec) = &self.v1_decoder {
                 dec.seek(seek_tc.to_secs_f64());
-                dec.frame_queue().lock().unwrap().clear();
+                dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
                 dec.resume();
             }
 
@@ -3963,7 +3963,7 @@ impl PlaybackEngine {
             let mut found_target = false;
             while std::time::Instant::now() < deadline {
                 let popped = self.v1_decoder.as_ref()
-                    .and_then(|dec| dec.frame_queue().lock().unwrap().pop());
+                    .and_then(|dec| dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop());
                 if let Some(frame) = popped {
                     if frame.is_eof { break; }
                     let (w, h) = (frame.width, frame.height);
@@ -3971,7 +3971,7 @@ impl PlaybackEngine {
 
                     // Compute frame number from PTS
                     let frame_num = {
-                        let seq = self.sequence.read().unwrap();
+                        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                         if let Some(clip) = seq.tracks.get(self.current_track_index)
                             .and_then(|t| t.clips.get(self.current_clip_index))
                         {
@@ -3994,7 +3994,7 @@ impl PlaybackEngine {
                         found_target = true;
                         self.playhead = RationalTime { value: frame_num, rate: self.playhead.rate };
                         let rgba = self.post_process_rgba(rgba, w, h);
-                        let mut fb = self.frame_buffer.lock().unwrap();
+                        let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                         fb.write_frame(rgba, w, h);
                         drop(fb);
                         let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
@@ -4033,7 +4033,7 @@ impl PlaybackEngine {
         if !self.render_cache_disk.is_enabled() { return; }
         // Only pre-render if we have a clip with a non-identity grade
         let clip_info = {
-            let seq = self.sequence.read().unwrap();
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             seq.tracks.iter()
                 .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
                 .find_map(|t| t.clip_at_timecode(self.playhead))
@@ -4119,7 +4119,7 @@ impl PlaybackEngine {
 
     /// Update the shared frame buffer with current render cache coverage per clip.
     fn update_render_cache_ranges(&mut self) {
-        let seq = self.sequence.read().unwrap();
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let mut ranges = Vec::new();
 
         for track in seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video) {
@@ -4150,20 +4150,20 @@ impl PlaybackEngine {
         }
         drop(seq);
 
-        let mut fb = self.frame_buffer.lock().unwrap();
+        let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
         fb.render_cache_ranges = ranges;
     }
 
     fn prefetch_ahead(&mut self) {
         // 1. Drain any currently queued forward frames into cache
         if let Some(dec) = &self.v1_decoder {
-            let mut queue = dec.frame_queue().lock().unwrap();
+            let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
             while let Some(frame) = queue.pop() {
                 if frame.is_eof { break; }
                 let pts = frame.pts;
                 let (w, h) = (frame.width, frame.height);
                 let rgba = frame.to_rgba();
-                let seq = self.sequence.read().unwrap();
+                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 let frame_num = if let Some(clip) = seq.tracks.get(self.current_track_index)
                     .and_then(|t| t.clips.get(self.current_clip_index))
                 {
@@ -4195,20 +4195,20 @@ impl PlaybackEngine {
             if let Some(dec) = &self.v1_decoder {
                 let seek_secs = RationalTime { value: prefetch_start, rate: self.playhead.rate }.to_secs_f64();
                 dec.seek(seek_secs);
-                dec.frame_queue().lock().unwrap().clear();
+                dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
                 dec.resume();
             }
 
             let deadline = std::time::Instant::now() + Duration::from_millis(400);
             while std::time::Instant::now() < deadline {
                 let popped = self.v1_decoder.as_ref()
-                    .and_then(|dec| dec.frame_queue().lock().unwrap().pop());
+                    .and_then(|dec| dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop());
                 if let Some(frame) = popped {
                     if frame.is_eof { break; }
                     let (w, h) = (frame.width, frame.height);
                     let rgba = frame.to_rgba();
                     let frame_num = {
-                        let seq = self.sequence.read().unwrap();
+                        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                         if let Some(clip) = seq.tracks.get(self.current_track_index)
                             .and_then(|t| t.clips.get(self.current_clip_index))
                         {
@@ -4232,7 +4232,7 @@ impl PlaybackEngine {
             if let Some(dec) = &self.v1_decoder {
                 let current_secs = self.playhead.to_secs_f64();
                 dec.seek(current_secs);
-                dec.frame_queue().lock().unwrap().clear();
+                dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
             }
         }
 
@@ -4247,7 +4247,7 @@ impl PlaybackEngine {
         while std::time::Instant::now() < deadline {
             // Pop best frame in limited scope to avoid borrow across post_process
             let best = self.v1_decoder.as_ref().and_then(|dec| {
-                let mut queue = dec.frame_queue().lock().unwrap();
+                let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
                 let mut best = None;
                 while let Some(frame) = queue.pop() {
                     if frame.is_eof {
@@ -4261,7 +4261,7 @@ impl PlaybackEngine {
                 let (w, h) = (frame.width, frame.height);
                 let rgba = frame.to_rgba();
                 let rgba = self.post_process_rgba(rgba, w, h);
-                let mut fb = self.frame_buffer.lock().unwrap();
+                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(rgba, w, h);
                 drop(fb);
                 let _ = self.event_tx.send(AppEvent::FrameReady);
@@ -4283,7 +4283,7 @@ impl PlaybackEngine {
     /// Check for an active transition at the current playhead and blend if needed.
     fn apply_transition_if_active(&mut self, from_rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
         // Read sequence to check for transitions
-        let seq = self.sequence.read().unwrap();
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let active = crate::transition::find_active_transition(&seq, self.playhead);
         drop(seq);
 
@@ -4351,7 +4351,7 @@ impl PlaybackEngine {
         if let Some(t_dec) = &self.transition_decoder {
             let current_source_secs = partner_source_secs;
             let frame_tolerance = self.fps.frame_duration_secs() * 0.5;
-            let mut queue = t_dec.frame_queue().lock().unwrap();
+            let mut queue = t_dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
             while let Some(f) = queue.front() {
                 if f.is_eof {
                     let _ = queue.pop();
@@ -4675,7 +4675,7 @@ impl PlaybackEngine {
         self.cached_pregrade_frame = Some((Arc::clone(&rgba_arc), width, height));
         self.frame_cache.insert(self.playhead.value, Arc::clone(&rgba_arc), width, height);
         {
-            let mut fb = self.frame_buffer.lock().unwrap();
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.pregrade_data = rgba_arc;
         }
 
@@ -4686,7 +4686,7 @@ impl PlaybackEngine {
         let cache_key = if has_overlays {
             None
         } else {
-            let seq = self.sequence.read().unwrap();
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             let clip = seq.tracks.iter()
                 .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
                 .find_map(|t| t.clip_at_timecode(self.playhead))
@@ -4733,7 +4733,7 @@ impl PlaybackEngine {
                         3 => gpu.render_scope_histogram(&cached, width, height, scope_w, scope_h),
                         _ => gpu.render_scope_waveform(&cached, width, height, scope_w, scope_h),
                     };
-                    let mut fb = self.frame_buffer.lock().unwrap();
+                    let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                     fb.scope_texture = tex;
                     fb.scope_texture_w = scope_w;
                     fb.scope_texture_h = scope_h;
@@ -4761,7 +4761,7 @@ impl PlaybackEngine {
                 3 => gpu.render_scope_histogram(&result, width, height, scope_w, scope_h),
                 _ => gpu.render_scope_waveform(&result, width, height, scope_w, scope_h),
             };
-            let mut fb = self.frame_buffer.lock().unwrap();
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.scope_texture = tex;
             fb.scope_texture_w = scope_w;
             fb.scope_texture_h = scope_h;
@@ -4793,7 +4793,7 @@ impl PlaybackEngine {
                     blend_mode: klipp_core::BlendMode::Normal,
                 }];
                 {
-                    let seq = self.sequence.read().unwrap();
+                    let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                     let fps_f64 = self.fps.as_f64();
                     for (track_idx, track) in &seq.overlay_video_tracks(self.current_track_index) {
                         if let Some(ov_frame) = self.overlay_frames.get(track_idx) {
@@ -4833,7 +4833,7 @@ impl PlaybackEngine {
                 None
             };
 
-            let mut fb = self.frame_buffer.lock().unwrap();
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame(out, w, h);
             if let Some((tex, sw, sh, mode)) = scope_tex {
                 fb.scope_texture = tex;
@@ -4846,7 +4846,7 @@ impl PlaybackEngine {
         } else if let Some((track_idx, ov_w, ov_h)) = {
             // Pick the topmost overlay (highest track index) with a frame in deterministic order.
             let overlay_indices: Vec<usize> = {
-                let seq = self.sequence.read().unwrap();
+                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 seq.overlay_video_tracks(self.current_track_index).iter().map(|(i, _)| *i).collect()
             };
             overlay_indices.iter().rev().find_map(|ti| {
@@ -4856,7 +4856,7 @@ impl PlaybackEngine {
             // Case 2: No V1 video, but overlay exists (standalone title/generator).
             // Apply track + clip opacity by pre-multiplying alpha.
             let (effective_opacity, ov_rgba) = {
-                let seq = self.sequence.read().unwrap();
+                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 let fps_f64 = self.fps.as_f64();
                 let track_opacity = seq.tracks.get(track_idx).map(|t| t.opacity).unwrap_or(1.0);
                 let clip_opacity = seq.tracks.get(track_idx)
@@ -4874,7 +4874,7 @@ impl PlaybackEngine {
                     pixel[3] = ((pixel[3] as u16 * mul) / 255) as u8;
                 }
             }
-            let mut fb = self.frame_buffer.lock().unwrap();
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame(rgba, ov_w, ov_h);
             drop(fb);
             let _ = self.event_tx.send(AppEvent::FrameReady);
@@ -4883,7 +4883,7 @@ impl PlaybackEngine {
 
     fn post_process_rgba_inner(&mut self, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
         let t0 = std::time::Instant::now();
-        let seq = self.sequence.read().unwrap();
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let clip = seq.tracks.get(self.current_track_index)
             .and_then(|t| t.clips.get(self.current_clip_index));
         // Capture the current clip's id for per-effect compare gating after
@@ -5226,7 +5226,7 @@ impl PlaybackEngine {
                     Ok((result, tapped)) => {
                         // Store tapped output for scope display
                         if let Some(tap_data) = tapped {
-                            let mut fb = self.frame_buffer.lock().unwrap();
+                            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                             fb.scope_data = tap_data;
                         }
                         result
@@ -5333,7 +5333,7 @@ impl PlaybackEngine {
             if needs_temporal {
                 // Only create temporal decoder for plugins that actually need it
                 let (source_path, clip_source_in) = {
-                    let seq = self.sequence.read().unwrap();
+                    let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                     let clip = seq.tracks.get(self.current_track_index)
                         .and_then(|t| t.clips.get(self.current_clip_index));
                     let path = clip.and_then(|c| {
@@ -5576,11 +5576,11 @@ impl PlaybackEngine {
 
         // Store pre-grade frame in frame buffer for Before/After split
         if let Some(original) = pre_grade_rgba {
-            let mut fb = self.frame_buffer.lock().unwrap();
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.original_data = original;
         } else {
             // Clear original when not in split mode to free memory
-            let mut fb = self.frame_buffer.lock().unwrap();
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             if !fb.original_data.is_empty() {
                 fb.original_data = Vec::new();
             }
@@ -5588,7 +5588,7 @@ impl PlaybackEngine {
 
         // Store unstab frame for stabilization compare split
         {
-            let mut fb = self.frame_buffer.lock().unwrap();
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(u) = unstab_rgba {
                 fb.unstab_data = u;
             } else if !fb.unstab_data.is_empty() {
@@ -5598,7 +5598,7 @@ impl PlaybackEngine {
 
         // Store per-effect compare frame (or clear when inactive).
         {
-            let mut fb = self.frame_buffer.lock().unwrap();
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(cmp) = compare_effect_rgba {
                 fb.compare_effect_data = cmp;
             } else if !fb.compare_effect_data.is_empty() {
@@ -5629,7 +5629,7 @@ impl PlaybackEngine {
         let deadline = std::time::Instant::now() + Duration::from_millis(200);
         loop {
             {
-                let mut queue = dec.frame_queue().lock().unwrap();
+                let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
                 // Drain frames that are far from the seek target
                 while let Some(front) = queue.front() {
                     let pts = front.pts_secs();
@@ -5654,7 +5654,7 @@ impl PlaybackEngine {
     }
 
     fn sequence_duration(&self) -> Timecode {
-        self.sequence.read().unwrap().total_duration()
+        self.sequence.read().unwrap_or_else(|e| e.into_inner()).total_duration()
     }
 
     fn path_for_media(&self, media_id: MediaId) -> Option<PathBuf> {

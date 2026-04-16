@@ -1164,7 +1164,7 @@ impl KlippApp {
                         width: w,
                         height: h,
                     };
-                    frames_clone.lock().unwrap().push(frame.clone());
+                    frames_clone.lock().unwrap_or_else(|e| e.into_inner()).push(frame.clone());
                     let _ = tx.send(FilmstripResult::Frame {
                         media_id,
                         frame,
@@ -1174,7 +1174,7 @@ impl KlippApp {
                         tracing::info!("Filmstrip: generated {count} frames for {:?}", path);
                         // Write to cache
                         if let Some(ref key) = cache_key {
-                            let cached_frames = frames.lock().unwrap();
+                            let cached_frames = frames.lock().unwrap_or_else(|e| e.into_inner());
                             if let Err(e) = klipp_media::disk_cache::write_filmstrip_cache(key, &cached_frames) {
                                 tracing::warn!("Failed to write filmstrip cache: {e}");
                             } else {
@@ -1839,7 +1839,7 @@ impl KlippApp {
 
         // ── Phase 1: minimal lock — take data, release immediately (~5µs) ──
         let frame_data = {
-            let mut fb = self.frame_buffer.lock().unwrap();
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.swap_pending();
             self.state.render_cache_ranges = fb.render_cache_ranges.clone();
             if !fb.dirty {
@@ -2140,7 +2140,7 @@ impl KlippApp {
 
         // Put frame data back so scopes can read it (~5µs pointer move)
         {
-            let mut fb = self.frame_buffer.lock().unwrap();
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             // Only put back if engine hasn't written a newer frame
             if fb.data.is_empty() {
                 fb.data = rgba_bytes;
@@ -2340,7 +2340,7 @@ impl KlippApp {
     }
 
     fn sync_sequence_to_engine(&self) {
-        let mut seq = self.sequence.write().unwrap();
+        let mut seq = self.sequence.write().unwrap_or_else(|e| e.into_inner());
         let active = &self.state.sequences[self.state.active_sequence_idx];
         // Flatten compound clips so the engine receives a plain sequence
         // with no ClipKind::Sequence clips — the engine has no compound-clip
@@ -2356,7 +2356,7 @@ impl KlippApp {
 
         // Fast UI-thread re-grade at reduced resolution for instant scope feedback.
         let fb_snapshot = {
-            let fb = self.frame_buffer.lock().unwrap();
+            let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             if fb.pregrade_data.is_empty() || fb.width == 0 {
                 None
             } else {
@@ -2405,7 +2405,7 @@ impl KlippApp {
 
         // ALWAYS bump generation so scopes detect the change
         {
-            let mut fb = self.frame_buffer.lock().unwrap();
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             if let Some((data, w, h)) = preview {
                 fb.scope_preview = data;
                 fb.scope_preview_w = w;
@@ -2522,7 +2522,7 @@ impl KlippApp {
     }
 
     fn sync_media_pool_to_engine(&self) {
-        let mut pool = self.media_pool_shared.write().unwrap();
+        let mut pool = self.media_pool_shared.write().unwrap_or_else(|e| e.into_inner());
         *pool = self.state.media_pool.clone();
     }
 
@@ -4079,7 +4079,7 @@ impl KlippApp {
     fn insert_freeze_frame(&mut self, duration_secs: f64) {
         // 1. Snapshot the viewer frame.
         let (rgba, width, height) = {
-            let fb = self.frame_buffer.lock().unwrap();
+            let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             if fb.data.is_empty() || fb.width == 0 || fb.height == 0 {
                 drop(fb);
                 self.state.toast.show("No frame to freeze yet".to_string());
@@ -5058,7 +5058,7 @@ impl KlippApp {
                 }
                 // Frame grab: save current viewer frame as PNG
                 AppCommand::FrameGrab => {
-                    let fb = self.frame_buffer.lock().unwrap();
+                    let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                     if !fb.data.is_empty() && fb.width > 0 && fb.height > 0 {
                         let w = fb.width;
                         let h = fb.height;
@@ -5093,7 +5093,7 @@ impl KlippApp {
                 // Extract frame to bin: save PNG + import as still — no file dialog.
                 AppCommand::ExtractFrameToBin => {
                     let (rgba, w, h) = {
-                        let fb = self.frame_buffer.lock().unwrap();
+                        let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                         if fb.data.is_empty() || fb.width == 0 || fb.height == 0 {
                             drop(fb);
                             self.state.toast.show("No frame available".to_string());
@@ -8993,7 +8993,7 @@ impl KlippApp {
             }
             AppCommand::AutoWhiteBalance { clip_id } => {
                 // Grab current frame and compute auto WB correction
-                let fb = self.frame_buffer.lock().unwrap();
+                let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 if fb.width > 0 && fb.height > 0 && !fb.data.is_empty() {
                     let (temp_adj, tint_adj) = klipp_color::auto_white_balance(
                         &fb.data, fb.width, fb.height,
@@ -9169,7 +9169,7 @@ impl KlippApp {
     /// not mutate `self.state`; caller is responsible for pushing the
     /// result and persisting.
     fn capture_grade_still(&self, name: String) -> Option<crate::state::GradeStill> {
-        let fb = self.frame_buffer.lock().unwrap();
+        let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
         if fb.data.is_empty() || fb.width == 0 {
             return None;
         }
@@ -16189,7 +16189,7 @@ impl eframe::App for KlippApp {
         self.poll_render_queue();
         // Show filmstrip thumbnail preview only while waiting for a seek result
         if self.state.awaiting_seek_frame && !self.state.showing_thumbnail_preview {
-            let is_dirty = self.frame_buffer.lock().unwrap().dirty;
+            let is_dirty = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).dirty;
             if !is_dirty {
                 self.show_filmstrip_preview(ctx);
             }
@@ -16415,7 +16415,7 @@ impl eframe::App for KlippApp {
         if let Some((media_id, rgba, width, height)) = self.state.browser_skim_pending.take() {
             // Write to frame buffer so scopes update during skimming
             {
-                let mut fb = self.frame_buffer.lock().unwrap();
+                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(rgba.clone(), width, height);
             }
             let image = egui::ColorImage::from_rgba_unmultiplied(
@@ -19134,7 +19134,7 @@ impl KlippApp {
                     // If locked but data not yet computed, compute it now
                     if self.state.scope_cursor_locked && self.state.scope_cursor_locked_data.is_none() {
                         if let (Some(pos), Some(rect)) = (self.state.scope_cursor_locked_pos, self.state.viewer_image_rect) {
-                            let fb = self.frame_buffer.lock().unwrap();
+                            let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                             self.state.scope_cursor_locked_data = crate::widgets::scope_window::sample_viewer_pixel(
                                 pos, rect, &fb, self.state.scope_cursor_sample_radius,
                             );
@@ -19145,7 +19145,7 @@ impl KlippApp {
                         self.state.scope_cursor_locked_data
                     } else if self.state.scope_cursor_show {
                         if let (Some(pos), Some(rect)) = (self.state.viewer_pointer_pos, self.state.viewer_image_rect) {
-                            let fb = self.frame_buffer.lock().unwrap();
+                            let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                             crate::widgets::scope_window::sample_viewer_pixel(
                                 pos, rect, &fb, self.state.scope_cursor_sample_radius,
                             )

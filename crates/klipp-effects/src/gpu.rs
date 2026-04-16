@@ -11,7 +11,7 @@ static GPU_POWER_PREF: std::sync::Mutex<Option<wgpu::PowerPreference>> = std::sy
 /// Options: HighPerformance (discrete), LowPower (integrated).
 /// None uses HighPerformance as default.
 pub fn set_gpu_power_preference(pref: Option<wgpu::PowerPreference>) {
-    *GPU_POWER_PREF.lock().unwrap() = pref;
+    *GPU_POWER_PREF.lock().unwrap_or_else(|e| e.into_inner()) = pref;
 }
 
 use crate::BuiltinEffect;
