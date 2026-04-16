@@ -162,7 +162,31 @@ impl Default for AudioEffectChain {
 }
 
 /// Factory: create effect by type ID.
+///
+/// LADSPA plugins use a composite type_id: `"ladspa:{path}:{label}"`. The
+/// path component may itself contain a `:` (e.g. Windows drive letters), so
+/// we split on the LAST `:` to separate the label.
 pub fn create_effect(type_id: &str, sample_rate: u32) -> Option<Box<dyn AudioEffect>> {
+    if let Some(rest) = type_id.strip_prefix("ladspa:") {
+        if let Some(last_colon) = rest.rfind(':') {
+            let path_str = &rest[..last_colon];
+            let label = &rest[last_colon + 1..];
+            return match crate::ladspa::LadspaEffect::new(
+                std::path::Path::new(path_str),
+                label,
+                sample_rate,
+            ) {
+                Ok(e) => Some(Box::new(e)),
+                Err(err) => {
+                    tracing::warn!("LADSPA load failed for {type_id}: {err}");
+                    None
+                }
+            };
+        }
+        tracing::warn!("LADSPA type_id missing label separator: {type_id}");
+        return None;
+    }
+
     match type_id {
         "eq" => Some(Box::new(eq::ParametricEq::new(sample_rate))),
         "compressor" => Some(Box::new(compressor::Compressor::new(sample_rate))),

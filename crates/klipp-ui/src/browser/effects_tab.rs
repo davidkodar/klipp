@@ -445,6 +445,21 @@ pub fn show(
                                         EffectSource::Audio(_) => {
                                             // Audio effects not yet applicable via double-click
                                         }
+                                        EffectSource::Ladspa(plugin) => {
+                                            let type_id = format!(
+                                                "ladspa:{}:{}",
+                                                plugin.path.display(),
+                                                plugin.label
+                                            );
+                                            cmds.push(AppCommand::AddAudioEffect {
+                                                clip_id,
+                                                effect_type: type_id,
+                                            });
+                                            state.toast.show(format!(
+                                                "\"{}\" applied",
+                                                fx.name
+                                            ));
+                                        }
                                     }
                                 } else {
                                     state.toast.show("Select a clip first".to_string());
@@ -459,11 +474,24 @@ pub fn show(
                                             type_id: type_id.clone(),
                                         });
                                     }
+                                    EffectSource::Ladspa(plugin) => {
+                                        let type_id = format!(
+                                            "ladspa:{}:{}",
+                                            plugin.path.display(),
+                                            plugin.label
+                                        );
+                                        state.drag_drop.begin(DragPayload::AudioEffect {
+                                            name: fx.name.clone(),
+                                            type_id,
+                                        });
+                                    }
                                     _ => {
                                         let (is_builtin, plugin_id) = match &fx.source {
                                             EffectSource::Builtin(_) => (true, String::new()),
                                             EffectSource::Ofx(id) => (false, id.clone()),
-                                            EffectSource::Audio(_) => unreachable!(),
+                                            EffectSource::Audio(_) | EffectSource::Ladspa(_) => {
+                                                unreachable!()
+                                            }
                                         };
                                         state.drag_drop.begin(DragPayload::Effect {
                                             name: fx.name.clone(),
@@ -578,6 +606,7 @@ fn effect_card(
         crate::browser::effect_registry::EffectSource::Ofx(_) => ("OFX", egui::Color32::from_rgba_unmultiplied(80, 120, 200, 200)),
         crate::browser::effect_registry::EffectSource::Builtin(_) => ("Built-in", egui::Color32::from_rgba_unmultiplied(60, 150, 80, 200)),
         crate::browser::effect_registry::EffectSource::Audio(_) => ("Built-in", egui::Color32::from_rgba_unmultiplied(60, 150, 80, 200)),
+        crate::browser::effect_registry::EffectSource::Ladspa(_) => ("LADSPA", egui::Color32::from_rgba_unmultiplied(170, 120, 60, 220)),
     };
     {
         let badge_font = egui::FontId::monospace(8.0);

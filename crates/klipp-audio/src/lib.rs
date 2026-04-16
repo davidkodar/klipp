@@ -1,4 +1,5 @@
 pub mod dsp;
+pub mod ladspa;
 pub mod lufs;
 pub mod mixer;
 pub mod spectrum;
