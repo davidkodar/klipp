@@ -1,4 +1,4 @@
-use crate::types::{DecodedFrame, FrameData, FrameQueue, SharedFrameQueue};
+use crate::types::{DecodedFrame, FrameQueue, SharedFrameQueue};
 use crossbeam_channel::{Receiver, Sender};
 use klipp_core::RationalTime;
 use std::path::{Path, PathBuf};
@@ -732,7 +732,7 @@ fn decode_thread_main(
                 pts: RationalTime::from_secs_f64(pts_secs, 90000),
                 width,
                 height,
-                data: FrameData::Rgba(rgba_data),
+                data: rgba_data,
                 is_eof: false,
             };
 

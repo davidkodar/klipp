@@ -17,7 +17,7 @@ pub mod video_decoder;
 pub use composite::{composite_layers, CompositeLayer};
 pub use engine::{detect_rotation_from_path, generate_filmstrip_incremental, generate_thumbnail, generate_thumbnail_at_size, generate_thumbnail_non_black, generate_thumbnail_at_size_non_black, is_frame_black, PlaybackEngine, PlaybackState, SequentialFrameDecoder};
 pub use texture::{FrameBuffer, SharedFrameBuffer};
-pub use types::{AudioRingBuf, DecodedFrame, FrameData, FrameQueue, SharedFrameQueue};
+pub use types::{AudioRingBuf, DecodedFrame, FrameQueue, SharedFrameQueue};
 
 /// Initialize ffmpeg. Idempotent — safe to call multiple times. Required
 /// before any decode operation. The app binary calls this once at startup;

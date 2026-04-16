@@ -3,19 +3,16 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 /// A decoded video frame with its presentation timestamp.
+///
+/// `data` is RGBA8. HW paths (NVDEC / VAAPI) download + convert to RGBA before
+/// reaching this struct (see `klipp-engine::video_decoder` and the GPU NV12
+/// converter in `klipp-effects::nv12_gpu`).
 pub struct DecodedFrame {
     pub pts: RationalTime,
     pub width: u32,
     pub height: u32,
-    pub data: FrameData,
+    pub data: Vec<u8>,
     pub is_eof: bool,
-}
-
-pub enum FrameData {
-    /// Software decode path — already converted to RGBA.
-    Rgba(Vec<u8>),
-    /// Hardware decode path — NV12 planes before GPU conversion.
-    Nv12 { y: Vec<u8>, uv: Vec<u8> },
 }
 
 impl DecodedFrame {
@@ -24,24 +21,14 @@ impl DecodedFrame {
         self.pts.to_secs_f64()
     }
 
-    /// Convert frame data to RGBA bytes, regardless of source format.
+    /// Clone the frame data as RGBA bytes.
     pub fn to_rgba(&self) -> Vec<u8> {
-        match &self.data {
-            FrameData::Rgba(data) => data.clone(),
-            FrameData::Nv12 { y, uv } => {
-                nv12_to_rgba(y, uv, self.width, self.height)
-            }
-        }
+        self.data.clone()
     }
 
-    /// Move frame data to RGBA bytes, avoiding a clone for the common RGBA case.
+    /// Move the frame data out as RGBA bytes.
     pub fn into_rgba(self) -> Vec<u8> {
-        match self.data {
-            FrameData::Rgba(data) => data,
-            FrameData::Nv12 { ref y, ref uv } => {
-                nv12_to_rgba(y, uv, self.width, self.height)
-            }
-        }
+        self.data
     }
 
     /// Create an EOF sentinel frame.
@@ -50,7 +37,7 @@ impl DecodedFrame {
             pts: RationalTime::zero(),
             width: 0,
             height: 0,
-            data: FrameData::Rgba(Vec::new()),
+            data: Vec::new(),
             is_eof: true,
         }
     }
@@ -121,35 +108,3 @@ pub type SharedFrameQueue = Arc<Mutex<FrameQueue>>;
 
 /// Audio sample ring buffer — f32 interleaved stereo.
 pub type AudioRingBuf = Arc<ringbuf::HeapRb<f32>>;
-
-/// NV12 → RGBA conversion (BT.709).
-fn nv12_to_rgba(y_plane: &[u8], uv_plane: &[u8], width: u32, height: u32) -> Vec<u8> {
-    let mut rgba = vec![0u8; (width * height * 4) as usize];
-    let y_stride = width;
-    let uv_stride = width;
-
-    for row in 0..height {
-        for col in 0..width {
-            let y = y_plane[(row * y_stride + col) as usize] as f32;
-            let uv_row = row / 2;
-            let uv_col = (col / 2) * 2;
-            let u = uv_plane[(uv_row * uv_stride + uv_col) as usize] as f32;
-            let v = uv_plane[(uv_row * uv_stride + uv_col + 1) as usize] as f32;
-
-            // BT.709 YUV → RGB
-            let y = y - 16.0;
-            let u = u - 128.0;
-            let v = v - 128.0;
-            let r = (1.164 * y + 1.793 * v).clamp(0.0, 255.0) as u8;
-            let g = (1.164 * y - 0.213 * u - 0.533 * v).clamp(0.0, 255.0) as u8;
-            let b = (1.164 * y + 2.112 * u).clamp(0.0, 255.0) as u8;
-
-            let i = ((row * width + col) * 4) as usize;
-            rgba[i] = r;
-            rgba[i + 1] = g;
-            rgba[i + 2] = b;
-            rgba[i + 3] = 255;
-        }
-    }
-    rgba
-}

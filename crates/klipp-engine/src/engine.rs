@@ -3003,7 +3003,7 @@ impl PlaybackEngine {
                 }
 
                 self.overlay_frames.insert(track_idx, crate::types::DecodedFrame {
-                    data: crate::types::FrameData::Rgba(rgba),
+                    data: rgba,
                     width: res.width,
                     height: res.height,
                     pts: RationalTime::from_frames(0, 24),
@@ -3034,7 +3034,7 @@ impl PlaybackEngine {
                 // composite time so paused opacity drags update the visible frame.
 
                 self.overlay_frames.insert(track_idx, crate::types::DecodedFrame {
-                    data: crate::types::FrameData::Rgba(rgba),
+                    data: rgba,
                     width: res.width,
                     height: res.height,
                     pts: RationalTime::from_frames(0, 24),
