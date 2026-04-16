@@ -4,7 +4,7 @@
 //! Grade hash: FNV1a of deterministic JSON serialization of the grade state.
 //! LRU eviction when total size exceeds max_cache_size_gb.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
@@ -81,13 +81,22 @@ impl RenderCacheKey {
 }
 
 /// In-memory hot cache (last N post-grade frames, zero decompress cost).
+///
+/// Keyed by the full `RenderCacheKey` (clip_id + frame_number + grade_hash)
+/// so two clips that happen to share a frame_number cannot evict each other.
+/// Eviction is FIFO on insert — the oldest entry is dropped when the cache
+/// hits `capacity`, which is sufficient for a "last N frames" window and
+/// matches the semantic intent of the previous modulo-slot design.
 pub struct HotCache {
-    entries: Vec<Option<HotCacheEntry>>,
+    entries: HashMap<RenderCacheKey, HotCacheEntry>,
+    /// Insertion order, oldest at the front. On re-insert of an existing key
+    /// the previous entry is moved to the back so the hot set keeps the most
+    /// recently touched frames.
+    order: VecDeque<RenderCacheKey>,
     capacity: usize,
 }
 
 struct HotCacheEntry {
-    key: RenderCacheKey,
     rgba: Vec<u8>,
     width: u32,
     height: u32,
@@ -96,27 +105,42 @@ struct HotCacheEntry {
 impl HotCache {
     pub fn new(capacity: usize) -> Self {
         Self {
-            entries: (0..capacity).map(|_| None).collect(),
+            entries: HashMap::with_capacity(capacity),
+            order: VecDeque::with_capacity(capacity),
             capacity,
         }
     }
 
     pub fn get(&self, key: &RenderCacheKey) -> Option<(&[u8], u32, u32)> {
-        let slot = (key.frame_number.unsigned_abs() as usize) % self.capacity;
-        self.entries[slot].as_ref()
-            .filter(|e| e.key == *key)
+        self.entries
+            .get(key)
             .map(|e| (e.rgba.as_slice(), e.width, e.height))
     }
 
     pub fn insert(&mut self, key: RenderCacheKey, rgba: Vec<u8>, width: u32, height: u32) {
-        let slot = (key.frame_number.unsigned_abs() as usize) % self.capacity;
-        self.entries[slot] = Some(HotCacheEntry { key, rgba, width, height });
+        // Re-inserting an existing key: drop its old position so it ends up
+        // at the back of the FIFO.
+        if self.entries.contains_key(&key) {
+            if let Some(pos) = self.order.iter().position(|k| k == &key) {
+                self.order.remove(pos);
+            }
+        }
+        // Evict oldest until there's room. Capacity is typically small
+        // (~30), so a linear pop is fine.
+        while self.entries.len() >= self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+        self.order.push_back(key.clone());
+        self.entries.insert(key, HotCacheEntry { rgba, width, height });
     }
 
     pub fn clear(&mut self) {
-        for entry in &mut self.entries {
-            *entry = None;
-        }
+        self.entries.clear();
+        self.order.clear();
     }
 }
 
