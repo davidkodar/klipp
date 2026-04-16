@@ -456,6 +456,14 @@ impl CommandHistory {
                 // Construct a combined entry: old state from begin_drag, new state from final_state
                 let combined = combine_old_new(old_entry, final_state);
                 self.push(combined);
+            } else {
+                // Defensive: the coalesce key was set but the "before" snapshot is
+                // missing (e.g. a caller invoked end_drag without begin_drag first,
+                // or an intervening code path stole the pending entry). Push the
+                // final state on its own so the user's edit is not silently lost;
+                // undo will revert this single entry even if it can't reach the
+                // true pre-drag state.
+                self.push(final_state);
             }
         }
     }
