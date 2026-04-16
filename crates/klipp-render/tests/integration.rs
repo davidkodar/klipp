@@ -765,6 +765,7 @@ fn export_mp4_with_embedded_subtitle_stream() {
                 },
             ],
         }],
+        chapters: Vec::new(),
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -856,6 +857,7 @@ fn export_without_embed_has_no_subtitle_stream() {
                 text: "Should not be embedded".to_string(),
             }],
         }],
+        chapters: Vec::new(),
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
