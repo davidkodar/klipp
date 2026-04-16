@@ -907,6 +907,10 @@ impl KlippApp {
                 | AppEvent::SceneDetectProgress { .. }
                 | AppEvent::SceneDetectComplete { .. }
                 | AppEvent::SceneDetectFailed { .. } => {}
+                // Audio sync events come through proxy_event_rx (our generic
+                // background-job channel) and are handled in drain_proxy_events.
+                AppEvent::AudioSyncComplete { .. }
+                | AppEvent::AudioSyncFailed { .. } => {}
             }
         }
 
@@ -1265,6 +1269,173 @@ impl KlippApp {
                 }
             }
         }
+    }
+
+    /// Spawn a background job that cross-correlates a target clip's audio
+    /// against the current reference clip's audio (#61). On completion the
+    /// worker pushes `AudioSyncComplete` / `AudioSyncFailed` onto the
+    /// proxy event channel, handled by `apply_audio_sync_result`.
+    fn spawn_audio_sync(&mut self, clip_id: klipp_core::ClipId) {
+        let ref_clip_id = match self.state.audio_reference_clip_id {
+            Some(id) => id,
+            None => {
+                self.state.toast.show(
+                    "Set an audio reference first: right-click a clip \u{2192} Set as Audio Reference.".to_string(),
+                );
+                return;
+            }
+        };
+        if ref_clip_id == clip_id {
+            self.state.toast.show(
+                "Target and reference are the same clip \u{2014} pick a different clip to align.".to_string(),
+            );
+            return;
+        }
+
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let ref_clip = seq.all_clips().find(|c| c.id == ref_clip_id);
+        let tgt_clip = seq.all_clips().find(|c| c.id == clip_id);
+        let (ref_clip, tgt_clip) = match (ref_clip, tgt_clip) {
+            (Some(a), Some(b)) => (a, b),
+            _ => {
+                self.state.toast.show("Audio sync: clip not found in active sequence.".to_string());
+                return;
+            }
+        };
+
+        let ref_media_id = match ref_clip.media_id() { Some(m) => m, None => {
+            self.state.toast.show("Audio sync: reference clip has no media.".to_string());
+            return;
+        }};
+        let tgt_media_id = match tgt_clip.media_id() { Some(m) => m, None => {
+            self.state.toast.show("Audio sync: target clip has no media.".to_string());
+            return;
+        }};
+
+        let ref_pcm_path = self.state.media_pool.get(&ref_media_id)
+            .and_then(|m| m.audio_cache.as_ref())
+            .map(|c| c.pcm_path.clone());
+        let tgt_pcm_path = self.state.media_pool.get(&tgt_media_id)
+            .and_then(|m| m.audio_cache.as_ref())
+            .map(|c| c.pcm_path.clone());
+        let (ref_path, tgt_path) = match (ref_pcm_path, tgt_pcm_path) {
+            (Some(a), Some(b)) => (a, b),
+            _ => {
+                self.state.toast.show(
+                    "Audio sync: audio cache not ready yet for one of the clips. Try again in a moment.".to_string(),
+                );
+                return;
+            }
+        };
+
+        let ref_timeline_in_secs = ref_clip.timeline_in.to_secs_f64();
+        // Each clip's portion of the media is [source_in, source_out]; subtract
+        // those when resolving the offset so we correlate comparable regions.
+        let ref_source_in_secs = ref_clip.source_in.to_secs_f64();
+        let tgt_source_in_secs = tgt_clip.source_in.to_secs_f64();
+
+        let tx = self.proxy_event_tx.clone();
+        self.state.toast.show("Syncing audio\u{2026}".to_string());
+
+        std::thread::Builder::new()
+            .name("klipp-audio-sync".into())
+            .spawn(move || {
+                use crate::audio_sync::{find_sync_offset, load_pcm_mono};
+                const SR: u32 = 48_000;
+
+                let ref_full = match load_pcm_mono(&ref_path) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::AudioSyncFailed {
+                            clip_id,
+                            error: format!("load reference PCM: {e}"),
+                        });
+                        return;
+                    }
+                };
+                let tgt_full = match load_pcm_mono(&tgt_path) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::AudioSyncFailed {
+                            clip_id,
+                            error: format!("load target PCM: {e}"),
+                        });
+                        return;
+                    }
+                };
+
+                // Slice each buffer to the active [source_in..] region so the
+                // correlation compares what the user sees on the timeline,
+                // not unused head trim.
+                fn slice_from(buf: &[f32], start_secs: f64, sr: u32) -> &[f32] {
+                    let start = ((start_secs.max(0.0)) * sr as f64) as usize;
+                    if start >= buf.len() { &[] } else { &buf[start..] }
+                }
+                let ref_slice = slice_from(&ref_full, ref_source_in_secs, SR);
+                let tgt_slice = slice_from(&tgt_full, tgt_source_in_secs, SR);
+
+                let offset = find_sync_offset(ref_slice, tgt_slice, SR, 60.0);
+                let _ = tx.send(AppEvent::AudioSyncComplete {
+                    clip_id,
+                    offset_samples: offset,
+                    ref_timeline_in_secs,
+                });
+            })
+            .ok();
+    }
+
+    /// Apply a completed audio-sync result: shift the target clip's timeline
+    /// position so its audio lines up with the reference.
+    fn apply_audio_sync_result(
+        &mut self,
+        clip_id: klipp_core::ClipId,
+        offset_samples: i64,
+        ref_timeline_in_secs: f64,
+    ) {
+        const SR: f64 = 48_000.0;
+        let offset_secs = offset_samples as f64 / SR;
+
+        // Positive offset_samples → target audio _starts later_ than the
+        // reference in source time. To align playback, the target clip
+        // should _start earlier_ on the timeline by that amount (i.e.
+        // shifted left from the reference position).
+        let new_in_secs = ref_timeline_in_secs - offset_secs;
+        if new_in_secs < 0.0 {
+            self.state.toast.show(format!(
+                "Audio sync: computed offset {:.3}s would push clip before timeline start \u{2014} skipped.",
+                offset_secs
+            ));
+            return;
+        }
+
+        // Find the target clip's current rate so we create the new timeline_in
+        // at a rate that matches other clips in the sequence.
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let rate = seq.all_clips().find(|c| c.id == clip_id)
+            .map(|c| c.timeline_in.rate)
+            .unwrap_or_else(|| {
+                let fps = seq.fps;
+                (fps.num as f64 / fps.den as f64).round() as u32
+            })
+            .max(1);
+        let new_timeline_in = klipp_core::Timecode::from_secs_f64(new_in_secs, rate);
+
+        // Push MoveClip through the normal command path so history / magnetic
+        // rules / sync-to-engine all behave the same as a drag.
+        let _ = self.cmd_tx.send(AppCommand::MoveClip {
+            clip_id,
+            new_timeline_in,
+        });
+
+        let fps_f = {
+            let fps = self.state.sequence().fps;
+            fps.num as f64 / fps.den.max(1) as f64
+        };
+        let frames = (offset_secs * fps_f).round() as i64;
+        self.state.toast.show(format!(
+            "Synced: offset {:+.3}s ({:+} frame{})",
+            offset_secs, frames, if frames.abs() == 1 { "" } else { "s" },
+        ));
     }
 
     fn drain_audio_conforms(&mut self) {
@@ -10203,6 +10374,20 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::ResetWaveformZoom { track_id } => {
+                // Remove the entry entirely so the default (1.0) applies.
+                self.state.waveform_zoom.remove(track_id);
+                true
+            }
+            AppCommand::SetAudioReference { clip_id } => {
+                self.state.audio_reference_clip_id = Some(*clip_id);
+                self.state.toast.show("Audio reference set.".to_string());
+                true
+            }
+            AppCommand::AlignToAudioReference { clip_id } => {
+                self.spawn_audio_sync(*clip_id);
+                true
+            }
             // Markers — handled by handle_marker_commands
             // Linked clips
             AppCommand::UnlinkClip { clip_id } => {
@@ -16987,6 +17172,13 @@ impl KlippApp {
                     self.state.tracking_progress.remove(&clip_id);
                     tracing::warn!("Point tracking failed for {:?}: {}", clip_id, error);
                     self.state.toast.show(format!("Point tracking failed: {error}"));
+                }
+                AppEvent::AudioSyncComplete { clip_id, offset_samples, ref_timeline_in_secs } => {
+                    self.apply_audio_sync_result(clip_id, offset_samples, ref_timeline_in_secs);
+                }
+                AppEvent::AudioSyncFailed { clip_id, error } => {
+                    tracing::warn!("Audio sync failed for {:?}: {}", clip_id, error);
+                    self.state.toast.show(format!("Audio sync failed: {error}"));
                 }
                 _ => {}
             }

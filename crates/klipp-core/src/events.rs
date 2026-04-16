@@ -838,6 +838,15 @@ pub enum AppCommand {
     AddTrackBelow { track_index: usize },
     RemoveTrack { track_id: TrackId },
     RenameTrack { track_id: TrackId, name: String },
+    /// Reset the per-track waveform amplitude zoom back to 1.0 (#50).
+    ResetWaveformZoom { track_id: TrackId },
+
+    // Audio sync (#61)
+    /// Mark a clip as the reference for future `AlignToAudioReference` calls.
+    SetAudioReference { clip_id: ClipId },
+    /// Cross-correlate the given clip's audio with the current reference clip
+    /// and shift its timeline position to align them.
+    AlignToAudioReference { clip_id: ClipId },
 
     // Media pool management
     RemoveFromPool { media_id: MediaId },
@@ -1306,6 +1315,20 @@ pub enum AppEvent {
     TrackingProgress { clip_id: ClipId, progress: f32 },
     TrackingComplete { clip_id: ClipId, point_index: usize, positions: Vec<(f64, f64)>, start_frame: usize },
     TrackingFailed { clip_id: ClipId, error: String },
+
+    // Audio sync (#61)
+    /// Background cross-correlation finished. `offset_samples` at 48 kHz —
+    /// positive means the target clip was found to start _later_ than the
+    /// reference; negative means _earlier_. `ref_timeline_in_secs` is the
+    /// reference clip's timeline position at the moment the job was spawned
+    /// (read on the UI thread, shipped to the worker, and echoed back so the
+    /// completion handler has it without another lookup).
+    AudioSyncComplete {
+        clip_id: ClipId,
+        offset_samples: i64,
+        ref_timeline_in_secs: f64,
+    },
+    AudioSyncFailed { clip_id: ClipId, error: String },
 }
 
 /// Target for generating keyframes from tracked point data.

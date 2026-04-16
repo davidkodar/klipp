@@ -475,6 +475,45 @@ impl TimelinePanel {
                 painter.rect_filled(track_rect, 0.0, egui::Color32::from_rgb(29, 29, 34));
             }
 
+            // Alt+scroll over an audio track → adjust per-track waveform
+            // amplitude zoom (#50). Uses raw_scroll_delta so we can peek
+            // without consuming the timeline pan/zoom channel. Only audio
+            // tracks respond; other kinds fall through to normal scroll.
+            if track_kind == TrackKind::Audio {
+                let pointer_over_track = ui.input(|i| i.pointer.interact_pos())
+                    .is_some_and(|p| track_rect.contains(p));
+                if pointer_over_track {
+                    let alt_held = ui.input(|i| i.modifiers.alt);
+                    if alt_held {
+                        let (sy, zd) = ui.input_mut(|i| {
+                            let s = i.smooth_scroll_delta;
+                            let zd = i.zoom_delta();
+                            i.smooth_scroll_delta = egui::Vec2::ZERO;
+                            (s.y, zd)
+                        });
+                        // Combine wheel scroll + pinch zoom — whichever the
+                        // OS surfaces first. A raw delta of 1.0 should scale
+                        // by ~1.1 so the zoom feels reactive but not jumpy.
+                        let mut factor = 1.0_f32;
+                        if sy.abs() > 0.1 {
+                            factor *= if sy > 0.0 { 1.1 } else { 1.0 / 1.1 };
+                        }
+                        if (zd - 1.0).abs() > 0.001 {
+                            factor *= zd;
+                        }
+                        if (factor - 1.0).abs() > 1e-4 {
+                            let track_id_here = state.sequence().tracks[track_idx].id;
+                            let cur = state.waveform_zoom
+                                .get(&track_id_here)
+                                .copied()
+                                .unwrap_or(1.0);
+                            let next = (cur * factor).clamp(0.1, 8.0);
+                            state.waveform_zoom.insert(track_id_here, next);
+                        }
+                    }
+                }
+            }
+
             // Draw clips for this track (clipped to lane rect, bounded by tracks area)
             // Skip rendering for tracks fully outside the visible area
             if track_visible {
@@ -2936,6 +2975,23 @@ impl TimelinePanel {
                     self.renaming_track = Some((track_idx, track_name.to_string()));
                     ui.close_menu();
                 }
+                // Per-track waveform amplitude zoom reset (#50). Only shown
+                // for audio tracks where the zoom actually applies.
+                if state.sequence().tracks[track_idx].kind == TrackKind::Audio {
+                    let has_zoom = state.waveform_zoom
+                        .get(&track_id)
+                        .copied()
+                        .map(|v| (v - 1.0).abs() > 1e-4)
+                        .unwrap_or(false);
+                    let resp = ui.add_enabled(
+                        has_zoom,
+                        egui::Button::new("Reset Waveform Zoom"),
+                    );
+                    if resp.clicked() {
+                        cmds.push(AppCommand::ResetWaveformZoom { track_id });
+                        ui.close_menu();
+                    }
+                }
                 ui.separator();
                 let has_clips = !state.sequence().tracks[track_idx].clips.is_empty();
                 let remove_resp = ui.add_enabled(!has_clips, egui::Button::new("Remove Track"));
@@ -3975,6 +4031,7 @@ impl TimelinePanel {
         state: &AppState,
         track_kind: klipp_timeline::TrackKind,
         bright_color: egui::Color32,
+        track_id: klipp_core::TrackId,
     ) {
         if track_kind == TrackKind::Audio && !clip.kind.is_gap() && state.audio_show_waveform {
             // Draw waveform overlay for clips with audio peak data
@@ -4009,6 +4066,15 @@ impl TimelinePanel {
                             let center_y = clip_rect.center().y;
                             let half_h = clip_rect.height() * 0.48; // nearly full height
                             let w = clip_rect.width();
+
+                            // Per-track amplitude zoom (#50). Default 1.0 when
+                            // no entry for this track. Clamp guards against
+                            // stored extreme values.
+                            let wf_zoom = state.waveform_zoom
+                                .get(&track_id)
+                                .copied()
+                                .unwrap_or(1.0)
+                                .clamp(0.1, 8.0);
 
                             // Resolve fade params for waveform shaping (FCP-style tapered waveform)
                             let wf_resolve_fade = |c: &klipp_timeline::Clip| -> (f32, f32, klipp_timeline::FadeCurve, klipp_timeline::FadeCurve) {
@@ -4069,8 +4135,13 @@ impl TimelinePanel {
                                 let col_time = col_frac * wf_clip_dur;
                                 let fade = wf_fade_envelope(col_time);
 
-                                let y_top = center_y - pmax.abs().sqrt().min(1.0) * half_h * fade;
-                                let y_bot = center_y + pmin.abs().sqrt().min(1.0) * half_h * fade;
+                                // Amplitude zoom scales the waveform height.
+                                // `.min(half_h)` caps at the full track half-height so
+                                // waveforms can't bleed outside the clip rect when zoom > 1.
+                                let top_h = (pmax.abs().sqrt().min(1.0) * half_h * fade * wf_zoom).min(half_h);
+                                let bot_h = (pmin.abs().sqrt().min(1.0) * half_h * fade * wf_zoom).min(half_h);
+                                let y_top = center_y - top_h;
+                                let y_bot = center_y + bot_h;
 
                                 if (y_bot - y_top) > 0.5 {
                                     clip_painter.line_segment(
@@ -5011,6 +5082,41 @@ impl TimelinePanel {
                 if ui.button("Duplicate Clip  Ctrl+D").clicked() {
                     cmds.push(AppCommand::DuplicateClip { clip_id });
                     ui.close_menu();
+                }
+                // Audio sync (#61): set reference / align. Shown regardless
+                // of track kind because the linked-audio partner of a video
+                // clip can back the correlation too; the worker falls back
+                // gracefully when the clip lacks an audio cache.
+                {
+                    let is_ref = state.audio_reference_clip_id == Some(clip_id);
+                    let ref_label = if is_ref {
+                        "\u{25CF} Audio Reference (click to re-set)".to_string()
+                    } else {
+                        "Set as Audio Reference".to_string()
+                    };
+                    if ui.button(ref_label).clicked() {
+                        cmds.push(AppCommand::SetAudioReference { clip_id });
+                        ui.close_menu();
+                    }
+                    let align_enabled = state.audio_reference_clip_id.is_some()
+                        && state.audio_reference_clip_id != Some(clip_id);
+                    let align_resp = ui.add_enabled(
+                        align_enabled,
+                        egui::Button::new("Align to Audio Reference"),
+                    );
+                    if !align_enabled {
+                        align_resp.clone().on_disabled_hover_text(
+                            if state.audio_reference_clip_id.is_none() {
+                                "Set an audio reference clip first"
+                            } else {
+                                "This clip is the reference"
+                            },
+                        );
+                    }
+                    if align_resp.clicked() {
+                        cmds.push(AppCommand::AlignToAudioReference { clip_id });
+                        ui.close_menu();
+                    }
                 }
                 ui.separator();
                 if ui.button("Copy Attributes  Ctrl+Shift+C").clicked() {
@@ -7705,6 +7811,7 @@ impl TimelinePanel {
         interactive: bool,
     ) {
         let track_kind = state.sequence().tracks[track_idx].kind;
+        let track_id = state.sequence().tracks[track_idx].id;
         let clips: Vec<_> = state.sequence().tracks[track_idx].clips.clone();
 
         let zoom = state.timeline_zoom;
@@ -7758,7 +7865,7 @@ impl TimelinePanel {
 
             self.draw_filmstrip_background(painter, clip_rect, clip, state, cmds, track_kind, content_rect, fill, is_being_dragged, clip_index);
 
-            self.draw_audio_waveform(painter, clip_rect, clip, state, track_kind, bright_color);
+            self.draw_audio_waveform(painter, clip_rect, clip, state, track_kind, bright_color, track_id);
 
             self.draw_audio_rubber_band(ui, painter, clip_rect, clip, state, cmds, track_kind, content_rect, interactive, pointer_pos, pointer_down, is_selected, is_multi_selected);
 
