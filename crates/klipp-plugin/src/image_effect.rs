@@ -220,6 +220,16 @@ pub fn release_image(handle: OfxPropertySetHandle) {
 static IMG_MEM_STORE: LazyLock<Mutex<HashMap<usize, Vec<u8>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Monotonic counter for image memory handles. Starts at 1 so that 0 can
+/// continue to mean "null / invalid handle" in the OFX ABI. Using a
+/// counter rather than Vec::as_ptr() avoids two collision classes:
+/// (1) zero-byte allocations all return NonNull::dangling(), so every such
+///     handle is the same address; (2) the allocator can legitimately reuse
+///     an address after a Vec is freed, giving a future alloc the same key
+///     as a previously-freed one if a free/alloc interleaves on the store.
+static IMG_MEM_NEXT_HANDLE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(1);
+
 // ── OfxImageEffectSuiteV1 implementation ─────────────────────────────
 
 unsafe extern "C" fn get_property_set_fn(
@@ -491,7 +501,8 @@ unsafe extern "C" fn image_memory_alloc_fn(
     handle: *mut OfxImageMemoryHandle,
 ) -> OfxStatus {
     let buf = vec![0u8; n_bytes];
-    let key = buf.as_ptr() as usize;
+    let key = IMG_MEM_NEXT_HANDLE
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     IMG_MEM_STORE.lock().unwrap().insert(key, buf);
     *handle = key as OfxImageMemoryHandle;
     K_OFX_STAT_OK
