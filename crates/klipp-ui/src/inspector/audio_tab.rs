@@ -580,7 +580,7 @@ fn slider_row(
 fn show_clip_audio(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
-    _state: &AppState,
+    state: &AppState,
     clip: &Clip,
     track_idx: usize,
     is_timeline: bool,
@@ -970,7 +970,7 @@ fn show_clip_audio(
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
             .show(ui, |ui| {
-                super::audio_fx_inspector::show_content(ui, theme, clip_id, &clip.audio_effects, cmds);
+                super::audio_fx_inspector::show_content(ui, theme, clip_id, &clip.audio_effects, &state.ladspa_plugins, cmds);
             });
         ui.add_space(4.0);
     });

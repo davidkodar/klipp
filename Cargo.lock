@@ -2166,9 +2166,12 @@ dependencies = [
 name = "klipp-audio"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "klipp-core",
+ "libloading",
  "realfft",
  "serde",
+ "tracing",
 ]
 
 [[package]]

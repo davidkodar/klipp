@@ -121,6 +121,10 @@ impl ThumbnailRenderer {
                         // Audio effects have no visual preview
                         continue;
                     }
+                    EffectSource::Ladspa(_) => {
+                        // LADSPA plugins are audio-only — no visual preview.
+                        continue;
+                    }
                 };
                 let _ = tx.send(ThumbnailResult {
                     effect_name: name.clone(),

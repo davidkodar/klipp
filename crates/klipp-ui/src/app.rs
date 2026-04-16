@@ -556,6 +556,19 @@ impl KlippApp {
             tracing::info!("OFX: discovered {} plugin(s), {} total effects in registry", count, app.state.effect_registry.effects.len());
             // ofx_host dropped here — UI doesn't need to keep it; engine has its own
         }
+
+        // Discover LADSPA plugins at startup (cheap — dlopen+iterate only).
+        {
+            let _t = LogTimer::new("ui: LADSPA discovery");
+            app.state.ladspa_plugins = klipp_audio::ladspa::discover_ladspa_plugins();
+            app.state
+                .effect_registry
+                .merge_ladspa_plugins(&app.state.ladspa_plugins);
+            tracing::info!(
+                "LADSPA: discovered {} plugin(s)",
+                app.state.ladspa_plugins.len()
+            );
+        }
         klipp_core::startup_timer::mark("KlippApp::new returning");
         app
     }
@@ -7381,11 +7394,33 @@ impl KlippApp {
 
             // Audio DSP effects
             AppCommand::AddAudioEffect { clip_id, ref effect_type } => {
-                // Build default instance from effect descriptors
+                // Build default instance from effect descriptors. LADSPA plugins
+                // don't expose `&'static str` param names, so their defaults
+                // come from the discovered plugin info instead of the factory.
                 let instance = {
-                    let default_params: Vec<(String, f32)> = klipp_audio::dsp::create_effect(effect_type, 48000)
-                        .map(|fx| fx.param_descriptors().iter().map(|d| (d.name.to_string(), d.default)).collect())
-                        .unwrap_or_default();
+                    let default_params: Vec<(String, f32)> = if effect_type.starts_with("ladspa:") {
+                        effect_type
+                            .strip_prefix("ladspa:")
+                            .and_then(|rest| {
+                                let cut = rest.rfind(':')?;
+                                let path = &rest[..cut];
+                                let label = &rest[cut + 1..];
+                                self.state.ladspa_plugins.iter().find(|p| {
+                                    p.path.to_string_lossy() == path && p.label == label
+                                })
+                            })
+                            .map(|info| {
+                                info.control_inputs
+                                    .iter()
+                                    .map(|port| (port.name.clone(), port.default))
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        klipp_audio::dsp::create_effect(effect_type, 48000)
+                            .map(|fx| fx.param_descriptors().iter().map(|d| (d.name.to_string(), d.default)).collect())
+                            .unwrap_or_default()
+                    };
                     klipp_core::AudioEffectInstance {
                         effect_type: effect_type.clone(),
                         enabled: true,

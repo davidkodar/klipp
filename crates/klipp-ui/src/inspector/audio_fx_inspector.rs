@@ -1,4 +1,5 @@
 use crate::theme::KlippTheme;
+use klipp_audio::ladspa::LadspaPluginInfo;
 use klipp_core::{AppCommand, AudioEffectInstance, ClipId};
 
 /// Show the audio effects chain for a clip.
@@ -8,6 +9,7 @@ pub fn show(
     theme: &KlippTheme,
     clip_id: ClipId,
     audio_effects: &[AudioEffectInstance],
+    ladspa_plugins: &[LadspaPluginInfo],
     cmds: &mut Vec<AppCommand>,
 ) {
     // ── Section header ──
@@ -50,7 +52,7 @@ pub fn show(
 
     ui.add_space(4.0);
 
-    show_content(ui, theme, clip_id, audio_effects, cmds);
+    show_content(ui, theme, clip_id, audio_effects, ladspa_plugins, cmds);
 }
 
 /// Show the audio effects content without the section header.
@@ -60,6 +62,7 @@ pub fn show_content(
     theme: &KlippTheme,
     clip_id: ClipId,
     audio_effects: &[AudioEffectInstance],
+    ladspa_plugins: &[LadspaPluginInfo],
     cmds: &mut Vec<AppCommand>,
 ) {
     // "+ Add Effect" button
@@ -106,9 +109,27 @@ pub fn show_content(
     // ── Effect cards ──
     let mut remove_idx = None;
     for (idx, inst) in audio_effects.iter().enumerate() {
-        let effect_name = klipp_audio::dsp::create_effect(&inst.effect_type, 48000)
-            .map(|fx| fx.name().to_string())
-            .unwrap_or_else(|| inst.effect_type.clone());
+        // LADSPA lookup — avoid dlopen-per-frame by short-circuiting on the
+        // "ladspa:" prefix and resolving the display name from the discovery
+        // cache.
+        let ladspa_info: Option<&LadspaPluginInfo> =
+            parse_ladspa_type_id(&inst.effect_type).and_then(|(path, label)| {
+                ladspa_plugins.iter().find(|p| {
+                    p.path.to_string_lossy() == path && p.label == label
+                })
+            });
+
+        let effect_name = if let Some(info) = ladspa_info {
+            if info.name.is_empty() { info.label.clone() } else { info.name.clone() }
+        } else if inst.effect_type.starts_with("ladspa:") {
+            // Plugin uninstalled — show the raw effect_type so the user knows
+            // what's missing.
+            inst.effect_type.clone()
+        } else {
+            klipp_audio::dsp::create_effect(&inst.effect_type, 48000)
+                .map(|fx| fx.name().to_string())
+                .unwrap_or_else(|| inst.effect_type.clone())
+        };
 
         let card_id = ui.id().with(("audio_fx_card", idx));
         let collapsed_key = card_id.with("collapsed");
@@ -192,7 +213,20 @@ pub fn show_content(
                     ui.add_space(4.0);
 
                     // ── Parameters ──
-                    if let Some(effect) = klipp_audio::dsp::create_effect(&inst.effect_type, 48000) {
+                    if let Some(info) = ladspa_info {
+                        render_ladspa_params(ui, theme, clip_id, idx, inst, info, cmds);
+                    } else if inst.effect_type.starts_with("ladspa:") {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "LADSPA plugin not found: {}",
+                                inst.effect_type.strip_prefix("ladspa:").unwrap_or("")
+                            ))
+                            .size(10.0)
+                            .color(egui::Color32::from_rgb(200, 140, 60)),
+                        );
+                    } else if let Some(effect) =
+                        klipp_audio::dsp::create_effect(&inst.effect_type, 48000)
+                    {
                         let descs = effect.param_descriptors();
                         for desc in descs {
                             let current_value = inst.params.iter()
@@ -279,6 +313,119 @@ pub fn show_content(
         cmds.push(AppCommand::RemoveAudioEffect {
             clip_id,
             effect_index: idx,
+        });
+    }
+}
+
+/// Parse `"ladspa:{path}:{label}"` into `(path, label)`. Returns None for
+/// non-LADSPA effect_types or malformed strings. Splits on the LAST `:` so
+/// Windows paths with drive letters don't get chopped.
+fn parse_ladspa_type_id(type_id: &str) -> Option<(&str, &str)> {
+    let rest = type_id.strip_prefix("ladspa:")?;
+    let last_colon = rest.rfind(':')?;
+    Some((&rest[..last_colon], &rest[last_colon + 1..]))
+}
+
+/// Render parameter sliders for a LADSPA plugin. Uses the port metadata
+/// from discovery (min / max / integer / logarithmic / toggle) to pick
+/// an appropriate widget per port.
+fn render_ladspa_params(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: ClipId,
+    effect_index: usize,
+    inst: &AudioEffectInstance,
+    info: &LadspaPluginInfo,
+    cmds: &mut Vec<AppCommand>,
+) {
+    if info.control_inputs.is_empty() {
+        ui.label(
+            egui::RichText::new("(no parameters)")
+                .size(10.0)
+                .color(theme.text_dim),
+        );
+        return;
+    }
+
+    for port in &info.control_inputs {
+        let current_value = inst
+            .params
+            .iter()
+            .find(|(k, _)| k == &port.name)
+            .map(|(_, v)| *v)
+            .unwrap_or(port.default);
+
+        let label = if port.name.is_empty() {
+            format!("port {}", port.index)
+        } else {
+            port.name.clone()
+        };
+
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(&label)
+                    .size(10.0)
+                    .color(theme.text_secondary),
+            );
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let mut val = current_value;
+
+                if port.is_toggle {
+                    let mut on = val >= 0.5;
+                    let resp = ui.checkbox(&mut on, "");
+                    if resp.changed() {
+                        let new_val = if on { 1.0 } else { 0.0 };
+                        cmds.push(AppCommand::UpdateAudioEffectParam {
+                            clip_id,
+                            effect_index,
+                            param_name: port.name.clone(),
+                            value: new_val,
+                        });
+                    }
+                    return;
+                }
+
+                let range = (port.max - port.min).max(f32::EPSILON);
+                let speed = (range * 0.003).max(0.0001);
+                let decimals = if port.is_integer {
+                    0
+                } else if range > 100.0 {
+                    1
+                } else if range > 10.0 {
+                    2
+                } else {
+                    3
+                };
+
+                let unit_suffix = match klipp_audio::ladspa::unit_hint_for_port_name(&port.name) {
+                    klipp_audio::dsp::ParamUnit::Db => " dB",
+                    klipp_audio::dsp::ParamUnit::Hz => " Hz",
+                    klipp_audio::dsp::ParamUnit::Ms => " ms",
+                    klipp_audio::dsp::ParamUnit::Percent => "%",
+                    klipp_audio::dsp::ParamUnit::Ratio => ":1",
+                    klipp_audio::dsp::ParamUnit::None => "",
+                };
+
+                let mut drag = egui::DragValue::new(&mut val)
+                    .range(port.min..=port.max)
+                    .speed(speed)
+                    .max_decimals(decimals)
+                    .suffix(unit_suffix);
+                if port.is_integer {
+                    drag = drag.fixed_decimals(0);
+                }
+
+                let resp = ui.add(drag);
+                if resp.changed() {
+                    cmds.push(AppCommand::UpdateAudioEffectParam {
+                        clip_id,
+                        effect_index,
+                        param_name: port.name.clone(),
+                        value: val,
+                    });
+                }
+            });
         });
     }
 }

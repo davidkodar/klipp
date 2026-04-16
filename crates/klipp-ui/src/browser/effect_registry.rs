@@ -6,8 +6,11 @@ use crate::browser::effects_tab::EffectCategory;
 #[derive(Debug, Clone)]
 pub enum EffectSource {
     Builtin(klipp_effects::BuiltinEffect),
-    Ofx(String), // plugin identifier
+    Ofx(String),   // plugin identifier
     Audio(String), // audio effect type_id (e.g. "eq", "compressor")
+    /// External LADSPA plugin. Holds the full discovered metadata so the
+    /// inspector can render parameter sliders without a second lookup.
+    Ladspa(klipp_audio::ladspa::LadspaPluginInfo),
 }
 
 /// A single entry in the effects browser.
@@ -524,6 +527,40 @@ impl EffectRegistry {
         Self { effects, reference_frame: None }
     }
 
+    /// Merge discovered LADSPA plugins into the registry. One `EffectEntry`
+    /// per plugin; grouping is the plugin maker so the browser buckets them
+    /// sensibly. Discovery already de-dupes by unique_id.
+    pub fn merge_ladspa_plugins(
+        &mut self,
+        plugins: &[klipp_audio::ladspa::LadspaPluginInfo],
+    ) {
+        for plugin in plugins {
+            let name = if plugin.name.is_empty() {
+                plugin.label.clone()
+            } else {
+                plugin.name.clone()
+            };
+            let grouping = if plugin.maker.is_empty() {
+                "LADSPA".to_string()
+            } else {
+                plugin.maker.clone()
+            };
+            let description = if plugin.maker.is_empty() {
+                format!("LADSPA plugin: {}", name)
+            } else {
+                format!("LADSPA plugin: {} by {}", name, plugin.maker)
+            };
+            self.effects.push(EffectEntry {
+                name,
+                category: EffectCategory::AudioEQ, // shown under the Audio tab
+                source: EffectSource::Ladspa(plugin.clone()),
+                source_label: "LADSPA",
+                description,
+                grouping,
+            });
+        }
+    }
+
     /// Merge discovered OFX plugins into the registry, skipping duplicates.
     /// OFX bundles often ship multiple versions of the same plugin — keep only the latest.
     pub fn merge_ofx_plugins(&mut self, plugins: &[klipp_plugin::OfxPluginInfo]) {
@@ -606,7 +643,7 @@ impl EffectRegistry {
                     EffectCategory::AudioEQ
                         | EffectCategory::AudioDynamics
                         | EffectCategory::AudioReverb
-                );
+                ) || matches!(e.source, EffectSource::Ladspa(_));
                 let cat_match = match category {
                     // Favourites: show every effect the user has starred,
                     // video or audio alike. Empty favorites list → empty

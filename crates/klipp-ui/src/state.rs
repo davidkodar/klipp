@@ -753,6 +753,9 @@ pub struct AppState {
     // OFX plugins
     pub available_plugins: Vec<klipp_plugin::OfxPluginInfo>,
 
+    // LADSPA audio plugins — discovered once at startup.
+    pub ladspa_plugins: Vec<klipp_audio::ladspa::LadspaPluginInfo>,
+
     // Unified effects registry (built-in + OFX merged)
     pub effect_registry: crate::browser::effect_registry::EffectRegistry,
     /// Effect browser filters
@@ -1965,6 +1968,7 @@ impl Default for AppState {
             false_color_lut: crate::prefs::FalseColorPalette::broadcast().build_lut(),
             pending_false_color_palette: None,
             available_plugins: Vec::new(),
+            ladspa_plugins: Vec::new(),
             effect_registry: crate::browser::effect_registry::EffectRegistry::new(),
             effect_filter_builtin: true,
             effect_filter_ofx: true,
