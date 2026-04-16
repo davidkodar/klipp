@@ -948,6 +948,26 @@ impl KlippApp {
                 for (old, new) in self.state.spectrum_bins.iter_mut().zip(new_bins.iter()) {
                     *old = *old * (1.0 - SMOOTH) + *new * SMOOTH;
                 }
+
+                // ── Spectrogram history slice ──
+                //
+                // `spectrum_bins` is in dBFS (clamped to -96..=0 by
+                // `compute_spectrum`). Map the useful dynamic range
+                // [-72 dB, 0 dB] onto [0.0, 1.0] so the waterfall's
+                // colour mapping has sensible contrast (-96 → black near
+                // the silence floor would wash out the interesting
+                // signal). Cap history at 300 slices ≈ ~10s at 30fps.
+                const MIN_DB: f32 = -72.0;
+                const MAX_DB: f32 = 0.0;
+                const DB_RANGE: f32 = MAX_DB - MIN_DB;
+                let slice: Vec<f32> = self.state.spectrum_bins
+                    .iter()
+                    .map(|&db| ((db - MIN_DB) / DB_RANGE).clamp(0.0, 1.0))
+                    .collect();
+                self.state.spectrum_history.push_back(slice);
+                if self.state.spectrum_history.len() > 300 {
+                    self.state.spectrum_history.pop_front();
+                }
             }
         }
     }
@@ -16239,6 +16259,8 @@ impl eframe::App for KlippApp {
             let lufs_history: Vec<f32> =
                 self.state.lufs_short_term_history.iter().copied().collect();
             let lufs_target = self.state.lufs_target;
+            let spectrum_history: Vec<Vec<f32>> =
+                self.state.spectrum_history.iter().cloned().collect();
             crate::widgets::scope_window::show_scope_window(
                 ctx,
                 &mut self.state.scope_window,
@@ -16253,6 +16275,7 @@ impl eframe::App for KlippApp {
                 &correlation_samples,
                 &lufs_history,
                 lufs_target,
+                &spectrum_history,
             );
         }
 

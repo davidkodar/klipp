@@ -802,6 +802,12 @@ pub struct AppState {
     /// once per `LufsReadings` event (see app.rs handler) and popped from
     /// the front when the cap is exceeded.
     pub lufs_short_term_history: std::collections::VecDeque<f32>,
+    /// Rolling history of FFT bin slices for the spectrogram waterfall.
+    /// Each entry is one normalized spectrum snapshot (256 bins, 0.0–1.0).
+    /// Capacity: 300 slices ≈ ~10s at 30fps refresh. Pushed from the
+    /// spectrum refresh loop in `app.rs` and popped from the front when
+    /// the cap is exceeded.
+    pub spectrum_history: std::collections::VecDeque<Vec<f32>>,
     /// Smoothed display values (EMA-filtered for stable visual)
     pub lufs_momentary_smooth: f32,
     pub lufs_short_term_smooth: f32,
@@ -1274,6 +1280,10 @@ pub enum ScopeType {
     /// Rolling LUFS history graph — short-term LUFS over the last ~60s
     /// with the user's loudness target drawn as a horizontal line.
     LoudnessHistory,
+    /// Scrolling FFT waterfall — x=time, y=frequency, color=magnitude.
+    /// Rolling 10-second history of normalized spectrum slices; audio-only
+    /// (skips the video frame-buffer lock, same as other audio scopes).
+    Spectrogram,
 }
 
 impl From<ScopeMode> for ScopeType {
@@ -1298,12 +1308,13 @@ impl ScopeType {
             Self::AudioSpectrum => "Audio Spectrum",
             Self::AudioCorrelation => "Audio Correlation",
             Self::LoudnessHistory => "Loudness History",
+            Self::Spectrogram => "Spectrogram",
         }
     }
 
-    pub const ALL: [ScopeType; 8] = [
+    pub const ALL: [ScopeType; 9] = [
         Self::Waveform, Self::Parade, Self::Vectorscope, Self::Histogram, Self::CIEChromaticity, Self::AudioSpectrum,
-        Self::AudioCorrelation, Self::LoudnessHistory,
+        Self::AudioCorrelation, Self::LoudnessHistory, Self::Spectrogram,
     ];
 
     /// Convert to ScopeMode for the existing render pipeline (CIE/Audio scopes have no video render mode).
@@ -1317,6 +1328,7 @@ impl ScopeType {
             Self::AudioSpectrum => None,
             Self::AudioCorrelation => None,
             Self::LoudnessHistory => None,
+            Self::Spectrogram => None,
         }
     }
 }
@@ -1963,6 +1975,11 @@ impl Default for AppState {
             lufs_short_term_history: {
                 let mut v = std::collections::VecDeque::new();
                 v.reserve(600);
+                v
+            },
+            spectrum_history: {
+                let mut v = std::collections::VecDeque::new();
+                v.reserve(300);
                 v
             },
             lufs_momentary_smooth: f32::NEG_INFINITY,

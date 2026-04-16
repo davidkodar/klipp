@@ -1579,6 +1579,50 @@ mod tests {
         assert_ne!(r, b);
     }
 
+    // ── Spectrogram scope tests (#74) ────────────────────────────────────
+
+    #[test]
+    fn render_spectrogram_correct_size() {
+        let history = vec![vec![0.5f32; 256]; 10];
+        let img = render_audio_spectrogram(&history, 300, 200);
+        assert_eq!(img.size, [300, 200]);
+        assert_eq!(img.pixels.len(), 300 * 200);
+    }
+
+    #[test]
+    fn render_spectrogram_empty_doesnt_panic() {
+        let img = render_audio_spectrogram(&[], 300, 200);
+        assert_eq!(img.size, [300, 200]);
+    }
+
+    #[test]
+    fn magnitude_to_color_extremes() {
+        let black = magnitude_to_color(0.0);
+        let white = magnitude_to_color(1.0);
+        assert!(black.r() < 50);
+        assert!(black.b() < 60);
+        assert!(white.r() > 200);
+        assert!(white.g() > 200);
+        assert!(white.b() > 200);
+    }
+
+    #[test]
+    fn spectrum_history_caps_at_300() {
+        let mut history: std::collections::VecDeque<Vec<f32>> =
+            std::collections::VecDeque::new();
+        for _ in 0..400 {
+            history.push_back(vec![0.5; 256]);
+            if history.len() > 300 { history.pop_front(); }
+        }
+        assert_eq!(history.len(), 300);
+    }
+
+    #[test]
+    fn lerp_rgb_midpoint() {
+        let mid = lerp_rgb((0,0,0), (200,200,200), 0.5);
+        assert_eq!(mid, (100, 100, 100));
+    }
+
     #[test]
     fn pane_settings_new_fields_default_correctly() {
         // Defaults must preserve the pre-enhancement behaviour: I/Q lines
@@ -1811,4 +1855,90 @@ pub(crate) fn render_lufs_history(
     }
 
     egui::ColorImage { size: [w, h], pixels }
+}
+
+/// Render a scrolling FFT waterfall (spectrogram): x = time, y = frequency
+/// (bin 0 = lowest at the bottom, bin N-1 = highest at the top), colour =
+/// magnitude via a 5-stop heat-map gradient.
+///
+/// `history` is oldest-first — the most recent slice lands on the right
+/// edge. Each slice is a `Vec<f32>` of per-bin magnitudes in the closed
+/// range `[0.0, 1.0]`; the caller (`app.rs` spectrum refresh loop) is
+/// responsible for normalising raw dBFS bins into this range.
+///
+/// Empty `history` returns a background-only image at the requested size.
+pub fn render_audio_spectrogram(
+    history: &[Vec<f32>],
+    width: usize,
+    height: usize,
+) -> egui::ColorImage {
+    use egui::Color32;
+    let w = width.max(1);
+    let h = height.max(1);
+    let bg = Color32::from_rgb(10, 10, 14);
+    let mut pixels = vec![bg; w * h];
+
+    if history.is_empty() {
+        return egui::ColorImage { size: [w, h], pixels };
+    }
+
+    let n_slices = history.len();
+    for (slice_idx, slice) in history.iter().enumerate() {
+        if slice.is_empty() {
+            continue;
+        }
+        // Map oldest→newest onto left→right. Naive mapping; see function
+        // docstring for the n_slices-vs-width aliasing caveat.
+        let x = if n_slices > 1 {
+            (slice_idx as f32 / (n_slices - 1) as f32 * (w - 1) as f32) as usize
+        } else {
+            w - 1
+        };
+        let n_bins = slice.len();
+        for (bin_idx, &mag) in slice.iter().enumerate() {
+            // bin 0 = lowest freq, render at the bottom → invert Y.
+            let y_frac = if n_bins > 1 {
+                bin_idx as f32 / (n_bins - 1) as f32
+            } else {
+                0.0
+            };
+            let y = (h - 1).saturating_sub((y_frac * (h - 1) as f32) as usize);
+            if x < w && y < h {
+                pixels[y * w + x] = magnitude_to_color(mag);
+            }
+        }
+    }
+
+    egui::ColorImage { size: [w, h], pixels }
+}
+
+/// Map a normalized magnitude `[0.0, 1.0]` to an RGB heat-map colour via
+/// a 5-stop gradient: dark-blue → blue → cyan → yellow-green → white.
+/// Values outside the range clamp to the endpoints.
+pub(crate) fn magnitude_to_color(mag: f32) -> egui::Color32 {
+    // Five evenly-spaced stops (t = 0.0, 0.25, 0.5, 0.75, 1.0).
+    let stops: [(u8, u8, u8); 5] = [
+        (10, 10, 40),     // dark blue  — near-silence
+        (20, 80, 180),    // blue       — quiet
+        (20, 180, 180),   // cyan       — mid
+        (180, 200, 20),   // yellow-green — loud
+        (255, 255, 255),  // white      — peak
+    ];
+    let m = mag.clamp(0.0, 1.0);
+    // Figure out which of the four segments we're in.
+    let seg_f = m * 4.0;
+    let seg = (seg_f as usize).min(3);
+    let t = seg_f - seg as f32;
+    let (r, g, b) = lerp_rgb(stops[seg], stops[seg + 1], t);
+    egui::Color32::from_rgb(r, g, b)
+}
+
+/// Linear interpolation between two RGB triples. `t` is clamped to
+/// `[0.0, 1.0]` by the callers above, but rounding uses `as u8` so the
+/// result is tolerant of slight overshoot.
+pub(crate) fn lerp_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+    let lerp = |x: u8, y: u8, t: f32| -> u8 {
+        (x as f32 + (y as f32 - x as f32) * t).round() as u8
+    };
+    (lerp(a.0, b.0, t), lerp(a.1, b.1, t), lerp(a.2, b.2, t))
 }

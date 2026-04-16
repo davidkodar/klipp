@@ -104,6 +104,10 @@ pub fn show_scope_window(
     correlation_samples: &[f32],
     lufs_history: &[f32],
     lufs_target: f32,
+    // `spectrum_history`: oldest-first slices of normalised FFT bins
+    // (each slice is one `Vec<f32>` of 256 values in 0.0–1.0) for the
+    // spectrogram waterfall scope. Collected at the call site.
+    spectrum_history: &[Vec<f32>],
 ) {
     if !state.open {
         return;
@@ -212,7 +216,7 @@ pub fn show_scope_window(
                                 ui.painter().rect_stroke(pane_rect, 0.0,
                                     egui::Stroke::new(0.5, egui::Color32::from_rgb(0x2a, 0x2a, 0x30)));
                                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
-                                draw_pane(&mut child, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target);
+                                draw_pane(&mut child, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history);
                             }
                         }
 
@@ -247,6 +251,7 @@ fn draw_pane(
     correlation_samples: &[f32],
     lufs_history: &[f32],
     lufs_target: f32,
+    spectrum_history: &[Vec<f32>],
 ) {
     let pane_rect = ui.max_rect();
     let scope_type = state.panes[pane_idx].scope_type;
@@ -421,7 +426,7 @@ fn draw_pane(
         return;
     }
 
-    render_pane_scope(ui, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, content_rect, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target);
+    render_pane_scope(ui, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, content_rect, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history);
 }
 
 fn render_pane_scope(
@@ -438,6 +443,7 @@ fn render_pane_scope(
     correlation_samples: &[f32],
     lufs_history: &[f32],
     lufs_target: f32,
+    spectrum_history: &[Vec<f32>],
 ) {
     let pane = &state.panes[pane_idx];
     let render_h: usize = 256; // Smaller for multi-pane to stay fast
@@ -449,7 +455,10 @@ fn render_pane_scope(
     // on every repaint when audio is idle.
     let is_audio_only = matches!(
         pane.scope_type,
-        ScopeType::AudioSpectrum | ScopeType::AudioCorrelation | ScopeType::LoudnessHistory
+        ScopeType::AudioSpectrum
+            | ScopeType::AudioCorrelation
+            | ScopeType::LoudnessHistory
+            | ScopeType::Spectrogram
     );
     let scope_image = if is_audio_only {
         let throttled = runtime.last_render[pane_idx]
@@ -471,6 +480,9 @@ fn render_pane_scope(
                 }
                 ScopeType::LoudnessHistory => {
                     super::scopes::render_lufs_history(lufs_history, lufs_target, render_w, render_h)
+                }
+                ScopeType::Spectrogram => {
+                    super::scopes::render_audio_spectrogram(spectrum_history, render_w, render_h)
                 }
                 _ => unreachable!("is_audio_only gates this match"),
             };
@@ -526,7 +538,8 @@ fn render_pane_scope(
                     }
                     ScopeType::AudioSpectrum
                     | ScopeType::AudioCorrelation
-                    | ScopeType::LoudnessHistory => unreachable!(
+                    | ScopeType::LoudnessHistory
+                    | ScopeType::Spectrogram => unreachable!(
                         "audio-only scopes are rendered before the frame-buffer match"
                     ),
                 };
@@ -732,7 +745,8 @@ pub fn draw_scope_cursor_indicator(
         }
         ScopeType::AudioSpectrum
         | ScopeType::AudioCorrelation
-        | ScopeType::LoudnessHistory => {
+        | ScopeType::LoudnessHistory
+        | ScopeType::Spectrogram => {
             // Audio-only scopes have no colour-picker overlay — the cursor
             // is a video-pixel sample and there is no video pixel under
             // these scopes. Intentionally do nothing.
@@ -766,6 +780,11 @@ fn draw_pane_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindo
             ui.label("No settings available.");
             ui.small("Short-term LUFS over the last ~60 s.");
             ui.small("Green band = \u{00B1}1 LU around the loudness target.");
+        }
+        ScopeType::Spectrogram => {
+            ui.label("No settings available.");
+            ui.small("Scrolling FFT waterfall — ~10 s of history.");
+            ui.small("x = time, y = frequency (log), colour = magnitude.");
         }
     }
 
