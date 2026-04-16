@@ -6870,7 +6870,20 @@ pub fn generate_filmstrip_incremental(
     let _dst_w = decode_w;
     let _dst_h = decode_h;
 
-    let mut sws_cache: Option<*mut ffmpeg_next::ffi::SwsContext> = None;
+    // RAII guard so the cached raw SwsContext is released on every exit
+    // path (early return on `Ok(count)`, panic unwind, or future `?`
+    // propagations). Without this the context leaked every time the
+    // filmstrip helper ran, mirroring a pattern that SequentialFrameDecoder
+    // already handles correctly in its own Drop impl.
+    struct SwsCacheGuard(Option<*mut ffmpeg_next::ffi::SwsContext>);
+    impl Drop for SwsCacheGuard {
+        fn drop(&mut self) {
+            if let Some(sws) = self.0.take() {
+                unsafe { ffmpeg_next::ffi::sws_freeContext(sws); }
+            }
+        }
+    }
+    let mut sws_cache = SwsCacheGuard(None);
     let mut count = 0;
 
     let num_frames = ((duration_secs / interval_secs).ceil() as usize).min(500);
@@ -6921,7 +6934,7 @@ pub fn generate_filmstrip_incremental(
             continue;
         }
 
-        if let Some(rgba) = frame_to_rgba(&decoded_frame, decode_w, decode_h, is_hw, &mut sws_cache) {
+        if let Some(rgba) = frame_to_rgba(&decoded_frame, decode_w, decode_h, is_hw, &mut sws_cache.0) {
             if rotation != 0 {
                 let (rotated, rw, rh) = rotate_rgba(&rgba, decode_w, decode_h, rotation);
                 on_frame(seek_secs, rotated, rw, rh);
