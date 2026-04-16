@@ -10837,6 +10837,59 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::OpenInExternalApp { media_id } => {
+                // Look up the item; bail silently if it vanished between menu
+                // draw and dispatch (race with RemoveFromPool, etc).
+                let (path, filename, offline, is_still, has_audio, has_video) = match self.state.media_pool.get(media_id) {
+                    Some(item) => (
+                        item.path.clone(),
+                        item.filename.clone(),
+                        item.offline,
+                        item.is_still,
+                        item.has_audio,
+                        !item.video_codec.is_empty(),
+                    ),
+                    None => return true,
+                };
+
+                if offline {
+                    self.state.toast.show("Clip is offline \u{2014} cannot open in external app.");
+                    return true;
+                }
+
+                // Routing: stills always go to the image editor; anything
+                // without a video stream (or pure audio files) → audio
+                // editor; otherwise video editor. `has_audio && !has_video`
+                // catches audio-only containers where `video_codec` is blank.
+                let app = if is_still {
+                    &self.prefs.external_tools.image_editor
+                } else if !has_video && has_audio {
+                    &self.prefs.external_tools.audio_editor
+                } else {
+                    &self.prefs.external_tools.video_editor
+                };
+
+                #[cfg(target_os = "linux")]
+                {
+                    let spawn_result = if app.trim().is_empty() {
+                        std::process::Command::new("xdg-open").arg(&path).spawn()
+                    } else {
+                        std::process::Command::new(app).arg(&path).spawn()
+                    };
+                    match spawn_result {
+                        Ok(_) => self.state.toast.show(format!("Opened in external app: {filename}")),
+                        Err(err) => self.state.toast.show(format!("Failed to open external app: {err}")),
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    // macOS / Windows: deferred — no xdg-open equivalent wired up yet.
+                    let _ = (app, &path, &filename);
+                    self.state.toast.show("External app handoff is Linux-only for now.");
+                }
+
+                true
+            }
             AppCommand::RevealMediaInBrowser { media_id } => {
                 // Switch to Media tab
                 self.layout.active_browser_tab = crate::layout_state::BrowserTab::Media;
@@ -16684,29 +16737,56 @@ impl KlippApp {
                     self.state.skim_decode_started_at = None;
                 }
                 AppEvent::MediaFileChanged { path, deleted } => {
-                    // Find media item(s) matching this path
-                    if let Some(item) = self.state.media_pool.find_by_path(&path) {
-                        let id = item.id;
-                        let filename = item.filename.clone();
-                        if deleted || !path.exists() {
-                            if let Some(item) = self.state.media_pool.get_mut(&id) {
+                    // Collect all matching media IDs up-front — a single file
+                    // path can back multiple items (e.g. subclips sharing a
+                    // parent source). We need every one to stay in sync.
+                    let matches: Vec<(klipp_core::MediaId, String)> = self
+                        .state
+                        .media_pool
+                        .all()
+                        .filter(|item| item.path == path)
+                        .map(|item| (item.id, item.filename.clone()))
+                        .collect();
+
+                    if matches.is_empty() {
+                        // Nothing to do — watcher may have caught a stale path.
+                    } else if deleted || !path.exists() {
+                        let first_filename = matches[0].1.clone();
+                        for (id, _) in &matches {
+                            if let Some(item) = self.state.media_pool.get_mut(id) {
                                 item.offline = true;
                             }
-                            // Track and surface — toast points at File menu rather than
-                            // popping a modal mid-edit, which would interrupt the user.
-                            if !self.state.offline_media_ids.contains(&id) {
-                                self.state.offline_media_ids.push(id);
+                            if !self.state.offline_media_ids.contains(id) {
+                                self.state.offline_media_ids.push(*id);
                             }
-                            self.state.toast.show(format!(
-                                "Media file offline: {filename}. Use File \u{2192} Relink Media\u{2026}"
-                            ));
-                            tracing::warn!("Media file deleted externally: {:?}", path);
-                        } else {
-                            if let Some(item) = self.state.media_pool.get_mut(&id) {
+                        }
+                        // Track and surface — toast points at File menu rather than
+                        // popping a modal mid-edit, which would interrupt the user.
+                        self.state.toast.show(format!(
+                            "Media file offline: {first_filename}. Use File \u{2192} Relink Media\u{2026}"
+                        ));
+                        tracing::warn!("Media file deleted externally: {:?}", path);
+                    } else {
+                        // File was modified. Always mark for re-probe; if
+                        // round-trip is enabled, dispatch the same re-probe
+                        // command RelinkMedia uses so metadata, thumbnails,
+                        // and waveforms refresh without user action.
+                        let round_trip = self.prefs.external_tools.round_trip_reload;
+                        for (id, _) in &matches {
+                            if let Some(item) = self.state.media_pool.get_mut(id) {
                                 item.needs_reprobe = true;
                             }
-                            tracing::info!("Media file modified externally: {:?}", path);
+                            if round_trip {
+                                let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
+                                    path: path.clone(),
+                                    media_id: *id,
+                                });
+                            }
                         }
+                        if round_trip {
+                            self.state.toast.show("Clip reloaded after external edit.");
+                        }
+                        tracing::info!("Media file modified externally: {:?}", path);
                     }
                 }
                 AppEvent::StabilizationProgress { clip_id, progress } => {
@@ -21589,5 +21669,87 @@ mod marker_export_tests {
         // 1.5 seconds at 30 fps -> frame 45
         let tc = RationalTime { value: 45, rate: 30 };
         assert_eq!(timecode_to_frame(&tc, 30.0), 45);
+    }
+}
+
+#[cfg(test)]
+mod external_tools_tests {
+    use crate::prefs::ExternalToolsPrefs;
+
+    #[test]
+    fn external_tools_prefs_default_round_trip_enabled() {
+        let prefs = ExternalToolsPrefs::default();
+        assert!(prefs.round_trip_reload);
+        assert!(prefs.image_editor.is_empty());
+        assert!(prefs.audio_editor.is_empty());
+        assert!(prefs.video_editor.is_empty());
+    }
+
+    /// Mirrors the routing in the `OpenInExternalApp` handler: stills always
+    /// go to the image editor.
+    #[test]
+    fn external_app_routing_still_uses_image_editor() {
+        let prefs = ExternalToolsPrefs {
+            image_editor: "gimp".into(),
+            audio_editor: "audacity".into(),
+            video_editor: "kdenlive".into(),
+            round_trip_reload: true,
+        };
+        let is_still = true;
+        let has_video = false;
+        let has_audio = false;
+        let app = if is_still {
+            &prefs.image_editor
+        } else if !has_video && has_audio {
+            &prefs.audio_editor
+        } else {
+            &prefs.video_editor
+        };
+        assert_eq!(app, "gimp");
+    }
+
+    /// Mirrors the routing in the `OpenInExternalApp` handler: audio-only
+    /// files (has_audio, no video_codec) route to the audio editor.
+    #[test]
+    fn external_app_routing_audio_only() {
+        let prefs = ExternalToolsPrefs {
+            image_editor: "gimp".into(),
+            audio_editor: "audacity".into(),
+            video_editor: "kdenlive".into(),
+            round_trip_reload: true,
+        };
+        let is_still = false;
+        let has_video = false;
+        let has_audio = true;
+        let app = if is_still {
+            &prefs.image_editor
+        } else if !has_video && has_audio {
+            &prefs.audio_editor
+        } else {
+            &prefs.video_editor
+        };
+        assert_eq!(app, "audacity");
+    }
+
+    /// Video clips route to the video editor.
+    #[test]
+    fn external_app_routing_video_uses_video_editor() {
+        let prefs = ExternalToolsPrefs {
+            image_editor: "gimp".into(),
+            audio_editor: "audacity".into(),
+            video_editor: "kdenlive".into(),
+            round_trip_reload: true,
+        };
+        let is_still = false;
+        let has_video = true;
+        let has_audio = true;
+        let app = if is_still {
+            &prefs.image_editor
+        } else if !has_video && has_audio {
+            &prefs.audio_editor
+        } else {
+            &prefs.video_editor
+        };
+        assert_eq!(app, "kdenlive");
     }
 }

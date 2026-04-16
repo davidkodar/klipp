@@ -1406,6 +1406,10 @@ fn show_context_menu(
         cmds.push(AppCommand::RemoveFromPool { media_id });
         ui.close_menu();
     }
+    if ui.button("Open in External App").clicked() {
+        cmds.push(AppCommand::OpenInExternalApp { media_id });
+        ui.close_menu();
+    }
     if ui.button("Reveal in File Manager").clicked() {
         cmds.push(AppCommand::RevealInFileManager {
             path: path.to_path_buf(),

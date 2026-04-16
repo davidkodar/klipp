@@ -18,6 +18,7 @@ enum PrefsTab {
     Timeline,
     Viewer,
     Proxy,
+    ExternalTools,
     Advanced,
     Keyboard,
     About,
@@ -185,7 +186,7 @@ impl PreferencesPanel {
                             ("PROJECT", &[(PrefsTab::General, "\u{1F4C4}", "General"), (PrefsTab::Appearance, "\u{2699}", "Appearance")]),
                             ("PERFORMANCE", &[(PrefsTab::System, "\u{1F5A5}", "System"), (PrefsTab::Playback, "\u{25B6}", "Playback"), (PrefsTab::MediaCache, "\u{1F4BE}", "Cache")]),
                             ("EDITING", &[(PrefsTab::Editing, "\u{2702}", "Editing"), (PrefsTab::Timeline, "\u{1F39E}", "Timeline"), (PrefsTab::Viewer, "\u{1F5B5}", "Viewer")]),
-                            ("MEDIA & AUDIO", &[(PrefsTab::FileBrowser, "\u{1F4C2}", "File Browser"), (PrefsTab::Audio, "\u{1F3B5}", "Audio"), (PrefsTab::AudioHardware, "\u{1F50A}", "Audio HW"), (PrefsTab::Proxy, "\u{1F4F9}", "Proxy")]),
+                            ("MEDIA & AUDIO", &[(PrefsTab::FileBrowser, "\u{1F4C2}", "File Browser"), (PrefsTab::Audio, "\u{1F3B5}", "Audio"), (PrefsTab::AudioHardware, "\u{1F50A}", "Audio HW"), (PrefsTab::Proxy, "\u{1F4F9}", "Proxy"), (PrefsTab::ExternalTools, "\u{1F517}", "External Tools")]),
                             ("COLOR & EXPORT", &[(PrefsTab::Color, "\u{1F3A8}", "Color"), (PrefsTab::Export, "\u{2B07}", "Export")]),
                             ("INTERFACE", &[(PrefsTab::Title, "T", "Titles"), (PrefsTab::Keyboard, "\u{2328}", "Keyboard"), (PrefsTab::Advanced, "\u{2699}", "Advanced")]),
                             ("ABOUT", &[(PrefsTab::About, "\u{2139}", "About Klipp")]),
@@ -239,6 +240,7 @@ impl PreferencesPanel {
                             PrefsTab::Audio => self.show_audio(ui, prefs, prefs_dirty),
                             PrefsTab::Export => self.show_export(ui, prefs, prefs_dirty, &mut cmds),
                             PrefsTab::Proxy => self.show_proxy(ui, prefs, prefs_dirty),
+                            PrefsTab::ExternalTools => self.show_external_tools(ui, prefs, prefs_dirty),
                             PrefsTab::System => self.show_system(ui, prefs, prefs_dirty),
                             PrefsTab::Appearance => self.show_appearance(ui, prefs, prefs_dirty),
                             PrefsTab::AudioHardware => self.show_audio_hardware(ui, prefs, prefs_dirty),
@@ -318,6 +320,7 @@ impl PreferencesPanel {
             PrefsTab::Audio => &["audio", "pan law", "fade", "curve", "loudness", "normalize", "peak hold", "anti-click", "mixing"],
             PrefsTab::AudioHardware => &["audio hardware", "output device", "sample rate", "buffer size", "monitoring", "pipewire", "alsa"],
             PrefsTab::Proxy => &["proxy", "auto-generate", "resolution", "proxy cache", "transcode"],
+            PrefsTab::ExternalTools => &["external tools", "external app", "handoff", "round-trip", "round trip", "gimp", "krita", "audacity", "kdenlive", "editor", "image editor", "audio editor", "video editor"],
             PrefsTab::Color => &["color", "working space", "rec.709", "lut", "interpolation", "scopes", "vectorscope", "skin angle"],
             PrefsTab::Export => &["export", "encoder", "h.264", "h.265", "prores", "color space", "audio sample rate", "overwrite", "parallel render"],
             PrefsTab::Title => &["title", "font", "size", "alignment", "duration", "safe area", "text"],
@@ -1601,6 +1604,84 @@ impl PreferencesPanel {
                     tracing::info!("Proxy cache cleared: {}", cache_dir.display());
                 }
             }
+        });
+    }
+
+    fn show_external_tools(
+        &mut self,
+        ui: &mut egui::Ui,
+        prefs: &mut Preferences,
+        dirty: &mut bool,
+    ) {
+        // Page heading
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("External Tools").strong().size(18.0).color(Self::NORMAL_TEXT));
+        });
+        ui.add_space(4.0);
+
+        // ── APPLICATIONS section ──
+        Self::section_header(ui, "APPLICATIONS");
+
+        Self::setting_row_with_subtitle(ui, "Image editor", "Used for still images (PNG/JPG/etc). Empty = OS default.", |ui| {
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut prefs.external_tools.image_editor)
+                    .desired_width(230.0)
+                    .hint_text("e.g. gimp"),
+            );
+            if resp.changed() { *dirty = true; }
+        });
+
+        Self::setting_row_with_subtitle(ui, "Audio editor", "Used for audio-only clips. Empty = OS default.", |ui| {
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut prefs.external_tools.audio_editor)
+                    .desired_width(230.0)
+                    .hint_text("e.g. audacity"),
+            );
+            if resp.changed() { *dirty = true; }
+        });
+
+        Self::setting_row_with_subtitle(ui, "Video editor", "Used for video clips. Empty = OS default.", |ui| {
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut prefs.external_tools.video_editor)
+                    .desired_width(230.0)
+                    .hint_text("e.g. kdenlive"),
+            );
+            if resp.changed() { *dirty = true; }
+        });
+
+        // ── ROUND-TRIP section ──
+        Self::section_header(ui, "ROUND-TRIP");
+
+        Self::setting_row_with_subtitle(
+            ui,
+            "Reload on external edit",
+            "When the external app saves the file, refresh metadata and thumbnails automatically.",
+            |ui| {
+                let mut val = prefs.external_tools.round_trip_reload;
+                let resp = ui.add(crate::widgets::toggle::toggle(&mut val))
+                    .on_hover_text("Uses the existing media watcher — no extra file watches are created.");
+                if resp.changed() {
+                    prefs.external_tools.round_trip_reload = val;
+                    *dirty = true;
+                }
+            },
+        );
+
+        // ── HINT ──
+        ui.add_space(10.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(14.0);
+            ui.label(
+                egui::RichText::new(
+                    "Enter an executable name (looked up on $PATH) or a full path. \
+                     Examples: gimp, krita, audacity, kdenlive, /usr/bin/gimp. \
+                     Leave empty to fall back to xdg-open (OS default). Linux only \u{2014} \
+                     macOS/Windows support is deferred.",
+                )
+                .size(10.5)
+                .color(Self::DIM_TEXT),
+            );
         });
     }
 

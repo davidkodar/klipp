@@ -37,6 +37,8 @@ pub struct Preferences {
     pub viewer: ViewerPrefs,
     #[serde(default)]
     pub advanced: AdvancedPrefs,
+    #[serde(default)]
+    pub external_tools: ExternalToolsPrefs,
 }
 
 /// Rich recent project entry with cached metadata for the launch screen.
@@ -1489,6 +1491,33 @@ impl Default for AdvancedPrefs {
             toast_duration_secs: default_toast_secs(), modal_backdrop_alpha: default_modal_alpha(),
             perf_overlay_interval_ms: default_perf_ms(), anti_click_fade_ms: default_anti_click_ms(),
             pre_roll_secs: default_preroll_secs(),
+        }
+    }
+}
+
+/// External-application handoff for round-trip editing (GIMP / Krita / Audacity / etc).
+/// Empty strings fall back to `xdg-open`, which delegates to the user's OS default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalToolsPrefs {
+    #[serde(default)]
+    pub image_editor: String,
+    #[serde(default)]
+    pub audio_editor: String,
+    #[serde(default)]
+    pub video_editor: String,
+    /// When true, external-edit saves are picked up by the existing media
+    /// watcher and the clip's metadata / thumbnails refresh automatically.
+    #[serde(default = "default_true")]
+    pub round_trip_reload: bool,
+}
+
+impl Default for ExternalToolsPrefs {
+    fn default() -> Self {
+        Self {
+            image_editor: String::new(),
+            audio_editor: String::new(),
+            video_editor: String::new(),
+            round_trip_reload: true,
         }
     }
 }

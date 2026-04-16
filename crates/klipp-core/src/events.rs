@@ -836,6 +836,10 @@ pub enum AppCommand {
 
     SetMediaTags { media_id: MediaId, tags: Vec<String> },
     RevealInFileManager { path: PathBuf },
+    /// Open a media clip in an external application (GIMP / Krita / Audacity / etc).
+    /// The app is chosen from `ExternalToolsPrefs` based on media type and falls
+    /// back to `xdg-open` when the configured field is empty.
+    OpenInExternalApp { media_id: MediaId },
     RevealMediaInBrowser { media_id: MediaId },
     SetMediaColorLabel { media_id: MediaId, label: u8 },
     DeleteUnusedMedia,
