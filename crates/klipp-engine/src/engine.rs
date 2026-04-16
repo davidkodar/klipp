@@ -6449,9 +6449,19 @@ fn decode_frame_at_or_after(
             if frame_passes_target(out_frame) {
                 return true;
             }
-            // Otherwise the frame is too early — discard and keep decoding.
         }
-        let _ = decoder.send_packet(&packet);
+        if decoder.send_packet(&packet).is_err() {
+            // EAGAIN after a drain — rare but possible with high-latency
+            // codecs (AV1, HEVC B-frames). Drain again then retry once.
+            while decoder.receive_frame(out_frame).is_ok() {
+                if frame_passes_target(out_frame) {
+                    return true;
+                }
+            }
+            if decoder.send_packet(&packet).is_err() {
+                tracing::warn!("decode_frame_at_or_after: packet lost after drain+retry");
+            }
+        }
     }
     // Phase 2: stream exhausted but no frame yet — drain anything that came
     // out from the last send_packet.
@@ -6664,7 +6674,12 @@ impl CachedFrameDecoder {
             if stream.index() != self.stream_index {
                 continue;
             }
-            let _ = self.decoder.send_packet(&packet);
+            if self.decoder.send_packet(&packet).is_err() {
+                while self.decoder.receive_frame(&mut self.frame).is_ok() {}
+                if self.decoder.send_packet(&packet).is_err() {
+                    tracing::warn!("CachedFrameDecoder: packet lost after drain+retry");
+                }
+            }
             while self.decoder.receive_frame(&mut self.frame).is_ok() {
                 let pts = self.frame.pts().unwrap_or(0);
                 let time_base = stream.time_base();
@@ -6724,7 +6739,16 @@ pub fn decode_frame_at_time(
         if stream.index() != stream_index {
             continue;
         }
-        let _ = decoder.send_packet(&packet);
+        if decoder.send_packet(&packet).is_err() {
+            // EAGAIN — drain pending frames, then retry once
+            if decoder.receive_frame(&mut decoded_frame).is_ok() {
+                got_frame = true;
+                break;
+            }
+            if decoder.send_packet(&packet).is_err() {
+                tracing::warn!("decode_frame_at_time: packet lost after drain+retry");
+            }
+        }
         if decoder.receive_frame(&mut decoded_frame).is_ok() {
             got_frame = true;
             break;
@@ -6917,7 +6941,12 @@ pub fn generate_filmstrip_incremental(
             if stream.index() != stream_index {
                 continue;
             }
-            let _ = decoder.send_packet(&packet);
+            if decoder.send_packet(&packet).is_err() {
+                while decoder.receive_frame(&mut decoded_frame).is_ok() {}
+                if decoder.send_packet(&packet).is_err() {
+                    tracing::warn!("filmstrip: packet lost after drain+retry");
+                }
+            }
             while decoder.receive_frame(&mut decoded_frame).is_ok() {
                 let frame_ts = decoded_frame.timestamp().unwrap_or(0);
                 let tb = stream.time_base();
@@ -7037,7 +7066,17 @@ impl SequentialFrameDecoder {
                     if packet.stream() != self.stream_index {
                         continue;
                     }
-                    let _ = self.decoder.send_packet(&packet);
+                    if self.decoder.send_packet(&packet).is_err() {
+                        // EAGAIN — drain before retry (stabilize / analysis
+                        // path processes thousands of sequential frames; a
+                        // lost packet here subtly corrupts motion vectors)
+                        while self.decoder.receive_frame(&mut decoded).is_ok() {
+                            return self.convert(&decoded);
+                        }
+                        if self.decoder.send_packet(&packet).is_err() {
+                            tracing::warn!("SequentialFrameDecoder: packet lost after drain+retry");
+                        }
+                    }
                 }
                 Err(ffmpeg_next::Error::Eof) => {
                     self.eof_reached = true;
