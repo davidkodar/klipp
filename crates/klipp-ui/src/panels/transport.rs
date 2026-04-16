@@ -86,6 +86,22 @@ impl TransportBar {
                 cmds.push(AppCommand::SeekRelative(1));
             }
 
+            // Jog wheel — drag horizontally to scrub frame by frame.
+            // A software substitute for hardware JogShuttle devices;
+            // emits JogFrames which routes through the existing
+            // SeekRelative plumbing. Sized to fit the 44px transport
+            // bar with a small margin.
+            ui.add_space(6.0);
+            let jog_frames = crate::widgets::jog_wheel::jog_wheel(
+                ui,
+                &mut state.jog_wheel_state,
+                16.0,
+            );
+            if jog_frames != 0 {
+                cmds.push(AppCommand::JogFrames { frames: jog_frames });
+            }
+            ui.add_space(6.0);
+
             // +10s
             if ui
                 .add_enabled(enabled, egui::Button::image(Icon::FastForward.bold(16.0).tint(icon_tint)).min_size(egui::vec2(32.0, 32.0)))

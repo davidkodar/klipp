@@ -20,3 +20,4 @@ pub mod timeline;
 pub mod toolbar;
 pub mod transport;
 pub mod viewer;
+pub mod workspace_manager;

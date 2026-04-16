@@ -852,31 +852,49 @@ impl ToolbarPanel {
         });
     }
 
-    fn window_menu(ui: &mut egui::Ui, _cmds: &mut Vec<AppCommand>, state: &mut AppState) {
+    fn window_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
         ui.menu_button(egui::RichText::new("Window").size(11.0), |ui| {
-            // Workspaces
-            ui.label(egui::RichText::new("WORKSPACES").size(9.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
+            // Active-workspace mode flags (controls the composite
+            // inspector layout — not the same as a full workspace
+            // preset below; kept as-is for backwards compatibility).
+            ui.label(egui::RichText::new("ACTIVE MODE").size(9.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
             for (ws, label) in &[(Workspace::Edit, "Default"), (Workspace::Color, "Color Grading"), (Workspace::Export, "Audio Mixing")] {
                 let c = if state.active_workspace == *ws { "\u{2714} " } else { "  " };
                 if ui.button(format!("{c}{label}")).clicked() { state.active_workspace = *ws; ui.close_menu(); }
             }
-            // Show user-saved workspaces
-            for (i, ws) in state.custom_workspaces.clone().iter().enumerate() {
-                if ui.button(&ws.name).clicked() {
-                    let ws = &state.custom_workspaces[i];
-                    state.show_browser_panel = ws.show_browser;
-                    state.show_inspector_panel = ws.show_inspector;
-                    state.show_history_panel = ws.show_history;
-                    state.show_markers_panel = ws.show_markers;
-                    state.show_curve_editor = ws.show_curve_editor;
-                    state.show_scopes = ws.show_scopes;
-                    state.show_color_panel = ws.show_color_panel;
+            ui.separator();
+
+            // Built-in workspace layout presets (#39). Dispatched via
+            // AppCommand so the apply path — write visibility + sizes +
+            // layout.save() — stays in one place.
+            ui.label(egui::RichText::new("BUILT-IN LAYOUTS").size(9.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
+            for (i, layout) in crate::state::builtin_workspace_layouts().iter().enumerate() {
+                if ui.button(&layout.name).clicked() {
+                    cmds.push(AppCommand::ApplyBuiltinWorkspaceLayout { index: i });
                     ui.close_menu();
                 }
             }
+
+            // User-saved workspaces.
+            if !state.custom_workspaces.is_empty() {
+                ui.separator();
+                ui.label(egui::RichText::new("SAVED").size(9.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
+                for ws in state.custom_workspaces.clone().iter() {
+                    if ui.button(&ws.name).clicked() {
+                        cmds.push(AppCommand::ApplyCustomWorkspaceLayout { name: ws.name.clone() });
+                        ui.close_menu();
+                    }
+                }
+            }
+
+            ui.separator();
             if ui.button("Save Workspace...").clicked() {
                 state.save_workspace_name = "My Workspace".into();
                 state.show_save_workspace_dialog = true;
+                ui.close_menu();
+            }
+            if ui.button("\u{2699} Manage Workspaces\u{2026}").clicked() {
+                state.show_workspace_manager = true;
                 ui.close_menu();
             }
             ui.separator();

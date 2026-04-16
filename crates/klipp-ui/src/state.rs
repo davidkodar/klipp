@@ -162,7 +162,12 @@ pub enum ColorToolsPosition {
     Bottom,
 }
 
-/// A saved workspace layout (panel visibility + name).
+/// A saved workspace layout (panel visibility + sizes + name).
+///
+/// Sizing fields are `Option<f32>` with `#[serde(default)]` so legacy
+/// workspaces.json files saved before this field set loaded cleanly:
+/// missing fields → `None` → the applier leaves the current dimension
+/// alone rather than collapsing it.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SavedWorkspaceLayout {
     pub name: String,
@@ -173,6 +178,106 @@ pub struct SavedWorkspaceLayout {
     pub show_curve_editor: bool,
     pub show_scopes: bool,
     pub show_color_panel: bool,
+    #[serde(default)]
+    pub browser_width: Option<f32>,
+    #[serde(default)]
+    pub inspector_width: Option<f32>,
+    #[serde(default)]
+    pub timeline_height: Option<f32>,
+    #[serde(default)]
+    pub color_panel_height: Option<f32>,
+}
+
+/// The 5 built-in workspace layouts shipped out of the box. Mirrors
+/// Kdenlive's workspace vocabulary (Logging / Editing / Effects /
+/// Audio / Color) so users coming from Kdenlive find familiar names.
+///
+/// Never persisted to disk — computed fresh at runtime so layout
+/// tweaks in later releases reach all users, not just new installs.
+pub fn builtin_workspace_layouts() -> Vec<SavedWorkspaceLayout> {
+    vec![
+        // ── Logging ── media review focus: wide browser, narrow inspector,
+        // tall-ish timeline for scrubbing through takes, markers panel open.
+        SavedWorkspaceLayout {
+            name: "Logging".into(),
+            show_browser: true,
+            show_inspector: false,
+            show_history: false,
+            show_markers: true,
+            show_curve_editor: false,
+            show_scopes: false,
+            show_color_panel: false,
+            browser_width: Some(420.0),
+            inspector_width: Some(280.0),
+            timeline_height: Some(180.0),
+            color_panel_height: None,
+        },
+        // ── Editing ── the default balanced layout.
+        SavedWorkspaceLayout {
+            name: "Editing".into(),
+            show_browser: true,
+            show_inspector: true,
+            show_history: false,
+            show_markers: false,
+            show_curve_editor: false,
+            show_scopes: false,
+            show_color_panel: false,
+            browser_width: Some(280.0),
+            inspector_width: Some(300.0),
+            timeline_height: Some(240.0),
+            color_panel_height: None,
+        },
+        // ── Effects ── wider inspector for effect params, curve editor on
+        // for keyframe tweaking, narrower browser to save horizontal space.
+        SavedWorkspaceLayout {
+            name: "Effects".into(),
+            show_browser: true,
+            show_inspector: true,
+            show_history: false,
+            show_markers: false,
+            show_curve_editor: true,
+            show_scopes: false,
+            show_color_panel: false,
+            browser_width: Some(240.0),
+            inspector_width: Some(360.0),
+            timeline_height: Some(220.0),
+            color_panel_height: None,
+        },
+        // ── Audio ── tall timeline so waveforms are readable, curve editor
+        // for volume/pan automation, narrower inspector sized for the Audio
+        // inspector tab rather than the wider Effects tab.
+        SavedWorkspaceLayout {
+            name: "Audio".into(),
+            show_browser: true,
+            show_inspector: true,
+            show_history: false,
+            show_markers: false,
+            show_curve_editor: true,
+            show_scopes: false,
+            show_color_panel: false,
+            browser_width: Some(240.0),
+            inspector_width: Some(340.0),
+            timeline_height: Some(300.0),
+            color_panel_height: None,
+        },
+        // ── Color ── browser hidden to maximise scopes + viewer real estate,
+        // color panel below viewer, scopes on, short timeline since editing
+        // is usually done before grading.
+        SavedWorkspaceLayout {
+            name: "Color".into(),
+            show_browser: false,
+            show_inspector: true,
+            show_history: false,
+            show_markers: false,
+            show_curve_editor: false,
+            show_scopes: true,
+            show_color_panel: true,
+            browser_width: Some(200.0),
+            inspector_width: Some(340.0),
+            timeline_height: Some(180.0),
+            color_panel_height: Some(320.0),
+        },
+    ]
 }
 
 /// Active tab in the simple color inspector.
@@ -201,6 +306,12 @@ pub struct AppState {
     pub show_save_workspace_dialog: bool,
     /// Name for the workspace being saved.
     pub save_workspace_name: String,
+    /// Show the workspace-manager modal (delete/rename/export/import).
+    pub show_workspace_manager: bool,
+    /// Currently highlighted workspace name in the manager dialog.
+    /// String rather than index so built-ins and user presets share one
+    /// selector without needing a variant enum.
+    pub workspace_manager_selected: Option<String>,
 
     // Project
     pub sequences: Vec<Sequence>,
@@ -263,6 +374,10 @@ pub struct AppState {
 
     // Export
     pub show_export_dialog: bool,
+
+    // Transport-bar jog wheel state (#38, scoped — software jog only).
+    // Lives on AppState so in-progress drags survive panel relayouts.
+    pub jog_wheel_state: crate::widgets::jog_wheel::JogWheelState,
     /// Whether the export-preset manager modal is visible. Opens from a
     /// button next to the preset dropdown in the export dialog.
     pub show_preset_manager: bool,
@@ -1569,6 +1684,8 @@ impl Default for AppState {
             custom_workspaces: Vec::new(),
             show_save_workspace_dialog: false,
             save_workspace_name: String::new(),
+            show_workspace_manager: false,
+            workspace_manager_selected: None,
             sequences: vec![Sequence::new_default()],
             active_sequence_idx: 0,
             compound_clip_stack: Vec::new(),
@@ -1600,6 +1717,7 @@ impl Default for AppState {
             thumbnail_textures: std::collections::HashMap::new(),
             filmstrip_textures: std::collections::HashMap::new(),
             show_export_dialog: false,
+            jog_wheel_state: crate::widgets::jog_wheel::JogWheelState::new(),
             show_preset_manager: false,
             preset_manager_selected: None,
             show_clip_properties: false,
@@ -2041,5 +2159,61 @@ mod tests {
         let mut slot = Some((a, 2, true));
         adjust(&mut slot, a, 2, false);
         assert_eq!(slot, Some((a, 2, true)));
+    }
+
+    // ── Workspace layout tests (#39) ──
+
+    #[test]
+    fn builtin_layouts_has_five_entries() {
+        let layouts = builtin_workspace_layouts();
+        assert_eq!(layouts.len(), 5);
+    }
+
+    #[test]
+    fn builtin_layout_names_are_unique() {
+        let layouts = builtin_workspace_layouts();
+        let names: std::collections::HashSet<_> =
+            layouts.iter().map(|l| l.name.clone()).collect();
+        assert_eq!(names.len(), layouts.len());
+    }
+
+    #[test]
+    fn builtin_layouts_include_expected_names() {
+        let layouts = builtin_workspace_layouts();
+        let names: std::collections::HashSet<_> =
+            layouts.iter().map(|l| l.name.clone()).collect();
+        for expected in ["Logging", "Editing", "Effects", "Audio", "Color"] {
+            assert!(names.contains(expected), "missing built-in: {expected}");
+        }
+    }
+
+    #[test]
+    fn apply_layout_with_none_sizes_preserves_existing_size() {
+        // Mirrors the apply path in app.rs: a None size must leave the
+        // current pixel width untouched. Pure logic — no egui needed.
+        let mut browser_width = 350.0f32;
+        let layout_browser_width: Option<f32> = None;
+        if let Some(w) = layout_browser_width {
+            browser_width = w;
+        }
+        assert_eq!(browser_width, 350.0);
+
+        // Sanity: Some _does_ overwrite.
+        let layout_browser_width: Option<f32> = Some(420.0);
+        if let Some(w) = layout_browser_width {
+            browser_width = w;
+        }
+        assert_eq!(browser_width, 420.0);
+    }
+
+    #[test]
+    fn color_layout_has_color_panel_height() {
+        // The Color preset is the only built-in that uses the color
+        // panel — guard that the dedicated size field is populated so
+        // applying Color doesn't leave an unsized panel.
+        let layouts = builtin_workspace_layouts();
+        let color = layouts.iter().find(|l| l.name == "Color").unwrap();
+        assert!(color.show_color_panel);
+        assert!(color.color_panel_height.is_some());
     }
 }

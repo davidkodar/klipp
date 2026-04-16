@@ -411,6 +411,24 @@ pub enum AppCommand {
     /// Open the Clip Properties modal focused on the given media item.
     OpenClipProperties { media_id: MediaId },
 
+    // Software jog wheel (#38, scoped — HID support is deferred)
+    /// Step the playhead by N frames (positive = forward, negative =
+    /// backward). Emitted by the transport-bar jog wheel widget.
+    JogFrames { frames: i32 },
+
+    // Workspace layout presets (#39)
+    /// Apply one of the 5 built-in workspace layouts by index into
+    /// `builtin_workspace_layouts()`. Writes visibility flags + sizes.
+    ApplyBuiltinWorkspaceLayout { index: usize },
+    /// Apply a user-saved workspace layout by its `name`.
+    ApplyCustomWorkspaceLayout { name: String },
+    /// Remove a user-saved workspace layout by name (built-ins are never
+    /// removable — checked in the handler).
+    DeleteWorkspaceLayout { name: String },
+    /// Rename a user-saved workspace layout. No-op if `new_name` is empty
+    /// or if a layout with that name already exists.
+    RenameWorkspaceLayout { old_name: String, new_name: String },
+
     // Compositing
     SetTrackOpacity { track_index: usize, opacity: f32 },
     SetTrackVisibility { track_index: usize, visible: bool },

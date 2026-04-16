@@ -11245,6 +11245,66 @@ impl KlippApp {
                 self.state.show_clip_properties = true;
                 true
             }
+            AppCommand::ApplyBuiltinWorkspaceLayout { index } => {
+                let builtins = crate::state::builtin_workspace_layouts();
+                if let Some(layout) = builtins.get(*index).cloned() {
+                    self.apply_workspace_layout(&layout);
+                    self.state.toast.show(format!("Applied workspace: {}", layout.name));
+                }
+                true
+            }
+            AppCommand::ApplyCustomWorkspaceLayout { name } => {
+                if let Some(layout) = self.state.custom_workspaces.iter()
+                    .find(|l| l.name == *name)
+                    .cloned()
+                {
+                    self.apply_workspace_layout(&layout);
+                    self.state.toast.show(format!("Applied workspace: {}", layout.name));
+                }
+                true
+            }
+            AppCommand::DeleteWorkspaceLayout { name } => {
+                let before = self.state.custom_workspaces.len();
+                self.state.custom_workspaces.retain(|l| l.name != *name);
+                if self.state.custom_workspaces.len() != before {
+                    if self.state.workspace_manager_selected.as_deref() == Some(name.as_str()) {
+                        self.state.workspace_manager_selected = None;
+                    }
+                    persist_workspaces(&self.state.custom_workspaces);
+                    self.state.toast.show("Workspace deleted".to_string());
+                }
+                true
+            }
+            AppCommand::RenameWorkspaceLayout { old_name, new_name } => {
+                let trimmed = new_name.trim().to_string();
+                if !trimmed.is_empty()
+                    && !self.state.custom_workspaces.iter().any(|l| l.name == trimmed)
+                {
+                    if let Some(l) = self.state.custom_workspaces
+                        .iter_mut()
+                        .find(|l| l.name == *old_name)
+                    {
+                        l.name = trimmed.clone();
+                        if self.state.workspace_manager_selected.as_deref() == Some(old_name.as_str()) {
+                            self.state.workspace_manager_selected = Some(trimmed);
+                        }
+                        persist_workspaces(&self.state.custom_workspaces);
+                    }
+                }
+                true
+            }
+            AppCommand::JogFrames { frames } => {
+                // Reuse the existing SeekRelative(i64) plumbing — the
+                // transport-bar step buttons already dispatch ±1 through
+                // this path, so `JogFrames { frames: N }` is identical
+                // except it bundles the N samples the wheel widget has
+                // accumulated since its last emit. Clamping + playhead
+                // math lives in the SeekRelative handler, no duplication.
+                if *frames != 0 {
+                    let _ = self.cmd_tx.send(AppCommand::SeekRelative(*frames as i64));
+                }
+                true
+            }
             AppCommand::ImportSubtitles { path } => {
                 let path = path.clone();
                 match std::fs::read_to_string(&path) {
@@ -17310,6 +17370,36 @@ impl KlippApp {
     }
 
 
+    /// Apply a `SavedWorkspaceLayout` to AppState + LayoutState. Used by
+    /// both the built-in and user-layout apply commands.
+    ///
+    /// Visibility flags are copied unconditionally; size fields only
+    /// overwrite `self.layout.*` when `Some`, which preserves user
+    /// customisation when an older layout JSON doesn't carry sizes (the
+    /// serde `#[default]` lands them as `None`).
+    fn apply_workspace_layout(&mut self, layout: &crate::state::SavedWorkspaceLayout) {
+        self.state.show_browser_panel = layout.show_browser;
+        self.state.show_inspector_panel = layout.show_inspector;
+        self.state.show_history_panel = layout.show_history;
+        self.state.show_markers_panel = layout.show_markers;
+        self.state.show_curve_editor = layout.show_curve_editor;
+        self.state.show_scopes = layout.show_scopes;
+        self.state.show_color_panel = layout.show_color_panel;
+        if let Some(w) = layout.browser_width {
+            self.layout.browser_width = w;
+        }
+        if let Some(w) = layout.inspector_width {
+            self.layout.inspector_width = w;
+        }
+        if let Some(h) = layout.timeline_height {
+            self.layout.timeline_height = h;
+        }
+        if let Some(h) = layout.color_panel_height {
+            self.layout.color_panel_height = h;
+        }
+        self.layout.save();
+    }
+
     fn update_thumbnail_textures(&mut self, ctx: &egui::Context) {
         let media_ids: Vec<MediaId> = self.state.media_pool.all().map(|m| m.id).collect();
         for media_id in media_ids {
@@ -17514,6 +17604,11 @@ impl KlippApp {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button("Save").clicked() {
+                            // Capture the current panel sizes alongside the
+                            // visibility flags so the saved workspace is a
+                            // full layout snapshot — not just "which panels
+                            // are visible," which would drop the sizing the
+                            // user just arranged.
                             let layout = crate::state::SavedWorkspaceLayout {
                                 name: self.state.save_workspace_name.clone(),
                                 show_browser: self.state.show_browser_panel,
@@ -17523,6 +17618,10 @@ impl KlippApp {
                                 show_curve_editor: self.state.show_curve_editor,
                                 show_scopes: self.state.show_scopes,
                                 show_color_panel: self.state.show_color_panel,
+                                browser_width: Some(self.layout.browser_width),
+                                inspector_width: Some(self.layout.inspector_width),
+                                timeline_height: Some(self.layout.timeline_height),
+                                color_panel_height: Some(self.layout.color_panel_height),
                             };
                             // Replace if name exists, otherwise add
                             if let Some(existing) = self.state.custom_workspaces.iter_mut().find(|w| w.name == layout.name) {
@@ -17532,12 +17631,7 @@ impl KlippApp {
                             }
                             self.state.show_save_workspace_dialog = false;
                             self.state.toast.show("Workspace saved".to_string());
-                            // Persist to prefs file
-                            if let Ok(json) = serde_json::to_string_pretty(&self.state.custom_workspaces) {
-                                let path = dirs::config_dir().unwrap_or_default().join("klipp/workspaces.json");
-                                let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
-                                let _ = std::fs::write(&path, json);
-                            }
+                            persist_workspaces(&self.state.custom_workspaces);
                         }
                         if ui.button("Cancel").clicked() {
                             self.state.show_save_workspace_dialog = false;
@@ -17749,6 +17843,15 @@ impl KlippApp {
                 ctx,
                 &mut self.state,
                 &mut self.prefs.export.custom_presets,
+            );
+            cmds.extend(dialog_cmds);
+        }
+
+        // Workspace Layout Manager modal (#39)
+        if self.state.show_workspace_manager {
+            let dialog_cmds = crate::panels::workspace_manager::show_workspace_manager_dialog(
+                ctx,
+                &mut self.state,
             );
             cmds.extend(dialog_cmds);
         }
@@ -19394,6 +19497,22 @@ fn would_create_cycle(
 }
 
 /// Count how many clips across all sequences reference this media_id.
+/// Persist the current custom workspace list to
+/// `~/.config/klipp/workspaces.json`. Errors are swallowed because this
+/// is a best-effort UI persistence write — if it fails the user gets
+/// the runtime state for this session and a warning in the log.
+fn persist_workspaces(workspaces: &[crate::state::SavedWorkspaceLayout]) {
+    if let Ok(json) = serde_json::to_string_pretty(workspaces) {
+        let path = dirs::config_dir()
+            .unwrap_or_default()
+            .join("klipp/workspaces.json");
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
+        if let Err(e) = std::fs::write(&path, json) {
+            tracing::warn!("Failed to persist workspaces.json: {e}");
+        }
+    }
+}
+
 fn media_usage_count(media_id: MediaId, sequences: &[Sequence]) -> usize {
     sequences.iter()
         .flat_map(|seq| seq.tracks.iter())
