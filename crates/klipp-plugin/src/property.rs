@@ -178,6 +178,7 @@ unsafe extern "C" fn prop_set_pointer_fn(
     index: c_int,
     value: *mut c_void,
 ) -> OfxStatus {
+    check_non_null!(name);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| ps.set_pointer(&name, index as usize, value)) {
         Some(()) => K_OFX_STAT_OK,
@@ -194,6 +195,7 @@ unsafe extern "C" fn prop_set_string_fn(
     index: c_int,
     value: *const c_char,
 ) -> OfxStatus {
+    check_non_null!(name, value);
     let name = CStr::from_ptr(name).to_string_lossy();
     let value = CStr::from_ptr(value).to_string_lossy();
     match with_propset(handle, |ps| ps.set_string(&name, index as usize, &value)) {
@@ -208,6 +210,7 @@ unsafe extern "C" fn prop_set_double_fn(
     index: c_int,
     value: c_double,
 ) -> OfxStatus {
+    check_non_null!(name);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| ps.set_double(&name, index as usize, value)) {
         Some(()) => K_OFX_STAT_OK,
@@ -221,6 +224,7 @@ unsafe extern "C" fn prop_set_int_fn(
     index: c_int,
     value: c_int,
 ) -> OfxStatus {
+    check_non_null!(name);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| ps.set_int(&name, index as usize, value)) {
         Some(()) => K_OFX_STAT_OK,
@@ -234,6 +238,7 @@ unsafe extern "C" fn prop_set_pointer_n_fn(
     count: c_int,
     values: *const *mut c_void,
 ) -> OfxStatus {
+    check_non_null!(name, values);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| {
         for i in 0..count as usize {
@@ -251,6 +256,7 @@ unsafe extern "C" fn prop_set_string_n_fn(
     count: c_int,
     values: *const *const c_char,
 ) -> OfxStatus {
+    check_non_null!(name, values);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| {
         for i in 0..count as usize {
@@ -269,6 +275,7 @@ unsafe extern "C" fn prop_set_double_n_fn(
     count: c_int,
     values: *const c_double,
 ) -> OfxStatus {
+    check_non_null!(name, values);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| {
         for i in 0..count as usize {
@@ -286,6 +293,7 @@ unsafe extern "C" fn prop_set_int_n_fn(
     count: c_int,
     values: *const c_int,
 ) -> OfxStatus {
+    check_non_null!(name, values);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| {
         for i in 0..count as usize {
@@ -303,6 +311,7 @@ unsafe extern "C" fn prop_get_pointer_fn(
     index: c_int,
     out: *mut *mut c_void,
 ) -> OfxStatus {
+    check_non_null!(name, out);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| ps.get_pointer(&name, index as usize)) {
         Some(Some(ptr)) => {
@@ -330,6 +339,7 @@ unsafe extern "C" fn prop_get_string_fn(
     index: c_int,
     out: *mut *const c_char,
 ) -> OfxStatus {
+    check_non_null!(name, out);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| {
         let has = ps.has_property(&name);
@@ -360,6 +370,7 @@ unsafe extern "C" fn prop_get_double_fn(
     index: c_int,
     out: *mut c_double,
 ) -> OfxStatus {
+    check_non_null!(name, out);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| {
         let has = ps.has_property(&name);
@@ -390,6 +401,7 @@ unsafe extern "C" fn prop_get_int_fn(
     index: c_int,
     out: *mut c_int,
 ) -> OfxStatus {
+    check_non_null!(name, out);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| {
         let has = ps.has_property(&name);
@@ -420,6 +432,7 @@ unsafe extern "C" fn prop_get_pointer_n_fn(
     count: c_int,
     out: *mut *mut c_void,
 ) -> OfxStatus {
+    check_non_null!(name, out);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| {
         for i in 0..count as usize {
@@ -437,6 +450,7 @@ unsafe extern "C" fn prop_get_string_n_fn(
     count: c_int,
     out: *mut *const c_char,
 ) -> OfxStatus {
+    check_non_null!(name, out);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| {
         for i in 0..count as usize {
@@ -456,6 +470,7 @@ unsafe extern "C" fn prop_get_double_n_fn(
     count: c_int,
     out: *mut c_double,
 ) -> OfxStatus {
+    check_non_null!(name, out);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| {
         for i in 0..count as usize {
@@ -473,6 +488,7 @@ unsafe extern "C" fn prop_get_int_n_fn(
     count: c_int,
     out: *mut c_int,
 ) -> OfxStatus {
+    check_non_null!(name, out);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| {
         for i in 0..count as usize {
@@ -488,6 +504,7 @@ unsafe extern "C" fn prop_reset_fn(
     handle: OfxPropertySetHandle,
     name: *const c_char,
 ) -> OfxStatus {
+    check_non_null!(name);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| ps.reset(&name)) {
         Some(()) => K_OFX_STAT_OK,
@@ -500,6 +517,7 @@ unsafe extern "C" fn prop_get_dimension_fn(
     name: *const c_char,
     out: *mut c_int,
 ) -> OfxStatus {
+    check_non_null!(name, out);
     let name = CStr::from_ptr(name).to_string_lossy();
     match with_propset(handle, |ps| ps.dimension(&name)) {
         Some(dim) => {
