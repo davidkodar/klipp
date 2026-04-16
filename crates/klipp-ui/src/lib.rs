@@ -1,4 +1,5 @@
 pub mod app;
+pub mod audio_sync;
 pub mod browser;
 pub mod drag_drop;
 pub mod history;

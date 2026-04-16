@@ -936,6 +936,15 @@ pub struct AppState {
     pub audio_show_waveform: bool,
     pub audio_anti_click_fade: bool,
     pub audio_show_crossfade_indicators: bool,
+    /// Per-track waveform amplitude zoom. Default is 1.0 when a key is absent.
+    /// Alt+scroll over an audio track adjusts this; right-click track header resets it.
+    /// Clamped to [0.1, 8.0] by the UI handlers.
+    pub waveform_zoom: std::collections::HashMap<TrackId, f32>,
+
+    /// The clip currently designated as the audio-sync reference (set via the
+    /// clip context menu). `AlignToAudioReference` shifts a target clip's
+    /// timeline position to align its audio to this reference.
+    pub audio_reference_clip_id: Option<ClipId>,
 
     /// Fade handle drag state: (clip_id, true=fade_in, false=fade_out, original_fade_secs)
     pub dragging_fade_handle: Option<(ClipId, bool, f32)>,
@@ -2050,6 +2059,8 @@ impl Default for AppState {
             audio_show_waveform: true,
             audio_anti_click_fade: true,
             audio_show_crossfade_indicators: true,
+            waveform_zoom: std::collections::HashMap::new(),
+            audio_reference_clip_id: None,
             dragging_fade_handle: None,
             proxy_generating: std::collections::HashSet::new(),
             proxy_progress: std::collections::HashMap::new(),
