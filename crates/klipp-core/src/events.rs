@@ -558,6 +558,8 @@ pub enum AppCommand {
     ExportSubtitles { path: PathBuf },
     /// Export sequence as FCPXML 1.9 for Final Cut Pro interchange.
     ExportFcpxml { path: PathBuf },
+    /// Export sequence as MLT XML (.kdenlive) for Kdenlive interchange (cuts-only v1).
+    ExportKdenlive { path: PathBuf },
     /// Export sequence as CMX 3600 EDL for broad NLE interchange.
     ExportEdl { path: PathBuf },
     /// Export sequence markers as YouTube-compatible chapter text

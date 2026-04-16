@@ -12034,6 +12034,14 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::ExportKdenlive { path } => {
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                match klipp_project::mlt_export::export_kdenlive(seq, &self.state.media_pool, path) {
+                    Ok(_) => self.state.toast.show(format!("Kdenlive project exported to {}", path.display())),
+                    Err(e) => self.state.toast.show(format!("Kdenlive export failed: {e}")),
+                }
+                true
+            }
             AppCommand::ExportEdl { path } => {
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                 match klipp_project::fcpxml::export_edl(seq, &self.state.media_pool, path) {

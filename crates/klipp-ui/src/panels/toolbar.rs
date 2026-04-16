@@ -429,6 +429,17 @@ impl ToolbarPanel {
                         cmds.push(AppCommand::ExportFcpxml { path });
                     }
                 }
+                if ui.button("Kdenlive Project...").clicked() {
+                    ui.close_menu();
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title("Export as Kdenlive Project")
+                        .add_filter("Kdenlive project", &["kdenlive"])
+                        .set_file_name("project.kdenlive")
+                        .save_file()
+                    {
+                        cmds.push(AppCommand::ExportKdenlive { path });
+                    }
+                }
                 if ui.button("EDL...").clicked() {
                     ui.close_menu();
                     if let Some(path) = rfd::FileDialog::new().set_title("Export EDL").add_filter("EDL", &["edl"]).set_file_name("export.edl").save_file() {

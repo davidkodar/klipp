@@ -385,6 +385,7 @@ mod tests {
             user_notes: String::new(),
             bin: None,
             bin_id: None,
+            parent_media_id: None,
             added_at: 0,
             fingerprint: None,
             file_modified_at: None,
