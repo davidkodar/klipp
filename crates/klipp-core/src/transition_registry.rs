@@ -651,18 +651,36 @@ const _: () = assert!(TRANSITION_SPECS.len() == 66);
 // ---------------------------------------------------------------------------
 
 /// Returns the spec for a given `TransitionKind`.
-/// Panics if the kind is not registered (invariant: all kinds are in the table).
+///
+/// The registry is expected to list every `TransitionKind` variant. If a
+/// lookup misses — almost certainly because a new variant was added without
+/// a matching `TRANSITION_SPECS` entry — we loudly log an error, trip a
+/// `debug_assert!` (so tests and debug builds fail fast), and fall back to
+/// `TRANSITION_SPECS[0]` (CrossDissolve) in release so a single missing
+/// registry row does not crash the editor and lose unsaved work.
 pub fn spec_for_kind(kind: TransitionKind) -> &'static TransitionSpec {
     let mut i = 0;
     while i < TRANSITION_SPECS.len() {
-        // We compare via kind_id since PartialEq isn't available in const,
-        // but this is a runtime function so we can use the derived PartialEq.
+        // We compare via discriminants — derived PartialEq on TransitionKind
+        // is available but discriminant comparison is cheaper for this scan.
         if std::mem::discriminant(&TRANSITION_SPECS[i].kind) == std::mem::discriminant(&kind) {
             return &TRANSITION_SPECS[i];
         }
         i += 1;
     }
-    panic!("TransitionKind not found in TRANSITION_SPECS — registry invariant violated");
+    tracing::error!(
+        "spec_for_kind: TransitionKind {:?} is missing from TRANSITION_SPECS — \
+         registry invariant violated. Falling back to {:?}. Add the new variant \
+         to TRANSITION_SPECS to resolve.",
+        kind,
+        TRANSITION_SPECS[0].kind,
+    );
+    debug_assert!(
+        false,
+        "TransitionKind {:?} not found in TRANSITION_SPECS",
+        kind,
+    );
+    &TRANSITION_SPECS[0]
 }
 
 /// Returns the spec for a given `kind_id`, or `None` if not found.
