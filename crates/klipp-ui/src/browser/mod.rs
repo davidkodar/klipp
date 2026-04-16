@@ -564,6 +564,11 @@ pub struct BrowserPanel {
     /// Minimum star rating the bin filters to. `None` = show all ratings.
     /// Session state only — deliberately not persisted to prefs for MVP.
     pub min_rating_filter: Option<u8>,
+    /// Bitmask of active colour-label filters. Bit N corresponds to
+    /// `ColorLabel::ALL[N]` (i.e. `ColorLabel::from_u8(N)`). OR semantics:
+    /// a clip passes when ANY of its label bits matches an active bit.
+    /// `0` disables the filter (all labels pass). Session state only.
+    pub color_label_filter: u8,
     pub browser_view_mode: media_tab::BrowserViewMode,
     // Bin management state
     pub renaming_bin: Option<(String, String)>,  // (old_name, current_edit_text)
@@ -741,6 +746,7 @@ impl Default for BrowserPanel {
             media_selected_bin: None,
             smart_bin_filter: SmartBinFilter::None,
             min_rating_filter: None,
+            color_label_filter: 0,
             browser_view_mode: media_tab::BrowserViewMode::List,
             renaming_bin: None,
             creating_bin: None,
@@ -1200,58 +1206,10 @@ impl BrowserPanel {
 
                 match active_tab {
                     BrowserTab::Media => {
-                        // Smart bin filter + granular rating filter. Both are
-                        // AND-combined in the filter closure, so e.g.
-                        // "Video Only" + "3+ stars" shows only video clips
-                        // rated at least 3.
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Filter:").size(10.0).color(theme.text_dim));
-                            let filter_label = match self.smart_bin_filter {
-                                SmartBinFilter::None => "All Media",
-                                SmartBinFilter::Unused => "Unused",
-                                SmartBinFilter::VideoOnly => "Video Only",
-                                SmartBinFilter::AudioOnly => "Audio Only",
-                                SmartBinFilter::StillsOnly => "Stills Only",
-                            };
-                            egui::ComboBox::from_id_salt("smart_bin")
-                                .selected_text(filter_label)
-                                .width(100.0)
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::None, "All Media");
-                                    ui.separator();
-                                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::Unused, "Unused");
-                                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::VideoOnly, "Video Only");
-                                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::AudioOnly, "Audio Only");
-                                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::StillsOnly, "Stills Only");
-                                });
-
-                            ui.add_space(8.0);
-                            ui.label(egui::RichText::new("Rating:").size(10.0).color(theme.text_dim));
-                            let rating_label = match self.min_rating_filter {
-                                None => "Any".to_string(),
-                                Some(1) => "1+ \u{2605}".to_string(),
-                                Some(2) => "2+ \u{2605}\u{2605}".to_string(),
-                                Some(3) => "3+ \u{2605}\u{2605}\u{2605}".to_string(),
-                                Some(4) => "4+ \u{2605}\u{2605}\u{2605}\u{2605}".to_string(),
-                                Some(5) => "5 \u{2605}\u{2605}\u{2605}\u{2605}\u{2605}".to_string(),
-                                _ => "Any".to_string(),
-                            };
-                            egui::ComboBox::from_id_salt("rating_filter")
-                                .selected_text(rating_label)
-                                .width(110.0)
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut self.min_rating_filter, None, "Any");
-                                    for stars in 1u8..=5 {
-                                        let glyphs = "\u{2605}".repeat(stars as usize);
-                                        let label = if stars == 5 {
-                                            format!("5 {glyphs}")
-                                        } else {
-                                            format!("{stars}+ {glyphs}")
-                                        };
-                                        ui.selectable_value(&mut self.min_rating_filter, Some(stars), label);
-                                    }
-                                });
-                        });
+                        // Smart bin + rating + colour-label filters.
+                        // AND-combined across categories, OR-combined
+                        // within the colour-label bitmask.
+                        self.render_media_filter_toolbar(ui, theme);
                         let tab_cmds = media_tab::show(
                             ui,
                             state,
@@ -1266,6 +1224,7 @@ impl BrowserPanel {
                             &mut self.scroll_to_media_id,
                             self.smart_bin_filter,
                             self.min_rating_filter,
+                            self.color_label_filter,
                         );
                         cmds.extend(tab_cmds);
                     }
@@ -1284,6 +1243,11 @@ impl BrowserPanel {
                     cmds.extend(file_cmds);
                 }
                 BrowserTab::Media => {
+                    // Render the filter toolbar above the media list in the
+                    // non-split path too — otherwise the filters are only
+                    // visible when Files is pinned, which is poor
+                    // discoverability.
+                    self.render_media_filter_toolbar(ui, theme);
                     let tab_cmds = media_tab::show(
                         ui,
                         state,
@@ -1298,6 +1262,7 @@ impl BrowserPanel {
                         &mut self.scroll_to_media_id,
                         self.smart_bin_filter,
                         self.min_rating_filter,
+                        self.color_label_filter,
                     );
                     cmds.extend(tab_cmds);
                 }
@@ -3815,6 +3780,121 @@ impl BrowserPanel {
         }
 
         cmds
+    }
+
+    /// Render the Media-tab filter row: smart-bin dropdown, minimum-rating
+    /// dropdown, and the colour-label dot toggles. All three combine with
+    /// AND across categories and OR within each category (e.g. "Video Only"
+    /// + "3+ stars" + "Red or Green label").
+    ///
+    /// Called from both the split-view right pane and the non-split Media
+    /// tab so both layouts have the filters above the item list.
+    fn render_media_filter_toolbar(&mut self, ui: &mut egui::Ui, theme: &KlippTheme) {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Filter:").size(10.0).color(theme.text_dim));
+            let filter_label = match self.smart_bin_filter {
+                SmartBinFilter::None => "All Media",
+                SmartBinFilter::Unused => "Unused",
+                SmartBinFilter::VideoOnly => "Video Only",
+                SmartBinFilter::AudioOnly => "Audio Only",
+                SmartBinFilter::StillsOnly => "Stills Only",
+            };
+            egui::ComboBox::from_id_salt("smart_bin")
+                .selected_text(filter_label)
+                .width(100.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::None, "All Media");
+                    ui.separator();
+                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::Unused, "Unused");
+                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::VideoOnly, "Video Only");
+                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::AudioOnly, "Audio Only");
+                    ui.selectable_value(&mut self.smart_bin_filter, SmartBinFilter::StillsOnly, "Stills Only");
+                });
+
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Rating:").size(10.0).color(theme.text_dim));
+            let rating_label = match self.min_rating_filter {
+                None => "Any".to_string(),
+                Some(1) => "1+ \u{2605}".to_string(),
+                Some(2) => "2+ \u{2605}\u{2605}".to_string(),
+                Some(3) => "3+ \u{2605}\u{2605}\u{2605}".to_string(),
+                Some(4) => "4+ \u{2605}\u{2605}\u{2605}\u{2605}".to_string(),
+                Some(5) => "5 \u{2605}\u{2605}\u{2605}\u{2605}\u{2605}".to_string(),
+                _ => "Any".to_string(),
+            };
+            egui::ComboBox::from_id_salt("rating_filter")
+                .selected_text(rating_label)
+                .width(110.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.min_rating_filter, None, "Any");
+                    for stars in 1u8..=5 {
+                        let glyphs = "\u{2605}".repeat(stars as usize);
+                        let label = if stars == 5 {
+                            format!("5 {glyphs}")
+                        } else {
+                            format!("{stars}+ {glyphs}")
+                        };
+                        ui.selectable_value(&mut self.min_rating_filter, Some(stars), label);
+                    }
+                });
+
+            // ── Colour-label dot toggles ──
+            ui.add_space(8.0);
+            ui.separator();
+            ui.label(egui::RichText::new("Label:").size(10.0).color(theme.text_dim));
+            for (i, label) in klipp_media::ColorLabel::ALL.iter().enumerate() {
+                let bit = 1u8 << i;
+                let is_active = (self.color_label_filter & bit) != 0;
+                let (r, g, b) = label.rgb().unwrap_or((120, 120, 130));
+                let dot_color = egui::Color32::from_rgb(r, g, b);
+
+                // 16×16 hit target; a smaller filled circle inside, with a
+                // white ring when the filter is active.
+                let (dot_rect, dot_resp) = ui.allocate_exact_size(
+                    egui::vec2(16.0, 16.0),
+                    egui::Sense::click(),
+                );
+                let radius = if is_active { 6.0 } else { 5.0 };
+                ui.painter().circle_filled(dot_rect.center(), radius, dot_color);
+                if is_active {
+                    ui.painter().circle_stroke(
+                        dot_rect.center(),
+                        7.0,
+                        egui::Stroke::new(1.5, egui::Color32::WHITE),
+                    );
+                } else if dot_resp.hovered() {
+                    ui.painter().circle_stroke(
+                        dot_rect.center(),
+                        6.5,
+                        egui::Stroke::new(1.0, egui::Color32::from_gray(180)),
+                    );
+                }
+                let tooltip = match label {
+                    klipp_media::ColorLabel::None => "No label",
+                    klipp_media::ColorLabel::Red => "Red",
+                    klipp_media::ColorLabel::Orange => "Orange",
+                    klipp_media::ColorLabel::Yellow => "Yellow",
+                    klipp_media::ColorLabel::Green => "Green",
+                    klipp_media::ColorLabel::Blue => "Blue",
+                    klipp_media::ColorLabel::Purple => "Purple",
+                };
+                let dot_resp = dot_resp.on_hover_text(tooltip);
+                if dot_resp.clicked() {
+                    self.color_label_filter ^= bit;
+                }
+            }
+
+            if self.color_label_filter != 0 {
+                ui.add_space(4.0);
+                if ui
+                    .small_button("\u{2715}")
+                    .on_hover_text("Clear colour filter")
+                    .clicked()
+                {
+                    self.color_label_filter = 0;
+                }
+            }
+        });
     }
 
     fn show_library_tab(

@@ -31,6 +31,19 @@ pub fn passes_rating_filter(rating: u8, min: Option<u8>) -> bool {
     }
 }
 
+/// Returns true when an item with the given colour label should pass the
+/// bitmask filter. `filter == 0` disables the filter (all labels pass).
+/// Bit N represents `ColorLabel::from_u8(N)` — bit 0 is the "no label"
+/// slot, bits 1..=6 are the six colours in `ColorLabel::ALL` order.
+/// Multiple bits combine with OR semantics (match any).
+pub fn passes_color_filter(label: klipp_media::ColorLabel, filter: u8) -> bool {
+    if filter == 0 {
+        return true;
+    }
+    let bit = 1u8 << label.to_u8();
+    filter & bit != 0
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
@@ -46,6 +59,7 @@ pub fn show(
     scroll_to_media_id: &mut Option<MediaId>,
     smart_filter: super::SmartBinFilter,
     min_rating_filter: Option<u8>,
+    color_label_filter: u8,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
 
@@ -85,6 +99,12 @@ pub fn show(
             }
             // Minimum star rating filter.
             if !passes_rating_filter(m.rating, min_rating_filter) {
+                return false;
+            }
+            // Colour-label filter (bitmask, OR semantics).
+            // `0` disables the filter. `ColorLabel::None` (to_u8() == 0) is
+            // bit 0 — setting it filters to unlabelled clips only.
+            if !passes_color_filter(m.color_label, color_label_filter) {
                 return false;
             }
             if !search_lower.is_empty() {
@@ -1523,5 +1543,56 @@ mod rating_filter_tests {
         assert!(!passes_rating_filter(0, Some(1)));
         assert!(passes_rating_filter(1, Some(1)));
         assert!(passes_rating_filter(5, Some(1)));
+    }
+}
+
+#[cfg(test)]
+mod color_filter_tests {
+    use super::passes_color_filter;
+    use klipp_media::ColorLabel;
+
+    #[test]
+    fn color_filter_zero_passes_all() {
+        assert!(passes_color_filter(ColorLabel::Red, 0));
+        assert!(passes_color_filter(ColorLabel::None, 0));
+        assert!(passes_color_filter(ColorLabel::Purple, 0));
+    }
+
+    #[test]
+    fn color_filter_single_bit_filters_correctly() {
+        let filter = 1u8 << ColorLabel::Red.to_u8();
+        assert!(passes_color_filter(ColorLabel::Red, filter));
+        assert!(!passes_color_filter(ColorLabel::Blue, filter));
+        assert!(!passes_color_filter(ColorLabel::None, filter));
+    }
+
+    #[test]
+    fn color_filter_multi_bit_or_semantics() {
+        // Red and Green both active — either matches.
+        let filter = (1u8 << ColorLabel::Red.to_u8())
+            | (1u8 << ColorLabel::Green.to_u8());
+        assert!(passes_color_filter(ColorLabel::Red, filter));
+        assert!(passes_color_filter(ColorLabel::Green, filter));
+        assert!(!passes_color_filter(ColorLabel::Blue, filter));
+        assert!(!passes_color_filter(ColorLabel::None, filter));
+    }
+
+    #[test]
+    fn color_filter_none_label_included_when_bit_set() {
+        // Bit 0 = ColorLabel::None — selecting it filters to unlabelled clips.
+        let filter = 1u8 << ColorLabel::None.to_u8();
+        assert!(passes_color_filter(ColorLabel::None, filter));
+        assert!(!passes_color_filter(ColorLabel::Red, filter));
+    }
+
+    #[test]
+    fn color_filter_toggle_bit() {
+        // XOR toggle is how the dot-button UI manipulates the bitmask.
+        let mut filter: u8 = 0;
+        let bit = 1u8 << ColorLabel::Red.to_u8();
+        filter ^= bit; // toggle on
+        assert_eq!(filter & bit, bit);
+        filter ^= bit; // toggle off
+        assert_eq!(filter & bit, 0);
     }
 }
