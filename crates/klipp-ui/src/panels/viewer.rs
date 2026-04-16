@@ -272,26 +272,7 @@ impl ViewerPanel {
         let center = viewer_rect.center();
         let logo_tex = self.logo_texture.get_or_insert_with(|| {
             let png_bytes = include_bytes!("../../../../assets/icons/klipp_app_icons/png/dark/klipp-dark-128.png");
-            let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes.as_slice()));
-            let mut reader = decoder.read_info().expect("viewer logo PNG decode");
-            let mut buf = vec![0u8; reader.output_buffer_size()];
-            let info = reader.next_frame(&mut buf).expect("viewer logo PNG frame");
-            let bytes = &buf[..info.buffer_size()];
-            let pixels: Vec<egui::Color32> = match info.color_type {
-                png::ColorType::Rgba => bytes
-                    .chunks_exact(4)
-                    .map(|c| egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
-                    .collect(),
-                png::ColorType::Rgb => bytes
-                    .chunks_exact(3)
-                    .map(|c| egui::Color32::from_rgb(c[0], c[1], c[2]))
-                    .collect(),
-                _ => panic!("Unsupported viewer logo PNG color type"),
-            };
-            let image = egui::ColorImage {
-                size: [info.width as usize, info.height as usize],
-                pixels,
-            };
+            let image = crate::ui_util::decode_png_or_fallback(png_bytes);
             ui.ctx().load_texture("klipp_viewer_logo", image, egui::TextureOptions::LINEAR)
         });
         let logo_size = 48.0;
