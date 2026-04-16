@@ -410,6 +410,17 @@ impl ToolbarPanel {
                     cmds.push(AppCommand::ExportDvdChapters { path });
                 }
             }
+            if ui.button("Generate Render Script\u{2026}").clicked() {
+                ui.close_menu();
+                if let Some(path) = rfd::FileDialog::new()
+                    .set_title("Save Render Script")
+                    .add_filter("Shell script", &["sh"])
+                    .set_file_name("render.sh")
+                    .save_file()
+                {
+                    cmds.push(AppCommand::GenerateRenderScript { path });
+                }
+            }
             // Timeline-format exports (current Sequence → interchange format).
             ui.menu_button("Export Timeline", |ui| {
                 if ui.button("FCPXML...").clicked() {

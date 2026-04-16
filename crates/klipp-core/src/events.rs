@@ -523,6 +523,11 @@ pub enum AppCommand {
     /// Export sequence markers as a DVDStyler / dvdauthor chapter list
     /// (one `HH:MM:SS.mmm` per line, labels dropped).
     ExportDvdChapters { path: PathBuf },
+    /// Generate a headless bash render script that calls ffmpeg to render
+    /// the current sequence. Cuts only — effects/grades/transitions are NOT
+    /// serialized. The script includes a prominent WARNING comment advising
+    /// users to Ctrl+E for full-quality export.
+    GenerateRenderScript { path: PathBuf },
     /// Create a compound clip (nested sequence) from selected clips.
     CreateCompoundClip { name: String },
     /// Create a multicam clip from clips on different tracks at the playhead.
