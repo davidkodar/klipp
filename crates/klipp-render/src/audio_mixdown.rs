@@ -212,7 +212,20 @@ fn get_track_samples(
     let mut output = state.buffer[state.buffer_pos..state.buffer_pos + to_read].to_vec();
     state.buffer_pos += to_read;
 
-    // Pad with silence if clip ran out
+    // Pad with silence if the decoded clip buffer ran short of the expected
+    // frame's worth of samples. This happens when the source file is shorter
+    // than the timeline says, or when source_end_secs exceeds the real
+    // duration. Without the warning the underrun is silent and looks like
+    // A/V drift to anyone debugging the export.
+    if output.len() < stereo_count {
+        tracing::warn!(
+            "audio_mixdown: clip underrun — padded {} samples of silence \
+             (expected {}, decoded {})",
+            stereo_count - output.len(),
+            stereo_count,
+            output.len(),
+        );
+    }
     output.resize(stereo_count, 0.0);
     output
 }
