@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use klipp_core::{BinId, ClipId, Keyframe, MediaId, RationalTime};
 use klipp_timeline::Clip;
 
@@ -391,8 +391,8 @@ impl HistoryEntry {
 
 #[derive(Default)]
 pub struct CommandHistory {
-    undo_stack: Vec<HistoryEntry>,
-    redo_stack: Vec<HistoryEntry>,
+    undo_stack: VecDeque<HistoryEntry>,
+    redo_stack: VecDeque<HistoryEntry>,
     max_size: usize,
 
     // Coalescing state — for drag gesture support
@@ -410,8 +410,8 @@ pub struct CommandHistory {
 impl CommandHistory {
     pub fn new() -> Self {
         Self {
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
             max_size: 1000,
             pending_coalesce_key: None,
             pending_old_entry: None,
@@ -430,10 +430,10 @@ impl CommandHistory {
     }
 
     pub fn push(&mut self, entry: HistoryEntry) {
-        self.undo_stack.push(entry);
+        self.undo_stack.push_back(entry);
         self.redo_stack.clear();
         if self.max_size > 0 && self.undo_stack.len() > self.max_size {
-            self.undo_stack.remove(0);
+            self.undo_stack.pop_front();
         }
         self.ops_since_save = self.ops_since_save.saturating_add(1);
     }
@@ -472,14 +472,14 @@ impl CommandHistory {
     }
 
     pub fn undo(&mut self) -> Option<HistoryEntry> {
-        let entry = self.undo_stack.pop()?;
-        self.redo_stack.push(entry.clone());
+        let entry = self.undo_stack.pop_back()?;
+        self.redo_stack.push_back(entry.clone());
         Some(entry)
     }
 
     pub fn redo(&mut self) -> Option<HistoryEntry> {
-        let entry = self.redo_stack.pop()?;
-        self.undo_stack.push(entry.clone());
+        let entry = self.redo_stack.pop_back()?;
+        self.undo_stack.push_back(entry.clone());
         Some(entry)
     }
 
@@ -492,20 +492,20 @@ impl CommandHistory {
     }
 
     pub fn undo_label(&self) -> Option<&'static str> {
-        self.undo_stack.last().map(|e| e.label())
+        self.undo_stack.back().map(|e| e.label())
     }
 
     pub fn redo_label(&self) -> Option<&'static str> {
-        self.redo_stack.last().map(|e| e.label())
+        self.redo_stack.back().map(|e| e.label())
     }
 
     /// Get all undo stack entries (oldest first) for history panel display.
-    pub fn undo_entries(&self) -> &[HistoryEntry] {
+    pub fn undo_entries(&self) -> &VecDeque<HistoryEntry> {
         &self.undo_stack
     }
 
     /// Get all redo stack entries (oldest first) for history panel display.
-    pub fn redo_entries(&self) -> &[HistoryEntry] {
+    pub fn redo_entries(&self) -> &VecDeque<HistoryEntry> {
         &self.redo_stack
     }
 
