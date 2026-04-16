@@ -263,6 +263,22 @@ pub struct AppState {
 
     // Export
     pub show_export_dialog: bool,
+    /// Whether the export-preset manager modal is visible. Opens from a
+    /// button next to the preset dropdown in the export dialog.
+    pub show_preset_manager: bool,
+    /// Currently highlighted preset id inside the manager dialog. Session
+    /// state only — lives on AppState rather than locally so the selection
+    /// survives re-opens of the dialog within the same session.
+    pub preset_manager_selected: Option<String>,
+
+    // Clip properties dialog (#47)
+    /// Whether the Clip Properties modal is visible.
+    pub show_clip_properties: bool,
+    /// Media item currently open in the Clip Properties modal. `None` when
+    /// the modal is hidden.
+    pub clip_properties_media_id: Option<MediaId>,
+    /// Active tab inside the Clip Properties modal.
+    pub clip_properties_tab: ClipPropertiesTab,
 
     // Phase 4: Tools & modes
     pub active_tool: Tool,
@@ -1093,6 +1109,39 @@ impl ScopeCursorData {
 
 // ── Floating scope window types ─────────────────────────────────────────
 
+/// Active tab in the Clip Properties modal dialog (#47). Session state
+/// only — not persisted across runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClipPropertiesTab {
+    #[default]
+    Info,
+    File,
+    Tags,
+    Markers,
+    Usage,
+    Streams,
+    Metadata,
+}
+
+impl ClipPropertiesTab {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Info => "Info",
+            Self::File => "File",
+            Self::Tags => "Tags",
+            Self::Markers => "Markers",
+            Self::Usage => "Usage",
+            Self::Streams => "Streams",
+            Self::Metadata => "Metadata",
+        }
+    }
+
+    pub const ALL: [ClipPropertiesTab; 7] = [
+        Self::Info, Self::File, Self::Tags, Self::Markers,
+        Self::Usage, Self::Streams, Self::Metadata,
+    ];
+}
+
 /// Scope type for floating window panes (extends ScopeMode with CIE).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ScopeType {
@@ -1551,6 +1600,11 @@ impl Default for AppState {
             thumbnail_textures: std::collections::HashMap::new(),
             filmstrip_textures: std::collections::HashMap::new(),
             show_export_dialog: false,
+            show_preset_manager: false,
+            preset_manager_selected: None,
+            show_clip_properties: false,
+            clip_properties_media_id: None,
+            clip_properties_tab: ClipPropertiesTab::default(),
             active_tool: Tool::Select,
             viewer_mode: ViewerMode::Program,
             snap_enabled: true,

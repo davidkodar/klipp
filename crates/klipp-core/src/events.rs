@@ -399,6 +399,17 @@ pub enum AppCommand {
     ShowExportDialog,
     ExportSequence { settings: ExportSettings },
     CancelExport,
+    /// Delete a user-defined export preset by id.
+    DeleteExportPreset { preset_id: String },
+    /// Rename a user-defined export preset.
+    RenameExportPreset { preset_id: String, new_name: String },
+    /// Clone an existing preset (user or built-in) into a new
+    /// user-preset entry with "(copy)" appended to the name.
+    DuplicateExportPreset { preset_id: String },
+
+    // Clip properties dialog (#47)
+    /// Open the Clip Properties modal focused on the given media item.
+    OpenClipProperties { media_id: MediaId },
 
     // Compositing
     SetTrackOpacity { track_index: usize, opacity: f32 },

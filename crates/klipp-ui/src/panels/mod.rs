@@ -1,6 +1,8 @@
 pub mod audio_mixer;
 pub mod batch_rename_dialog;
+pub mod clip_properties;
 pub mod curve_editor;
+pub mod preset_manager;
 pub mod inspector;
 pub mod node_graph;
 pub mod node_inspector;

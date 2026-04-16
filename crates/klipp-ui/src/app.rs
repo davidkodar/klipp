@@ -11189,6 +11189,62 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::DeleteExportPreset { preset_id } => {
+                let id = preset_id.clone();
+                let before = self.prefs.export.custom_presets.len();
+                self.prefs.export.custom_presets.retain(|p| p.id != id);
+                if self.prefs.export.custom_presets.len() != before {
+                    // If the deleted preset was the "last used" pointer,
+                    // clear it so the export dialog reopens clean.
+                    if self.prefs.export.last_preset_id.as_deref() == Some(id.as_str()) {
+                        self.prefs.export.last_preset_id = None;
+                    }
+                    // Same for the active dialog selection.
+                    if self.export_dialog.selected_preset_id.as_deref() == Some(id.as_str()) {
+                        self.export_dialog.selected_preset_id = None;
+                    }
+                    self.prefs_dirty = true;
+                    self.state.toast.show("Preset deleted".to_string());
+                }
+                true
+            }
+            AppCommand::RenameExportPreset { preset_id, new_name } => {
+                let trimmed = new_name.trim().to_string();
+                if !trimmed.is_empty() {
+                    if let Some(p) = self.prefs.export.custom_presets
+                        .iter_mut()
+                        .find(|p| p.id == *preset_id && !p.built_in)
+                    {
+                        p.name = trimmed;
+                        self.prefs_dirty = true;
+                    }
+                }
+                true
+            }
+            AppCommand::DuplicateExportPreset { preset_id } => {
+                let all_presets: Vec<klipp_core::ExportPreset> = klipp_core::builtin_presets()
+                    .into_iter()
+                    .chain(self.prefs.export.custom_presets.iter().cloned())
+                    .collect();
+                if let Some(src) = all_presets.iter().find(|p| &p.id == preset_id).cloned() {
+                    let new_p = klipp_core::ExportPreset {
+                        id: format!("custom-{}", uuid::Uuid::new_v4()),
+                        name: format!("{} (copy)", src.name),
+                        built_in: false,
+                        settings: src.settings.clone(),
+                    };
+                    self.prefs.export.custom_presets.push(new_p);
+                    self.prefs_dirty = true;
+                    self.state.toast.show("Preset duplicated".to_string());
+                }
+                true
+            }
+            AppCommand::OpenClipProperties { media_id } => {
+                self.state.clip_properties_media_id = Some(*media_id);
+                self.state.clip_properties_tab = crate::state::ClipPropertiesTab::default();
+                self.state.show_clip_properties = true;
+                true
+            }
             AppCommand::ImportSubtitles { path } => {
                 let path = path.clone();
                 match std::fs::read_to_string(&path) {
@@ -16740,6 +16796,12 @@ impl KlippApp {
                         self.export_dialog.show_save_preset = true;
                         self.export_dialog.save_preset_name.clear();
                     }
+                    // Opens the preset manager (#45) in a separate modal
+                    // so the user can delete, rename, duplicate, or
+                    // import/export user presets.
+                    if ui.button("\u{2699} Manage\u{2026}").on_hover_text("Manage export presets").clicked() {
+                        self.state.show_preset_manager = true;
+                    }
                 });
                 ui.add_space(4.0);
 
@@ -17668,6 +17730,25 @@ impl KlippApp {
                 ctx,
                 &mut self.state,
                 &items,
+            );
+            cmds.extend(dialog_cmds);
+        }
+
+        // Clip Properties modal (#47)
+        if self.state.show_clip_properties {
+            let dialog_cmds = crate::panels::clip_properties::show_clip_properties_dialog(
+                ctx,
+                &mut self.state,
+            );
+            cmds.extend(dialog_cmds);
+        }
+
+        // Export Preset Manager modal (#45)
+        if self.state.show_preset_manager {
+            let dialog_cmds = crate::panels::preset_manager::show_preset_manager_dialog(
+                ctx,
+                &mut self.state,
+                &mut self.prefs.export.custom_presets,
             );
             cmds.extend(dialog_cmds);
         }

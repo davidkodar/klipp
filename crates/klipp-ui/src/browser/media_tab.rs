@@ -1412,6 +1412,11 @@ fn show_context_menu(
         });
         ui.close_menu();
     }
+    ui.separator();
+    if ui.button("Properties\u{2026}").clicked() {
+        cmds.push(AppCommand::OpenClipProperties { media_id });
+        ui.close_menu();
+    }
 }
 
 fn handle_media_click(

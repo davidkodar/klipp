@@ -5416,8 +5416,18 @@ impl TimelinePanel {
                     }
 
                 ui.separator();
-                let r = ui.add_enabled(false, egui::Button::new("Properties..."));
-                r.on_disabled_hover_text("(coming soon)");
+                // Properties… opens the multi-tab Clip Properties dialog
+                // (#47) on the selected clip's source media.
+                let media_for_clip = state.sequence().tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == clip_id)
+                    .and_then(|c| c.media_id());
+                if ui.add_enabled(media_for_clip.is_some(), egui::Button::new("Properties\u{2026}")).clicked() {
+                    if let Some(mid) = media_for_clip {
+                        cmds.push(AppCommand::OpenClipProperties { media_id: mid });
+                    }
+                    ui.close_menu();
+                }
             } else {
                 // No clip selected — offer gap operations on empty track space
                 // Find gap at click position on this track
