@@ -6,9 +6,25 @@ use crate::snapshot::{
 };
 use crate::stage::FrameContext;
 use klipp_core::ClipId;
+use klipp_timeline::{TitleAnimationType, TitleData};
 use klipp_title::TitleRenderer;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Returns a modified TitleData with `write_on` set for typewriter animations,
+/// or None when the animation is Static or non-typewriter.
+fn typewriter_override(td: &TitleData, clip_elapsed_secs: f64) -> Option<TitleData> {
+    if let TitleAnimationType::Typewriter { chars_per_sec } = td.animation_type {
+        let chars = td.text.chars().count().max(1);
+        let write_on = ((clip_elapsed_secs * chars_per_sec as f64) / chars as f64)
+            .clamp(0.0, 1.0) as f32;
+        let mut out = td.clone();
+        out.write_on = write_on;
+        Some(out)
+    } else {
+        None
+    }
+}
 
 /// Composites all video tracks into a single RGBA frame for each timeline frame.
 ///
@@ -137,7 +153,13 @@ impl FrameCompositor {
         match &clip.kind {
             ClipKindSnapshot::Gap | ClipKindSnapshot::AdjustmentLayer => Ok(None),
             ClipKindSnapshot::Title(data) => {
-                Ok(Some(self.title_renderer.render(data, width, height)))
+                // Typewriter animation overrides `write_on` based on clip-elapsed seconds.
+                // Cloning only when animation is Typewriter keeps the static-title path allocation-free.
+                let clip_frame = frame_num.saturating_sub(clip.timeline_start_frame);
+                let elapsed_secs = clip_frame as f64 / fps.max(1.0);
+                let typewriter = typewriter_override(data, elapsed_secs);
+                let td = typewriter.as_ref().unwrap_or(data);
+                Ok(Some(self.title_renderer.render(td, width, height)))
             }
             ClipKindSnapshot::Generator(data) => {
                 let clip_frame = frame_num.saturating_sub(clip.timeline_start_frame);

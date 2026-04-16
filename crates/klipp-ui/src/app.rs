@@ -9931,6 +9931,26 @@ impl KlippApp {
                 self.state.title_fade_duration = *duration;
                 true
             }
+            AppCommand::SetTitleAnimation { clip_id, animation_kind, speed } => {
+                let animation = decode_title_animation(*animation_kind, *speed);
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let fps = seq.fps;
+                let frame_w = seq.resolution.width as f32;
+                let frame_h = seq.resolution.height as f32;
+                for track in &mut seq.tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.animation_type = animation.clone();
+                        }
+                        apply_title_animation_keyframes(clip, &animation, fps, frame_h, frame_w);
+                    }
+                }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             _ => false,
         }
     }
@@ -10327,6 +10347,13 @@ impl KlippApp {
             AppCommand::AddAudioTrack => {
                 let name = self.state.sequences[self.state.active_sequence_idx].next_track_name(klipp_timeline::TrackKind::Audio);
                 self.state.sequences[self.state.active_sequence_idx].add_audio_track(name);
+                self.sync_sequence_to_engine();
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::AddSubtitleTrack { name } => {
+                let n = name.clone();
+                self.state.sequences[self.state.active_sequence_idx].add_subtitle_track(n);
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
                 true
@@ -11646,19 +11673,108 @@ impl KlippApp {
                 let path = path.clone();
                 match std::fs::read_to_string(&path) {
                     Ok(content) => {
-                        let subs = parse_srt_vtt(&content);
-                        if subs.is_empty() {
-                            self.state.toast.show("No subtitles found in file".to_string());
+                        // Detect format by extension (case-insensitive). Unknown
+                        // extensions fall back to the SRT/VTT parser.
+                        let ext = path
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .map(|s| s.to_ascii_lowercase())
+                            .unwrap_or_default();
+                        let is_ass = ext == "ass" || ext == "ssa";
+
+                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                        let fps_rate = seq.fps.rate();
+                        // One new track per imported file, named after the file stem.
+                        let track_name = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("Subtitles")
+                            .to_string();
+                        let new_track_id = seq.add_subtitle_track(track_name);
+                        let sub_track_idx = seq
+                            .tracks
+                            .iter()
+                            .position(|t| t.id == new_track_id)
+                            .unwrap();
+                        let track = &mut seq.tracks[sub_track_idx];
+                        track.source_file = Some(path.clone());
+
+                        let imported_count;
+                        if is_ass {
+                            let (entries, styles) = parse_ass(&content);
+                            imported_count = entries.len();
+                            for entry in &entries {
+                                let timeline_in = klipp_core::RationalTime::from_secs_f64(entry.start_secs, fps_rate);
+                                let timeline_out = klipp_core::RationalTime::from_secs_f64(entry.end_secs, fps_rate);
+                                let dur = timeline_out - timeline_in;
+                                let style = styles.get(&entry.style_name);
+
+                                let (font_name, font_size, color, outline, shadow, font_style) = match style {
+                                    Some(s) => {
+                                        let fs = match (s.bold, s.italic) {
+                                            (false, false) => klipp_timeline::FontStyle::Regular,
+                                            (true, false) => klipp_timeline::FontStyle::Bold,
+                                            (false, true) => klipp_timeline::FontStyle::Italic,
+                                            (true, true) => klipp_timeline::FontStyle::BoldItalic,
+                                        };
+                                        let outline = if s.outline > 0.0 {
+                                            Some(klipp_timeline::TextOutline { color: [0, 0, 0, 255], width: s.outline })
+                                        } else { None };
+                                        let shadow = if s.shadow > 0.0 {
+                                            Some(klipp_timeline::TitleShadow {
+                                                color: [0, 0, 0, 180],
+                                                offset_x: s.shadow,
+                                                offset_y: s.shadow,
+                                                blur: s.shadow,
+                                            })
+                                        } else { None };
+                                        (
+                                            if s.font_name.is_empty() { String::new() } else { s.font_name.clone() },
+                                            if s.font_size > 0.0 { s.font_size } else { 32.0 },
+                                            s.primary_color,
+                                            outline,
+                                            shadow,
+                                            fs,
+                                        )
+                                    }
+                                    None => (
+                                        String::new(),
+                                        32.0,
+                                        [255, 255, 255, 255],
+                                        Some(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0 }),
+                                        None,
+                                        klipp_timeline::FontStyle::Regular,
+                                    ),
+                                };
+
+                                let title_data = klipp_timeline::TitleData {
+                                    text: entry.text.clone(),
+                                    font_size,
+                                    font_name,
+                                    font_style,
+                                    color,
+                                    position: klipp_timeline::TitlePosition { x: 0.5, y: 0.88 },
+                                    alignment: klipp_timeline::TextAlignment::Center,
+                                    background: klipp_timeline::TitleBackground::None,
+                                    outline,
+                                    shadow,
+                                    ass_style_name: if entry.style_name.is_empty() { None } else { Some(entry.style_name.clone()) },
+                                    ..Default::default()
+                                };
+                                let clip = klipp_timeline::Clip {
+                                    id: klipp_core::ClipId::new(),
+                                    kind: klipp_timeline::ClipKind::Title(title_data),
+                                    timeline_in,
+                                    timeline_out,
+                                    source_in: klipp_core::RationalTime::from_secs_f64(0.0, fps_rate),
+                                    source_out: dur,
+                                    ..klipp_timeline::Clip::gap(timeline_in, timeline_out)
+                                };
+                                track.clips.push(clip);
+                            }
                         } else {
-                            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                            let fps_rate = seq.fps.rate();
-                            // Find or create a subtitle track
-                            let sub_track_idx = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Subtitle)
-                                .unwrap_or_else(|| {
-                                    let id = seq.add_subtitle_track("Subtitles".into());
-                                    seq.tracks.iter().position(|t| t.id == id).unwrap()
-                                });
-                            let track = &mut seq.tracks[sub_track_idx];
+                            let subs = parse_srt_vtt(&content);
+                            imported_count = subs.len();
                             for sub in &subs {
                                 let timeline_in = klipp_core::RationalTime::from_secs_f64(sub.start_secs, fps_rate);
                                 let timeline_out = klipp_core::RationalTime::from_secs_f64(sub.end_secs, fps_rate);
@@ -11684,8 +11800,20 @@ impl KlippApp {
                                 };
                                 track.clips.push(clip);
                             }
+                        }
+
+                        if imported_count == 0 {
+                            // Remove the newly-created empty track and warn.
+                            let tid = track.id;
+                            let _ = seq.remove_track(tid);
+                            self.state.toast.show("No subtitles found in file".to_string());
+                        } else {
                             track.sort_clips();
-                            self.state.toast.show(format!("Imported {} subtitles", subs.len()));
+                            self.state.toast.show(format!(
+                                "Imported {} subtitle(s) into \"{}\"",
+                                imported_count,
+                                seq.tracks[sub_track_idx].name,
+                            ));
                             self.state.dirty = true;
                         }
                     }
@@ -11746,6 +11874,59 @@ impl KlippApp {
                         tracing::error!("Kdenlive import failed: {e:?}");
                         self.state.toast.show(format!(
                             "Failed to import Kdenlive project: {e}",
+                        ));
+                    }
+                }
+                true
+            }
+            AppCommand::ImportFcpxml { path } => {
+                let path = path.clone();
+                match klipp_project::fcpxml_import::load_fcpxml(&path) {
+                    Ok(result) => {
+                        // Write warnings file if any features were dropped.
+                        if !result.warnings.is_empty() {
+                            let warnings_path = path.with_extension("import_warnings.txt");
+                            let body = result.warnings.join("\n");
+                            match std::fs::write(&warnings_path, &body) {
+                                Ok(_) => {
+                                    self.state.toast.show(format!(
+                                        "FCPXML project imported with {} warning(s). See {}",
+                                        result.warnings.len(),
+                                        warnings_path.display(),
+                                    ));
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Could not write import warnings: {e}");
+                                    self.state.toast.show(format!(
+                                        "Imported with {} warning(s); could not write log: {e}",
+                                        result.warnings.len(),
+                                    ));
+                                }
+                            }
+                        } else {
+                            self.state.toast.show(
+                                "FCPXML project imported successfully.".to_string(),
+                            );
+                        }
+
+                        // Merge the imported media pool, preserving MediaIds so
+                        // imported clips resolve correctly. Same pattern as
+                        // Kdenlive / OTIO.
+                        let items: Vec<_> = result.media_pool.all().cloned().collect();
+                        for item in items {
+                            self.state.media_pool.add(item);
+                        }
+
+                        self.state.sequences.push(result.sequence);
+                        self.state.active_sequence_idx = self.state.sequences.len() - 1;
+                        self.state.dirty = true;
+                        self.sync_media_pool_to_engine();
+                        self.sync_sequence_to_engine();
+                    }
+                    Err(e) => {
+                        tracing::error!("FCPXML import failed: {e:?}");
+                        self.state.toast.show(format!(
+                            "Failed to import FCPXML project: {e}",
                         ));
                     }
                 }
@@ -20696,6 +20877,228 @@ struct SubtitleEntry {
     text: String,
 }
 
+// ── ASS/SSA subtitle parsing (Tier 1, no libass) ──
+
+/// A single Dialogue line from an ASS/SSA file.
+#[derive(Debug, Clone)]
+struct AssSubtitleEntry {
+    pub start_secs: f64,
+    pub end_secs: f64,
+    /// Displayable text — ASS override tags stripped, `\N`/`\n`/`\h` normalized.
+    pub text: String,
+    /// Name of the V4+ style this dialogue references (empty if none).
+    pub style_name: String,
+}
+
+/// A [V4+ Styles] entry — just the fields we actually wire into TitleData.
+#[derive(Debug, Clone, Default)]
+struct AssStyle {
+    #[allow(dead_code)]
+    pub name: String,
+    pub font_name: String,
+    pub font_size: f32,
+    /// RGBA. Converted from ASS `&HAABBGGRR` (alpha is inverted in ASS: 00 = opaque).
+    pub primary_color: [u8; 4],
+    pub outline: f32,
+    pub shadow: f32,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+/// Parse ASS/SSA. Reads `[V4+ Styles]` (both V4+ and V4 headers) and `[Events]`.
+/// Returns `(entries, styles_by_name)`. The import handler maps
+/// `entry.style_name` → style for TitleData population.
+fn parse_ass(content: &str) -> (Vec<AssSubtitleEntry>, std::collections::HashMap<String, AssStyle>) {
+    use std::collections::HashMap;
+    let mut entries: Vec<AssSubtitleEntry> = Vec::new();
+    let mut styles: HashMap<String, AssStyle> = HashMap::new();
+
+    #[derive(PartialEq)]
+    enum Section { None, Styles, Events, Other }
+    let mut section = Section::None;
+    let mut styles_fmt: Vec<String> = Vec::new();
+    let mut events_fmt: Vec<String> = Vec::new();
+
+    for raw in content.lines() {
+        let line = raw.trim_start_matches('\u{feff}').trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('!') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            let header = line.trim_start_matches('[').trim_end_matches(']').trim();
+            section = if header.eq_ignore_ascii_case("V4+ Styles")
+                || header.eq_ignore_ascii_case("V4 Styles")
+            {
+                Section::Styles
+            } else if header.eq_ignore_ascii_case("Events") {
+                Section::Events
+            } else {
+                Section::Other
+            };
+            continue;
+        }
+        // Each line in V4+/Events is `Key: value`
+        let Some(colon) = line.find(':') else { continue; };
+        let key = line[..colon].trim();
+        let value = line[colon + 1..].trim();
+        match section {
+            Section::Styles => {
+                if key.eq_ignore_ascii_case("Format") {
+                    styles_fmt = value
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect();
+                } else if key.eq_ignore_ascii_case("Style") {
+                    if styles_fmt.is_empty() { continue; }
+                    // Styles have no free-text field, so a plain split is safe.
+                    let fields: Vec<&str> = value.split(',').map(str::trim).collect();
+                    if fields.len() < styles_fmt.len() { continue; }
+                    let mut style = AssStyle::default();
+                    for (i, fname) in styles_fmt.iter().enumerate() {
+                        let v = fields[i];
+                        match fname.as_str() {
+                            "Name" => style.name = v.to_string(),
+                            "Fontname" => style.font_name = v.to_string(),
+                            "Fontsize" => {
+                                if let Ok(n) = v.parse::<f32>() { style.font_size = n; }
+                            }
+                            "PrimaryColour" => style.primary_color = parse_ass_color(v),
+                            "Outline" => {
+                                if let Ok(n) = v.parse::<f32>() { style.outline = n; }
+                            }
+                            "Shadow" => {
+                                if let Ok(n) = v.parse::<f32>() { style.shadow = n; }
+                            }
+                            "Bold" => style.bold = v != "0" && !v.is_empty(),
+                            "Italic" => style.italic = v != "0" && !v.is_empty(),
+                            _ => {}
+                        }
+                    }
+                    if !style.name.is_empty() {
+                        styles.insert(style.name.clone(), style);
+                    }
+                }
+            }
+            Section::Events => {
+                if key.eq_ignore_ascii_case("Format") {
+                    events_fmt = value
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect();
+                } else if key.eq_ignore_ascii_case("Dialogue") {
+                    if events_fmt.is_empty() { continue; }
+                    // The last Format column is "Text" and may contain commas.
+                    // Split into at most events_fmt.len() parts with splitn.
+                    let fields: Vec<&str> = value
+                        .splitn(events_fmt.len(), ',')
+                        .collect();
+                    if fields.len() < events_fmt.len() { continue; }
+                    let mut start_s = 0.0;
+                    let mut end_s = 0.0;
+                    let mut style_name = String::new();
+                    let mut text_raw = String::new();
+                    for (i, fname) in events_fmt.iter().enumerate() {
+                        let v = fields[i];
+                        match fname.as_str() {
+                            "Start" => start_s = parse_ass_time(v.trim()),
+                            "End" => end_s = parse_ass_time(v.trim()),
+                            "Style" => style_name = v.trim().to_string(),
+                            "Text" => text_raw = v.to_string(), // keep whitespace
+                            _ => {}
+                        }
+                    }
+                    let text = strip_ass_override_tags(&text_raw);
+                    if !text.is_empty() && end_s > start_s {
+                        entries.push(AssSubtitleEntry {
+                            start_secs: start_s,
+                            end_secs: end_s,
+                            text,
+                            style_name,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (entries, styles)
+}
+
+/// ASS time: `H:MM:SS.cc` where cc is centiseconds (NOT milliseconds).
+fn parse_ass_time(s: &str) -> f64 {
+    let s = s.trim();
+    // Split into H, MM, SS.cc
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() != 3 { return 0.0; }
+    let h: f64 = parts[0].parse().unwrap_or(0.0);
+    let m: f64 = parts[1].parse().unwrap_or(0.0);
+    let sec_cc = parts[2];
+    // sec_cc like "23.45" — parse as seconds (dot separator is centiseconds or
+    // ms; either way f64 parsing gets us the right numeric value).
+    let sec: f64 = sec_cc.parse().unwrap_or(0.0);
+    h * 3600.0 + m * 60.0 + sec
+}
+
+/// Parse an ASS colour literal into an RGBA [u8; 4].
+/// ASS v4+ stores colours as `&HAABBGGRR&` or `&HBBGGRR&` (BGR order, alpha prefixed).
+/// Alpha is INVERTED: `&H00` = fully opaque, `&HFF` = fully transparent.
+/// Returns opaque white on parse failure.
+fn parse_ass_color(s: &str) -> [u8; 4] {
+    let s = s.trim();
+    // Strip `&H` prefix and trailing `&`
+    let hex = s
+        .trim_start_matches("&H")
+        .trim_start_matches("&h")
+        .trim_end_matches('&');
+    if hex.is_empty() {
+        return [255, 255, 255, 255];
+    }
+    // Pad/truncate to handle 6- or 8-hex forms. ASS often omits leading zeros.
+    let hex_upper = hex.to_ascii_uppercase();
+    // Parse as u32 — gives us AABBGGRR (or 00BBGGRR if alpha omitted).
+    let n = u32::from_str_radix(&hex_upper, 16).unwrap_or(0xFF_FF_FF_FF);
+    let a_inv = ((n >> 24) & 0xFF) as u8;
+    let b = ((n >> 16) & 0xFF) as u8;
+    let g = ((n >> 8) & 0xFF) as u8;
+    let r = (n & 0xFF) as u8;
+    // If the hex was 6 chars (no alpha), a_inv = 0 = opaque, which is what we want.
+    let a = 255u8.saturating_sub(a_inv);
+    [r, g, b, a]
+}
+
+/// Strip ASS override blocks (`{...}`) from dialogue text, decode standard escapes.
+/// - `\N` → hard line break
+/// - `\n` → soft wrap (we treat as space since our renderer auto-wraps)
+/// - `\h` → non-breaking space
+fn strip_ass_override_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut depth: i32 = 0;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '{' {
+            depth += 1;
+            continue;
+        }
+        if c == '}' {
+            if depth > 0 { depth -= 1; }
+            continue;
+        }
+        if depth > 0 { continue; }
+        if c == '\\' {
+            match chars.peek() {
+                Some('N') => { chars.next(); out.push('\n'); }
+                Some('n') => { chars.next(); out.push(' '); }
+                Some('h') => { chars.next(); out.push(' '); }
+                _ => out.push(c),
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Parse SRT or VTT subtitle content into timed entries.
 fn parse_srt_vtt(content: &str) -> Vec<SubtitleEntry> {
     let mut subs = Vec::new();
@@ -21143,6 +21546,84 @@ fn format_ass_time(secs: f64) -> String {
     format!("{}:{:02}:{:02}.{:02}", h, m, s, cs)
 }
 
+// ── Title animation helpers ──
+
+/// Decode the (animation_kind, speed) pair from `AppCommand::SetTitleAnimation`
+/// into a `TitleAnimationType` enum variant.
+fn decode_title_animation(kind: u8, speed: f32) -> klipp_timeline::TitleAnimationType {
+    use klipp_timeline::TitleAnimationType as T;
+    match kind {
+        1 => T::ScrollUp { speed_px_per_sec: speed },
+        2 => T::ScrollDown { speed_px_per_sec: speed },
+        3 => T::CrawlLeft { speed_px_per_sec: speed },
+        4 => T::CrawlRight { speed_px_per_sec: speed },
+        5 => T::Typewriter { chars_per_sec: speed },
+        _ => T::Static,
+    }
+}
+
+/// Write transform_pos_x/y_keyframes for scroll/crawl animations, or clear
+/// them for Static/Typewriter. Speed is honoured only as a hint — the travel
+/// always spans the full clip duration (so shorter clips scroll faster).
+/// Position offsets use the same pixel-offset convention as other
+/// transform_pos_x/y_keyframes in this codebase (0 = centred).
+fn apply_title_animation_keyframes(
+    clip: &mut klipp_timeline::Clip,
+    animation: &klipp_timeline::TitleAnimationType,
+    _seq_fps: klipp_core::Fps,
+    frame_height: f32,
+    frame_width: f32,
+) {
+    use klipp_core::{Interpolation, Keyframe};
+    use klipp_timeline::TitleAnimationType as T;
+
+    let clip_dur_secs = clip.duration().to_secs_f64().max(0.001);
+
+    let mk_linear_kf = |time_secs: f64, value: f32| Keyframe {
+        time_secs,
+        value,
+        interpolation: Interpolation::Linear,
+        tangent_out: (0.0, 0.0),
+        tangent_in: (0.0, 0.0),
+    };
+
+    match animation {
+        T::ScrollUp { .. } => {
+            clip.transform_pos_x_keyframes.clear();
+            clip.transform_pos_y_keyframes = vec![
+                mk_linear_kf(0.0, frame_height),
+                mk_linear_kf(clip_dur_secs, -frame_height),
+            ];
+        }
+        T::ScrollDown { .. } => {
+            clip.transform_pos_x_keyframes.clear();
+            clip.transform_pos_y_keyframes = vec![
+                mk_linear_kf(0.0, -frame_height),
+                mk_linear_kf(clip_dur_secs, frame_height),
+            ];
+        }
+        T::CrawlLeft { .. } => {
+            clip.transform_pos_y_keyframes.clear();
+            clip.transform_pos_x_keyframes = vec![
+                mk_linear_kf(0.0, frame_width),
+                mk_linear_kf(clip_dur_secs, -frame_width),
+            ];
+        }
+        T::CrawlRight { .. } => {
+            clip.transform_pos_y_keyframes.clear();
+            clip.transform_pos_x_keyframes = vec![
+                mk_linear_kf(0.0, -frame_width),
+                mk_linear_kf(clip_dur_secs, frame_width),
+            ];
+        }
+        T::Typewriter { .. } | T::Static => {
+            clip.transform_pos_x_keyframes.clear();
+            clip.transform_pos_y_keyframes.clear();
+        }
+    }
+}
+
+
 #[cfg(test)]
 mod subtitle_tests {
     use super::*;
@@ -21385,6 +21866,204 @@ This is valid
         assert!((parsed[1].start_secs - 5.0).abs() < 0.001);
         assert!((parsed[1].end_secs - 7.25).abs() < 0.001);
         assert_eq!(parsed[1].text, "Second cue");
+    }
+
+    // ── ASS/SSA parser tests (Tier 1) ──
+
+    const ASS_FIXTURE: &str = "\
+[Script Info]
+Title: Example
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,20,1
+Style: Bold1,Helvetica,32,&H000000FF,&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,2,0,2,10,10,20,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:04.00,Default,,0,0,0,,Hello world
+Dialogue: 0,0:00:05.00,0:00:07.50,Bold1,,0,0,0,,{\\b1}Bold{\\b0} line with \\Nhard break
+Dialogue: 0,0:00:09.00,0:00:11.00,Default,,0,0,0,,Text, with commas, inside
+";
+
+    #[test]
+    fn parse_ass_basic_entry_count() {
+        let (entries, _) = parse_ass(ASS_FIXTURE);
+        assert_eq!(entries.len(), 3);
+    }
+
+    #[test]
+    fn parse_ass_timing() {
+        let (entries, _) = parse_ass(ASS_FIXTURE);
+        assert!((entries[0].start_secs - 1.0).abs() < 0.001);
+        assert!((entries[0].end_secs - 4.0).abs() < 0.001);
+        assert!((entries[1].start_secs - 5.0).abs() < 0.001);
+        assert!((entries[1].end_secs - 7.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn parse_ass_style_name_preserved() {
+        let (entries, _) = parse_ass(ASS_FIXTURE);
+        assert_eq!(entries[0].style_name, "Default");
+        assert_eq!(entries[1].style_name, "Bold1");
+    }
+
+    #[test]
+    fn parse_ass_strips_override_tags_and_preserves_text() {
+        let (entries, _) = parse_ass(ASS_FIXTURE);
+        // Override blocks removed; \N becomes newline.
+        assert_eq!(entries[1].text, "Bold line with \nhard break");
+    }
+
+    #[test]
+    fn parse_ass_text_with_commas() {
+        // The Text column is last; commas inside must survive splitn.
+        let (entries, _) = parse_ass(ASS_FIXTURE);
+        assert_eq!(entries[2].text, "Text, with commas, inside");
+    }
+
+    #[test]
+    fn parse_ass_styles_collected() {
+        let (_, styles) = parse_ass(ASS_FIXTURE);
+        assert!(styles.contains_key("Default"));
+        assert!(styles.contains_key("Bold1"));
+        let b = &styles["Bold1"];
+        assert_eq!(b.font_name, "Helvetica");
+        assert!((b.font_size - 32.0).abs() < 0.001);
+        // Bold1 has Bold=-1 (SSA style for "true")
+        assert!(b.bold);
+        assert!(!b.italic);
+    }
+
+    #[test]
+    fn strip_ass_override_tags_removes_braces() {
+        // Plain override tag stripping
+        assert_eq!(strip_ass_override_tags("{\\b1}hi{\\b0}"), "hi");
+        // Nested-looking braces
+        assert_eq!(strip_ass_override_tags("a{\\i1}b{\\i0}c"), "abc");
+        // \N becomes newline
+        assert_eq!(strip_ass_override_tags("line1\\Nline2"), "line1\nline2");
+        // \h becomes space
+        assert_eq!(strip_ass_override_tags("a\\hb"), "a b");
+    }
+
+    #[test]
+    fn parse_ass_color_bgr_to_rgba() {
+        // &H00FFFFFF = AABBGGRR = 00 FF FF FF → RGB=white, alpha=255 (00 inverted)
+        assert_eq!(parse_ass_color("&H00FFFFFF"), [255, 255, 255, 255]);
+        // &H000000FF = AABBGGRR = 00 00 00 FF → R=FF, G=00, B=00, A=255 (red)
+        assert_eq!(parse_ass_color("&H000000FF"), [255, 0, 0, 255]);
+        // &H00FF0000 = AABBGGRR = 00 FF 00 00 → R=0, G=0, B=FF, A=255 (blue)
+        assert_eq!(parse_ass_color("&H00FF0000"), [0, 0, 255, 255]);
+        // 6-hex form (no alpha) — alpha defaults to opaque
+        assert_eq!(parse_ass_color("&HFFFFFF"), [255, 255, 255, 255]);
+        // Alpha inverted: &H7F = semi-transparent (255 - 127 = 128)
+        let c = parse_ass_color("&H7FFFFFFF");
+        assert_eq!(c[3], 128);
+    }
+
+    #[test]
+    fn parse_ass_time_centiseconds() {
+        // H:MM:SS.cc — cc is centiseconds, so 0:01:23.45 = 83.45s
+        assert!((parse_ass_time("0:01:23.45") - 83.45).abs() < 0.001);
+        assert!((parse_ass_time("1:00:00.00") - 3600.0).abs() < 0.001);
+        assert!((parse_ass_time("0:00:00.00") - 0.0).abs() < 0.001);
+    }
+
+    // ── Title animation helpers ──
+
+    #[test]
+    fn typewriter_write_on_calculation() {
+        let chars = 10usize;
+        let chars_per_sec = 5.0f64;
+        let elapsed = 1.0f64;
+        let write_on = (elapsed * chars_per_sec / chars as f64).clamp(0.0, 1.0) as f32;
+        assert!((write_on - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn typewriter_write_on_clamps_at_one() {
+        let chars = 10usize;
+        let chars_per_sec = 5.0f64;
+        let elapsed = 10.0f64;
+        let write_on = (elapsed * chars_per_sec / chars as f64).clamp(0.0, 1.0) as f32;
+        assert_eq!(write_on, 1.0);
+    }
+
+    #[test]
+    fn title_animation_default_is_static() {
+        let anim = klipp_timeline::TitleAnimationType::default();
+        assert_eq!(anim, klipp_timeline::TitleAnimationType::Static);
+    }
+
+    #[test]
+    fn decode_title_animation_roundtrip() {
+        use klipp_timeline::TitleAnimationType as T;
+        assert_eq!(decode_title_animation(0, 0.0), T::Static);
+        assert_eq!(decode_title_animation(1, 100.0), T::ScrollUp { speed_px_per_sec: 100.0 });
+        assert_eq!(decode_title_animation(2, 100.0), T::ScrollDown { speed_px_per_sec: 100.0 });
+        assert_eq!(decode_title_animation(3, 100.0), T::CrawlLeft { speed_px_per_sec: 100.0 });
+        assert_eq!(decode_title_animation(4, 100.0), T::CrawlRight { speed_px_per_sec: 100.0 });
+        assert_eq!(decode_title_animation(5, 15.0), T::Typewriter { chars_per_sec: 15.0 });
+        // Unknown → Static (defensive)
+        assert_eq!(decode_title_animation(99, 0.0), T::Static);
+    }
+
+    #[test]
+    fn apply_title_animation_keyframes_scroll_up_generates_two_kfs() {
+        use klipp_core::RationalTime;
+        use klipp_timeline::TitleAnimationType;
+        // Build a 4-second clip at 24fps
+        let ti = RationalTime::from_secs_f64(0.0, 24);
+        let to = RationalTime::from_secs_f64(4.0, 24);
+        let mut clip = klipp_timeline::Clip::gap(ti, to);
+        clip.timeline_in = ti;
+        clip.timeline_out = to;
+        let anim = TitleAnimationType::ScrollUp { speed_px_per_sec: 100.0 };
+        apply_title_animation_keyframes(
+            &mut clip,
+            &anim,
+            klipp_core::Fps::new(24, 1),
+            1080.0,
+            1920.0,
+        );
+        assert!(clip.transform_pos_x_keyframes.is_empty());
+        assert_eq!(clip.transform_pos_y_keyframes.len(), 2);
+        // First kf: bottom (+H), last kf: top (-H)
+        assert!((clip.transform_pos_y_keyframes[0].value - 1080.0).abs() < 0.001);
+        assert!((clip.transform_pos_y_keyframes[1].value + 1080.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn apply_title_animation_keyframes_static_clears_all() {
+        use klipp_core::{Interpolation, Keyframe, RationalTime};
+        use klipp_timeline::TitleAnimationType;
+        let ti = RationalTime::from_secs_f64(0.0, 24);
+        let to = RationalTime::from_secs_f64(2.0, 24);
+        let mut clip = klipp_timeline::Clip::gap(ti, to);
+        clip.timeline_in = ti;
+        clip.timeline_out = to;
+        // Seed with some existing keyframes
+        clip.transform_pos_x_keyframes.push(Keyframe {
+            time_secs: 0.0, value: 100.0, interpolation: Interpolation::Linear,
+            tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0),
+        });
+        clip.transform_pos_y_keyframes.push(Keyframe {
+            time_secs: 0.0, value: 100.0, interpolation: Interpolation::Linear,
+            tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0),
+        });
+        apply_title_animation_keyframes(
+            &mut clip,
+            &TitleAnimationType::Static,
+            klipp_core::Fps::new(24, 1),
+            1080.0,
+            1920.0,
+        );
+        assert!(clip.transform_pos_x_keyframes.is_empty());
+        assert!(clip.transform_pos_y_keyframes.is_empty());
     }
 }
 

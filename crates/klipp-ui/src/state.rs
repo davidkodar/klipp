@@ -1153,6 +1153,14 @@ pub struct SubtitleEditorState {
     pub timecode_buf: String,
     /// Ripple mode — when true, timing changes shift downstream clips.
     pub ripple: bool,
+    /// Selected subtitle track (None = none selected / no filter). Used by the
+    /// track-grouped editor to highlight the active track.
+    pub selected_subtitle_track: Option<klipp_core::TrackId>,
+    /// Set of subtitle track IDs currently collapsed in the editor.
+    pub subtitle_track_collapsed: std::collections::HashSet<klipp_core::TrackId>,
+    /// Track being renamed inline (header double-click). Name edit buffer.
+    pub editing_track_name: Option<klipp_core::TrackId>,
+    pub track_name_buf: String,
 }
 
 /// Independent viewer overlay toggles — multiple can be active simultaneously.

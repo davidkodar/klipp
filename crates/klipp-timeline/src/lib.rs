@@ -8,8 +8,8 @@ mod sequence;
 pub use clip_kind::{
     adjust_style_runs_for_text_change, apply_style_to_range, CharAnimation, CharEntrance,
     ClipKind, FontStyle, InnerShadow, MotionBlur, StyleRun, TextAlignment, TextExtrusion,
-    TextGlow, TextGradient, TextOutline, TextPattern, TextPath, TitleBackground, TitleData,
-    TitlePosition, TitleShadow, GeneratorData,
+    TextGlow, TextGradient, TextOutline, TextPattern, TextPath, TitleAnimationType,
+    TitleBackground, TitleData, TitlePosition, TitleShadow, GeneratorData,
 };
 pub use marker::Marker;
 pub use sequence::{

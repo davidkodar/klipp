@@ -1296,6 +1296,107 @@ fn show_title_editor(
     }
     ui.add_space(8.0);
 
+    // ── Title Motion Animation ──
+    // Scroll/crawl auto-generate transform_pos_x/y_keyframes; Typewriter overrides
+    // write_on per-frame at render time. Static clears any existing keyframes.
+    ui.separator();
+    ui.label(egui::RichText::new("Title Animation").strong().size(11.0));
+    {
+        use klipp_timeline::TitleAnimationType as T;
+        let current_label = match &td.animation_type {
+            T::Static => "None",
+            T::ScrollUp { .. } => "Scroll Up",
+            T::ScrollDown { .. } => "Scroll Down",
+            T::CrawlLeft { .. } => "Crawl Left",
+            T::CrawlRight { .. } => "Crawl Right",
+            T::Typewriter { .. } => "Typewriter",
+        };
+        let current_kind: u8 = match &td.animation_type {
+            T::Static => 0,
+            T::ScrollUp { .. } => 1,
+            T::ScrollDown { .. } => 2,
+            T::CrawlLeft { .. } => 3,
+            T::CrawlRight { .. } => 4,
+            T::Typewriter { .. } => 5,
+        };
+        let mut selected = current_kind;
+        egui::ComboBox::from_id_salt("title_animation")
+            .selected_text(current_label)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut selected, 0, "None");
+                ui.selectable_value(&mut selected, 1, "Scroll Up");
+                ui.selectable_value(&mut selected, 2, "Scroll Down");
+                ui.selectable_value(&mut selected, 3, "Crawl Left");
+                ui.selectable_value(&mut selected, 4, "Crawl Right");
+                ui.selectable_value(&mut selected, 5, "Typewriter");
+            });
+        if selected != current_kind {
+            // Use sensible defaults when switching variants
+            let speed = match selected {
+                1 | 2 | 3 | 4 => 120.0,   // px/sec
+                5 => 15.0,                 // chars/sec
+                _ => 0.0,
+            };
+            cmds.push(AppCommand::SetTitleAnimation {
+                clip_id,
+                animation_kind: selected,
+                speed,
+            });
+        }
+
+        // Speed / chars_per_sec spinner, shown only for animated variants
+        match &td.animation_type {
+            T::ScrollUp { speed_px_per_sec }
+            | T::ScrollDown { speed_px_per_sec }
+            | T::CrawlLeft { speed_px_per_sec }
+            | T::CrawlRight { speed_px_per_sec } => {
+                let mut v = *speed_px_per_sec;
+                ui.horizontal(|ui| {
+                    ui.label("Speed:");
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut v)
+                                .range(10.0..=2000.0)
+                                .speed(1.0)
+                                .suffix(" px/s")
+                                .fixed_decimals(0),
+                        )
+                        .changed()
+                    {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id,
+                            animation_kind: current_kind,
+                            speed: v,
+                        });
+                    }
+                });
+            }
+            T::Typewriter { chars_per_sec } => {
+                let mut v = *chars_per_sec;
+                ui.horizontal(|ui| {
+                    ui.label("Chars/sec:");
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut v)
+                                .range(1.0..=100.0)
+                                .speed(0.5)
+                                .fixed_decimals(1),
+                        )
+                        .changed()
+                    {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id,
+                            animation_kind: 5,
+                            speed: v,
+                        });
+                    }
+                });
+            }
+            T::Static => {}
+        }
+    }
+    ui.add_space(8.0);
+
     // ── Motion Blur ──
     ui.separator();
     ui.label(egui::RichText::new("Motion Blur").strong().size(11.0));

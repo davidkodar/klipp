@@ -11,13 +11,14 @@
 
 use crate::state::AppState;
 use crate::widgets::timecode_edit::timecode_edit;
-use klipp_core::{AppCommand, ClipId, Fps, Timecode};
+use klipp_core::{AppCommand, ClipId, Fps, Timecode, TrackId};
 
 /// Row data flattened from all subtitle/text tracks, sorted by timeline_in.
 #[derive(Debug, Clone)]
 struct SubRow {
     clip_id: ClipId,
     track_index: usize,
+    track_id: TrackId,
     timeline_in: Timecode,
     timeline_out: Timecode,
     source_in: Timecode,
@@ -28,6 +29,15 @@ struct SubRow {
     font_name: String,
     font_style_u8: u8,
     color: [u8; 4],
+}
+
+/// Per-track descriptor used by the track-grouped editor.
+#[derive(Debug, Clone)]
+struct SubTrack {
+    track_id: TrackId,
+    name: String,
+    source_file: Option<std::path::PathBuf>,
+    clip_count: usize,
 }
 
 /// Collect all subtitle/text clips across tracks, sorted by timeline_in.
@@ -45,6 +55,7 @@ fn collect_subtitle_clips(seq: &klipp_timeline::Sequence) -> Vec<SubRow> {
                 rows.push(SubRow {
                     clip_id: clip.id,
                     track_index: track_idx,
+                    track_id: track.id,
                     timeline_in: clip.timeline_in,
                     timeline_out: clip.timeline_out,
                     source_in: clip.source_in,
@@ -60,6 +71,26 @@ fn collect_subtitle_clips(seq: &klipp_timeline::Sequence) -> Vec<SubRow> {
     }
     rows.sort_by_key(|r| r.timeline_in);
     rows
+}
+
+/// Collect descriptors for all subtitle/text tracks in display order.
+fn collect_subtitle_tracks(seq: &klipp_timeline::Sequence) -> Vec<SubTrack> {
+    seq.tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            matches!(
+                t.kind,
+                klipp_timeline::TrackKind::Subtitle | klipp_timeline::TrackKind::Text
+            )
+        })
+        .map(|(_idx, t)| SubTrack {
+            track_id: t.id,
+            name: t.name.clone(),
+            source_file: t.source_file.clone(),
+            clip_count: t.clips.len(),
+        })
+        .collect()
 }
 
 /// Find the index of the subtitle whose range contains the playhead.
@@ -160,13 +191,16 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                     state.subtitle_editor.ripple = !ripple;
                 }
 
-                // Import SRT/VTT
-                if ui.button("\u{2191} Import SRT/VTT").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("SRT/VTT", &["srt", "vtt"])
-                        .pick_file()
+                // Import one or more subtitle files (SRT/VTT/ASS/SSA).
+                // Each file becomes its own subtitle track named after the file stem.
+                if ui.button("\u{2191} Import Files\u{2026}").clicked() {
+                    if let Some(paths) = rfd::FileDialog::new()
+                        .add_filter("Subtitles", &["srt", "vtt", "ass", "ssa"])
+                        .pick_files()
                     {
-                        cmds.push(AppCommand::ImportSubtitles { path });
+                        for path in paths {
+                            cmds.push(AppCommand::ImportSubtitles { path });
+                        }
                     }
                 }
 
@@ -188,49 +222,89 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
 
             ui.separator();
 
-            // ── Empty state ──────────────────────────────────────
-            if rows.is_empty() {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(40.0);
-                    ui.label(
-                        egui::RichText::new("No subtitles yet.")
-                            .size(13.0)
-                            .color(egui::Color32::from_rgb(0xa0, 0xa0, 0xb0)),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new("Click [+ Add at playhead] or [\u{2191} Import SRT/VTT] to get started.")
-                            .size(11.0)
-                            .color(egui::Color32::from_rgb(0x70, 0x70, 0x80)),
-                    );
-                });
-                return;
-            }
-
-            // ── List ─────────────────────────────────────────────
+            // ── Track-grouped list + empty state ──────────────────
+            let sub_tracks = collect_subtitle_tracks(state.sequence());
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                for (i, row) in rows.iter().enumerate() {
-                    let is_active = active_idx == Some(i);
-                    let is_selected = selected_clip == Some(row.clip_id);
-                    let row_frame = egui::Frame::none()
-                        .fill(if is_active {
-                            egui::Color32::from_rgba_unmultiplied(0xff, 0xdc, 0x32, 30)
-                        } else if is_selected {
-                            egui::Color32::from_rgba_unmultiplied(0x40, 0x80, 0xff, 20)
-                        } else {
-                            egui::Color32::TRANSPARENT
-                        })
-                        .inner_margin(egui::Margin::same(4.0))
-                        .stroke(egui::Stroke::new(
-                            1.0,
-                            egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 10),
-                        ));
-
-                    row_frame.show(ui, |ui| {
-                        render_row(ui, i, row, fps, state, &mut cmds);
+                if sub_tracks.is_empty() {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(40.0);
+                        ui.label(
+                            egui::RichText::new("No subtitle tracks yet.")
+                                .size(13.0)
+                                .color(egui::Color32::from_rgb(0xa0, 0xa0, 0xb0)),
+                        );
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("Click [+ Add Subtitle Track] below or [\u{2191} Import Files\u{2026}] above to get started.")
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(0x70, 0x70, 0x80)),
+                        );
+                        ui.add_space(8.0);
                     });
-                    ui.add_space(2.0);
+                } else {
+                    let mut row_counter: usize = 0;
+                    for st in &sub_tracks {
+                        render_track_header(ui, st, playhead, fps, state, &mut cmds);
+
+                        let collapsed = state.subtitle_editor.subtitle_track_collapsed.contains(&st.track_id);
+                        if !collapsed {
+                            // Render only rows for this track (the flat `rows` list is sorted
+                            // across all tracks; per-track ordering is consistent by timeline_in).
+                            for (i, row) in rows.iter().enumerate() {
+                                if row.track_id != st.track_id { continue; }
+                                let is_active = active_idx == Some(i);
+                                let is_selected = selected_clip == Some(row.clip_id);
+                                let row_frame = egui::Frame::none()
+                                    .fill(if is_active {
+                                        egui::Color32::from_rgba_unmultiplied(0xff, 0xdc, 0x32, 30)
+                                    } else if is_selected {
+                                        egui::Color32::from_rgba_unmultiplied(0x40, 0x80, 0xff, 20)
+                                    } else {
+                                        egui::Color32::TRANSPARENT
+                                    })
+                                    .inner_margin(egui::Margin::same(4.0))
+                                    .stroke(egui::Stroke::new(
+                                        1.0,
+                                        egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 10),
+                                    ));
+                                row_frame.show(ui, |ui| {
+                                    render_row(ui, row_counter, row, fps, state, &mut cmds);
+                                });
+                                ui.add_space(2.0);
+                                row_counter += 1;
+                            }
+                            if st.clip_count == 0 {
+                                ui.label(
+                                    egui::RichText::new("  (empty track)")
+                                        .size(10.0)
+                                        .italics()
+                                        .color(egui::Color32::from_rgb(0x70, 0x70, 0x80)),
+                                );
+                            }
+                        }
+                        ui.add_space(4.0);
+                    }
                 }
+
+                // ── Footer: add-track / import-files ──────────────
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("+ Add Subtitle Track").clicked() {
+                        let seq = state.sequence();
+                        let name = seq.next_track_name(klipp_timeline::TrackKind::Subtitle);
+                        cmds.push(AppCommand::AddSubtitleTrack { name });
+                    }
+                    if ui.button("\u{2191} Import Files\u{2026}").clicked() {
+                        if let Some(paths) = rfd::FileDialog::new()
+                            .add_filter("Subtitles", &["srt", "vtt", "ass", "ssa"])
+                            .pick_files()
+                        {
+                            for path in paths {
+                                cmds.push(AppCommand::ImportSubtitles { path });
+                            }
+                        }
+                    }
+                });
             });
         });
 
@@ -245,6 +319,116 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
 
     state.show_subtitle_editor = open;
     cmds
+}
+
+/// Render a collapsible track header row — chevron, name (editable on double-click),
+/// source file label, add-clip button, delete-track button.
+fn render_track_header(
+    ui: &mut egui::Ui,
+    st: &SubTrack,
+    playhead: Timecode,
+    fps: Fps,
+    state: &mut AppState,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let collapsed = state.subtitle_editor.subtitle_track_collapsed.contains(&st.track_id);
+    let hdr_frame = egui::Frame::none()
+        .fill(egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 6))
+        .inner_margin(egui::Margin::symmetric(4.0, 3.0))
+        .stroke(egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(0xff, 0xff, 0xff, 16),
+        ));
+    hdr_frame.show(ui, |ui| {
+        ui.horizontal(|ui| {
+            // Collapse chevron
+            let arrow = if collapsed { "\u{25B6}" } else { "\u{25BC}" };
+            if ui.small_button(arrow).clicked() {
+                if collapsed {
+                    state.subtitle_editor.subtitle_track_collapsed.remove(&st.track_id);
+                } else {
+                    state.subtitle_editor.subtitle_track_collapsed.insert(st.track_id);
+                }
+            }
+
+            // Editable name (double-click to edit, Enter/blur to commit)
+            let is_editing_name = state.subtitle_editor.editing_track_name == Some(st.track_id);
+            if is_editing_name {
+                let buf = &mut state.subtitle_editor.track_name_buf;
+                let resp = ui.add(
+                    egui::TextEdit::singleline(buf)
+                        .desired_width(160.0)
+                        .font(egui::TextStyle::Body),
+                );
+                if resp.lost_focus()
+                    || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                {
+                    let new_name = buf.trim().to_string();
+                    if !new_name.is_empty() && new_name != st.name {
+                        cmds.push(AppCommand::RenameTrack {
+                            track_id: st.track_id,
+                            name: new_name,
+                        });
+                    }
+                    state.subtitle_editor.editing_track_name = None;
+                    state.subtitle_editor.track_name_buf.clear();
+                }
+            } else {
+                let label = egui::Label::new(
+                    egui::RichText::new(&st.name).strong().size(12.0),
+                )
+                .sense(egui::Sense::click());
+                let resp = ui.add(label);
+                if resp.double_clicked() {
+                    state.subtitle_editor.editing_track_name = Some(st.track_id);
+                    state.subtitle_editor.track_name_buf = st.name.clone();
+                }
+            }
+
+            if let Some(src) = &st.source_file {
+                let filename = src
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                if !filename.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!("  Source: {filename}"))
+                            .size(10.0)
+                            .italics()
+                            .color(egui::Color32::from_rgb(0x80, 0x90, 0xa0)),
+                    );
+                }
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Delete track — fires RemoveTrack (app shows its own confirm if non-empty).
+                if ui
+                    .small_button("\u{1F5D1}")
+                    .on_hover_text("Delete this track")
+                    .clicked()
+                {
+                    cmds.push(AppCommand::RemoveTrack { track_id: st.track_id });
+                }
+                // Add row at playhead, on THIS track.
+                if ui
+                    .small_button("+ Row")
+                    .on_hover_text("Add a subtitle clip at the playhead on this track")
+                    .clicked()
+                {
+                    let dur_frames = (fps.as_f64() * 3.0).round() as u32;
+                    cmds.push(AppCommand::AddSubtitleAtPlayhead {
+                        timeline_in: playhead,
+                        duration_frames: dur_frames,
+                    });
+                }
+                ui.label(
+                    egui::RichText::new(format!("{} clip(s)", st.clip_count))
+                        .size(10.0)
+                        .color(egui::Color32::from_rgb(0x70, 0x70, 0x80)),
+                );
+            });
+        });
+    });
 }
 
 fn render_row(

@@ -348,6 +348,11 @@ pub struct Track {
     /// Stored height before collapse, so double-click can restore it.
     #[serde(skip)]
     pub pre_collapse_height: Option<f32>,
+    /// Source file (for subtitle tracks imported from SRT/VTT/ASS/SSA).
+    /// Set when a track is created via subtitle file import; displayed in
+    /// the subtitle editor as a "Source: foo.srt" label.
+    #[serde(default)]
+    pub source_file: Option<std::path::PathBuf>,
 }
 
 fn default_opacity() -> f32 { 1.0 }
@@ -376,6 +381,7 @@ impl Track {
             storyline_anchor: None,
             custom_height: None,
             pre_collapse_height: None,
+            source_file: None,
         }
     }
 

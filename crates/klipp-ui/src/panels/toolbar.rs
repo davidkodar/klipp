@@ -384,6 +384,16 @@ impl ToolbarPanel {
                         cmds.push(AppCommand::ImportOtio { path });
                     }
                 }
+                if ui.button("Final Cut Pro XML (.fcpxml)...").clicked() {
+                    ui.close_menu();
+                    if let Some(path) = rfd::FileDialog::new()
+                        .set_title("Import FCPXML Project")
+                        .add_filter("Final Cut Pro XML", &["fcpxml", "xml"])
+                        .pick_file()
+                    {
+                        cmds.push(AppCommand::ImportFcpxml { path });
+                    }
+                }
             });
             ui.separator();
             if ui.add(egui::Button::new("Export...").shortcut_text("Ctrl+E")).clicked() { cmds.push(AppCommand::ShowExportDialog); ui.close_menu(); }

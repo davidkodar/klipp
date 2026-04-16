@@ -537,6 +537,11 @@ pub enum AppCommand {
     /// stacks) are logged to a `<name>.import_warnings.txt` file alongside
     /// the source.
     ImportOtio { path: PathBuf },
+    /// Parse a Final Cut Pro XML (`.fcpxml`) file and import its timeline as
+    /// a new Sequence. Unsupported features (effects, transitions, compound
+    /// clips, multicam, roles, connected clips) are logged to a
+    /// `<name>.import_warnings.txt` file alongside the source.
+    ImportFcpxml { path: PathBuf },
     /// Copy the current project and all referenced media into a new
     /// self-contained directory at `dest_dir`. Source project is untouched.
     /// Runs on a background thread — see `ConsolidateDone` for completion.
@@ -852,6 +857,16 @@ pub enum AppCommand {
     /// Update the title animation fade duration stored in AppState.
     SetTitleFadeDuration { duration: f32 },
     ClearTitleOverlay,
+    /// Set the title motion animation (scroll/crawl/typewriter).
+    /// `animation_kind`: 0=Static, 1=ScrollUp, 2=ScrollDown, 3=CrawlLeft, 4=CrawlRight, 5=Typewriter.
+    /// `speed` is `speed_px_per_sec` for scroll/crawl or `chars_per_sec` for Typewriter
+    /// (ignored for Static). Regenerates transform_pos_x/y_keyframes for scroll/crawl,
+    /// clears them for Static/Typewriter.
+    SetTitleAnimation {
+        clip_id: ClipId,
+        animation_kind: u8,
+        speed: f32,
+    },
 
     // Linked clips
     ImportMediaLinked { media_id: MediaId },
@@ -876,6 +891,9 @@ pub enum AppCommand {
     // Dynamic tracks
     AddVideoTrack,
     AddAudioTrack,
+    /// Add a new subtitle track with an explicit name.
+    /// Used by the subtitle-editor "+ Add Subtitle Track" and multi-file import.
+    AddSubtitleTrack { name: String },
     /// Sync auto_create_tracks preference to AppState.
     SyncAutoCreateTracks(bool),
     /// Insert a new track of the same kind above the given track index.

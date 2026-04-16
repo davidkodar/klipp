@@ -1,6 +1,7 @@
 pub mod consolidate;
 mod format;
 pub mod fcpxml;
+pub mod fcpxml_import;
 pub mod grade_stills;
 mod load;
 pub mod mlt_export;

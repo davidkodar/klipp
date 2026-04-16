@@ -187,6 +187,34 @@ pub struct TitleData {
     /// Per-character style runs. Empty = uniform style from base properties.
     #[serde(default)]
     pub style_runs: Vec<StyleRun>,
+    /// ASS/SSA style name this subtitle uses (for round-tripping imported .ass files).
+    /// None = uses a synthetic "Default" style on export.
+    #[serde(default)]
+    pub ass_style_name: Option<String>,
+    /// Title motion animation (scroll/crawl/typewriter). Defaults to Static.
+    /// Scroll/crawl variants auto-generate `transform_pos_x/y_keyframes`.
+    /// Typewriter overrides `write_on` per frame at render time (no keyframes).
+    #[serde(default)]
+    pub animation_type: TitleAnimationType,
+}
+
+/// Title motion preset — drives keyframe generation (scroll/crawl) or
+/// per-frame `write_on` override (typewriter). Static = no animation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub enum TitleAnimationType {
+    #[default]
+    Static,
+    /// Scrolls bottom-to-top (credits roll). Speed drives keyframe
+    /// generation but the actual travel is clip-duration-bounded.
+    ScrollUp { speed_px_per_sec: f32 },
+    /// Scrolls top-to-bottom.
+    ScrollDown { speed_px_per_sec: f32 },
+    /// Crawls right-to-left (news ticker).
+    CrawlLeft { speed_px_per_sec: f32 },
+    /// Crawls left-to-right.
+    CrawlRight { speed_px_per_sec: f32 },
+    /// Per-character reveal (typewriter effect).
+    Typewriter { chars_per_sec: f32 },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -282,6 +310,8 @@ impl Default for TitleData {
             texture_fill_path: None,
             motion_blur: None,
             style_runs: Vec::new(),
+            ass_style_name: None,
+            animation_type: TitleAnimationType::default(),
         }
     }
 }

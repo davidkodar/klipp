@@ -1,0 +1,901 @@
+//! FCPXML (Final Cut Pro XML) project import — version 1.9.
+//!
+//! Parses `.fcpxml` files and produces a Klipp `Sequence` plus a populated
+//! `MediaPool`. Mirrors the `mlt_import.rs` structure and reuses the shared
+//! `ImportResult` contract from `mlt_import.rs`.
+//!
+//! Scope (MVP): assets (resources), formats, a single spine, `<asset-clip>`
+//! and legacy `<clip ref="...">`, `<gap>`, and `<marker>`. Deferred: effects,
+//! transitions, compound clips, multicam, roles, keywords, connected clips
+//! (nested `<video>`/`<audio>` for secondary storylines), custom LUT refs.
+//!
+//! Parser is read-only (uses `roxmltree`). Zero panic paths — all errors are
+//! returned as `FcpxmlImportError`. Unsupported features are logged to
+//! `ImportResult::warnings`.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use klipp_core::{Fps, MarkerColor, MarkerId, MediaId, RationalTime, Resolution, SequenceId};
+use klipp_media::{MediaItem, MediaPool};
+use klipp_timeline::{Clip, ClipKind, ClipMarker, Marker, Sequence, Track, TrackKind};
+
+pub use crate::mlt_import::ImportResult;
+
+/// Error type for FCPXML import failures.
+#[derive(Debug)]
+pub enum FcpxmlImportError {
+    Io(std::io::Error),
+    Parse(String),
+    NoSequence,
+    InvalidTime(String),
+    MissingAsset(String),
+    MissingFormat(String),
+}
+
+impl std::fmt::Display for FcpxmlImportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "Failed to read FCPXML file: {e}"),
+            Self::Parse(s) => write!(f, "Failed to parse FCPXML: {s}"),
+            Self::NoSequence => write!(f, "No <sequence> found in FCPXML"),
+            Self::InvalidTime(s) => write!(f, "Invalid FCPXML time value: {s}"),
+            Self::MissingAsset(id) => write!(f, "Referenced asset '{id}' not found in <resources>"),
+            Self::MissingFormat(id) => write!(f, "Referenced format '{id}' not found in <resources>"),
+        }
+    }
+}
+
+impl std::error::Error for FcpxmlImportError {}
+
+impl From<std::io::Error> for FcpxmlImportError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+impl From<roxmltree::Error> for FcpxmlImportError {
+    fn from(e: roxmltree::Error) -> Self {
+        Self::Parse(e.to_string())
+    }
+}
+
+/// A resource in the `<resources>` block that references a media file.
+#[derive(Debug, Clone)]
+struct AssetInfo {
+    path: PathBuf,
+    /// Duration of the source media, as a rational (num, den) in seconds.
+    /// `None` if the asset didn't declare a duration.
+    duration_rational: Option<(i64, i64)>,
+    /// The format id this asset was declared against — reserved for future
+    /// per-asset fps resolution (e.g. mixed-rate sequences).
+    #[allow(dead_code)]
+    format_ref: Option<String>,
+    name: String,
+}
+
+/// A `<format>` resource — FPS + canvas dimensions.
+#[derive(Debug, Clone, Copy)]
+struct FormatInfo {
+    /// `frameDuration` as (num, den) seconds. `1/25s` → (1, 25) — i.e. each
+    /// frame lasts 1/25 of a second, so the sequence runs at 25 fps.
+    frame_duration: (i64, i64),
+    width: u32,
+    height: u32,
+}
+
+impl FormatInfo {
+    /// Convert `frameDuration` into a Klipp `Fps`. `1/25s` → 25/1 fps,
+    /// `1001/24000s` → 24000/1001 fps.
+    fn to_fps(&self) -> Fps {
+        // fps = 1 / frame_duration_secs = den / num (seconds)
+        let (fd_num, fd_den) = self.frame_duration;
+        // Clamp to positive u32; fall back to 24/1 if anything is unusable.
+        if fd_num <= 0 || fd_den <= 0 {
+            return Fps::film_24();
+        }
+        let num_u32 = u32::try_from(fd_den).unwrap_or(24);
+        let den_u32 = u32::try_from(fd_num).unwrap_or(1);
+        Fps::new(num_u32, den_u32)
+    }
+}
+
+/// Parse an FCPXML rational time like `"100/25s"`, `"5s"`, or `"1001/24000s"`.
+/// Returns the time as a `(num, den)` rational in seconds.
+///
+/// Grammar:
+/// - `"N/Ds"`: rational N/D seconds
+/// - `"Ns"`: integer N seconds (denominator = 1)
+/// - trailing `"s"` is mandatory; whitespace trimmed
+/// - `"0s"` is valid
+fn parse_fcpxml_rational(s: &str) -> Result<(i64, i64), FcpxmlImportError> {
+    let trimmed = s.trim();
+    let stripped = trimmed
+        .strip_suffix('s')
+        .ok_or_else(|| FcpxmlImportError::InvalidTime(s.to_string()))?;
+    if let Some((num_str, den_str)) = stripped.split_once('/') {
+        let num: i64 = num_str
+            .trim()
+            .parse()
+            .map_err(|_| FcpxmlImportError::InvalidTime(s.to_string()))?;
+        let den: i64 = den_str
+            .trim()
+            .parse()
+            .map_err(|_| FcpxmlImportError::InvalidTime(s.to_string()))?;
+        if den == 0 {
+            return Err(FcpxmlImportError::InvalidTime(s.to_string()));
+        }
+        Ok((num, den))
+    } else {
+        let num: i64 = stripped
+            .trim()
+            .parse()
+            .map_err(|_| FcpxmlImportError::InvalidTime(s.to_string()))?;
+        Ok((num, 1))
+    }
+}
+
+/// Convert an FCPXML rational-time string to a Klipp `RationalTime` at the
+/// given sequence fps. The returned `RationalTime` has `rate = fps.rate()`
+/// (which equals `fps.num`), so frames map 1:1 onto `value`.
+///
+/// Rounding: `frames = round(num * fps.num / (den * fps.den))`, performed in
+/// `i128` to avoid overflow on long durations.
+fn parse_fcpxml_time(s: &str, seq_fps: Fps) -> Result<RationalTime, FcpxmlImportError> {
+    let (num, den) = parse_fcpxml_rational(s)?;
+    let rate = seq_fps.rate();
+    // frames = (num * fps.num) / (den * fps.den), rounded to nearest.
+    // All arithmetic in i128 to avoid overflow.
+    let numerator = (num as i128) * (seq_fps.num as i128);
+    let denominator = (den as i128) * (seq_fps.den as i128);
+    if denominator == 0 {
+        return Err(FcpxmlImportError::InvalidTime(s.to_string()));
+    }
+    // Round-half-away-from-zero.
+    let frames_i128 = if (numerator ^ denominator) >= 0 {
+        (numerator + denominator / 2) / denominator
+    } else {
+        (numerator - denominator / 2) / denominator
+    };
+    let frames = i64::try_from(frames_i128)
+        .map_err(|_| FcpxmlImportError::InvalidTime(s.to_string()))?;
+    Ok(RationalTime::from_frames(frames, rate))
+}
+
+/// Strip `file://` prefix from an asset src URL and minimally decode percent-
+/// escapes for space (`%20`). We don't pull in a new dep for full percent-
+/// decoding; a warning is pushed if we detect other escapes so the user knows
+/// the path may be wrong.
+fn decode_file_url(src: &str, warnings: &mut Vec<String>) -> PathBuf {
+    let path_part = src
+        .strip_prefix("file://")
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| src.to_string());
+    // Minimal percent-decode for the common spaces-in-paths case.
+    let decoded = path_part.replace("%20", " ");
+    if decoded.contains('%') {
+        warnings.push(format!(
+            "Asset src '{src}' contains percent-encoded characters that were not decoded — path may be wrong"
+        ));
+    }
+    PathBuf::from(decoded)
+}
+
+/// Index `<resources>` children into format + asset tables.
+fn index_resources<'a>(
+    resources: roxmltree::Node<'a, 'a>,
+    warnings: &mut Vec<String>,
+) -> (HashMap<String, FormatInfo>, HashMap<String, AssetInfo>) {
+    let mut formats: HashMap<String, FormatInfo> = HashMap::new();
+    let mut assets: HashMap<String, AssetInfo> = HashMap::new();
+
+    for child in resources.children().filter(|n| n.is_element()) {
+        match child.tag_name().name() {
+            "format" => {
+                let id = match child.attribute("id") {
+                    Some(v) => v.to_string(),
+                    None => continue,
+                };
+                // `frameDuration` is optional in FCPXML for still-image formats;
+                // fall back to 24fps so we don't reject the document outright.
+                let frame_duration = match child
+                    .attribute("frameDuration")
+                    .map(parse_fcpxml_rational)
+                    .transpose()
+                {
+                    Ok(Some(v)) => v,
+                    Ok(None) => {
+                        // No frameDuration — common for image-only formats.
+                        (1, 24)
+                    }
+                    Err(e) => {
+                        warnings.push(format!(
+                            "Format '{id}' has invalid frameDuration: {e}; defaulting to 1/24s"
+                        ));
+                        (1, 24)
+                    }
+                };
+                let width = child
+                    .attribute("width")
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(1920);
+                let height = child
+                    .attribute("height")
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(1080);
+                formats.insert(
+                    id,
+                    FormatInfo {
+                        frame_duration,
+                        width,
+                        height,
+                    },
+                );
+            }
+            "asset" => {
+                let id = match child.attribute("id") {
+                    Some(v) => v.to_string(),
+                    None => continue,
+                };
+                let src = child.attribute("src").unwrap_or("");
+                let path = decode_file_url(src, warnings);
+                let name = child
+                    .attribute("name")
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| {
+                        path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown")
+                            .to_string()
+                    });
+                let duration_rational = match child
+                    .attribute("duration")
+                    .map(parse_fcpxml_rational)
+                    .transpose()
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warnings.push(format!(
+                            "Asset '{id}' has invalid duration: {e}; treating as unknown length"
+                        ));
+                        None
+                    }
+                };
+                let format_ref = child.attribute("format").map(|s| s.to_string());
+                assets.insert(
+                    id,
+                    AssetInfo {
+                        path,
+                        duration_rational,
+                        format_ref,
+                        name,
+                    },
+                );
+            }
+            "media" | "effect" | "title-effect" | "transition-effect" => {
+                warnings.push(format!(
+                    "<{}> resource is not supported — referenced clips may be incomplete",
+                    child.tag_name().name()
+                ));
+            }
+            _ => {}
+        }
+    }
+    (formats, assets)
+}
+
+/// Find the first `<sequence>` node under `<library>/<event>/<project>`.
+/// Returns None if the document doesn't contain one.
+fn find_first_sequence<'a>(root: roxmltree::Node<'a, 'a>) -> Option<roxmltree::Node<'a, 'a>> {
+    root.descendants()
+        .find(|n| n.is_element() && n.tag_name().name() == "sequence")
+}
+
+/// Register (or look up) a MediaItem for an asset. Dedupes on `asset_id`
+/// within this import pass; the caller reuses the returned `MediaId` across
+/// clips that reference the same asset.
+fn register_asset_media(
+    media_pool: &mut MediaPool,
+    asset_id: &str,
+    asset: &AssetInfo,
+    seq_fps: Fps,
+    cache: &mut HashMap<String, MediaId>,
+) -> MediaId {
+    if let Some(mid) = cache.get(asset_id) {
+        return *mid;
+    }
+
+    // Try to dedupe on path — if the pool already has a MediaItem for this
+    // file, reuse its id so the project stays consistent across imports.
+    if let Some(existing) = media_pool.find_by_path(&asset.path) {
+        let id = existing.id;
+        cache.insert(asset_id.to_string(), id);
+        return id;
+    }
+
+    let duration = match asset.duration_rational {
+        Some((num, den)) => {
+            let numerator = (num as i128) * (seq_fps.num as i128);
+            let denominator = (den as i128) * (seq_fps.den as i128);
+            let frames = if denominator != 0 {
+                i64::try_from(numerator / denominator).unwrap_or(0)
+            } else {
+                0
+            };
+            RationalTime::from_frames(frames, seq_fps.rate())
+        }
+        None => RationalTime::ZERO,
+    };
+
+    let offline = !asset.path.exists();
+    let item = MediaItem {
+        id: MediaId::new(),
+        path: asset.path.clone(),
+        filename: asset.name.clone(),
+        duration,
+        fps: seq_fps,
+        resolution: Resolution { width: 0, height: 0 },
+        video_codec: String::new(),
+        audio_codec: String::new(),
+        has_audio: false,
+        file_size_bytes: 0,
+        sample_rate: None,
+        audio_channels: None,
+        offline,
+        is_still: false,
+        proxy_path: None,
+        proxy_ready: false,
+        default_source_in: None,
+        default_source_out: None,
+        rating: 0,
+        tags: Vec::new(),
+        user_notes: String::new(),
+        bin: None,
+        bin_id: None,
+        parent_media_id: None,
+        added_at: 0,
+        fingerprint: None,
+        file_modified_at: None,
+        media_created_at: None,
+        color_label: klipp_media::ColorLabel::default(),
+        colour_space: klipp_media::ColourSpace::default(),
+        log_format: klipp_core::LogFormat::default(),
+        source_rotation: 0,
+        camera_make: None,
+        camera_model: None,
+        encoder: None,
+        bit_depth: None,
+        video_bitrate_kbps: None,
+        audio_bitrate_kbps: None,
+        color_primaries: None,
+        color_transfer: None,
+        pixel_format: None,
+        detected_log_format: klipp_core::LogFormat::default(),
+        skim_file: None,
+        needs_reprobe: !offline,
+        waveform_data: None,
+        audio_cache: None,
+    };
+    let id = media_pool.add(item);
+    cache.insert(asset_id.to_string(), id);
+    id
+}
+
+/// Parse `<marker>` children of a clip element, returning ClipMarkers with
+/// `time_secs` in source-time (relative to the clip's `start`).
+fn parse_clip_markers(clip_node: roxmltree::Node<'_, '_>, seq_fps: Fps) -> Vec<ClipMarker> {
+    let mut out = Vec::new();
+    for m in clip_node
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "marker")
+    {
+        let start_attr = match m.attribute("start") {
+            Some(v) => v,
+            None => continue,
+        };
+        // Marker `start` is in source-time (within the asset), relative to
+        // the asset's time origin. Klipp's ClipMarker.time_secs is relative
+        // to the clip's source_in, so subtract source_in_secs at render time
+        // — here we just record the start as reported.
+        let time = match parse_fcpxml_time(start_attr, seq_fps) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let name = m
+            .attribute("value")
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        out.push(ClipMarker {
+            time_secs: time.to_secs_f64(),
+            name,
+            color: MarkerColor::Blue,
+        });
+    }
+    out
+}
+
+/// Parse a `<asset-clip>` or `<clip>` element into a Klipp `Clip`.
+fn parse_clip_element(
+    node: roxmltree::Node<'_, '_>,
+    assets: &HashMap<String, AssetInfo>,
+    media_pool: &mut MediaPool,
+    media_cache: &mut HashMap<String, MediaId>,
+    seq_fps: Fps,
+    warnings: &mut Vec<String>,
+) -> Result<Option<Clip>, FcpxmlImportError> {
+    let asset_id = match node.attribute("ref") {
+        Some(v) => v,
+        None => {
+            warnings.push(format!(
+                "<{}> has no 'ref' attribute — skipped",
+                node.tag_name().name()
+            ));
+            return Ok(None);
+        }
+    };
+    let asset = match assets.get(asset_id) {
+        Some(a) => a.clone(),
+        None => return Err(FcpxmlImportError::MissingAsset(asset_id.to_string())),
+    };
+    let offset_str = node.attribute("offset").unwrap_or("0s");
+    let duration_str = node.attribute("duration").unwrap_or("0s");
+    let start_str = node.attribute("start").unwrap_or("0s");
+
+    let timeline_in = parse_fcpxml_time(offset_str, seq_fps)?;
+    let duration = parse_fcpxml_time(duration_str, seq_fps)?;
+    let source_in = parse_fcpxml_time(start_str, seq_fps)?;
+
+    let timeline_out = timeline_in + duration;
+    let source_out = source_in + duration;
+
+    let media_id = register_asset_media(media_pool, asset_id, &asset, seq_fps, media_cache);
+
+    let mut clip = Clip::gap(timeline_in, timeline_out);
+    clip.source_in = source_in;
+    clip.source_out = source_out;
+    clip.kind = ClipKind::Media { media_id };
+    if let Some(enabled) = node.attribute("enabled") {
+        clip.enabled = enabled != "0";
+    }
+    clip.clip_markers = parse_clip_markers(node, seq_fps);
+
+    // Warn about known-unsupported child elements so the user isn't surprised.
+    for child in node.children().filter(|n| n.is_element()) {
+        match child.tag_name().name() {
+            "marker" => {} // handled
+            "video" | "audio" => warnings.push(format!(
+                "Connected clip ({}) on '{asset_id}' is not imported — deferred feature",
+                child.tag_name().name()
+            )),
+            "filter-video" | "filter-audio" | "adjust-color" | "adjust-levels" => warnings
+                .push(format!(
+                    "Effect <{}> on clip '{asset_id}' is not imported",
+                    child.tag_name().name()
+                )),
+            other => warnings.push(format!(
+                "Unknown <{other}> child on clip '{asset_id}' — ignored",
+            )),
+        }
+    }
+
+    Ok(Some(clip))
+}
+
+/// Parse an FCPXML 1.9 document from a string.
+pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
+    let doc = roxmltree::Document::parse(xml)?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "fcpxml" {
+        return Err(FcpxmlImportError::Parse(format!(
+            "Root element is <{}>, expected <fcpxml>",
+            root.tag_name().name()
+        )));
+    }
+
+    let mut warnings: Vec<String> = Vec::new();
+
+    // Index <resources>.
+    let resources_node = root
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "resources");
+    let (formats, assets) = match resources_node {
+        Some(r) => index_resources(r, &mut warnings),
+        None => {
+            warnings.push("<resources> block missing — clips may fail to resolve".to_string());
+            (HashMap::new(), HashMap::new())
+        }
+    };
+
+    // Find the first <sequence>.
+    let seq_node = find_first_sequence(root).ok_or(FcpxmlImportError::NoSequence)?;
+
+    // Resolve sequence format → fps + resolution.
+    let seq_format_ref = seq_node.attribute("format").map(|s| s.to_string());
+    let (seq_fps, resolution) = if let Some(ref fref) = seq_format_ref {
+        let fmt = formats
+            .get(fref)
+            .ok_or_else(|| FcpxmlImportError::MissingFormat(fref.clone()))?;
+        (
+            fmt.to_fps(),
+            Resolution {
+                width: fmt.width,
+                height: fmt.height,
+            },
+        )
+    } else {
+        warnings.push(
+            "<sequence> has no format attribute — defaulting to 24fps 1920x1080".to_string(),
+        );
+        (Fps::film_24(), Resolution { width: 1920, height: 1080 })
+    };
+
+    // The spine is the primary storyline.
+    let spine = match seq_node
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "spine")
+    {
+        Some(s) => s,
+        None => {
+            warnings.push("<sequence> has no <spine> — timeline will be empty".to_string());
+            // Build an empty sequence and return — not an error.
+            let sequence = Sequence {
+                id: SequenceId::new(),
+                name: project_name_from_tree(root),
+                fps: seq_fps,
+                resolution,
+                tracks: vec![Track::new("V1", TrackKind::Video)],
+                in_point: None,
+                out_point: None,
+                markers: Vec::new(),
+                last_playhead: None,
+            };
+            return Ok(ImportResult {
+                sequence,
+                media_pool: MediaPool::new(),
+                warnings,
+            });
+        }
+    };
+
+    let mut media_pool = MediaPool::new();
+    let mut media_cache: HashMap<String, MediaId> = HashMap::new();
+    let mut track = Track::new("V1", TrackKind::Video);
+
+    for child in spine.children().filter(|n| n.is_element()) {
+        match child.tag_name().name() {
+            "asset-clip" | "clip" => {
+                match parse_clip_element(
+                    child,
+                    &assets,
+                    &mut media_pool,
+                    &mut media_cache,
+                    seq_fps,
+                    &mut warnings,
+                )? {
+                    Some(clip) => track.clips.push(clip),
+                    None => {}
+                }
+            }
+            "gap" => {
+                // Gaps in FCPXML are explicit on the spine. Klipp's timeline
+                // represents empty space as absence of clips — skipping the
+                // gap preserves the intended offsets on subsequent clips,
+                // because each clip carries its own `offset` attribute
+                // (absolute timeline position).
+            }
+            "title" => warnings.push(
+                "<title> on spine is not imported — deferred feature".to_string(),
+            ),
+            "ref-clip" => warnings.push(
+                "<ref-clip> (compound clip) is not imported — deferred feature".to_string(),
+            ),
+            "mc-clip" => warnings.push(
+                "<mc-clip> (multicam) is not imported — deferred feature".to_string(),
+            ),
+            "transition" => warnings.push(
+                "<transition> is not imported — deferred feature".to_string(),
+            ),
+            "sync-clip" => warnings.push(
+                "<sync-clip> is not imported — deferred feature".to_string(),
+            ),
+            "audition" => warnings.push(
+                "<audition> is not imported — the active pick will also be skipped"
+                    .to_string(),
+            ),
+            other => warnings.push(format!(
+                "Unknown spine element <{other}> — ignored",
+            )),
+        }
+    }
+
+    let sequence = Sequence {
+        id: SequenceId::new(),
+        name: project_name_from_tree(root),
+        fps: seq_fps,
+        resolution,
+        tracks: vec![track],
+        in_point: None,
+        out_point: None,
+        markers: collect_sequence_markers(seq_node, seq_fps),
+        last_playhead: None,
+    };
+
+    // Touch MarkerId so it isn't a dead import if no sequence markers are
+    // produced — future work will promote clip markers or spine markers.
+    let _ = MarkerId::new;
+
+    Ok(ImportResult {
+        sequence,
+        media_pool,
+        warnings,
+    })
+}
+
+/// FCPXML allows `<marker>` children directly inside `<sequence>` in some
+/// projects. Harvest any we find into sequence markers.
+fn collect_sequence_markers(
+    seq_node: roxmltree::Node<'_, '_>,
+    seq_fps: Fps,
+) -> Vec<Marker> {
+    let mut out = Vec::new();
+    for m in seq_node
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "marker")
+    {
+        let start_attr = match m.attribute("start") {
+            Some(v) => v,
+            None => continue,
+        };
+        let position = match parse_fcpxml_time(start_attr, seq_fps) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let duration = m
+            .attribute("duration")
+            .and_then(|s| parse_fcpxml_time(s, seq_fps).ok())
+            .filter(|d| d.value > 0);
+        let label = m
+            .attribute("value")
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        out.push(Marker {
+            id: MarkerId::new(),
+            position,
+            label,
+            color: MarkerColor::Blue,
+            duration,
+        });
+    }
+    out
+}
+
+fn project_name_from_tree(root: roxmltree::Node<'_, '_>) -> String {
+    root.descendants()
+        .find(|n| n.is_element() && n.tag_name().name() == "project")
+        .and_then(|n| n.attribute("name"))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "Imported FCPXML".to_string())
+}
+
+/// Parse an FCPXML file from disk.
+pub fn load_fcpxml(path: &Path) -> Result<ImportResult, FcpxmlImportError> {
+    tracing::info!(path = %path.display(), "FCPXML import: starting");
+    let xml_text = std::fs::read_to_string(path)?;
+    let mut result = parse_fcpxml(&xml_text)?;
+
+    // Inherit the filename as the sequence name if the XML didn't carry one.
+    if result.sequence.name == "Imported FCPXML" {
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            result.sequence.name = stem.to_string();
+        }
+    }
+
+    tracing::info!(
+        tracks = result.sequence.tracks.len(),
+        total_clips = result
+            .sequence
+            .tracks
+            .iter()
+            .map(|t| t.clips.len())
+            .sum::<usize>(),
+        warnings = result.warnings.len(),
+        "FCPXML import: done"
+    );
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SIMPLE_FCPXML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<fcpxml version="1.9">
+  <resources>
+    <format id="r0" frameDuration="1/25s" width="1920" height="1080"/>
+    <asset id="r1" name="clip.mp4" src="file:///tmp/clip.mp4"
+           duration="100/25s" format="r0"/>
+  </resources>
+  <library>
+    <event name="Event">
+      <project name="Project">
+        <sequence duration="100/25s" format="r0">
+          <spine>
+            <asset-clip name="clip.mp4" ref="r1"
+                        offset="0/25s" duration="100/25s" start="0/25s"/>
+          </spine>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>"#;
+
+    const FCPXML_WITH_GAP: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<fcpxml version="1.9">
+  <resources>
+    <format id="r0" frameDuration="1/25s" width="1920" height="1080"/>
+    <asset id="r1" name="a.mp4" src="file:///tmp/a.mp4"
+           duration="50/25s" format="r0"/>
+    <asset id="r2" name="b.mp4" src="file:///tmp/b.mp4"
+           duration="50/25s" format="r0"/>
+  </resources>
+  <library>
+    <event name="E">
+      <project name="P">
+        <sequence duration="200/25s" format="r0">
+          <spine>
+            <asset-clip ref="r1" offset="0/25s" duration="50/25s" start="0/25s"/>
+            <gap offset="50/25s" duration="10/25s"/>
+            <asset-clip ref="r2" offset="60/25s" duration="50/25s" start="0/25s"/>
+          </spine>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>"#;
+
+    const FCPXML_WITH_MARKER: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<fcpxml version="1.9">
+  <resources>
+    <format id="r0" frameDuration="1/25s" width="1920" height="1080"/>
+    <asset id="r1" name="clip.mp4" src="file:///tmp/clip.mp4"
+           duration="100/25s" format="r0"/>
+  </resources>
+  <library>
+    <event name="E">
+      <project name="P">
+        <sequence duration="100/25s" format="r0">
+          <spine>
+            <asset-clip ref="r1" offset="0/25s" duration="100/25s" start="0/25s">
+              <marker start="5/25s" duration="1/25s" value="My Marker"/>
+            </asset-clip>
+          </spine>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>"#;
+
+    const FCPXML_2997: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<fcpxml version="1.9">
+  <resources>
+    <format id="r0" frameDuration="1001/30000s" width="1920" height="1080"/>
+    <asset id="r1" name="clip.mp4" src="file:///tmp/clip.mp4"
+           duration="30030/30000s" format="r0"/>
+  </resources>
+  <library>
+    <event name="E">
+      <project name="P">
+        <sequence duration="30030/30000s" format="r0">
+          <spine>
+            <asset-clip ref="r1" offset="0s" duration="30030/30000s" start="0s"/>
+          </spine>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>"#;
+
+    #[test]
+    fn parse_simple_fcpxml_produces_one_sequence() {
+        let result = parse_fcpxml(SIMPLE_FCPXML).expect("parse ok");
+        assert_eq!(result.sequence.tracks.len(), 1);
+    }
+
+    #[test]
+    fn parse_fcpxml_clip_count() {
+        let result = parse_fcpxml(SIMPLE_FCPXML).expect("parse ok");
+        assert_eq!(result.sequence.tracks[0].clips.len(), 1);
+    }
+
+    #[test]
+    fn parse_fcpxml_time_integer() {
+        assert_eq!(parse_fcpxml_rational("100/25s").unwrap(), (100, 25));
+        let tc = parse_fcpxml_time("100/25s", Fps::new(25, 1)).unwrap();
+        assert_eq!(tc.value, 100);
+        assert_eq!(tc.rate, 25);
+    }
+
+    #[test]
+    fn parse_fcpxml_time_non_integer() {
+        // 24000/1001 fps — NTSC film.
+        let fps = Fps::new(24000, 1001);
+        // 1001/24000s at 24000/1001fps → exactly 1 frame.
+        let one = parse_fcpxml_time("1001/24000s", fps).unwrap();
+        assert_eq!(one.value, 1);
+        // 3003/24000s → 3 frames.
+        let three = parse_fcpxml_time("3003/24000s", fps).unwrap();
+        assert_eq!(three.value, 3);
+    }
+
+    #[test]
+    fn parse_fcpxml_time_seconds_only() {
+        assert_eq!(parse_fcpxml_rational("5s").unwrap(), (5, 1));
+        assert_eq!(parse_fcpxml_rational("0s").unwrap(), (0, 1));
+        // 5s at 25fps = 125 frames.
+        let tc = parse_fcpxml_time("5s", Fps::new(25, 1)).unwrap();
+        assert_eq!(tc.value, 125);
+    }
+
+    #[test]
+    fn parse_fcpxml_with_gap_skips_gap() {
+        let result = parse_fcpxml(FCPXML_WITH_GAP).expect("parse ok");
+        let track = &result.sequence.tracks[0];
+        assert_eq!(track.clips.len(), 2, "two clips present, gap itself skipped");
+        // First clip at 0, second at offset 60 (because gap pushed it forward).
+        assert_eq!(track.clips[0].timeline_in.value, 0);
+        assert_eq!(track.clips[1].timeline_in.value, 60);
+    }
+
+    #[test]
+    fn parse_fcpxml_marker_imported() {
+        let result = parse_fcpxml(FCPXML_WITH_MARKER).expect("parse ok");
+        let track = &result.sequence.tracks[0];
+        assert_eq!(track.clips.len(), 1);
+        assert!(
+            !track.clips[0].clip_markers.is_empty(),
+            "clip should have at least one marker"
+        );
+        assert_eq!(track.clips[0].clip_markers[0].name, "My Marker");
+    }
+
+    #[test]
+    fn parse_fcpxml_invalid_xml_returns_error() {
+        let result = parse_fcpxml("<not-fcpxml></not-fcpxml>");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_fcpxml_missing_asset_ref_returns_error() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<fcpxml version="1.9">
+  <resources>
+    <format id="r0" frameDuration="1/25s" width="1920" height="1080"/>
+  </resources>
+  <library>
+    <event name="E">
+      <project name="P">
+        <sequence duration="10/25s" format="r0">
+          <spine>
+            <asset-clip ref="r999" offset="0/25s" duration="10/25s" start="0/25s"/>
+          </spine>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>"#;
+        let result = parse_fcpxml(xml);
+        assert!(matches!(result, Err(FcpxmlImportError::MissingAsset(_))));
+    }
+
+    #[test]
+    fn parse_fcpxml_2997_roundtrip() {
+        // Sanity: 30000/1001 sequence with a 1-second clip resolves to
+        // ~30 frames at the sequence rate (30000).
+        let result = parse_fcpxml(FCPXML_2997).expect("parse ok");
+        assert_eq!(result.sequence.fps, Fps::new(30000, 1001));
+        let clip = &result.sequence.tracks[0].clips[0];
+        // duration = 30030/30000 seconds = 30030 * 30000 / (30000 * 1001) frames
+        // = 900900000 / 30030000 = 30 frames at rate=30000.
+        assert_eq!(clip.timeline_out.value - clip.timeline_in.value, 30);
+    }
+}
