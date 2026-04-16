@@ -236,6 +236,7 @@ unsafe extern "C" fn get_property_set_fn(
     effect: OfxImageEffectHandle,
     props_out: *mut OfxPropertySetHandle,
 ) -> OfxStatus {
+    check_non_null!(props_out);
     match instance::with_instance(effect, |inst| inst.props_handle) {
         Some(h) => {
             *props_out = h;
@@ -252,6 +253,7 @@ unsafe extern "C" fn get_param_set_fn(
     effect: OfxImageEffectHandle,
     param_set_out: *mut OfxParamSetHandle,
 ) -> OfxStatus {
+    check_non_null!(param_set_out);
     match instance::with_instance(effect, |inst| inst.param_set_handle) {
         Some(h) => {
             *param_set_out = h;
@@ -269,6 +271,8 @@ unsafe extern "C" fn clip_define_fn(
     name: *const c_char,
     props_out: *mut OfxPropertySetHandle,
 ) -> OfxStatus {
+    check_non_null!(name);
+    // props_out write below is individually guarded.
     let name_str = CStr::from_ptr(name).to_string_lossy();
     match instance::with_instance(effect, |inst| {
         inst.add_clip(&name_str);
@@ -293,6 +297,8 @@ unsafe extern "C" fn clip_get_handle_fn(
     clip_out: *mut OfxImageClipHandle,
     props_out: *mut OfxPropertySetHandle,
 ) -> OfxStatus {
+    check_non_null!(name);
+    // clip_out / props_out writes below are individually guarded.
     let name_str = CStr::from_ptr(name).to_string_lossy();
     match instance::with_instance(effect, |inst| {
         inst.clips.get(&*name_str).map(|c| (c.handle, c.props_handle))
@@ -354,6 +360,7 @@ unsafe extern "C" fn clip_get_property_set_fn(
     clip: OfxImageClipHandle,
     props_out: *mut OfxPropertySetHandle,
 ) -> OfxStatus {
+    check_non_null!(props_out);
     match instance::lookup_clip(clip) {
         Some((inst_handle, clip_name)) => {
             match instance::with_instance(inst_handle, |inst| {
@@ -376,6 +383,7 @@ unsafe extern "C" fn clip_get_image_fn(
     _region: *const OfxRectD,
     img_props_out: *mut OfxPropertySetHandle,
 ) -> OfxStatus {
+    check_non_null!(img_props_out);
     // Find which instance this clip belongs to
     let Some((inst_handle, clip_name)) = instance::lookup_clip(clip) else {
         return K_OFX_STAT_ERR_BAD_HANDLE;
@@ -466,6 +474,7 @@ unsafe extern "C" fn clip_get_region_of_definition_fn(
     _time: c_double,
     bounds: *mut OfxRectD,
 ) -> OfxStatus {
+    check_non_null!(bounds);
     // Return the clip's image bounds if available
     let Some((inst_handle, clip_name)) = instance::lookup_clip(clip) else {
         return K_OFX_STAT_ERR_BAD_HANDLE;
@@ -500,6 +509,7 @@ unsafe extern "C" fn image_memory_alloc_fn(
     n_bytes: usize,
     handle: *mut OfxImageMemoryHandle,
 ) -> OfxStatus {
+    check_non_null!(handle);
     let buf = vec![0u8; n_bytes];
     let key = IMG_MEM_NEXT_HANDLE
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -518,6 +528,7 @@ unsafe extern "C" fn image_memory_lock_fn(
     handle: OfxImageMemoryHandle,
     ptr: *mut *mut c_void,
 ) -> OfxStatus {
+    check_non_null!(ptr);
     let key = handle as usize;
     match IMG_MEM_STORE.lock().unwrap().get_mut(&key) {
         Some(buf) => {
