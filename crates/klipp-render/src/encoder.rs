@@ -821,7 +821,6 @@ impl Encoder {
             }
 
             self.audio_buffer.drain(..floats_per_frame);
-            self.audio_pts += frame_size as i64;
 
             // Get raw pointers before borrowing self for send/drain
             let (frame_ptr, enc_ptr) = unsafe {
@@ -833,22 +832,36 @@ impl Encoder {
                 (fp, ep)
             };
 
-            // Send frame via raw FFI (avoids borrow conflicts with drain)
+            // Send frame via raw FFI (avoids borrow conflicts with drain).
+            // Advance audio_pts only on success — previously it was
+            // incremented unconditionally before the send, so a failed
+            // send still shifted the PTS timeline forward, producing
+            // silent audio drift in the exported file.
             let send_result =
                 unsafe { ffmpeg_next::ffi::avcodec_send_frame(enc_ptr, frame_ptr) };
             match send_result {
-                0 => {}
+                0 => {
+                    self.audio_pts += frame_size as i64;
+                }
                 e if e == ffmpeg_next::error::EAGAIN => {
                     self.drain_audio_packets()?;
                     let ep2 = unsafe { self.audio_encoder.as_mut().unwrap().as_mut_ptr() };
-                    unsafe {
-                        ffmpeg_next::ffi::avcodec_send_frame(ep2, frame_ptr);
+                    let retry =
+                        unsafe { ffmpeg_next::ffi::avcodec_send_frame(ep2, frame_ptr) };
+                    if retry == 0 {
+                        self.audio_pts += frame_size as i64;
+                    } else {
+                        return Err(RenderError::Encode(format!(
+                            "audio send_frame failed after EAGAIN drain (error={retry}) at pts={}",
+                            self.audio_pts,
+                        )));
                     }
                 }
                 e => {
-                    if self.audio_pts < (frame_size * 5) as i64 {
-                        tracing::warn!("audio send_frame error={e} at pts={}", self.audio_pts);
-                    }
+                    return Err(RenderError::Encode(format!(
+                        "audio send_frame error={e} at pts={}",
+                        self.audio_pts,
+                    )));
                 }
             }
 
