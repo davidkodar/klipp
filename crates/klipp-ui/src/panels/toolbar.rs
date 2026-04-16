@@ -777,8 +777,12 @@ impl ToolbarPanel {
                     state.viewer_overlays.false_color = !state.viewer_overlays.false_color;
                     ui.close_menu();
                 }
-                // Submenu arrow for preset quick-switcher
-                ui.menu_button("\u{25B8}", |ui| {
+                // Submenu for the palette quick-switcher. egui auto-adds
+                // its own submenu arrow to menu_button labels, so we give
+                // this a descriptive word rather than another arrow glyph
+                // (which produced double-arrow visuals and, at smaller
+                // sizes, unrenderable placeholder squares).
+                ui.menu_button("Palette", |ui| {
                     let built_ins = crate::prefs::FalseColorPalette::built_ins();
                     for preset in &built_ins {
                         let is_current = state.pending_false_color_palette.is_none()
