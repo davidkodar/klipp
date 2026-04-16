@@ -603,13 +603,35 @@ fn log_to_linear(v: f32, format: klipp_core::LogFormat) -> f32 {
             }
         }
         LogFormat::AppleLog => {
-            // Apple Log Profile (from Apple's White Paper)
-            // Piecewise: for v >= cut_point use pow, otherwise linear
-            let cut = 0.0928;
-            if v >= cut {
-                (10.0f32.powf((v - 0.385537) / 0.247190) - 0.01) / 1.0
+            // Apple Log Profile — decode V (normalised 0..1 Apple Log code
+            // value) to scene-linear L, where 1.0 = 100% diffuse white
+            // (18% gray ≈ 0.18). Three segments per the Apple Log Profile
+            // white paper (2023):
+            //   V  < 0   → L = R₀             (black floor, preserves the
+            //                                  slightly-negative toe anchor)
+            //   V  < Pₜ  → L = √(V/c) + R₀    (quadratic toe, matches the
+            //                                  forward curve V = c·(L−R₀)²)
+            //   V ≥ Pₜ  → L = 2^((V−δ)/γ) − β  (log/exponential segment)
+            // Pₜ is derived from the forward constants (c·(Rₜ−R₀)²) so the
+            // toe and log pieces meet exactly at L = Rₜ = 0.01 — kept
+            // symbolic to avoid a hard-coded near-value drifting out of
+            // sync if any constant is ever retuned.
+            //
+            // Previous implementation used ARRI LogC3 constants verbatim
+            // and decoded Apple Log to the wrong scene-linear values.
+            const R0:    f32 = -0.05641088;
+            const RT:    f32 =  0.01;
+            const C:     f32 = 47.28711236;
+            const BETA:  f32 =  0.00964052;
+            const GAMMA: f32 =  0.08550479;
+            const DELTA: f32 =  0.69336945;
+            const PT:    f32 = C * (RT - R0) * (RT - R0);
+            if v < 0.0 {
+                R0
+            } else if v < PT {
+                (v / C).sqrt() + R0
             } else {
-                (v - 0.052272) / 5.555556
+                2.0f32.powf((v - DELTA) / GAMMA) - BETA
             }
         }
         LogFormat::AcesCC => {
