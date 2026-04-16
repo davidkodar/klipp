@@ -625,6 +625,7 @@ mod tests {
             audio_bitrate_kbps: None, video_bitrate_kbps: None,
             rate_control: klipp_core::RateControl::Crf,
             burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, embed_chapters: false,
+            bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr,
         };
         p.begin_export(&settings);
         p.begin_clip(&ClipContext {

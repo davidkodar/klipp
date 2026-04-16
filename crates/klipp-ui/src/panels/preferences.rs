@@ -1447,9 +1447,16 @@ impl PreferencesPanel {
         });
 
         Self::setting_row(ui, "Parallel render jobs", |ui| {
-            let mut val = prefs.export.parallel_render;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
-                prefs.export.parallel_render = val;
+            let mut val = prefs.export.parallel_render_jobs;
+            let resp = ui.add(
+                egui::Slider::new(&mut val, 1..=8).text("jobs"),
+            ).on_hover_text(
+                "How many export jobs run simultaneously.\n\
+                 Higher = faster multi-segment exports, more CPU/GPU load.\n\
+                 Takes effect on the next export.",
+            );
+            if resp.changed() {
+                prefs.export.parallel_render_jobs = val;
                 *dirty = true;
             }
         });
@@ -1458,6 +1465,26 @@ impl PreferencesPanel {
             let mut val = prefs.export.open_folder_after_export;
             if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
                 prefs.export.open_folder_after_export = val;
+                *dirty = true;
+            }
+        });
+
+        // Post-export shell command (#63 Tier-1).
+        // Fire-and-forget via bash -c, with {file}/{dir} placeholders.
+        Self::setting_row(ui, "Post-export command", |ui| {
+            let resp = ui
+                .add(
+                    egui::TextEdit::singleline(&mut prefs.export.post_export_command)
+                        .desired_width(360.0)
+                        .hint_text("e.g. rsync -av {file} user@host:/media/"),
+                )
+                .on_hover_text(
+                    "Shell command run after an export finishes.\n\
+                     {file} → output file path\n\
+                     {dir}  → output directory\n\
+                     Runs via `bash -c` in the background. Leave empty to skip.",
+                );
+            if resp.changed() {
                 *dirty = true;
             }
         });

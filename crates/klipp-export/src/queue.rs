@@ -87,21 +87,26 @@ impl RenderSnapshot {
     }
 }
 
+/// One live render thread + its per-job shared state.
+/// Bundled so RenderQueue can hold a Vec of them for parallel rendering (#62).
+struct ActiveJob {
+    job_id: Uuid,
+    handle: std::thread::JoinHandle<()>,
+    cancel: Arc<AtomicBool>,
+    progress: (Arc<AtomicU64>, u64), // (counter, total_frames)
+    event_rx: crossbeam_channel::Receiver<RenderThreadEvent>,
+    hw_info: Arc<std::sync::Mutex<String>>,
+    render_stage: Arc<std::sync::Mutex<String>>,
+}
+
 pub struct RenderQueue {
     pub jobs: Vec<RenderJob>,
     snapshots: Vec<(Uuid, RenderSnapshot)>,
-    /// Active render thread handle.
-    active_thread: Option<std::thread::JoinHandle<()>>,
-    /// Cancellation flag for the active job.
-    active_cancel: Option<Arc<AtomicBool>>,
-    /// Progress counter for the active job (frames completed).
-    active_progress: Option<(Uuid, Arc<AtomicU64>, u64)>, // (id, counter, total_frames)
-    /// Channel for completion/failure events from the render thread.
-    event_rx: Option<crossbeam_channel::Receiver<RenderThreadEvent>>,
-    /// Shared hw_info from the active export job.
-    active_hw_info: Option<Arc<std::sync::Mutex<String>>>,
-    /// Shared render_stage from the active export job.
-    active_render_stage: Option<Arc<std::sync::Mutex<String>>>,
+    /// Currently running render threads (len up to `max_parallel`).
+    active_jobs: Vec<ActiveJob>,
+    /// Max jobs to run simultaneously. Read at job-start time, so changing
+    /// this between frames takes effect on the next spawn.
+    pub max_parallel: usize,
 }
 
 enum RenderThreadEvent {
@@ -122,12 +127,8 @@ impl RenderQueue {
         Self {
             jobs: Vec::new(),
             snapshots: Vec::new(),
-            active_thread: None,
-            active_cancel: None,
-            active_progress: None,
-            event_rx: None,
-            active_hw_info: None,
-            active_render_stage: None,
+            active_jobs: Vec::new(),
+            max_parallel: 2,
         }
     }
 
@@ -160,46 +161,40 @@ impl RenderQueue {
             loudness_result: None,
         });
         self.snapshots.push((id, snapshot));
-        self.start_next_if_idle();
+        self.start_next_jobs();
         id
     }
 
-    /// Signal the active render thread to stop (called on app exit).
+    /// Signal all active render threads to stop (called on app exit).
+    /// Doesn't join — threads clean up on their own.
     pub fn kill_active(&mut self) {
-        if let Some(cancel) = &self.active_cancel {
-            cancel.store(true, Ordering::Relaxed);
+        for j in &self.active_jobs {
+            j.cancel.store(true, Ordering::Relaxed);
         }
-        // Don't join — let the thread clean up on its own
-        self.active_thread = None;
-        self.active_cancel = None;
-        self.active_progress = None;
-        self.event_rx = None;
-        self.active_hw_info = None;
-        self.active_render_stage = None;
+        self.active_jobs.clear();
     }
 
     pub fn cancel_job(&mut self, id: Uuid) {
-        if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
-            match job.status {
-                RenderJobStatus::Queued => {
+        // Check current status first (avoid double-borrow).
+        let status = self.jobs.iter().find(|j| j.id == id).map(|j| j.status.clone());
+        match status {
+            Some(RenderJobStatus::Queued) => {
+                if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
                     job.status = RenderJobStatus::Cancelled;
                 }
-                RenderJobStatus::Rendering => {
-                    if let Some(cancel) = &self.active_cancel {
-                        cancel.store(true, Ordering::Relaxed);
-                    }
-                    job.status = RenderJobStatus::Cancelled;
-                    // Thread will detect cancellation and clean up
-                    self.active_thread = None;
-                    self.active_cancel = None;
-                    self.active_progress = None;
-                    self.event_rx = None;
-                    self.active_hw_info = None;
-                    self.active_render_stage = None;
-                    self.start_next_if_idle();
-                }
-                _ => {}
             }
+            Some(RenderJobStatus::Rendering) => {
+                // Signal the matching active job, then drop it.
+                if let Some(idx) = self.active_jobs.iter().position(|a| a.job_id == id) {
+                    self.active_jobs[idx].cancel.store(true, Ordering::Relaxed);
+                    self.active_jobs.swap_remove(idx);
+                }
+                if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
+                    job.status = RenderJobStatus::Cancelled;
+                }
+                self.start_next_jobs();
+            }
+            _ => {}
         }
     }
 
@@ -225,55 +220,51 @@ impl RenderQueue {
     pub fn poll(&mut self) -> Vec<RenderQueueEvent> {
         let mut events = Vec::new();
 
-        // Update progress from AtomicU64
-        if let Some((id, ref progress, total_frames)) = self.active_progress {
-            let frames_done = progress.load(Ordering::Relaxed);
+        // Reap finished threads (JoinHandle::is_finished) – they already sent
+        // their terminal event before returning, so we'll still process it below
+        // via try_recv on the buffered channel.
+        // We don't remove active_jobs yet — we first need to drain their event_rx.
+
+        // 1. Update progress counters + hw_info/render_stage for every active job.
+        for aj in &self.active_jobs {
+            let (ref counter, total_frames) = aj.progress;
+            let frames_done = counter.load(Ordering::Relaxed);
             let pct = if total_frames > 0 {
                 (frames_done as f32 / total_frames as f32).min(1.0)
             } else {
                 0.0
             };
-            if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
+            if let Some(job) = self.jobs.iter_mut().find(|j| j.id == aj.job_id) {
                 job.frames_done = frames_done;
                 if job.progress != pct {
                     job.progress = pct;
-                    events.push(RenderQueueEvent::Progress { id, progress: pct });
+                    events.push(RenderQueueEvent::Progress { id: aj.job_id, progress: pct });
                 }
             }
-        }
-
-        // Read hw_info + render_stage from shared mutexes
-        if let Some((id, _, _)) = self.active_progress {
-            if let Some(ref hw) = self.active_hw_info {
-                if let Ok(info) = hw.lock() {
-                    if !info.is_empty() {
-                        if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
-                            if job.hw_info.is_empty() {
-                                job.hw_info = info.clone();
-                            }
+            if let Ok(info) = aj.hw_info.lock() {
+                if !info.is_empty() {
+                    if let Some(job) = self.jobs.iter_mut().find(|j| j.id == aj.job_id) {
+                        if job.hw_info.is_empty() {
+                            job.hw_info = info.clone();
                         }
                     }
                 }
             }
-            if let Some(ref stage) = self.active_render_stage {
-                if let Ok(s) = stage.lock() {
-                    if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
-                        job.render_stage = s.clone();
-                    }
+            if let Ok(s) = aj.render_stage.lock() {
+                if let Some(job) = self.jobs.iter_mut().find(|j| j.id == aj.job_id) {
+                    job.render_stage = s.clone();
                 }
             }
         }
 
-        // Check for thread completion events
-        let thread_events: Vec<RenderThreadEvent> = if let Some(ref rx) = self.event_rx {
-            let mut evts = Vec::new();
-            while let Ok(event) = rx.try_recv() {
-                evts.push(event);
+        // 2. Drain per-job event channels and collect terminal events.
+        let mut terminal_ids: Vec<Uuid> = Vec::new();
+        let mut thread_events: Vec<RenderThreadEvent> = Vec::new();
+        for aj in &self.active_jobs {
+            while let Ok(event) = aj.event_rx.try_recv() {
+                thread_events.push(event);
             }
-            evts
-        } else {
-            Vec::new()
-        };
+        }
 
         for event in thread_events {
             match event {
@@ -294,25 +285,13 @@ impl RenderQueue {
                         });
                         info!("Render complete: {}", job.output_path.display());
                     }
-                    self.active_thread = None;
-                    self.active_cancel = None;
-                    self.active_progress = None;
-                    self.event_rx = None;
-                    self.active_hw_info = None;
-                    self.active_render_stage = None;
-                    self.start_next_if_idle();
+                    terminal_ids.push(id);
                 }
                 RenderThreadEvent::Cancelled { id } => {
                     if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
                         job.status = RenderJobStatus::Cancelled;
                     }
-                    self.active_thread = None;
-                    self.active_cancel = None;
-                    self.active_progress = None;
-                    self.event_rx = None;
-                    self.active_hw_info = None;
-                    self.active_render_stage = None;
-                    self.start_next_if_idle();
+                    terminal_ids.push(id);
                 }
                 RenderThreadEvent::Failed { id, error } => {
                     if let Some(job) = self.jobs.iter_mut().find(|j| j.id == id) {
@@ -320,15 +299,28 @@ impl RenderQueue {
                         job.error = Some(error.clone());
                     }
                     events.push(RenderQueueEvent::Failed { id, error });
-                    self.active_thread = None;
-                    self.active_cancel = None;
-                    self.active_progress = None;
-                    self.event_rx = None;
-                    self.active_hw_info = None;
-                    self.active_render_stage = None;
-                    self.start_next_if_idle();
+                    terminal_ids.push(id);
                 }
             }
+        }
+
+        // 3. Drop ActiveJob entries whose terminal event arrived or whose
+        //    thread already exited without sending (e.g. panic).
+        self.active_jobs.retain(|aj| {
+            if terminal_ids.contains(&aj.job_id) {
+                return false;
+            }
+            if aj.handle.is_finished() {
+                // Thread exited without a terminal event. Mark job Failed as a
+                // defensive fallback (shouldn't normally happen).
+                return false;
+            }
+            true
+        });
+
+        // 4. Spawn more jobs up to max_parallel.
+        if !terminal_ids.is_empty() || self.active_jobs.len() < self.max_parallel {
+            self.start_next_jobs();
         }
 
         events
@@ -340,7 +332,9 @@ impl RenderQueue {
             .any(|j| j.status == RenderJobStatus::Rendering)
     }
 
-    /// Returns (label, progress 0.0..1.0) of the currently rendering job, if any.
+    /// Returns (label, progress 0.0..1.0) of the first currently rendering job, if any.
+    /// With parallel rendering multiple jobs may be running — this returns the first
+    /// for legacy single-progress UI compatibility.
     pub fn active_job_progress(&self) -> Option<(&str, f32)> {
         self.jobs
             .iter()
@@ -355,19 +349,26 @@ impl RenderQueue {
             .count()
     }
 
-    fn start_next_if_idle(&mut self) {
-        if self.active_thread.is_some() {
-            return;
+    /// Spawn as many new render threads as fit under `max_parallel`.
+    fn start_next_jobs(&mut self) {
+        while self.active_jobs.len() < self.max_parallel.max(1) {
+            let next_id = self
+                .jobs
+                .iter()
+                .find(|j| j.status == RenderJobStatus::Queued)
+                .map(|j| j.id);
+            let Some(id) = next_id else { return };
+            if !self.spawn_job(id) {
+                // Spawn failed (e.g. no snapshot). Status already marked Failed.
+                continue;
+            }
         }
+    }
 
-        let next_id = self
-            .jobs
-            .iter()
-            .find(|j| j.status == RenderJobStatus::Queued)
-            .map(|j| j.id);
-
-        let Some(id) = next_id else { return };
-
+    /// Spawn a single render thread for the job with the given id. Returns
+    /// true if the thread started, false if the job was marked Failed before
+    /// spawning (e.g. missing snapshot).
+    fn spawn_job(&mut self, id: Uuid) -> bool {
         let job = self.jobs.iter_mut().find(|j| j.id == id).unwrap();
         job.status = RenderJobStatus::Rendering;
         job.started_at = Some(std::time::Instant::now());
@@ -377,7 +378,7 @@ impl RenderQueue {
         let Some(snap_pos) = snap_pos else {
             job.status = RenderJobStatus::Failed;
             job.error = Some("No render snapshot found".into());
-            return;
+            return false;
         };
         let (_, snapshot) = self.snapshots.remove(snap_pos);
 
@@ -451,11 +452,15 @@ impl RenderQueue {
             })
             .expect("Failed to spawn render thread");
 
-        self.active_thread = Some(handle);
-        self.active_cancel = Some(cancel);
-        self.active_progress = Some((id, progress, total_frames));
-        self.event_rx = Some(event_rx);
-        self.active_hw_info = Some(hw_info);
-        self.active_render_stage = Some(render_stage);
+        self.active_jobs.push(ActiveJob {
+            job_id: id,
+            handle,
+            cancel,
+            progress: (progress, total_frames),
+            event_rx,
+            hw_info,
+            render_stage,
+        });
+        true
     }
 }

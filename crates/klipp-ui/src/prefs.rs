@@ -608,9 +608,19 @@ pub struct ExportPrefs {
     /// Open the output folder in file manager after export finishes.
     #[serde(default)]
     pub open_folder_after_export: bool,
+    /// How many render jobs can run simultaneously. Higher = faster multi-segment
+    /// exports, more CPU usage. Read at job-start time (takes effect on next export).
+    #[serde(default = "default_parallel_jobs")]
+    pub parallel_render_jobs: usize,
+    /// Shell command to run after an export completes. Placeholders:
+    /// `{file}` = output file path, `{dir}` = output directory.
+    /// Runs via `bash -c` in the background. Leave empty to skip.
+    #[serde(default)]
+    pub post_export_command: String,
 }
 fn default_encoder_preset() -> String { "H.264 High Quality".into() }
 fn default_export_sr() -> u32 { 48000 }
+fn default_parallel_jobs() -> usize { 2 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum OverwriteMode {
@@ -632,6 +642,8 @@ impl Default for ExportPrefs {
             overwrite_mode: Default::default(),
             parallel_render: true,
             open_folder_after_export: false,
+            parallel_render_jobs: default_parallel_jobs(),
+            post_export_command: String::new(),
         }
     }
 }
@@ -2413,5 +2425,79 @@ mod tests {
         let rt = round_trip(&prefs);
         assert_eq!(rt.viewer.false_color_palette.name, "ARRI");
         assert_eq!(rt.viewer.false_color_palette.stops.len(), 13);
+    }
+
+    // ── #62 / #63 / #65 — export pipeline features ─────────────────────────
+
+    #[test]
+    fn parallel_render_default_is_two() {
+        // #62: safe default — 2 parallel jobs on every system.
+        let p = ExportPrefs::default();
+        assert_eq!(p.parallel_render_jobs, 2);
+    }
+
+    #[test]
+    fn post_export_command_default_is_empty() {
+        // #63 Tier-1: pref defaults to empty (no command run).
+        let p = ExportPrefs::default();
+        assert!(p.post_export_command.is_empty());
+    }
+
+    #[test]
+    fn post_export_command_placeholder_substitution() {
+        // {file} placeholder replaces with full path.
+        let cmd = "notify-send {file}"
+            .replace("{file}", "/tmp/out.mp4")
+            .replace("{dir}", "/tmp");
+        assert_eq!(cmd, "notify-send /tmp/out.mp4");
+    }
+
+    #[test]
+    fn post_export_dir_placeholder() {
+        // {dir} placeholder replaces with parent directory — both can appear.
+        let cmd = "rsync {file} server:{dir}/archive"
+            .replace("{file}", "/tmp/out.mp4")
+            .replace("{dir}", "/tmp");
+        assert_eq!(cmd, "rsync /tmp/out.mp4 server:/tmp/archive");
+    }
+
+    #[test]
+    fn hdr_mode_default_is_sdr() {
+        // #65: SDR is the default so existing presets are unchanged.
+        assert_eq!(klipp_core::HdrMode::default(), klipp_core::HdrMode::Sdr);
+    }
+
+    #[test]
+    fn export_settings_bit_depth_default_zero() {
+        // #65: bit_depth == 0 preserves 8-bit / existing behavior across every
+        // codec path.
+        let s = klipp_core::ExportSettings::default();
+        assert_eq!(s.bit_depth, 0);
+        assert_eq!(s.hdr_mode, klipp_core::HdrMode::Sdr);
+    }
+
+    #[test]
+    fn parallel_jobs_pref_round_trips_through_json() {
+        let mut prefs = Preferences::default();
+        prefs.export.parallel_render_jobs = 4;
+        prefs.export.post_export_command = "echo {file}".into();
+        let rt = round_trip(&prefs);
+        assert_eq!(rt.export.parallel_render_jobs, 4);
+        assert_eq!(rt.export.post_export_command, "echo {file}");
+    }
+
+    #[test]
+    fn parallel_jobs_missing_uses_default() {
+        // A config from before #62 has no `parallel_render_jobs` key —
+        // serde must fall back to default_parallel_jobs().
+        let json = r#"{
+            "general": { "auto_save_interval_secs": 300, "recent_projects": [] },
+            "playback": { "scrub_audio": true, "jkl_audio_mute_threshold": 4.0 },
+            "export": { "custom_presets": [] },
+            "proxy": { "auto_generate_on_import": true, "proxy_resolution": "Half" }
+        }"#;
+        let prefs: Preferences = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(prefs.export.parallel_render_jobs, 2);
+        assert!(prefs.export.post_export_command.is_empty());
     }
 }

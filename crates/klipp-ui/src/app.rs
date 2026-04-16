@@ -96,6 +96,11 @@ struct ExportDialogState {
     /// 0=YouTube/Spotify (-14), 1=Podcast (-16), 2=EBU R128 (-23), 3=ATSC A/85 (-24), 4=Custom
     loudness_preset: u8,
     custom_lufs: f32,
+    /// Encoder bit depth. 0 = codec default (8-bit), 10 = 10-bit encode.
+    /// Only meaningful for H.264/H.265. (#65)
+    bit_depth: u8,
+    /// HDR transfer. Only surfaced in UI when bit_depth == 10 on H.264/H.265. (#65)
+    hdr_mode: klipp_core::HdrMode,
 }
 
 impl Default for ExportDialogState {
@@ -127,6 +132,8 @@ impl Default for ExportDialogState {
             normalize_loudness: false,
             loudness_preset: 0,
             custom_lufs: -14.0,
+            bit_depth: 0,
+            hdr_mode: klipp_core::HdrMode::Sdr,
         }
     }
 }
@@ -15565,6 +15572,8 @@ fn build_export_settings(dialog: &ExportDialogState) -> ExportSettings {
         embed_subtitles: dialog.embed_subtitles,
         target_lufs: dialog_target_lufs(dialog),
         embed_chapters: dialog.embed_chapters,
+        bit_depth: dialog.bit_depth,
+        hdr_mode: dialog.hdr_mode,
     }
 }
 
@@ -17192,11 +17201,55 @@ impl KlippApp {
     }
 
     fn poll_render_queue(&mut self) {
+        // #62: propagate the user's parallel-jobs pref into the queue each
+        // frame. Pref is read at job-start time, so live updates just apply
+        // on the next spawn without disturbing in-flight jobs.
+        self.state.render_queue.max_parallel =
+            self.prefs.export.parallel_render_jobs.max(1);
         let events = self.state.render_queue.poll();
         for event in events {
             match event {
                 klipp_export::RenderQueueEvent::Complete { id, output_path } => {
                     tracing::info!("Render job {} complete: {}", id, output_path.display());
+                    // #63 Tier-1: open output folder if the pref is enabled.
+                    if self.prefs.export.open_folder_after_export {
+                        if let Some(parent) = output_path.parent() {
+                            if let Err(e) = std::process::Command::new("xdg-open")
+                                .arg(parent)
+                                .spawn()
+                            {
+                                tracing::warn!(
+                                    "open_folder_after_export: xdg-open failed for {}: {}",
+                                    parent.display(),
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    // #63 Tier-1: run post-export shell command with
+                    // {file}/{dir} substitution. Fire-and-forget — we don't
+                    // capture output, and any launch error is logged only.
+                    let tmpl = self.prefs.export.post_export_command.trim();
+                    if !tmpl.is_empty() {
+                        let dir = output_path
+                            .parent()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        let file = output_path.to_string_lossy();
+                        let cmd = tmpl
+                            .replace("{file}", &file)
+                            .replace("{dir}", &dir);
+                        match std::process::Command::new("bash")
+                            .arg("-c")
+                            .arg(&cmd)
+                            .spawn()
+                        {
+                            Ok(_) => tracing::info!("post_export_command launched: {cmd}"),
+                            Err(e) => tracing::warn!(
+                                "post_export_command failed to launch ({cmd}): {e}"
+                            ),
+                        }
+                    }
                 }
                 klipp_export::RenderQueueEvent::Failed { id, error } => {
                     tracing::error!("Render job {} failed: {}", id, error);
@@ -17394,6 +17447,52 @@ impl KlippApp {
                             }
                         }
                         ui.end_row();
+
+                        // #65: bit-depth + HDR controls, only for H.264/H.265.
+                        // ProRes is always 10-bit, DNxHD is 8-bit, AV1/VP9 are
+                        // beyond baseline scope for this phase.
+                        if matches!(
+                            self.export_dialog.video_codec,
+                            ExportVideoCodec::H264 | ExportVideoCodec::H265
+                        ) {
+                            ui.label("Bit depth:");
+                            ui.horizontal(|ui| {
+                                ui.radio_value(&mut self.export_dialog.bit_depth, 0u8, "8-bit");
+                                ui.radio_value(&mut self.export_dialog.bit_depth, 10u8, "10-bit");
+                            });
+                            ui.end_row();
+
+                            if self.export_dialog.bit_depth == 10 {
+                                ui.label("HDR:");
+                                ui.horizontal(|ui| {
+                                    ui.radio_value(
+                                        &mut self.export_dialog.hdr_mode,
+                                        klipp_core::HdrMode::Sdr,
+                                        "SDR",
+                                    );
+                                    ui.radio_value(
+                                        &mut self.export_dialog.hdr_mode,
+                                        klipp_core::HdrMode::Hlg,
+                                        "HLG",
+                                    );
+                                    ui.radio_value(
+                                        &mut self.export_dialog.hdr_mode,
+                                        klipp_core::HdrMode::Pq,
+                                        "HDR10 (PQ)",
+                                    );
+                                });
+                                ui.end_row();
+                            } else {
+                                // Keep state consistent: no 10-bit → SDR.
+                                self.export_dialog.hdr_mode = klipp_core::HdrMode::Sdr;
+                            }
+                        } else {
+                            // Non-H.264/H.265 codecs: reset to 8-bit/SDR so
+                            // the user-invisible state doesn't leak into the
+                            // export settings.
+                            self.export_dialog.bit_depth = 0;
+                            self.export_dialog.hdr_mode = klipp_core::HdrMode::Sdr;
+                        }
 
                         // Rate control mode
                         if self.export_dialog.video_codec.uses_crf() {
@@ -21398,6 +21497,8 @@ mod render_script_tests {
             embed_subtitles: false,
             target_lufs: None,
             embed_chapters: false,
+            bit_depth: 0,
+            hdr_mode: klipp_core::HdrMode::Sdr,
         };
         let script = generate_render_script(&seq, &media_pool, &settings, "/tmp/out.mp4");
         assert!(script.starts_with("#!/usr/bin/env bash\n"), "missing shebang: {script}");

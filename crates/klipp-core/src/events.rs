@@ -23,6 +23,19 @@ pub enum VideoParam {
     Rotation,
 }
 
+/// HDR transfer characteristic for export. Writes matching color-space tags
+/// into the output container (BT.2020 primaries + the selected transfer).
+/// #65 baseline — full mastering-display metadata deferred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum HdrMode {
+    #[default]
+    Sdr,
+    /// Hybrid Log-Gamma (ARIB STD-B67).
+    Hlg,
+    /// Perceptual Quantizer / HDR10 (SMPTE ST 2084).
+    Pq,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExportSettings {
     pub output_path: PathBuf,
@@ -48,6 +61,37 @@ pub struct ExportSettings {
     /// Embed sequence markers as chapter metadata in the output container.
     /// Only honoured for MP4/MKV/MOV — WebM has no chapter concept.
     pub embed_chapters: bool,
+    /// Requested encoder bit depth. `0` = codec default (8-bit); `10` enables
+    /// 10-bit encode for H.264/H.265. Other codecs ignore this (ProRes is
+    /// always 10-bit, DNxHD is 8-bit). #65 baseline.
+    pub bit_depth: u8,
+    /// HDR transfer characteristic. Defaults to SDR (BT.709). When 10-bit
+    /// encode is active, HLG/PQ write BT.2020 primaries + matching transfer.
+    pub hdr_mode: HdrMode,
+}
+
+impl Default for ExportSettings {
+    fn default() -> Self {
+        Self {
+            output_path: PathBuf::new(),
+            format: ExportFormat::Mp4,
+            video_codec: ExportVideoCodec::H264,
+            resolution: None,
+            fps: None,
+            crf: 23,
+            preset: EncoderPreset::default(),
+            audio_codec: ExportAudioCodec::Aac,
+            audio_bitrate_kbps: Some(192),
+            video_bitrate_kbps: None,
+            rate_control: RateControl::default(),
+            burn_in_subtitles: true,
+            embed_subtitles: false,
+            target_lufs: None,
+            embed_chapters: false,
+            bit_depth: 0,
+            hdr_mode: HdrMode::default(),
+        }
+    }
 }
 
 /// A single chapter entry frozen at export time. Timebase is milliseconds

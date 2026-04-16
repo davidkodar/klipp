@@ -99,6 +99,49 @@ fn pick_video_encoder(codec: &ExportVideoCodec, width: u32, height: u32) -> (&'s
     }
 }
 
+/// Write color-space tags onto the encoder's AVCodecContext.
+/// Picks BT.709 (SDR) or BT.2020 + HLG/PQ based on `settings.hdr_mode`.
+/// Safety: the caller must hold a valid `&mut Encoder` context; `as_mut_ptr`
+/// returns a non-null pointer for the lifetime of the context.
+fn apply_color_tags(
+    video_ctx: &mut ffmpeg_next::codec::encoder::video::Video,
+    hdr_mode: klipp_core::HdrMode,
+) {
+    use ffmpeg_next::ffi::{AVColorPrimaries, AVColorSpace, AVColorTransferCharacteristic};
+    let (prim, trc, space) = match hdr_mode {
+        klipp_core::HdrMode::Sdr => (
+            AVColorPrimaries::AVCOL_PRI_BT709,
+            AVColorTransferCharacteristic::AVCOL_TRC_BT709,
+            AVColorSpace::AVCOL_SPC_BT709,
+        ),
+        klipp_core::HdrMode::Hlg => (
+            AVColorPrimaries::AVCOL_PRI_BT2020,
+            AVColorTransferCharacteristic::AVCOL_TRC_ARIB_STD_B67,
+            AVColorSpace::AVCOL_SPC_BT2020_NCL,
+        ),
+        klipp_core::HdrMode::Pq => (
+            AVColorPrimaries::AVCOL_PRI_BT2020,
+            AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084,
+            AVColorSpace::AVCOL_SPC_BT2020_NCL,
+        ),
+    };
+    unsafe {
+        (*video_ctx.as_mut_ptr()).color_primaries = prim;
+        (*video_ctx.as_mut_ptr()).color_trc = trc;
+        (*video_ctx.as_mut_ptr()).colorspace = space;
+    }
+}
+
+/// x265-params string fragment matching `hdr_mode` — used by the software
+/// H.265 encoder which doesn't honor the AVCodecContext fields the same way.
+fn x265_color_params(hdr_mode: klipp_core::HdrMode) -> &'static str {
+    match hdr_mode {
+        klipp_core::HdrMode::Sdr => "colorprim=bt709:transfer=bt709:colormatrix=bt709",
+        klipp_core::HdrMode::Hlg => "colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc",
+        klipp_core::HdrMode::Pq => "colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc",
+    }
+}
+
 impl Encoder {
     /// Open the encoder for the given output path and settings.
     pub fn open(
@@ -159,7 +202,11 @@ impl Encoder {
         video_ctx.set_frame_rate(Some(ffmpeg_next::Rational::new(fps_num, fps_den)));
         video_ctx.set_time_base(ffmpeg_next::Rational::new(fps_den, fps_num));
 
-        // Set pixel format based on codec + HW/SW
+        // Set pixel format based on codec + HW/SW.
+        // #65 baseline: for H.264/H.265, bit_depth == 10 selects a 10-bit
+        // format. NVENC needs P010LE (semi-planar, 10 bits in MSBs of a
+        // 16-bit word); software encoders take planar YUV420P10LE.
+        let want_10bit = settings.bit_depth == 10;
         let pix_fmt = match settings.video_codec {
             ExportVideoCodec::ProRes4444 => ffmpeg_next::format::Pixel::YUV444P10LE,
             ExportVideoCodec::ProRes422 | ExportVideoCodec::ProRes422HQ => {
@@ -168,7 +215,20 @@ impl Encoder {
             ExportVideoCodec::DNxHD115 | ExportVideoCodec::DNxHD145 => {
                 ffmpeg_next::format::Pixel::YUV422P
             }
-            ExportVideoCodec::H264 | ExportVideoCodec::H265 | ExportVideoCodec::Av1 => {
+            ExportVideoCodec::H264 | ExportVideoCodec::H265 => {
+                if is_hw_encoder {
+                    if want_10bit {
+                        ffmpeg_next::format::Pixel::P010LE
+                    } else {
+                        ffmpeg_next::format::Pixel::NV12
+                    }
+                } else if want_10bit {
+                    ffmpeg_next::format::Pixel::YUV420P10LE
+                } else {
+                    ffmpeg_next::format::Pixel::YUV420P
+                }
+            }
+            ExportVideoCodec::Av1 => {
                 if is_hw_encoder {
                     ffmpeg_next::format::Pixel::NV12
                 } else {
@@ -197,28 +257,14 @@ impl Encoder {
                     klipp_core::EncoderPreset::VerySlow => "p7",
                 };
                 video_opts.set("preset", nvenc_preset);
-                // Rec.709 colour space tagging
-                unsafe {
-                    (*video_ctx.as_mut_ptr()).color_primaries =
-                        ffmpeg_next::ffi::AVColorPrimaries::AVCOL_PRI_BT709;
-                    (*video_ctx.as_mut_ptr()).color_trc =
-                        ffmpeg_next::ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
-                    (*video_ctx.as_mut_ptr()).colorspace =
-                        ffmpeg_next::ffi::AVColorSpace::AVCOL_SPC_BT709;
-                }
+                // Colour-space tagging (BT.709 SDR or BT.2020 HDR — #65).
+                apply_color_tags(&mut video_ctx, settings.hdr_mode);
             }
             ExportVideoCodec::H264 => {
                 video_ctx.set_bit_rate(0); // CRF mode
                 video_opts.set("crf", &settings.crf.to_string());
                 video_opts.set("preset", settings.preset.ffmpeg_value());
-                unsafe {
-                    (*video_ctx.as_mut_ptr()).color_primaries =
-                        ffmpeg_next::ffi::AVColorPrimaries::AVCOL_PRI_BT709;
-                    (*video_ctx.as_mut_ptr()).color_trc =
-                        ffmpeg_next::ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
-                    (*video_ctx.as_mut_ptr()).colorspace =
-                        ffmpeg_next::ffi::AVColorSpace::AVCOL_SPC_BT709;
-                }
+                apply_color_tags(&mut video_ctx, settings.hdr_mode);
             }
             ExportVideoCodec::H265 if is_hw_encoder => {
                 video_opts.set("rc", "vbr");
@@ -232,23 +278,14 @@ impl Encoder {
                     klipp_core::EncoderPreset::VerySlow => "p7",
                 };
                 video_opts.set("preset", nvenc_preset);
-                unsafe {
-                    (*video_ctx.as_mut_ptr()).color_primaries =
-                        ffmpeg_next::ffi::AVColorPrimaries::AVCOL_PRI_BT709;
-                    (*video_ctx.as_mut_ptr()).color_trc =
-                        ffmpeg_next::ffi::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
-                    (*video_ctx.as_mut_ptr()).colorspace =
-                        ffmpeg_next::ffi::AVColorSpace::AVCOL_SPC_BT709;
-                }
+                apply_color_tags(&mut video_ctx, settings.hdr_mode);
             }
             ExportVideoCodec::H265 => {
                 video_ctx.set_bit_rate(0);
                 video_opts.set("crf", &settings.crf.to_string());
                 video_opts.set("preset", settings.preset.ffmpeg_value());
-                video_opts.set(
-                    "x265-params",
-                    "colorprim=bt709:transfer=bt709:colormatrix=bt709",
-                );
+                video_opts.set("x265-params", x265_color_params(settings.hdr_mode));
+                apply_color_tags(&mut video_ctx, settings.hdr_mode);
             }
             ExportVideoCodec::ProRes422 => {
                 video_opts.set("profile:v", "2");
@@ -965,7 +1002,8 @@ mod tests {
             preset: EncoderPreset::Fast,
             audio_codec: ExportAudioCodec::Aac,
             audio_bitrate_kbps: Some(128), video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
-            burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, embed_chapters: false }
+            burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, embed_chapters: false,
+            bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr }
     }
 
     fn make_snapshot() -> SequenceSnapshot {
