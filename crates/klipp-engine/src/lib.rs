@@ -1,4 +1,5 @@
 pub mod audio_decoder;
+pub mod audio_input;
 pub mod audio_output;
 pub mod audio_source;
 pub mod composite;

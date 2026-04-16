@@ -86,6 +86,43 @@ impl TransportBar {
                 cmds.push(AppCommand::SeekRelative(1));
             }
 
+            // Record button (#60).
+            // Dim red when idle (needs an armed track to do anything),
+            // bright red when actively recording. Clicking toggles —
+            // StartRecording checks for an armed track and shows a toast
+            // if none exists, so the button is always enabled.
+            {
+                let rec_color = if state.is_recording {
+                    egui::Color32::from_rgb(232, 50, 50)
+                } else {
+                    egui::Color32::from_rgb(150, 50, 50)
+                };
+                // U+25CF BLACK CIRCLE — renders in egui's default font set.
+                // U+23FA (the proper "record" glyph) is in Misc Technical and
+                // isn't covered by the default fallback chain, so use the
+                // filled circle that's already used elsewhere in the UI.
+                let glyph = egui::RichText::new("\u{25CF}")
+                    .color(rec_color)
+                    .size(18.0);
+                let resp = ui
+                    .add(
+                        egui::Button::new(glyph)
+                            .min_size(egui::vec2(32.0, 32.0)),
+                    )
+                    .on_hover_text(if state.is_recording {
+                        "Stop recording"
+                    } else {
+                        "Start recording (arm an audio track first)"
+                    });
+                if resp.clicked() {
+                    if state.is_recording {
+                        cmds.push(AppCommand::StopRecording);
+                    } else {
+                        cmds.push(AppCommand::StartRecording);
+                    }
+                }
+            }
+
             // Jog wheel — drag horizontally to scrub frame by frame.
             // A software substitute for hardware JogShuttle devices;
             // emits JogFrames which routes through the existing

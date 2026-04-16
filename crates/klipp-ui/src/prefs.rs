@@ -982,6 +982,11 @@ pub struct AudioHardwarePrefs {
     /// Detects PipeWire/WirePlumber per-app mute state.
     #[serde(default = "default_mute_reminder_interval")]
     pub mute_reminder_interval_secs: u32,
+    /// Input device name used for audio recording (#60). Empty string = system
+    /// default. Kept as `String` (not `Option<String>`) to match the "Default"
+    /// sentinel idiom used by the recording input picker dropdown.
+    #[serde(default)]
+    pub input_device: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1006,6 +1011,7 @@ impl Default for AudioHardwarePrefs {
             buffer_size: default_buffer_size(),
             monitoring_mode: Default::default(),
             mute_reminder_interval_secs: default_mute_reminder_interval(),
+            input_device: String::new(),
         }
     }
 }

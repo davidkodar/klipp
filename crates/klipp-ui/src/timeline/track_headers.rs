@@ -263,8 +263,49 @@ pub fn show(
             }
         }
 
-        // Mute button (right side, 16x16)
+        // Record-arm button (audio tracks only) — dim red when un-armed,
+        // bright red when armed. Appears to the left of the mute button.
         let btn_size = 16.0;
+        if track.kind == TrackKind::Audio {
+            let arm_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    track_rect.max.x - btn_size * 4.0 - 16.0,
+                    track_rect.center().y - btn_size / 2.0,
+                ),
+                egui::vec2(btn_size, btn_size),
+            );
+            let arm_resp = ui.allocate_rect(arm_rect, egui::Sense::click());
+            let arm_active = track.record_armed;
+            let arm_color = if arm_active {
+                egui::Color32::from_rgb(232, 50, 50)
+            } else {
+                egui::Color32::from_rgb(130, 50, 50)
+            };
+            ui.painter().rect_filled(
+                arm_rect,
+                3.0,
+                if arm_resp.hovered() { theme.bg_raised } else { egui::Color32::TRANSPARENT },
+            );
+            // U+25CF BLACK CIRCLE — covered by egui's default font fallback
+            // chain (U+23FA, the proper record symbol, is not).
+            ui.painter().text(
+                arm_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "\u{25CF}",
+                egui::FontId::proportional(11.0),
+                arm_color,
+            );
+            let tip = if arm_active { "Un-arm for recording" } else { "Arm for recording" };
+            styled_tooltip(&arm_resp, theme, tip, None);
+            if arm_resp.clicked() {
+                cmds.push(AppCommand::ArmTrack {
+                    track_id: track.id,
+                    armed: !arm_active,
+                });
+            }
+        }
+
+        // Mute button (right side, 16x16)
         let mute_rect = egui::Rect::from_min_size(
             egui::pos2(
                 track_rect.max.x - btn_size * 3.0 - 12.0,
