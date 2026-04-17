@@ -5463,7 +5463,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // ─── Film Grain GPU Shader ──────────────────────────────────────────────────
 
-const SHADER_GRAIN: &str = "
+// Film grain — additive pseudo-random noise, weighted by tonal band.
+// Real film grain is photon shot noise, which IS additive in linear
+// light; the sRGB version under-represented noise in highlights
+// (gamma compresses noise there) and over-represented it in shadows.
+// Linear additive matches the physical model.
+const SHADER_GRAIN: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -5478,7 +5484,9 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 fn wang_hash(seed: u32) -> f32 {
     var x = seed;
     x = (x ^ 61u) ^ (x >> 16u);
@@ -5494,12 +5502,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
-    let pixel = input[idx];
-    let r = f32(pixel & 0xFFu) / 255.0;
-    let g = f32((pixel >> 8u) & 0xFFu) / 255.0;
-    let b = f32((pixel >> 16u) & 0xFFu) / 255.0;
-    let a = pixel & 0xFF000000u;
-    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let p = unpack(input[idx]);
+    let luma = 0.2126 * p.x + 0.7152 * p.y + 0.0722 * p.z;
 
     // Pixel coordinates (for grain size variation)
     let px = idx % params.width;
@@ -5523,13 +5527,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let highlight_w = luma * params.highlights;
     let weight = clamp(shadow_w + highlight_w, 0.0, 1.5);
 
-    // Apply grain
-    let ro = u32(clamp((r + grain_r * weight) * 255.0, 0.0, 255.0));
-    let go = u32(clamp((g + grain_g * weight) * 255.0, 0.0, 255.0));
-    let bo = u32(clamp((b + grain_b * weight) * 255.0, 0.0, 255.0));
-    output[idx] = ro | (go << 8u) | (bo << 16u) | a;
+    output[idx] = pack(vec4<f32>(
+        p.x + grain_r * weight,
+        p.y + grain_g * weight,
+        p.z + grain_b * weight,
+        p.w,
+    ));
 }
-";
+"
+);
 
 // ─── Alpha Mask GPU Shaders ─────────────────────────────────────────────────
 
@@ -6116,7 +6122,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 ";
 
-const SHADER_EDGE_DETECT: &str = "
+// Edge detect — Sobel filter on luma. BT.709 coefficients are the
+// standard for linear-light luma; using them on sRGB-encoded bytes
+// (as the old version did) misweighed channels. Linear Sobel
+// produces slightly different edge magnitudes that are more
+// consistent with the physical gradient.
+const SHADER_EDGE_DETECT: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -6127,15 +6139,14 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 fn get_lum(x: i32, y: i32) -> f32 {
     let cx = clamp(x, 0, i32(params.width) - 1);
     let cy = clamp(y, 0, i32(params.height) - 1);
-    let v = input[u32(cy) * params.width + u32(cx)];
-    let r = f32(v & 0xFFu) / 255.0;
-    let g = f32((v >> 8u) & 0xFFu) / 255.0;
-    let b = f32((v >> 16u) & 0xFFu) / 255.0;
-    return 0.299 * r + 0.587 * g + 0.114 * b;
+    let p = unpack(input[u32(cy) * params.width + u32(cx)]);
+    return 0.2126 * p.x + 0.7152 * p.y + 0.0722 * p.z;
 }
 
 @compute @workgroup_size(256)
@@ -6155,20 +6166,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let edge = clamp(sqrt(gx * gx + gy * gy) * params.strength, 0.0, 1.0);
 
-    let v = input[idx];
-    let or = f32(v & 0xFFu) / 255.0;
-    let og = f32((v >> 8u) & 0xFFu) / 255.0;
-    let ob = f32((v >> 16u) & 0xFFu) / 255.0;
-    let a = v >> 24u;
+    let orig = unpack(input[idx]);
     let m = params.mix_val;
-    let rr = u32(clamp((or * (1.0 - m) + edge * m) * 255.0, 0.0, 255.0));
-    let rg = u32(clamp((og * (1.0 - m) + edge * m) * 255.0, 0.0, 255.0));
-    let rb = u32(clamp((ob * (1.0 - m) + edge * m) * 255.0, 0.0, 255.0));
-    output[idx] = rr | (rg << 8u) | (rb << 16u) | (a << 24u);
+    let mixed = orig.xyz * (1.0 - m) + vec3<f32>(edge) * m;
+    output[idx] = pack(vec4<f32>(mixed, orig.w));
 }
-";
+"
+);
 
-const SHADER_CHANNEL_MIXER: &str = "
+// Channel mixer — 3x3 linear combination of RGB channels. Linear
+// mixing corresponds to real light-combining operations (e.g.
+// "synthesise luma from 0.7 R + 0.2 G + 0.1 B"). The sRGB version
+// mixed gamma-encoded bytes, which silently under- or over-weighted
+// depending on channel intensity.
+const SHADER_CHANNEL_MIXER: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -6187,25 +6199,23 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    let v = input[idx];
-    let r = f32(v & 0xFFu) / 255.0;
-    let g = f32((v >> 8u) & 0xFFu) / 255.0;
-    let b = f32((v >> 16u) & 0xFFu) / 255.0;
-    let a = v >> 24u;
-    let out_r = params.rr * r + params.rg * g + params.rb * b;
-    let out_g = params.gr * r + params.gg * g + params.gb * b;
-    let out_b = params.br * r + params.bg * g + params.bb * b;
-    let cr = u32(clamp(out_r * 255.0, 0.0, 255.0));
-    let cg = u32(clamp(out_g * 255.0, 0.0, 255.0));
-    let cb = u32(clamp(out_b * 255.0, 0.0, 255.0));
-    output[idx] = cr | (cg << 8u) | (cb << 16u) | (a << 24u);
+    let p = unpack(input[idx]);
+    let out = vec3<f32>(
+        params.rr * p.x + params.rg * p.y + params.rb * p.z,
+        params.gr * p.x + params.gg * p.y + params.gb * p.z,
+        params.br * p.x + params.bg * p.y + params.bb * p.z,
+    );
+    output[idx] = pack(vec4<f32>(out, p.w));
 }
-";
+"
+);
 
 // Directional blur — averages along a `(dx, dy)` line. Linear-light
 // averaging so midtones don't darken through the trail.
@@ -6482,7 +6492,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 ";
 
-const SHADER_DENOISE: &str = "
+// Denoise — bilateral filter. Spatial + colour-similarity weights.
+// Linear-light luma (BT.709) matches what the coefficients were
+// defined for; linear colour-diff means the colour_sigma slider
+// now measures physical light-level distance rather than sRGB
+// byte distance. Slider values may need re-tuning on complex
+// images (the scale of "similar" pixels shifts).
+const SHADER_DENOISE: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -6493,7 +6510,9 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -6503,31 +6522,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = i32(idx % w);
     let y = i32(idx / w);
 
-    let cv = input[idx];
-    let cr = f32(cv & 0xFFu) / 255.0;
-    let cg = f32((cv >> 8u) & 0xFFu) / 255.0;
-    let cb = f32((cv >> 16u) & 0xFFu) / 255.0;
-    let ca = (cv >> 24u) & 0xFFu;
-    let center_luma = 0.299 * cr + 0.587 * cg + 0.114 * cb;
+    let center = unpack(input[idx]);
+    let center_luma = 0.2126 * center.x + 0.7152 * center.y + 0.0722 * center.z;
 
     let kernel_size = min(i32(ceil(params.spatial_sigma * 2.0)), 10);
     let spatial_denom = 2.0 * params.spatial_sigma * params.spatial_sigma;
     let color_denom = 2.0 * params.color_sigma * params.color_sigma;
 
-    var sum_r = 0.0;
-    var sum_g = 0.0;
-    var sum_b = 0.0;
+    var sum = vec3<f32>(0.0);
     var total_weight = 0.0;
 
     for (var dy = -kernel_size; dy <= kernel_size; dy = dy + 1) {
         for (var dx = -kernel_size; dx <= kernel_size; dx = dx + 1) {
             let sx = u32(clamp(x + dx, 0, i32(w) - 1));
             let sy = u32(clamp(y + dy, 0, i32(h) - 1));
-            let nv = input[sy * w + sx];
-            let nr = f32(nv & 0xFFu) / 255.0;
-            let ng = f32((nv >> 8u) & 0xFFu) / 255.0;
-            let nb = f32((nv >> 16u) & 0xFFu) / 255.0;
-            let n_luma = 0.299 * nr + 0.587 * ng + 0.114 * nb;
+            let n = unpack(input[sy * w + sx]);
+            let n_luma = 0.2126 * n.x + 0.7152 * n.y + 0.0722 * n.z;
 
             let spatial_dist = f32(dx * dx + dy * dy);
             let spatial_w = exp(-spatial_dist / spatial_denom);
@@ -6535,20 +6545,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let color_w = exp(-color_diff * color_diff / color_denom);
             let weight = spatial_w * color_w;
 
-            sum_r += nr * weight;
-            sum_g += ng * weight;
-            sum_b += nb * weight;
+            sum = sum + n.xyz * weight;
             total_weight += weight;
         }
     }
 
     let inv = 1.0 / total_weight;
-    let rr = u32(clamp(sum_r * inv * 255.0, 0.0, 255.0));
-    let rg = u32(clamp(sum_g * inv * 255.0, 0.0, 255.0));
-    let rb = u32(clamp(sum_b * inv * 255.0, 0.0, 255.0));
-    output[idx] = rr | (rg << 8u) | (rb << 16u) | (ca << 24u);
+    output[idx] = pack(vec4<f32>(sum * inv, center.w));
 }
-";
+"
+);
 
 const SHADER_GAMMA: &str = "
 struct Params {
@@ -7073,7 +7079,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 ";
 
-const SHADER_ROLLING_SHUTTER: &str = "
+// Rolling shutter correction — per-row affine warp with bilinear
+// sampling. Bilinear averaging benefits from linear light; without
+// it, the four-tap interpolation darkens soft sub-pixel edges
+// (the classic gamma-resize issue).
+const SHADER_ROLLING_SHUTTER: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -7091,14 +7102,9 @@ struct RowXform {
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
 @group(0) @binding(3) var<storage, read> row_xforms: array<RowXform>;
-
-fn unpack(v: u32) -> vec4<f32> {
-    return vec4<f32>(
-        f32(v & 0xFFu), f32((v >> 8u) & 0xFFu),
-        f32((v >> 16u) & 0xFFu), f32((v >> 24u) & 0xFFu)
-    );
-}
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 fn sample_bilinear(fx: f32, fy: f32) -> vec4<f32> {
     let w = params.width;
     let h = params.height;
@@ -7129,16 +7135,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let src_x = xf.a * fx + xf.b * fy + xf.tx;
     let src_y = xf.c * fx + xf.d * fy + xf.ty;
 
-    let color = sample_bilinear(src_x, src_y);
-    let ro = u32(clamp(color.x, 0.0, 255.0));
-    let go = u32(clamp(color.y, 0.0, 255.0));
-    let bo = u32(clamp(color.z, 0.0, 255.0));
-    let ao = u32(clamp(color.w, 0.0, 255.0));
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (ao << 24u);
+    output[idx] = pack(sample_bilinear(src_x, src_y));
 }
-";
+"
+);
 
-const SHADER_STABILIZATION: &str = "
+// Stabilisation — per-frame homography warp with bilinear sampling.
+// Bilinear averaging in linear preserves soft edge luminance through
+// the warp.
+const SHADER_STABILIZATION: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -7157,14 +7163,9 @@ struct Homography3x3 {
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
 @group(0) @binding(3) var<storage, read> homography: Homography3x3;
-
-fn unpack(v: u32) -> vec4<f32> {
-    return vec4<f32>(
-        f32(v & 0xFFu), f32((v >> 8u) & 0xFFu),
-        f32((v >> 16u) & 0xFFu), f32((v >> 24u) & 0xFFu)
-    );
-}
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 fn sample_bilinear(fx: f32, fy: f32) -> vec4<f32> {
     let w = params.width;
     let h = params.height;
@@ -7199,14 +7200,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let src_x = (homography.h0 * x + homography.h1 * y + homography.h2) / w_div;
     let src_y = (homography.h3 * x + homography.h4 * y + homography.h5) / w_div;
 
-    let color = sample_bilinear(src_x, src_y);
-    let ro = u32(clamp(color.x, 0.0, 255.0));
-    let go = u32(clamp(color.y, 0.0, 255.0));
-    let bo = u32(clamp(color.z, 0.0, 255.0));
-    let ao = u32(clamp(color.w, 0.0, 255.0));
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (ao << 24u);
+    output[idx] = pack(sample_bilinear(src_x, src_y));
 }
-";
+"
+);
 
 // ── Color Balance (temperature / tint / hue rotation / global mix) ────────────
 const SHADER_COLOR_BALANCE: &str = "
