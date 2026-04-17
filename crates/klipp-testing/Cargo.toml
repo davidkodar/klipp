@@ -1,0 +1,11 @@
+[package]
+name = "klipp-testing"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Test-only helper crate. Never pulled into production binaries:
+# downstream crates should only depend on this via `[dev-dependencies]`.
+
+[lib]
+path = "src/lib.rs"
