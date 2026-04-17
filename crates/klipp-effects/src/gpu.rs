@@ -1810,6 +1810,470 @@ impl GpuEffectsPipeline {
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Dispatch-only entry points — GPU-resident chain path
+    //
+    // Each `*_chain` method performs the same compute-shader dispatch as its
+    // `apply_*_gpu` counterpart, but reads from one of `buf_a`/`buf_b`
+    // (selected by `in_is_a`) and writes to the opposite slot. The result
+    // stays on the GPU. Callers (see `GraphExecutor::execute_linear`) plumb
+    // the ping-pong parity through a whole run of single-input filter nodes
+    // so only the head of the chain uploads and only the tail downloads.
+    //
+    // `in_is_a` is preferred over raw `&wgpu::Buffer` references because
+    // `wgpu::Buffer` is `!Clone` and we need to re-borrow `&mut self` across
+    // dispatches (for params writes, bind group creation, LUT uploads, …).
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Pick (input, output) buffer refs from the current ping-pong slot.
+    fn chain_in_out(&self, in_is_a: bool) -> (&wgpu::Buffer, &wgpu::Buffer) {
+        let buf_a = self.buf_a.as_ref().expect("ensure_chain_buffers must be called first");
+        let buf_b = self.buf_b.as_ref().expect("ensure_chain_buffers must be called first");
+        if in_is_a { (buf_a, buf_b) } else { (buf_b, buf_a) }
+    }
+
+    /// Dispatch-only colour-grade pass. Reads `in_is_a`-slot, writes the other.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_color_grade_chain(
+        &mut self,
+        in_is_a: bool,
+        width: u32,
+        height: u32,
+        exposure: f32,
+        contrast: f32,
+        saturation: f32,
+        temperature: f32,
+        tint: f32,
+        highlights: f32,
+        shadows: f32,
+        whites: f32,
+        blacks: f32,
+        lift: (f32, f32, f32),
+        gamma: (f32, f32, f32),
+        gain: (f32, f32, f32),
+        offset: (f32, f32, f32),
+        hue: f32,
+        global_mix: f32,
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        self.write_params(&GpuColorGradeParams {
+            width, height, exposure, contrast, saturation, temperature, tint,
+            highlights, shadows, whites, blacks,
+            lift_r: lift.0, lift_g: lift.1, lift_b: lift.2,
+            gamma_r: gamma.0, gamma_g: gamma.1, gamma_b: gamma.2,
+            gain_r: gain.0, gain_g: gain.1, gain_b: gain.2,
+            offset_r: offset.0, offset_g: offset.1, offset_b: offset.2,
+            hue, global_mix, _pad0: 0,
+        });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let (input, output) = self.chain_in_out(in_is_a);
+        self.dispatch(&self.color_grade_pipeline, input, output, workgroups);
+    }
+
+    /// Dispatch-only colour-balance pass.
+    pub fn apply_color_balance_chain(
+        &mut self,
+        in_is_a: bool,
+        width: u32,
+        height: u32,
+        temperature: f32,
+        tint: f32,
+        hue: f32,
+        global_mix: f32,
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        self.write_params(&GpuColorBalanceParams {
+            width, height, temperature, tint, hue, global_mix,
+            _pad0: 0, _pad1: 0,
+        });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let (input, output) = self.chain_in_out(in_is_a);
+        self.dispatch(&self.color_balance_pipeline, input, output, workgroups);
+    }
+
+    /// Dispatch-only wheel sat/bri pass.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_wheel_sat_bri_chain(
+        &mut self,
+        in_is_a: bool,
+        width: u32,
+        height: u32,
+        lift_sat: f32, lift_bri: f32,
+        gamma_sat: f32, gamma_bri: f32,
+        gain_sat: f32, gain_bri: f32,
+        offset_sat: f32, offset_bri: f32,
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        self.write_params(&GpuWheelSatBriParams {
+            width, height,
+            lift_sat, lift_bri, gamma_sat, gamma_bri,
+            gain_sat, gain_bri, offset_sat, offset_bri,
+            _pad0: 0, _pad1: 0,
+        });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let (input, output) = self.chain_in_out(in_is_a);
+        self.dispatch(&self.wheel_sat_bri_pipeline, input, output, workgroups);
+    }
+
+    /// Dispatch-only RGB curves pass. Uploads LUT, writes params, dispatches.
+    pub fn apply_rgb_curves_chain(
+        &mut self,
+        in_is_a: bool,
+        width: u32,
+        height: u32,
+        lut_data: &[f32; 1024],
+        preserve_luma: bool,
+        mix: f32,
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        self.queue.write_buffer(&self.rgb_curves_lut_buf, 0, bytemuck::cast_slice(lut_data));
+        self.write_params(&GpuRgbCurvesParams {
+            width, height,
+            preserve_luma: if preserve_luma { 1 } else { 0 },
+            mix,
+        });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let (input, output) = self.chain_in_out(in_is_a);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rgb_curves_chain_bg"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.rgb_curves_lut_buf.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.rgb_curves_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Dispatch-only vibrance pass.
+    pub fn apply_vibrance_chain(
+        &mut self,
+        in_is_a: bool,
+        width: u32,
+        height: u32,
+        amount: f32,
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        self.write_params(&GpuVibranceParams { width, height, amount, _pad: 0 });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let (input, output) = self.chain_in_out(in_is_a);
+        self.dispatch(&self.vibrance_pipeline, input, output, workgroups);
+    }
+
+    /// Dispatch-only 12-sector colour warper pass.
+    pub fn apply_color_warper_chain(
+        &mut self,
+        in_is_a: bool,
+        width: u32,
+        height: u32,
+        hue_shifts: &[f32; 12],
+        sat_shifts: &[f32; 12],
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        self.write_params(&GpuColorWarperParams {
+            width, height, _pad0: 0, _pad1: 0,
+            hue_shifts: *hue_shifts, sat_shifts: *sat_shifts,
+        });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let (input, output) = self.chain_in_out(in_is_a);
+        self.dispatch(&self.color_warper_pipeline, input, output, workgroups);
+    }
+
+    /// Dispatch-only input-transform (log→linear via 1D LUT) pass.
+    pub fn apply_input_transform_chain(
+        &mut self,
+        in_is_a: bool,
+        width: u32,
+        height: u32,
+        lut_data: &[f32; 256],
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        self.queue.write_buffer(&self.input_transform_lut_buf, 0, bytemuck::cast_slice(lut_data));
+        self.write_params(&GpuInputTransformParams { width, height, _pad0: 0, _pad1: 0 });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let (input, output) = self.chain_in_out(in_is_a);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("input_transform_chain_bg"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.input_transform_lut_buf.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.input_transform_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Dispatch-only clarity (midtone unsharp-mask) pass. Uses `buf_c` as
+    /// scratch for the horizontal/vertical luma blur. The caller must have
+    /// already called `ensure_buffers` for a frame that fits in `buf_c` too.
+    pub fn apply_clarity_chain(
+        &mut self,
+        in_is_a: bool,
+        width: u32,
+        height: u32,
+        amount: f32,
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        let byte_size = (width * height * 16) as u64;
+        // buf_c must exist and match the current size.
+        if self.buf_c.is_none() || self.current_buf_size < byte_size {
+            self.buf_c = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("buf_c"), size: byte_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let radius = 20u32;
+
+        // Pass 1: horizontal blur (in RGBA → out luma scratch).
+        self.write_params(&GpuClarityBlurParams { width, height, radius, _pad: 0 });
+        {
+            let (input, output) = self.chain_in_out(in_is_a);
+            self.dispatch(&self.clarity_blur_h_pipeline, input, output, workgroups);
+        }
+
+        // Pass 2: vertical blur (out luma → buf_c blurred luma).
+        {
+            let output = if in_is_a { self.buf_b.as_ref() } else { self.buf_a.as_ref() }.unwrap();
+            let buf_c = self.buf_c.as_ref().unwrap();
+            self.dispatch(&self.clarity_blur_v_pipeline, output, buf_c, workgroups);
+        }
+
+        // Pass 3: unsharp mask (in RGBA + buf_c blurred luma → out RGBA).
+        self.write_params(&GpuClarityApplyParams { width, height, amount, _pad: 0 });
+        let (input, output) = self.chain_in_out(in_is_a);
+        let buf_c = self.buf_c.as_ref().unwrap();
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("clarity_apply_chain_bg"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: buf_c.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.clarity_apply_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Dispatch-only bilateral denoise pass.
+    pub fn apply_denoise_chain(
+        &mut self,
+        in_is_a: bool,
+        width: u32,
+        height: u32,
+        spatial_sigma: f32,
+        color_sigma: f32,
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        self.write_params(&DenoiseParams { width, height, spatial_sigma, color_sigma });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let (input, output) = self.chain_in_out(in_is_a);
+        self.dispatch(&self.denoise_pipeline, input, output, workgroups);
+    }
+
+    /// Dispatch-only hue/sat curves pass. Uploads the 6×256 LUT, writes
+    /// params, and dispatches.
+    pub fn apply_huesat_chain(
+        &mut self,
+        in_is_a: bool,
+        width: u32,
+        height: u32,
+        mix: f32,
+        lut_data: &[f32; 1536],
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        self.queue.write_buffer(&self.huesat_lut_buf, 0, bytemuck::cast_slice(lut_data));
+        self.write_params(&GpuHueSatParams { width, height, mix, _pad0: 0 });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let (input, output) = self.chain_in_out(in_is_a);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("huesat_chain_bg"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.huesat_lut_buf.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.huesat_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Dispatch-only 3D LUT pass with trilinear interpolation.
+    pub fn apply_3d_lut_chain(
+        &mut self,
+        in_is_a: bool,
+        width: u32,
+        height: u32,
+        lut_data: &[f32],
+        lut_size: u32,
+        opacity: f32,
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        if opacity <= 0.0 {
+            // No-op: copy in → out via queue buffer copy.
+            let byte_size = (width * height * 16) as u64;
+            let (input, output) = self.chain_in_out(in_is_a);
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            encoder.copy_buffer_to_buffer(input, 0, output, 0, byte_size);
+            self.queue.submit(std::iter::once(encoder.finish()));
+            return;
+        }
+        let lut_byte_size = (lut_data.len() * 4) as u64;
+        if self.lut3d_buf.is_none() || self.lut3d_buf_size < lut_byte_size {
+            self.lut3d_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("lut3d_data"),
+                size: lut_byte_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.lut3d_buf_size = lut_byte_size;
+        }
+        let lut_buf = self.lut3d_buf.as_ref().unwrap();
+        self.queue.write_buffer(lut_buf, 0, bytemuck::cast_slice(lut_data));
+        self.write_params(&GpuLut3dParams { width, height, lut_size, opacity });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let (input, output) = self.chain_in_out(in_is_a);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("lut3d_chain_bg"),
+            layout: &self.huesat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: lut_buf.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.lut3d_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+    }
+
+    /// Dispatch-only film grain overlay pass.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_grain_chain(
+        &mut self,
+        in_is_a: bool,
+        width: u32,
+        height: u32,
+        amount: f32,
+        size: f32,
+        shadows: f32,
+        highlights: f32,
+        monochrome: bool,
+        frame_seed: u32,
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        self.write_params(&GpuGrainParams {
+            width, height, amount, size, shadows, highlights, frame_seed,
+            monochrome: if monochrome { 1 } else { 0 },
+        });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let (input, output) = self.chain_in_out(in_is_a);
+        self.dispatch(&self.grain_pipeline, input, output, workgroups);
+    }
+
+    // ─── Chain plumbing helpers ────────────────────────────────────────────
+
+    /// Resize `buf_a` / `buf_b` / `buf_c` to hold at least `byte_size` bytes.
+    /// Public entry point for the node executor's GPU-resident chain path.
+    pub fn ensure_chain_buffers(&mut self, byte_size: u64) {
+        self.ensure_buffers(byte_size);
+    }
+
+    /// Upload a linear-f32 RGBA frame into `buf_a`. Used by the node
+    /// executor to seed the ping-pong chain.
+    pub fn upload_chain_input_linear(&mut self, linear_rgba: &[f32]) {
+        if self.is_device_lost() {
+            return;
+        }
+        let buf_a = self.buf_a.as_ref().expect("ensure_chain_buffers must be called first");
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+    }
+
+    /// Download the final linear-f32 RGBA frame. `slot_a` selects `buf_a`
+    /// when true, `buf_b` when false — the caller's ping-pong parity.
+    pub fn download_chain_output_linear(&self, slot_a: bool, pixel_count: usize) -> Vec<f32> {
+        let buf = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() };
+        let buf = buf.expect("ensure_chain_buffers must be called first");
+        self.download_linear_rgba_f32(buf, pixel_count)
+    }
+
+    /// Borrow the chain buffers by their ping-pong slot. `slot_a` true
+    /// returns `buf_a`; false returns `buf_b`. Intended for callers that
+    /// want to pass the buffer refs to `*_chain` dispatch entries.
+    #[allow(dead_code)]
+    pub fn chain_buffer(&self, slot_a: bool) -> &wgpu::Buffer {
+        if slot_a {
+            self.buf_a.as_ref().expect("ensure_chain_buffers must be called first")
+        } else {
+            self.buf_b.as_ref().expect("ensure_chain_buffers must be called first")
+        }
+    }
+
     /// Apply a chain of effects on the GPU. Returns the processed RGBA data.
     pub fn apply_effects(
         &mut self,

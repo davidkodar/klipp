@@ -152,6 +152,12 @@ impl GraphExecutor {
     /// buffer is 4 f32 per pixel, RGBA interleaved, alpha linear. Returns
     /// (final graded frame, optional tapped node output for scopes), both in
     /// the same linear-light representation.
+    ///
+    /// Consecutive single-input filter nodes that have a GPU implementation
+    /// are collapsed into a GPU-resident chain: one upload at the head, one
+    /// download at the tail, ping-pong between `buf_a`/`buf_b` in between.
+    /// This is the dominant cost of interactive colour grading — every
+    /// saved download is a ~15-20 ms sync fence on NVIDIA Vulkan.
     #[allow(clippy::too_many_arguments)]
     pub fn execute_linear(
         &mut self,
@@ -167,14 +173,28 @@ impl GraphExecutor {
         // 1. Topological sort
         let order = graph.topo_sort()?;
 
+        // Pre-compute fan-out count per source node. A node whose output
+        // is consumed more than once can't be absorbed into a chain (its
+        // pre-download value is needed by at least one other path), so we
+        // break the chain after it.
+        let mut fan_out: HashMap<NodeId, usize> = HashMap::new();
+        for edge in &graph.edges {
+            *fan_out.entry(edge.from_node).or_insert(0) += 1;
+        }
+
         // 2. Map: NodeId → linear-light output buffer (Arc-shared for zero-copy
         //    passthrough of bypassed / default-param nodes).
         let mut node_outputs: HashMap<NodeId, Arc<Vec<f32>>> = HashMap::new();
         let mut tapped_output: Option<Arc<Vec<f32>>> = None;
 
-        // Helper: resolve a node's primary input as an Arc (source frame if
-        // unconnected or upstream output missing).
-        // Inlined below so we don't need to plumb an extra borrow through.
+        // ── GPU chain state ────────────────────────────────────────────
+        //
+        // Between nodes we may carry the "current" frame in a GPU storage
+        // buffer instead of downloading to CPU. `chain_tail` names the
+        // node whose output currently lives in GPU memory; `chain_slot_a`
+        // tracks which ping-pong slot holds it (true = buf_a).
+        let mut chain_tail: Option<NodeId> = None;
+        let mut chain_slot_a: bool = true;
 
         // 3. Execute nodes in topo order
         for node_id in order {
@@ -210,8 +230,51 @@ impl GraphExecutor {
             );
             let bypass = !node.enabled
                 || (is_param_driven_filter && node.params.is_default());
+
+            // If a chain is live, see whether this node can extend it or
+            // whether we must flush the tail back to CPU first.
+            let primary_input_id = graph.input_of(node_id, 0);
+            let primary_is_chain_tail = chain_tail.is_some() && primary_input_id == chain_tail;
+            // The chain tail's fan-out must be 1 for the chain to extend
+            // past it (more consumers would need a CPU copy anyway, so
+            // extending only delays the inevitable download).
+            let chain_tail_fan_out_one = chain_tail
+                .map(|id| fan_out.get(&id).copied().unwrap_or(0) <= 1)
+                .unwrap_or(true);
+            let can_extend_chain = !bypass
+                && primary_is_chain_tail
+                && chain_tail_fan_out_one
+                && self.node_supports_gpu_chain(&node.kind, &node.params)
+                && Some(node_id) != matte_preview_node
+                && Some(node_id) != matte_tap;
+
+            // If a chain is live and this node can't extend it, flush
+            // before proceeding. This covers:
+            //   - bypass / default-param nodes consuming the chain tail
+            //   - Output node (terminal)
+            //   - matte generators + multi-input nodes (CombineMattes,
+            //     ApplyMatte, Blend, Layer, Mask, Qualifier) which either
+            //     touch GPU state directly or speak u8
+            //   - chain tail with fan-out > 1 (output read elsewhere)
+            //
+            // We also flush if the current node is unrelated (doesn't
+            // consume the chain tail) because GPU-based matte / scope ops
+            // may clobber buf_a/buf_b mid-chain. Correctness > perf for
+            // the rare branching case; the common linear grade chain
+            // never triggers this.
+            if chain_tail.is_some() && !can_extend_chain {
+                self.flush_chain(
+                    &mut chain_tail,
+                    chain_slot_a,
+                    width,
+                    height,
+                    &mut node_outputs,
+                    matte_tap,
+                    &mut tapped_output,
+                );
+            }
+
             if bypass && node.kind != NodeKind::Source && node.kind != NodeKind::Output {
-                let primary_input_id = graph.input_of(node_id, 0);
                 let passthrough = primary_input_id
                     .and_then(|id| node_outputs.get(&id))
                     .cloned()
@@ -224,7 +287,87 @@ impl GraphExecutor {
                 continue;
             }
 
-            // Resolve inputs — borrow as slices from Arc-held buffers
+            // Evaluate keyframes — override params at current clip time
+            let mut params = node.params.clone();
+            for (param_name, value) in node.keyframes.evaluate_all(clip_time_secs) {
+                params.apply_override(&param_name, value);
+            }
+
+            // ── GPU chain fast-path ────────────────────────────────────
+            // Does this node extend an active chain? If so, dispatch on
+            // the GPU-resident buffer pair and leave the result on the
+            // GPU. Re-check `can_extend_chain` against the evaluated
+            // params — a keyframe may have flipped ColorWheels into
+            // log-mode (CPU-only), which we can't dispatch.
+            if can_extend_chain
+                && self.node_supports_gpu_chain(&node.kind, &params)
+                && self.gpu.is_some()
+            {
+                // Current input lives in the slot named by chain_slot_a.
+                // Dispatch reads from that slot, writes to the opposite.
+                if self.dispatch_chain_node_slots(
+                    node_id, &node.kind, &params, width, height, frame_number,
+                    /* in_is_a = */ chain_slot_a,
+                ) {
+                    chain_slot_a = !chain_slot_a;
+                    chain_tail = Some(node_id);
+                    // Record a sentinel in node_outputs so downstream
+                    // lookups know this ID exists, but leave the real
+                    // bytes in GPU. We never read this back while the
+                    // chain is live — only after a flush is triggered.
+                    // Inserting an empty Arc<Vec<f32>> is cheap and lets
+                    // us distinguish "node ran" from "node missing".
+                    node_outputs.insert(node_id, Arc::new(Vec::new()));
+                    continue;
+                }
+                // If dispatch_chain_node reports it couldn't run (rare —
+                // unexpected param shape, or device-lost fallback), fall
+                // through to the CPU-resident path. Flush chain first.
+                self.flush_chain(
+                    &mut chain_tail,
+                    chain_slot_a,
+                    width,
+                    height,
+                    &mut node_outputs,
+                    matte_tap,
+                    &mut tapped_output,
+                );
+            }
+
+            // Try to START a new chain from this node. Needs: GPU
+            // available, node whitelisted + effective + not matte preview,
+            // primary input resolved from a CPU-resident Vec (or source).
+            let can_start_chain = self.gpu.is_some()
+                && !bypass
+                && self.node_supports_gpu_chain(&node.kind, &params)
+                && Some(node_id) != matte_preview_node
+                && Some(node_id) != matte_tap;
+            if can_start_chain {
+                let primary_cpu: &[f32] = primary_input_id
+                    .and_then(|id| node_outputs.get(&id))
+                    .filter(|arc| !arc.is_empty())
+                    .map(|arc| arc.as_slice())
+                    .unwrap_or(source_frame);
+                if self.start_chain(
+                    node_id,
+                    &node.kind,
+                    &params,
+                    primary_cpu,
+                    width,
+                    height,
+                    frame_number,
+                ) {
+                    chain_tail = Some(node_id);
+                    chain_slot_a = false; // output landed in buf_b
+                    node_outputs.insert(node_id, Arc::new(Vec::new()));
+                    continue;
+                }
+            }
+
+            // ── CPU / unchained path ────────────────────────────────────
+            // Resolve inputs — borrow as slices from Arc-held buffers.
+            // (The chain path above guarantees no sentinel-empty Arcs are
+            // ever read here: we always flushed before falling through.)
             let primary = graph
                 .input_of(node_id, 0)
                 .and_then(|id| node_outputs.get(&id));
@@ -235,15 +378,16 @@ impl GraphExecutor {
                 .input_of(node_id, 2)
                 .and_then(|id| node_outputs.get(&id));
 
-            let primary_slice = primary.map(|v| v.as_slice()).unwrap_or(source_frame);
-            let secondary_slice = secondary.map(|v| v.as_slice());
-            let tertiary_slice = tertiary.map(|v| v.as_slice());
-
-            // Evaluate keyframes — override params at current clip time
-            let mut params = node.params.clone();
-            for (param_name, value) in node.keyframes.evaluate_all(clip_time_secs) {
-                params.apply_override(&param_name, value);
-            }
+            let primary_slice = primary
+                .filter(|arc| !arc.is_empty())
+                .map(|v| v.as_slice())
+                .unwrap_or(source_frame);
+            let secondary_slice = secondary
+                .filter(|arc| !arc.is_empty())
+                .map(|v| v.as_slice());
+            let tertiary_slice = tertiary
+                .filter(|arc| !arc.is_empty())
+                .map(|v| v.as_slice());
 
             // Execute the node
             let output = self.execute_node(
@@ -281,6 +425,20 @@ impl GraphExecutor {
             node_outputs.insert(node_id, output_arc);
         }
 
+        // Flush any residual chain (e.g. the chain tail feeds directly
+        // into the Output node and we never hit a non-chain break).
+        if chain_tail.is_some() {
+            self.flush_chain(
+                &mut chain_tail,
+                chain_slot_a,
+                width,
+                height,
+                &mut node_outputs,
+                matte_tap,
+                &mut tapped_output,
+            );
+        }
+
         // 4. Return the output node's input. Unwrap the Arc when we hold the
         //    sole reference to avoid a clone — falls back to clone only if
         //    another holder (e.g. a downstream passthrough) still has it.
@@ -296,6 +454,386 @@ impl GraphExecutor {
             tapped_output.map(|a| Arc::try_unwrap(a).unwrap_or_else(|a| (*a).clone()));
 
         Ok((result, tapped_vec))
+    }
+
+    /// Returns true if this (kind, params) pair has a GPU-resident chain
+    /// dispatch entry. Must be a single-input filter kind and produce a
+    /// non-degenerate GPU dispatch — kinds that pass the frame through
+    /// without touching the GPU (e.g. `ColorMatch`, `ColorWheels` in log
+    /// mode) return false so we break the chain instead.
+    fn node_supports_gpu_chain(&self, kind: &NodeKind, params: &NodeParams) -> bool {
+        if self.gpu.is_none() {
+            return false;
+        }
+        match kind {
+            NodeKind::InputTransform => {
+                if let Some(fmt) = params.log_format {
+                    use klipp_core::LogFormat;
+                    !matches!(fmt, LogFormat::Srgb | LogFormat::Linear)
+                } else {
+                    false
+                }
+            }
+            NodeKind::Exposure => params.exposure.unwrap_or(0.0) != 0.0,
+            NodeKind::Contrast => {
+                params.contrast.unwrap_or(0.0) != 0.0 || params.clarity.unwrap_or(0.0) != 0.0
+            }
+            NodeKind::Saturation => {
+                params.saturation.unwrap_or(1.0) != 1.0 || params.vibrance.unwrap_or(0.0) != 0.0
+            }
+            NodeKind::ToneControls => {
+                let hi = params.highlights.unwrap_or(0.0);
+                let sh = params.shadows.unwrap_or(0.0);
+                let wh = params.whites.unwrap_or(0.0);
+                let bl = params.blacks.unwrap_or(0.0);
+                hi != 0.0 || sh != 0.0 || wh != 0.0 || bl != 0.0
+            }
+            NodeKind::ColorWheels => {
+                // Log-mode wheels have no GPU shader — keep them on CPU.
+                !params.wheels_log_mode.unwrap_or(false)
+            }
+            NodeKind::WheelSatBri => true,
+            NodeKind::RGBCurves => params
+                .curves
+                .as_ref()
+                .map_or(false, |c| !is_curves_identity(c)),
+            NodeKind::HueSatCurves => params
+                .huesat
+                .as_ref()
+                .map_or(false, |h| !h.is_all_identity()),
+            NodeKind::ColorBalance => true,
+            NodeKind::Lut3D => params.lut_path.is_some(),
+            NodeKind::FilmGrain => params
+                .grain
+                .as_ref()
+                .map_or(false, |g| g.enabled && g.amount > 0.001),
+            NodeKind::ColorMatch => false, // current impl is pass-through
+            NodeKind::ColorWarper => params
+                .warper_params
+                .as_ref()
+                .map_or(false, |w| !w.is_identity()),
+            NodeKind::Denoise => {
+                params.denoise_luma.unwrap_or(0.0) > 0.0
+                    || params.denoise_chroma.unwrap_or(0.0) > 0.0
+            }
+            _ => false,
+        }
+    }
+
+    /// Start a new GPU chain: upload `primary_input` to `buf_a`, dispatch
+    /// this first node into `buf_b`. Returns true on success; false if
+    /// the node's GPU dispatch wasn't available (caller falls back).
+    fn start_chain(
+        &mut self,
+        node_id: NodeId,
+        kind: &NodeKind,
+        params: &NodeParams,
+        primary_input: &[f32],
+        width: u32,
+        height: u32,
+        frame_number: u64,
+    ) -> bool {
+        let gpu = match &mut self.gpu {
+            Some(g) => g,
+            None => return false,
+        };
+        if gpu.is_device_lost() {
+            return false;
+        }
+        let byte_size = (width as u64) * (height as u64) * 16;
+        gpu.ensure_chain_buffers(byte_size);
+        gpu.upload_chain_input_linear(primary_input);
+        // Dispatch this node with in = buf_a, out = buf_b.
+        self.dispatch_chain_node_slots(node_id, kind, params, width, height, frame_number, /* in_is_a */ true)
+    }
+
+    /// Dispatch-only chain step with explicit slot selection.
+    fn dispatch_chain_node_slots(
+        &mut self,
+        node_id: NodeId,
+        kind: &NodeKind,
+        params: &NodeParams,
+        width: u32,
+        height: u32,
+        frame_number: u64,
+        in_is_a: bool,
+    ) -> bool {
+        let gpu = match &mut self.gpu {
+            Some(g) => g,
+            None => return false,
+        };
+        if gpu.is_device_lost() {
+            return false;
+        }
+
+        // Dispatch-only entries take `in_is_a`: they pick the in/out
+        // buffer refs internally and ping-pong between buf_a/buf_b. We
+        // don't need to clone buffer handles here (wgpu::Buffer is not
+        // Clone anyway).
+        let _ = gpu; // borrow released for the match arms below
+
+        match kind {
+            NodeKind::InputTransform => {
+                let Some(fmt) = params.log_format else { return false };
+                use klipp_core::LogFormat;
+                if matches!(fmt, LogFormat::Srgb | LogFormat::Linear) {
+                    return false;
+                }
+                let lut = klipp_color::build_input_transform_lut(fmt);
+                self.gpu.as_mut().unwrap()
+                    .apply_input_transform_chain(in_is_a, width, height, &lut);
+                true
+            }
+            NodeKind::Exposure => {
+                let exp = params.exposure.unwrap_or(0.0);
+                if exp == 0.0 { return false; }
+                self.gpu.as_mut().unwrap().apply_color_grade_chain(
+                    in_is_a, width, height,
+                    exp, 0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0, 0.0,
+                    (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                    0.0, 1.0,
+                );
+                true
+            }
+            NodeKind::Contrast => {
+                let con = params.contrast.unwrap_or(0.0);
+                let clarity = params.clarity.unwrap_or(0.0);
+                if con == 0.0 && clarity == 0.0 { return false; }
+                // Contrast (color_grade) and Clarity (3-pass) both target
+                // the same in/out slot. Running both would leave output
+                // in the wrong slot or require a buf copy — fall back to
+                // the non-chain path when both are active.
+                if con != 0.0 && clarity != 0.0 {
+                    return false;
+                }
+                if con != 0.0 {
+                    self.gpu.as_mut().unwrap().apply_color_grade_chain(
+                        in_is_a, width, height,
+                        0.0, con, 1.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0, 0.0,
+                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                        0.0, 1.0,
+                    );
+                } else {
+                    self.gpu.as_mut().unwrap()
+                        .apply_clarity_chain(in_is_a, width, height, clarity);
+                }
+                true
+            }
+            NodeKind::Saturation => {
+                let sat = params.saturation.unwrap_or(1.0);
+                let vib = params.vibrance.unwrap_or(0.0);
+                if sat == 1.0 && vib == 0.0 { return false; }
+                // Single-sub-effect constraint, same rationale as Contrast.
+                if sat != 1.0 && vib != 0.0 {
+                    return false;
+                }
+                if sat != 1.0 {
+                    self.gpu.as_mut().unwrap().apply_color_grade_chain(
+                        in_is_a, width, height,
+                        0.0, 0.0, sat, 0.0, 0.0,
+                        0.0, 0.0, 0.0, 0.0,
+                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                        0.0, 1.0,
+                    );
+                } else {
+                    self.gpu.as_mut().unwrap()
+                        .apply_vibrance_chain(in_is_a, width, height, vib);
+                }
+                true
+            }
+            NodeKind::ToneControls => {
+                let hi = params.highlights.unwrap_or(0.0);
+                let sh = params.shadows.unwrap_or(0.0);
+                let wh = params.whites.unwrap_or(0.0);
+                let bl = params.blacks.unwrap_or(0.0);
+                if hi == 0.0 && sh == 0.0 && wh == 0.0 && bl == 0.0 { return false; }
+                self.gpu.as_mut().unwrap().apply_color_grade_chain(
+                    in_is_a, width, height,
+                    0.0, 0.0, 1.0, 0.0, 0.0,
+                    hi, sh, wh, bl,
+                    (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                    0.0, 1.0,
+                );
+                true
+            }
+            NodeKind::ColorWheels => {
+                if params.wheels_log_mode.unwrap_or(false) { return false; }
+                let lift = klipp_color::wheel_offset_to_rgb(
+                    params.lift_x.unwrap_or(0.0),
+                    params.lift_y.unwrap_or(0.0),
+                    params.lift_master.unwrap_or(0.0),
+                );
+                let gamma = klipp_color::wheel_offset_to_rgb(
+                    params.gamma_x.unwrap_or(0.0),
+                    params.gamma_y.unwrap_or(0.0),
+                    params.gamma_master.unwrap_or(0.0),
+                );
+                let gain = klipp_color::wheel_offset_to_rgb(
+                    params.gain_x.unwrap_or(0.0),
+                    params.gain_y.unwrap_or(0.0),
+                    params.gain_master.unwrap_or(0.0),
+                );
+                let offset = klipp_color::wheel_offset_to_rgb(
+                    params.offset_x.unwrap_or(0.0),
+                    params.offset_y.unwrap_or(0.0),
+                    params.offset_master.unwrap_or(0.0),
+                );
+                self.gpu.as_mut().unwrap().apply_color_grade_chain(
+                    in_is_a, width, height,
+                    0.0, 0.0, 1.0, 0.0, 0.0,
+                    0.0, 0.0, 0.0, 0.0,
+                    lift, gamma, gain, offset,
+                    0.0, 1.0,
+                );
+                true
+            }
+            NodeKind::WheelSatBri => {
+                self.gpu.as_mut().unwrap().apply_wheel_sat_bri_chain(
+                    in_is_a, width, height,
+                    params.lift_sat.unwrap_or(0.0),
+                    params.lift_bri.unwrap_or(0.0),
+                    params.gamma_sat.unwrap_or(0.0),
+                    params.gamma_bri.unwrap_or(0.0),
+                    params.gain_sat.unwrap_or(0.0),
+                    params.gain_bri.unwrap_or(0.0),
+                    params.offset_sat.unwrap_or(0.0),
+                    params.offset_bri.unwrap_or(0.0),
+                );
+                true
+            }
+            NodeKind::RGBCurves => {
+                let Some(curves) = params.curves.as_ref() else { return false };
+                if is_curves_identity(curves) { return false; }
+                // Use pre-built LUTs from prepare_clip() when available.
+                let luts = self
+                    .curve_lut_cache
+                    .get(&node_id)
+                    .cloned()
+                    .unwrap_or_else(|| Arc::new(build_curve_luts(curves)));
+                let mut lut_data = [0.0f32; 1024];
+                for (i, &v) in luts.master.iter().enumerate().take(256) {
+                    lut_data[i] = v as f32 / 255.0;
+                }
+                for (i, &v) in luts.red.iter().enumerate().take(256) {
+                    lut_data[256 + i] = v as f32 / 255.0;
+                }
+                for (i, &v) in luts.green.iter().enumerate().take(256) {
+                    lut_data[512 + i] = v as f32 / 255.0;
+                }
+                for (i, &v) in luts.blue.iter().enumerate().take(256) {
+                    lut_data[768 + i] = v as f32 / 255.0;
+                }
+                let preserve_luma = params.curves_preserve_luma.unwrap_or(false);
+                let mix = params.curves_mix.unwrap_or(1.0);
+                self.gpu.as_mut().unwrap().apply_rgb_curves_chain(
+                    in_is_a, width, height,
+                    &lut_data, preserve_luma, mix,
+                );
+                true
+            }
+            NodeKind::HueSatCurves => {
+                let Some(huesat) = params.huesat.as_ref() else { return false };
+                if huesat.is_all_identity() { return false; }
+                let lut_data = build_huesat_lut_data(huesat);
+                let mix = params.huesat_mix.unwrap_or(1.0);
+                self.gpu.as_mut().unwrap()
+                    .apply_huesat_chain(in_is_a, width, height, mix, &lut_data);
+                true
+            }
+            NodeKind::ColorBalance => {
+                self.gpu.as_mut().unwrap().apply_color_balance_chain(
+                    in_is_a, width, height,
+                    params.temperature.unwrap_or(0.0),
+                    params.tint.unwrap_or(0.0),
+                    params.hue.unwrap_or(0.0),
+                    params.global_mix.unwrap_or(1.0),
+                );
+                true
+            }
+            NodeKind::Lut3D => {
+                let Some(path) = params.lut_path.as_ref() else { return false };
+                let lut = self
+                    .lut_cache
+                    .entry(path.clone())
+                    .or_insert_with(|| {
+                        Arc::new(
+                            klipp_color::load_lut(path)
+                                .unwrap_or(LutData { size: 2, data: vec![0.0; 24] }),
+                        )
+                    })
+                    .clone();
+                let opacity = params.lut_opacity.unwrap_or(1.0);
+                self.gpu.as_mut().unwrap().apply_3d_lut_chain(
+                    in_is_a, width, height,
+                    &lut.data, lut.size as u32, opacity,
+                );
+                true
+            }
+            NodeKind::FilmGrain => {
+                let Some(grain) = params.grain.as_ref() else { return false };
+                if !grain.enabled || grain.amount <= 0.001 { return false; }
+                self.gpu.as_mut().unwrap().apply_grain_chain(
+                    in_is_a, width, height,
+                    grain.amount, grain.size,
+                    grain.shadows, grain.highlights,
+                    grain.monochrome,
+                    frame_number as u32,
+                );
+                true
+            }
+            NodeKind::ColorWarper => {
+                let warper = params.warper_params.clone().unwrap_or_default();
+                if warper.is_identity() { return false; }
+                self.gpu.as_mut().unwrap().apply_color_warper_chain(
+                    in_is_a, width, height,
+                    &warper.hue_shifts, &warper.sat_shifts,
+                );
+                true
+            }
+            NodeKind::Denoise => {
+                let luma = params.denoise_luma.unwrap_or(0.0);
+                let chroma = params.denoise_chroma.unwrap_or(0.0);
+                let radius = params.denoise_radius.unwrap_or(3);
+                if luma <= 0.0 && chroma <= 0.0 { return false; }
+                let spatial_sigma = radius as f32;
+                let color_sigma = (luma + chroma) * 0.5;
+                self.gpu.as_mut().unwrap().apply_denoise_chain(
+                    in_is_a, width, height,
+                    spatial_sigma, color_sigma,
+                );
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Flush the GPU chain: download the buffer identified by `slot_a` and
+    /// store it in `node_outputs` under `chain_tail`'s node ID. Also
+    /// updates `tapped_output` if the tail is the matte tap.
+    fn flush_chain(
+        &mut self,
+        chain_tail: &mut Option<NodeId>,
+        slot_a: bool,
+        width: u32,
+        height: u32,
+        node_outputs: &mut HashMap<NodeId, Arc<Vec<f32>>>,
+        matte_tap: Option<NodeId>,
+        tapped_output: &mut Option<Arc<Vec<f32>>>,
+    ) {
+        let Some(tail_id) = chain_tail.take() else { return };
+        let gpu = match &self.gpu {
+            Some(g) => g,
+            None => return,
+        };
+        let pixel_count = (width as usize) * (height as usize);
+        let linear = gpu.download_chain_output_linear(slot_a, pixel_count);
+        let arc = Arc::new(linear);
+        if Some(tail_id) == matte_tap {
+            *tapped_output = Some(arc.clone());
+        }
+        node_outputs.insert(tail_id, arc);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1471,5 +2009,102 @@ mod tests {
             "exposure +1 should brighten mid-grey: got {:.2}",
             mid[0],
         );
+    }
+
+    // ── GPU-resident chain tests (skipped on machines without wgpu) ──────
+    //
+    // These tests exercise the single-fence chain path end-to-end. They
+    // compare the chain output against the CPU reference implementation.
+    // Difference tolerance is lax (±4 code values) because GPU / CPU
+    // paths quantise f32 math differently.
+
+    #[test]
+    fn chain_single_exposure_matches_cpu() {
+        let mut gpu_executor = GraphExecutor::new();
+        if gpu_executor.gpu.is_none() {
+            // No GPU in this environment (e.g. CI). Skip — the CPU
+            // executor is covered by the other tests in this module.
+            return;
+        }
+        let mut cpu_executor = GraphExecutor::new_cpu_only();
+
+        let mut graph = default_graph();
+        graph.nodes.iter_mut()
+            .find(|n| n.kind == NodeKind::Exposure)
+            .unwrap()
+            .params.exposure = Some(0.75);
+
+        let frame = vec![
+            128u8, 64, 200, 255, 200, 128, 64, 255, 64, 200, 128, 255, 128, 128, 128, 255,
+        ];
+        let (gpu_out, _) = gpu_executor.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+        let (cpu_out, _) = cpu_executor.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+
+        assert_eq!(gpu_out.len(), cpu_out.len());
+        for (i, (g, c)) in gpu_out.iter().zip(cpu_out.iter()).enumerate() {
+            assert!(
+                (*g as i32 - *c as i32).abs() <= 4,
+                "byte {i}: GPU chain {g} vs CPU {c} differ by > 4",
+            );
+        }
+    }
+
+    #[test]
+    fn chain_multi_node_matches_cpu() {
+        let mut gpu_executor = GraphExecutor::new();
+        if gpu_executor.gpu.is_none() {
+            return;
+        }
+        let mut cpu_executor = GraphExecutor::new_cpu_only();
+
+        let mut graph = default_graph();
+        graph.nodes.iter_mut()
+            .find(|n| n.kind == NodeKind::Exposure)
+            .unwrap()
+            .params.exposure = Some(0.5);
+        graph.nodes.iter_mut()
+            .find(|n| n.kind == NodeKind::Saturation)
+            .unwrap()
+            .params.saturation = Some(1.3);
+        graph.nodes.iter_mut()
+            .find(|n| n.kind == NodeKind::ColorBalance)
+            .unwrap()
+            .params.temperature = Some(0.15);
+
+        let frame = vec![
+            100u8, 150, 200, 255, 200, 150, 100, 255, 50, 100, 150, 255, 128, 128, 128, 255,
+        ];
+        let (gpu_out, _) = gpu_executor.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+        let (cpu_out, _) = cpu_executor.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+
+        assert_eq!(gpu_out.len(), cpu_out.len());
+        for (i, (g, c)) in gpu_out.iter().zip(cpu_out.iter()).enumerate() {
+            assert!(
+                (*g as i32 - *c as i32).abs() <= 5,
+                "byte {i}: GPU chain {g} vs CPU {c} differ by > 5",
+            );
+        }
+    }
+
+    #[test]
+    fn chain_default_params_is_identity() {
+        // Confirm chaining doesn't break the is_default() bypass: a graph
+        // with no effective params should still round-trip within ±1
+        // code value.
+        let mut executor = GraphExecutor::new();
+        if executor.gpu.is_none() {
+            return;
+        }
+        let graph = default_graph();
+        let frame = vec![
+            100u8, 50, 200, 255, 150, 100, 50, 255, 200, 150, 100, 255, 50, 200, 150, 255,
+        ];
+        let (result, _) = executor.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+        for (a, b) in frame.iter().zip(result.iter()) {
+            assert!(
+                (*a as i32 - *b as i32).abs() <= 1,
+                "default-param graph should be passthrough: orig {a}, got {b}",
+            );
+        }
     }
 }
