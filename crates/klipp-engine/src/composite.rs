@@ -667,6 +667,20 @@ mod tests {
         vec![r, g, b, a].repeat((w * h) as usize)
     }
 
+    /// Test bridge: u8-in, u8-out wrapper around the post-refactor
+    /// linear-f32 `klipp_effects::apply_effects`. Keeps these viewer
+    /// regression tests meaningful without rewriting each assertion.
+    fn apply_effects_u8(
+        effects: &[klipp_effects::BuiltinEffect],
+        rgba: Vec<u8>,
+        w: u32,
+        h: u32,
+    ) -> Vec<u8> {
+        let linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&rgba);
+        let out = klipp_effects::apply_effects(effects, linear, w, h);
+        klipp_effects::linear_f32_rgba_to_srgb_u8(&out)
+    }
+
     /// Viewer flow: V1 graded + V2 graded → composite.
     /// V1 = solid red + grayscale, V2 = solid blue + half brightness.
     /// Verifies each clip's effects run independently before compositing.
@@ -677,7 +691,7 @@ mod tests {
 
         // V1: solid red → grayscale via HSVAdjust(sat=0)
         let v1_raw = solid_frame(255, 0, 0, 255, w, h);
-        let v1_graded = klipp_effects::apply_effects(
+        let v1_graded = apply_effects_u8(
             &[klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }],
             v1_raw, w, h,
         );
@@ -687,7 +701,7 @@ mod tests {
 
         // V2: solid blue → half brightness via HSVAdjust(value=0.5)
         let v2_raw = solid_frame(0, 0, 255, 255, w, h);
-        let v2_graded = klipp_effects::apply_effects(
+        let v2_graded = apply_effects_u8(
             &[klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 1.0, value: 0.5 }],
             v2_raw, w, h,
         );
@@ -714,7 +728,7 @@ mod tests {
         let w = 4u32;
         let h = 4u32;
 
-        let v1_graded = klipp_effects::apply_effects(
+        let v1_graded = apply_effects_u8(
             &[klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }],
             solid_frame(255, 0, 0, 255, w, h), w, h,
         );
@@ -741,12 +755,12 @@ mod tests {
         let h = 4u32;
 
         // V1: red → grayscale
-        let v1 = klipp_effects::apply_effects(
+        let v1 = apply_effects_u8(
             &[klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }],
             solid_frame(255, 0, 0, 255, w, h), w, h,
         );
         // V2: green → half brightness
-        let v2 = klipp_effects::apply_effects(
+        let v2 = apply_effects_u8(
             &[klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 1.0, value: 0.5 }],
             solid_frame(0, 255, 0, 255, w, h), w, h,
         );
@@ -772,7 +786,7 @@ mod tests {
         let w = 4u32;
         let h = 4u32;
         let raw = solid_frame(100, 150, 200, 255, w, h);
-        let graded = klipp_effects::apply_effects(&[], raw.clone(), w, h);
+        let graded = apply_effects_u8(&[], raw.clone(), w, h);
         assert_eq!(graded, raw, "empty effects should pass through unchanged");
     }
 

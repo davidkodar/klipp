@@ -381,12 +381,16 @@ impl ProcessingStage for BuiltinEffectsStage {
             self.prepare_stabilization(ctx.clip_time_secs);
         }
 
-        // Prefer GPU path
-        if let Some(ref mut gpu) = self.gpu {
-            return gpu.apply_effects(&fx, frame, width, height);
-        }
-
-        // CPU fallback
-        klipp_effects::apply_effects(&fx, frame, width, height)
+        // Export stages speak sRGB u8 at their ProcessingStage trait
+        // boundary; bridge locally to meet the linear-edge-to-edge
+        // signature of `apply_effects`. The export pipeline is not
+        // hot-path perf sensitive, so the round-trip is acceptable.
+        let linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&frame);
+        let out_linear = if let Some(ref mut gpu) = self.gpu {
+            gpu.apply_effects(&fx, linear, width, height)
+        } else {
+            klipp_effects::apply_effects(&fx, linear, width, height)
+        };
+        klipp_effects::linear_f32_rgba_to_srgb_u8(&out_linear)
     }
 }

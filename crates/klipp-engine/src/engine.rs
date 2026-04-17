@@ -1355,7 +1355,13 @@ impl PlaybackEngine {
                     clip_relative_secs,
                     total_secs,
                 );
-                let final_rgba = self.post_process_rgba(rgba, res.width, res.height);
+                // Generator produces sRGB u8; lift to linear at the
+                // caller seam so `post_process_rgba` stays linear-in/
+                // linear-out, then display-transform at the viewer
+                // boundary.
+                let linear = u8_rgba_to_linear(&rgba);
+                let final_linear = self.post_process_rgba(linear, res.width, res.height);
+                let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, res.width, res.height);
                 drop(fb);
@@ -2211,7 +2217,11 @@ impl PlaybackEngine {
                     return;
                 };
 
-                let final_rgba = self.post_process_rgba(rgba, w, h);
+                // u8→linear→post_process→display_transform→u8 at this
+                // title/generator viewer boundary.
+                let linear = u8_rgba_to_linear(&rgba);
+                let final_linear = self.post_process_rgba(linear, w, h);
+                let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, w, h);
                 drop(fb);
@@ -2464,17 +2474,18 @@ impl PlaybackEngine {
         }
 
         // Grade V1's frame through the full processing pipeline (scopes, stabilization,
-        // comparison mode, keyframes, global LUT) BEFORE compositing. V1 keeps its existing
-        // post_process_rgba() path unchanged — only the timing moves from post-composite
-        // to pre-composite so overlays don't get V1's grade applied to them.
+        // comparison mode, keyframes, global LUT) BEFORE compositing.
+        // `post_process_rgba` is linear-in/linear-out post the linear-
+        // edge-to-edge refactor, and `LinearFrame.data` already sits in
+        // linear — feed it directly, skipping the pre-refactor round-
+        // trip via `frame.into_rgba().to_linear()`.
         let (final_w, final_h) = (frame.width, frame.height);
-        let v1_graded = self.post_process_rgba(frame.into_rgba(), final_w, final_h);
+        let v1_graded_linear = self.post_process_rgba(frame.data, final_w, final_h);
 
         // Composite V1 (graded) + overlay tracks in linear-light f32.
-        // Inputs arrive as sRGB u8 (graded output of apply_clip_effects,
-        // which still runs u8 today — migrates in 10c). We decode to
-        // linear once per layer, blend physically, then sRGB-encode the
-        // final accumulated buffer once at the end.
+        // Every layer is already linear (post_process_rgba, apply_clip_
+        // effects, and LinearFrame all speak linear now), so we blend
+        // without any u8⇄linear seams in the hot loop.
         let t_composite = std::time::Instant::now();
         let v1_opacity = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
@@ -2510,13 +2521,13 @@ impl PlaybackEngine {
             accumulated_linear.fill(0.0);
         }
 
-        // Blend V1 (always the first layer) onto the zero canvas.
+        // Blend V1 (always the first layer) onto the zero canvas. V1
+        // already comes back from post_process_rgba as linear f32.
         {
             let t_blend = std::time::Instant::now();
-            let v1_linear = u8_rgba_to_linear(&v1_graded);
             crate::composite::blend_layer_linear(
                 &mut accumulated_linear,
-                &v1_linear,
+                &v1_graded_linear,
                 v1_opacity,
                 klipp_core::BlendMode::Normal,
             );
@@ -2531,39 +2542,47 @@ impl PlaybackEngine {
         for (track_idx, effective, clip) in &overlay_clip_data {
             if *effective <= 0.001 { continue; }
 
-            // Adjustment layer: apply its effects to the accumulated composite.
-            // apply_clip_effects still runs u8 today — convert linear → u8,
-            // run, convert back. The round-trip cost is acceptable for
-            // adjustment layers (rare, not in playback hot path).
+            // Adjustment layer: apply its effects directly to the
+            // accumulated linear composite — no u8 bookends needed
+            // post-refactor.
             if let Some(clip) = clip {
                 if matches!(clip.kind, klipp_timeline::ClipKind::AdjustmentLayer) {
                     let clip_time = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
-                    let u8_pass = linear_rgba_to_u8(&accumulated_linear);
-                    let u8_result = self.apply_clip_effects(u8_pass, final_w, final_h, clip, clip_time);
-                    accumulated_linear = u8_rgba_to_linear(&u8_result);
+                    let pass = std::mem::take(&mut accumulated_linear);
+                    accumulated_linear = self.apply_clip_effects(pass, final_w, final_h, clip, clip_time);
                     continue;
                 }
             }
 
-            // Regular clip: grade its frame (u8) and blend onto accumulated linear.
+            // Regular clip: grade its linear frame and blend onto
+            // accumulated linear. Dimensions-mismatch scaling is the
+            // one remaining u8 seam inside the compositor because
+            // `image::imageops::resize` is u8-only — pay the round-
+            // trip only when an overlay's source doesn't already
+            // match the sequence size.
             if let Some(ov_frame) = self.overlay_frames.get(track_idx) {
-                let mut ov_rgba = ov_frame.to_rgba();
                 let (ov_w, ov_h) = (ov_frame.width, ov_frame.height);
+                // `overlay_frames` stores sRGB u8 (DecodedFrame) —
+                // decode to linear once per overlay, then stay linear
+                // for the grade + blend.
+                let mut ov_linear = u8_rgba_to_linear(&ov_frame.data);
                 if let Some(clip) = clip {
                     let clip_time = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
-                    ov_rgba = self.apply_clip_effects(ov_rgba, ov_w, ov_h, clip, clip_time);
+                    ov_linear = self.apply_clip_effects(ov_linear, ov_w, ov_h, clip, clip_time);
                 }
-                // Scale if dimensions differ (u8 space, identical pixels to before)
-                let src_u8 = if ov_w == final_w && ov_h == final_h {
-                    ov_rgba
+                let src_linear = if ov_w == final_w && ov_h == final_h {
+                    ov_linear
                 } else {
                     use image::{ImageBuffer, Rgba};
+                    // Resize path: linear → u8 → resize → u8 → linear.
+                    // Inevitable while imageops is u8-only; localised to
+                    // just the mismatched-dim case.
+                    let ov_rgba = linear_rgba_to_u8(&ov_linear);
                     let img = ImageBuffer::<Rgba<u8>, _>::from_raw(ov_w, ov_h, ov_rgba)
                         .unwrap_or_else(|| ImageBuffer::new(final_w, final_h));
                     let scaled = image::imageops::resize(&img, final_w, final_h, image::imageops::FilterType::Triangle);
-                    scaled.into_raw()
+                    u8_rgba_to_linear(&scaled.into_raw())
                 };
-                let src_linear = u8_rgba_to_linear(&src_u8);
                 let t_blend = std::time::Instant::now();
                 crate::composite::blend_layer_linear(
                     &mut accumulated_linear,
@@ -3602,7 +3621,10 @@ impl PlaybackEngine {
             let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
                 let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
             let rgba = self.title_renderer.render_with_gpu(td_for_render, res.width, res.height, gpu);
-            let final_rgba = self.post_process_rgba(rgba, res.width, res.height);
+            // Title renderer emits u8; bridge at this viewer boundary.
+            let linear = u8_rgba_to_linear(&rgba);
+            let final_linear = self.post_process_rgba(linear, res.width, res.height);
+            let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame(final_rgba, res.width, res.height);
             drop(fb);
@@ -3771,7 +3793,9 @@ impl PlaybackEngine {
                 let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
                 let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
                 let rgba = self.title_renderer.render_with_gpu(td_for_render, res.width, res.height, gpu);
-                let final_rgba = self.post_process_rgba(rgba, res.width, res.height);
+                let linear = u8_rgba_to_linear(&rgba);
+                let final_linear = self.post_process_rgba(linear, res.width, res.height);
+                let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, res.width, res.height);
                 drop(fb);
@@ -3808,7 +3832,9 @@ impl PlaybackEngine {
                     let rgba = klipp_core::generator::render_generator(
                         &gen_data, res2.width, res2.height, elapsed_secs, total_secs,
                     );
-                    let final_rgba = self.post_process_rgba(rgba, res2.width, res2.height);
+                    let linear = u8_rgba_to_linear(&rgba);
+                    let final_linear = self.post_process_rgba(linear, res2.width, res2.height);
+                    let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
                     let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                     fb.write_frame(final_rgba, res2.width, res2.height);
                     drop(fb);
@@ -3995,13 +4021,16 @@ impl PlaybackEngine {
     fn step_frame(&mut self, direction: i64) {
         let target_frame = self.playhead.value + direction;
 
-        // Check frame cache first (works for both forward AND backward)
+        // Check frame cache first (works for both forward AND backward).
+        // The cache stores sRGB u8 — bridge at this viewer seam.
         if let Some((rgba_arc, w, h)) = self.frame_cache.get(target_frame) {
             let rgba = rgba_arc.as_ref().clone();
             self.playhead = RationalTime { value: target_frame, rate: self.playhead.rate };
-            let rgba = self.post_process_rgba(rgba, w, h);
+            let linear = u8_rgba_to_linear(&rgba);
+            let final_linear = self.post_process_rgba(linear, w, h);
+            let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            fb.write_frame(rgba, w, h);
+            fb.write_frame(final_rgba, w, h);
             drop(fb);
             let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
             let _ = self.event_tx.send(AppEvent::FrameReady);
@@ -4034,12 +4063,15 @@ impl PlaybackEngine {
                 }
                 drop(seq);
                 let (w, h) = (frame.width, frame.height);
-                let rgba = frame.to_rgba();
-                // Cache pre-grade frame for backward stepping
-                self.frame_cache.insert(self.playhead.value, Arc::new(rgba.clone()), w, h);
-                let rgba = self.post_process_rgba(rgba, w, h);
+                // Cache pre-grade frame as u8 for backward stepping
+                // (frame_cache stores u8). Feed linear straight into
+                // post_process_rgba so the hot path stays in linear.
+                let rgba_u8 = linear_rgba_to_u8(&frame.data);
+                self.frame_cache.insert(self.playhead.value, Arc::new(rgba_u8), w, h);
+                let final_linear = self.post_process_rgba(frame.data, w, h);
+                let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                fb.write_frame(rgba, w, h);
+                fb.write_frame(final_rgba, w, h);
                 drop(fb);
                 // Frame step chirp (~20ms). Chirps on a scrub are gated on
                 // the scrub-audio preference; non-scrub frame steps keep theirs.
@@ -4090,12 +4122,14 @@ impl PlaybackEngine {
                     drop(seq);
 
                     let (w, h) = (frame.width, frame.height);
-                    let rgba = frame.to_rgba();
-                    // Cache pre-grade frame for backward stepping
-                    self.frame_cache.insert(self.playhead.value, Arc::new(rgba.clone()), w, h);
-                    let rgba = self.post_process_rgba(rgba, w, h);
+                    // Cache pre-grade frame as u8 for backward
+                    // stepping; post_process_rgba stays linear.
+                    let rgba_u8 = linear_rgba_to_u8(&frame.data);
+                    self.frame_cache.insert(self.playhead.value, Arc::new(rgba_u8), w, h);
+                    let final_linear = self.post_process_rgba(frame.data, w, h);
+                    let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
                     let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                    fb.write_frame(rgba, w, h);
+                    fb.write_frame(final_rgba, w, h);
                     drop(fb);
                     // Frame step chirp (~20ms). Same gating as the primary
                     // frame-step path above — skip during a silenced scrub.
@@ -4146,7 +4180,6 @@ impl PlaybackEngine {
                 if let Some(frame) = popped {
                     if frame.is_eof { break; }
                     let (w, h) = (frame.width, frame.height);
-                    let rgba = frame.to_rgba();
 
                     // Compute frame number from PTS
                     let frame_num = {
@@ -4165,16 +4198,20 @@ impl PlaybackEngine {
                         }
                     };
 
-                    // Cache the pre-grade frame
-                    self.frame_cache.insert(frame_num, Arc::new(rgba.clone()), w, h);
+                    // Cache the pre-grade frame as u8 for backward
+                    // stepping; the display path stays in linear until
+                    // the viewer seam below.
+                    let rgba_u8 = linear_rgba_to_u8(&frame.data);
+                    self.frame_cache.insert(frame_num, Arc::new(rgba_u8), w, h);
 
                     // When we reach the target frame, display it
                     if frame_num >= target_frame && !found_target {
                         found_target = true;
                         self.playhead = RationalTime { value: frame_num, rate: self.playhead.rate };
-                        let rgba = self.post_process_rgba(rgba, w, h);
+                        let final_linear = self.post_process_rgba(frame.data, w, h);
+                        let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
                         let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                        fb.write_frame(rgba, w, h);
+                        fb.write_frame(final_rgba, w, h);
                         drop(fb);
                         let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                         let _ = self.event_tx.send(AppEvent::FrameReady);
@@ -4274,14 +4311,20 @@ impl PlaybackEngine {
             if self.render_cache_hot.get(&key).is_some() { continue; }
             if self.render_cache_disk.get(&key).is_some() { continue; }
 
-            // Check if we have the pre-grade frame in the decode cache
+            // Check if we have the pre-grade frame in the decode cache.
+            // `frame_cache` stores sRGB u8 and both render caches do
+            // too — bridge around `post_process_rgba_inner`, which is
+            // linear-in/linear-out post the linear-edge-to-edge
+            // refactor.
             if let Some((rgba_arc, w, h)) = self.frame_cache.get(frame_num) {
                 let rgba = rgba_arc.as_ref().clone();
                 // Save/restore playhead so grading evaluates at the right time
                 let saved_playhead = self.playhead;
                 self.playhead = klipp_core::RationalTime { value: frame_num, rate: self.playhead.rate };
 
-                let graded = self.post_process_rgba_inner(rgba, w, h);
+                let linear = u8_rgba_to_linear(&rgba);
+                let graded_linear = self.post_process_rgba_inner(linear, w, h);
+                let graded = linear_rgba_to_u8(&graded_linear);
 
                 self.render_cache_hot.insert(key.clone(), graded.clone(), w, h);
                 self.render_cache_disk.put(&key, &graded, w, h);
@@ -4438,10 +4481,13 @@ impl PlaybackEngine {
             });
             if let Some(frame) = best {
                 let (w, h) = (frame.width, frame.height);
-                let rgba = frame.to_rgba();
-                let rgba = self.post_process_rgba(rgba, w, h);
+                // LinearFrame carries linear natively — feed it
+                // straight into post_process_rgba, display-transform
+                // once at the viewer seam.
+                let final_linear = self.post_process_rgba(frame.data, w, h);
+                let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                fb.write_frame(rgba, w, h);
+                fb.write_frame(final_rgba, w, h);
                 drop(fb);
                 let _ = self.event_tx.send(AppEvent::FrameReady);
                 if let Some(dec) = &self.v1_decoder {
@@ -4668,23 +4714,25 @@ impl PlaybackEngine {
     /// mode, or global LUT. V1 continues to use post_process_rgba_inner() for those.
     fn apply_clip_effects(
         &mut self,
-        rgba: Vec<u8>,
+        linear_rgba: Vec<f32>,
         width: u32,
         height: u32,
         clip: &klipp_timeline::Clip,
         clip_time_secs: f64,
-    ) -> Vec<u8> {
-        // 1. Node graph (color grade)
+    ) -> Vec<f32> {
+        // 1. Node graph (color grade) — takes linear natively via
+        //    `execute_linear`, skipping the u8 round-trip that
+        //    `execute` would otherwise introduce.
         let rgba = if !clip.node_graph.is_identity() {
             self.graph_executor.prepare_clip(&clip.node_graph);
             let frame_number = (clip_time_secs * self.fps.as_f64()).max(0.0) as u64;
-            match self.graph_executor.execute(
-                &rgba, &clip.node_graph, width, height, clip_time_secs, frame_number, None, None,
+            match self.graph_executor.execute_linear(
+                &linear_rgba, &clip.node_graph, width, height, clip_time_secs, frame_number, None, None,
             ) {
                 Ok((result, _)) => result,
-                Err(e) => { tracing::error!("Overlay node graph failed: {e:?}"); rgba }
+                Err(e) => { tracing::error!("Overlay node graph failed: {e:?}"); linear_rgba }
             }
-        } else { rgba };
+        } else { linear_rgba };
 
         // 2. Builtin effects (GPU preferred, CPU fallback) with keyframe evaluation
         let rgba = if !clip.builtin_effects.is_empty() {
@@ -4840,17 +4888,27 @@ impl PlaybackEngine {
             } else { rgba }
         } else { rgba };
 
-        // 3. OFX effects chain
+        // 3. OFX effects chain — OFX plugins are an external boundary we
+        //    don't control, so they still receive sRGB u8. Bridge
+        //    locally (linear → u8 in, u8 → linear out) and keep the
+        //    round-trip scoped to just the OFX call.
         if !clip.effects.is_empty() {
-            self.ofx_host.apply_effects_chain(&clip.effects, &rgba, width, height, clip_time_secs)
+            let rgba_u8 = klipp_effects::linear_f32_rgba_to_srgb_u8(&rgba);
+            let out_u8 = self.ofx_host.apply_effects_chain(&clip.effects, &rgba_u8, width, height, clip_time_secs);
+            klipp_effects::srgb_u8_to_linear_f32_rgba(&out_u8)
         } else {
             rgba
         }
     }
 
-    fn post_process_rgba(&mut self, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+    fn post_process_rgba(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
         self.ensure_gpu_effects();
-        let rgba_arc = Arc::new(rgba.clone());
+        // The pregrade frame cache, the render cache, and the UI
+        // pregrade_data all still speak sRGB u8 — keep one local bridge
+        // to serve those consumers. This is a single encode per frame
+        // (down from five before the linear-edge-to-edge refactor).
+        let rgba_u8 = linear_rgba_to_u8(&linear_rgba);
+        let rgba_arc = Arc::new(rgba_u8);
         self.cached_pregrade_frame = Some((Arc::clone(&rgba_arc), width, height));
         self.frame_cache.insert(self.playhead.value, Arc::clone(&rgba_arc), width, height);
         {
@@ -4928,16 +4986,20 @@ impl PlaybackEngine {
                         }
                     }
                 }
-                return cached;
+                // Render cache stores u8; callers consume linear.
+                return u8_rgba_to_linear(&cached);
             }
         }
 
-        let result = self.post_process_rgba_inner(rgba, width, height);
+        let result_linear = self.post_process_rgba_inner(linear_rgba, width, height);
 
-        // Store in render cache (both hot and cold)
+        // Store in render cache (both hot and cold) + render the GPU
+        // scope texture. Both speak u8 — one encode at the tail of the
+        // function, matched by one decode at the cache-hit path above.
+        let result_u8 = linear_rgba_to_u8(&result_linear);
         if let Some(key) = cache_key {
-            self.render_cache_hot.insert(key.clone(), result.clone(), width, height);
-            self.render_cache_disk.put(&key, &result, width, height);
+            self.render_cache_hot.insert(key.clone(), result_u8.clone(), width, height);
+            self.render_cache_disk.put(&key, &result_u8, width, height);
         }
 
         // Render GPU scope texture from the graded frame. Modes with
@@ -4949,9 +5011,9 @@ impl PlaybackEngine {
             let scope_h = 256u32;
             let mode = self.scope_render_mode;
             let tex = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
-                GpuScopeKind::Waveform => gpu.render_scope_waveform(&result, width, height, scope_w, scope_h),
-                GpuScopeKind::Parade => gpu.render_scope_parade(&result, width, height, scope_w, scope_h),
-                GpuScopeKind::Histogram => gpu.render_scope_histogram(&result, width, height, scope_w, scope_h),
+                GpuScopeKind::Waveform => gpu.render_scope_waveform(&result_u8, width, height, scope_w, scope_h),
+                GpuScopeKind::Parade => gpu.render_scope_parade(&result_u8, width, height, scope_w, scope_h),
+                GpuScopeKind::Histogram => gpu.render_scope_histogram(&result_u8, width, height, scope_w, scope_h),
             });
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             match tex {
@@ -4970,7 +5032,7 @@ impl PlaybackEngine {
             }
         }
 
-        result
+        result_linear
     }
 
     /// Re-grade the cached pre-grade frame without re-decoding.
@@ -4979,21 +5041,19 @@ impl PlaybackEngine {
         self.ensure_gpu_effects();
         // Case 1: V1 video exists — regrade and composite with overlay(s)
         if let Some((ref rgba_arc, w, h)) = self.cached_pregrade_frame.clone() {
-            let mut out = self.post_process_rgba_inner(rgba_arc.as_ref().clone(), w, h);
+            // cached_pregrade_frame stores sRGB u8 — decode once here
+            // so the grade + composite run in linear.
+            let linear_in = u8_rgba_to_linear(rgba_arc.as_ref());
+            let graded_linear = self.post_process_rgba_inner(linear_in, w, h);
 
             // Composite overlay frames (titles etc.) over V1, in track order.
             // Effective opacity = track.opacity * clip-level opacity (with keyframes/modifiers).
             // Evaluating here means paused opacity drags update the visible composite.
             let has_overlays = !self.overlay_frames.is_empty();
-            if has_overlays {
-                // Linear-light composite: each u8 layer decodes to linear
-                // once, `composite_layers_linear` blends physically, and
-                // the final linear buffer sRGB-encodes once for
-                // downstream. Fixes gamma-averaged edges on overlay
-                // composites at the paused-regrade path.
+            let out_u8 = if has_overlays {
                 use crate::composite::{composite_layers_linear, CompositeLayerLinear};
                 let mut layers = vec![CompositeLayerLinear {
-                    rgba: u8_rgba_to_linear(&std::mem::take(&mut out)),
+                    rgba: graded_linear,
                     width: w,
                     height: h,
                     opacity: 1.0,
@@ -5011,7 +5071,7 @@ impl PlaybackEngine {
                             let effective = track.opacity * clip_opacity;
                             if effective > 0.001 {
                                 layers.push(CompositeLayerLinear {
-                                    rgba: u8_rgba_to_linear(&ov_frame.to_rgba()),
+                                    rgba: u8_rgba_to_linear(&ov_frame.data),
                                     width: ov_frame.width,
                                     height: ov_frame.height,
                                     opacity: effective,
@@ -5024,11 +5084,12 @@ impl PlaybackEngine {
                 let linear_out = composite_layers_linear(&layers, w, h);
                 // Display boundary — same tone-map path as the main
                 // playback compositor.
-                out = klipp_color::display::display_transform(
-                    &linear_out,
-                    self.tone_map_op,
-                );
-            }
+                klipp_color::display::display_transform(&linear_out, self.tone_map_op)
+            } else {
+                // No overlays — the single-layer graded frame IS the
+                // output; display_transform at the viewer seam.
+                klipp_color::display::display_transform(&graded_linear, self.tone_map_op)
+            };
 
             // Render GPU scope texture from the graded frame. Modes
             // with no GPU kernel (vectorscope, unknown codes) clear
@@ -5039,9 +5100,9 @@ impl PlaybackEngine {
                 let scope_h = 256u32;
                 let mode = self.scope_render_mode;
                 let tex_opt = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
-                    GpuScopeKind::Waveform => gpu.render_scope_waveform(&out, w, h, scope_w, scope_h),
-                    GpuScopeKind::Parade => gpu.render_scope_parade(&out, w, h, scope_w, scope_h),
-                    GpuScopeKind::Histogram => gpu.render_scope_histogram(&out, w, h, scope_w, scope_h),
+                    GpuScopeKind::Waveform => gpu.render_scope_waveform(&out_u8, w, h, scope_w, scope_h),
+                    GpuScopeKind::Parade => gpu.render_scope_parade(&out_u8, w, h, scope_w, scope_h),
+                    GpuScopeKind::Histogram => gpu.render_scope_histogram(&out_u8, w, h, scope_w, scope_h),
                 });
                 Some((tex_opt, scope_w, scope_h, mode))
             } else {
@@ -5049,7 +5110,7 @@ impl PlaybackEngine {
             };
 
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            fb.write_frame(out, w, h);
+            fb.write_frame(out_u8, w, h);
             if let Some((tex_opt, sw, sh, mode)) = scope_tex {
                 match tex_opt {
                     Some(t) => {
@@ -5106,7 +5167,14 @@ impl PlaybackEngine {
         }
     }
 
-    fn post_process_rgba_inner(&mut self, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+    fn post_process_rgba_inner(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
+        // Through this function `rgba` now names the linear-f32 RGBA
+        // buffer, not the sRGB u8 buffer from before the linear-edge-
+        // to-edge refactor. Each u8 boundary (speed-ramp blend, OFX
+        // plugin chain, global 3D LUT, compare snapshots) bridges
+        // locally and commentarily, keeping the shared node-graph /
+        // builtin-effects spine in linear throughout.
+        let rgba = linear_rgba;
         let t0 = std::time::Instant::now();
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let clip = seq.tracks.get(self.current_track_index)
@@ -5411,7 +5479,10 @@ impl PlaybackEngine {
 
         drop(seq);
 
-        // Save pre-grade frame for Before/After split view
+        // Save pre-grade frame (linear) for Before/After split view.
+        // The frame buffer stores u8 so the u8 encode stays at the
+        // split-view seam below; the snapshot itself is linear to
+        // match the rest of the chain.
         let pre_grade_rgba = if self.bypass_color_grade {
             Some(rgba.clone())
         } else {
@@ -5438,7 +5509,11 @@ impl PlaybackEngine {
         let rgba = if let Some(ref graph) = node_graph {
             if !graph.is_identity() || matte_pv_node.is_some() {
                 let frame_number = (clip_time_secs * self.playhead.rate as f64).max(0.0) as u64;
-                match self.graph_executor.execute(
+                // Use the linear native entry point — the graph
+                // executor operates in linear natively; the old
+                // `execute` wrapper would decode u8→linear then re-
+                // encode on the way back.
+                match self.graph_executor.execute_linear(
                     &rgba,
                     graph,
                     width,
@@ -5449,10 +5524,13 @@ impl PlaybackEngine {
                     matte_pv_node,
                 ) {
                     Ok((result, tapped)) => {
-                        // Store tapped output for scope display
-                        if let Some(tap_data) = tapped {
+                        // Store tapped output for scope display — scope
+                        // consumers still speak u8, so encode at this
+                        // one seam only.
+                        if let Some(tap_linear) = tapped {
+                            let tap_u8 = klipp_effects::linear_f32_rgba_to_srgb_u8(&tap_linear);
                             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                            fb.scope_data = tap_data;
+                            fb.scope_data = tap_u8;
                         }
                         result
                     }
@@ -5472,6 +5550,13 @@ impl PlaybackEngine {
         // 1.5. Speed Ramp — modify effective speed if SpeedRamp effect is present
         // The SpeedRamp effect modifies the clip's playback speed natively, bypassing OFX.
         // Frame blending uses the GPU transition pipeline for smooth interpolation.
+        //
+        // `prev_blend_frame` stays sRGB u8: the slow-motion crossfade
+        // here is bit-for-bit the pre-refactor math (lerp of two u8
+        // frames clamped to `[0, 255]`). Converting the alpha to linear
+        // would change the blend curve across stops. We bridge at the
+        // entry/exit of this block instead — one decode + one encode —
+        // to preserve the original behaviour exactly.
         let speed_ramp = builtin_fx.iter().find_map(|e| match e {
             klipp_effects::BuiltinEffect::SpeedRamp { speed, blend_mode, reverse, freeze, freeze_at, .. } => {
                 Some((*speed, *blend_mode, *reverse, *freeze, *freeze_at))
@@ -5489,24 +5574,19 @@ impl PlaybackEngine {
                 && self.prev_blend_dims == (width, height)
                 && rgba.len() == width as usize * height as usize * 4
             {
-                // Linear frame blending for slow-motion (blend_mode == 1).
-                // Fractional frame position = frac(source_secs * fps) — moves
-                // smoothly through 0..1 when frames are held across multiple
-                // display ticks, giving a smooth crossfade between the previous
-                // and current decoded frames. blend_mode == 2 (optical flow) is
-                // intentionally not implemented here.
+                // u8 boundary: decode this frame, blend against the u8
+                // prev frame, re-encode. Pre-refactor-identical math.
+                let mut cur_u8 = linear_rgba_to_u8(&rgba);
                 let source_secs = self.master_clock.current_secs();
                 let frac = (source_secs * self.fps.rate() as f64).fract();
                 let alpha = frac.clamp(0.0, 1.0) as f32;
                 let inv_alpha = 1.0 - alpha;
-                // Safe: prev_blend_frame.is_some() checked above.
                 let prev = self.prev_blend_frame.as_ref().unwrap();
-                if prev.len() == rgba.len() {
-                    let mut out = rgba;
-                    for (o, p) in out.iter_mut().zip(prev.iter()) {
+                if prev.len() == cur_u8.len() {
+                    for (o, p) in cur_u8.iter_mut().zip(prev.iter()) {
                         *o = (*p as f32 * inv_alpha + *o as f32 * alpha).clamp(0.0, 255.0) as u8;
                     }
-                    out
+                    u8_rgba_to_linear(&cur_u8)
                 } else {
                     // Length mismatch (e.g. stride) — skip blend defensively.
                     rgba
@@ -5521,11 +5601,12 @@ impl PlaybackEngine {
             rgba
         };
 
-        // Cache this frame as the blend source for the next tick. Only track
-        // when the SpeedRamp effect is present — avoids a per-frame clone cost
-        // on clips with no time-remap work to do.
-        if speed_ramp.is_some() && rgba.len() == width as usize * height as usize * 4 {
-            self.prev_blend_frame = Some(rgba.clone());
+        // Cache this frame (as u8) as the blend source for the next
+        // tick. Only track when the SpeedRamp effect is present —
+        // avoids a per-frame clone cost on clips with no time-remap
+        // work to do.
+        if speed_ramp.is_some() && rgba.len() == (width as usize * height as usize * 4) {
+            self.prev_blend_frame = Some(linear_rgba_to_u8(&rgba));
             self.prev_blend_dims = (width, height);
         } else if speed_ramp.is_none() && self.prev_blend_frame.is_some() {
             // Free memory when the effect is removed.
@@ -5535,6 +5616,8 @@ impl PlaybackEngine {
 
         // Per-effect compare (OFX branch): snapshot before the OFX chain
         // runs so we can re-apply the chain with the target bypassed.
+        // Snapshot is linear, matching the rest of the chain; the OFX
+        // compare replay below bridges at the plugin call.
         let effect_compare_ofx_active = self.compare_effect_active
             && self.compare_effect_is_ofx
             && current_clip_id == self.compare_effect_clip_id;
@@ -5543,8 +5626,13 @@ impl PlaybackEngine {
         } else { None };
 
         // 2. OFX effects chain (with temporal clip access for Retime/SlitScan/etc.)
+        //
+        // OFX plugins are an external boundary we don't control, so
+        // they still receive sRGB u8. Bridge locally: linear→u8 in,
+        // u8→linear out.
         let frame_time = self.playhead.to_secs_f64();
         let rgba = if !ofx_effects.is_empty() {
+            let rgba_u8 = linear_rgba_to_u8(&rgba);
             // Check if any OFX effect needs temporal clip access (Retime, SlitScan, etc.)
             let needs_temporal = ofx_effects.iter().any(|e| {
                 e.plugin_name.contains("Retime")
@@ -5555,7 +5643,7 @@ impl PlaybackEngine {
                     || e.plugin_name.contains("TimeBlur")
             });
 
-            if needs_temporal {
+            let out_u8 = if needs_temporal {
                 // Only create temporal decoder for plugins that actually need it
                 let (source_path, clip_source_in) = {
                     let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
@@ -5586,15 +5674,16 @@ impl PlaybackEngine {
                         }
                     });
                     self.ofx_host.apply_effects_chain_temporal(
-                        &ofx_effects, &rgba, width, height, frame_time, frame_provider,
+                        &ofx_effects, &rgba_u8, width, height, frame_time, frame_provider,
                     )
                 } else {
-                    self.ofx_host.apply_effects_chain(&ofx_effects, &rgba, width, height, frame_time)
+                    self.ofx_host.apply_effects_chain(&ofx_effects, &rgba_u8, width, height, frame_time)
                 }
             } else {
                 // No temporal plugins — fast path, no decoder creation
-                self.ofx_host.apply_effects_chain(&ofx_effects, &rgba, width, height, frame_time)
-            }
+                self.ofx_host.apply_effects_chain(&ofx_effects, &rgba_u8, width, height, frame_time)
+            };
+            u8_rgba_to_linear(&out_u8)
         } else { rgba };
         let t3 = std::time::Instant::now();
 
@@ -5682,7 +5771,9 @@ impl PlaybackEngine {
             Some(rgba.clone())
         } else { None };
 
-        // 3. Built-in effects (GPU-accelerated when available, CPU fallback)
+        // 3. Built-in effects (GPU-accelerated when available, CPU fallback).
+        //    Both `gpu.apply_effects` and the CPU fallback now speak
+        //    linear-f32 natively — no u8 round-trip here.
         let rgba = if !builtin_fx.is_empty() {
             if let Some(gpu) = &mut self.gpu_effects {
                 gpu.apply_effects(&builtin_fx, rgba, width, height)
@@ -5692,13 +5783,17 @@ impl PlaybackEngine {
         } else { rgba };
         let t4 = std::time::Instant::now();
 
-        // 4. Global color pipeline (GPU-accelerated 3D LUT when available)
+        // 4. Global color pipeline (GPU-accelerated 3D LUT when available).
+        //    `apply_3d_lut_gpu` and `color_pipeline.process_frame` still
+        //    speak u8; bridge locally and comment the reason.
         let rgba = if self.color_pipeline.enabled {
-            if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
-                gpu.apply_3d_lut_gpu(rgba, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
+            let rgba_u8 = linear_rgba_to_u8(&rgba);
+            let out_u8 = if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
+                gpu.apply_3d_lut_gpu(rgba_u8, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
             } else {
-                self.color_pipeline.process_frame(rgba, width, height)
-            }
+                self.color_pipeline.process_frame(rgba_u8, width, height)
+            };
+            u8_rgba_to_linear(&out_u8)
         } else {
             rgba
         };
@@ -5729,11 +5824,13 @@ impl PlaybackEngine {
                 }
             } else { pre_builtin };
             let r = if self.color_pipeline.enabled {
-                if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
-                    gpu.apply_3d_lut_gpu(r, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
+                let r_u8 = linear_rgba_to_u8(&r);
+                let out_u8 = if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
+                    gpu.apply_3d_lut_gpu(r_u8, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
                 } else {
-                    self.color_pipeline.process_frame(r, width, height)
-                }
+                    self.color_pipeline.process_frame(r_u8, width, height)
+                };
+                u8_rgba_to_linear(&out_u8)
             } else { r };
             Some(r)
         } else { None };
@@ -5758,11 +5855,13 @@ impl PlaybackEngine {
                 // Global color LUT — same pass as the main path so both
                 // halves are pixel-comparable.
                 if self.color_pipeline.enabled {
-                    if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
-                        gpu.apply_3d_lut_gpu(r, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
+                    let r_u8 = linear_rgba_to_u8(&r);
+                    let out_u8 = if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
+                        gpu.apply_3d_lut_gpu(r_u8, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
                     } else {
-                        self.color_pipeline.process_frame(r, width, height)
-                    }
+                        self.color_pipeline.process_frame(r_u8, width, height)
+                    };
+                    u8_rgba_to_linear(&out_u8)
                 } else {
                     r
                 }
@@ -5770,12 +5869,15 @@ impl PlaybackEngine {
         } else if effect_compare_ofx_active {
             pre_ofx_for_compare.as_ref().map(|pre| {
                 // OFX path: re-apply OFX chain with the target bypassed,
-                // then the full builtin chain and LUT.
-                let r = if !compare_ofx_effects.is_empty() {
-                    self.ofx_host.apply_effects_chain(&compare_ofx_effects, pre, width, height, frame_time)
+                // then the full builtin chain and LUT. OFX plugins speak
+                // u8 — bridge.
+                let pre_u8 = linear_rgba_to_u8(pre);
+                let r_u8 = if !compare_ofx_effects.is_empty() {
+                    self.ofx_host.apply_effects_chain(&compare_ofx_effects, &pre_u8, width, height, frame_time)
                 } else {
-                    pre.clone()
+                    pre_u8
                 };
+                let r = u8_rgba_to_linear(&r_u8);
                 let r = if !builtin_fx.is_empty() {
                     if let Some(gpu) = &mut self.gpu_effects {
                         gpu.apply_effects(&builtin_fx, r, width, height)
@@ -5786,11 +5888,13 @@ impl PlaybackEngine {
                     r
                 };
                 if self.color_pipeline.enabled {
-                    if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
-                        gpu.apply_3d_lut_gpu(r, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
+                    let r_u8 = linear_rgba_to_u8(&r);
+                    let out_u8 = if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
+                        gpu.apply_3d_lut_gpu(r_u8, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
                     } else {
-                        self.color_pipeline.process_frame(r, width, height)
-                    }
+                        self.color_pipeline.process_frame(r_u8, width, height)
+                    };
+                    u8_rgba_to_linear(&out_u8)
                 } else {
                     r
                 }
@@ -5799,10 +5903,12 @@ impl PlaybackEngine {
             None
         };
 
-        // Store pre-grade frame in frame buffer for Before/After split
-        if let Some(original) = pre_grade_rgba {
+        // Store pre-grade frame in frame buffer for Before/After split.
+        // `fb.original_data` is u8 sRGB — encode at the seam.
+        if let Some(original_linear) = pre_grade_rgba {
+            let original_u8 = linear_rgba_to_u8(&original_linear);
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            fb.original_data = original;
+            fb.original_data = original_u8;
         } else {
             // Clear original when not in split mode to free memory
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
@@ -5811,11 +5917,11 @@ impl PlaybackEngine {
             }
         }
 
-        // Store unstab frame for stabilization compare split
+        // Store unstab frame for stabilization compare split. `fb.unstab_data` is u8.
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(u) = unstab_rgba {
-                fb.unstab_data = u;
+            if let Some(u_linear) = unstab_rgba {
+                fb.unstab_data = linear_rgba_to_u8(&u_linear);
             } else if !fb.unstab_data.is_empty() {
                 fb.unstab_data = Vec::new();
             }
@@ -5824,8 +5930,8 @@ impl PlaybackEngine {
         // Store per-effect compare frame (or clear when inactive).
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(cmp) = compare_effect_rgba {
-                fb.compare_effect_data = cmp;
+            if let Some(cmp_linear) = compare_effect_rgba {
+                fb.compare_effect_data = linear_rgba_to_u8(&cmp_linear);
             } else if !fb.compare_effect_data.is_empty() {
                 fb.compare_effect_data = Vec::new();
             }

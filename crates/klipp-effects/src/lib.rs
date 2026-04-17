@@ -420,12 +420,71 @@ pub enum BuiltinEffect {
     },
 }
 
-/// Apply a chain of built-in effects to an RGBA frame.
-pub fn apply_effects(effects: &[BuiltinEffect], mut rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+/// sRGB → linear-light (IEC 61966-2-1). Scalar helper mirroring
+/// `klipp_color::transfer::srgb_to_linear` so this crate stays
+/// klipp_color-free. Kept in lock-step with the curve used throughout
+/// the engine.
+#[inline]
+fn srgb_to_linear_scalar(c: f32) -> f32 {
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+/// Linear-light → sRGB (IEC 61966-2-1). See [`srgb_to_linear_scalar`].
+#[inline]
+fn linear_to_srgb_scalar(c: f32) -> f32 {
+    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+}
+
+/// Bulk sRGB u8 RGBA → linear f32 RGBA decode. Alpha stays linear per
+/// sRGB spec. Used at the u8⇄linear boundary when an effect (or caller
+/// that still speaks u8) needs to meet the linear-f32 `apply_effects`
+/// signature.
+pub fn srgb_u8_to_linear_f32_rgba(rgba: &[u8]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(rgba.len());
+    for chunk in rgba.chunks_exact(4) {
+        out.push(srgb_to_linear_scalar(chunk[0] as f32 / 255.0));
+        out.push(srgb_to_linear_scalar(chunk[1] as f32 / 255.0));
+        out.push(srgb_to_linear_scalar(chunk[2] as f32 / 255.0));
+        out.push(chunk[3] as f32 / 255.0);
+    }
+    out
+}
+
+/// Inverse of [`srgb_u8_to_linear_f32_rgba`]. Values outside `[0, 1]`
+/// clamp at the u8 boundary (not earlier).
+pub fn linear_f32_rgba_to_srgb_u8(linear: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(linear.len());
+    for chunk in linear.chunks_exact(4) {
+        out.push((linear_to_srgb_scalar(chunk[0]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        out.push((linear_to_srgb_scalar(chunk[1]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        out.push((linear_to_srgb_scalar(chunk[2]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        out.push((chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+    }
+    out
+}
+
+/// Apply a chain of built-in effects to a linear-f32 RGBA frame.
+///
+/// **CPU fallback path.** The individual effect implementations in
+/// [`opacity`], [`blur`], [`crop`], [`sharpen`], [`transform`],
+/// [`chroma_key`], [`light`], and the inline `apply_*` helpers below
+/// still operate on sRGB u8 buffers. Rather than rewriting every one
+/// of them at once, we bridge at the entry/exit of the chain: decode
+/// linear → u8 once, run the chain, re-encode u8 → linear once. This
+/// keeps the chain bit-identical to the pre-refactor behaviour while
+/// matching the engine-level linear plumbing.
+///
+/// Empty chains skip the bridge entirely so a linear-f32 passthrough
+/// costs nothing.
+pub fn apply_effects(effects: &[BuiltinEffect], linear_rgba: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
+    if effects.is_empty() {
+        return linear_rgba;
+    }
+    let mut rgba = linear_f32_rgba_to_srgb_u8(&linear_rgba);
     for effect in effects {
         rgba = apply_one(effect, rgba, width, height);
     }
-    rgba
+    srgb_u8_to_linear_f32_rgba(&rgba)
 }
 
 fn apply_one(effect: &BuiltinEffect, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
@@ -1307,6 +1366,15 @@ fn apply_chromatic_aberration(rgba: Vec<u8>, width: u32, height: u32, red_shift:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test helper: u8-in, u8-out bridge around the new linear-f32
+    /// [`apply_effects`]. Keeps the existing u8 assertions meaningful
+    /// without rewriting each test after the linear-edge-to-edge refactor.
+    fn apply_effects(effects: &[BuiltinEffect], rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+        let linear = srgb_u8_to_linear_f32_rgba(&rgba);
+        let out = super::apply_effects(effects, linear, width, height);
+        linear_f32_rgba_to_srgb_u8(&out)
+    }
 
     #[test]
     fn test_invert_full() {

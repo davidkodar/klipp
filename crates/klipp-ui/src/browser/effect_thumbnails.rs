@@ -107,12 +107,16 @@ impl ThumbnailRenderer {
                 let rgba = match source {
                     EffectSource::Builtin(effect) => {
                         let preview = builtin_preview_params(effect);
-                        klipp_effects::apply_effects(
+                        // Thumbnail renderer speaks sRGB u8; bridge
+                        // to match the linear-f32 `apply_effects`.
+                        let linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&frame.rgba);
+                        let out = klipp_effects::apply_effects(
                             std::slice::from_ref(&preview),
-                            frame.rgba.clone(),
+                            linear,
                             frame.width,
                             frame.height,
-                        )
+                        );
+                        klipp_effects::linear_f32_rgba_to_srgb_u8(&out)
                     }
                     EffectSource::Ofx(plugin_id) => {
                         apply_ofx_visual_proxy(&frame, plugin_id)
@@ -421,10 +425,12 @@ fn apply_ofx_visual_proxy(frame: &ReferenceFrame, plugin_name: &str) -> Vec<u8> 
 
     // ── Try builtin effect proxies first (blur, sharpen, transform, crop, chromakey) ──
     if let Some(builtin) = builtin_proxy_for(&n, plugin_name) {
-        return klipp_effects::apply_effects(
+        let linear = klipp_effects::srgb_u8_to_linear_f32_rgba(rgba);
+        let out = klipp_effects::apply_effects(
             std::slice::from_ref(&builtin),
-            rgba.clone(), frame.width, frame.height,
+            linear, frame.width, frame.height,
         );
+        return klipp_effects::linear_f32_rgba_to_srgb_u8(&out);
     }
 
     // ── Per-pixel transformations ──

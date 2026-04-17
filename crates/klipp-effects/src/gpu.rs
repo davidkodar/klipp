@@ -1766,15 +1766,15 @@ impl GpuEffectsPipeline {
     pub fn apply_effects(
         &mut self,
         effects: &[BuiltinEffect],
-        rgba: Vec<u8>,
+        linear_rgba: Vec<f32>,
         width: u32,
         height: u32,
-    ) -> Vec<u8> {
+    ) -> Vec<f32> {
         if self.is_device_lost() {
-            return rgba;
+            return linear_rgba;
         }
         if effects.is_empty() {
-            return rgba;
+            return linear_rgba;
         }
 
         let byte_size = (width * height * 16) as u64;
@@ -1783,8 +1783,9 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        // Upload frame data to buf_a
-        self.upload_u8_rgba_as_linear(buf_a, &rgba);
+        // Upload frame data to buf_a (already linear-f32 — direct upload).
+        self.queue
+            .write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
 
         // Track which buffer has the current data (true = buf_a, false = buf_b)
         let mut current_in_a = true;
@@ -2541,10 +2542,11 @@ impl GpuEffectsPipeline {
             }
         }
 
-        // Download result from GPU, converting linear-f32 back to
-        // sRGB u8 at the caller boundary.
+        // Download result from GPU as linear-f32 directly. The caller
+        // owns the boundary — engine paths stay linear, export / scope
+        // paths bridge at their own seam.
         let final_buf = if current_in_a { buf_a } else { buf_b };
-        self.download_linear_rgba_as_u8(final_buf, (width * height) as usize)
+        self.download_linear_rgba_f32(final_buf, (width * height) as usize)
     }
 
     /// Blur an alpha mask on the GPU. Input/output are single-channel u8 buffers.
@@ -2737,6 +2739,9 @@ impl GpuEffectsPipeline {
 
     /// Download `pixel_count` linear-f32 RGBA vec4s from a pixel
     /// storage buffer and convert to sRGB u8 RGBA at the boundary.
+    /// Retained for the u8-boundary paths (scopes, transition helpers,
+    /// 3D LUT) that still speak u8.
+    #[allow(dead_code)]
     fn download_linear_rgba_as_u8(
         &self,
         source: &wgpu::Buffer,
@@ -2750,6 +2755,26 @@ impl GpuEffectsPipeline {
         }
         let linear: &[f32] = bytemuck::cast_slice(&bytes);
         linear_f32_rgba_to_u8(linear)
+    }
+
+    /// Download `pixel_count` linear-f32 RGBA vec4s from a pixel
+    /// storage buffer as-is. This is the native entry point for the
+    /// linear-edge-to-edge pipeline — callers that already speak
+    /// linear (the engine compositor) skip the sRGB u8 boundary
+    /// entirely.
+    fn download_linear_rgba_f32(
+        &self,
+        source: &wgpu::Buffer,
+        pixel_count: usize,
+    ) -> Vec<f32> {
+        let byte_size = (pixel_count * 16) as u64;
+        let bytes = self.download(source, byte_size);
+        if bytes.len() < pixel_count * 16 {
+            // Device-lost fallback: `download` returned zero bytes.
+            return vec![0.0f32; pixel_count * 4];
+        }
+        let linear: &[f32] = bytemuck::cast_slice(&bytes);
+        linear.to_vec()
     }
 
     /// Render a transition between two frames on the GPU.
