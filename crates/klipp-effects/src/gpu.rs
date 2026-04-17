@@ -8303,4 +8303,125 @@ mod scope_shader_tests {
             best.0, best.1, best.2,
         );
     }
+
+    /// Per-column average luminance (R+G+B sum, averaged over the
+    /// column's height). Used by parade and histogram tests to find
+    /// where a bright feature sits horizontally.
+    fn column_luma_avg(output: &[u8], out_w: usize, out_h: usize, px: usize) -> f32 {
+        let mut sum = 0u64;
+        for py in 0..out_h {
+            let off = (py * out_w + px) * 4;
+            sum += output[off] as u64 + output[off + 1] as u64 + output[off + 2] as u64;
+        }
+        sum as f32 / out_h as f32
+    }
+
+    /// Find the row whose average R+G+B across a horizontal strip
+    /// `[x_start, x_end)` is highest. Used to locate the bright
+    /// trace within one parade section.
+    fn peak_row_in_strip(
+        output: &[u8], out_w: usize, out_h: usize, x_start: usize, x_end: usize,
+    ) -> (usize, f32) {
+        let mut best = (0usize, 0.0f32);
+        let width = (x_end - x_start) as f32;
+        for py in 0..out_h {
+            let mut sum = 0u64;
+            for px in x_start..x_end {
+                let off = (py * out_w + px) * 4;
+                sum += output[off] as u64 + output[off + 1] as u64 + output[off + 2] as u64;
+            }
+            let avg = sum as f32 / width;
+            if avg > best.1 {
+                best = (py, avg);
+            }
+        }
+        best
+    }
+
+    /// Contract: parade on a flat sRGB-118 mid-grey frame produces a
+    /// bright trace in *all three* R/G/B sections at the row
+    /// corresponding to bin 118 (50 IRE). Catches the same domain
+    /// regression as the waveform test — if someone removes the
+    /// `linear_to_srgb_c` call from `SHADER_SCOPE_PARADE`, the
+    /// trace collapses into the bottom fifth of every section and
+    /// this test fails.
+    #[test]
+    fn gpu_parade_mid_grey_all_sections_peak_at_50_ire() {
+        let Some(mut gpu) = GpuEffectsPipeline::new() else {
+            eprintln!("Skipping: no GPU available");
+            return;
+        };
+        let (fw, fh, ow, oh) = (256u32, 128u32, 256u32, 256u32);
+        let frame = flat_srgb_frame(118, fw, fh);
+        let out = gpu.render_scope_parade(&frame, fw, fh, ow, oh);
+        assert_eq!(out.len(), (ow * oh * 4) as usize);
+
+        // Use rough thirds for section boundaries rather than the
+        // pixel-exact `section_w / gap` layout — a small layout shift
+        // (different gap constant etc.) shouldn't fail this test.
+        // The domain-correctness signal is what matters here.
+        let third = (ow as usize) / 3;
+        let sections = [
+            (0usize, third, "red"),
+            (third, 2 * third, "green"),
+            (2 * third, ow as usize, "blue"),
+        ];
+
+        let expected = 255 - 118; // bin 118 → py 137 when out_h = 256
+        for (xs, xe, label) in sections {
+            let (peak_row, peak_avg) = peak_row_in_strip(&out, ow as usize, oh as usize, xs, xe);
+            assert!(
+                (peak_row as i32 - expected as i32).abs() <= 2,
+                "parade {label} section peak at row {peak_row} (avg {peak_avg:.1}), \
+                 expected row {expected} ± 2 (bin 118, 50 IRE)",
+            );
+            assert!(
+                peak_avg > 50.0,
+                "parade {label} section peak-row avg {peak_avg:.1} looks like background — \
+                 bin may be empty or shader broken",
+            );
+        }
+    }
+
+    /// Contract: histogram of a flat sRGB-118 mid-grey frame shows a
+    /// bright vertical bar at the column corresponding to bin 118.
+    /// All four channels (R, G, B, Luma) peak at the same bin for
+    /// an achromatic frame, so the column is unambiguously the
+    /// brightest in the image. Catches the domain regression on the
+    /// histogram accumulator shader directly.
+    #[test]
+    fn gpu_histogram_mid_grey_peaks_at_bin_118() {
+        let Some(mut gpu) = GpuEffectsPipeline::new() else {
+            eprintln!("Skipping: no GPU available");
+            return;
+        };
+        let (fw, fh, ow, oh) = (256u32, 128u32, 256u32, 256u32);
+        let frame = flat_srgb_frame(118, fw, fh);
+        let out = gpu.render_scope_histogram(&frame, fw, fh, ow, oh);
+        assert_eq!(out.len(), (ow * oh * 4) as usize);
+
+        // Find the column whose total luminance is highest — should
+        // be the column that hosts bin 118.
+        let (mut peak_px, mut peak_avg) = (0usize, 0.0f32);
+        for px in 0..ow as usize {
+            let avg = column_luma_avg(&out, ow as usize, oh as usize, px);
+            if avg > peak_avg {
+                peak_px = px;
+                peak_avg = avg;
+            }
+        }
+
+        // bin = px * 256 / out_w. For out_w = 256 that's px = bin.
+        let expected = (118usize * ow as usize) / 256;
+        assert!(
+            (peak_px as i32 - expected as i32).abs() <= 2,
+            "histogram peak at column {peak_px} (avg {peak_avg:.1}), \
+             expected column {expected} ± 2 (bin 118)",
+        );
+        assert!(
+            peak_avg > 50.0,
+            "histogram peak column avg {peak_avg:.1} looks like background — \
+             bins may be empty or shader broken",
+        );
+    }
 }
