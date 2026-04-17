@@ -1533,6 +1533,30 @@ impl PlaybackEngine {
         }
         // Apply per-clip volume from sequence data
         self.sync_clip_volumes();
+
+        // `open_audio_source` intentionally leaves each source paused so the
+        // caller can line up master-clock + video decoder before audio
+        // starts pushing samples. That contract works for the "user pressed
+        // play" path, where the dedicated Play command resumes everything
+        // explicitly. It breaks when `start_all_audio` fires mid-playback
+        // — e.g. the preroll-hit branch delegates through
+        // `seek_all_audio_to_timecode`, which expects audio to come back up
+        // transparently. Without this resume, the newly-opened PCM feeders
+        // sit idle, the mix-thread staging rings never get fed, LUFS pegs
+        // on whatever NaN/stale state the meter sees, and clip-2+ plays
+        // silent. Resume here when we know playback is already live.
+        if self.state == PlaybackState::Playing {
+            for active in &self.audio_sources {
+                active.source.resume();
+            }
+            if let Some(aout) = &self.audio_output {
+                aout.0.resume();
+            }
+            debug!(
+                "start_all_audio: resumed {} source(s) for live playback",
+                self.audio_sources.len(),
+            );
+        }
     }
 
     /// Sync per-clip volume, pan, and fade from sequence data to the audio output.
@@ -2654,6 +2678,37 @@ impl PlaybackEngine {
             self.contiguous_audio.store(true, std::sync::atomic::Ordering::Relaxed);
             self.last_frame_time = std::time::Instant::now();
             let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
+
+            // The `is_contiguous` check above only considers the video track
+            // (same media, source_out == next.source_in). Audio tracks may
+            // live independently and switch to a different media file at
+            // this boundary — the existing `AudioSource`s are still decoding
+            // the previous media, so a `set_fade` update would silence them
+            // once the old media runs out. Scan the audio sources and, if
+            // any sits on a media that no longer matches the clip at the
+            // new playhead, delegate to `start_all_audio` to stop-and-reopen
+            // the decoders. Video stays contiguous regardless. Mirrors the
+            // matching check in `seek_all_audio_to_timecode`.
+            let audio_media_changed = {
+                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+                self.audio_sources.iter().any(|active| {
+                    let Some(track) = seq.tracks.get(active.track_index) else {
+                        return true;
+                    };
+                    match track.clip_at_timecode(self.playhead) {
+                        Some((_, clip)) => clip.media_id() != Some(active.media_id),
+                        None => true,
+                    }
+                })
+            };
+            if audio_media_changed {
+                info!(
+                    "CUT-DIAG CONTIGUOUS: audio media changed at boundary — restarting audio sources",
+                );
+                self.start_all_audio(self.playhead);
+                self.update_overlay_decoders(self.playhead);
+                return;
+            }
 
             // CRITICAL: Immediately update fade parameters on audio sources
             {
