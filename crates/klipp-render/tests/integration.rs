@@ -26,7 +26,7 @@ fn make_export_settings(path: &std::path::Path) -> ExportSettings {
         audio_codec: ExportAudioCodec::Copy, // Skip audio for speed
         audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
         burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, embed_chapters: false,
-        bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr }
+        bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable }
 }
 
 // ═══════════════════════════════════════════════════════════════════

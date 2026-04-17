@@ -680,7 +680,7 @@ mod tests {
                 audio_codec: klipp_core::ExportAudioCodec::Copy,
                 audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
                 burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, embed_chapters: false,
-                bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr },
+                bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable },
             snapshot: make_test_snapshot(),
             cancel: cancel.clone(),
             progress: Arc::new(AtomicU64::new(0)),

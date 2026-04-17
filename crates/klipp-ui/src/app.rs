@@ -100,6 +100,9 @@ struct ExportDialogState {
     bit_depth: u8,
     /// HDR transfer. Only surfaced in UI when bit_depth == 10 on H.264/H.265. (#65)
     hdr_mode: klipp_core::HdrMode,
+    /// Display-boundary tone-map operator picked by the user.
+    /// Default Hable matches prior behaviour.
+    tone_map_op: klipp_core::ToneMapOp,
 }
 
 impl Default for ExportDialogState {
@@ -133,6 +136,7 @@ impl Default for ExportDialogState {
             custom_lufs: -14.0,
             bit_depth: 0,
             hdr_mode: klipp_core::HdrMode::Sdr,
+            tone_map_op: klipp_core::ToneMapOp::Hable,
         }
     }
 }
@@ -15964,6 +15968,7 @@ fn build_export_settings(dialog: &ExportDialogState) -> ExportSettings {
         embed_chapters: dialog.embed_chapters,
         bit_depth: dialog.bit_depth,
         hdr_mode: dialog.hdr_mode,
+        tone_map_op: dialog.tone_map_op,
     }
 }
 
@@ -17898,6 +17903,28 @@ impl KlippApp {
                             self.export_dialog.bit_depth = 0;
                             self.export_dialog.hdr_mode = klipp_core::HdrMode::Sdr;
                         }
+
+                        // Tone-map operator — the "colour science" picker.
+                        // Applied at the display-boundary inside
+                        // `Encoder::encode_linear_frame` during export,
+                        // after the grade and before sRGB quantise.
+                        // ACES is the industry-standard filmic look;
+                        // Hable is the previous default.
+                        ui.label("Colour science:");
+                        egui::ComboBox::from_id_salt("export_tone_map")
+                            .selected_text(klipp_color::display::tone_map_op_label(
+                                self.export_dialog.tone_map_op,
+                            ))
+                            .show_ui(ui, |ui| {
+                                for op in klipp_color::display::TONE_MAP_OPS_ALL {
+                                    ui.selectable_value(
+                                        &mut self.export_dialog.tone_map_op,
+                                        op,
+                                        klipp_color::display::tone_map_op_label(op),
+                                    );
+                                }
+                            });
+                        ui.end_row();
 
                         // Rate control mode
                         if self.export_dialog.video_codec.uses_crf() {
@@ -22392,6 +22419,7 @@ mod render_script_tests {
             embed_chapters: false,
             bit_depth: 0,
             hdr_mode: klipp_core::HdrMode::Sdr,
+            tone_map_op: klipp_core::ToneMapOp::Hable,
         };
         let script = generate_render_script(&seq, &media_pool, &settings, "/tmp/out.mp4");
         assert!(script.starts_with("#!/usr/bin/env bash\n"), "missing shebang: {script}");

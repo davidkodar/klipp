@@ -180,7 +180,7 @@ mod tests {
             audio_codec: klipp_core::ExportAudioCodec::Aac,
             audio_bitrate_kbps: Some(192), video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
             burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, embed_chapters: false,
-            bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr };
+            bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable };
         pipeline.begin_export(&settings);
 
         let ctx = make_frame_context();

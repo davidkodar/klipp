@@ -36,6 +36,29 @@ pub enum HdrMode {
     Pq,
 }
 
+/// Display-boundary tone-map operator.
+///
+/// Picked by the user as a viewer / export "colour science" option.
+/// Lives in `klipp-core` so `ExportSettings` can carry it without
+/// pulling in `klipp-color`; the actual curves live in
+/// [`klipp_color::display`] and match one-to-one on these variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ToneMapOp {
+    /// Identity — no tone mapping. Values above 1.0 clip at display
+    /// encode. Useful for SDR content that is already display-ready.
+    None,
+    /// Simple Reinhard soft-roll-off: `x / (1 + x)`. Neutral look.
+    Reinhard,
+    /// Uncharted 2 filmic curve. Cinematic default.
+    #[default]
+    Hable,
+    /// Stephen Hill's fitted ACES RRT+ODT. Industry-standard filmic
+    /// look — preserves hue through highlight roll-off via matrix
+    /// pre/post-transform, at the cost of a per-pixel (rather than
+    /// per-channel) pass.
+    Aces,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExportSettings {
     pub output_path: PathBuf,
@@ -68,6 +91,11 @@ pub struct ExportSettings {
     /// HDR transfer characteristic. Defaults to SDR (BT.709). When 10-bit
     /// encode is active, HLG/PQ write BT.2020 primaries + matching transfer.
     pub hdr_mode: HdrMode,
+    /// Display-boundary tone-map operator. Defaults to Hable (filmic)
+    /// for backwards compatibility with exports produced before this
+    /// setting existed. ACES is the alternative for users who want
+    /// hue-preserving highlight roll-off.
+    pub tone_map_op: ToneMapOp,
 }
 
 impl Default for ExportSettings {
@@ -90,6 +118,7 @@ impl Default for ExportSettings {
             embed_chapters: false,
             bit_depth: 0,
             hdr_mode: HdrMode::default(),
+            tone_map_op: ToneMapOp::default(),
         }
     }
 }
