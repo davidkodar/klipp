@@ -3479,6 +3479,66 @@ fn boxes_for_gaussian(sigma: f32) -> [usize; 3] {
 
 // ─── WGSL Compute Shaders ────────────────────────────────────────────────────
 
+/// WGSL helper functions that decode sRGB u8 storage to linear f32
+/// on load and re-encode on store. Shared by every effect shader
+/// whose math requires linear-light values for physical correctness
+/// (averaging — blur, bloom, denoise, light rays, film halation;
+/// spatial weighting — sharpen, clarity, chromatic aberration;
+/// compositing — transitions, bloom blend).
+///
+/// The `pack` half clamps to `[0, 1]` only at the u8 storage
+/// boundary — intermediate values may exceed 1.0 throughout the
+/// shader. When the full linear f32 storage path lands in Phase 10
+/// this entire helper goes away (storage will already be linear).
+///
+/// Alpha channel stays linear per sRGB spec — gamma applies only to
+/// the three colour channels.
+///
+/// Exposed as a `macro_rules!` so it can be spliced into `concat!()`
+/// shader definitions (which only accept literals, not `const` refs).
+macro_rules! shader_linear_helpers_wgsl {
+    () => {
+        "
+fn srgb_to_linear_component(c: f32) -> f32 {
+    if (c <= 0.04045) {
+        return c / 12.92;
+    } else {
+        return pow((c + 0.055) / 1.055, 2.4);
+    }
+}
+
+fn linear_to_srgb_component(c: f32) -> f32 {
+    if (c <= 0.0031308) {
+        return c * 12.92;
+    } else {
+        return 1.055 * pow(c, 1.0/2.4) - 0.055;
+    }
+}
+
+fn unpack(v: u32) -> vec4<f32> {
+    let r = f32(v & 0xFFu) / 255.0;
+    let g = f32((v >> 8u) & 0xFFu) / 255.0;
+    let b = f32((v >> 16u) & 0xFFu) / 255.0;
+    let a = f32((v >> 24u) & 0xFFu) / 255.0;
+    return vec4<f32>(
+        srgb_to_linear_component(r),
+        srgb_to_linear_component(g),
+        srgb_to_linear_component(b),
+        a,
+    );
+}
+
+fn pack(v: vec4<f32>) -> u32 {
+    let r = clamp(linear_to_srgb_component(v.x), 0.0, 1.0) * 255.0;
+    let g = clamp(linear_to_srgb_component(v.y), 0.0, 1.0) * 255.0;
+    let b = clamp(linear_to_srgb_component(v.z), 0.0, 1.0) * 255.0;
+    let a = clamp(v.w, 0.0, 1.0) * 255.0;
+    return u32(r) | (u32(g) << 8u) | (u32(b) << 16u) | (u32(a) << 24u);
+}
+"
+    };
+}
+
 const SHADER_OPACITY: &str = concat!(
     "
 struct Params {
@@ -3518,6 +3578,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
+// Horizontal blur. Averages linear-light RGB — the gamma-encoded
+// version underestimated midtone brightness and made edges look
+// unnaturally dark. unpack decodes sRGB u8 → linear f32 [0,1];
+// pack encodes linear f32 → sRGB u8 at the 8-bit storage boundary.
+// Alpha stays linear per sRGB convention.
 const SHADER_BLUR_H: &str = concat!(
     "
 struct Params {
@@ -3531,21 +3596,7 @@ struct Params {
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
-    "
-fn unpack(v: u32) -> vec4<f32> {
-    return vec4<f32>(
-        f32(v & 0xFFu),
-        f32((v >> 8u) & 0xFFu),
-        f32((v >> 16u) & 0xFFu),
-        f32((v >> 24u) & 0xFFu),
-    );
-}
-
-fn pack(v: vec4<f32>) -> u32 {
-    let c = clamp(v, vec4<f32>(0.0), vec4<f32>(255.0));
-    return u32(c.x) | (u32(c.y) << 8u) | (u32(c.z) << 16u) | (u32(c.w) << 24u);
-}
-",
+    shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -3581,21 +3632,7 @@ struct Params {
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
-    "
-fn unpack(v: u32) -> vec4<f32> {
-    return vec4<f32>(
-        f32(v & 0xFFu),
-        f32((v >> 8u) & 0xFFu),
-        f32((v >> 16u) & 0xFFu),
-        f32((v >> 24u) & 0xFFu),
-    );
-}
-
-fn pack(v: vec4<f32>) -> u32 {
-    let c = clamp(v, vec4<f32>(0.0), vec4<f32>(255.0));
-    return u32(c.x) | (u32(c.y) << 8u) | (u32(c.z) << 16u) | (u32(c.w) << 24u);
-}
-",
+    shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -3631,21 +3668,7 @@ struct Params {
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
-    "
-fn unpack(v: u32) -> vec4<f32> {
-    return vec4<f32>(
-        f32(v & 0xFFu),
-        f32((v >> 8u) & 0xFFu),
-        f32((v >> 16u) & 0xFFu),
-        f32((v >> 24u) & 0xFFu),
-    );
-}
-
-fn pack(v: vec4<f32>) -> u32 {
-    let c = clamp(v, vec4<f32>(0.0), vec4<f32>(255.0));
-    return u32(c.x) | (u32(c.y) << 8u) | (u32(c.z) << 16u) | (u32(c.w) << 24u);
-}
-",
+    shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
