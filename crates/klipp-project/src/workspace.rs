@@ -45,7 +45,7 @@ pub fn create_workspace(path: &Path, name: &str) -> Result<(), String> {
 
     let json = serde_json::to_string_pretty(&ws)
         .map_err(|e| format!("Failed to serialize workspace: {e}"))?;
-    std::fs::write(path.join("workspace.json"), json)
+    crate::path_util::atomic_write(&path.join("workspace.json"), json.as_bytes())
         .map_err(|e| format!("Failed to write workspace.json: {e}"))?;
 
     Ok(())

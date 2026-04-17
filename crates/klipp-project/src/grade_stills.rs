@@ -24,13 +24,7 @@ pub struct GradeStillData {
     pub height: u32,
 }
 
-/// Write data to a file atomically (mirrors save.rs's helper).
-fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    let temp_path = path.with_extension("tmp");
-    std::fs::write(&temp_path, data)?;
-    std::fs::rename(&temp_path, path)?;
-    Ok(())
-}
+use crate::path_util::atomic_write;
 
 fn stills_dir(project_dir: &Path) -> PathBuf {
     project_dir.join("media").join("stills")

@@ -1,20 +1,9 @@
 use crate::format::*;
-use crate::path_util::to_project_relative;
+use crate::path_util::{atomic_write, to_project_relative};
 use klipp_media::{MediaItem, MediaPool};
 use klipp_timeline::{ClipKind, Sequence, TrackKind};
 use std::path::Path;
 use tracing::info;
-
-/// Write data to a file atomically: write to a temp file in the same directory
-/// (ensuring same filesystem), then rename over the target. This guarantees the
-/// file is either fully written or left untouched — a crash mid-write only
-/// leaves an orphaned `.tmp` file, never a corrupt project file.
-fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    let temp_path = path.with_extension("tmp");
-    std::fs::write(&temp_path, data)?;
-    std::fs::rename(&temp_path, path)?;
-    Ok(())
-}
 
 /// Project-level settings persisted alongside sequence data.
 #[derive(Debug, Clone)]
