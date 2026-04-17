@@ -6030,7 +6030,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // ─── New effect shaders ─────────────────────────────────────────────────────
 
-const SHADER_INVERT: &str = "
+// Invert — 1 − x applied per channel in linear light. Linear
+// inversion is what "negate the physical light" means; the sRGB
+// version inverted gamma-encoded bytes, producing the classic
+// "photo negative" look that's technically wrong but historically
+// what users expect. We take the physically correct path.
+const SHADER_INVERT: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -6041,28 +6047,28 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    let v = input[idx];
-    let r = f32(v & 0xFFu) / 255.0;
-    let g = f32((v >> 8u) & 0xFFu) / 255.0;
-    let b = f32((v >> 16u) & 0xFFu) / 255.0;
-    let a = v >> 24u;
+    let p = unpack(input[idx]);
     let m = params.mix_val;
-    let or = r + (1.0 - r - r) * m;
-    let og = g + (1.0 - g - g) * m;
-    let ob = b + (1.0 - b - b) * m;
-    let rr = u32(clamp(or * 255.0, 0.0, 255.0));
-    let rg = u32(clamp(og * 255.0, 0.0, 255.0));
-    let rb = u32(clamp(ob * 255.0, 0.0, 255.0));
-    output[idx] = rr | (rg << 8u) | (rb << 16u) | (a << 24u);
+    let inv = vec3<f32>(1.0) - p.xyz;
+    let out = p.xyz + (inv - p.xyz) * m;
+    output[idx] = pack(vec4<f32>(out, p.w));
 }
-";
+"
+);
 
-const SHADER_POSTERIZE: &str = "
+// Posterize — quantise to N levels. Banding will now distribute in
+// linear space rather than sRGB, so bands bunch slightly differently
+// in shadows; the effect is still recognisable as a poster-style
+// colour reduction.
+const SHADER_POSTERIZE: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -6073,27 +6079,25 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    let v = input[idx];
-    let r = f32(v & 0xFFu) / 255.0;
-    let g = f32((v >> 8u) & 0xFFu) / 255.0;
-    let b = f32((v >> 16u) & 0xFFu) / 255.0;
-    let a = v >> 24u;
+    let p = unpack(input[idx]);
     let lvl = params.levels;
     let div = lvl - 1.0;
-    let or = floor(r * lvl) / div;
-    let og = floor(g * lvl) / div;
-    let ob = floor(b * lvl) / div;
-    let rr = u32(clamp(or * 255.0, 0.0, 255.0));
-    let rg = u32(clamp(og * 255.0, 0.0, 255.0));
-    let rb = u32(clamp(ob * 255.0, 0.0, 255.0));
-    output[idx] = rr | (rg << 8u) | (rb << 16u) | (a << 24u);
+    let out = vec3<f32>(
+        floor(p.x * lvl) / div,
+        floor(p.y * lvl) / div,
+        floor(p.z * lvl) / div,
+    );
+    output[idx] = pack(vec4<f32>(out, p.w));
 }
-";
+"
+);
 
 const SHADER_MOSAIC: &str = "
 struct Params {
@@ -6556,7 +6560,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-const SHADER_GAMMA: &str = "
+// Gamma — power curve applied per channel in linear. The user's
+// gamma slider now acts on physical light, so gamma=2.2 makes
+// the image appear perceptually-gamma-corrected (same as raising
+// a linear image to 1/2.2 at display). For users coming from
+// sRGB-pipeline apps, a gamma value of 1.0 remains identity.
+const SHADER_GAMMA: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -6567,25 +6577,23 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    let v = input[idx];
-    let r = f32(v & 0xFFu) / 255.0;
-    let g = f32((v >> 8u) & 0xFFu) / 255.0;
-    let b = f32((v >> 16u) & 0xFFu) / 255.0;
-    let a = v >> 24u;
-    let or = pow(r, params.inv_gamma);
-    let og = pow(g, params.inv_gamma);
-    let ob = pow(b, params.inv_gamma);
-    let rr = u32(clamp(or * 255.0, 0.0, 255.0));
-    let rg = u32(clamp(og * 255.0, 0.0, 255.0));
-    let rb = u32(clamp(ob * 255.0, 0.0, 255.0));
-    output[idx] = rr | (rg << 8u) | (rb << 16u) | (a << 24u);
+    let p = unpack(input[idx]);
+    let out = vec3<f32>(
+        pow(max(p.x, 0.0), params.inv_gamma),
+        pow(max(p.y, 0.0), params.inv_gamma),
+        pow(max(p.z, 0.0), params.inv_gamma),
+    );
+    output[idx] = pack(vec4<f32>(out, p.w));
 }
-";
+"
+);
 
 const SHADER_HSV_ADJUST: &str = "
 struct Params {
@@ -6868,7 +6876,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-const SHADER_LEVELS: &str = "
+// Levels — black/white point remap + gamma, applied per channel
+// in linear. in_black / in_white / out_black / out_white are now
+// linear values; users coming from sRGB-pipeline tooling will find
+// 0.18 linear behaves as "mid grey" rather than 0.5.
+const SHADER_LEVELS: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -6883,37 +6896,30 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    let v = input[idx];
-    let r = f32(v & 0xFFu) / 255.0;
-    let g = f32((v >> 8u) & 0xFFu) / 255.0;
-    let b = f32((v >> 16u) & 0xFFu) / 255.0;
-    let a = v >> 24u;
+    let p = unpack(input[idx]);
 
     let in_range = max(params.in_white - params.in_black, 0.001);
+    let m = clamp((p.xyz - vec3<f32>(params.in_black)) / in_range, vec3<f32>(0.0), vec3<f32>(1.0));
 
-    let mr = clamp((r - params.in_black) / in_range, 0.0, 1.0);
-    let mg = clamp((g - params.in_black) / in_range, 0.0, 1.0);
-    let mb = clamp((b - params.in_black) / in_range, 0.0, 1.0);
+    let g = vec3<f32>(
+        pow(m.x, params.inv_gamma),
+        pow(m.y, params.inv_gamma),
+        pow(m.z, params.inv_gamma),
+    );
 
-    let gr = pow(mr, params.inv_gamma);
-    let gg = pow(mg, params.inv_gamma);
-    let gb = pow(mb, params.inv_gamma);
-
-    let fr = params.out_black + gr * (params.out_white - params.out_black);
-    let fg = params.out_black + gg * (params.out_white - params.out_black);
-    let fb = params.out_black + gb * (params.out_white - params.out_black);
-
-    let ro = u32(clamp(fr * 255.0, 0.0, 255.0));
-    let go = u32(clamp(fg * 255.0, 0.0, 255.0));
-    let bo = u32(clamp(fb * 255.0, 0.0, 255.0));
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+    let out_range = params.out_white - params.out_black;
+    let out = vec3<f32>(params.out_black) + g * out_range;
+    output[idx] = pack(vec4<f32>(out, p.w));
 }
-";
+"
+);
 
 const SHADER_EQUALIZE: &str = "
 struct Params {
@@ -7644,13 +7650,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 ";
 
-// ── Clarity (midtone unsharp mask — horizontal blur pass) ─────────────────────
-const SHADER_CLARITY_BLUR_H: &str = "
+// Clarity — three-pass midtone unsharp mask. CLARITY_BLUR_H reads
+// sRGB RGBA, computes linear-light BT.709 luma, writes the linear
+// luma (quantised to 0-255 in the low byte of the u32 for storage
+// compat with the existing intermediate layout). CLARITY_BLUR_V
+// just averages that 0-1 luma byte (scale-invariant, unchanged).
+// CLARITY_APPLY adds back detail weighted by linear midtone
+// presence, centred on 0.18 linear.
+const SHADER_CLARITY_BLUR_H: &str = concat!(
+    "
 struct Params { width: u32, height: u32, radius: u32, _pad: u32, }
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -7662,19 +7677,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var count = 0u;
     for (var dx = -r; dx <= r; dx = dx + 1) {
         let sx = clamp(x + dx, 0, i32(params.width) - 1);
-        let pix = input[u32(y) * params.width + u32(sx)];
-        let pr = f32(pix & 0xFFu) / 255.0;
-        let pg = f32((pix >> 8u) & 0xFFu) / 255.0;
-        let pb = f32((pix >> 16u) & 0xFFu) / 255.0;
-        sum += 0.2126 * pr + 0.7152 * pg + 0.0722 * pb;
+        let p = unpack(input[u32(y) * params.width + u32(sx)]);
+        sum += 0.2126 * p.x + 0.7152 * p.y + 0.0722 * p.z;
         count += 1u;
     }
     let luma = sum / f32(count);
+    // Store linear luma as 0-255 byte in low channel; upstream passes
+    // read it as a linear value via `/ 255.0`.
     output[idx] = u32(clamp(luma * 255.0, 0.0, 255.0));
 }
-";
+"
+);
 
-// ── Clarity (midtone unsharp mask — vertical blur pass) ───────────────────────
 const SHADER_CLARITY_BLUR_V: &str = "
 struct Params { width: u32, height: u32, radius: u32, _pad: u32, }
 @group(0) @binding(0) var<storage, read> input: array<u32>;
@@ -7700,34 +7714,36 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 ";
 
-// ── Clarity (apply unsharp mask with midtone weighting) ───────────────────────
-const SHADER_CLARITY_APPLY: &str = "
+const SHADER_CLARITY_APPLY: &str = concat!(
+    "
 struct Params { width: u32, height: u32, amount: f32, _pad: u32, }
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
 @group(0) @binding(3) var<storage, read> blurred: array<u32>;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    let pixel = input[idx];
-    let r = f32(pixel & 0xFFu);
-    let g = f32((pixel >> 8u) & 0xFFu);
-    let b = f32((pixel >> 16u) & 0xFFu);
-    let a = (pixel >> 24u) & 0xFFu;
-    let luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0;
+    let p = unpack(input[idx]);
+    let luma = 0.2126 * p.x + 0.7152 * p.y + 0.0722 * p.z;
     let blurred_luma = f32(blurred[idx]) / 255.0;
     let detail = luma - blurred_luma;
-    let midtone_weight = 1.0 - abs(2.0 * luma - 1.0);
-    let adj = detail * params.amount * midtone_weight * 255.0;
-    let ro = u32(clamp(r + adj, 0.0, 255.0));
-    let go = u32(clamp(g + adj, 0.0, 255.0));
-    let bo = u32(clamp(b + adj, 0.0, 255.0));
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+    // Midtone weight peaked on linear 0.18 (perceptual mid-grey).
+    let midtone_weight = max(1.0 - abs((luma / 0.18) - 1.0), 0.0);
+    let adj = detail * params.amount * midtone_weight;
+    output[idx] = pack(vec4<f32>(
+        p.x + adj,
+        p.y + adj,
+        p.z + adj,
+        p.w,
+    ));
 }
-";
+"
+);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // GPU Scope Rendering Shaders
