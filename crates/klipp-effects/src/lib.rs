@@ -1,3 +1,37 @@
+//! Built-in GPU effects and shared scope / analysis pipelines.
+//!
+//! The crate exposes [`BuiltinEffect`] — a serialisable enum covering
+//! every first-party effect (opacity, blur, sharpen, crop, transform,
+//! chroma key, bloom, glow, light rays, vignette, …) plus a few
+//! workflow utilities (rolling shutter repair, scene detection, video
+//! stabilisation). Each effect has a CPU implementation for fallback
+//! and a WGSL compute-shader GPU path in [`gpu::GpuEffectsPipeline`].
+//!
+//! # GPU pipeline
+//!
+//! All GPU work goes through [`gpu::GpuEffectsPipeline`]: a single wgpu
+//! device holding one storage buffer per intermediate + one
+//! `apply_effects` dispatcher that chains effect passes via ping-pong
+//! buffers. See [`nv12_gpu`] for the HW-decode output fast-path (NV12 →
+//! RGBA on GPU) and [`gpu_scopes`] for histogram / vectorscope / RGB
+//! parade compute kernels.
+//!
+//! # WGSL uniform rule
+//!
+//! WGSL uniform structs **must** use individual scalar padding fields
+//! (`_pad0: u32, _pad1: u32, …`) rather than `array<u32, N>` — naga
+//! silently rejects the array form in validation. Rust-side structs
+//! mirror with `_pad: [u32; N]` which is fine, but the matching WGSL
+//! declaration must unpack.
+//!
+//! # Stabilisation
+//!
+//! [`stabilization`] uses a sequential-frame analyse pass
+//! ([`klipp_engine::SequentialFrameDecoder`]) to compute per-frame
+//! motion vectors, then applies the inverse as a warp during playback
+//! and export. Analyse went from 10–15 min to ~18 s on 4K through the
+//! decoder optimisation.
+
 pub mod blur;
 mod chroma_key;
 mod crop;

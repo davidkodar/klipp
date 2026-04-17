@@ -1,3 +1,52 @@
+//! Real-time playback engine: decode, composite, mix, output.
+//!
+//! The engine owns the running timeline. One [`PlaybackEngine`] runs on
+//! its own thread, receives [`klipp_core::AppCommand`]s from the UI, and
+//! emits [`klipp_core::AppEvent`]s back. It drives video decode
+//! ([`video_decoder`]), audio decode ([`audio_decoder`], [`pcm_reader`]),
+//! multi-track audio mixing ([`mix_thread`]), audio output
+//! ([`audio_output`]), compositing ([`composite`]), effects application,
+//! and the render cache ([`render_cache`]).
+//!
+//! # Threading model
+//!
+//! * **Engine thread** — owns `PlaybackEngine`; drains commands, advances
+//!   the playhead, pops decoded frames, composites, writes to
+//!   [`texture::FrameBuffer`]. Never blocks on the UI.
+//! * **Decode threads** — one per open video decoder, one per active
+//!   audio source. Communicate via [`types::FrameQueue`] (bounded Mutex)
+//!   and [`types::AudioRingBuf`] (lock-free ringbuf).
+//! * **Mix thread** — drains per-track audio staging buffers, sums,
+//!   applies per-clip gain / pan / fade / effects, writes to the cpal
+//!   ring. FTZ/DAZ enabled to avoid denormal stalls on silence.
+//! * **cpal audio callback** — on an OS-owned thread; pulls from the mix
+//!   ring and drives the output device.
+//!
+//! # Synchronisation primitive
+//!
+//! [`sync::MasterClock`] is the single source of truth for "what time is
+//! it". Audio and video both slave to it. See `sync.rs` for the
+//! seek / pause / resume state machine and the generation counter used
+//! by callers to detect stale state.
+//!
+//! # Decode-pipeline invariant
+//!
+//! Two-phase decode: **always drain `receive_frame` before feeding new
+//! packets with `send_packet`.** Mixing the two order causes EAGAIN
+//! packet loss on high-latency codecs (AV1, HEVC with B-frames, VP9).
+//! On EAGAIN from `send_packet`, drain output frames then retry — the
+//! helpers in this module (`video_decoder.rs`, `audio_decoder.rs`, and
+//! every `engine.rs` helper that calls `send_packet` directly) follow
+//! this rule; new code must too.
+//!
+//! # Colour pipeline
+//!
+//! Currently 8-bit sRGB throughout. Every effect and grade operates on
+//! gamma-encoded bytes, which is physically wrong for exposure /
+//! saturation / LGG above ~+1 stop. A future linear-light pipeline
+//! (f16 or f32 intermediate, display transform at the viewer) is the
+//! canonical fix; this crate is the substrate for it.
+
 pub mod audio_decoder;
 pub mod audio_input;
 pub mod audio_output;
