@@ -5180,7 +5180,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-const SHADER_HUESAT: &str = "
+// Hue/Sat curves — six HSL-based curves (hue-vs-hue, hue-vs-sat,
+// hue-vs-lum, lum-vs-sat, sat-vs-sat, orange-vs-sat). HSL math is
+// colour-space-agnostic (works on any normalised RGB), but feeding
+// it linear-light values means hue/sat/lum values shift vs sRGB
+// (grey lum = 0.18 linear ≈ 0.46 sRGB). Curve authors re-tune in
+// linear; the physical luminance axis of lum-vs-sat is now correct.
+const SHADER_HUESAT: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -5192,6 +5199,9 @@ struct Params {
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
 @group(0) @binding(3) var<storage, read> lut: array<f32>;
+",
+    shader_linear_helpers_wgsl!(),
+    "
 // LUT layout: 6 curves × 256 entries = indices 0..1535
 // Curve 0: hue_vs_hue   (0..255)
 // Curve 1: hue_vs_sat   (256..511)
@@ -5256,13 +5266,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
-    let pixel = input[idx];
-    let orig_r = f32(pixel & 0xFFu) / 255.0;
-    let orig_g = f32((pixel >> 8u) & 0xFFu) / 255.0;
-    let orig_b = f32((pixel >> 16u) & 0xFFu) / 255.0;
-    let a = (pixel >> 24u) & 0xFFu;
-
-    let hsl = rgb_to_hsl(orig_r, orig_g, orig_b);
+    let orig = unpack(input[idx]);
+    let hsl = rgb_to_hsl(orig.x, orig.y, orig.z);
     var h = hsl.x;
     var s = hsl.y;
     var l = hsl.z;
@@ -5296,21 +5301,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let rgb = hsl_to_rgb(h, s, l);
 
-    // Mix with original
-    let r = orig_r + (rgb.x - orig_r) * params.mix;
-    let g = orig_g + (rgb.y - orig_g) * params.mix;
-    let b = orig_b + (rgb.z - orig_b) * params.mix;
-
-    let ro = u32(clamp(r, 0.0, 1.0) * 255.0);
-    let go = u32(clamp(g, 0.0, 1.0) * 255.0);
-    let bo = u32(clamp(b, 0.0, 1.0) * 255.0);
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+    let mixed = orig.xyz + (rgb - orig.xyz) * params.mix;
+    output[idx] = pack(vec4<f32>(mixed, orig.w));
 }
-";
+"
+);
 
 // ─── Qualifier (Secondary Color Correction) GPU Shader ──────────────────────
 
-const SHADER_QUALIFIER: &str = "
+// Qualifier — HSL-based isolation + secondary colour correction on
+// matched pixels. HSL / hue-wheel values are now in linear light
+// (grey lum = 0.18 rather than 0.46). The sec_exposure adjustment
+// now acts as a physically correct 2^stops multiplier on the
+// isolated region.
+const SHADER_QUALIFIER: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -5337,6 +5342,9 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    "
 
 fn circular_distance(a: f32, b: f32) -> f32 {
     let d = abs(a - b);
@@ -5365,11 +5373,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
-    let pixel = input[idx];
-    let r = f32(pixel & 0xFFu) / 255.0;
-    let g = f32((pixel >> 8u) & 0xFFu) / 255.0;
-    let b = f32((pixel >> 16u) & 0xFFu) / 255.0;
-    let a = pixel & 0xFF000000u;
+    let orig = unpack(input[idx]);
+    let r = orig.x;
+    let g = orig.y;
+    let b = orig.z;
 
     // RGB -> HSL
     let mx = max(r, max(g, b));
@@ -5403,14 +5410,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Matte preview mode: output greyscale matte
     if params.matte_preview != 0u {
-        let v = u32(clamp(matte * 255.0, 0.0, 255.0));
-        output[idx] = v | (v << 8u) | (v << 16u) | a;
+        output[idx] = pack(vec4<f32>(matte, matte, matte, orig.w));
         return;
     }
 
     // Skip untouched pixels
     if matte < 0.001 {
-        output[idx] = pixel;
+        output[idx] = input[idx];
         return;
     }
 
@@ -5441,7 +5447,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         gb = luma + (gb - luma) * params.sec_saturation;
     }
 
-    // Hue shift (rotation matrix)
+    // Hue shift (rotation matrix — coefficients are from the classic
+    // AE luma-rotation matrix, tuned for linear-ish RGB)
     if abs(params.sec_hue_shift) > 0.001 {
         let cos_h = cos(params.sec_hue_shift);
         let sin_h = sin(params.sec_hue_shift);
@@ -5458,12 +5465,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // Blend through matte
-    let ro = u32(clamp((r * (1.0 - matte) + gr * matte) * 255.0, 0.0, 255.0));
-    let go2 = u32(clamp((g * (1.0 - matte) + gg * matte) * 255.0, 0.0, 255.0));
-    let bo2 = u32(clamp((b * (1.0 - matte) + gb * matte) * 255.0, 0.0, 255.0));
-    output[idx] = ro | (go2 << 8u) | (bo2 << 16u) | a;
+    let out = vec3<f32>(
+        r * (1.0 - matte) + gr * matte,
+        g * (1.0 - matte) + gg * matte,
+        b * (1.0 - matte) + gb * matte,
+    );
+    output[idx] = pack(vec4<f32>(out, orig.w));
 }
-";
+"
+);
 
 // ─── Film Grain GPU Shader ──────────────────────────────────────────────────
 
@@ -7215,8 +7225,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-// ── Color Balance (temperature / tint / hue rotation / global mix) ────────────
-const SHADER_COLOR_BALANCE: &str = "
+// Colour balance — temperature / tint additive shifts + optional
+// Rodrigues hue rotation around the luma diagonal. Additive shifts
+// in linear mean "add N units of light to R, subtract from B"
+// rather than "add N units of gamma-encoded byte."
+const SHADER_COLOR_BALANCE: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -7231,24 +7245,21 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
-    let pixel = input[idx];
-    let orig_r = f32(pixel & 0xFFu) / 255.0;
-    let orig_g = f32((pixel >> 8u) & 0xFFu) / 255.0;
-    let orig_b = f32((pixel >> 16u) & 0xFFu) / 255.0;
-    let a = (pixel >> 24u) & 0xFFu;
-
+    let orig = unpack(input[idx]);
     let t = params.temperature / 100.0 * 0.1;
     let g_tint = params.tint / 100.0 * 0.1;
 
-    var r = orig_r + t;
-    var g = orig_g + g_tint;
-    var b = orig_b - t;
+    var r = orig.x + t;
+    var g = orig.y + g_tint;
+    var b = orig.z - t;
 
     // Hue rotation in RGB (Rodrigues rotation around (1,1,1)/sqrt(3) axis)
     if abs(params.hue) > 0.01 {
@@ -7265,19 +7276,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // Global mix
-    r = orig_r + (r - orig_r) * params.global_mix;
-    g = orig_g + (g - orig_g) * params.global_mix;
-    b = orig_b + (b - orig_b) * params.global_mix;
+    r = orig.x + (r - orig.x) * params.global_mix;
+    g = orig.y + (g - orig.y) * params.global_mix;
+    b = orig.z + (b - orig.z) * params.global_mix;
 
-    let ro = u32(clamp(r, 0.0, 1.0) * 255.0);
-    let go = u32(clamp(g, 0.0, 1.0) * 255.0);
-    let bo = u32(clamp(b, 0.0, 1.0) * 255.0);
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+    output[idx] = pack(vec4<f32>(r, g, b, orig.w));
 }
-";
+"
+);
 
-// ── WheelSatBri (per-wheel saturation and brightness adjustments) ─────────────
-const SHADER_WHEEL_SAT_BRI: &str = "
+// Wheel sat/bri — per-wheel saturation and brightness adjustments,
+// band-weighted. Same formula as the sRGB version but in linear so
+// BT.709 luma sits in its defined domain and the wheel-band curves
+// (lift = 1 − luma, gain = luma, gamma = sin curve) target physical
+// tonal regions.
+const SHADER_WHEEL_SAT_BRI: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -7296,17 +7310,18 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
-    let pixel = input[idx];
-    var r = f32(pixel & 0xFFu) / 255.0;
-    var g = f32((pixel >> 8u) & 0xFFu) / 255.0;
-    var b = f32((pixel >> 16u) & 0xFFu) / 255.0;
-    let a = (pixel >> 24u) & 0xFFu;
+    let orig = unpack(input[idx]);
+    var r = orig.x;
+    var g = orig.y;
+    var b = orig.z;
 
     let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
 
@@ -7327,15 +7342,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     g = luma2 + (g - luma2) * sat_factor;
     b = luma2 + (b - luma2) * sat_factor;
 
-    let ro = u32(clamp(r, 0.0, 1.0) * 255.0);
-    let go = u32(clamp(g, 0.0, 1.0) * 255.0);
-    let bo = u32(clamp(b, 0.0, 1.0) * 255.0);
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+    output[idx] = pack(vec4<f32>(r, g, b, orig.w));
 }
-";
+"
+);
 
-// ── RGB Curves (LUT-based curve application) ──────────────────────────────────
-const SHADER_RGB_CURVES: &str = "
+// RGB curves — four LUT-lookup curves (master + per-channel).
+// Curves are authored on linear input now; 0.18 is mid-grey on
+// the curve axis, not 0.46. BT.709 luma coefficients apply to
+// linear directly for the preserve-luma option.
+const SHADER_RGB_CURVES: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -7352,10 +7369,12 @@ struct Params {
 // 256..511 = red
 // 512..767 = green
 // 768..1023 = blue
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 fn lut_lookup(channel: u32, val: f32) -> f32 {
     let base = channel * 256u;
-    let idx_f = val * 255.0;
+    let idx_f = clamp(val, 0.0, 1.0) * 255.0;
     let idx0 = u32(clamp(idx_f, 0.0, 254.0));
     let idx1 = idx0 + 1u;
     let frac = idx_f - f32(idx0);
@@ -7367,23 +7386,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
-    let pixel = input[idx];
-    let orig_r = f32(pixel & 0xFFu) / 255.0;
-    let orig_g = f32((pixel >> 8u) & 0xFFu) / 255.0;
-    let orig_b = f32((pixel >> 16u) & 0xFFu) / 255.0;
-    let a = (pixel >> 24u) & 0xFFu;
+    let orig = unpack(input[idx]);
 
     // Apply per-channel curves, then master
-    var r = lut_lookup(1u, orig_r);
-    var g = lut_lookup(2u, orig_g);
-    var b = lut_lookup(3u, orig_b);
+    var r = lut_lookup(1u, orig.x);
+    var g = lut_lookup(2u, orig.y);
+    var b = lut_lookup(3u, orig.z);
     r = lut_lookup(0u, r);
     g = lut_lookup(0u, g);
     b = lut_lookup(0u, b);
 
     // Preserve luma: scale output to match input luma
     if params.preserve_luma != 0u {
-        let orig_luma = 0.2126 * orig_r + 0.7152 * orig_g + 0.0722 * orig_b;
+        let orig_luma = 0.2126 * orig.x + 0.7152 * orig.y + 0.0722 * orig.z;
         let new_luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
         if new_luma > 0.0001 {
             let scale = orig_luma / new_luma;
@@ -7394,16 +7409,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // Mix with original
-    r = orig_r + (r - orig_r) * params.mix;
-    g = orig_g + (g - orig_g) * params.mix;
-    b = orig_b + (b - orig_b) * params.mix;
+    r = orig.x + (r - orig.x) * params.mix;
+    g = orig.y + (g - orig.y) * params.mix;
+    b = orig.z + (b - orig.z) * params.mix;
 
-    let ro = u32(clamp(r, 0.0, 1.0) * 255.0);
-    let go = u32(clamp(g, 0.0, 1.0) * 255.0);
-    let bo = u32(clamp(b, 0.0, 1.0) * 255.0);
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+    output[idx] = pack(vec4<f32>(r, g, b, orig.w));
 }
-";
+"
+);
 
 // ── Mask matte generation (SDF-based power windows) ───────────────────────────
 const SHADER_MASK: &str = "
