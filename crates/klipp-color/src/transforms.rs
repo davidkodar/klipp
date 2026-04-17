@@ -498,9 +498,9 @@ pub fn apply_input_transform(rgba: &mut [u8], log_format: klipp_core::LogFormat)
         }
 
         // Linear → sRGB gamma for display/grading in Rec.709
-        pixel[0] = (linear_to_srgb(lr).clamp(0.0, 1.0) * 255.0) as u8;
-        pixel[1] = (linear_to_srgb(lg).clamp(0.0, 1.0) * 255.0) as u8;
-        pixel[2] = (linear_to_srgb(lb).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[0] = (crate::transfer::linear_to_srgb(lr).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[1] = (crate::transfer::linear_to_srgb(lg).clamp(0.0, 1.0) * 255.0) as u8;
+        pixel[2] = (crate::transfer::linear_to_srgb(lb).clamp(0.0, 1.0) * 255.0) as u8;
     }
 }
 
@@ -717,22 +717,18 @@ pub fn build_input_transform_lut(log_format: klipp_core::LogFormat) -> [f32; 256
     for i in 0..256 {
         let v = i as f32 / 255.0;
         let linear = log_to_linear(v, log_format);
-        lut[i] = linear_to_srgb(linear).clamp(0.0, 1.0);
+        lut[i] = crate::transfer::linear_to_srgb(linear).clamp(0.0, 1.0);
     }
     lut
-}
-
-fn linear_to_srgb(v: f32) -> f32 {
-    if v <= 0.003_130_8 {
-        v * 12.92
-    } else {
-        1.055 * v.powf(1.0 / 2.4) - 0.055
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Tests in this module reference the sRGB transfer functions by
+    // their old unqualified names. They now live in crate::transfer
+    // — re-import them so the existing assertions keep compiling.
+    use crate::transfer::linear_to_srgb;
 
     fn make_pixel(r: u8, g: u8, b: u8) -> Vec<u8> {
         vec![r, g, b, 255]
@@ -1691,13 +1687,11 @@ mod tests {
 
     #[test]
     fn round_trip_linear_to_srgb_and_back() {
-        // srgb_to_linear is not exposed, so we test linear_to_srgb round-trip
-        // by verifying that linear_to_srgb(log_to_linear(v, Srgb)) ≈ linear_to_srgb(v)
-        // since log_to_linear for Srgb is identity.
-        // Instead, test that linear_to_srgb produces expected known values:
-        // linear_to_srgb(0.0) = 0.0
-        // linear_to_srgb(1.0) = 1.0
-        // linear_to_srgb(0.18) ≈ 0.4613 (18% gray in sRGB)
+        // Both directions of the transfer curve now live in
+        // crate::transfer and have their own thorough tests. The
+        // spot-check below stays to catch any accidental rewiring
+        // that pulls the wrong function into transforms.rs.
+        use crate::transfer::srgb_to_linear;
         assert!((linear_to_srgb(0.0) - 0.0).abs() < 0.001);
         assert!((linear_to_srgb(1.0) - 1.0).abs() < 0.001);
         let srgb_18 = linear_to_srgb(0.18);
@@ -1705,6 +1699,8 @@ mod tests {
             (srgb_18 - 0.4613).abs() < 0.01,
             "linear_to_srgb(0.18) should be ~0.4613, got {srgb_18}"
         );
+        // Forward direction is now exposed too.
+        assert!((srgb_to_linear(0.4613) - 0.18).abs() < 0.005);
     }
 
     #[test]

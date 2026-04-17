@@ -5,3 +5,6 @@ edition = "2021"
 
 [dependencies]
 klipp-core = { workspace = true }
+
+[dev-dependencies]
+klipp-testing = { path = "../klipp-testing" }

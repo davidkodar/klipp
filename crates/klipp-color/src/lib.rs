@@ -49,6 +49,7 @@ pub mod masks;
 pub mod qualifier;
 pub mod pipeline;
 pub mod scopes;
+pub mod transfer;
 pub mod transforms;
 pub mod warper;
 pub mod wheels;
