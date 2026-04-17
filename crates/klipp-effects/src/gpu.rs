@@ -777,7 +777,7 @@ impl GpuEffectsPipeline {
     #[allow(clippy::too_many_arguments)]
     pub fn apply_color_grade(
         &mut self,
-        rgba: Vec<u8>,
+        linear_rgba: Vec<f32>,
         width: u32,
         height: u32,
         exposure: f32,
@@ -795,9 +795,9 @@ impl GpuEffectsPipeline {
         offset: (f32, f32, f32),
         hue: f32,
         global_mix: f32,
-    ) -> Vec<u8> {
+    ) -> Vec<f32> {
         if self.is_device_lost() {
-            return rgba;
+            return linear_rgba;
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -805,7 +805,8 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.upload_u8_rgba_as_linear(buf_a, &rgba);
+        self.queue
+            .write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -840,22 +841,22 @@ impl GpuEffectsPipeline {
         });
         self.dispatch(&self.color_grade_pipeline, buf_a, buf_b, workgroups);
 
-        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
     /// Apply color balance (temperature, tint, hue rotation, global mix) on GPU.
     pub fn apply_color_balance_gpu(
         &mut self,
-        rgba: Vec<u8>,
+        linear_rgba: Vec<f32>,
         width: u32,
         height: u32,
         temperature: f32,
         tint: f32,
         hue: f32,
         global_mix: f32,
-    ) -> Vec<u8> {
+    ) -> Vec<f32> {
         if self.is_device_lost() {
-            return rgba;
+            return linear_rgba;
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -863,7 +864,8 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.upload_u8_rgba_as_linear(buf_a, &rgba);
+        self.queue
+            .write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -874,22 +876,22 @@ impl GpuEffectsPipeline {
         });
         self.dispatch(&self.color_balance_pipeline, buf_a, buf_b, workgroups);
 
-        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
     /// Apply per-wheel saturation & brightness adjustments on GPU.
     pub fn apply_wheel_sat_bri_gpu(
         &mut self,
-        rgba: Vec<u8>,
+        linear_rgba: Vec<f32>,
         width: u32,
         height: u32,
         lift_sat: f32, lift_bri: f32,
         gamma_sat: f32, gamma_bri: f32,
         gain_sat: f32, gain_bri: f32,
         offset_sat: f32, offset_bri: f32,
-    ) -> Vec<u8> {
+    ) -> Vec<f32> {
         if self.is_device_lost() {
-            return rgba;
+            return linear_rgba;
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -897,7 +899,8 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.upload_u8_rgba_as_linear(buf_a, &rgba);
+        self.queue
+            .write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -910,22 +913,22 @@ impl GpuEffectsPipeline {
         });
         self.dispatch(&self.wheel_sat_bri_pipeline, buf_a, buf_b, workgroups);
 
-        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
     /// Apply RGB curves on GPU using pre-computed LUTs.
     /// `lut_data` must be 4×256 f32 values (master, red, green, blue).
     pub fn apply_rgb_curves_gpu(
         &mut self,
-        rgba: Vec<u8>,
+        linear_rgba: Vec<f32>,
         width: u32,
         height: u32,
         lut_data: &[f32; 1024], // 4 × 256
         preserve_luma: bool,
         mix: f32,
-    ) -> Vec<u8> {
+    ) -> Vec<f32> {
         if self.is_device_lost() {
-            return rgba;
+            return linear_rgba;
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -933,7 +936,8 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.upload_u8_rgba_as_linear(buf_a, &rgba);
+        self.queue
+            .write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
 
         // Upload curve LUT data
         self.queue.write_buffer(&self.rgb_curves_lut_buf, 0, bytemuck::cast_slice(lut_data));
@@ -970,7 +974,7 @@ impl GpuEffectsPipeline {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1324,50 +1328,50 @@ impl GpuEffectsPipeline {
     }
 
     /// Apply vibrance on GPU.
-    pub fn apply_vibrance_gpu(&mut self, rgba: Vec<u8>, width: u32, height: u32, amount: f32) -> Vec<u8> {
+    pub fn apply_vibrance_gpu(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32, amount: f32) -> Vec<f32> {
         if self.is_device_lost() {
-            return rgba;
+            return linear_rgba;
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
-        self.upload_u8_rgba_as_linear(buf_a, &rgba);
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         self.write_params(&GpuVibranceParams { width, height, amount, _pad: 0 });
         self.dispatch(&self.vibrance_pipeline, buf_a, buf_b, workgroups);
-        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
     /// Apply 12-sector color warper on GPU.
-    pub fn apply_color_warper_gpu(&mut self, rgba: Vec<u8>, width: u32, height: u32, hue_shifts: &[f32; 12], sat_shifts: &[f32; 12]) -> Vec<u8> {
+    pub fn apply_color_warper_gpu(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32, hue_shifts: &[f32; 12], sat_shifts: &[f32; 12]) -> Vec<f32> {
         if self.is_device_lost() {
-            return rgba;
+            return linear_rgba;
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
-        self.upload_u8_rgba_as_linear(buf_a, &rgba);
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         self.write_params(&GpuColorWarperParams {
             width, height, _pad0: 0, _pad1: 0,
             hue_shifts: *hue_shifts, sat_shifts: *sat_shifts,
         });
         self.dispatch(&self.color_warper_pipeline, buf_a, buf_b, workgroups);
-        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
     /// Apply input transform (log-to-sRGB) on GPU using a pre-computed 1D LUT.
-    pub fn apply_input_transform_gpu(&mut self, rgba: Vec<u8>, width: u32, height: u32, lut_data: &[f32; 256]) -> Vec<u8> {
+    pub fn apply_input_transform_gpu(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32, lut_data: &[f32; 256]) -> Vec<f32> {
         if self.is_device_lost() {
-            return rgba;
+            return linear_rgba;
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
-        self.upload_u8_rgba_as_linear(buf_a, &rgba);
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
         self.queue.write_buffer(&self.input_transform_lut_buf, 0, bytemuck::cast_slice(lut_data));
         self.write_params(&GpuInputTransformParams { width, height, _pad0: 0, _pad1: 0 });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
@@ -1389,13 +1393,13 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
-        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
     /// Apply clarity (midtone unsharp mask) on GPU using 3-pass approach.
-    pub fn apply_clarity_gpu(&mut self, rgba: Vec<u8>, width: u32, height: u32, amount: f32) -> Vec<u8> {
+    pub fn apply_clarity_gpu(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32, amount: f32) -> Vec<f32> {
         if self.is_device_lost() {
-            return rgba;
+            return linear_rgba;
         }
         let byte_size = (width * height * 16) as u64;
         let _luma_size = (width * height * 4) as u64; // store luma as u32 per pixel
@@ -1413,7 +1417,7 @@ impl GpuEffectsPipeline {
         let buf_b = self.buf_b.as_ref().unwrap();
         let buf_c = self.buf_c.as_ref().unwrap();
 
-        self.upload_u8_rgba_as_linear(buf_a, &rgba);
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let radius = 20u32;
 
@@ -1444,20 +1448,20 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
-        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
     /// Apply bilateral denoise on GPU. Used by the color grading Denoise node.
     pub fn apply_denoise_gpu(
         &mut self,
-        rgba: Vec<u8>,
+        linear_rgba: Vec<f32>,
         width: u32,
         height: u32,
         spatial_sigma: f32,
         color_sigma: f32,
-    ) -> Vec<u8> {
+    ) -> Vec<f32> {
         if self.is_device_lost() {
-            return rgba;
+            return linear_rgba;
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -1465,7 +1469,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.upload_u8_rgba_as_linear(buf_a, &rgba);
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -1475,7 +1479,7 @@ impl GpuEffectsPipeline {
         });
         self.dispatch(&self.denoise_pipeline, buf_a, buf_b, workgroups);
 
-        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
     /// Generate a mask matte on GPU. Supports up to 4 masks (circle, rect, linear gradient).
@@ -1532,14 +1536,14 @@ impl GpuEffectsPipeline {
     /// `lut_data` must be 6×256 f32 values (6 curves, 256 entries each).
     pub fn apply_huesat_gpu(
         &mut self,
-        rgba: Vec<u8>,
+        linear_rgba: Vec<f32>,
         width: u32,
         height: u32,
         mix: f32,
         lut_data: &[f32; 1536], // 6 × 256
-    ) -> Vec<u8> {
+    ) -> Vec<f32> {
         if self.is_device_lost() {
-            return rgba;
+            return linear_rgba;
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -1547,7 +1551,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.upload_u8_rgba_as_linear(buf_a, &rgba);
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
 
         // Upload LUT data
         self.queue.write_buffer(&self.huesat_lut_buf, 0, bytemuck::cast_slice(lut_data));
@@ -1586,25 +1590,25 @@ impl GpuEffectsPipeline {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
     /// Apply a 3D LUT with trilinear interpolation on GPU.
     /// `lut_data` is RGB triples in B-major order, `lut_size` is the grid dimension (e.g. 33).
     pub fn apply_3d_lut_gpu(
         &mut self,
-        rgba: Vec<u8>,
+        linear_rgba: Vec<f32>,
         width: u32,
         height: u32,
         lut_data: &[f32],
         lut_size: u32,
         opacity: f32,
-    ) -> Vec<u8> {
+    ) -> Vec<f32> {
         if self.is_device_lost() {
-            return rgba;
+            return linear_rgba;
         }
         if opacity <= 0.0 {
-            return rgba;
+            return linear_rgba;
         }
 
         let byte_size = (width * height * 16) as u64;
@@ -1613,7 +1617,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.upload_u8_rgba_as_linear(buf_a, &rgba);
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
 
         // (Re-)create LUT buffer if needed
         let lut_byte_size = (lut_data.len() * 4) as u64;
@@ -1661,7 +1665,7 @@ impl GpuEffectsPipeline {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
     /// Apply qualifier (secondary color correction) on GPU.
@@ -1669,7 +1673,7 @@ impl GpuEffectsPipeline {
     #[allow(clippy::too_many_arguments)]
     pub fn apply_qualifier_gpu(
         &mut self,
-        rgba: Vec<u8>,
+        linear_rgba: Vec<f32>,
         width: u32,
         height: u32,
         hue_center: f32, hue_width: f32, hue_soft: f32,
@@ -1678,9 +1682,9 @@ impl GpuEffectsPipeline {
         invert: bool,
         sec_exposure: f32, sec_saturation: f32, sec_hue_shift: f32, sec_temperature: f32,
         matte_preview: bool,
-    ) -> Vec<u8> {
+    ) -> Vec<f32> {
         if self.is_device_lost() {
-            return rgba;
+            return linear_rgba;
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -1688,7 +1692,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.upload_u8_rgba_as_linear(buf_a, &rgba);
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
 
         self.write_params(&GpuQualifierParams {
             width,
@@ -1717,13 +1721,13 @@ impl GpuEffectsPipeline {
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
         self.dispatch(&self.qualifier_pipeline, buf_a, buf_b, workgroups);
-        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
     /// Apply film grain overlay on GPU.
     pub fn apply_grain_gpu(
         &mut self,
-        rgba: Vec<u8>,
+        linear_rgba: Vec<f32>,
         width: u32,
         height: u32,
         amount: f32,
@@ -1732,9 +1736,9 @@ impl GpuEffectsPipeline {
         highlights: f32,
         monochrome: bool,
         frame_seed: u32,
-    ) -> Vec<u8> {
+    ) -> Vec<f32> {
         if self.is_device_lost() {
-            return rgba;
+            return linear_rgba;
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
@@ -1742,7 +1746,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.upload_u8_rgba_as_linear(buf_a, &rgba);
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(&linear_rgba));
 
         self.write_params(&GpuGrainParams {
             width,
@@ -1759,7 +1763,7 @@ impl GpuEffectsPipeline {
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
         self.dispatch(&self.grain_pipeline, buf_a, buf_b, workgroups);
-        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
     /// Apply a chain of effects on the GPU. Returns the processed RGBA data.

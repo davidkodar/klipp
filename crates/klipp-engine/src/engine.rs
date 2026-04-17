@@ -5784,16 +5784,17 @@ impl PlaybackEngine {
         let t4 = std::time::Instant::now();
 
         // 4. Global color pipeline (GPU-accelerated 3D LUT when available).
-        //    `apply_3d_lut_gpu` and `color_pipeline.process_frame` still
-        //    speak u8; bridge locally and comment the reason.
+        //    `apply_3d_lut_gpu` now speaks linear-f32. The CPU fallback
+        //    `color_pipeline.process_frame` still speaks u8 — bracket only that
+        //    branch.
         let rgba = if self.color_pipeline.enabled {
-            let rgba_u8 = linear_rgba_to_u8(&rgba);
-            let out_u8 = if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
-                gpu.apply_3d_lut_gpu(rgba_u8, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
+            if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
+                gpu.apply_3d_lut_gpu(rgba, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
             } else {
-                self.color_pipeline.process_frame(rgba_u8, width, height)
-            };
-            u8_rgba_to_linear(&out_u8)
+                let rgba_u8 = linear_rgba_to_u8(&rgba);
+                let out_u8 = self.color_pipeline.process_frame(rgba_u8, width, height);
+                u8_rgba_to_linear(&out_u8)
+            }
         } else {
             rgba
         };
@@ -5824,13 +5825,13 @@ impl PlaybackEngine {
                 }
             } else { pre_builtin };
             let r = if self.color_pipeline.enabled {
-                let r_u8 = linear_rgba_to_u8(&r);
-                let out_u8 = if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
-                    gpu.apply_3d_lut_gpu(r_u8, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
+                if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
+                    gpu.apply_3d_lut_gpu(r, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
                 } else {
-                    self.color_pipeline.process_frame(r_u8, width, height)
-                };
-                u8_rgba_to_linear(&out_u8)
+                    let r_u8 = linear_rgba_to_u8(&r);
+                    let out_u8 = self.color_pipeline.process_frame(r_u8, width, height);
+                    u8_rgba_to_linear(&out_u8)
+                }
             } else { r };
             Some(r)
         } else { None };
@@ -5855,13 +5856,13 @@ impl PlaybackEngine {
                 // Global color LUT — same pass as the main path so both
                 // halves are pixel-comparable.
                 if self.color_pipeline.enabled {
-                    let r_u8 = linear_rgba_to_u8(&r);
-                    let out_u8 = if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
-                        gpu.apply_3d_lut_gpu(r_u8, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
+                    if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
+                        gpu.apply_3d_lut_gpu(r, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
                     } else {
-                        self.color_pipeline.process_frame(r_u8, width, height)
-                    };
-                    u8_rgba_to_linear(&out_u8)
+                        let r_u8 = linear_rgba_to_u8(&r);
+                        let out_u8 = self.color_pipeline.process_frame(r_u8, width, height);
+                        u8_rgba_to_linear(&out_u8)
+                    }
                 } else {
                     r
                 }
@@ -5888,13 +5889,13 @@ impl PlaybackEngine {
                     r
                 };
                 if self.color_pipeline.enabled {
-                    let r_u8 = linear_rgba_to_u8(&r);
-                    let out_u8 = if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
-                        gpu.apply_3d_lut_gpu(r_u8, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
+                    if let (Some(lut), Some(gpu)) = (&self.color_pipeline.global_lut, &mut self.gpu_effects) {
+                        gpu.apply_3d_lut_gpu(r, width, height, &lut.data, lut.size as u32, self.color_pipeline.global_lut_opacity)
                     } else {
-                        self.color_pipeline.process_frame(r_u8, width, height)
-                    };
-                    u8_rgba_to_linear(&out_u8)
+                        let r_u8 = linear_rgba_to_u8(&r);
+                        let out_u8 = self.color_pipeline.process_frame(r_u8, width, height);
+                        u8_rgba_to_linear(&out_u8)
+                    }
                 } else {
                     r
                 }
