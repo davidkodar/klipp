@@ -404,6 +404,12 @@ pub struct PlaybackEngine {
     /// into `fb.pending_data`. The returned stale pending_data comes
     /// back here so we don't churn 33 MB/frame through the allocator.
     composite_scratch_u8: Vec<u8>,
+    /// Display-side tone-mapping operator applied at the viewer
+    /// boundary. `None` by default (identity — SDR content never
+    /// exceeds 1.0 linear so the curve is a no-op). `Hable` or
+    /// `Reinhard` become useful once HDR footage surfaces; flipping
+    /// this is a one-line change. See [`klipp_color::display`].
+    tone_map_op: klipp_color::display::ToneMapOp,
     // Rolling shutter correction motion cache
     rsc_motion_cache: klipp_effects::rolling_shutter::MotionCache,
     // Transition decoder — secondary decoder for the partner clip during transitions
@@ -620,6 +626,7 @@ impl PlaybackEngine {
             },
             composite_scratch_linear: Vec::new(),
             composite_scratch_u8: Vec::new(),
+            tone_map_op: klipp_color::display::ToneMapOp::None,
             rsc_motion_cache: klipp_effects::rolling_shutter::MotionCache::new(256),
             transition_decoder: None,
             transition_clip_id: None,
@@ -2545,8 +2552,14 @@ impl PlaybackEngine {
         }
 
         // Encode the final linear composite to u8 for downstream (viewer,
-        // export, cache). Single conversion per frame, at the last step.
-        let final_rgba = linear_rgba_to_u8(&accumulated_linear);
+        // export, cache). This is the display boundary — applies the
+        // user-selected tone-map operator (None = identity for SDR) then
+        // sRGB-encodes the result. For `ToneMapOp::None` + SDR content
+        // this is bit-identical to the old linear_rgba_to_u8 path.
+        let final_rgba = klipp_color::display::display_transform(
+            &accumulated_linear,
+            self.tone_map_op,
+        );
         // Return the linear scratch to the pool for the next frame.
         self.composite_scratch_linear = accumulated_linear;
 
@@ -4958,7 +4971,12 @@ impl PlaybackEngine {
                     }
                 }
                 let linear_out = composite_layers_linear(&layers, w, h);
-                out = linear_rgba_to_u8(&linear_out);
+                // Display boundary — same tone-map path as the main
+                // playback compositor.
+                out = klipp_color::display::display_transform(
+                    &linear_out,
+                    self.tone_map_op,
+                );
             }
 
             // Render GPU scope texture from the graded frame
