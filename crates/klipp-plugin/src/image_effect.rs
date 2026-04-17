@@ -236,6 +236,7 @@ unsafe extern "C" fn get_property_set_fn(
     effect: OfxImageEffectHandle,
     props_out: *mut OfxPropertySetHandle,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(props_out);
     match instance::with_instance(effect, |inst| inst.props_handle) {
         Some(h) => {
@@ -247,12 +248,14 @@ unsafe extern "C" fn get_property_set_fn(
             K_OFX_STAT_ERR_BAD_HANDLE
         }
     }
+    })
 }
 
 unsafe extern "C" fn get_param_set_fn(
     effect: OfxImageEffectHandle,
     param_set_out: *mut OfxParamSetHandle,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(param_set_out);
     match instance::with_instance(effect, |inst| inst.param_set_handle) {
         Some(h) => {
@@ -264,6 +267,7 @@ unsafe extern "C" fn get_param_set_fn(
             K_OFX_STAT_ERR_BAD_HANDLE
         }
     }
+    })
 }
 
 unsafe extern "C" fn clip_define_fn(
@@ -271,6 +275,7 @@ unsafe extern "C" fn clip_define_fn(
     name: *const c_char,
     props_out: *mut OfxPropertySetHandle,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(name);
     // props_out write below is individually guarded.
     let name_str = CStr::from_ptr(name).to_string_lossy();
@@ -289,6 +294,7 @@ unsafe extern "C" fn clip_define_fn(
         }
         None => K_OFX_STAT_ERR_BAD_HANDLE,
     }
+    })
 }
 
 unsafe extern "C" fn clip_get_handle_fn(
@@ -297,6 +303,7 @@ unsafe extern "C" fn clip_get_handle_fn(
     clip_out: *mut OfxImageClipHandle,
     props_out: *mut OfxPropertySetHandle,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(name);
     // clip_out / props_out writes below are individually guarded.
     let name_str = CStr::from_ptr(name).to_string_lossy();
@@ -354,12 +361,14 @@ unsafe extern "C" fn clip_get_handle_fn(
             }
         }
     }
+    })
 }
 
 unsafe extern "C" fn clip_get_property_set_fn(
     clip: OfxImageClipHandle,
     props_out: *mut OfxPropertySetHandle,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(props_out);
     match instance::lookup_clip(clip) {
         Some((inst_handle, clip_name)) => {
@@ -375,6 +384,7 @@ unsafe extern "C" fn clip_get_property_set_fn(
         }
         None => K_OFX_STAT_ERR_BAD_HANDLE,
     }
+    })
 }
 
 unsafe extern "C" fn clip_get_image_fn(
@@ -383,6 +393,7 @@ unsafe extern "C" fn clip_get_image_fn(
     _region: *const OfxRectD,
     img_props_out: *mut OfxPropertySetHandle,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(img_props_out);
     // Find which instance this clip belongs to
     let Some((inst_handle, clip_name)) = instance::lookup_clip(clip) else {
@@ -459,14 +470,17 @@ unsafe extern "C" fn clip_get_image_fn(
         }
         K_OFX_STAT_FAILED
     }
+    })
 }
 
 unsafe extern "C" fn clip_release_image_fn(
     _img_props: OfxPropertySetHandle,
 ) -> OfxStatus {
+    ofx_guard!({
     // Images are managed by the host — release is a no-op during render.
     // The host cleans up after the render action completes.
     K_OFX_STAT_OK
+    })
 }
 
 unsafe extern "C" fn clip_get_region_of_definition_fn(
@@ -474,6 +488,7 @@ unsafe extern "C" fn clip_get_region_of_definition_fn(
     _time: c_double,
     bounds: *mut OfxRectD,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(bounds);
     // Return the clip's image bounds if available
     let Some((inst_handle, clip_name)) = instance::lookup_clip(clip) else {
@@ -496,6 +511,7 @@ unsafe extern "C" fn clip_get_region_of_definition_fn(
         }
         _ => K_OFX_STAT_FAILED,
     }
+    })
 }
 
 unsafe extern "C" fn abort_fn(effect: OfxImageEffectHandle) -> c_int {
@@ -509,6 +525,7 @@ unsafe extern "C" fn image_memory_alloc_fn(
     n_bytes: usize,
     handle: *mut OfxImageMemoryHandle,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(handle);
     let buf = vec![0u8; n_bytes];
     let key = IMG_MEM_NEXT_HANDLE
@@ -516,18 +533,22 @@ unsafe extern "C" fn image_memory_alloc_fn(
     IMG_MEM_STORE.lock().unwrap_or_else(|e| e.into_inner()).insert(key, buf);
     *handle = key as OfxImageMemoryHandle;
     K_OFX_STAT_OK
+    })
 }
 
 unsafe extern "C" fn image_memory_free_fn(handle: OfxImageMemoryHandle) -> OfxStatus {
+    ofx_guard!({
     let key = handle as usize;
     IMG_MEM_STORE.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
     K_OFX_STAT_OK
+    })
 }
 
 unsafe extern "C" fn image_memory_lock_fn(
     handle: OfxImageMemoryHandle,
     ptr: *mut *mut c_void,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(ptr);
     let key = handle as usize;
     match IMG_MEM_STORE.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key) {
@@ -537,10 +558,13 @@ unsafe extern "C" fn image_memory_lock_fn(
         }
         None => K_OFX_STAT_ERR_BAD_HANDLE,
     }
+    })
 }
 
 unsafe extern "C" fn image_memory_unlock_fn(_handle: OfxImageMemoryHandle) -> OfxStatus {
+    ofx_guard!({
     K_OFX_STAT_OK
+    })
 }
 
 /// Static OfxImageEffectSuiteV1 table.

@@ -465,6 +465,7 @@ unsafe extern "C" fn param_define_fn(
     name: *const c_char,
     props_out: *mut OfxPropertySetHandle,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(param_type, name);
     // props_out is optional by OFX convention: if the plugin does not need
     // the handle back it may pass null. The write below is guarded.
@@ -496,6 +497,7 @@ unsafe extern "C" fn param_define_fn(
         *props_out = props_handle;
     }
     K_OFX_STAT_OK
+    })
 }
 
 unsafe extern "C" fn param_get_handle_fn(
@@ -504,6 +506,7 @@ unsafe extern "C" fn param_get_handle_fn(
     handle_out: *mut OfxParamHandle,
     props_out: *mut OfxPropertySetHandle,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(name);
     // handle_out and props_out writes below are individually guarded so the
     // plugin can opt out of either return value.
@@ -554,12 +557,14 @@ unsafe extern "C" fn param_get_handle_fn(
         }
     }
     K_OFX_STAT_OK
+    })
 }
 
 unsafe extern "C" fn param_set_get_property_set_fn(
     param_set: OfxParamSetHandle,
     props_out: *mut OfxPropertySetHandle,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(props_out);
     let key = param_set as usize;
     let store = PARAM_SET_STORE.lock().unwrap_or_else(|e| e.into_inner());
@@ -570,12 +575,14 @@ unsafe extern "C" fn param_set_get_property_set_fn(
         }
         None => K_OFX_STAT_ERR_BAD_HANDLE,
     }
+    })
 }
 
 unsafe extern "C" fn param_get_property_set_fn(
     handle: OfxParamHandle,
     props_out: *mut OfxPropertySetHandle,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(props_out);
     match with_param(handle, |pi| pi.props_handle) {
         Some(h) => {
@@ -584,12 +591,14 @@ unsafe extern "C" fn param_get_property_set_fn(
         }
         None => K_OFX_STAT_ERR_BAD_HANDLE,
     }
+    })
 }
 
 /// paramGetValue — reads the current value into output pointer(s).
 /// The C signature is variadic but we receive it as a single *mut c_void
 /// pointing to the first output argument. We dispatch based on param type.
 unsafe extern "C" fn param_get_value_fn(handle: OfxParamHandle, out: *mut c_void) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(out);
     let key = handle as usize;
     let store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
@@ -672,6 +681,7 @@ unsafe extern "C" fn param_get_value_fn(handle: OfxParamHandle, out: *mut c_void
         }
     }
     K_OFX_STAT_OK
+    })
 }
 
 /// paramGetValueAtTime — returns interpolated value at the given time.
@@ -681,6 +691,7 @@ unsafe extern "C" fn param_get_value_at_time_fn(
     time: c_double,
     out: *mut c_void,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(out);
     let key = handle as usize;
     let store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
@@ -698,6 +709,7 @@ unsafe extern "C" fn param_get_value_at_time_fn(
 
     write_param_value(&value, &pi.descriptor, out);
     K_OFX_STAT_OK
+    })
 }
 
 /// paramGetDerivative — returns the rate of change at a given time.
@@ -706,6 +718,7 @@ unsafe extern "C" fn param_get_derivative_fn(
     time: c_double,
     out: *mut c_void,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(out);
     let key = handle as usize;
     let store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
@@ -739,6 +752,7 @@ unsafe extern "C" fn param_get_derivative_fn(
 
     *(out as *mut f64) = derivative;
     K_OFX_STAT_OK
+    })
 }
 
 /// paramGetIntegral — returns the area under the curve between time1 and time2.
@@ -749,6 +763,7 @@ unsafe extern "C" fn param_get_integral_fn(
     time2: c_double,
     out: *mut c_void,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(out);
     let key = handle as usize;
     let store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
@@ -790,10 +805,12 @@ unsafe extern "C" fn param_get_integral_fn(
 
     *(out as *mut f64) = integral;
     K_OFX_STAT_OK
+    })
 }
 
 /// paramSetValue — write value from input pointer(s).
 unsafe extern "C" fn param_set_value_fn(handle: OfxParamHandle, input: *const c_void) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(input);
     let key = handle as usize;
     let mut store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
@@ -845,6 +862,7 @@ unsafe extern "C" fn param_set_value_fn(handle: OfxParamHandle, input: *const c_
         _ => {}
     }
     K_OFX_STAT_OK
+    })
 }
 
 /// paramSetValueAtTime — inserts or replaces a keyframe at the given time.
@@ -853,6 +871,7 @@ unsafe extern "C" fn param_set_value_at_time_fn(
     time: c_double,
     input: *const c_void,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(input);
     let key = handle as usize;
     let mut store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
@@ -899,12 +918,14 @@ unsafe extern "C" fn param_set_value_at_time_fn(
 
     insert_keyframe(&mut pi.keyframes, time, value);
     K_OFX_STAT_OK
+    })
 }
 
 unsafe extern "C" fn param_get_num_keys_fn(
     handle: OfxParamHandle,
     n: *mut c_uint,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(n);
     let key = handle as usize;
     let store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
@@ -915,6 +936,7 @@ unsafe extern "C" fn param_get_num_keys_fn(
         }
         None => K_OFX_STAT_ERR_BAD_HANDLE,
     }
+    })
 }
 
 unsafe extern "C" fn param_get_key_time_fn(
@@ -922,6 +944,7 @@ unsafe extern "C" fn param_get_key_time_fn(
     nth: c_uint,
     time: *mut c_double,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(time);
     let key = handle as usize;
     let store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
@@ -935,6 +958,7 @@ unsafe extern "C" fn param_get_key_time_fn(
         }
         None => K_OFX_STAT_ERR_BAD_INDEX,
     }
+    })
 }
 
 unsafe extern "C" fn param_get_key_index_fn(
@@ -943,6 +967,7 @@ unsafe extern "C" fn param_get_key_index_fn(
     direction: c_int,
     index: *mut c_int,
 ) -> OfxStatus {
+    ofx_guard!({
     check_non_null!(index);
     let key = handle as usize;
     let store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
@@ -990,12 +1015,14 @@ unsafe extern "C" fn param_get_key_index_fn(
         }
         _ => K_OFX_STAT_ERR_VALUE,
     }
+    })
 }
 
 unsafe extern "C" fn param_delete_key_fn(
     handle: OfxParamHandle,
     time: c_double,
 ) -> OfxStatus {
+    ofx_guard!({
     let key = handle as usize;
     let mut store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(pi) = store.get_mut(&key) else {
@@ -1010,9 +1037,11 @@ unsafe extern "C" fn param_delete_key_fn(
         }
         None => K_OFX_STAT_ERR_VALUE,
     }
+    })
 }
 
 unsafe extern "C" fn param_delete_all_keys_fn(handle: OfxParamHandle) -> OfxStatus {
+    ofx_guard!({
     let key = handle as usize;
     let mut store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
     let Some(pi) = store.get_mut(&key) else {
@@ -1020,6 +1049,7 @@ unsafe extern "C" fn param_delete_all_keys_fn(handle: OfxParamHandle) -> OfxStat
     };
     pi.keyframes.clear();
     K_OFX_STAT_OK
+    })
 }
 
 unsafe extern "C" fn param_copy_fn(
@@ -1028,6 +1058,7 @@ unsafe extern "C" fn param_copy_fn(
     offset: c_double,
     range: *const OfxRangeD,
 ) -> OfxStatus {
+    ofx_guard!({
     let src_key = src as usize;
     let dst_key = dst as usize;
     let mut store = PARAM_STORE.lock().unwrap_or_else(|e| e.into_inner());
@@ -1065,17 +1096,22 @@ unsafe extern "C" fn param_copy_fn(
         }
     }
     K_OFX_STAT_OK
+    })
 }
 
 unsafe extern "C" fn param_edit_begin_fn(
     _param_set: OfxParamSetHandle,
     _name: *const c_char,
 ) -> OfxStatus {
+    ofx_guard!({
     K_OFX_STAT_OK
+    })
 }
 
 unsafe extern "C" fn param_edit_end_fn(_param_set: OfxParamSetHandle) -> OfxStatus {
+    ofx_guard!({
     K_OFX_STAT_OK
+    })
 }
 
 /// Static OfxParameterSuiteV1 table.

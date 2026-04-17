@@ -17,6 +17,36 @@ macro_rules! check_non_null {
     };
 }
 
+/// Wrap an OFX callback body so that a panic turns into
+/// `K_OFX_STAT_ERR_FATAL` instead of unwinding across the FFI boundary
+/// (which is UB on Rust 2021 and aborts the whole host process on 2024).
+///
+/// Usage: `ofx_guard!({ body })` inside every `unsafe extern "C" fn … ->
+/// OfxStatus`. The body executes inside `catch_unwind`; any panic from
+/// inside — allocation failure, index out of bounds, a residual
+/// `.unwrap()` on unexpected state — is logged and converted to a clean
+/// error status the plugin can observe. `AssertUnwindSafe` is used
+/// because the callback body typically touches shared Mutex-protected
+/// global stores; lock poisoning from a panic mid-critical-section is
+/// handled by the workspace-wide unwrap_or_else(|e| e.into_inner())
+/// treatment applied in a previous pass.
+#[macro_export]
+macro_rules! ofx_guard {
+    ($body:block) => {{
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> $crate::ffi::OfxStatus { $body },
+        )) {
+            Ok(status) => status,
+            Err(_) => {
+                tracing::error!(
+                    "OFX callback panicked — returning K_OFX_STAT_ERR_FATAL",
+                );
+                $crate::ffi::K_OFX_STAT_ERR_FATAL
+            }
+        }
+    }};
+}
+
 pub mod constants;
 pub mod ffi;
 pub mod gpu_cuda;
