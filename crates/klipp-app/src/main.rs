@@ -1,3 +1,23 @@
+//! Klipp desktop binary.
+//!
+//! Wires the engine, media pool, and UI into a single process. The
+//! real work lives in [`klipp_engine::PlaybackEngine`] and
+//! [`klipp_ui::app::KlippApp`]; this binary is a thin orchestrator:
+//!
+//! 1. Install the tracing subscriber and start the startup timer.
+//! 2. Pre-warm expensive probes (audio devices, OFX plugins, font
+//!    registry) on background threads so the first frame doesn't
+//!    block on them.
+//! 3. Construct shared `Arc<RwLock<Sequence>>` and
+//!    `Arc<RwLock<MediaPool>>` state.
+//! 4. Spawn the playback engine on its own thread (crossbeam channel
+//!    for commands, another for events).
+//! 5. Launch the eframe/egui event loop with `KlippApp` as the
+//!    `eframe::App` trait object.
+//!
+//! Nothing else. Commands funnel through `AppCommand`, events through
+//! `AppEvent`, both defined in `klipp-core`.
+
 use anyhow::Result;
 use klipp_core::startup_timer::{mark, mark_process_start, LogTimer};
 use klipp_engine::{FrameBuffer, PlaybackEngine};
