@@ -721,7 +721,16 @@ unsafe extern "C" fn flush_resources_fn() -> OfxStatus {
 
 /// Global OpenGL runtime reference for suite functions.
 /// Set by the host before calling render actions.
-static GL_RUNTIME_STORE: LazyLock<Mutex<Option<&'static OpenGlRuntime>>> =
+///
+/// Stored as `Arc<OpenGlRuntime>` so the runtime outlives the store's
+/// read, no matter what: if the host drops `self.opengl` between
+/// `set_gl_runtime` and `clear_gl_runtime` — e.g. because a plugin
+/// callback on another thread panics before the render action returns
+/// — the Arc held here keeps the runtime alive until the store is
+/// cleared or overwritten. Previous implementation used
+/// `&'static OpenGlRuntime` synthesised from a raw pointer, which was a
+/// guaranteed UAF in exactly that drop-between-set-and-clear window.
+static GL_RUNTIME_STORE: LazyLock<Mutex<Option<std::sync::Arc<OpenGlRuntime>>>> =
     LazyLock::new(|| Mutex::new(None));
 
 /// Maps output texture ID → FBO ID for cleanup.
@@ -730,11 +739,12 @@ static GL_FBO_STORE: LazyLock<Mutex<HashMap<GLuint, GLuint>>> =
 
 /// Set the global GL runtime reference (called by host before GPU render).
 ///
-/// # Safety
-/// The reference must remain valid for the duration of the render.
-pub unsafe fn set_gl_runtime(rt: &OpenGlRuntime) {
-    let ptr = rt as *const OpenGlRuntime;
-    *GL_RUNTIME_STORE.lock().unwrap_or_else(|e| e.into_inner()) = Some(&*ptr);
+/// Takes an `Arc` clone so the store shares ownership of the runtime —
+/// the runtime remains valid for the duration of the render even if
+/// the host's own handle is dropped in the middle (e.g. on a plugin
+/// panic). No `unsafe` needed: ownership, not lifetime-transmutation.
+pub fn set_gl_runtime(rt: std::sync::Arc<OpenGlRuntime>) {
+    *GL_RUNTIME_STORE.lock().unwrap_or_else(|e| e.into_inner()) = Some(rt);
 }
 
 /// Clear the global GL runtime reference (called by host after GPU render).

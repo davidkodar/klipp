@@ -207,7 +207,13 @@ pub struct OfxHostRuntime {
     /// OpenCL runtime (if available — AMD/Intel/NVIDIA).
     opencl: Option<crate::gpu_opencl::OpenClRuntime>,
     /// OpenGL runtime (if available — headless EGL context).
-    opengl: Option<crate::gpu_opengl::OpenGlRuntime>,
+    ///
+    /// Wrapped in `Arc` so the runtime can be shared with the global
+    /// `GL_RUNTIME_STORE` used by the OFX GL suite callbacks without any
+    /// lifetime transmutation. A panic during render that drops this
+    /// host field can no longer leave the suite store pointing at freed
+    /// memory — the Arc keeps the runtime alive until cleared.
+    opengl: Option<std::sync::Arc<crate::gpu_opengl::OpenGlRuntime>>,
     /// Current render context — frame dimensions for temporal access.
     render_width: u32,
     render_height: u32,
@@ -238,7 +244,7 @@ impl OfxHostRuntime {
 
         let cuda: Option<crate::gpu_cuda::CudaRuntime> = None;
         let opencl: Option<crate::gpu_opencl::OpenClRuntime> = None;
-        let opengl: Option<crate::gpu_opengl::OpenGlRuntime> = None;
+        let opengl: Option<std::sync::Arc<crate::gpu_opengl::OpenGlRuntime>> = None;
 
         let host_propset_handle = property::register_propset(host_props);
 
@@ -1305,7 +1311,8 @@ impl OfxHostRuntime {
         if use_opengl && !cuda_active && !opencl_active {
             // Lazy init: create OpenGL context on first use
             if self.opengl.is_none() {
-                self.opengl = crate::gpu_opengl::OpenGlRuntime::new();
+                self.opengl = crate::gpu_opengl::OpenGlRuntime::new()
+                    .map(std::sync::Arc::new);
                 if self.opengl.is_none() {
                     warn!("OFX: OpenGL context creation failed at render time");
                 }
@@ -1313,10 +1320,11 @@ impl OfxHostRuntime {
             if let Some(ref gl) = self.opengl {
                 if gl.make_current() {
                     opengl_active = true;
-                    // Store the runtime reference for the suite functions.
-                    // Safety: self.opengl is stable in memory (Box behind Option,
-                    // self is &mut so no concurrent access) and we clear it after render.
-                    unsafe { crate::gpu_opengl::set_gl_runtime(gl) };
+                    // Share ownership of the runtime with the suite-level
+                    // GL_RUNTIME_STORE via Arc. The store keeps the runtime
+                    // alive even if self.opengl is dropped between set and
+                    // clear (e.g. on a panic unwind).
+                    crate::gpu_opengl::set_gl_runtime(std::sync::Arc::clone(gl));
 
                     // Call kOfxActionOpenGLContextAttached (once per instance)
                     let needs_attach = instance::with_instance(inst_handle, |inst| {
