@@ -1,3 +1,30 @@
+//! Title / text rasteriser: layout, glyph compositing, and style runs.
+//!
+//! Given a [`klipp_timeline::TitleData`] — text content, font choice,
+//! size, colour, alignment, shadow / outline / glow / gradient /
+//! pattern / motion-blur parameters, plus per-character style runs for
+//! mixed formatting — this crate produces an RGBA buffer ready for
+//! compositing over a video frame.
+//!
+//! Layout runs through `fontdue` (pure-Rust TTF/OTF rasteriser) so the
+//! crate has no C dependency. System font discovery is in
+//! [`font_discovery`] and is cached at startup via
+//! `~/.cache/klipp/font_registry.json`.
+//!
+//! # Alpha mask processor
+//!
+//! [`AlphaMaskProcessor`] is the trait the title renderer calls for
+//! GPU-accelerated alpha-mask operations (e.g. feather, dilate, erode
+//! for glows and shadows). The concrete impl lives in `klipp-engine`
+//! to avoid a circular dep — pass one in via
+//! [`TitleRenderer::render_with_gpu`].
+//!
+//! # Fallback font
+//!
+//! An embedded Noto Sans Regular (OFL) is linked in so titles always
+//! render, even when the user's system has no matching font. It's
+//! picked automatically when the requested font can't be resolved.
+
 use fontdue::layout::{
     CoordinateSystem, HorizontalAlign, Layout, LayoutSettings, TextStyle, VerticalAlign,
     WrapStyle,
