@@ -173,6 +173,7 @@ impl KeyBindings {
         bind(&mut b, "toggle_zebra", vec![KeyCombo::new("Z")]);
         bind(&mut b, "toggle_false_color", vec![KeyCombo::alt("F")]);
         bind(&mut b, "toggle_perf_overlay", vec![KeyCombo::new("P")]);
+        bind(&mut b, "toggle_perf_recording", vec![KeyCombo::ctrl_shift("P")]);
         bind(&mut b, "toggle_matte_preview", vec![KeyCombo::alt("M")]);
         bind(&mut b, "toggle_safe_areas", vec![KeyCombo::alt("S")]);
         bind(&mut b, "toggle_grid_overlay", vec![KeyCombo::alt("G")]);
@@ -356,6 +357,7 @@ impl KeyBindings {
             "toggle_zebra" => "Toggle Zebra Overlay",
             "toggle_false_color" => "Toggle False Color",
             "toggle_perf_overlay" => "Toggle Perf Overlay",
+            "toggle_perf_recording" => "Toggle Perf Recording",
             "toggle_matte_preview" => "Toggle Matte Preview",
             "toggle_safe_areas" => "Toggle Safe Areas",
             "toggle_grid_overlay" => "Toggle Grid & Crosshair",
@@ -403,7 +405,7 @@ impl KeyBindings {
             ("Timeline", &["insert_edit", "overwrite_edit", "lift_edit", "extract_edit", "toggle_edit_mode", "ripple_trim_head", "ripple_trim_tail", "trim_out_to_playhead", "trim_in_to_playhead", "freeze_frame"]),
             ("Navigation", &["next_edit_point", "prev_edit_point", "set_in_point", "set_out_point", "clear_in_point", "clear_out_point", "clear_in_out", "set_range_to_clip"]),
             ("Transport", &["play_pause", "step_forward", "step_backward", "go_to_start", "go_to_end", "shuttle_reverse", "shuttle_pause", "shuttle_forward", "toggle_loop", "toggle_scrub_audio"]),
-            ("Viewer", &["toggle_fullscreen", "toggle_before_after", "toggle_color_panel", "toggle_scopes", "toggle_zebra", "toggle_false_color", "toggle_perf_overlay", "toggle_matte_preview", "toggle_safe_areas", "toggle_grid_overlay", "extract_frame_to_file", "extract_frame_to_bin"]),
+            ("Viewer", &["toggle_fullscreen", "toggle_before_after", "toggle_color_panel", "toggle_scopes", "toggle_zebra", "toggle_false_color", "toggle_perf_overlay", "toggle_perf_recording", "toggle_matte_preview", "toggle_safe_areas", "toggle_grid_overlay", "extract_frame_to_file", "extract_frame_to_bin"]),
             ("Window", &["toggle_project_notes"]),
             ("Display", &["toggle_snap", "toggle_skimming", "fit_to_window", "zoom_to_selection", "zoom_in", "zoom_out"]),
             ("Markers", &["add_marker", "add_clip_marker", "toggle_keyframe", "toggle_keyframe_editor", "prev_keyframe", "next_keyframe"]),

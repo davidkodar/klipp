@@ -288,6 +288,11 @@ pub struct PlaybackEngine {
     cmd_rx: Receiver<AppCommand>,
     event_tx: Sender<AppEvent>,
     frame_buffer: SharedFrameBuffer,
+    /// Shared per-frame performance telemetry. UI reads it for the
+    /// overlay and session export; the engine writes one entry per
+    /// `post_process_rgba` call. Behind a mutex because both sides
+    /// run on their own threads.
+    perf_ring: crate::perf::SharedPerfRing,
     state: PlaybackState,
     current_file: Option<PathBuf>,
     current_clip_index: usize,
@@ -497,6 +502,7 @@ impl PlaybackEngine {
         media_pool: Arc<RwLock<MediaPool>>,
         repaint_cb: Box<dyn Fn() + Send>,
         skim_consumer: crate::audio_output::SkimConsumer,
+        perf_ring: crate::perf::SharedPerfRing,
     ) -> Result<Self, klipp_core::KlippError> {
         info!("PlaybackEngine: initializing (ffmpeg-next backend)");
 
@@ -572,6 +578,7 @@ impl PlaybackEngine {
             cmd_rx,
             event_tx,
             frame_buffer,
+            perf_ring,
             state: PlaybackState::Idle,
             current_file: None,
             current_clip_index: 0,
@@ -5825,18 +5832,63 @@ impl PlaybackEngine {
         }
 
         let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let seq_ms = (t1 - t0).as_secs_f64() * 1000.0;
+        let grade_ms = (t2 - t1).as_secs_f64() * 1000.0;
+        let ofx_ms = (t3 - t2).as_secs_f64() * 1000.0;
+        let builtin_ms = (t4 - t3).as_secs_f64() * 1000.0;
+        let lut_ms = (t5 - t4).as_secs_f64() * 1000.0;
+
         if total_ms > 2.0 {
             debug!(
                 "PERF post_process: {:.1}ms total | seq_read={:.1}ms grade={:.1}ms ofx={:.1}ms builtin={:.1}ms lut={:.1}ms",
-                total_ms,
-                (t1 - t0).as_secs_f64() * 1000.0,
-                (t2 - t1).as_secs_f64() * 1000.0,
-                (t3 - t2).as_secs_f64() * 1000.0,
-                (t4 - t3).as_secs_f64() * 1000.0,
-                (t5 - t4).as_secs_f64() * 1000.0,
+                total_ms, seq_ms, grade_ms, ofx_ms, builtin_ms, lut_ms,
             );
         }
+
+        // Push one sample per processed frame into the shared ring
+        // so the UI overlay + session recorder have real numbers to
+        // paint. Target fps is read from the active clip's source
+        // framerate (falls back to 0.0 when nothing is playing).
+        // Drop heuristic: `total_ms` exceeded the frame budget.
+        let target_fps = self.target_fps_for_overlay();
+        let dropped = match target_fps {
+            Some(fps) if fps > 0.0 => total_ms as f32 > (1000.0 / fps),
+            _ => false,
+        };
+        let sample = crate::perf::PerfSample {
+            timestamp: std::time::Instant::now(),
+            width,
+            height,
+            target_fps: target_fps.unwrap_or(0.0),
+            seq_read_ms: seq_ms as f32,
+            grade_ms: grade_ms as f32,
+            ofx_ms: ofx_ms as f32,
+            builtin_ms: builtin_ms as f32,
+            lut_ms: lut_ms as f32,
+            total_ms: total_ms as f32,
+            dropped,
+        };
+        if let Ok(mut ring) = self.perf_ring.lock() {
+            ring.push(sample);
+        }
+
         rgba
+    }
+
+    /// Best-available target fps for perf reporting. Reads from the
+    /// currently-playing sequence's time base; returns `None` if the
+    /// engine is idle or we can't lock the sequence cheaply.
+    fn target_fps_for_overlay(&self) -> Option<f32> {
+        let Ok(seq) = self.sequence.try_read() else { return None };
+        let fps = seq.fps.as_f64() as f32;
+        if fps > 0.0 && fps.is_finite() { Some(fps) } else { None }
+    }
+
+    /// Shared handle to the perf ring buffer. The UI clones this
+    /// Arc to paint the overlay and (on request) export a session
+    /// recording.
+    pub fn perf_ring(&self) -> crate::perf::SharedPerfRing {
+        self.perf_ring.clone()
     }
 
     /// Wait for a video frame near `target_secs` to appear in the queue.

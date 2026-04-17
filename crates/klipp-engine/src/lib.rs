@@ -54,6 +54,7 @@ pub mod audio_source;
 pub mod composite;
 pub mod engine;
 pub mod mix_thread;
+pub mod perf;
 pub mod render_cache;
 pub mod pcm_reader;
 pub mod skim_audio;

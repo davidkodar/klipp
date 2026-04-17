@@ -618,6 +618,30 @@ pub struct AppState {
 
     // Phase 5: Performance overlay
     pub show_perf_overlay: bool,
+    /// Whether a perf-telemetry recording is currently running. When
+    /// true, the overlay shows a "REC" badge and the ring buffer
+    /// captures samples from the `begin_recording` mark forward.
+    pub perf_recording_active: bool,
+    /// UI-side signal that something (menu / toolbar / keybinding
+    /// other than the `P`/`Ctrl+Shift+P` shortcut) requested the
+    /// recording be toggled. `KlippApp::update` consumes this on
+    /// each paint and dispatches to `toggle_perf_recording`.
+    pub pending_perf_recording_toggle: bool,
+    /// Path of the most recent session dump written by a completed
+    /// recording. Used by the overlay and toast to let the user find
+    /// the file.
+    pub perf_last_session_path: Option<std::path::PathBuf>,
+    /// Latest per-frame perf sample snapshotted from the engine's
+    /// shared ring buffer. `None` until the engine processes its
+    /// first frame.
+    pub perf_latest_sample: Option<klipp_engine::perf::PerfSample>,
+    /// Rolling averages over the last ~2 s of samples (or the whole
+    /// ring if it's shorter). Refreshed on the same 250 ms cadence
+    /// as `perf_fps` / `perf_cpu_percent`.
+    pub perf_averages: klipp_engine::perf::PerfAverages,
+    /// Drops observed within the last second of wall clock.
+    /// Painted in the overlay as "Drops: N in last 1s".
+    pub perf_drops_last_sec: u32,
     pub perf_fps: f64,
     pub perf_frame_count: u64,
     pub perf_dropped_frames: u64,
@@ -1919,6 +1943,12 @@ impl Default for AppState {
             range_snap_line_x: None,
             ruler_press_origin: None,
             show_perf_overlay: false,
+            perf_recording_active: false,
+            pending_perf_recording_toggle: false,
+            perf_last_session_path: None,
+            perf_latest_sample: None,
+            perf_averages: klipp_engine::perf::PerfAverages::default(),
+            perf_drops_last_sec: 0,
             perf_fps: 0.0,
             perf_frame_count: 0,
             perf_dropped_frames: 0,

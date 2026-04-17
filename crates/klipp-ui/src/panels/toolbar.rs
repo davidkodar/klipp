@@ -868,7 +868,31 @@ impl ToolbarPanel {
             }
             ui.separator();
             let perf_check = if state.show_perf_overlay { "\u{2714} " } else { "  " };
-            if ui.button(format!("{perf_check}Performance Overlay")).clicked() { state.show_perf_overlay = !state.show_perf_overlay; ui.close_menu(); }
+            if ui.button(format!("{perf_check}Performance Overlay").as_str()).clicked() {
+                state.show_perf_overlay = !state.show_perf_overlay;
+                ui.close_menu();
+            }
+            let rec_label = if state.perf_recording_active {
+                "  Stop Performance Recording"
+            } else {
+                "  Record Performance Session\u{2026}"
+            };
+            if ui.add(egui::Button::new(rec_label).shortcut_text("Ctrl+Shift+P")).clicked() {
+                state.pending_perf_recording_toggle = true;
+                ui.close_menu();
+            }
+            if let Some(ref p) = state.perf_last_session_path {
+                let short = p.file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| p.to_string_lossy().into_owned());
+                if ui.button(format!("  Last Session: {short}").as_str()).clicked() {
+                    // Toast the full path so the user can copy it —
+                    // revealing in the file manager would need an
+                    // extra dependency we don't currently ship.
+                    state.toast.show(format!("Perf session: {}", p.display()));
+                    ui.close_menu();
+                }
+            }
         });
     }
 

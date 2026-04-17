@@ -219,6 +219,10 @@ pub struct KlippApp {
     curve_editor: crate::panels::curve_editor::CurveEditorPanel,
     // Floating scope window runtime (textures, UI state)
     scope_window_runtime: crate::widgets::scope_window::ScopeWindowRuntime,
+    /// Shared per-frame perf telemetry from the engine. Painted by
+    /// the performance overlay and snapshotted to JSON when the user
+    /// clicks "Record Performance".
+    perf_ring: klipp_engine::perf::SharedPerfRing,
 }
 
 impl KlippApp {
@@ -232,6 +236,7 @@ impl KlippApp {
         skim_consumer: klipp_engine::audio_output::SkimConsumer,
         spectrum_buf: Option<Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>>,
         spectrum_sample_rate: u32,
+        perf_ring: klipp_engine::perf::SharedPerfRing,
     ) -> Self {
         use klipp_core::startup_timer::LogTimer;
 
@@ -351,6 +356,7 @@ impl KlippApp {
             media_watcher: None,
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
             scope_window_runtime: crate::widgets::scope_window::ScopeWindowRuntime::default(),
+            perf_ring,
         };
         // Build false color LUT from loaded preferences
         app.state.false_color_lut = app.prefs.viewer.false_color_palette.build_lut();
@@ -637,6 +643,69 @@ impl KlippApp {
         // Frame count increments on each FrameReady event (tracked in drain_events)
         // HW decode is set when we get a VAAPI log — for now just read from frame_buffer existence
         // We'll set hw_decode from engine events if available
+
+        // Snapshot the engine's per-frame perf ring for the overlay.
+        // Lock once, read latest + averages + drops-in-last-second,
+        // drop the lock before painting. Tiny mutex window.
+        if self.state.show_perf_overlay {
+            if let Ok(ring) = self.perf_ring.lock() {
+                // Average over the last ~2 seconds at 60 fps = 120
+                // samples; or whatever's in the ring if shorter.
+                self.state.perf_averages = ring.averages(120);
+                self.state.perf_drops_last_sec = ring.drops_in_last(1.0);
+                self.state.perf_latest_sample = ring.latest().copied();
+            }
+        }
+    }
+
+    /// Start / stop a perf telemetry recording. When stopping, the
+    /// captured samples are written as JSON to
+    /// `<cache_dir>/klipp/perf/session_<unix_ts>.json` so the user
+    /// can attach the file to a bug report or share it for analysis.
+    fn toggle_perf_recording(&mut self) {
+        if self.state.perf_recording_active {
+            // Stop + dump.
+            let samples = match self.perf_ring.lock() {
+                Ok(mut ring) => ring.end_recording(),
+                Err(_) => Vec::new(),
+            };
+            self.state.perf_recording_active = false;
+            if samples.is_empty() {
+                self.state.toast.show("Perf recording: no samples captured");
+                return;
+            }
+            // Unix timestamp — good enough for filename uniqueness.
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let dir = dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("klipp/perf");
+            let _ = std::fs::create_dir_all(&dir);
+            let path = dir.join(format!("session_{ts}.json"));
+            let json = klipp_engine::perf::samples_to_json(&samples);
+            match std::fs::write(&path, json) {
+                Ok(_) => {
+                    self.state.toast.show(format!(
+                        "Perf session saved ({} samples): {}",
+                        samples.len(),
+                        path.display(),
+                    ));
+                    self.state.perf_last_session_path = Some(path);
+                }
+                Err(e) => {
+                    self.state.toast.show(format!("Failed to write perf session: {e}"));
+                }
+            }
+        } else {
+            // Start.
+            if let Ok(mut ring) = self.perf_ring.lock() {
+                ring.begin_recording();
+            }
+            self.state.perf_recording_active = true;
+            // Auto-show the overlay so the user sees the REC badge.
+            self.state.show_perf_overlay = true;
+            self.state.toast.show("Perf recording started · Ctrl+Shift+P to stop");
+        }
     }
 
     fn drain_events(&mut self, ctx: &egui::Context) {
@@ -15086,6 +15155,7 @@ impl KlippApp {
     }
 
     fn shortcuts_title_and_tools2(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        let mut pending_perf_recording_toggle = false;
         ctx.input(|i| {
             // Ctrl+T — Create title clip at playhead on a free text track (or create new one)
             if i.modifiers.ctrl && i.key_pressed(egui::Key::T) {
@@ -15196,7 +15266,17 @@ impl KlippApp {
             if i.key_pressed(egui::Key::P) && !i.modifiers.ctrl {
                 self.state.show_perf_overlay = !self.state.show_perf_overlay;
             }
+            // Ctrl+Shift+P — Toggle perf recording session. Captured
+            // as a boolean here; the actual ring-buffer mark/dump
+            // happens in `update` after the input phase so the
+            // borrow on self can release cleanly.
+            if i.key_pressed(egui::Key::P) && i.modifiers.ctrl && i.modifiers.shift {
+                pending_perf_recording_toggle = true;
+            }
         });
+        if pending_perf_recording_toggle {
+            self.toggle_perf_recording();
+        }
     }
 
     fn shortcuts_multicam_and_io(&mut self, ctx: &egui::Context, text_editing: bool, cmds: &mut Vec<AppCommand>) {
@@ -16028,6 +16108,15 @@ impl eframe::App for KlippApp {
                 "main-thread heartbeat"
             );
             self.last_heartbeat = std::time::Instant::now();
+        }
+
+        // Consume any menu / toolbar request to toggle the perf
+        // recording. The direct Ctrl+Shift+P keybinding calls
+        // `toggle_perf_recording` inline during shortcut handling
+        // for snappier UX; this pending-flag path covers everything
+        // else that doesn't have easy access to `&mut self`.
+        if std::mem::take(&mut self.state.pending_perf_recording_toggle) {
+            self.toggle_perf_recording();
         }
 
         // CONTRAST RULE: Ensure selection bg stays dark each frame.

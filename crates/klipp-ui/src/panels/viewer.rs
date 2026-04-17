@@ -1541,15 +1541,77 @@ impl ViewerPanel {
             PlaybackState::Idle => "IDLE",
         };
 
-        let lines = [
+        // Engine-side per-frame telemetry. Painted between the UI
+        // counters and the OS counters so the user reads "what's my
+        // UI doing / what's the engine doing / what's the process
+        // doing" top-to-bottom. Values come from the
+        // `klipp_engine::perf::PerfRing` snapshotted in
+        // `update_perf_stats`.
+        let avg = &state.perf_averages;
+        let (res_line, fps_line, budget_line) = match state.perf_latest_sample {
+            Some(ref s) => (
+                format!("Frame:  {}x{}", s.width, s.height),
+                format!("Target: {:.1} fps", s.target_fps),
+                match s.frame_budget_ms() {
+                    Some(budget) => {
+                        format!(
+                            "Budget: {:.1} ms  actual {:.1} ms",
+                            budget, avg.total_ms,
+                        )
+                    }
+                    None => format!("Budget: — ms  actual {:.1} ms", avg.total_ms),
+                },
+            ),
+            None => (
+                "Frame:  — (engine idle)".to_string(),
+                "Target: — fps".to_string(),
+                "Budget: — ms  actual —".to_string(),
+            ),
+        };
+
+        let rec_line = if state.perf_recording_active {
+            Some("● REC  (Ctrl+Shift+P to stop)".to_string())
+        } else {
+            None
+        };
+
+        let mut lines = Vec::new();
+        if let Some(r) = rec_line { lines.push(r); }
+        lines.extend([
             format!("UI FPS: {:.0}", state.perf_fps),
             format!("Decode: {hw_label}"),
             format!("State:  {playback_label}"),
+            res_line,
+            fps_line,
+            budget_line,
+            format!(
+                "  decode/seq  {:.2} ms",
+                avg.seq_read_ms,
+            ),
+            format!(
+                "  grade       {:.2} ms",
+                avg.grade_ms,
+            ),
+            format!(
+                "  builtin fx  {:.2} ms",
+                avg.builtin_ms,
+            ),
+            format!(
+                "  ofx         {:.2} ms",
+                avg.ofx_ms,
+            ),
+            format!(
+                "  lut         {:.2} ms",
+                avg.lut_ms,
+            ),
+            format!(
+                "Drops:  {} in last 1s · {} total",
+                state.perf_drops_last_sec, state.perf_dropped_frames,
+            ),
             format!("Frames: {}", state.perf_frame_count),
-            format!("Drops:  {}", state.perf_dropped_frames),
             format!("CPU:    {:.0}%", state.perf_cpu_percent),
             format!("Mem:    {:.0} MB", state.perf_memory_mb),
-        ];
+        ]);
 
         let max_w = lines.iter()
             .map(|l| {
@@ -1569,12 +1631,27 @@ impl ViewerPanel {
             egui::Color32::from_rgba_premultiplied(0, 0, 0, 200),
         );
 
+        // Pick per-line colours by content instead of by hard-coded
+        // index — lines have shifted as we added the engine telemetry.
+        // Highlights: red for active drops, amber for high CPU, green
+        // for HW decode, coral for "actual > budget" frame pacing.
+        let budget_exceeded = state
+            .perf_latest_sample
+            .as_ref()
+            .and_then(|s| s.frame_budget_ms())
+            .map(|b| avg.total_ms > b)
+            .unwrap_or(false);
         for (i, line) in lines.iter().enumerate() {
-            let color = if i == 4 && state.perf_dropped_frames > 0 {
-                egui::Color32::from_rgb(255, 100, 100)
-            } else if i == 1 && state.perf_hw_decode {
+            let _ = i;
+            let color = if line.starts_with("● REC") {
+                egui::Color32::from_rgb(255, 80, 80)
+            } else if line.starts_with("Decode:") && state.perf_hw_decode {
                 egui::Color32::from_rgb(100, 255, 100)
-            } else if i == 5 && state.perf_cpu_percent > 80.0 {
+            } else if line.starts_with("Drops:") && state.perf_drops_last_sec > 0 {
+                egui::Color32::from_rgb(255, 100, 100)
+            } else if line.starts_with("Budget:") && budget_exceeded {
+                egui::Color32::from_rgb(255, 140, 100)
+            } else if line.starts_with("CPU:") && state.perf_cpu_percent > 80.0 {
                 egui::Color32::from_rgb(255, 180, 80)
             } else {
                 egui::Color32::from_rgb(220, 220, 230)

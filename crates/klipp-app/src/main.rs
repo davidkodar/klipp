@@ -102,6 +102,10 @@ fn main() -> Result<()> {
     let skim_consumer: klipp_engine::audio_output::SkimConsumer =
         Arc::new(Mutex::new(None));
 
+    // Shared performance ring — engine writes one sample per
+    // post-processed frame, UI reads for the overlay + session dump.
+    let perf_ring = klipp_engine::perf::shared();
+
     let engine = {
         let _t = LogTimer::new("PlaybackEngine::new (TOTAL)");
         PlaybackEngine::new(
@@ -112,6 +116,7 @@ fn main() -> Result<()> {
             media_pool.clone(),
             Box::new(|| {}),
             skim_consumer.clone(),
+            perf_ring.clone(),
         )
         .map_err(|e| anyhow::anyhow!("Failed to create playback engine: {e}"))?
     };
@@ -169,6 +174,7 @@ fn main() -> Result<()> {
     let seq_clone = sequence.clone();
     let pool_clone = media_pool.clone();
     let skim_clone = skim_consumer;
+    let perf_ring_clone = perf_ring.clone();
 
     mark("calling eframe::run_native");
     eframe::run_native(
@@ -187,6 +193,7 @@ fn main() -> Result<()> {
                 skim_clone,
                 spectrum_buf,
                 spectrum_sample_rate,
+                perf_ring_clone,
             )))
         }),
     )
