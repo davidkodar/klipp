@@ -111,6 +111,30 @@ pub fn read_to_string_capped(path: &Path, max_bytes: u64) -> Result<String, std:
 /// Read a binary file into a Vec<u8>, rejecting files larger than `max_bytes`.
 ///
 /// Same as `read_to_string_capped` but for non-UTF-8 formats (e.g. OTIO).
+/// Maximum node count for untrusted XML imports (1M nodes ≈ 1GB of
+/// in-memory parse structure). roxmltree defaults to `u32::MAX`, which
+/// would accept a degenerate input with billions of tiny nodes and OOM
+/// the process even though the file itself fit under `MAX_INPUT_FILE_BYTES`.
+pub const MAX_XML_NODES: u32 = 1_000_000;
+
+/// Parse an XML string into a roxmltree Document with explicit,
+/// security-hardened options:
+///   * `allow_dtd: false` — reject documents that declare a DOCTYPE /
+///     entity references. This is already the roxmltree default, but
+///     stating it locks the posture in place if the upstream default
+///     ever flips.
+///   * `nodes_limit: MAX_XML_NODES` — cap the parsed node count to
+///     prevent entity-bomb / nested-element DoS from degenerate inputs.
+pub fn parse_xml_safe(xml: &str) -> Result<roxmltree::Document<'_>, roxmltree::Error> {
+    roxmltree::Document::parse_with_options(
+        xml,
+        roxmltree::ParsingOptions {
+            allow_dtd: false,
+            nodes_limit: MAX_XML_NODES,
+        },
+    )
+}
+
 /// Write `data` to `path` atomically: write to a unique temp file in the
 /// same directory (so the rename stays on one filesystem), then rename
 /// over the target. A crash mid-write leaves an orphan temp file, never
