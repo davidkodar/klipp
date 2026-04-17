@@ -324,123 +324,134 @@ impl AudioOutput {
         let clip_channel_config_flag = clip_channel_config.clone();
         let skim_consumer_flag = skim_consumer.clone();
 
+        // Static dedup flag for the cpal output callback. cpal fires
+        // this at ~90 Hz; a repeating panic through plain catch_panic
+        // would drown every other diagnostic. See thread_guard docs.
+        static OUTPUT_CALLBACK_PANIC_LOGGED: AtomicBool = AtomicBool::new(false);
+
         let stream = device
             .build_output_stream(
                 &config,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    // Check for seek — if generation changed, drain stale buffer
-                    let current_gen = seek_gen_flag.load(Ordering::Acquire);
-                    // Use a thread-local to track last seen generation
-                    // (cpal callbacks always run on the same thread)
-                    thread_local! {
-                        static LAST_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-                    }
-                    LAST_GEN.with(|lg| {
-                        if lg.get() != current_gen {
-                            lg.set(current_gen);
-                            // Drain all stale samples from the ring buffer
-                            let mut discard = vec![0.0f32; 8192];
-                            loop {
-                                let n = consumer.pop_slice(&mut discard);
-                                if n == 0 {
-                                    break;
-                                }
+                    crate::thread_guard::catch_panic_once(
+                        "klipp-cpal-output",
+                        &OUTPUT_CALLBACK_PANIC_LOGGED,
+                        || {
+                            // Check for seek — if generation changed, drain stale buffer
+                            let current_gen = seek_gen_flag.load(Ordering::Acquire);
+                            // Use a thread-local to track last seen generation
+                            // (cpal callbacks always run on the same thread)
+                            thread_local! {
+                                static LAST_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
                             }
-                            // Output silence for this callback
-                            data.fill(0.0);
-                            return;
-                        }
-
-                        let is_paused = paused_flag.load(Ordering::Acquire);
-                        let is_chirping = chirp_flag.load(Ordering::Acquire);
-
-                        if is_paused && is_chirping {
-                            // Chirp mode: play ring buffer samples even while paused.
-                            // When buffer empties, chirp is done.
-                            let filled = consumer.pop_slice(data);
-                            data[filled..].fill(0.0);
-                            if filled == 0 {
-                                chirp_flag.store(false, Ordering::Release);
-                            }
-                            return;
-                        }
-                        if is_paused {
-                            // Paused — output silence, don't drain ring buffer
-                            data.fill(0.0);
-                            return;
-                        }
-                        if flushing_flag.load(Ordering::Acquire) {
-                            // Flushing — drain ring buffer but output silence
-                            let _ = consumer.pop_slice(data);
-                            data.fill(0.0);
-                            return;
-                        }
-                        let filled = consumer.pop_slice(data);
-                        data[filled..].fill(0.0);
-                        // Apply gain + clip volume + master volume + clip pan (lock-free, instant)
-                        let master_vol = f32::from_bits(master_vol_flag.load(Ordering::Relaxed));
-                        let clip_vol = f32::from_bits(clip_vol_flag.load(Ordering::Relaxed));
-                        let clip_gn = f32::from_bits(clip_gain_flag.load(Ordering::Relaxed));
-                        let pan = f32::from_bits(clip_pan_flag.load(Ordering::Relaxed));
-                        let vol = master_vol * clip_vol * clip_gn;
-
-                        // Balance-style pan: center = unity, hard L/R attenuates opposite
-                        let pan_l = if pan <= 0.0 { 1.0 } else { 1.0 - pan };
-                        let pan_r = if pan >= 0.0 { 1.0 } else { 1.0 + pan };
-
-                        let need_vol = (vol - 1.0).abs() > 0.001;
-                        let need_pan = pan.abs() > 0.001;
-
-                        if need_vol || need_pan {
-                            for pair in data[..filled].chunks_mut(2) {
-                                if let Some(l) = pair.get_mut(0) {
-                                    *l *= vol * pan_l;
-                                }
-                                if let Some(r) = pair.get_mut(1) {
-                                    *r *= vol * pan_r;
-                                }
-                            }
-                        }
-
-                        // Apply channel config (after gain/volume/pan)
-                        let ch_config = clip_channel_config_flag.load(Ordering::Relaxed);
-                        if ch_config != 0 {
-                            for pair in data[..filled].chunks_mut(2) {
-                                if pair.len() == 2 {
-                                    match ch_config {
-                                        1 => { // MonoDownmix
-                                            let mono = (pair[0] + pair[1]) * 0.5;
-                                            pair[0] = mono;
-                                            pair[1] = mono;
+                            LAST_GEN.with(|lg| {
+                                if lg.get() != current_gen {
+                                    lg.set(current_gen);
+                                    // Drain all stale samples from the ring buffer
+                                    let mut discard = vec![0.0f32; 8192];
+                                    loop {
+                                        let n = consumer.pop_slice(&mut discard);
+                                        if n == 0 {
+                                            break;
                                         }
-                                        2 => { // SwapLR
-                                            pair.swap(0, 1);
+                                    }
+                                    // Output silence for this callback
+                                    data.fill(0.0);
+                                    return;
+                                }
+
+                                let is_paused = paused_flag.load(Ordering::Acquire);
+                                let is_chirping = chirp_flag.load(Ordering::Acquire);
+
+                                if is_paused && is_chirping {
+                                    // Chirp mode: play ring buffer samples even while paused.
+                                    // When buffer empties, chirp is done.
+                                    let filled = consumer.pop_slice(data);
+                                    data[filled..].fill(0.0);
+                                    if filled == 0 {
+                                        chirp_flag.store(false, Ordering::Release);
+                                    }
+                                    return;
+                                }
+                                if is_paused {
+                                    // Paused — output silence, don't drain ring buffer
+                                    data.fill(0.0);
+                                    return;
+                                }
+                                if flushing_flag.load(Ordering::Acquire) {
+                                    // Flushing — drain ring buffer but output silence
+                                    let _ = consumer.pop_slice(data);
+                                    data.fill(0.0);
+                                    return;
+                                }
+                                let filled = consumer.pop_slice(data);
+                                data[filled..].fill(0.0);
+                                // Apply gain + clip volume + master volume + clip pan (lock-free, instant)
+                                let master_vol = f32::from_bits(master_vol_flag.load(Ordering::Relaxed));
+                                let clip_vol = f32::from_bits(clip_vol_flag.load(Ordering::Relaxed));
+                                let clip_gn = f32::from_bits(clip_gain_flag.load(Ordering::Relaxed));
+                                let pan = f32::from_bits(clip_pan_flag.load(Ordering::Relaxed));
+                                let vol = master_vol * clip_vol * clip_gn;
+
+                                // Balance-style pan: center = unity, hard L/R attenuates opposite
+                                let pan_l = if pan <= 0.0 { 1.0 } else { 1.0 - pan };
+                                let pan_r = if pan >= 0.0 { 1.0 } else { 1.0 + pan };
+
+                                let need_vol = (vol - 1.0).abs() > 0.001;
+                                let need_pan = pan.abs() > 0.001;
+
+                                if need_vol || need_pan {
+                                    for pair in data[..filled].chunks_mut(2) {
+                                        if let Some(l) = pair.get_mut(0) {
+                                            *l *= vol * pan_l;
                                         }
-                                        _ => {}
+                                        if let Some(r) = pair.get_mut(1) {
+                                            *r *= vol * pan_r;
+                                        }
                                     }
                                 }
-                            }
-                        }
-                        // NO clock update — master clock is external
-                    });
 
-                    // Mix in skim audio (independent of playback state).
-                    // Uses thread-local buffer to avoid heap allocation in real-time callback.
-                    if let Ok(mut skim_guard) = skim_consumer_flag.try_lock() {
-                        if let Some(ref mut skim_cons) = *skim_guard {
-                            thread_local! {
-                                static SKIM_BUF: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) };
-                            }
-                            SKIM_BUF.with(|buf| {
-                                let mut buf = buf.borrow_mut();
-                                buf.resize(data.len(), 0.0);
-                                let read = skim_cons.pop_slice(&mut buf[..data.len()]);
-                                for i in 0..read {
-                                    data[i] = (data[i] + buf[i]).clamp(-1.0, 1.0);
+                                // Apply channel config (after gain/volume/pan)
+                                let ch_config = clip_channel_config_flag.load(Ordering::Relaxed);
+                                if ch_config != 0 {
+                                    for pair in data[..filled].chunks_mut(2) {
+                                        if pair.len() == 2 {
+                                            match ch_config {
+                                                1 => { // MonoDownmix
+                                                    let mono = (pair[0] + pair[1]) * 0.5;
+                                                    pair[0] = mono;
+                                                    pair[1] = mono;
+                                                }
+                                                2 => { // SwapLR
+                                                    pair.swap(0, 1);
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
                                 }
+                                // NO clock update — master clock is external
                             });
-                        }
-                    }
+
+                            // Mix in skim audio (independent of playback state).
+                            // Uses thread-local buffer to avoid heap allocation in real-time callback.
+                            if let Ok(mut skim_guard) = skim_consumer_flag.try_lock() {
+                                if let Some(ref mut skim_cons) = *skim_guard {
+                                    thread_local! {
+                                        static SKIM_BUF: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) };
+                                    }
+                                    SKIM_BUF.with(|buf| {
+                                        let mut buf = buf.borrow_mut();
+                                        buf.resize(data.len(), 0.0);
+                                        let read = skim_cons.pop_slice(&mut buf[..data.len()]);
+                                        for i in 0..read {
+                                            data[i] = (data[i] + buf[i]).clamp(-1.0, 1.0);
+                                        }
+                                    });
+                                }
+                            }
+                        },
+                    );
                 },
                 move |err| {
                     error!("cpal stream error: {err}");

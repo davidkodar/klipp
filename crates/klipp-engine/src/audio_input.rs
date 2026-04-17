@@ -116,15 +116,27 @@ impl AudioInput {
             tracing::error!("cpal input stream error: {e}");
         };
 
+        // Shared dedup flag across the three sample-format variants.
+        // Only one branch below actually runs per stream, and a genuine
+        // panic deserves exactly one log per process run.
+        static INPUT_CALLBACK_PANIC_LOGGED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+
         // Build for f32 — every mainstream device on every OS supports f32
         // via cpal's auto-conversion.
         let stream = match default_cfg.sample_format() {
             cpal::SampleFormat::F32 => device.build_input_stream(
                 &config,
                 move |data: &[f32], _| {
-                    // Best-effort — if the ring is full (writer thread stalled),
-                    // we drop samples rather than blocking the audio thread.
-                    let _ = producer.push_slice(data);
+                    crate::thread_guard::catch_panic_once(
+                        "klipp-cpal-input-f32",
+                        &INPUT_CALLBACK_PANIC_LOGGED,
+                        || {
+                            // Best-effort — if the ring is full (writer thread stalled),
+                            // we drop samples rather than blocking the audio thread.
+                            let _ = producer.push_slice(data);
+                        },
+                    );
                 },
                 err_fn,
                 None,
@@ -132,11 +144,17 @@ impl AudioInput {
             cpal::SampleFormat::I16 => device.build_input_stream(
                 &config,
                 move |data: &[i16], _| {
-                    let mut tmp = Vec::with_capacity(data.len());
-                    for &s in data {
-                        tmp.push(s as f32 / i16::MAX as f32);
-                    }
-                    let _ = producer.push_slice(&tmp);
+                    crate::thread_guard::catch_panic_once(
+                        "klipp-cpal-input-i16",
+                        &INPUT_CALLBACK_PANIC_LOGGED,
+                        || {
+                            let mut tmp = Vec::with_capacity(data.len());
+                            for &s in data {
+                                tmp.push(s as f32 / i16::MAX as f32);
+                            }
+                            let _ = producer.push_slice(&tmp);
+                        },
+                    );
                 },
                 err_fn,
                 None,
@@ -144,13 +162,19 @@ impl AudioInput {
             cpal::SampleFormat::U16 => device.build_input_stream(
                 &config,
                 move |data: &[u16], _| {
-                    let mut tmp = Vec::with_capacity(data.len());
-                    for &s in data {
-                        // u16 is unsigned 0..=65535 with silence at 32768.
-                        let centered = s as f32 - 32768.0;
-                        tmp.push(centered / 32768.0);
-                    }
-                    let _ = producer.push_slice(&tmp);
+                    crate::thread_guard::catch_panic_once(
+                        "klipp-cpal-input-u16",
+                        &INPUT_CALLBACK_PANIC_LOGGED,
+                        || {
+                            let mut tmp = Vec::with_capacity(data.len());
+                            for &s in data {
+                                // u16 is unsigned 0..=65535 with silence at 32768.
+                                let centered = s as f32 - 32768.0;
+                                tmp.push(centered / 32768.0);
+                            }
+                            let _ = producer.push_slice(&tmp);
+                        },
+                    );
                 },
                 err_fn,
                 None,
