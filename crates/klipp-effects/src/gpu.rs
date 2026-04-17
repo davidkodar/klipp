@@ -7851,12 +7851,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── Waveform bin accumulation (atomic histogram per column) ───────────────────
-// Input is linear-f32 in [0,1]. Bin indices stay 0-255 (linear bins).
+// Input is linear-f32 scene light; bins are sRGB code values. Video scopes are
+// always plotted in the display-encoded domain — 0 / 100 IRE map to sRGB 0 /
+// 255, NOT to linear 0.0 / 1.0. Before binning we gamma-encode each channel
+// via the sRGB OETF so a mid-grey (linear 0.18) lands at bin ~118 instead of
+// bin ~46, restoring the FCP / DaVinci trace distribution.
 const SHADER_SCOPE_WAVEFORM: &str = "
 struct Params { width: u32, height: u32, display_columns: u32, step: u32, }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> bins: array<atomic<u32>>;
 @group(0) @binding(2) var<uniform> params: Params;
+fn linear_to_srgb_c(c: f32) -> f32 {
+    let x = clamp(c, 0.0, 1.0);
+    if (x <= 0.0031308) { return x * 12.92; }
+    return 1.055 * pow(x, 1.0/2.4) - 0.055;
+}
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -7864,7 +7873,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = idx % params.width;
     if (x % params.step != 0u) { return; }
     let pixel = input[idx];
-    let luma = clamp(0.2126 * pixel.x + 0.7152 * pixel.y + 0.0722 * pixel.z, 0.0, 1.0);
+    let r = linear_to_srgb_c(pixel.x);
+    let g = linear_to_srgb_c(pixel.y);
+    let b = linear_to_srgb_c(pixel.z);
+    let luma = clamp(0.2126 * r + 0.7152 * g + 0.0722 * b, 0.0, 1.0);
     let bin = u32(luma * 255.0);
     let col = x * params.display_columns / params.width;
     atomicAdd(&bins[col * 256u + bin], 1u);
@@ -7872,12 +7884,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 ";
 
 // ── Parade bin accumulation (atomic per-channel per-column) ───────────────────
-// Input is linear-f32 in [0,1]. Bin indices stay 0-255 (linear bins).
+// Input linear, bins sRGB — see SHADER_SCOPE_WAVEFORM header for rationale.
 const SHADER_SCOPE_PARADE: &str = "
 struct Params { width: u32, height: u32, display_columns: u32, step: u32, }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> bins: array<atomic<u32>>;
 @group(0) @binding(2) var<uniform> params: Params;
+fn linear_to_srgb_c(c: f32) -> f32 {
+    let x = clamp(c, 0.0, 1.0);
+    if (x <= 0.0031308) { return x * 12.92; }
+    return 1.055 * pow(x, 1.0/2.4) - 0.055;
+}
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -7885,9 +7902,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = idx % params.width;
     if (x % params.step != 0u) { return; }
     let pixel = input[idx];
-    let r = u32(clamp(pixel.x, 0.0, 1.0) * 255.0);
-    let g = u32(clamp(pixel.y, 0.0, 1.0) * 255.0);
-    let b = u32(clamp(pixel.z, 0.0, 1.0) * 255.0);
+    let r = u32(linear_to_srgb_c(pixel.x) * 255.0);
+    let g = u32(linear_to_srgb_c(pixel.y) * 255.0);
+    let b = u32(linear_to_srgb_c(pixel.z) * 255.0);
     let col = x * params.display_columns / params.width;
     let base = col * 256u;
     let dc256 = params.display_columns * 256u;
@@ -7898,12 +7915,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 ";
 
 // ── Histogram bin accumulation (global R/G/B/Luma) ────────────────────────────
-// Input is linear-f32 in [0,1]. Bin indices stay 0-255 (linear bins).
+// Input linear, bins sRGB — see SHADER_SCOPE_WAVEFORM header for rationale.
 const SHADER_SCOPE_HISTOGRAM: &str = "
 struct Params { width: u32, height: u32, display_columns: u32, step: u32, }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> bins: array<atomic<u32>>;
 @group(0) @binding(2) var<uniform> params: Params;
+fn linear_to_srgb_c(c: f32) -> f32 {
+    let x = clamp(c, 0.0, 1.0);
+    if (x <= 0.0031308) { return x * 12.92; }
+    return 1.055 * pow(x, 1.0/2.4) - 0.055;
+}
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -7912,13 +7934,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y = idx / params.width;
     if (x % params.step != 0u) || (y % params.step != 0u) { return; }
     let pixel = input[idx];
-    let r = u32(clamp(pixel.x, 0.0, 1.0) * 255.0);
-    let g = u32(clamp(pixel.y, 0.0, 1.0) * 255.0);
-    let b = u32(clamp(pixel.z, 0.0, 1.0) * 255.0);
+    let r_srgb = linear_to_srgb_c(pixel.x);
+    let g_srgb = linear_to_srgb_c(pixel.y);
+    let b_srgb = linear_to_srgb_c(pixel.z);
+    let r = u32(r_srgb * 255.0);
+    let g = u32(g_srgb * 255.0);
+    let b = u32(b_srgb * 255.0);
     atomicAdd(&bins[r], 1u);
     atomicAdd(&bins[256u + g], 1u);
     atomicAdd(&bins[512u + b], 1u);
-    let luma = u32(clamp((0.2126 * pixel.x + 0.7152 * pixel.y + 0.0722 * pixel.z), 0.0, 1.0) * 255.0);
+    let luma = u32(clamp(0.2126 * r_srgb + 0.7152 * g_srgb + 0.0722 * b_srgb, 0.0, 1.0) * 255.0);
     atomicAdd(&bins[768u + luma], 1u);
 }
 ";
@@ -7932,6 +7957,19 @@ struct Params {
 @group(0) @binding(0) var<storage, read> bins: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
+
+// Phosphor ramp — matches `render_waveform_direct` on the CPU path.
+// `knee` sets how quickly a single-pixel trace saturates toward full
+// intensity: 3.0 gives the soft roll-off that makes mid-density areas
+// phosphor-green while dense clumps climb toward white-hot.
+fn phosphor(count: f32, base: vec3<f32>) -> vec3<f32> {
+    let intensity = sqrt(count / (count + 3.0));
+    let white_mix = intensity * intensity * intensity;
+    let r = (base.x + (1.0 - base.x) * white_mix) * intensity;
+    let g = (base.y + (1.0 - base.y) * white_mix) * intensity;
+    let b = (base.z + (1.0 - base.z) * white_mix) * intensity;
+    return vec3<f32>(r, g, b);
+}
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -7949,15 +7987,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // DaVinci log tone mapping
-    let gain = 300.0;
-    let brightness = log(1.0 + count * gain) / log(1.0 + gain);
-    let out = pow(clamp(brightness, 0.0, 1.0), 1.0 / 2.2);
-
-    // Green trace with subtle secondaries
-    let ro = u32(clamp(out * 0.15 * 255.0, 0.0, 255.0));
-    let go = u32(clamp(out * 255.0, 0.0, 255.0));
-    let bo = u32(clamp(out * 0.15 * 255.0, 0.0, 255.0));
+    let rgb = phosphor(count, vec3<f32>(0.0, 0.9, 0.0));
+    let ro = u32(clamp(rgb.x * 255.0, 0.0, 255.0));
+    let go = u32(clamp(rgb.y * 255.0, 0.0, 255.0));
+    let bo = u32(clamp(rgb.z * 255.0, 0.0, 255.0));
     output[idx] = ro | (go << 8u) | (bo << 16u) | (0xFFu << 24u);
 }
 ";
@@ -8005,16 +8038,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // DaVinci log tone mapping: log(1 + count * gain) / log(1 + gain)
-    let gain = 300.0;
-    let brightness = log(1.0 + count * gain) / log(1.0 + gain);
-    let out = pow(clamp(brightness, 0.0, 1.0), 1.0 / 2.2);
+    // Per-channel phosphor base colour — red, green, blue trace with
+    // the same phosphor ramp as the waveform so mid-density traces
+    // stay saturated and dense clumps climb toward white-hot.
+    var base = vec3<f32>(0.0, 0.0, 0.0);
+    if channel == 0u { base = vec3<f32>(0.95, 0.05, 0.0); }
+    else if channel == 1u { base = vec3<f32>(0.0, 0.95, 0.05); }
+    else { base = vec3<f32>(0.05, 0.15, 0.95); }
 
-    // Pure channel color
-    var r = 0.0; var g = 0.0; var b = 0.0;
-    if channel == 0u { r = out; g = out * 0.06; b = out * 0.03; }
-    else if channel == 1u { r = out * 0.03; g = out; b = out * 0.06; }
-    else { r = out * 0.06; g = out * 0.08; b = out; }
+    let intensity = sqrt(count / (count + 3.0));
+    let white_mix = intensity * intensity * intensity;
+    let r = (base.x + (1.0 - base.x) * white_mix) * intensity;
+    let g = (base.y + (1.0 - base.y) * white_mix) * intensity;
+    let b = (base.z + (1.0 - base.z) * white_mix) * intensity;
 
     let ro = u32(clamp(r * 255.0, 0.0, 255.0));
     let go = u32(clamp(g * 255.0, 0.0, 255.0));

@@ -4879,16 +4879,30 @@ impl PlaybackEngine {
                     let scope_w = 720u32;
                     let scope_h = 256u32;
                     let mode = self.scope_render_mode;
+                    // Vectorscope (mode 2) has no GPU implementation —
+                    // clear the texture so the UI falls back to the
+                    // CPU vectorscope renderer in `scopes.rs`.
                     let tex = match mode {
-                        1 => gpu.render_scope_parade(&cached, width, height, scope_w, scope_h),
-                        3 => gpu.render_scope_histogram(&cached, width, height, scope_w, scope_h),
-                        _ => gpu.render_scope_waveform(&cached, width, height, scope_w, scope_h),
+                        0 => Some(gpu.render_scope_waveform(&cached, width, height, scope_w, scope_h)),
+                        1 => Some(gpu.render_scope_parade(&cached, width, height, scope_w, scope_h)),
+                        3 => Some(gpu.render_scope_histogram(&cached, width, height, scope_w, scope_h)),
+                        _ => None,
                     };
                     let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                    fb.scope_texture = tex;
-                    fb.scope_texture_w = scope_w;
-                    fb.scope_texture_h = scope_h;
-                    fb.scope_texture_mode = mode;
+                    match tex {
+                        Some(t) => {
+                            fb.scope_texture = t;
+                            fb.scope_texture_w = scope_w;
+                            fb.scope_texture_h = scope_h;
+                            fb.scope_texture_mode = mode;
+                        }
+                        None => {
+                            fb.scope_texture.clear();
+                            fb.scope_texture_w = 0;
+                            fb.scope_texture_h = 0;
+                            fb.scope_texture_mode = mode;
+                        }
+                    }
                 }
                 return cached;
             }
@@ -4902,21 +4916,34 @@ impl PlaybackEngine {
             self.render_cache_disk.put(&key, &result, width, height);
         }
 
-        // Render GPU scope texture from the graded frame
+        // Render GPU scope texture from the graded frame — vectorscope
+        // (mode 2) has no GPU implementation, so clear the texture and
+        // let the UI fall back to the CPU vectorscope renderer.
         if let Some(gpu) = &mut self.gpu_effects {
             let scope_w = 720u32;
             let scope_h = 256u32;
             let mode = self.scope_render_mode;
             let tex = match mode {
-                1 => gpu.render_scope_parade(&result, width, height, scope_w, scope_h),
-                3 => gpu.render_scope_histogram(&result, width, height, scope_w, scope_h),
-                _ => gpu.render_scope_waveform(&result, width, height, scope_w, scope_h),
+                0 => Some(gpu.render_scope_waveform(&result, width, height, scope_w, scope_h)),
+                1 => Some(gpu.render_scope_parade(&result, width, height, scope_w, scope_h)),
+                3 => Some(gpu.render_scope_histogram(&result, width, height, scope_w, scope_h)),
+                _ => None,
             };
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            fb.scope_texture = tex;
-            fb.scope_texture_w = scope_w;
-            fb.scope_texture_h = scope_h;
-            fb.scope_texture_mode = mode;
+            match tex {
+                Some(t) => {
+                    fb.scope_texture = t;
+                    fb.scope_texture_w = scope_w;
+                    fb.scope_texture_h = scope_h;
+                    fb.scope_texture_mode = mode;
+                }
+                None => {
+                    fb.scope_texture.clear();
+                    fb.scope_texture_w = 0;
+                    fb.scope_texture_h = 0;
+                    fb.scope_texture_mode = mode;
+                }
+            }
         }
 
         result
@@ -4979,29 +5006,42 @@ impl PlaybackEngine {
                 );
             }
 
-            // Render GPU scope texture from the graded frame
+            // Render GPU scope texture from the graded frame —
+            // vectorscope (mode 2) has no GPU implementation, so clear
+            // the texture and let the UI fall back to the CPU renderer.
             let scope_tex = if let Some(gpu) = &mut self.gpu_effects {
                 tracing::debug!("Engine: GPU scope render mode={} frame={}x{}", self.scope_render_mode, w, h);
                 let scope_w = 720u32;
                 let scope_h = 256u32;
                 let mode = self.scope_render_mode;
-                let tex = match mode {
-                    1 => gpu.render_scope_parade(&out, w, h, scope_w, scope_h),
-                    3 => gpu.render_scope_histogram(&out, w, h, scope_w, scope_h),
-                    _ => gpu.render_scope_waveform(&out, w, h, scope_w, scope_h),
+                let tex_opt = match mode {
+                    0 => Some(gpu.render_scope_waveform(&out, w, h, scope_w, scope_h)),
+                    1 => Some(gpu.render_scope_parade(&out, w, h, scope_w, scope_h)),
+                    3 => Some(gpu.render_scope_histogram(&out, w, h, scope_w, scope_h)),
+                    _ => None,
                 };
-                Some((tex, scope_w, scope_h, mode))
+                Some((tex_opt, scope_w, scope_h, mode))
             } else {
                 None
             };
 
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame(out, w, h);
-            if let Some((tex, sw, sh, mode)) = scope_tex {
-                fb.scope_texture = tex;
-                fb.scope_texture_w = sw;
-                fb.scope_texture_h = sh;
-                fb.scope_texture_mode = mode;
+            if let Some((tex_opt, sw, sh, mode)) = scope_tex {
+                match tex_opt {
+                    Some(t) => {
+                        fb.scope_texture = t;
+                        fb.scope_texture_w = sw;
+                        fb.scope_texture_h = sh;
+                        fb.scope_texture_mode = mode;
+                    }
+                    None => {
+                        fb.scope_texture.clear();
+                        fb.scope_texture_w = 0;
+                        fb.scope_texture_h = 0;
+                        fb.scope_texture_mode = mode;
+                    }
+                }
             }
             drop(fb);
             let _ = self.event_tx.send(AppEvent::FrameReady);
