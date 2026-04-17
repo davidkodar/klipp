@@ -192,6 +192,7 @@ pub struct KlippApp {
     skim_consumer: klipp_engine::audio_output::SkimConsumer,
     /// cpal device sample rate (for skim audio resampling)
     cpal_sample_rate: u32,
+    last_window_title: String,
     // Launch screen
     launch_screen: crate::panels::launch_screen::LaunchScreen,
     // New Project dialog
@@ -336,6 +337,7 @@ impl KlippApp {
             new_timeline: crate::timeline::NewTimelinePanel,
             skim_consumer,
             cpal_sample_rate,
+            last_window_title: String::new(),
             launch_screen: crate::panels::launch_screen::LaunchScreen::default(),
             new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog::new(None),
             node_graph_panel: crate::panels::node_graph::NodeGraphPanel::default(),
@@ -3291,7 +3293,7 @@ impl KlippApp {
                                 // Remove any existing cut at this exact time
                                 clip.multicam_cuts.retain(|(t, _)| (*t - clip_time).abs() > 0.001);
                                 clip.multicam_cuts.push((clip_time, angle as u8));
-                                clip.multicam_cuts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                                clip.multicam_cuts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
                                 found = true;
                                 break;
                             }
@@ -5275,7 +5277,7 @@ impl KlippApp {
 
             // Merge adjacent/overlapping regions (with a small gap tolerance)
             if used_pcm && !pcm_regions.is_empty() {
-                pcm_regions.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                pcm_regions.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
                 let mut merged: Vec<(f64, f64)> = Vec::new();
                 for r in pcm_regions {
                     if let Some(last) = merged.last_mut() {
@@ -6883,7 +6885,7 @@ impl KlippApp {
                             tangent_out: (0.0, 0.0),
                             tangent_in: (0.0, 0.0),
                         });
-                        clip.speed_keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap());
+                        clip.speed_keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
                         recalc_timeline_out_from_speed(clip);
                     }
                     self.sync_sequence_to_engine();
@@ -6910,7 +6912,7 @@ impl KlippApp {
                         if *index < clip.speed_keyframes.len() {
                             clip.speed_keyframes[*index].time_secs = *time_secs;
                             clip.speed_keyframes[*index].value = *speed as f32;
-                            clip.speed_keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap());
+                            clip.speed_keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
                         }
                         recalc_timeline_out_from_speed(clip);
                     }
@@ -12784,7 +12786,7 @@ impl KlippApp {
                     duration: None,
                 });
                 self.state.sequences[self.state.active_sequence_idx].markers.sort_by(|a, b| {
-                    a.position.to_secs_f64().partial_cmp(&b.position.to_secs_f64()).unwrap()
+                    a.position.to_secs_f64().partial_cmp(&b.position.to_secs_f64()).unwrap_or(std::cmp::Ordering::Equal)
                 });
                 self.state.dirty = true;
                 true
@@ -16012,10 +16014,17 @@ impl eframe::App for KlippApp {
 
         // CONTRAST RULE: Ensure selection bg stays dark each frame.
         // egui popup windows can reset visuals; re-apply selection colors to be safe.
-        ctx.style_mut(|style| {
-            // Dark warm tint — light text is readable on this background.
-            style.visuals.selection.bg_fill = egui::Color32::from_rgb(0x38, 0x2c, 0x14);
-        });
+        // Only mutate when the value drifted — avoids bumping the style dirty flag
+        // on the 99% of frames where no popup reset happened.
+        {
+            let target = egui::Color32::from_rgb(0x38, 0x2c, 0x14);
+            let needs_fix = ctx.style().visuals.selection.bg_fill != target;
+            if needs_fix {
+                ctx.style_mut(|style| {
+                    style.visuals.selection.bg_fill = target;
+                });
+            }
+        }
 
         // ── Poll system audio mute state (Linux/PipeWire) ──
         // Check every ~2 seconds via `wpctl` so we can warn the user if
@@ -16050,6 +16059,9 @@ impl eframe::App for KlippApp {
 
         // ── Handle OS-level file drag-and-drop ──
         let dropped_files: Vec<std::path::PathBuf> = ctx.input(|i| {
+            if i.raw.dropped_files.is_empty() {
+                return Vec::new();
+            }
             i.raw.dropped_files.iter()
                 .filter_map(|f| f.path.clone())
                 .collect()
@@ -16248,7 +16260,9 @@ impl eframe::App for KlippApp {
             self.state.multicam_viewer_active = false;
         }
 
-        // Window title with project name and dirty indicator
+        // Window title with project name and dirty indicator — only
+        // send the viewport command when the title actually changed to
+        // avoid a per-frame String allocation + IPC round-trip.
         {
             let title = match &self.state.project_path {
                 Some(p) => {
@@ -16263,7 +16277,10 @@ impl eframe::App for KlippApp {
                 }
                 None => "Klipp".to_string(),
             };
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+            if title != self.last_window_title {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+                self.last_window_title = title;
+            }
         }
 
         // Apply pending false color palette switch from toolbar quick-switcher
