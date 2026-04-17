@@ -2202,6 +2202,7 @@ dependencies = [
  "pollster 0.4.0",
  "serde",
  "tracing",
+ "tracing-subscriber",
  "wgpu",
 ]
 

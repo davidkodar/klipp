@@ -8042,27 +8042,53 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let bin = px * 256u / params.out_w;
 
-    // Stack channels: luma (back), then R, G, B
+    // Stack channels: luma (back), then R, G, B. Unrolled because
+    // naga rejects dynamic indexing into a locally-declared array.
     var r_acc = 0.0; var g_acc = 0.0; var b_acc = 0.0;
-    let channels: array<vec4<f32>, 4> = array<vec4<f32>, 4>(
-        vec4<f32>(0.35, 0.35, 0.35, f32(bins[768u + bin])),  // luma
-        vec4<f32>(1.0, 0.08, 0.05, f32(bins[bin])),           // red
-        vec4<f32>(0.05, 0.9, 0.08, f32(bins[256u + bin])),    // green
-        vec4<f32>(0.08, 0.2, 1.0, f32(bins[512u + bin])),     // blue
-    );
+    let from_bottom = params.out_h - 1u - py;
 
-    for (var ch = 0u; ch < 4u; ch = ch + 1u) {
-        let c = channels[ch];
-        let count = c.w;
-        if count < 1.0 { continue; }
-        let height_frac = sqrt(count / max_c);
-        let height_px = u32(height_frac * f32(params.out_h));
-        let from_bottom = params.out_h - 1u - py;
-        if from_bottom < height_px {
-            let fade = 1.0 - f32(from_bottom) / f32(max(height_px, 1u)) * 0.5;
-            r_acc += c.x * fade * 0.6;
-            g_acc += c.y * fade * 0.6;
-            b_acc += c.z * fade * 0.6;
+    // Luma (neutral grey back fill).
+    let luma_count = f32(bins[768u + bin]);
+    if luma_count >= 1.0 {
+        let h_px = u32(sqrt(luma_count / max_c) * f32(params.out_h));
+        if from_bottom < h_px {
+            let fade = 1.0 - f32(from_bottom) / f32(max(h_px, 1u)) * 0.5;
+            r_acc += 0.35 * fade * 0.6;
+            g_acc += 0.35 * fade * 0.6;
+            b_acc += 0.35 * fade * 0.6;
+        }
+    }
+    // Red channel.
+    let r_count = f32(bins[bin]);
+    if r_count >= 1.0 {
+        let h_px = u32(sqrt(r_count / max_c) * f32(params.out_h));
+        if from_bottom < h_px {
+            let fade = 1.0 - f32(from_bottom) / f32(max(h_px, 1u)) * 0.5;
+            r_acc += 1.0 * fade * 0.6;
+            g_acc += 0.08 * fade * 0.6;
+            b_acc += 0.05 * fade * 0.6;
+        }
+    }
+    // Green channel.
+    let g_count = f32(bins[256u + bin]);
+    if g_count >= 1.0 {
+        let h_px = u32(sqrt(g_count / max_c) * f32(params.out_h));
+        if from_bottom < h_px {
+            let fade = 1.0 - f32(from_bottom) / f32(max(h_px, 1u)) * 0.5;
+            r_acc += 0.05 * fade * 0.6;
+            g_acc += 0.9 * fade * 0.6;
+            b_acc += 0.08 * fade * 0.6;
+        }
+    }
+    // Blue channel.
+    let b_count = f32(bins[512u + bin]);
+    if b_count >= 1.0 {
+        let h_px = u32(sqrt(b_count / max_c) * f32(params.out_h));
+        if from_bottom < h_px {
+            let fade = 1.0 - f32(from_bottom) / f32(max(h_px, 1u)) * 0.5;
+            r_acc += 0.08 * fade * 0.6;
+            g_acc += 0.2 * fade * 0.6;
+            b_acc += 1.0 * fade * 0.6;
         }
     }
 
