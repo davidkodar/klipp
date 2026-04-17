@@ -112,7 +112,9 @@ impl SkimAudioSession {
         std::thread::Builder::new()
             .name("klipp-skim-audio".into())
             .spawn(move || {
-                skim_feeder_thread(pcm_data, t_pos, t_playing, t_active, t_vol, producer, output_rate);
+                crate::thread_guard::catch_panic("klipp-skim-audio", || {
+                    skim_feeder_thread(pcm_data, t_pos, t_playing, t_active, t_vol, producer, output_rate);
+                });
             })
             .ok();
 
@@ -196,7 +198,9 @@ impl SkimAudioSession {
         std::thread::Builder::new()
             .name("klipp-skim-live".into())
             .spawn(move || {
-                skim_feeder_thread(pcm_data, t_pos, t_playing, t_active, t_vol, producer, output_rate);
+                crate::thread_guard::catch_panic("klipp-skim-live", || {
+                    skim_feeder_thread(pcm_data, t_pos, t_playing, t_active, t_vol, producer, output_rate);
+                });
             })
             .ok();
 

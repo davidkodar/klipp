@@ -171,26 +171,28 @@ impl PcmAudioFeeder {
         let thread = std::thread::Builder::new()
             .name("klipp-pcm-feed".into())
             .spawn(move || {
-                pcm_feed_thread(
-                    pcm_data,
-                    output_rate,
-                    needs_resample,
-                    producer,
-                    cmd_rx,
-                    vol,
-                    mute,
-                    pts_clone,
-                    gen_clone,
-                    fsi,
-                    fcd,
-                    ffi,
-                    ffo,
-                    fic,
-                    foc,
-                    fg,
-                    ac,
-                    audio_effects,
-                );
+                crate::thread_guard::catch_panic("klipp-pcm-feed", || {
+                    pcm_feed_thread(
+                        pcm_data,
+                        output_rate,
+                        needs_resample,
+                        producer,
+                        cmd_rx,
+                        vol,
+                        mute,
+                        pts_clone,
+                        gen_clone,
+                        fsi,
+                        fcd,
+                        ffi,
+                        ffo,
+                        fic,
+                        foc,
+                        fg,
+                        ac,
+                        audio_effects,
+                    );
+                });
             })
             .map_err(|e| PcmFeederError::Open(format!("spawn thread: {e}")))?;
 

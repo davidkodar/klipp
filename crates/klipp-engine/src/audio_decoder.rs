@@ -65,7 +65,9 @@ impl AudioDecoder {
         let thread = std::thread::Builder::new()
             .name("klipp-adec".into())
             .spawn(move || {
-                audio_decode_thread(path_owned, output_rate, producer, cmd_rx, vol, mute, pts_clone, gen_clone, audio_effects);
+                crate::thread_guard::catch_panic("klipp-adec", || {
+                    audio_decode_thread(path_owned, output_rate, producer, cmd_rx, vol, mute, pts_clone, gen_clone, audio_effects);
+                });
             })
             .map_err(|e| AudioDecoderError::Open(format!("spawn thread: {e}")))?;
 

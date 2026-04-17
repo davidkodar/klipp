@@ -74,7 +74,9 @@ impl VideoDecoder {
         let thread = std::thread::Builder::new()
             .name("klipp-vdec".into())
             .spawn(move || {
-                decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation);
+                crate::thread_guard::catch_panic("klipp-vdec", || {
+                    decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation);
+                });
             })
             .map_err(|e| DecoderError::Open(format!("spawn thread: {e}")))?;
 

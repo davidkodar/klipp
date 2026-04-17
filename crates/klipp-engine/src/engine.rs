@@ -3186,7 +3186,7 @@ impl PlaybackEngine {
 
         debug!("[Loop] Starting pre-seek to {target_secs:.3}s (gen={generation})");
 
-        std::thread::spawn(move || {
+        std::thread::spawn(move || crate::thread_guard::catch_panic("klipp-preseek", move || {
             let tc = RationalTime::from_secs_f64(target_secs, 24); // rate doesn't matter for lookup
             let seq = match sequence.read() {
                 Ok(s) => s,
@@ -3311,7 +3311,7 @@ impl PlaybackEngine {
                 });
             }
             debug!("[Loop] Pre-seek ready (gen={generation})");
-        });
+        }));
     }
 
     fn execute_loop(&mut self, target: Timecode) {

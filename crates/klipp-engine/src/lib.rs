@@ -59,6 +59,7 @@ pub mod pcm_reader;
 pub mod skim_audio;
 pub mod sync;
 pub mod texture;
+pub mod thread_guard;
 pub mod transition;
 pub mod types;
 pub mod video_decoder;

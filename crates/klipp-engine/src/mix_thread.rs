@@ -63,7 +63,11 @@ impl MixThread {
 
         let thread = std::thread::Builder::new()
             .name("klipp-mix".into())
-            .spawn(move || mix_loop(producer, cmd_rx, mixer, sr, lufs_readings_writer, lufs_reset_reader, spectrum_writer, tp_oversample))
+            .spawn(move || {
+                crate::thread_guard::catch_panic("klipp-mix", || {
+                    mix_loop(producer, cmd_rx, mixer, sr, lufs_readings_writer, lufs_reset_reader, spectrum_writer, tp_oversample);
+                });
+            })
             .expect("failed to spawn mix thread");
 
         (
