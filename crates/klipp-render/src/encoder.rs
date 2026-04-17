@@ -720,6 +720,36 @@ impl Encoder {
         }
     }
 
+    /// Encode one linear-light f32 RGBA video frame.
+    ///
+    /// For SDR exports this is a straightforward linear → sRGB u8
+    /// encode followed by the existing RGBA→YUV scaler — bit-identical
+    /// to feeding the same content through [`Self::encode_video_frame`]
+    /// with the already-encoded sRGB bytes. `ToneMapOp::None` because
+    /// exports should not be filmic-tone-mapped at the encode step —
+    /// the colourist handles look via grade / LUT; the encoder just
+    /// writes what the pipeline produced.
+    ///
+    /// For HDR exports (`HdrMode::Hlg`, `HdrMode::Pq`) this currently
+    /// falls back to the sRGB path so the exported file has *correct*
+    /// colour-space tags ([`apply_color_tags`] writes BT.2020 + the
+    /// chosen transfer characteristic) but the pixel values
+    /// themselves are still sRGB-encoded. A follow-up (Phase 11)
+    /// wires in a genuine PQ/HLG transfer encode so 10-bit HDR
+    /// pixel data reaches the file.
+    pub fn encode_linear_frame(
+        &mut self,
+        linear_rgba: &[f32],
+        width: u32,
+        height: u32,
+    ) -> Result<(), RenderError> {
+        let srgb = klipp_color::display::display_transform(
+            linear_rgba,
+            klipp_color::display::ToneMapOp::None,
+        );
+        self.encode_video_frame(&srgb, width, height)
+    }
+
     /// Encode one RGBA video frame.
     pub fn encode_video_frame(
         &mut self,
