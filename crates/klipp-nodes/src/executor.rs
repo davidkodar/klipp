@@ -23,6 +23,16 @@ pub enum ExecutorError {
 
 /// Executes a node graph on RGBA frames.
 /// Uses GPU compute shaders for supported nodes when available, CPU fallback otherwise.
+///
+/// Internally the executor carries linear-light `Vec<f32>` RGBA buffers between
+/// nodes. Colour ops that have linear-native variants (exposure, saturation,
+/// contrast, tone controls, wheels, …) run on f32 directly. Ops that still
+/// require u8 input (curve application, qualifier/mask generation, GPU-delegated
+/// paths, LUT / grain / denoise) bracket the u8 round-trip at the call site.
+///
+/// The public [`GraphExecutor::execute`] entry point stays u8 in, u8 out for
+/// backward compatibility. Callers that already hold linear data should prefer
+/// [`GraphExecutor::execute_linear`], which skips the bracket at the boundary.
 pub struct GraphExecutor {
     /// Optional GPU pipeline for accelerated node execution.
     gpu: Option<GpuEffectsPipeline>,
@@ -30,6 +40,36 @@ pub struct GraphExecutor {
     lut_cache: HashMap<PathBuf, Arc<LutData>>,
     /// Cache of pre-built curve LUTs keyed by node ID.
     curve_lut_cache: HashMap<NodeId, Arc<CurveLuts>>,
+}
+
+// ── u8 ↔ linear bracket helpers ─────────────────────────────────────────────
+
+/// Convert an sRGB u8 RGBA buffer to linear-light f32 RGBA.
+/// Alpha stays linear (per the sRGB spec).
+fn u8_rgba_to_linear(rgba: &[u8]) -> Vec<f32> {
+    use klipp_color::transfer::srgb_to_linear;
+    let mut out = Vec::with_capacity(rgba.len());
+    for chunk in rgba.chunks_exact(4) {
+        out.push(srgb_to_linear(chunk[0] as f32 / 255.0));
+        out.push(srgb_to_linear(chunk[1] as f32 / 255.0));
+        out.push(srgb_to_linear(chunk[2] as f32 / 255.0));
+        out.push(chunk[3] as f32 / 255.0);
+    }
+    out
+}
+
+/// Convert a linear-light f32 RGBA buffer to sRGB u8 RGBA. Out-of-range values
+/// are clamped at the byte boundary only.
+fn linear_rgba_to_u8(linear: &[f32]) -> Vec<u8> {
+    use klipp_color::transfer::linear_to_srgb;
+    let mut out = Vec::with_capacity(linear.len());
+    for chunk in linear.chunks_exact(4) {
+        out.push((linear_to_srgb(chunk[0]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        out.push((linear_to_srgb(chunk[1]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        out.push((linear_to_srgb(chunk[2]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        out.push((chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+    }
+    out
 }
 
 impl GraphExecutor {
@@ -73,6 +113,12 @@ impl GraphExecutor {
     /// Execute the graph for one frame.
     ///
     /// Returns (final graded frame, optional tapped node output for scopes).
+    ///
+    /// Accepts and returns sRGB u8 RGBA. Converts to linear at the entry,
+    /// delegates to [`execute_linear`], converts back at the exit. Callers
+    /// that already hold linear data should call [`execute_linear`] directly
+    /// to avoid the extra round-trip.
+    #[allow(clippy::too_many_arguments)]
     pub fn execute(
         &mut self,
         source_frame: &[u8],
@@ -84,12 +130,46 @@ impl GraphExecutor {
         matte_tap: Option<NodeId>,
         matte_preview_node: Option<NodeId>,
     ) -> Result<(Vec<u8>, Option<Vec<u8>>), ExecutorError> {
+        let source_linear = u8_rgba_to_linear(source_frame);
+        let (result_linear, tapped_linear) = self.execute_linear(
+            &source_linear,
+            graph,
+            width,
+            height,
+            clip_time_secs,
+            frame_number,
+            matte_tap,
+            matte_preview_node,
+        )?;
+        let result_u8 = linear_rgba_to_u8(&result_linear);
+        let tapped_u8 = tapped_linear.as_deref().map(linear_rgba_to_u8);
+        Ok((result_u8, tapped_u8))
+    }
+
+    /// Execute the graph on a linear-light f32 RGBA frame.
+    ///
+    /// This is the native entry point for the linear-light pipeline. The
+    /// buffer is 4 f32 per pixel, RGBA interleaved, alpha linear. Returns
+    /// (final graded frame, optional tapped node output for scopes), both in
+    /// the same linear-light representation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_linear(
+        &mut self,
+        source_frame: &[f32],
+        graph: &NodeGraph,
+        width: u32,
+        height: u32,
+        clip_time_secs: f64,
+        frame_number: u64,
+        matte_tap: Option<NodeId>,
+        matte_preview_node: Option<NodeId>,
+    ) -> Result<(Vec<f32>, Option<Vec<f32>>), ExecutorError> {
         // 1. Topological sort
         let order = graph.topo_sort()?;
 
-        // 2. Map: NodeId → output buffer
-        let mut node_outputs: HashMap<NodeId, Vec<u8>> = HashMap::new();
-        let mut tapped_output: Option<Vec<u8>> = None;
+        // 2. Map: NodeId → linear-light output buffer
+        let mut node_outputs: HashMap<NodeId, Vec<f32>> = HashMap::new();
+        let mut tapped_output: Option<Vec<f32>> = None;
 
         // 3. Execute nodes in topo order
         for node_id in order {
@@ -114,7 +194,6 @@ impl GraphExecutor {
             }
 
             // Resolve inputs — borrow as slices
-            let empty = Vec::new();
             let primary = graph
                 .input_of(node_id, 0)
                 .and_then(|id| node_outputs.get(&id));
@@ -147,7 +226,6 @@ impl GraphExecutor {
                 height,
                 source_frame,
                 frame_number,
-                &empty,
                 clip_time_secs,
             );
 
@@ -158,9 +236,9 @@ impl GraphExecutor {
 
             // Matte preview — return greyscale matte early
             if Some(node_id) == matte_preview_node {
-                let matte: Vec<u8> = output
+                let matte: Vec<f32> = output
                     .chunks_exact(4)
-                    .flat_map(|c| [c[0], c[0], c[0], 255])
+                    .flat_map(|c| [c[0], c[0], c[0], 1.0])
                     .collect();
                 return Ok((matte, tapped_output));
             }
@@ -185,16 +263,15 @@ impl GraphExecutor {
         node_id: NodeId,
         kind: &NodeKind,
         params: &NodeParams,
-        primary_input: &[u8],
-        secondary_input: Option<&[u8]>,
-        tertiary_input: Option<&[u8]>,
+        primary_input: &[f32],
+        secondary_input: Option<&[f32]>,
+        tertiary_input: Option<&[f32]>,
         width: u32,
         height: u32,
-        source_frame: &[u8],
+        source_frame: &[f32],
         frame_number: u64,
-        _empty: &[u8],
         clip_time_secs: f64,
-    ) -> Vec<u8> {
+    ) -> Vec<f32> {
         match kind {
             NodeKind::Source => source_frame.to_vec(),
 
@@ -204,12 +281,15 @@ impl GraphExecutor {
                     if matches!(fmt, LogFormat::Srgb | LogFormat::Linear) {
                         primary_input.to_vec()
                     } else if let Some(gpu) = &mut self.gpu {
-                        // Pre-compute 1D LUT on CPU (256 entries, fast), apply on GPU
+                        // GPU path is u8 — bracket with linear↔u8 conversion.
                         let lut = klipp_color::build_input_transform_lut(fmt);
-                        gpu.apply_input_transform_gpu(primary_input.to_vec(), width, height, &lut)
+                        let primary_u8 = linear_rgba_to_u8(primary_input);
+                        let result_u8 =
+                            gpu.apply_input_transform_gpu(primary_u8, width, height, &lut);
+                        u8_rgba_to_linear(&result_u8)
                     } else {
                         let mut frame = primary_input.to_vec();
-                        klipp_color::apply_input_transform(&mut frame, fmt);
+                        klipp_color::linear::apply_input_transform(&mut frame, fmt);
                         frame
                     }
                 } else {
@@ -221,16 +301,18 @@ impl GraphExecutor {
                 let exp = params.exposure.unwrap_or(0.0);
                 if exp != 0.0 {
                     if let Some(gpu) = &mut self.gpu {
-                        gpu.apply_color_grade(
-                            primary_input.to_vec(), width, height,
+                        let primary_u8 = linear_rgba_to_u8(primary_input);
+                        let result_u8 = gpu.apply_color_grade(
+                            primary_u8, width, height,
                             exp, 0.0, 1.0, 0.0, 0.0,
                             0.0, 0.0, 0.0, 0.0,
                             (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                             0.0, 1.0,
-                        )
+                        );
+                        u8_rgba_to_linear(&result_u8)
                     } else {
                         let mut frame = primary_input.to_vec();
-                        klipp_color::apply_exposure(&mut frame, exp);
+                        klipp_color::linear::apply_exposure(&mut frame, exp);
                         frame
                     }
                 } else {
@@ -244,16 +326,18 @@ impl GraphExecutor {
                 if con != 0.0 || clarity != 0.0 {
                     let frame = if con != 0.0 {
                         if let Some(gpu) = &mut self.gpu {
-                            gpu.apply_color_grade(
-                                primary_input.to_vec(), width, height,
+                            let primary_u8 = linear_rgba_to_u8(primary_input);
+                            let result_u8 = gpu.apply_color_grade(
+                                primary_u8, width, height,
                                 0.0, con, 1.0, 0.0, 0.0,
                                 0.0, 0.0, 0.0, 0.0,
                                 (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                                 0.0, 1.0,
-                            )
+                            );
+                            u8_rgba_to_linear(&result_u8)
                         } else {
                             let mut f = primary_input.to_vec();
-                            klipp_color::apply_contrast(&mut f, con);
+                            klipp_color::linear::apply_contrast(&mut f, con);
                             f
                         }
                     } else {
@@ -261,10 +345,12 @@ impl GraphExecutor {
                     };
                     if clarity != 0.0 {
                         if let Some(gpu) = &mut self.gpu {
-                            gpu.apply_clarity_gpu(frame, width, height, clarity)
+                            let frame_u8 = linear_rgba_to_u8(&frame);
+                            let result_u8 = gpu.apply_clarity_gpu(frame_u8, width, height, clarity);
+                            u8_rgba_to_linear(&result_u8)
                         } else {
                             let mut f = frame;
-                            klipp_color::apply_clarity_inplace(&mut f, width, height, clarity);
+                            klipp_color::linear::apply_clarity(&mut f, width, height, clarity);
                             f
                         }
                     } else {
@@ -281,16 +367,18 @@ impl GraphExecutor {
                 if sat != 1.0 || vib != 0.0 {
                     let frame = if sat != 1.0 {
                         if let Some(gpu) = &mut self.gpu {
-                            gpu.apply_color_grade(
-                                primary_input.to_vec(), width, height,
+                            let primary_u8 = linear_rgba_to_u8(primary_input);
+                            let result_u8 = gpu.apply_color_grade(
+                                primary_u8, width, height,
                                 0.0, 0.0, sat, 0.0, 0.0,
                                 0.0, 0.0, 0.0, 0.0,
                                 (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                                 0.0, 1.0,
-                            )
+                            );
+                            u8_rgba_to_linear(&result_u8)
                         } else {
                             let mut f = primary_input.to_vec();
-                            klipp_color::apply_saturation(&mut f, sat);
+                            klipp_color::linear::apply_saturation(&mut f, sat);
                             f
                         }
                     } else {
@@ -298,10 +386,12 @@ impl GraphExecutor {
                     };
                     if vib != 0.0 {
                         if let Some(gpu) = &mut self.gpu {
-                            gpu.apply_vibrance_gpu(frame, width, height, vib)
+                            let frame_u8 = linear_rgba_to_u8(&frame);
+                            let result_u8 = gpu.apply_vibrance_gpu(frame_u8, width, height, vib);
+                            u8_rgba_to_linear(&result_u8)
                         } else {
                             let mut f = frame;
-                            klipp_color::apply_vibrance_buffer(&mut f, vib);
+                            klipp_color::linear::apply_vibrance(&mut f, vib);
                             f
                         }
                     } else {
@@ -319,16 +409,18 @@ impl GraphExecutor {
                 let bl = params.blacks.unwrap_or(0.0);
                 if hi != 0.0 || sh != 0.0 || wh != 0.0 || bl != 0.0 {
                     if let Some(gpu) = &mut self.gpu {
-                        gpu.apply_color_grade(
-                            primary_input.to_vec(), width, height,
+                        let primary_u8 = linear_rgba_to_u8(primary_input);
+                        let result_u8 = gpu.apply_color_grade(
+                            primary_u8, width, height,
                             0.0, 0.0, 1.0, 0.0, 0.0,
                             hi, sh, wh, bl,
                             (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                             0.0, 1.0,
-                        )
+                        );
+                        u8_rgba_to_linear(&result_u8)
                     } else {
                         let mut frame = primary_input.to_vec();
-                        klipp_color::apply_tone_controls(&mut frame, hi, sh, wh, bl);
+                        klipp_color::linear::apply_tone_controls(&mut frame, hi, sh, wh, bl);
                         frame
                     }
                 } else {
@@ -356,7 +448,7 @@ impl GraphExecutor {
                         params.log_high_master.unwrap_or(0.0),
                     );
                     let mut frame = primary_input.to_vec();
-                    klipp_color::apply_log_wheels(&mut frame, low, mid, high);
+                    klipp_color::linear::apply_log_wheels(&mut frame, low, mid, high);
                     frame
                 } else {
                     // Linear wheels: Lift/Gamma/Gain/Offset (traditional)
@@ -382,16 +474,20 @@ impl GraphExecutor {
                     );
                     // GPU path: SHADER_COLOR_GRADE applies wheels in a single dispatch
                     if let Some(gpu) = &mut self.gpu {
-                        gpu.apply_color_grade(
-                            primary_input.to_vec(), width, height,
+                        let primary_u8 = linear_rgba_to_u8(primary_input);
+                        let result_u8 = gpu.apply_color_grade(
+                            primary_u8, width, height,
                             0.0, 0.0, 1.0, 0.0, 0.0,
                             0.0, 0.0, 0.0, 0.0,
                             lift, gamma, gain, offset,
                             0.0, 1.0,
-                        )
+                        );
+                        u8_rgba_to_linear(&result_u8)
                     } else {
                         let mut frame = primary_input.to_vec();
-                        klipp_color::apply_lift_gamma_gain_offset(&mut frame, lift, gamma, gain, offset);
+                        klipp_color::linear::apply_lift_gamma_gain_offset(
+                            &mut frame, lift, gamma, gain, offset,
+                        );
                         frame
                     }
                 }
@@ -407,13 +503,17 @@ impl GraphExecutor {
                 let os = params.offset_sat.unwrap_or(0.0);
                 let ob = params.offset_bri.unwrap_or(0.0);
                 if let Some(gpu) = &mut self.gpu {
-                    gpu.apply_wheel_sat_bri_gpu(
-                        primary_input.to_vec(), width, height,
+                    let primary_u8 = linear_rgba_to_u8(primary_input);
+                    let result_u8 = gpu.apply_wheel_sat_bri_gpu(
+                        primary_u8, width, height,
                         ls, lb, gs, gb, gas, gab, os, ob,
-                    )
+                    );
+                    u8_rgba_to_linear(&result_u8)
                 } else {
                     let mut frame = primary_input.to_vec();
-                    klipp_color::apply_wheel_sat_bri(&mut frame, ls, lb, gs, gb, gas, gab, os, ob);
+                    klipp_color::linear::apply_wheel_sat_bri(
+                        &mut frame, ls, lb, gs, gb, gas, gab, os, ob,
+                    );
                     frame
                 }
             }
@@ -435,8 +535,11 @@ impl GraphExecutor {
                     let preserve_luma = params.curves_preserve_luma.unwrap_or(false);
                     let mix = params.curves_mix.unwrap_or(1.0);
 
+                    // Curves operate on u8 values — bracket with u8 conversion.
+                    let primary_u8 = linear_rgba_to_u8(primary_input);
+
                     // GPU path: pack LUTs into a flat array
-                    if let Some(gpu) = &mut self.gpu {
+                    let result_u8 = if let Some(gpu) = &mut self.gpu {
                         let mut lut_data = [0.0f32; 1024];
                         for (i, &v) in luts.master.iter().enumerate().take(256) {
                             lut_data[i] = v as f32 / 255.0;
@@ -451,26 +554,27 @@ impl GraphExecutor {
                             lut_data[768 + i] = v as f32 / 255.0;
                         }
                         gpu.apply_rgb_curves_gpu(
-                            primary_input.to_vec(), width, height,
+                            primary_u8, width, height,
                             &lut_data, preserve_luma, mix,
                         )
                     } else {
-                        let mut frame = primary_input.to_vec();
+                        let mut frame_u8 = primary_u8.clone();
                         klipp_color::curves::apply_curves(
-                            &mut frame,
+                            &mut frame_u8,
                             &luts.master,
                             &luts.red,
                             &luts.green,
                             &luts.blue,
                         );
                         if preserve_luma {
-                            apply_preserve_luma(&mut frame, primary_input);
+                            apply_preserve_luma(&mut frame_u8, &primary_u8);
                         }
                         if mix < 0.999 {
-                            klipp_color::apply_global_mix(&mut frame, primary_input, mix);
+                            klipp_color::apply_global_mix(&mut frame_u8, &primary_u8, mix);
                         }
-                        frame
-                    }
+                        frame_u8
+                    };
+                    u8_rgba_to_linear(&result_u8)
                 } else {
                     primary_input.to_vec()
                 }
@@ -480,15 +584,17 @@ impl GraphExecutor {
                 if let Some(huesat) = &params.huesat {
                     if !huesat.is_all_identity() {
                         let mix = params.huesat_mix.unwrap_or(1.0);
-                        // GPU path: build LUT data and dispatch
-                        if let Some(gpu) = &mut self.gpu {
+                        // Hue/sat curves operate on u8 — bracket.
+                        let primary_u8 = linear_rgba_to_u8(primary_input);
+                        let result_u8 = if let Some(gpu) = &mut self.gpu {
                             let lut_data = build_huesat_lut_data(huesat);
-                            gpu.apply_huesat_gpu(primary_input.to_vec(), width, height, mix, &lut_data)
+                            gpu.apply_huesat_gpu(primary_u8, width, height, mix, &lut_data)
                         } else {
-                            let mut frame = primary_input.to_vec();
-                            klipp_color::huesat::apply_huesat_curves(&mut frame, huesat, mix);
-                            frame
-                        }
+                            let mut frame_u8 = primary_u8;
+                            klipp_color::huesat::apply_huesat_curves(&mut frame_u8, huesat, mix);
+                            frame_u8
+                        };
+                        u8_rgba_to_linear(&result_u8)
                     } else {
                         primary_input.to_vec()
                     }
@@ -504,32 +610,36 @@ impl GraphExecutor {
                 let mix = params.global_mix.unwrap_or(1.0);
 
                 if let Some(gpu) = &mut self.gpu {
-                    gpu.apply_color_balance_gpu(
-                        primary_input.to_vec(), width, height,
+                    let primary_u8 = linear_rgba_to_u8(primary_input);
+                    let result_u8 = gpu.apply_color_balance_gpu(
+                        primary_u8, width, height,
                         temp, tint, hue, mix,
-                    )
+                    );
+                    u8_rgba_to_linear(&result_u8)
                 } else {
-                    let mut frame = primary_input.to_vec();
+                    let original = primary_input.to_vec();
+                    let mut frame = original.clone();
                     if temp != 0.0 || tint != 0.0 {
-                        klipp_color::apply_temperature_tint(&mut frame, temp, tint);
+                        klipp_color::linear::apply_temperature_tint(&mut frame, temp, tint);
                     }
                     if hue.abs() > 0.01 {
-                        klipp_color::apply_hue_rotation(&mut frame, hue);
+                        klipp_color::linear::apply_hue_rotation(&mut frame, hue);
                     }
                     if mix < 0.999 {
-                        klipp_color::apply_global_mix(&mut frame, primary_input, mix);
+                        klipp_color::linear::apply_global_mix(&mut frame, &original, mix);
                     }
                     frame
                 }
             }
 
             NodeKind::Qualifier => {
-                // Output is a matte (greyscale RGBA: R=G=B=matte_byte, A=255)
+                // Output is a matte (greyscale RGBA: R=G=B=matte value, A=1.0).
+                // Qualifier operates on u8 — bracket at the call site.
                 if let Some(qual) = &params.qualifier {
-                    // GPU path: qualifier generates matte via compute shader
-                    if let Some(gpu) = &mut self.gpu {
+                    let primary_u8 = linear_rgba_to_u8(primary_input);
+                    let matte_u8: Vec<u8> = if let Some(gpu) = &mut self.gpu {
                         gpu.apply_qualifier_gpu(
-                            primary_input.to_vec(), width, height,
+                            primary_u8, width, height,
                             qual.hue_center, qual.hue_width, qual.hue_soft,
                             qual.sat_low, qual.sat_high, qual.sat_soft,
                             qual.lum_low, qual.lum_high, qual.lum_soft,
@@ -539,14 +649,15 @@ impl GraphExecutor {
                         )
                     } else {
                         let matte = klipp_color::qualifier::generate_qualifier_matte(
-                            primary_input, width, height, qual,
+                            &primary_u8, width, height, qual,
                         );
                         matte.iter()
                             .flat_map(|&v| { let b = (v * 255.0) as u8; [b, b, b, 255] })
                             .collect()
-                    }
+                    };
+                    u8_rgba_to_linear(&matte_u8)
                 } else {
-                    vec![255u8; (width * height * 4) as usize]
+                    vec![1.0f32; (width * height * 4) as usize]
                 }
             }
 
@@ -556,10 +667,10 @@ impl GraphExecutor {
                     let evaluated = masks.evaluated_at(clip_time_secs);
 
                     // GPU path: convert masks to GPU format (skip Bezier shapes)
-                    if let Some(gpu) = &mut self.gpu {
+                    let matte_u8: Vec<u8> = if let Some(gpu) = &mut self.gpu {
                         let gpu_masks: Vec<klipp_effects::gpu::GpuMaskDef> = evaluated.masks.iter()
                             .filter(|m| m.enabled)
-                            .filter_map(|m| mask_to_gpu_def(m))
+                            .filter_map(mask_to_gpu_def)
                             .collect();
                         let has_bezier = evaluated.masks.iter()
                             .any(|m| m.enabled && matches!(m.shape, klipp_core::MaskShape::Bezier { .. }));
@@ -578,38 +689,52 @@ impl GraphExecutor {
                         matte.iter()
                             .flat_map(|&v| { let b = (v * 255.0) as u8; [b, b, b, 255] })
                             .collect()
-                    }
+                    };
+                    u8_rgba_to_linear(&matte_u8)
                 } else {
-                    vec![255u8; (width * height * 4) as usize]
+                    vec![1.0f32; (width * height * 4) as usize]
                 }
             }
 
             NodeKind::CombineMattes => {
-                let white = vec![255u8; (width * height * 4) as usize];
-                let matte_a = primary_input;
-                let matte_b = secondary_input.unwrap_or(&white);
-                matte_a
+                // Mattes are alpha-like values; combine in u8 to preserve
+                // the existing multiplication semantics.
+                let white_u8 = vec![255u8; (width * height * 4) as usize];
+                let matte_a_u8 = linear_rgba_to_u8(primary_input);
+                let matte_b_u8 = match secondary_input {
+                    Some(s) => linear_rgba_to_u8(s),
+                    None => white_u8,
+                };
+                let combined: Vec<u8> = matte_a_u8
                     .chunks_exact(4)
-                    .zip(matte_b.chunks_exact(4))
+                    .zip(matte_b_u8.chunks_exact(4))
                     .flat_map(|(a, b)| {
                         let combined = (a[0] as u16 * b[0] as u16 / 255) as u8;
                         [combined, combined, combined, 255]
                     })
-                    .collect()
+                    .collect();
+                u8_rgba_to_linear(&combined)
             }
 
             NodeKind::ApplyMatte => {
-                // Port 0: graded frame, Port 1: matte, Port 2: ungraded (pre-grade)
-                let graded = primary_input;
-                let white = vec![255u8; graded.len()];
-                let matte_rgba = secondary_input.unwrap_or(&white);
-                let ungraded = tertiary_input.unwrap_or(source_frame);
+                // Port 0: graded frame, Port 1: matte, Port 2: ungraded (pre-grade).
+                // Current semantics are u8-based — bracket to preserve behaviour.
+                let graded_u8 = linear_rgba_to_u8(primary_input);
+                let white_u8 = vec![255u8; graded_u8.len()];
+                let matte_rgba_u8 = match secondary_input {
+                    Some(s) => linear_rgba_to_u8(s),
+                    None => white_u8.clone(),
+                };
+                let ungraded_u8 = match tertiary_input {
+                    Some(t) => linear_rgba_to_u8(t),
+                    None => linear_rgba_to_u8(source_frame),
+                };
                 let mix = params.mix.unwrap_or(1.0);
 
-                graded
+                let blended: Vec<u8> = graded_u8
                     .chunks_exact(4)
-                    .zip(ungraded.chunks_exact(4))
-                    .zip(matte_rgba.chunks_exact(4))
+                    .zip(ungraded_u8.chunks_exact(4))
+                    .zip(matte_rgba_u8.chunks_exact(4))
                     .flat_map(|((g, u), m)| {
                         let matte_val = m[0] as f32 / 255.0 * mix;
                         let r = (u[0] as f32 + (g[0] as f32 - u[0] as f32) * matte_val) as u8;
@@ -618,30 +743,41 @@ impl GraphExecutor {
                         let b = (u[2] as f32 + (g[2] as f32 - u[2] as f32) * matte_val) as u8;
                         [r, g_ch, b, 255]
                     })
-                    .collect()
+                    .collect();
+                u8_rgba_to_linear(&blended)
             }
 
             NodeKind::Blend => {
-                let a = primary_input;
-                let b = secondary_input.unwrap_or(a);
+                // Two-input mix — preserve current u8 behaviour via bracket.
+                let a_u8 = linear_rgba_to_u8(primary_input);
+                let b_u8 = match secondary_input {
+                    Some(s) => linear_rgba_to_u8(s),
+                    None => a_u8.clone(),
+                };
                 let mix = params.mix.unwrap_or(0.5);
-                a.chunks_exact(4)
-                    .zip(b.chunks_exact(4))
+                let blended: Vec<u8> = a_u8
+                    .chunks_exact(4)
+                    .zip(b_u8.chunks_exact(4))
                     .flat_map(|(pa, pb)| {
                         let r = (pa[0] as f32 + (pb[0] as f32 - pa[0] as f32) * mix) as u8;
                         let g = (pa[1] as f32 + (pb[1] as f32 - pa[1] as f32) * mix) as u8;
                         let b_c = (pa[2] as f32 + (pb[2] as f32 - pa[2] as f32) * mix) as u8;
                         [r, g, b_c, 255]
                     })
-                    .collect()
+                    .collect();
+                u8_rgba_to_linear(&blended)
             }
 
             NodeKind::Layer => {
-                let fg = primary_input;
-                let bg = secondary_input.unwrap_or(source_frame);
-                // Simple alpha-over composite
-                fg.chunks_exact(4)
-                    .zip(bg.chunks_exact(4))
+                // Alpha-over composite — preserve current u8 semantics via bracket.
+                let fg_u8 = linear_rgba_to_u8(primary_input);
+                let bg_u8 = match secondary_input {
+                    Some(s) => linear_rgba_to_u8(s),
+                    None => linear_rgba_to_u8(source_frame),
+                };
+                let composed: Vec<u8> = fg_u8
+                    .chunks_exact(4)
+                    .zip(bg_u8.chunks_exact(4))
                     .flat_map(|(f, b)| {
                         let fa = f[3] as f32 / 255.0;
                         let r = (f[0] as f32 * fa + b[0] as f32 * (1.0 - fa)) as u8;
@@ -650,7 +786,8 @@ impl GraphExecutor {
                         let a = (f[3] as f32 + b[3] as f32 * (1.0 - fa)).min(255.0) as u8;
                         [r, g, bl, a]
                     })
-                    .collect()
+                    .collect();
+                u8_rgba_to_linear(&composed)
             }
 
             NodeKind::Lut3D => {
@@ -669,16 +806,18 @@ impl GraphExecutor {
                         })
                         .clone();
                     let opacity = params.lut_opacity.unwrap_or(1.0);
-                    if let Some(gpu) = &mut self.gpu {
+                    let primary_u8 = linear_rgba_to_u8(primary_input);
+                    let result_u8 = if let Some(gpu) = &mut self.gpu {
                         gpu.apply_3d_lut_gpu(
-                            primary_input.to_vec(), width, height,
+                            primary_u8, width, height,
                             &lut.data, lut.size as u32, opacity,
                         )
                     } else {
-                        let mut frame = primary_input.to_vec();
-                        klipp_color::apply_3d_lut(&mut frame, &lut, opacity);
-                        frame
-                    }
+                        let mut frame_u8 = primary_u8;
+                        klipp_color::apply_3d_lut(&mut frame_u8, &lut, opacity);
+                        frame_u8
+                    };
+                    u8_rgba_to_linear(&result_u8)
                 } else {
                     primary_input.to_vec()
                 }
@@ -687,20 +826,21 @@ impl GraphExecutor {
             NodeKind::FilmGrain => {
                 if let Some(grain) = &params.grain {
                     if grain.enabled && grain.amount > 0.001 {
-                        // GPU path
-                        if let Some(gpu) = &mut self.gpu {
+                        let primary_u8 = linear_rgba_to_u8(primary_input);
+                        let result_u8 = if let Some(gpu) = &mut self.gpu {
                             gpu.apply_grain_gpu(
-                                primary_input.to_vec(), width, height,
+                                primary_u8, width, height,
                                 grain.amount, grain.size,
                                 grain.shadows, grain.highlights,
                                 grain.monochrome,
                                 frame_number as u32,
                             )
                         } else {
-                            let mut frame = primary_input.to_vec();
-                            apply_grain_cpu(&mut frame, grain, frame_number);
-                            frame
-                        }
+                            let mut frame_u8 = primary_u8;
+                            apply_grain_cpu(&mut frame_u8, grain, frame_number);
+                            frame_u8
+                        };
+                        u8_rgba_to_linear(&result_u8)
                     } else {
                         primary_input.to_vec()
                     }
@@ -718,15 +858,19 @@ impl GraphExecutor {
                 let warper = params.warper_params.clone().unwrap_or_default();
                 if warper.is_identity() {
                     primary_input.to_vec()
-                } else if let Some(gpu) = &mut self.gpu {
-                    gpu.apply_color_warper_gpu(
-                        primary_input.to_vec(), width, height,
-                        &warper.hue_shifts, &warper.sat_shifts,
-                    )
                 } else {
-                    let mut frame = primary_input.to_vec();
-                    klipp_color::apply_color_warper(&mut frame, width, height, &warper);
-                    frame
+                    let primary_u8 = linear_rgba_to_u8(primary_input);
+                    let result_u8 = if let Some(gpu) = &mut self.gpu {
+                        gpu.apply_color_warper_gpu(
+                            primary_u8, width, height,
+                            &warper.hue_shifts, &warper.sat_shifts,
+                        )
+                    } else {
+                        let mut frame_u8 = primary_u8;
+                        klipp_color::apply_color_warper(&mut frame_u8, width, height, &warper);
+                        frame_u8
+                    };
+                    u8_rgba_to_linear(&result_u8)
                 }
             }
 
@@ -735,21 +879,22 @@ impl GraphExecutor {
                 let chroma = params.denoise_chroma.unwrap_or(0.0);
                 let radius = params.denoise_radius.unwrap_or(3);
                 if luma > 0.0 || chroma > 0.0 {
-                    if let Some(gpu) = &mut self.gpu {
-                        // Map luma/chroma strength to bilateral sigma values
+                    let primary_u8 = linear_rgba_to_u8(primary_input);
+                    let result_u8 = if let Some(gpu) = &mut self.gpu {
                         let spatial_sigma = radius as f32;
                         let color_sigma = (luma + chroma) * 0.5;
                         gpu.apply_denoise_gpu(
-                            primary_input.to_vec(), width, height,
+                            primary_u8, width, height,
                             spatial_sigma, color_sigma,
                         )
                     } else {
-                        let mut frame = primary_input.to_vec();
+                        let mut frame_u8 = primary_u8;
                         klipp_color::denoise::bilateral_denoise(
-                            &mut frame, width, height, luma, chroma, radius,
+                            &mut frame_u8, width, height, luma, chroma, radius,
                         );
-                        frame
-                    }
+                        frame_u8
+                    };
+                    u8_rgba_to_linear(&result_u8)
                 } else {
                     primary_input.to_vec()
                 }
@@ -928,7 +1073,14 @@ mod tests {
         let (result, _) = executor
             .execute(&frame, &graph, 2, 2, 0.0, 0, None, None)
             .unwrap();
-        assert_eq!(frame, result, "identity default graph should be passthrough");
+        // Linear round-trip is identity within ±1 u8 code value.
+        assert_eq!(frame.len(), result.len());
+        for (a, b) in frame.iter().zip(result.iter()) {
+            assert!(
+                (*a as i32 - *b as i32).abs() <= 1,
+                "identity default graph should be passthrough within ±1 code value: orig {a}, got {b}",
+            );
+        }
     }
 
     #[test]
@@ -964,10 +1116,13 @@ mod tests {
         let (result, _) = executor
             .execute(&frame, &graph, 1, 1, 0.0, 0, None, None)
             .unwrap();
-        assert_eq!(
-            frame, result,
-            "bypassed exposure node should not change frame"
-        );
+        // Bypass + linear round-trip: identity within ±1 code value.
+        for (a, b) in frame.iter().zip(result.iter()) {
+            assert!(
+                (*a as i32 - *b as i32).abs() <= 1,
+                "bypassed exposure node should not change frame: orig {a}, got {b}",
+            );
+        }
     }
 
     #[test]
@@ -1085,7 +1240,7 @@ mod tests {
         let apply_id = NodeId::new_v4();
         let output_id = NodeId::new_v4();
 
-        let mut graph = NodeGraph {
+        let graph = NodeGraph {
             nodes: vec![
                 crate::graph::Node {
                     id: source_id,
@@ -1167,9 +1322,10 @@ mod tests {
         let frame = vec![200, 100, 50, 255];
         let (result, _) = executor.execute(&frame, &graph, 1, 1, 0.0, 0, None, None).unwrap();
         // Blending a frame with itself at mix=0.5 should return the same values
-        assert_eq!(result[0], 200);
-        assert_eq!(result[1], 100);
-        assert_eq!(result[2], 50);
+        // (within ±1 code value after the u8↔linear round-trip).
+        assert!((result[0] as i32 - 200).abs() <= 1, "r: got {}", result[0]);
+        assert!((result[1] as i32 - 100).abs() <= 1, "g: got {}", result[1]);
+        assert!((result[2] as i32 - 50).abs() <= 1, "b: got {}", result[2]);
     }
 
     #[test]
@@ -1292,7 +1448,15 @@ mod tests {
 
         // Mid-grey entry (1,1,1) in a 3x3x3 grid = index 13
         let mid = lut[13]; // r=0.5, g=0.5, b=0.5 input
-        // +1 stop exposure should roughly double: 0.5 → ~1.0 (clamped)
-        assert!(mid[0] > 0.7, "exposure +1 should brighten mid-grey: got {:.2}", mid[0]);
+        // +1 stop exposure in linear-light doubles physical light: sRGB 0.5
+        // decodes to ~0.214 linear, doubling to ~0.428, which re-encodes to
+        // sRGB ~0.68 — meaningfully brighter than the 0.5 input. The exact
+        // output matches photographic reality; the old u8 path silently
+        // shifted the pivot and landed higher.
+        assert!(
+            mid[0] > 0.6,
+            "exposure +1 should brighten mid-grey: got {:.2}",
+            mid[0],
+        );
     }
 }
