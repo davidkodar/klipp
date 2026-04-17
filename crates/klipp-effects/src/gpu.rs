@@ -5068,7 +5068,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 ";
 
-const SHADER_COLOR_GRADE: &str = "
+// Colour grade — the big one. Exposure, tone controls, LGG+offset
+// wheels, contrast, saturation, temperature/tint, global mix. All
+// run in linear so BT.709 luma matches its coefficient domain,
+// exposure `2^stops` produces real photographic stops, contrast
+// pivots at 0.18 (perceptual mid-grey), tone-control band centres
+// map to the linear equivalents of the old 0.5/0.8/0.2 sRGB
+// thresholds (0.214/0.604/0.033 linear — close perceptually, but
+// now physically correct).
+const SHADER_COLOR_GRADE: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -5101,40 +5110,38 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
-    let pixel = input[idx];
-    let orig_r = f32(pixel & 0xFFu) / 255.0;
-    let orig_g = f32((pixel >> 8u) & 0xFFu) / 255.0;
-    let orig_b = f32((pixel >> 16u) & 0xFFu) / 255.0;
-    let a = (pixel >> 24u) & 0xFFu;
+    let orig = unpack(input[idx]);
+    var r = orig.x;
+    var g = orig.y;
+    var b = orig.z;
 
-    var r = orig_r;
-    var g = orig_g;
-    var b = orig_b;
-
-    // 1. Exposure (2^stops)
+    // 1. Exposure (2^stops) — physically correct in linear.
     let exp_factor = pow(2.0, params.exposure);
     r = r * exp_factor;
     g = g * exp_factor;
     b = b * exp_factor;
 
-    // 2. Tone controls (highlights/shadows/whites/blacks)
+    // 2. Tone controls. Band centres in linear: highlights 0.214,
+    //    whites 0.604, shadows 0.214, blacks 0.033.
     let luma1 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    let hi_w = max(luma1 - 0.5, 0.0) * 2.0;
-    let lo_w = max(0.5 - luma1, 0.0) * 2.0;
-    let white_w = max(luma1 - 0.8, 0.0) * 5.0;
-    let black_w = max(0.2 - luma1, 0.0) * 5.0;
+    let hi_w = max(luma1 - 0.214, 0.0) * (1.0 / (1.0 - 0.214));
+    let lo_w = max(0.214 - luma1, 0.0) * (1.0 / 0.214);
+    let white_w = max(luma1 - 0.604, 0.0) * (1.0 / (1.0 - 0.604));
+    let black_w = max(0.033 - luma1, 0.0) * (1.0 / 0.033);
     let tone_adj = params.highlights * hi_w + params.shadows * lo_w + params.whites * white_w + params.blacks * black_w;
     r = r + tone_adj;
     g = g + tone_adj;
     b = b + tone_adj;
 
-    // 3. Lift/Gamma/Gain/Offset color wheels
+    // 3. Lift/Gamma/Gain/Offset colour wheels.
     let luma2 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     let lift_w = max(1.0 - luma2, 0.0);
     let gain_w = max(luma2, 0.0);
@@ -5143,38 +5150,35 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     g = g + params.lift_g * lift_w + params.gamma_g * gamma_w + params.gain_g * gain_w + params.offset_g;
     b = b + params.lift_b * lift_w + params.gamma_b * gamma_w + params.gain_b * gain_w + params.offset_b;
 
-    // 4. Contrast (S-curve around 0.5)
+    // 4. Contrast — pivots at 0.18 linear mid-grey.
     let cs = 1.0 + params.contrast;
-    r = (r - 0.5) * cs + 0.5;
-    g = (g - 0.5) * cs + 0.5;
-    b = (b - 0.5) * cs + 0.5;
+    r = (r - 0.18) * cs + 0.18;
+    g = (g - 0.18) * cs + 0.18;
+    b = (b - 0.18) * cs + 0.18;
 
-    // 5. Saturation (BT.709 luma lerp)
+    // 5. Saturation (BT.709 luma lerp).
     let luma3 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     r = luma3 + (r - luma3) * params.saturation;
     g = luma3 + (g - luma3) * params.saturation;
     b = luma3 + (b - luma3) * params.saturation;
 
-    // 6. Temperature / Tint
+    // 6. Temperature / Tint.
     r = r + params.temperature * 0.001;
     b = b - params.temperature * 0.001;
     g = g + params.tint * 0.001;
 
-    // 7. Hue rotation (simplified: skip on GPU for now, CPU handles it)
-    // Full HSL conversion in WGSL is expensive; apply on CPU path for hue != 0
+    // 7. Hue rotation — CPU path handles this (HSL conversion is
+    //    expensive on GPU and UX decision to keep).
 
-    // 8. Global mix (blend with original)
-    r = orig_r + (r - orig_r) * params.global_mix;
-    g = orig_g + (g - orig_g) * params.global_mix;
-    b = orig_b + (b - orig_b) * params.global_mix;
+    // 8. Global mix (blend with original).
+    r = orig.x + (r - orig.x) * params.global_mix;
+    g = orig.y + (g - orig.y) * params.global_mix;
+    b = orig.z + (b - orig.z) * params.global_mix;
 
-    // Pack result
-    let ro = u32(clamp(r, 0.0, 1.0) * 255.0);
-    let go = u32(clamp(g, 0.0, 1.0) * 255.0);
-    let bo = u32(clamp(b, 0.0, 1.0) * 255.0);
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+    output[idx] = pack(vec4<f32>(r, g, b, orig.w));
 }
-";
+"
+);
 
 const SHADER_HUESAT: &str = "
 struct Params {
