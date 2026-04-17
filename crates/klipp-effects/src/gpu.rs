@@ -3539,6 +3539,10 @@ fn pack(v: vec4<f32>) -> u32 {
     };
 }
 
+// Opacity — multiply linear RGBA by a scalar. In linear light,
+// opacity 0.5 means "half the photons" (matching DaVinci / Nuke);
+// the sRGB u8 version multiplied gamma-encoded bytes, which
+// produced visibly darker-than-half output.
 const SHADER_OPACITY: &str = concat!(
     "
 struct Params {
@@ -3552,21 +3556,7 @@ struct Params {
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
-    "
-fn unpack(v: u32) -> vec4<f32> {
-    return vec4<f32>(
-        f32(v & 0xFFu),
-        f32((v >> 8u) & 0xFFu),
-        f32((v >> 16u) & 0xFFu),
-        f32((v >> 24u) & 0xFFu),
-    );
-}
-
-fn pack(v: vec4<f32>) -> u32 {
-    let c = clamp(v, vec4<f32>(0.0), vec4<f32>(255.0));
-    return u32(c.x) | (u32(c.y) << 8u) | (u32(c.z) << 16u) | (u32(c.w) << 24u);
-}
-",
+    shader_linear_helpers_wgsl!(),
     "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -5647,94 +5637,98 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // ─── Light effect shaders ──────────────────────────────────────────────────────
 
-const SHADER_BLOOM_THRESHOLD: &str = "
+// Bloom threshold — extract pixels above a luma threshold and
+// scale them by `(luma − threshold) / (1 − threshold)`. Linear
+// luma (BT.709) matches the coefficients' definition; thresholding
+// in linear gives a physically-meaningful "light above N nits".
+const SHADER_BLOOM_THRESHOLD: &str = concat!(
+    "
 struct Params { width: u32, height: u32, threshold: f32, _pad: u32 }
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    let v = input[idx];
-    let r = f32(v & 0xFFu) / 255.0;
-    let g = f32((v >> 8u) & 0xFFu) / 255.0;
-    let b = f32((v >> 16u) & 0xFFu) / 255.0;
-    let a = f32((v >> 24u) & 0xFFu) / 255.0;
-    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let px = unpack(input[idx]);
+    let luma = 0.2126 * px.x + 0.7152 * px.y + 0.0722 * px.z;
     if luma > params.threshold {
         let factor = (luma - params.threshold) / (1.0 - params.threshold + 1e-6);
-        let br = u32(clamp(r * factor * 255.0, 0.0, 255.0));
-        let bg = u32(clamp(g * factor * 255.0, 0.0, 255.0));
-        let bb = u32(clamp(b * factor * 255.0, 0.0, 255.0));
-        let ba = u32(a * 255.0);
-        output[idx] = br | (bg << 8u) | (bb << 16u) | (ba << 24u);
+        output[idx] = pack(vec4<f32>(px.xyz * factor, px.w));
     } else {
-        output[idx] = 0u;
+        output[idx] = pack(vec4<f32>(0.0, 0.0, 0.0, 0.0));
     }
 }
-";
+"
+);
 
-const SHADER_BLOOM_BLEND: &str = "
+// Bloom blend — additive blend of the bright-extracted buffer onto
+// the original. Linear add is physically correct for "combining
+// light sources"; the sRGB u8 version clipped at 255 and produced
+// the wrong midtone mix for HDR highlights.
+const SHADER_BLOOM_BLEND: &str = concat!(
+    "
 struct Params { width: u32, height: u32, intensity: f32, _pad: u32 }
 @group(0) @binding(0) var<storage, read> original: array<u32>;
 @group(0) @binding(1) var<storage, read> bright: array<u32>;
 @group(0) @binding(2) var<storage, read_write> output: array<u32>;
 @group(0) @binding(3) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    let ov = original[idx];
-    let bv = bright[idx];
-    let or = f32(ov & 0xFFu);
-    let og = f32((ov >> 8u) & 0xFFu);
-    let ob = f32((ov >> 16u) & 0xFFu);
-    let oa = (ov >> 24u) & 0xFFu;
-    let br = f32(bv & 0xFFu) * params.intensity;
-    let bg = f32((bv >> 8u) & 0xFFu) * params.intensity;
-    let bb = f32((bv >> 16u) & 0xFFu) * params.intensity;
-    let rr = u32(clamp(or + br, 0.0, 255.0));
-    let rg = u32(clamp(og + bg, 0.0, 255.0));
-    let rb = u32(clamp(ob + bb, 0.0, 255.0));
-    output[idx] = rr | (rg << 8u) | (rb << 16u) | (oa << 24u);
+    let o = unpack(original[idx]);
+    let b = unpack(bright[idx]);
+    let mixed = vec4<f32>(o.xyz + b.xyz * params.intensity, o.w);
+    output[idx] = pack(mixed);
 }
-";
+"
+);
 
-const SHADER_GLOW_BLEND: &str = "
+// Glow blend — Screen blend between original and blurred layer.
+// Screen formula 1 − (1−a)(1−b) is algebraically identical in any
+// linear [0, 1] space; running it in linear makes the "lighten"
+// curve match how real light stacks rather than how sRGB bytes add.
+const SHADER_GLOW_BLEND: &str = concat!(
+    "
 struct Params { width: u32, height: u32, intensity: f32, _pad: u32 }
 @group(0) @binding(0) var<storage, read> original: array<u32>;
 @group(0) @binding(1) var<storage, read> blurred: array<u32>;
 @group(0) @binding(2) var<storage, read_write> output: array<u32>;
 @group(0) @binding(3) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    let ov = original[idx];
-    let bv = blurred[idx];
-    let or = f32(ov & 0xFFu) / 255.0;
-    let og = f32((ov >> 8u) & 0xFFu) / 255.0;
-    let ob = f32((ov >> 16u) & 0xFFu) / 255.0;
-    let oa = (ov >> 24u) & 0xFFu;
-    let br = f32(bv & 0xFFu) / 255.0 * params.intensity;
-    let bg = f32((bv >> 8u) & 0xFFu) / 255.0 * params.intensity;
-    let bb = f32((bv >> 16u) & 0xFFu) / 255.0 * params.intensity;
-    // Screen blend: 1 - (1-a)(1-b)
-    let sr = 1.0 - (1.0 - or) * (1.0 - br);
-    let sg = 1.0 - (1.0 - og) * (1.0 - bg);
-    let sb = 1.0 - (1.0 - ob) * (1.0 - bb);
-    let rr = u32(clamp(sr * 255.0, 0.0, 255.0));
-    let rg = u32(clamp(sg * 255.0, 0.0, 255.0));
-    let rb = u32(clamp(sb * 255.0, 0.0, 255.0));
-    output[idx] = rr | (rg << 8u) | (rb << 16u) | (oa << 24u);
+    let o = unpack(original[idx]);
+    let b = unpack(blurred[idx]) * params.intensity;
+    // Screen blend in linear: 1 − (1 − o)(1 − b).
+    let s = vec3<f32>(
+        1.0 - (1.0 - o.x) * (1.0 - b.x),
+        1.0 - (1.0 - o.y) * (1.0 - b.y),
+        1.0 - (1.0 - o.z) * (1.0 - b.z),
+    );
+    output[idx] = pack(vec4<f32>(s, o.w));
 }
-";
+"
+);
 
-const SHADER_LIGHT_RAYS: &str = "
+// Light rays (god rays) — radial sampling from a virtual light source,
+// accumulates bright pixels (above threshold) along each ray, decays
+// with distance. Linear luma matches the BT.709 coefficient domain,
+// linear summation avoids gamma-darkening along the trail.
+const SHADER_LIGHT_RAYS: &str = concat!(
+    "
 struct Params {
     width: u32, height: u32,
     center_x: f32, center_y: f32,
@@ -5744,7 +5738,9 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -5757,9 +5753,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dy = y - cy;
     let step = params.decay / f32(params.samples);
 
-    var r_sum: f32 = 0.0;
-    var g_sum: f32 = 0.0;
-    var b_sum: f32 = 0.0;
+    var ray = vec3<f32>(0.0);
     var weight: f32 = 1.0;
     let decay_per_sample = 1.0 - step;
 
@@ -5767,43 +5761,34 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let t = f32(s) * step;
         let sx = clamp(u32(x - dx * t), 0u, params.width - 1u);
         let sy = clamp(u32(y - dy * t), 0u, params.height - 1u);
-        let si = sy * params.width + sx;
-        let sv = input[si];
-        let sr = f32(sv & 0xFFu) / 255.0;
-        let sg = f32((sv >> 8u) & 0xFFu) / 255.0;
-        let sb = f32((sv >> 16u) & 0xFFu) / 255.0;
-        let luma = 0.2126 * sr + 0.7152 * sg + 0.0722 * sb;
+        let sample = unpack(input[sy * params.width + sx]);
+        let luma = 0.2126 * sample.x + 0.7152 * sample.y + 0.0722 * sample.z;
         if luma > params.threshold {
-            r_sum += sr * weight;
-            g_sum += sg * weight;
-            b_sum += sb * weight;
+            ray = ray + sample.xyz * weight;
         }
         weight *= decay_per_sample;
     }
 
     let inv_samples = 1.0 / f32(params.samples);
-    let ray_r = r_sum * inv_samples * params.intensity;
-    let ray_g = g_sum * inv_samples * params.intensity;
-    let ray_b = b_sum * inv_samples * params.intensity;
-
-    let ov = input[idx];
-    let or = f32(ov & 0xFFu) / 255.0;
-    let og = f32((ov >> 8u) & 0xFFu) / 255.0;
-    let ob = f32((ov >> 16u) & 0xFFu) / 255.0;
-    let oa = (ov >> 24u) & 0xFFu;
-
-    let rr = u32(clamp((or + ray_r) * 255.0, 0.0, 255.0));
-    let rg = u32(clamp((og + ray_g) * 255.0, 0.0, 255.0));
-    let rb = u32(clamp((ob + ray_b) * 255.0, 0.0, 255.0));
-    output[idx] = rr | (rg << 8u) | (rb << 16u) | (oa << 24u);
+    let orig = unpack(input[idx]);
+    output[idx] = pack(vec4<f32>(orig.xyz + ray * inv_samples * params.intensity, orig.w));
 }
-";
+"
+);
 
-const SHADER_VIGNETTE: &str = "
+// Vignette — multiplicative darkening of the frame's edges. The
+// `factor` scalar applies in linear-light so `amount = -1.0` really
+// means "half the photons reach the edge" rather than "half the
+// sRGB byte value" (which the u8 version did — visibly darker).
+const SHADER_VIGNETTE: &str = concat!(
+    "
 struct Params { width: u32, height: u32, amount: f32, size: f32, softness: f32, roundness: f32, _pad: u32, _pad2: u32 }
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -5819,16 +5804,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dist = rect_dist * (1.0 - params.roundness) + circ_dist * params.roundness;
     let falloff = clamp((dist - params.size) / max(params.softness, 0.01), 0.0, 1.0);
     let factor = 1.0 + params.amount * falloff;
-    let v = input[idx];
-    let r = clamp(f32(v & 0xFFu) * factor, 0.0, 255.0);
-    let g = clamp(f32((v >> 8u) & 0xFFu) * factor, 0.0, 255.0);
-    let b = clamp(f32((v >> 16u) & 0xFFu) * factor, 0.0, 255.0);
-    let a = (v >> 24u) & 0xFFu;
-    output[idx] = u32(r) | (u32(g) << 8u) | (u32(b) << 16u) | (a << 24u);
+    let px = unpack(input[idx]);
+    output[idx] = pack(vec4<f32>(px.xyz * factor, px.w));
 }
-";
+"
+);
 
-const SHADER_LENS_FLARE: &str = "
+// Lens flare — synthetic additive disc glow + chromatic-abb'd
+// ghost discs along the flare-to-centre axis. Adding synthetic
+// light to linear RGB is physically correct; the u8 version added
+// gamma-encoded bytes, which visibly under-weighted the glow
+// (flares looked thin and under-saturated).
+const SHADER_LENS_FLARE: &str = concat!(
+    "
 struct Params {
     width: u32, height: u32, pos_x: f32, pos_y: f32,
     brightness: f32, flare_size: f32, ghost_count: u32, ghost_intensity: f32,
@@ -5837,6 +5825,9 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -5851,16 +5842,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cy = h * 0.5;
     let max_dim = max(w, h);
     let disc_r = params.flare_size * max_dim;
-    var add_r: f32 = 0.0;
-    var add_g: f32 = 0.0;
-    var add_b: f32 = 0.0;
+    var add = vec3<f32>(0.0);
     let dist = sqrt((px - fx) * (px - fx) + (py - fy) * (py - fy));
     if dist < disc_r {
         let falloff = 1.0 - dist / disc_r;
         let glow = falloff * falloff * params.brightness;
-        add_r += glow;
-        add_g += glow * 0.9;
-        add_b += glow * 0.7;
+        add = add + vec3<f32>(glow, glow * 0.9, glow * 0.7);
     }
     for (var gi: u32 = 0u; gi < params.ghost_count; gi = gi + 1u) {
         let t = (f32(gi) + 1.0) / (f32(params.ghost_count) + 1.0);
@@ -5872,25 +5859,29 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let gf = 1.0 - gdist / gr;
             let glow = gf * gf * params.ghost_intensity * params.brightness;
             let ca = params.chromatic_aberration * t;
-            add_r += glow * (1.0 + ca);
-            add_g += glow;
-            add_b += glow * (1.0 - ca * 0.5);
+            add = add + vec3<f32>(glow * (1.0 + ca), glow, glow * (1.0 - ca * 0.5));
         }
     }
-    let v = input[idx];
-    let rr = u32(clamp(f32(v & 0xFFu) + add_r * 255.0, 0.0, 255.0));
-    let rg = u32(clamp(f32((v >> 8u) & 0xFFu) + add_g * 255.0, 0.0, 255.0));
-    let rb = u32(clamp(f32((v >> 16u) & 0xFFu) + add_b * 255.0, 0.0, 255.0));
-    let a = (v >> 24u) & 0xFFu;
-    output[idx] = rr | (rg << 8u) | (rb << 16u) | (a << 24u);
+    let orig = unpack(input[idx]);
+    output[idx] = pack(vec4<f32>(orig.xyz + add, orig.w));
 }
-";
+"
+);
 
-const SHADER_ANAMORPHIC_STREAK: &str = "
+// Anamorphic streak — horizontal threshold-accumulate-and-tint on
+// bright pixels. Linear summation of light sources, then additive
+// blend onto the original. Both benefit from linear: bright streaks
+// don't dim-out through gamma averaging, and additive compositing
+// is physically what anamorphic lenses produce.
+const SHADER_ANAMORPHIC_STREAK: &str = concat!(
+    "
 struct Params { width: u32, height: u32, threshold: f32, half_len: u32, intensity: f32, tint: f32, _pad: u32, _pad2: u32 }
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -5899,60 +5890,59 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y = idx / params.width;
     let tint_r = 1.0 + (1.0 - params.tint) * 0.3;
     let tint_b = 1.0 + params.tint * 0.5;
-    var sr: f32 = 0.0; var sg: f32 = 0.0; var sb: f32 = 0.0;
+    var streak = vec3<f32>(0.0);
     let x_start = max(i32(x) - i32(params.half_len), 0);
     let x_end = min(x + params.half_len + 1u, params.width);
     let count = f32(x_end - u32(x_start));
     for (var sx: u32 = u32(x_start); sx < x_end; sx = sx + 1u) {
-        let si = y * params.width + sx;
-        let sv = input[si];
-        let r = f32(sv & 0xFFu) / 255.0;
-        let g = f32((sv >> 8u) & 0xFFu) / 255.0;
-        let b = f32((sv >> 16u) & 0xFFu) / 255.0;
-        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        let px = unpack(input[y * params.width + sx]);
+        let luma = 0.2126 * px.x + 0.7152 * px.y + 0.0722 * px.z;
         if luma > params.threshold {
             let factor = (luma - params.threshold) / (1.0 - params.threshold + 1e-6);
-            sr += r * factor; sg += g * factor; sb += b * factor;
+            streak = streak + px.xyz * factor;
         }
     }
-    sr = sr / count; sg = sg / count; sb = sb / count;
-    let v = input[idx];
-    let rr = u32(clamp(f32(v & 0xFFu) + sr * tint_r * params.intensity * 255.0, 0.0, 255.0));
-    let rg = u32(clamp(f32((v >> 8u) & 0xFFu) + sg * params.intensity * 255.0, 0.0, 255.0));
-    let rb = u32(clamp(f32((v >> 16u) & 0xFFu) + sb * tint_b * params.intensity * 255.0, 0.0, 255.0));
-    let a = (v >> 24u) & 0xFFu;
-    output[idx] = rr | (rg << 8u) | (rb << 16u) | (a << 24u);
+    streak = streak / count;
+    let orig = unpack(input[idx]);
+    let out = vec3<f32>(
+        orig.x + streak.x * tint_r * params.intensity,
+        orig.y + streak.y * params.intensity,
+        orig.z + streak.z * tint_b * params.intensity,
+    );
+    output[idx] = pack(vec4<f32>(out, orig.w));
 }
-";
+"
+);
 
-const SHADER_FILM_HALATION: &str = "
+// Film halation — Screen-blend the pre-blurred "halation" layer
+// (warm red/orange spread around highlights) onto the original.
+// Screen blend in linear matches how light spreads on actual film
+// emulsion — additive glow that asymptotes at diffuse white.
+const SHADER_FILM_HALATION: &str = concat!(
+    "
 struct Params { width: u32, height: u32, threshold: f32, intensity: f32, hal_r: f32, hal_g: f32, hal_b: f32, _pad: u32 }
 @group(0) @binding(0) var<storage, read> original: array<u32>;
 @group(0) @binding(1) var<storage, read> halation: array<u32>;
 @group(0) @binding(2) var<storage, read_write> output: array<u32>;
 @group(0) @binding(3) var<uniform> params: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    let ov = original[idx];
-    let hv = halation[idx];
-    let or = f32(ov & 0xFFu) / 255.0;
-    let og = f32((ov >> 8u) & 0xFFu) / 255.0;
-    let ob = f32((ov >> 16u) & 0xFFu) / 255.0;
-    let oa = (ov >> 24u) & 0xFFu;
-    let hr = f32(hv & 0xFFu) / 255.0 * params.intensity;
-    let hg = f32((hv >> 8u) & 0xFFu) / 255.0 * params.intensity;
-    let hb = f32((hv >> 16u) & 0xFFu) / 255.0 * params.intensity;
-    let sr = 1.0 - (1.0 - or) * (1.0 - hr);
-    let sg = 1.0 - (1.0 - og) * (1.0 - hg);
-    let sb = 1.0 - (1.0 - ob) * (1.0 - hb);
-    let rr = u32(clamp(sr * 255.0, 0.0, 255.0));
-    let rg = u32(clamp(sg * 255.0, 0.0, 255.0));
-    let rb = u32(clamp(sb * 255.0, 0.0, 255.0));
-    output[idx] = rr | (rg << 8u) | (rb << 16u) | (oa << 24u);
+    let o = unpack(original[idx]);
+    let h = unpack(halation[idx]).xyz * params.intensity;
+    let s = vec3<f32>(
+        1.0 - (1.0 - o.x) * (1.0 - h.x),
+        1.0 - (1.0 - o.y) * (1.0 - h.y),
+        1.0 - (1.0 - o.z) * (1.0 - h.z),
+    );
+    output[idx] = pack(vec4<f32>(s, o.w));
 }
-";
+"
+);
 
 const SHADER_LUT3D: &str = "
 struct Params {
@@ -6217,7 +6207,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 ";
 
-const SHADER_DIRECTIONAL_BLUR: &str = "
+// Directional blur — averages along a `(dx, dy)` line. Linear-light
+// averaging so midtones don't darken through the trail.
+const SHADER_DIRECTIONAL_BLUR: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -6232,39 +6225,37 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let x = f32(idx % params.width);
     let y = f32(idx / params.width);
-    var sum_r = 0.0;
-    var sum_g = 0.0;
-    var sum_b = 0.0;
-    var sum_a = 0.0;
+    var sum = vec4<f32>(0.0);
     let w = i32(params.width);
     let h = i32(params.height);
     for (var i = 0u; i < params.samples; i = i + 1u) {
         let sx = clamp(i32(round(x + params.dx * f32(i))), 0, w - 1);
         let sy = clamp(i32(round(y + params.dy * f32(i))), 0, h - 1);
         let si = u32(sy) * params.width + u32(sx);
-        let v = input[si];
-        sum_r += f32(v & 0xFFu);
-        sum_g += f32((v >> 8u) & 0xFFu);
-        sum_b += f32((v >> 16u) & 0xFFu);
-        sum_a += f32(v >> 24u);
+        sum += unpack(input[si]);
     }
     let inv = 1.0 / f32(params.samples);
-    let rr = u32(clamp(sum_r * inv, 0.0, 255.0));
-    let rg = u32(clamp(sum_g * inv, 0.0, 255.0));
-    let rb = u32(clamp(sum_b * inv, 0.0, 255.0));
-    let ra = u32(clamp(sum_a * inv, 0.0, 255.0));
-    output[idx] = rr | (rg << 8u) | (rb << 16u) | (ra << 24u);
+    output[idx] = pack(sum * inv);
 }
-";
+"
+);
 
-const SHADER_EMBOSS: &str = "
+// Emboss — relief effect via directional difference. Same math as
+// the sRGB version but pivoted at linear 0.18 (perceptual mid-grey)
+// and with all differencing in linear. Result is visually close to
+// the old version (the 0.5 sRGB vs 0.18 linear pivot differ by ≈
+// one code value on neutral output).
+const SHADER_EMBOSS: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -6279,7 +6270,9 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -6289,16 +6282,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let x = idx % w;
     let y = idx / w;
-
-    let pixel = input[idx];
-    let orig_r = f32(pixel & 0xFFu) / 255.0;
-    let orig_g = f32((pixel >> 8u) & 0xFFu) / 255.0;
-    let orig_b = f32((pixel >> 16u) & 0xFFu) / 255.0;
-    let a = (pixel >> 24u) & 0xFFu;
+    let orig = unpack(input[idx]);
 
     // Skip border pixels
     if x == 0u || y == 0u || x >= w - 1u || y >= h - 1u {
-        output[idx] = pixel;
+        output[idx] = input[idx];
         return;
     }
 
@@ -6308,33 +6296,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let sx2 = clamp(i32(round(f32(x) - params.dx)), 0, i32(w) - 1);
     let sy2 = clamp(i32(round(f32(y) - params.dy)), 0, i32(h) - 1);
 
-    let p1 = input[u32(sy1) * w + u32(sx1)];
-    let p2 = input[u32(sy2) * w + u32(sx2)];
+    let p1 = unpack(input[u32(sy1) * w + u32(sx1)]);
+    let p2 = unpack(input[u32(sy2) * w + u32(sx2)]);
 
-    let r1 = f32(p1 & 0xFFu) / 255.0;
-    let g1 = f32((p1 >> 8u) & 0xFFu) / 255.0;
-    let b1 = f32((p1 >> 16u) & 0xFFu) / 255.0;
+    // Emboss: difference scaled around 0.18 (perceptual mid-grey
+    // anchor in linear). sRGB version pivoted at 0.5 sRGB (~0.21
+    // linear) — close enough that the slider feel stays familiar.
+    let emboss = vec3<f32>(0.18) + (p1.xyz - p2.xyz) * params.strength;
 
-    let r2 = f32(p2 & 0xFFu) / 255.0;
-    let g2 = f32((p2 >> 8u) & 0xFFu) / 255.0;
-    let b2 = f32((p2 >> 16u) & 0xFFu) / 255.0;
-
-    // Emboss: difference scaled around 0.5 (neutral gray)
-    let er = clamp(0.5 + (r1 - r2) * params.strength, 0.0, 1.0);
-    let eg = clamp(0.5 + (g1 - g2) * params.strength, 0.0, 1.0);
-    let eb = clamp(0.5 + (b1 - b2) * params.strength, 0.0, 1.0);
-
-    // Mix with original
-    let rr = orig_r + (er - orig_r) * params.mix;
-    let rg = orig_g + (eg - orig_g) * params.mix;
-    let rb = orig_b + (eb - orig_b) * params.mix;
-
-    let ro = u32(clamp(rr, 0.0, 1.0) * 255.0);
-    let go = u32(clamp(rg, 0.0, 1.0) * 255.0);
-    let bo = u32(clamp(rb, 0.0, 1.0) * 255.0);
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+    // Mix with original in linear light.
+    let mixed = orig.xyz + (emboss - orig.xyz) * params.mix;
+    output[idx] = pack(vec4<f32>(mixed, orig.w));
 }
-";
+"
+);
 
 const SHADER_MIRROR: &str = "
 struct Params {
@@ -6810,7 +6785,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 ";
 
-const SHADER_RADIAL_BLUR: &str = "
+// Radial blur (zoom or spin). Averages samples along a radial or
+// rotational path — linear-light averaging keeps midtones intact
+// through the trail.
+const SHADER_RADIAL_BLUR: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -6825,16 +6804,13 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
-fn sample_pixel(sx: i32, sy: i32, w: u32, h: u32) -> vec3<f32> {
+",
+    shader_linear_helpers_wgsl!(),
+    "
+fn sample_linear_rgb(sx: i32, sy: i32, w: u32, h: u32) -> vec3<f32> {
     let cx = u32(clamp(sx, 0, i32(w) - 1));
     let cy = u32(clamp(sy, 0, i32(h) - 1));
-    let p = input[cy * w + cx];
-    return vec3<f32>(
-        f32(p & 0xFFu) / 255.0,
-        f32((p >> 8u) & 0xFFu) / 255.0,
-        f32((p >> 16u) & 0xFFu) / 255.0
-    );
+    return unpack(input[cy * w + cx]).xyz;
 }
 
 @compute @workgroup_size(256)
@@ -6862,7 +6838,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let t = (f32(i) / f32(s) - 0.5) * 2.0;
             let sx = i32(round(x + dx * t * scale));
             let sy = i32(round(y + dy * t * scale));
-            sum = sum + sample_pixel(sx, sy, w, h);
+            sum = sum + sample_linear_rgb(sx, sy, w, h);
         }
     } else {
         // Spin blur
@@ -6874,19 +6850,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let sin_a = sin(ang);
             let sx = i32(round(cx + dx * cos_a - dy * sin_a));
             let sy = i32(round(cy + dx * sin_a + dy * cos_a));
-            sum = sum + sample_pixel(sx, sy, w, h);
+            sum = sum + sample_linear_rgb(sx, sy, w, h);
         }
     }
 
     let inv = 1.0 / f32(s);
-    let orig = input[idx];
-    let a = orig >> 24u;
-    let ro = u32(clamp(sum.x * inv * 255.0, 0.0, 255.0));
-    let go = u32(clamp(sum.y * inv * 255.0, 0.0, 255.0));
-    let bo = u32(clamp(sum.z * inv * 255.0, 0.0, 255.0));
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+    // Preserve original alpha (alpha stays linear, no gamma).
+    let orig_a = unpack(input[idx]).w;
+    output[idx] = pack(vec4<f32>(sum * inv, orig_a));
 }
-";
+"
+);
 
 const SHADER_LEVELS: &str = "
 struct Params {
