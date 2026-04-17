@@ -19,6 +19,44 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
+/// sRGB → linear-light (IEC 61966-2-1).
+#[inline]
+fn srgb_to_linear_scalar(c: f32) -> f32 {
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+/// Linear-light → sRGB (IEC 61966-2-1).
+#[inline]
+fn linear_to_srgb_scalar(c: f32) -> f32 {
+    if c <= 0.0031308 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 }
+}
+
+/// sRGB-u8 RGBA → linear-f32 RGBA (interleaved). Used at the u8 boundary
+/// of the GPU pipeline now that storage buffers are native linear f32.
+fn u8_rgba_to_linear_f32(rgba: &[u8]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(rgba.len());
+    for chunk in rgba.chunks_exact(4) {
+        out.push(srgb_to_linear_scalar(chunk[0] as f32 / 255.0));
+        out.push(srgb_to_linear_scalar(chunk[1] as f32 / 255.0));
+        out.push(srgb_to_linear_scalar(chunk[2] as f32 / 255.0));
+        out.push(chunk[3] as f32 / 255.0);
+    }
+    out
+}
+
+/// linear-f32 RGBA → sRGB-u8 RGBA (interleaved). Inverse of
+/// [`u8_rgba_to_linear_f32`]; clamp happens at the u8 boundary.
+fn linear_f32_rgba_to_u8(linear: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(linear.len());
+    for chunk in linear.chunks_exact(4) {
+        out.push((linear_to_srgb_scalar(chunk[0]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        out.push((linear_to_srgb_scalar(chunk[1]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        out.push((linear_to_srgb_scalar(chunk[2]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        out.push((chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+    }
+    out
+}
+
 /// Definition of a single mask for GPU dispatch.
 pub struct GpuMaskDef {
     /// 0=circle, 1=rectangle, 2=linear_gradient
@@ -761,13 +799,13 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return rgba;
         }
-        let byte_size = (width * height * 4) as u64;
+        let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
 
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, &rgba);
+        self.upload_u8_rgba_as_linear(buf_a, &rgba);
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -802,7 +840,7 @@ impl GpuEffectsPipeline {
         });
         self.dispatch(&self.color_grade_pipeline, buf_a, buf_b, workgroups);
 
-        self.download(buf_b, byte_size)
+        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
     /// Apply color balance (temperature, tint, hue rotation, global mix) on GPU.
@@ -819,13 +857,13 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return rgba;
         }
-        let byte_size = (width * height * 4) as u64;
+        let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
 
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, &rgba);
+        self.upload_u8_rgba_as_linear(buf_a, &rgba);
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -836,7 +874,7 @@ impl GpuEffectsPipeline {
         });
         self.dispatch(&self.color_balance_pipeline, buf_a, buf_b, workgroups);
 
-        self.download(buf_b, byte_size)
+        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
     /// Apply per-wheel saturation & brightness adjustments on GPU.
@@ -853,13 +891,13 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return rgba;
         }
-        let byte_size = (width * height * 4) as u64;
+        let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
 
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, &rgba);
+        self.upload_u8_rgba_as_linear(buf_a, &rgba);
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -872,7 +910,7 @@ impl GpuEffectsPipeline {
         });
         self.dispatch(&self.wheel_sat_bri_pipeline, buf_a, buf_b, workgroups);
 
-        self.download(buf_b, byte_size)
+        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
     /// Apply RGB curves on GPU using pre-computed LUTs.
@@ -889,13 +927,13 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return rgba;
         }
-        let byte_size = (width * height * 4) as u64;
+        let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
 
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, &rgba);
+        self.upload_u8_rgba_as_linear(buf_a, &rgba);
 
         // Upload curve LUT data
         self.queue.write_buffer(&self.rgb_curves_lut_buf, 0, bytemuck::cast_slice(lut_data));
@@ -932,7 +970,7 @@ impl GpuEffectsPipeline {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        self.download(buf_b, byte_size)
+        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -1009,14 +1047,14 @@ impl GpuEffectsPipeline {
         let out_pixels = (out_w * out_h) as u64;
         let step = if frame_w > 1280 { 2u32 } else { 1 };
 
-        self.ensure_buffers((pixel_count * 4).max(out_pixels * 4));
+        self.ensure_buffers(pixel_count * 16);
         self.ensure_scope_bufs(num_bins, out_pixels);
 
         let buf_a = self.buf_a.as_ref().unwrap();
         let bins_buf = self.scope_bins_buf.as_ref().unwrap();
         let img_buf = self.scope_img_buf.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, rgba);
+        self.upload_u8_rgba_as_linear(buf_a, rgba);
 
         // 1. Clear bins
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -1110,14 +1148,14 @@ impl GpuEffectsPipeline {
         let out_pixels = (out_w * out_h) as u64;
         let step = if frame_w > 1280 { 2u32 } else { 1 };
 
-        self.ensure_buffers((pixel_count * 4).max(out_pixels * 4));
+        self.ensure_buffers(pixel_count * 16);
         self.ensure_scope_bufs(num_bins, out_pixels);
 
         let buf_a = self.buf_a.as_ref().unwrap();
         let bins_buf = self.scope_bins_buf.as_ref().unwrap();
         let img_buf = self.scope_img_buf.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, rgba);
+        self.upload_u8_rgba_as_linear(buf_a, rgba);
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.clear_buffer(bins_buf, 0, None);
@@ -1203,14 +1241,14 @@ impl GpuEffectsPipeline {
         let out_pixels = (out_w * out_h) as u64;
         let step = if frame_w > 1280 { 2u32 } else { 1 };
 
-        self.ensure_buffers((pixel_count * 4).max(out_pixels * 4));
+        self.ensure_buffers(pixel_count * 16);
         self.ensure_scope_bufs(num_bins, out_pixels);
 
         let buf_a = self.buf_a.as_ref().unwrap();
         let bins_buf = self.scope_bins_buf.as_ref().unwrap();
         let img_buf = self.scope_img_buf.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, rgba);
+        self.upload_u8_rgba_as_linear(buf_a, rgba);
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.clear_buffer(bins_buf, 0, None);
@@ -1290,15 +1328,15 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return rgba;
         }
-        let byte_size = (width * height * 4) as u64;
+        let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
-        self.queue.write_buffer(buf_a, 0, &rgba);
+        self.upload_u8_rgba_as_linear(buf_a, &rgba);
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         self.write_params(&GpuVibranceParams { width, height, amount, _pad: 0 });
         self.dispatch(&self.vibrance_pipeline, buf_a, buf_b, workgroups);
-        self.download(buf_b, byte_size)
+        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
     /// Apply 12-sector color warper on GPU.
@@ -1306,18 +1344,18 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return rgba;
         }
-        let byte_size = (width * height * 4) as u64;
+        let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
-        self.queue.write_buffer(buf_a, 0, &rgba);
+        self.upload_u8_rgba_as_linear(buf_a, &rgba);
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         self.write_params(&GpuColorWarperParams {
             width, height, _pad0: 0, _pad1: 0,
             hue_shifts: *hue_shifts, sat_shifts: *sat_shifts,
         });
         self.dispatch(&self.color_warper_pipeline, buf_a, buf_b, workgroups);
-        self.download(buf_b, byte_size)
+        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
     /// Apply input transform (log-to-sRGB) on GPU using a pre-computed 1D LUT.
@@ -1325,11 +1363,11 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return rgba;
         }
-        let byte_size = (width * height * 4) as u64;
+        let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
-        self.queue.write_buffer(buf_a, 0, &rgba);
+        self.upload_u8_rgba_as_linear(buf_a, &rgba);
         self.queue.write_buffer(&self.input_transform_lut_buf, 0, bytemuck::cast_slice(lut_data));
         self.write_params(&GpuInputTransformParams { width, height, _pad0: 0, _pad1: 0 });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
@@ -1351,7 +1389,7 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
-        self.download(buf_b, byte_size)
+        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
     /// Apply clarity (midtone unsharp mask) on GPU using 3-pass approach.
@@ -1359,7 +1397,7 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return rgba;
         }
-        let byte_size = (width * height * 4) as u64;
+        let byte_size = (width * height * 16) as u64;
         let _luma_size = (width * height * 4) as u64; // store luma as u32 per pixel
         self.ensure_buffers(byte_size);
         // Need a third buffer for blur intermediate
@@ -1375,7 +1413,7 @@ impl GpuEffectsPipeline {
         let buf_b = self.buf_b.as_ref().unwrap();
         let buf_c = self.buf_c.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, &rgba);
+        self.upload_u8_rgba_as_linear(buf_a, &rgba);
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let radius = 20u32;
 
@@ -1406,7 +1444,7 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
-        self.download(buf_b, byte_size)
+        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
     /// Apply bilateral denoise on GPU. Used by the color grading Denoise node.
@@ -1421,13 +1459,13 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return rgba;
         }
-        let byte_size = (width * height * 4) as u64;
+        let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
 
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, &rgba);
+        self.upload_u8_rgba_as_linear(buf_a, &rgba);
 
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
@@ -1437,7 +1475,7 @@ impl GpuEffectsPipeline {
         });
         self.dispatch(&self.denoise_pipeline, buf_a, buf_b, workgroups);
 
-        self.download(buf_b, byte_size)
+        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
     /// Generate a mask matte on GPU. Supports up to 4 masks (circle, rect, linear gradient).
@@ -1452,7 +1490,7 @@ impl GpuEffectsPipeline {
             let _ = masks;
             return vec![0u8; (width * height * 4) as usize];
         }
-        let byte_size = (width * height * 4) as u64;
+        let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
 
         let buf_a = self.buf_a.as_ref().unwrap();
@@ -1487,7 +1525,7 @@ impl GpuEffectsPipeline {
         self.write_params(&p);
         self.dispatch(&self.mask_pipeline, buf_a, buf_b, workgroups);
 
-        self.download(buf_b, byte_size)
+        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
     /// Apply hue/sat curves on the GPU using pre-computed LUTs.
@@ -1503,13 +1541,13 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return rgba;
         }
-        let byte_size = (width * height * 4) as u64;
+        let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
 
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, &rgba);
+        self.upload_u8_rgba_as_linear(buf_a, &rgba);
 
         // Upload LUT data
         self.queue.write_buffer(&self.huesat_lut_buf, 0, bytemuck::cast_slice(lut_data));
@@ -1548,7 +1586,7 @@ impl GpuEffectsPipeline {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        self.download(buf_b, byte_size)
+        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
     /// Apply a 3D LUT with trilinear interpolation on GPU.
@@ -1569,13 +1607,13 @@ impl GpuEffectsPipeline {
             return rgba;
         }
 
-        let byte_size = (width * height * 4) as u64;
+        let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
 
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, &rgba);
+        self.upload_u8_rgba_as_linear(buf_a, &rgba);
 
         // (Re-)create LUT buffer if needed
         let lut_byte_size = (lut_data.len() * 4) as u64;
@@ -1623,7 +1661,7 @@ impl GpuEffectsPipeline {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        self.download(buf_b, byte_size)
+        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
     /// Apply qualifier (secondary color correction) on GPU.
@@ -1644,13 +1682,13 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return rgba;
         }
-        let byte_size = (width * height * 4) as u64;
+        let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
 
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, &rgba);
+        self.upload_u8_rgba_as_linear(buf_a, &rgba);
 
         self.write_params(&GpuQualifierParams {
             width,
@@ -1679,7 +1717,7 @@ impl GpuEffectsPipeline {
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
         self.dispatch(&self.qualifier_pipeline, buf_a, buf_b, workgroups);
-        self.download(buf_b, byte_size)
+        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
     /// Apply film grain overlay on GPU.
@@ -1698,13 +1736,13 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return rgba;
         }
-        let byte_size = (width * height * 4) as u64;
+        let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
 
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
-        self.queue.write_buffer(buf_a, 0, &rgba);
+        self.upload_u8_rgba_as_linear(buf_a, &rgba);
 
         self.write_params(&GpuGrainParams {
             width,
@@ -1721,7 +1759,7 @@ impl GpuEffectsPipeline {
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
         self.dispatch(&self.grain_pipeline, buf_a, buf_b, workgroups);
-        self.download(buf_b, byte_size)
+        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
     /// Apply a chain of effects on the GPU. Returns the processed RGBA data.
@@ -1739,14 +1777,14 @@ impl GpuEffectsPipeline {
             return rgba;
         }
 
-        let byte_size = (width * height * 4) as u64;
+        let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
 
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
         // Upload frame data to buf_a
-        self.queue.write_buffer(buf_a, 0, &rgba);
+        self.upload_u8_rgba_as_linear(buf_a, &rgba);
 
         // Track which buffer has the current data (true = buf_a, false = buf_b)
         let mut current_in_a = true;
@@ -1962,7 +2000,7 @@ impl GpuEffectsPipeline {
                     // Step 1: Blur entire image to buf_c
                     let buf_c = self.buf_c.as_ref().unwrap();
                     // Copy input to buf_c first
-                    let byte_size = (width * height * 4) as u64;
+                    let byte_size = (width * height * 16) as u64;
                     {
                         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
                         enc.copy_buffer_to_buffer(input, 0, buf_c, 0, byte_size);
@@ -2033,7 +2071,7 @@ impl GpuEffectsPipeline {
                 BuiltinEffect::LightWrap { width: wrap_w, intensity, softness } => {
                     // Blur → blend where dark
                     let buf_c = self.buf_c.as_ref().unwrap();
-                    let byte_size = (width * height * 4) as u64;
+                    let byte_size = (width * height * 16) as u64;
                     {
                         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
                         enc.copy_buffer_to_buffer(input, 0, buf_c, 0, byte_size);
@@ -2334,20 +2372,24 @@ impl GpuEffectsPipeline {
                 }
                 BuiltinEffect::Equalize { strength } => {
                     // Hybrid GPU: build histogram/CDF on CPU (fast), remap on GPU (parallel).
-                    // Step 1: Download current frame to compute histogram
+                    // Step 1: Download current frame to compute histogram.
+                    // Storage is linear-f32 vec4s; read each pixel's
+                    // three channels as floats in [0,1] and bin the
+                    // BT.709 linear luma into 256 bins (0..=255).
                     let current_buf = if current_in_a { buf_a } else { buf_b };
-                    let frame_data = self.download(current_buf, byte_size);
+                    let frame_bytes = self.download(current_buf, byte_size);
+                    let frame_data: &[f32] = bytemuck::cast_slice(&frame_bytes);
 
-                    // Step 2: Build luminance histogram (256 bins)
                     let mut histogram = [0u32; 256];
                     let pixel_count = (width * height) as usize;
                     for i in 0..pixel_count {
                         let idx = i * 4;
-                        let r = frame_data[idx] as f32;
-                        let g = frame_data[idx + 1] as f32;
-                        let b = frame_data[idx + 2] as f32;
-                        let luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) as u8;
-                        histogram[luma as usize] += 1;
+                        let r = frame_data[idx];
+                        let g = frame_data[idx + 1];
+                        let b = frame_data[idx + 2];
+                        let luma = (0.2126 * r + 0.7152 * g + 0.0722 * b).clamp(0.0, 1.0);
+                        let bin = (luma * 255.0) as u8;
+                        histogram[bin as usize] += 1;
                     }
 
                     // Step 3: Build CDF and normalize to 0.0-1.0
@@ -2499,11 +2541,10 @@ impl GpuEffectsPipeline {
             }
         }
 
-        // Download result from GPU
-        self.download(
-            if current_in_a { buf_a } else { buf_b },
-            byte_size,
-        )
+        // Download result from GPU, converting linear-f32 back to
+        // sRGB u8 at the caller boundary.
+        let final_buf = if current_in_a { buf_a } else { buf_b };
+        self.download_linear_rgba_as_u8(final_buf, (width * height) as usize)
     }
 
     /// Blur an alpha mask on the GPU. Input/output are single-channel u8 buffers.
@@ -2641,6 +2682,11 @@ impl GpuEffectsPipeline {
         self.stabilization_buf.is_some()
     }
 
+    /// Download `byte_size` raw bytes from a storage buffer. Kept for
+    /// buffers that legitimately store bytes (for example the u32
+    /// scope image buffer) — pixel buffers now hold linear-f32 vec4s
+    /// and callers should use [`download_linear_rgba_as_u8`] or
+    /// [`download_linear_rgba`] instead.
     fn download(&self, source: &wgpu::Buffer, byte_size: u64) -> Vec<u8> {
         if self.is_device_lost() {
             return vec![0u8; byte_size as usize];
@@ -2679,6 +2725,33 @@ impl GpuEffectsPipeline {
         }
     }
 
+    /// Upload an sRGB u8 RGBA frame to a pixel storage buffer as
+    /// native linear-f32 vec4s (16 bytes/pixel). Callers pass `Vec<u8>`
+    /// at the boundary; this method handles the sRGB→linear decode +
+    /// GPU upload in one shot.
+    fn upload_u8_rgba_as_linear(&self, buf: &wgpu::Buffer, rgba: &[u8]) {
+        let linear = u8_rgba_to_linear_f32(rgba);
+        self.queue
+            .write_buffer(buf, 0, bytemuck::cast_slice(&linear));
+    }
+
+    /// Download `pixel_count` linear-f32 RGBA vec4s from a pixel
+    /// storage buffer and convert to sRGB u8 RGBA at the boundary.
+    fn download_linear_rgba_as_u8(
+        &self,
+        source: &wgpu::Buffer,
+        pixel_count: usize,
+    ) -> Vec<u8> {
+        let byte_size = (pixel_count * 16) as u64;
+        let bytes = self.download(source, byte_size);
+        if bytes.len() < pixel_count * 16 {
+            // Device-lost fallback: `download` returned zero bytes.
+            return vec![0u8; pixel_count * 4];
+        }
+        let linear: &[f32] = bytemuck::cast_slice(&bytes);
+        linear_f32_rgba_to_u8(linear)
+    }
+
     /// Render a transition between two frames on the GPU.
     /// `kind_id`: 0=CrossDissolve, 1=WipeLeft, 2=WipeRight, 3=WipeUp, 4=WipeDown, 5=DipToBlack, 6=DipToWhite
     pub fn render_transition(
@@ -2699,16 +2772,17 @@ impl GpuEffectsPipeline {
             let _ = to_rgba;
             return from_rgba.to_vec();
         }
-        let byte_size = (width * height * 4) as u64;
+        let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
 
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
         let buf_c = self.buf_c.as_ref().unwrap();
 
-        // Upload: buf_a = from, buf_c = to, buf_b = output
-        self.queue.write_buffer(buf_a, 0, from_rgba);
-        self.queue.write_buffer(buf_c, 0, to_rgba);
+        // Upload: buf_a = from, buf_c = to, buf_b = output.
+        // u8 sRGB → linear f32 at the boundary.
+        self.upload_u8_rgba_as_linear(buf_a, from_rgba);
+        self.upload_u8_rgba_as_linear(buf_c, to_rgba);
 
         self.write_params(&TransitionParams {
             width,
@@ -2752,7 +2826,7 @@ impl GpuEffectsPipeline {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        self.download(buf_b, byte_size)
+        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
     /// Dispatch bloom blend: additive blend of bright (buf_c) onto original (input) → output
@@ -3496,6 +3570,13 @@ fn boxes_for_gaussian(sigma: f32) -> [usize; 3] {
 ///
 /// Exposed as a `macro_rules!` so it can be spliced into `concat!()`
 /// shader definitions (which only accept literals, not `const` refs).
+// Storage buffers are now native linear-f32 `array<vec4<f32>>`. The
+// historical `unpack` / `pack` helpers used to decode/encode sRGB-u8 at
+// the storage boundary; now they are identity passes on `vec4<f32>`,
+// preserved as a no-op so the ~36 shaders that still reference them
+// compile unchanged. The sRGB↔linear component helpers remain for
+// shaders that must linearise user-supplied sRGB colour parameters
+// (for example `SHADER_TRANSITION`).
 macro_rules! shader_linear_helpers_wgsl {
     () => {
         "
@@ -3515,26 +3596,8 @@ fn linear_to_srgb_component(c: f32) -> f32 {
     }
 }
 
-fn unpack(v: u32) -> vec4<f32> {
-    let r = f32(v & 0xFFu) / 255.0;
-    let g = f32((v >> 8u) & 0xFFu) / 255.0;
-    let b = f32((v >> 16u) & 0xFFu) / 255.0;
-    let a = f32((v >> 24u) & 0xFFu) / 255.0;
-    return vec4<f32>(
-        srgb_to_linear_component(r),
-        srgb_to_linear_component(g),
-        srgb_to_linear_component(b),
-        a,
-    );
-}
-
-fn pack(v: vec4<f32>) -> u32 {
-    let r = clamp(linear_to_srgb_component(v.x), 0.0, 1.0) * 255.0;
-    let g = clamp(linear_to_srgb_component(v.y), 0.0, 1.0) * 255.0;
-    let b = clamp(linear_to_srgb_component(v.z), 0.0, 1.0) * 255.0;
-    let a = clamp(v.w, 0.0, 1.0) * 255.0;
-    return u32(r) | (u32(g) << 8u) | (u32(b) << 16u) | (u32(a) << 24u);
-}
+fn unpack(v: vec4<f32>) -> vec4<f32> { return v; }
+fn pack(v: vec4<f32>) -> vec4<f32> { return v; }
 "
     };
 }
@@ -3552,8 +3615,8 @@ struct Params {
     _pad: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -3582,8 +3645,8 @@ struct Params {
     _pad: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -3618,8 +3681,8 @@ struct Params {
     _pad: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -3654,8 +3717,8 @@ struct Params {
     _pad: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -3694,8 +3757,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-const SHADER_CROP: &str = concat!(
-    "
+const SHADER_CROP: &str = "
 struct Params {
     width: u32,
     height: u32,
@@ -3707,26 +3769,10 @@ struct Params {
     _pad: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
-",
-    "
-fn unpack(v: u32) -> vec4<f32> {
-    return vec4<f32>(
-        f32(v & 0xFFu),
-        f32((v >> 8u) & 0xFFu),
-        f32((v >> 16u) & 0xFFu),
-        f32((v >> 24u) & 0xFFu),
-    );
-}
 
-fn pack(v: vec4<f32>) -> u32 {
-    let c = clamp(v, vec4<f32>(0.0), vec4<f32>(255.0));
-    return u32(c.x) | (u32(c.y) << 8u) | (u32(c.z) << 16u) | (u32(c.w) << 24u);
-}
-",
-    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -3738,11 +3784,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let yf = f32(y);
 
     if xf < params.crop_left || xf >= params.crop_right || yf < params.crop_top || yf >= params.crop_bottom {
-        output[idx] = 0u;
+        output[idx] = vec4<f32>(0.0);
         return;
     }
 
-    var pixel = unpack(input[idx]);
+    var pixel = input[idx];
 
     if params.feather > 0.0 {
         let dist = min(
@@ -3755,10 +3801,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    output[idx] = pack(pixel);
+    output[idx] = pixel;
 }
-"
-);
+";
 
 const SHADER_TRANSFORM: &str = concat!(
     "
@@ -3783,8 +3828,8 @@ struct Params {
     _pad2: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     "
@@ -3834,14 +3879,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let src_idx = u32(src_y) * params.width + u32(src_x);
         output[idx] = input[src_idx];
     } else {
-        output[idx] = 0u;
+        output[idx] = vec4<f32>(0.0);
     }
 }
 "
 );
 
-const SHADER_CHROMA_KEY: &str = concat!(
-    "
+// Chroma-key math lives in sRGB YCbCr space (that's where `key_cb` /
+// `key_cr` are defined — they're derived from the user-picked sRGB
+// colour). Storage buffers are now linear-f32, so we re-encode to
+// sRGB inside the shader for the YCbCr distance test, then write back
+// the (possibly alpha-faded) linear pixel.
+const SHADER_CHROMA_KEY: &str = "
 struct Params {
     width: u32,
     height: u32,
@@ -3853,26 +3902,18 @@ struct Params {
     _pad1: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
-",
-    "
-fn unpack(v: u32) -> vec4<f32> {
-    return vec4<f32>(
-        f32(v & 0xFFu),
-        f32((v >> 8u) & 0xFFu),
-        f32((v >> 16u) & 0xFFu),
-        f32((v >> 24u) & 0xFFu),
-    );
+
+fn linear_to_srgb_component(c: f32) -> f32 {
+    if (c <= 0.0031308) {
+        return c * 12.92;
+    } else {
+        return 1.055 * pow(c, 1.0/2.4) - 0.055;
+    }
 }
 
-fn pack(v: vec4<f32>) -> u32 {
-    let c = clamp(v, vec4<f32>(0.0), vec4<f32>(255.0));
-    return u32(c.x) | (u32(c.y) << 8u) | (u32(c.z) << 16u) | (u32(c.w) << 24u);
-}
-",
-    "
 fn rgb_to_cbcr(r: f32, g: f32, b: f32) -> vec2<f32> {
     let cb = 128.0 + (-0.168736 * r - 0.331264 * g + 0.5 * b);
     let cr = 128.0 + (0.5 * r - 0.418688 * g - 0.081312 * b);
@@ -3884,8 +3925,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
-    var pixel = unpack(input[idx]);
-    let cbcr = rgb_to_cbcr(pixel.x, pixel.y, pixel.z);
+    var pixel = input[idx];
+    // Re-encode to sRGB 0-255 for YCbCr math (matches CPU path + user input).
+    let srgb_r = clamp(linear_to_srgb_component(pixel.x), 0.0, 1.0) * 255.0;
+    let srgb_g = clamp(linear_to_srgb_component(pixel.y), 0.0, 1.0) * 255.0;
+    let srgb_b = clamp(linear_to_srgb_component(pixel.z), 0.0, 1.0) * 255.0;
+    let cbcr = rgb_to_cbcr(srgb_r, srgb_g, srgb_b);
 
     let dcb = (cbcr.x - params.key_cb) / 255.0;
     let dcr = (cbcr.y - params.key_cr) / 255.0;
@@ -3898,10 +3943,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         pixel.w = pixel.w * factor;
     }
 
-    output[idx] = pack(pixel);
+    output[idx] = pixel;
 }
-"
-);
+";
 
 const SHADER_TRANSITION: &str = "
 struct Params {
@@ -3919,9 +3963,9 @@ struct Params {
     color_a: f32,
 }
 
-@group(0) @binding(0) var<storage, read> from_buf: array<u32>;
-@group(0) @binding(1) var<storage, read> to_buf: array<u32>;
-@group(0) @binding(2) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> from_buf: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> to_buf: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(3) var<uniform> params: Params;
 
 fn srgb_to_linear_component(c: f32) -> f32 {
@@ -3932,34 +3976,13 @@ fn srgb_to_linear_component(c: f32) -> f32 {
     }
 }
 
-fn linear_to_srgb_component(c: f32) -> f32 {
-    if (c <= 0.0031308) {
-        return c * 12.92;
-    } else {
-        return 1.055 * pow(c, 1.0/2.4) - 0.055;
-    }
-}
-
-fn unpack(v: u32) -> vec4<f32> {
-    let r = f32(v & 0xFFu) / 255.0;
-    let g = f32((v >> 8u) & 0xFFu) / 255.0;
-    let b = f32((v >> 16u) & 0xFFu) / 255.0;
-    let a = f32((v >> 24u) & 0xFFu) / 255.0;
-    return vec4<f32>(
-        srgb_to_linear_component(r),
-        srgb_to_linear_component(g),
-        srgb_to_linear_component(b),
-        a,
-    );
-}
-
-fn pack(v: vec4<f32>) -> u32 {
-    let r = clamp(linear_to_srgb_component(v.x), 0.0, 1.0) * 255.0;
-    let g = clamp(linear_to_srgb_component(v.y), 0.0, 1.0) * 255.0;
-    let b = clamp(linear_to_srgb_component(v.z), 0.0, 1.0) * 255.0;
-    let a = clamp(v.w, 0.0, 1.0) * 255.0;
-    return u32(r) | (u32(g) << 8u) | (u32(b) << 16u) | (u32(a) << 24u);
-}
+// Storage is native linear-f32 vec4, but the transition body below
+// was written against 0-255-range floats (linear or otherwise). To
+// keep the large body unchanged, the local `unpack` scales linear
+// [0,1] → 0-255, and `pack` divides by 255 back to linear. Alpha
+// stays in 0-255 internally the same way (max alpha = 255.0 ⇒ 1.0).
+fn unpack(v: vec4<f32>) -> vec4<f32> { return v * 255.0; }
+fn pack(v: vec4<f32>) -> vec4<f32> { return v / 255.0; }
 
 fn lerp_pixel(a: vec4<f32>, b: vec4<f32>, t: f32) -> vec4<f32> {
     return a * (1.0 - t) + b * t;
@@ -4012,12 +4035,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Dip to colour. param0 = hold duration (0..0.45) at the midpoint.
         // colour = dip colour (default black for kind 5, white for kind 6).
         // `params.color_*` are already in 0-1 sRGB — decode to linear
-        // so the dip crossfade works in physical light.
+        // so the dip crossfade works in physical light. Scale to the
+        // 0-255 local convention this shader body uses.
         let dip_color = vec4<f32>(
-            srgb_to_linear_component(params.color_r),
-            srgb_to_linear_component(params.color_g),
-            srgb_to_linear_component(params.color_b),
-            1.0,
+            srgb_to_linear_component(params.color_r) * 255.0,
+            srgb_to_linear_component(params.color_g) * 255.0,
+            srgb_to_linear_component(params.color_b) * 255.0,
+            255.0,
         );
         let hold = clamp(params.param0, 0.0, 0.45);
         let mid_start = 0.5 - hold * 0.5;
@@ -4111,12 +4135,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else if params.kind_id == 10u {
         // Flash: bright colour flash with parameterized peak.
         // param0 = intensity, param1 = peak position, color = flash colour.
-        // Decode user-supplied sRGB colour to linear.
+        // Decode user-supplied sRGB colour to linear, scaled to the
+        // 0-255 local convention this shader body uses.
         let flash_color = vec4<f32>(
-            srgb_to_linear_component(params.color_r),
-            srgb_to_linear_component(params.color_g),
-            srgb_to_linear_component(params.color_b),
-            1.0,
+            srgb_to_linear_component(params.color_r) * 255.0,
+            srgb_to_linear_component(params.color_g) * 255.0,
+            srgb_to_linear_component(params.color_b) * 255.0,
+            255.0,
         );
         let intensity = clamp(params.param0, 0.0, 2.0);
         let peak = clamp(params.param1, 0.05, 0.95);
@@ -4166,7 +4191,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else if params.kind_id == 12u {
         // Light Leak: additive coloured glow peaking at midpoint.
         // param0 = intensity, color = leak colour (default warm amber).
-        let leak_color = vec3<f32>(params.color_r, params.color_g, params.color_b) * 255.0;
+        let leak_color = vec3<f32>(
+            srgb_to_linear_component(params.color_r),
+            srgb_to_linear_component(params.color_g),
+            srgb_to_linear_component(params.color_b),
+        ) * 255.0;
         let intensity = clamp(params.param0, 0.0, 2.0);
         let leak_t = pow(p * (1.0 - p) * 4.0, 0.7) * intensity;
         let base = lerp_pixel(from_px, to_px, p);
@@ -4706,7 +4735,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Anamorphic Flare: horizontal streak across frame center.
         let intensity = params.param0;
         let streak_width = params.param1;
-        let flare_color = vec3<f32>(params.color_r, params.color_g, params.color_b) * 255.0;
+        let flare_color = vec3<f32>(
+            srgb_to_linear_component(params.color_r),
+            srgb_to_linear_component(params.color_g),
+            srgb_to_linear_component(params.color_b),
+        ) * 255.0;
         let envelope = sin(p * 3.14159265) * intensity;
         let base = lerp_pixel(from_px, to_px, p);
         let ny = abs(f32(y) / f32(params.height) - 0.5) * 2.0;
@@ -4769,7 +4802,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Halation: per-pixel brightness-threshold additive glow. O(1) per pixel.
         let threshold = params.param0;
         let spread = params.param1;
-        let halo_color = vec3<f32>(params.color_r, params.color_g, params.color_b) * 255.0;
+        let halo_color = vec3<f32>(
+            srgb_to_linear_component(params.color_r),
+            srgb_to_linear_component(params.color_g),
+            srgb_to_linear_component(params.color_b),
+        ) * 255.0;
         let envelope = sin(p * 3.14159265);
         let base = lerp_pixel(from_px, to_px, p);
         let luma = dot(base.xyz, vec3<f32>(0.2126, 0.7152, 0.0722)) / 255.0;
@@ -4912,7 +4949,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         result = lerp_pixel(from_s, to_s, p);
     } else if params.kind_id == 51u {
         // Colorize Flash: user-defined color washes over at the cut.
-        let flash_color = vec3<f32>(params.color_r, params.color_g, params.color_b) * 255.0;
+        let flash_color = vec3<f32>(
+            srgb_to_linear_component(params.color_r),
+            srgb_to_linear_component(params.color_g),
+            srgb_to_linear_component(params.color_b),
+        ) * 255.0;
         let intensity = clamp(params.param0, 0.0, 1.0);
         let peak = clamp(params.param1, 0.05, 0.95);
         let ramp_up = peak * 0.6;
@@ -5072,11 +5113,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             vec4<f32>(255.0, 255.0, 255.0, 255.0),
         );
     } else if params.kind_id == 46u {
-        // Fade to Color: A → solid color → B.
+        // Fade to Color: A → solid color → B. User-supplied sRGB → linear.
         let fade_color = vec4<f32>(
-            params.color_r * 255.0,
-            params.color_g * 255.0,
-            params.color_b * 255.0,
+            srgb_to_linear_component(params.color_r) * 255.0,
+            srgb_to_linear_component(params.color_g) * 255.0,
+            srgb_to_linear_component(params.color_b) * 255.0,
             255.0,
         );
         let hold = clamp(params.param0, 0.0, 0.45);
@@ -5138,8 +5179,8 @@ struct Params {
     _pad0: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -5226,8 +5267,8 @@ struct Params {
     _pad0: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @group(0) @binding(3) var<storage, read> lut: array<f32>;
 ",
@@ -5370,8 +5411,8 @@ struct Params {
     _pad2: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -5526,8 +5567,8 @@ struct Params {
     monochrome: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -5584,6 +5625,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // ─── Alpha Mask GPU Shaders ─────────────────────────────────────────────────
 
+// Alpha-only shaders use the shared buf_a/buf_b storage, but view them
+// through a dedicated u32-per-pixel layout (one pixel per u32, no RGBA
+// packing). That's fine even though buf_a/b are sized for vec4<f32> —
+// the shader just touches the first `w*h` u32 elements.
 const SHADER_ALPHA_BLUR_H: &str = "
 struct Params {
     width: u32,
@@ -5695,8 +5740,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 const SHADER_BLOOM_THRESHOLD: &str = concat!(
     "
 struct Params { width: u32, height: u32, threshold: f32, _pad: u32 }
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -5724,9 +5769,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 const SHADER_BLOOM_BLEND: &str = concat!(
     "
 struct Params { width: u32, height: u32, intensity: f32, _pad: u32 }
-@group(0) @binding(0) var<storage, read> original: array<u32>;
-@group(0) @binding(1) var<storage, read> bright: array<u32>;
-@group(0) @binding(2) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> original: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> bright: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(3) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -5750,9 +5795,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 const SHADER_GLOW_BLEND: &str = concat!(
     "
 struct Params { width: u32, height: u32, intensity: f32, _pad: u32 }
-@group(0) @binding(0) var<storage, read> original: array<u32>;
-@group(0) @binding(1) var<storage, read> blurred: array<u32>;
-@group(0) @binding(2) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> original: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> blurred: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(3) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -5786,8 +5831,8 @@ struct Params {
     threshold: f32, samples: u32,
     decay: f32, intensity: f32,
 }
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -5834,8 +5879,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 const SHADER_VIGNETTE: &str = concat!(
     "
 struct Params { width: u32, height: u32, amount: f32, size: f32, softness: f32, roundness: f32, _pad: u32, _pad2: u32 }
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -5873,8 +5918,8 @@ struct Params {
     brightness: f32, flare_size: f32, ghost_count: u32, ghost_intensity: f32,
     chromatic_aberration: f32, _pad: u32, _pad2: u32, _pad3: u32,
 }
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -5927,8 +5972,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 const SHADER_ANAMORPHIC_STREAK: &str = concat!(
     "
 struct Params { width: u32, height: u32, threshold: f32, half_len: u32, intensity: f32, tint: f32, _pad: u32, _pad2: u32 }
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -5972,9 +6017,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 const SHADER_FILM_HALATION: &str = concat!(
     "
 struct Params { width: u32, height: u32, threshold: f32, intensity: f32, hal_r: f32, hal_g: f32, hal_b: f32, _pad: u32 }
-@group(0) @binding(0) var<storage, read> original: array<u32>;
-@group(0) @binding(1) var<storage, read> halation: array<u32>;
-@group(0) @binding(2) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> original: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> halation: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(3) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -5995,6 +6040,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
+// LUT3D is defined in sRGB 0-1 space (each LUT entry maps an sRGB
+// triplet to an sRGB triplet). Storage is now native linear-f32, so
+// we encode pixel → sRGB, sample the LUT, then decode the result back
+// to linear. The opacity blend is done in linear space.
 const SHADER_LUT3D: &str = "
 struct Params {
     width: u32,
@@ -6003,8 +6052,8 @@ struct Params {
     opacity: f32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @group(0) @binding(3) var<storage, read> lut: array<f32>;
 
@@ -6014,16 +6063,25 @@ fn lut_sample(ri: u32, gi: u32, bi: u32) -> vec3<f32> {
     return vec3<f32>(lut[idx], lut[idx + 1u], lut[idx + 2u]);
 }
 
+fn linear_to_srgb_component(c: f32) -> f32 {
+    if (c <= 0.0031308) { return c * 12.92; }
+    else { return 1.055 * pow(c, 1.0/2.4) - 0.055; }
+}
+
+fn srgb_to_linear_component(c: f32) -> f32 {
+    if (c <= 0.04045) { return c / 12.92; }
+    else { return pow((c + 0.055) / 1.055, 2.4); }
+}
+
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pixel_idx = gid.x;
     if pixel_idx >= params.width * params.height { return; }
 
-    let packed = input[pixel_idx];
-    let r_in = f32(packed & 0xFFu) / 255.0;
-    let g_in = f32((packed >> 8u) & 0xFFu) / 255.0;
-    let b_in = f32((packed >> 16u) & 0xFFu) / 255.0;
-    let a = packed >> 24u;
+    let pixel = input[pixel_idx];
+    let r_in = clamp(linear_to_srgb_component(pixel.x), 0.0, 1.0);
+    let g_in = clamp(linear_to_srgb_component(pixel.y), 0.0, 1.0);
+    let b_in = clamp(linear_to_srgb_component(pixel.z), 0.0, 1.0);
 
     let n1 = f32(params.lut_size - 1u);
 
@@ -6060,16 +6118,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let c0 = mix(c00, c10, gf);
     let c1 = mix(c01, c11, gf);
 
-    let graded = mix(c0, c1, bf);
+    let graded_srgb = mix(c0, c1, bf);
 
-    // Blend with original by opacity
-    let orig = vec3<f32>(r_in, g_in, b_in);
+    // Decode LUT output (sRGB) back to linear.
+    let graded = vec3<f32>(
+        srgb_to_linear_component(clamp(graded_srgb.x, 0.0, 1.0)),
+        srgb_to_linear_component(clamp(graded_srgb.y, 0.0, 1.0)),
+        srgb_to_linear_component(clamp(graded_srgb.z, 0.0, 1.0)),
+    );
+
+    // Opacity blend in linear.
+    let orig = vec3<f32>(pixel.x, pixel.y, pixel.z);
     let result = mix(orig, graded, params.opacity);
 
-    let out_r = u32(clamp(result.x * 255.0, 0.0, 255.0));
-    let out_g = u32(clamp(result.y * 255.0, 0.0, 255.0));
-    let out_b = u32(clamp(result.z * 255.0, 0.0, 255.0));
-    output[pixel_idx] = out_r | (out_g << 8u) | (out_b << 16u) | (a << 24u);
+    output[pixel_idx] = vec4<f32>(result.x, result.y, result.z, pixel.w);
 }
 ";
 
@@ -6089,8 +6151,8 @@ struct Params {
     _pad: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -6121,8 +6183,8 @@ struct Params {
     _pad: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -6152,8 +6214,8 @@ struct Params {
     _pad: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
@@ -6185,8 +6247,8 @@ struct Params {
     mix_val: f32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -6245,8 +6307,8 @@ struct Params {
     _pad: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -6281,8 +6343,8 @@ struct Params {
     _pad3: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -6326,8 +6388,8 @@ struct Params {
     _pad1: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -6378,8 +6440,8 @@ struct Params {
     vertical: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
@@ -6408,8 +6470,8 @@ struct Params {
     scale: f32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 
 fn sample_pixel(sx: f32, sy: f32, w: u32, h: u32) -> vec4<f32> {
@@ -6423,14 +6485,10 @@ fn sample_pixel(sx: f32, sy: f32, w: u32, h: u32) -> vec4<f32> {
     let cy0 = u32(clamp(y0, 0, i32(h) - 1));
     let cx1 = u32(clamp(x1, 0, i32(w) - 1));
     let cy1 = u32(clamp(y1, 0, i32(h) - 1));
-    let p00 = input[cy0 * w + cx0];
-    let p10 = input[cy0 * w + cx1];
-    let p01 = input[cy1 * w + cx0];
-    let p11 = input[cy1 * w + cx1];
-    let c00 = vec4<f32>(f32(p00 & 0xFFu), f32((p00 >> 8u) & 0xFFu), f32((p00 >> 16u) & 0xFFu), f32((p00 >> 24u) & 0xFFu));
-    let c10 = vec4<f32>(f32(p10 & 0xFFu), f32((p10 >> 8u) & 0xFFu), f32((p10 >> 16u) & 0xFFu), f32((p10 >> 24u) & 0xFFu));
-    let c01 = vec4<f32>(f32(p01 & 0xFFu), f32((p01 >> 8u) & 0xFFu), f32((p01 >> 16u) & 0xFFu), f32((p01 >> 24u) & 0xFFu));
-    let c11 = vec4<f32>(f32(p11 & 0xFFu), f32((p11 >> 8u) & 0xFFu), f32((p11 >> 16u) & 0xFFu), f32((p11 >> 24u) & 0xFFu));
+    let c00 = input[cy0 * w + cx0];
+    let c10 = input[cy0 * w + cx1];
+    let c01 = input[cy1 * w + cx0];
+    let c11 = input[cy1 * w + cx1];
     let top = mix(c00, c10, fx);
     let bot = mix(c01, c11, fx);
     return mix(top, bot, fy);
@@ -6452,12 +6510,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let factor = 1.0 + params.distortion * r2;
     let sx = (nx * factor / params.scale) * cx + cx;
     let sy = (ny * factor / params.scale) * cy + cy;
-    let c = sample_pixel(sx, sy, w, h);
-    let rr = u32(clamp(c.x, 0.0, 255.0));
-    let rg = u32(clamp(c.y, 0.0, 255.0));
-    let rb = u32(clamp(c.z, 0.0, 255.0));
-    let ra = u32(clamp(c.w, 0.0, 255.0));
-    output[idx] = rr | (rg << 8u) | (rb << 16u) | (ra << 24u);
+    output[idx] = sample_pixel(sx, sy, w, h);
 }
 ";
 
@@ -6469,8 +6522,8 @@ struct Params {
     _pad: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
@@ -6482,22 +6535,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = i32(idx % w);
     let y = i32(idx / w);
     let r = i32(params.radius);
-    var max_r = 0u;
-    var max_g = 0u;
-    var max_b = 0u;
-    var max_a = 0u;
+    var max_px = vec4<f32>(0.0);
     for (var dy = -r; dy <= r; dy = dy + 1) {
         for (var dx = -r; dx <= r; dx = dx + 1) {
             let sx = u32(clamp(x + dx, 0, i32(w) - 1));
             let sy = u32(clamp(y + dy, 0, i32(h) - 1));
-            let v = input[sy * w + sx];
-            max_r = max(max_r, v & 0xFFu);
-            max_g = max(max_g, (v >> 8u) & 0xFFu);
-            max_b = max(max_b, (v >> 16u) & 0xFFu);
-            max_a = max(max_a, (v >> 24u) & 0xFFu);
+            max_px = max(max_px, input[sy * w + sx]);
         }
     }
-    output[idx] = max_r | (max_g << 8u) | (max_b << 16u) | (max_a << 24u);
+    output[idx] = max_px;
 }
 ";
 
@@ -6509,8 +6555,8 @@ struct Params {
     _pad: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
@@ -6522,22 +6568,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = i32(idx % w);
     let y = i32(idx / w);
     let r = i32(params.radius);
-    var min_r = 255u;
-    var min_g = 255u;
-    var min_b = 255u;
-    var min_a = 255u;
+    // 1.0 = 'white', matches the 255u sentinel the byte-packed version used.
+    var min_px = vec4<f32>(1.0);
     for (var dy = -r; dy <= r; dy = dy + 1) {
         for (var dx = -r; dx <= r; dx = dx + 1) {
             let sx = u32(clamp(x + dx, 0, i32(w) - 1));
             let sy = u32(clamp(y + dy, 0, i32(h) - 1));
-            let v = input[sy * w + sx];
-            min_r = min(min_r, v & 0xFFu);
-            min_g = min(min_g, (v >> 8u) & 0xFFu);
-            min_b = min(min_b, (v >> 16u) & 0xFFu);
-            min_a = min(min_a, (v >> 24u) & 0xFFu);
+            min_px = min(min_px, input[sy * w + sx]);
         }
     }
-    output[idx] = min_r | (min_g << 8u) | (min_b << 16u) | (min_a << 24u);
+    output[idx] = min_px;
 }
 ";
 
@@ -6556,8 +6596,8 @@ struct Params {
     color_sigma: f32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -6619,8 +6659,8 @@ struct Params {
     _pad: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -6657,8 +6697,8 @@ struct Params {
     _pad3: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -6729,8 +6769,8 @@ struct Params {
     _pad3: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 
 fn hash(p: u32) -> f32 {
@@ -6746,10 +6786,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let v = input[idx];
-    var r = f32(v & 0xFFu) / 255.0;
-    var g = f32((v >> 8u) & 0xFFu) / 255.0;
-    var b = f32((v >> 16u) & 0xFFu) / 255.0;
-    let a = v >> 24u;
+    var r = v.x;
+    var g = v.y;
+    var b = v.z;
 
     let noise_seed = idx * 7919u + params.seed;
     if params.monochrome != 0u {
@@ -6763,10 +6802,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         b = b + (hash(noise_seed + 2u) - 0.5) * 2.0 * params.amount;
     }
 
-    let ro = u32(clamp(r * 255.0, 0.0, 255.0));
-    let go = u32(clamp(g * 255.0, 0.0, 255.0));
-    let bo = u32(clamp(b * 255.0, 0.0, 255.0));
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+    output[idx] = vec4<f32>(r, g, b, v.w);
 }
 ";
 
@@ -6778,8 +6814,8 @@ struct Params {
     _pad: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
@@ -6802,9 +6838,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let sx = u32(clamp(x + dx, 0, i32(w) - 1));
             let sy = u32(clamp(y + dy, 0, i32(h) - 1));
             let p = input[sy * w + sx];
-            vals_r[n] = f32(p & 0xFFu);
-            vals_g[n] = f32((p >> 8u) & 0xFFu);
-            vals_b[n] = f32((p >> 16u) & 0xFFu);
+            vals_r[n] = p.x;
+            vals_g[n] = p.y;
+            vals_b[n] = p.z;
             n = n + 1u;
         }
     }
@@ -6840,11 +6876,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let orig = input[idx];
-    let a = orig >> 24u;
-    let ro = u32(clamp(vals_r[mid], 0.0, 255.0));
-    let go = u32(clamp(vals_g[mid], 0.0, 255.0));
-    let bo = u32(clamp(vals_b[mid], 0.0, 255.0));
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+    output[idx] = vec4<f32>(vals_r[mid], vals_g[mid], vals_b[mid], orig.w);
 }
 ";
 
@@ -6864,8 +6896,8 @@ struct Params {
     _pad: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -6942,8 +6974,8 @@ struct Params {
     _pad: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -6983,8 +7015,8 @@ struct Params {
     _pad0: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @group(0) @binding(3) var<storage, read> cdf: array<f32>;
 ",
@@ -7029,8 +7061,8 @@ struct Params {
     _pad2: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
@@ -7060,18 +7092,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let v = input[idx];
     if in_bar {
-        let bar_val = select(0u, 255u, params.bar_color != 0u);
-        let orig_r = f32(v & 0xFFu);
-        let orig_g = f32((v >> 8u) & 0xFFu);
-        let orig_b = f32((v >> 16u) & 0xFFu);
-        let orig_a = f32(v >> 24u);
+        // bar_color 0 = black, non-zero = white. Linear black = 0.0,
+        // linear white = 1.0 (same as sRGB 0/1 endpoints).
+        let bv = select(0.0, 1.0, params.bar_color != 0u);
         let op = params.opacity;
-        let bv = f32(bar_val);
-        let nr = u32(clamp(orig_r * (1.0 - op) + bv * op, 0.0, 255.0));
-        let ng = u32(clamp(orig_g * (1.0 - op) + bv * op, 0.0, 255.0));
-        let nb = u32(clamp(orig_b * (1.0 - op) + bv * op, 0.0, 255.0));
-        let na = u32(clamp(orig_a * (1.0 - op) + 255.0 * op, 0.0, 255.0));
-        output[idx] = nr | (ng << 8u) | (nb << 16u) | (na << 24u);
+        let orig_rgb = vec3<f32>(v.x, v.y, v.z);
+        let bar_rgb = vec3<f32>(bv);
+        let mixed = orig_rgb * (1.0 - op) + bar_rgb * op;
+        let na = v.w * (1.0 - op) + op;
+        output[idx] = vec4<f32>(mixed.x, mixed.y, mixed.z, na);
     } else {
         output[idx] = v;
     }
@@ -7090,8 +7119,8 @@ struct Params {
     _pad1: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
@@ -7115,22 +7144,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let r_scale = 1.0 + params.red_shift * norm_dist / max_dist;
     let r_sx = clamp(i32(round(cx + dx * r_scale)), 0, i32(w) - 1);
     let r_sy = clamp(i32(round(cy + dy * r_scale)), 0, i32(h) - 1);
-    let r_pixel = input[u32(r_sy) * w + u32(r_sx)];
-    let r_val = r_pixel & 0xFFu;
+    let r_val = input[u32(r_sy) * w + u32(r_sx)].x;
 
     // Green channel: original position
     let g_pixel = input[idx];
-    let g_val = (g_pixel >> 8u) & 0xFFu;
-    let a_val = g_pixel >> 24u;
+    let g_val = g_pixel.y;
+    let a_val = g_pixel.w;
 
     // Blue channel: sample shifted
     let b_scale = 1.0 + params.blue_shift * norm_dist / max_dist;
     let b_sx = clamp(i32(round(cx + dx * b_scale)), 0, i32(w) - 1);
     let b_sy = clamp(i32(round(cy + dy * b_scale)), 0, i32(h) - 1);
-    let b_pixel = input[u32(b_sy) * w + u32(b_sx)];
-    let b_val = (b_pixel >> 16u) & 0xFFu;
+    let b_val = input[u32(b_sy) * w + u32(b_sx)].z;
 
-    output[idx] = r_val | (g_val << 8u) | (b_val << 16u) | (a_val << 24u);
+    output[idx] = vec4<f32>(r_val, g_val, b_val, a_val);
 }
 ";
 
@@ -7153,8 +7180,8 @@ struct RowXform {
     _pad0: f32, _pad1: f32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @group(0) @binding(3) var<storage, read> row_xforms: array<RowXform>;
 ",
@@ -7214,8 +7241,8 @@ struct Homography3x3 {
     _p0: f32, _p1: f32, _p2: f32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @group(0) @binding(3) var<storage, read> homography: Homography3x3;
 ",
@@ -7277,8 +7304,8 @@ struct Params {
     _pad1: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -7342,8 +7369,8 @@ struct Params {
     _pad1: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -7395,8 +7422,8 @@ struct Params {
     mix: f32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @group(0) @binding(3) var<storage, read> lut: array<f32>;
 // LUT layout: 4 channels x 256 entries = 1024 floats
@@ -7466,8 +7493,8 @@ struct Params {
     m3_type: u32, m3_cx: f32, m3_cy: f32, m3_p1: f32, m3_p2: f32, m3_p3: f32, m3_feather: f32, m3_flags: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 
 fn smooth_step_sdf(dist: f32, feather: f32) -> f32 {
@@ -7542,8 +7569,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if params.mask_count >= 3u { matte = max(matte, eval_mask(nx, ny, aspect, params.m2_type, params.m2_cx, params.m2_cy, params.m2_p1, params.m2_p2, params.m2_p3, params.m2_feather, params.m2_flags)); }
     if params.mask_count >= 4u { matte = max(matte, eval_mask(nx, ny, aspect, params.m3_type, params.m3_cx, params.m3_cy, params.m3_p1, params.m3_p2, params.m3_p3, params.m3_feather, params.m3_flags)); }
 
-    let b = u32(clamp(matte, 0.0, 1.0) * 255.0);
-    output[idx] = b | (b << 8u) | (b << 16u) | (255u << 24u);
+    let m = clamp(matte, 0.0, 1.0);
+    // Matte is a single-channel luminance. We store it in all of RGB
+    // (callers read it as an RGBA triplet where R=G=B=matte). The
+    // value is already in a linear [0,1] domain — writing a neutral
+    // grey to a linear storage target is a no-op conversion.
+    output[idx] = vec4<f32>(m, m, m, 1.0);
 }
 ";
 
@@ -7553,8 +7584,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 const SHADER_VIBRANCE: &str = concat!(
     "
 struct Params { width: u32, height: u32, amount: f32, _pad: u32, }
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -7598,8 +7629,8 @@ struct Params {
     sat4: f32, sat5: f32, sat6: f32, sat7: f32,
     sat8: f32, sat9: f32, sat10: f32, sat11: f32,
 }
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -7685,40 +7716,53 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // Uses a 256-entry 1D LUT per channel (pre-computed on CPU from the log format).
 const SHADER_INPUT_TRANSFORM: &str = "
 struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32, }
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @group(0) @binding(3) var<storage, read> lut: array<f32>;
 // LUT layout: 256 entries (input 0..255 → output 0..1 sRGB)
+
+// Input transform is a 1D LUT keyed by sRGB 0-255 (the historical
+// design). Storage is now linear-f32, so we re-encode to sRGB,
+// index, and decode the LUT output (also sRGB) back to linear.
+fn it_linear_to_srgb(c: f32) -> f32 {
+    let x = clamp(c, 0.0, 1.0);
+    if (x <= 0.0031308) { return x * 12.92; }
+    else { return 1.055 * pow(x, 1.0/2.4) - 0.055; }
+}
+
+fn it_srgb_to_linear(c: f32) -> f32 {
+    let x = clamp(c, 0.0, 1.0);
+    if (x <= 0.04045) { return x / 12.92; }
+    else { return pow((x + 0.055) / 1.055, 2.4); }
+}
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
     let pixel = input[idx];
-    let ri = pixel & 0xFFu;
-    let gi = (pixel >> 8u) & 0xFFu;
-    let bi = (pixel >> 16u) & 0xFFu;
-    let a = (pixel >> 24u) & 0xFFu;
-    let ro = u32(clamp(lut[ri], 0.0, 1.0) * 255.0);
-    let go = u32(clamp(lut[gi], 0.0, 1.0) * 255.0);
-    let bo = u32(clamp(lut[bi], 0.0, 1.0) * 255.0);
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+    let ri = u32(clamp(it_linear_to_srgb(pixel.x) * 255.0, 0.0, 255.0));
+    let gi = u32(clamp(it_linear_to_srgb(pixel.y) * 255.0, 0.0, 255.0));
+    let bi = u32(clamp(it_linear_to_srgb(pixel.z) * 255.0, 0.0, 255.0));
+    let ro = it_srgb_to_linear(lut[ri]);
+    let go = it_srgb_to_linear(lut[gi]);
+    let bo = it_srgb_to_linear(lut[bi]);
+    output[idx] = vec4<f32>(ro, go, bo, pixel.w);
 }
 ";
 
 // Clarity — three-pass midtone unsharp mask. CLARITY_BLUR_H reads
-// sRGB RGBA, computes linear-light BT.709 luma, writes the linear
-// luma (quantised to 0-255 in the low byte of the u32 for storage
-// compat with the existing intermediate layout). CLARITY_BLUR_V
-// just averages that 0-1 luma byte (scale-invariant, unchanged).
-// CLARITY_APPLY adds back detail weighted by linear midtone
-// presence, centred on 0.18 linear.
+// linear RGBA, computes linear-light BT.709 luma, writes the luma
+// into the `.x` channel of a shared vec4<f32> intermediate buffer
+// (other channels unused — we never downconvert or pack). CLARITY_BLUR_V
+// averages that luma (still in `.x`). CLARITY_APPLY adds back detail
+// weighted by linear midtone presence, centred on 0.18 linear.
 const SHADER_CLARITY_BLUR_H: &str = concat!(
     "
 struct Params { width: u32, height: u32, radius: u32, _pad: u32, }
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 ",
     shader_linear_helpers_wgsl!(),
@@ -7739,17 +7783,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         count += 1u;
     }
     let luma = sum / f32(count);
-    // Store linear luma as 0-255 byte in low channel; upstream passes
-    // read it as a linear value via `/ 255.0`.
-    output[idx] = u32(clamp(luma * 255.0, 0.0, 255.0));
+    // Store linear luma in the .x channel; downstream passes read it as
+    // a linear [0,1] scalar.
+    output[idx] = vec4<f32>(luma, 0.0, 0.0, 0.0);
 }
 "
 );
 
 const SHADER_CLARITY_BLUR_V: &str = "
 struct Params { width: u32, height: u32, radius: u32, _pad: u32, }
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 
 @compute @workgroup_size(256)
@@ -7763,21 +7807,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var count = 0u;
     for (var dy = -r; dy <= r; dy = dy + 1) {
         let sy = clamp(y + dy, 0, i32(params.height) - 1);
-        let val = f32(input[u32(sy) * params.width + u32(x)]) / 255.0;
+        let val = input[u32(sy) * params.width + u32(x)].x;
         sum += val;
         count += 1u;
     }
-    output[idx] = u32(clamp(sum / f32(count) * 255.0, 0.0, 255.0));
+    output[idx] = vec4<f32>(sum / f32(count), 0.0, 0.0, 0.0);
 }
 ";
 
 const SHADER_CLARITY_APPLY: &str = concat!(
     "
 struct Params { width: u32, height: u32, amount: f32, _pad: u32, }
-@group(0) @binding(0) var<storage, read> input: array<u32>;
-@group(0) @binding(1) var<storage, read_write> output: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
-@group(0) @binding(3) var<storage, read> blurred: array<u32>;
+@group(0) @binding(3) var<storage, read> blurred: array<vec4<f32>>;
 ",
     shader_linear_helpers_wgsl!(),
     "
@@ -7787,7 +7831,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.width * params.height { return; }
     let p = unpack(input[idx]);
     let luma = 0.2126 * p.x + 0.7152 * p.y + 0.0722 * p.z;
-    let blurred_luma = f32(blurred[idx]) / 255.0;
+    let blurred_luma = blurred[idx].x;
     let detail = luma - blurred_luma;
     // Midtone weight peaked on linear 0.18 (perceptual mid-grey).
     let midtone_weight = max(1.0 - abs((luma / 0.18) - 1.0), 0.0);
@@ -7807,9 +7851,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── Waveform bin accumulation (atomic histogram per column) ───────────────────
+// Input is linear-f32 in [0,1]. Bin indices stay 0-255 (linear bins).
 const SHADER_SCOPE_WAVEFORM: &str = "
 struct Params { width: u32, height: u32, display_columns: u32, step: u32, }
-@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> bins: array<atomic<u32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @compute @workgroup_size(256)
@@ -7819,10 +7864,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = idx % params.width;
     if (x % params.step != 0u) { return; }
     let pixel = input[idx];
-    let r = f32(pixel & 0xFFu) / 255.0;
-    let g = f32((pixel >> 8u) & 0xFFu) / 255.0;
-    let b = f32((pixel >> 16u) & 0xFFu) / 255.0;
-    let luma = clamp(0.2126 * r + 0.7152 * g + 0.0722 * b, 0.0, 1.0);
+    let luma = clamp(0.2126 * pixel.x + 0.7152 * pixel.y + 0.0722 * pixel.z, 0.0, 1.0);
     let bin = u32(luma * 255.0);
     let col = x * params.display_columns / params.width;
     atomicAdd(&bins[col * 256u + bin], 1u);
@@ -7830,9 +7872,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 ";
 
 // ── Parade bin accumulation (atomic per-channel per-column) ───────────────────
+// Input is linear-f32 in [0,1]. Bin indices stay 0-255 (linear bins).
 const SHADER_SCOPE_PARADE: &str = "
 struct Params { width: u32, height: u32, display_columns: u32, step: u32, }
-@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> bins: array<atomic<u32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @compute @workgroup_size(256)
@@ -7842,9 +7885,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = idx % params.width;
     if (x % params.step != 0u) { return; }
     let pixel = input[idx];
-    let r = pixel & 0xFFu;
-    let g = (pixel >> 8u) & 0xFFu;
-    let b = (pixel >> 16u) & 0xFFu;
+    let r = u32(clamp(pixel.x, 0.0, 1.0) * 255.0);
+    let g = u32(clamp(pixel.y, 0.0, 1.0) * 255.0);
+    let b = u32(clamp(pixel.z, 0.0, 1.0) * 255.0);
     let col = x * params.display_columns / params.width;
     let base = col * 256u;
     let dc256 = params.display_columns * 256u;
@@ -7855,9 +7898,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 ";
 
 // ── Histogram bin accumulation (global R/G/B/Luma) ────────────────────────────
+// Input is linear-f32 in [0,1]. Bin indices stay 0-255 (linear bins).
 const SHADER_SCOPE_HISTOGRAM: &str = "
 struct Params { width: u32, height: u32, display_columns: u32, step: u32, }
-@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> bins: array<atomic<u32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @compute @workgroup_size(256)
@@ -7868,13 +7912,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y = idx / params.width;
     if (x % params.step != 0u) || (y % params.step != 0u) { return; }
     let pixel = input[idx];
-    let r = pixel & 0xFFu;
-    let g = (pixel >> 8u) & 0xFFu;
-    let b = (pixel >> 16u) & 0xFFu;
+    let r = u32(clamp(pixel.x, 0.0, 1.0) * 255.0);
+    let g = u32(clamp(pixel.y, 0.0, 1.0) * 255.0);
+    let b = u32(clamp(pixel.z, 0.0, 1.0) * 255.0);
     atomicAdd(&bins[r], 1u);
     atomicAdd(&bins[256u + g], 1u);
     atomicAdd(&bins[512u + b], 1u);
-    let luma = u32(clamp(0.2126 * f32(r) + 0.7152 * f32(g) + 0.0722 * f32(b), 0.0, 255.0));
+    let luma = u32(clamp((0.2126 * pixel.x + 0.7152 * pixel.y + 0.0722 * pixel.z), 0.0, 1.0) * 255.0);
     atomicAdd(&bins[768u + luma], 1u);
 }
 ";

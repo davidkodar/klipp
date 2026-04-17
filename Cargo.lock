@@ -2179,6 +2179,7 @@ name = "klipp-color"
 version = "0.1.0"
 dependencies = [
  "klipp-core",
+ "klipp-testing",
 ]
 
 [[package]]
@@ -2326,6 +2327,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "klipp-testing"
+version = "0.1.0"
+dependencies = [
+ "klipp-color",
+ "klipp-core",
+ "klipp-engine",
+]
+
+[[package]]
 name = "klipp-timeline"
 version = "0.1.0"
 dependencies = [
@@ -2363,6 +2373,7 @@ dependencies = [
 name = "klipp-ui"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "chrono",
  "crossbeam-channel",
  "dirs",
