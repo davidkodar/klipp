@@ -280,12 +280,19 @@ fn decode_to_display_round_trip_is_identity() {
 }
 
 #[test]
-#[ignore = "Phase 10 — scopes see the same linear data"]
 fn scope_bins_match_linear_distribution() {
-    // Histogram of the ramp, in the new scope ingest path, must
-    // distribute bins evenly (linear ramp = uniform linear
-    // distribution). Current sRGB scopes bunch bins into shadows.
-    todo!("waveform on a linear ramp produces uniform bins");
+    // Histogram of a linear ramp, fed into the new scope ingest
+    // path, must distribute bins near-uniformly. The sRGB u8 scopes
+    // above concentrate counts into the shadow bins because sRGB
+    // gamma packs more codes into the dark end; linear scopes don't.
+    let frame = linear_ramp(256, 1);
+    let hist = klipp_color::scopes::compute_histogram_linear(&frame, 256, 1);
+    // step_by(2) samples 128 pixels. Near-uniform ⇒ most bins are
+    // hit and no single bin dominates.
+    let populated = hist.r.iter().filter(|&&c| c > 0).count();
+    assert!(populated >= 120, "only {populated} bins populated — expected near-uniform");
+    let max = *hist.r.iter().max().unwrap();
+    assert!(max <= 5, "a single bin with {max} samples means non-uniform distribution");
 }
 
 // ---- encoder round trip ---------------------------------------------
