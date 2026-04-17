@@ -167,9 +167,14 @@ impl GraphExecutor {
         // 1. Topological sort
         let order = graph.topo_sort()?;
 
-        // 2. Map: NodeId → linear-light output buffer
-        let mut node_outputs: HashMap<NodeId, Vec<f32>> = HashMap::new();
-        let mut tapped_output: Option<Vec<f32>> = None;
+        // 2. Map: NodeId → linear-light output buffer (Arc-shared for zero-copy
+        //    passthrough of bypassed / default-param nodes).
+        let mut node_outputs: HashMap<NodeId, Arc<Vec<f32>>> = HashMap::new();
+        let mut tapped_output: Option<Arc<Vec<f32>>> = None;
+
+        // Helper: resolve a node's primary input as an Arc (source frame if
+        // unconnected or upstream output missing).
+        // Inlined below so we don't need to plumb an extra borrow through.
 
         // 3. Execute nodes in topo order
         for node_id in order {
@@ -178,13 +183,39 @@ impl GraphExecutor {
                 None => continue,
             };
 
-            // Bypassed nodes pass their primary input through unchanged
-            if !node.enabled {
+            // Bypassed nodes — and single-input filter nodes whose params
+            // are all at defaults — pass their primary input through
+            // unchanged. The Source node must still run (it produces the
+            // root buffer), and Output is handled below. Nodes that combine
+            // multiple inputs (CombineMattes, ApplyMatte, Blend, Layer) or
+            // that generate mattes from geometry (Mask, Qualifier) are NOT
+            // no-ops even with default params and must still execute.
+            let is_param_driven_filter = matches!(
+                node.kind,
+                NodeKind::InputTransform
+                    | NodeKind::Exposure
+                    | NodeKind::Contrast
+                    | NodeKind::Saturation
+                    | NodeKind::ToneControls
+                    | NodeKind::ColorWheels
+                    | NodeKind::WheelSatBri
+                    | NodeKind::RGBCurves
+                    | NodeKind::HueSatCurves
+                    | NodeKind::ColorBalance
+                    | NodeKind::Lut3D
+                    | NodeKind::FilmGrain
+                    | NodeKind::ColorMatch
+                    | NodeKind::ColorWarper
+                    | NodeKind::Denoise
+            );
+            let bypass = !node.enabled
+                || (is_param_driven_filter && node.params.is_default());
+            if bypass && node.kind != NodeKind::Source && node.kind != NodeKind::Output {
                 let primary_input_id = graph.input_of(node_id, 0);
                 let passthrough = primary_input_id
                     .and_then(|id| node_outputs.get(&id))
                     .cloned()
-                    .unwrap_or_else(|| source_frame.to_vec());
+                    .unwrap_or_else(|| Arc::new(source_frame.to_vec()));
                 node_outputs.insert(node.id, passthrough);
                 continue;
             }
@@ -193,7 +224,7 @@ impl GraphExecutor {
                 continue;
             }
 
-            // Resolve inputs — borrow as slices
+            // Resolve inputs — borrow as slices from Arc-held buffers
             let primary = graph
                 .input_of(node_id, 0)
                 .and_then(|id| node_outputs.get(&id));
@@ -229,32 +260,42 @@ impl GraphExecutor {
                 clip_time_secs,
             );
 
-            // Capture tapped node output for scopes
-            if Some(node_id) == matte_tap {
-                tapped_output = Some(output.clone());
-            }
-
             // Matte preview — return greyscale matte early
             if Some(node_id) == matte_preview_node {
                 let matte: Vec<f32> = output
                     .chunks_exact(4)
                     .flat_map(|c| [c[0], c[0], c[0], 1.0])
                     .collect();
-                return Ok((matte, tapped_output));
+                let tapped_vec =
+                    tapped_output.map(|a| Arc::try_unwrap(a).unwrap_or_else(|a| (*a).clone()));
+                return Ok((matte, tapped_vec));
             }
 
-            node_outputs.insert(node_id, output);
+            let output_arc = Arc::new(output);
+
+            // Capture tapped node output for scopes (share via Arc, no copy).
+            if Some(node_id) == matte_tap {
+                tapped_output = Some(output_arc.clone());
+            }
+
+            node_outputs.insert(node_id, output_arc);
         }
 
-        // 4. Return the output node's input
+        // 4. Return the output node's input. Unwrap the Arc when we hold the
+        //    sole reference to avoid a clone — falls back to clone only if
+        //    another holder (e.g. a downstream passthrough) still has it.
         let output_input_id = graph
             .input_of(graph.output_node_id, 0)
             .ok_or(ExecutorError::NoOutputConnection)?;
-        let result = node_outputs
+        let result_arc = node_outputs
             .remove(&output_input_id)
             .ok_or(ExecutorError::MissingNodeOutput)?;
+        let result = Arc::try_unwrap(result_arc).unwrap_or_else(|a| (*a).clone());
 
-        Ok((result, tapped_output))
+        let tapped_vec =
+            tapped_output.map(|a| Arc::try_unwrap(a).unwrap_or_else(|a| (*a).clone()));
+
+        Ok((result, tapped_vec))
     }
 
     #[allow(clippy::too_many_arguments)]
