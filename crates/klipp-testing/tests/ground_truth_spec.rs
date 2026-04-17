@@ -102,79 +102,98 @@ fn harness_encode_round_trip() {
 // ---- exposure ---------------------------------------------------------
 
 #[test]
-#[ignore = "Phase 4 — linear apply_exposure"]
 fn exposure_plus_one_stop_on_mid_grey_doubles_linear_value() {
-    // +1 stop on 0.18 linear should give 0.36 linear. The current
-    // u8 code gives ~0.92 sRGB (= 0.83 linear) because it multiplies
-    // gamma-encoded bytes. This test is the canonical exposure bug.
-    let _input = solid_linear(4, 4, MID_GREY_LINEAR);
-    let _expected = solid_linear(4, 4, [0.36, 0.36, 0.36, 1.0]);
-    // let actual = klipp_color::linear::apply_exposure(&_input, 1.0);
-    // assert_exact(&_expected, &actual, 1e-4);
-    todo!("call linear apply_exposure once Phase 4 lands");
+    // +1 stop on 0.18 linear should give 0.36 linear. The old u8
+    // code gave ~0.92 sRGB (= 0.83 linear) because it multiplied
+    // gamma-encoded bytes. This is the canonical exposure bug and
+    // the single most important test in the migration.
+    let mut frame = solid_linear(4, 4, MID_GREY_LINEAR);
+    klipp_color::linear::apply_exposure(&mut frame, 1.0);
+    let expected = solid_linear(4, 4, [0.36, 0.36, 0.36, 1.0]);
+    assert_exact(&expected, &frame, 1e-4);
 }
 
 #[test]
-#[ignore = "Phase 4 — linear apply_exposure"]
 fn exposure_minus_one_stop_on_mid_grey_halves_linear_value() {
-    let _expected = solid_linear(4, 4, [0.09, 0.09, 0.09, 1.0]);
-    todo!("call linear apply_exposure(-1.0) once Phase 4 lands");
+    let mut frame = solid_linear(4, 4, MID_GREY_LINEAR);
+    klipp_color::linear::apply_exposure(&mut frame, -1.0);
+    let expected = solid_linear(4, 4, [0.09, 0.09, 0.09, 1.0]);
+    assert_exact(&expected, &frame, 1e-4);
 }
 
 #[test]
-#[ignore = "Phase 4 — linear apply_exposure"]
 fn exposure_zero_stops_is_identity() {
-    // Every pixel unchanged after +0 EV.
-    todo!("call linear apply_exposure(0.0) once Phase 4 lands");
+    let mut frame = solid_linear(4, 4, [0.3, 0.6, 0.9, 1.0]);
+    let original = frame.clone();
+    klipp_color::linear::apply_exposure(&mut frame, 0.0);
+    assert_exact(&original, &frame, 0.0);
 }
 
 #[test]
-#[ignore = "Phase 4 — linear apply_exposure"]
 fn exposure_preserves_highlights_above_one() {
-    // +2 stops on a 0.6 linear pixel gives 2.4 — *not* clamped.
-    // This is what makes "recover highlights" possible later.
-    todo!("call linear apply_exposure(+2.0) on 0.6 linear");
+    // +2 stops on 0.6 linear gives 2.4 — *not* clamped. This is
+    // what makes "recover highlights" possible at later stages.
+    let mut frame = solid_linear(1, 1, [0.6, 0.6, 0.6, 1.0]);
+    klipp_color::linear::apply_exposure(&mut frame, 2.0);
+    for i in 0..3 {
+        assert!(
+            (frame[i] - 2.4).abs() < 1e-4,
+            "channel {i}: got {} (expected 2.4, not clipped)",
+            frame[i],
+        );
+    }
 }
 
 // ---- contrast --------------------------------------------------------
 
 #[test]
-#[ignore = "Phase 4 — linear apply_contrast"]
 fn contrast_zero_is_identity() {
-    todo!("call linear apply_contrast(0.0)");
+    let mut frame = solid_linear(4, 4, [0.1, 0.5, 0.9, 1.0]);
+    let original = frame.clone();
+    klipp_color::linear::apply_contrast(&mut frame, 0.0);
+    assert_exact(&original, &frame, 0.0);
 }
 
 #[test]
-#[ignore = "Phase 4 — linear apply_contrast"]
 fn contrast_does_not_shift_mid_grey() {
     // Any contrast around 0.18 must leave 0.18 fixed. The sRGB
-    // version mis-fixes at 0.5 sRGB (≈ 0.21 linear), visibly
+    // version mis-fixed at 0.5 sRGB (≈ 0.21 linear), visibly
     // bright-shifting every contrast adjustment.
-    todo!("apply_contrast(+0.5) on 0.18 linear — should stay ≈ 0.18");
+    let mut frame = solid_linear(2, 2, MID_GREY_LINEAR);
+    klipp_color::linear::apply_contrast(&mut frame, 0.5);
+    let expected = solid_linear(2, 2, MID_GREY_LINEAR);
+    assert_exact(&expected, &frame, 1e-6);
 }
 
 // ---- saturation ------------------------------------------------------
 
 #[test]
-#[ignore = "Phase 4 — linear apply_saturation"]
 fn saturation_one_is_identity() {
-    todo!("saturation factor 1.0 must be no-op");
+    let mut frame = solid_linear(1, 1, [0.8, 0.2, 0.5, 1.0]);
+    let original = frame.clone();
+    klipp_color::linear::apply_saturation(&mut frame, 1.0);
+    assert_exact(&original, &frame, 0.0);
 }
 
 #[test]
-#[ignore = "Phase 4 — linear apply_saturation"]
 fn saturation_zero_produces_bt709_luma() {
     // A pure linear red (1, 0, 0, 1) at factor 0 must produce
     // (0.2126, 0.2126, 0.2126) — the BT.709 luma of pure red.
-    let _expected = solid_linear(1, 1, [0.2126, 0.2126, 0.2126, 1.0]);
-    todo!("apply_saturation(0.0) on pure red");
+    let mut frame = solid_linear(1, 1, [1.0, 0.0, 0.0, 1.0]);
+    klipp_color::linear::apply_saturation(&mut frame, 0.0);
+    let expected = solid_linear(1, 1, [0.2126, 0.2126, 0.2126, 1.0]);
+    assert_exact(&expected, &frame, 1e-4);
 }
 
 #[test]
-#[ignore = "Phase 4 — linear apply_saturation"]
 fn saturation_zero_on_grey_is_invariant() {
     // Grey is already saturation-free; any factor should leave it.
-    todo!("apply_saturation(any) on any neutral grey = identity");
+    let mut frame = solid_linear(1, 1, [0.5, 0.5, 0.5, 1.0]);
+    let original = frame.clone();
+    klipp_color::linear::apply_saturation(&mut frame, 0.0);
+    assert_exact(&original, &frame, 0.0);
+    klipp_color::linear::apply_saturation(&mut frame, 3.0);
+    assert_exact(&original, &frame, 0.0);
 }
 
 // ---- compositing -----------------------------------------------------

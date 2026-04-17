@@ -9,3 +9,10 @@ publish = false
 
 [lib]
 path = "src/lib.rs"
+
+# dev-dependencies only — wired into the ground-truth spec tests that
+# exercise the real linear-light pipeline implementations. The lib
+# itself stays dependency-free so any crate can pull it in without
+# pulling klipp-color transitively.
+[dev-dependencies]
+klipp-color = { workspace = true }

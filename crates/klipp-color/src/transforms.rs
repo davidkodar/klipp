@@ -505,7 +505,7 @@ pub fn apply_input_transform(rgba: &mut [u8], log_format: klipp_core::LogFormat)
 }
 
 /// Convert a single channel from camera log encoding to scene-linear.
-fn log_to_linear(v: f32, format: klipp_core::LogFormat) -> f32 {
+pub fn log_to_linear(v: f32, format: klipp_core::LogFormat) -> f32 {
     use klipp_core::LogFormat;
     match format {
         LogFormat::SLog3 => {
