@@ -390,6 +390,12 @@ pub struct PlaybackEngine {
     scope_tap_node: Option<klipp_nodes::NodeId>,
     /// Which scope mode to render on GPU (0=waveform, 1=parade, 2=vectorscope, 3=histogram).
     scope_render_mode: u8,
+    /// Wall-clock timestamp of the last GPU scope render. Used to
+    /// throttle scope refresh to ~10 Hz — colourists can't perceive
+    /// scope updates faster than that, and each scope render costs
+    /// two full GPU sync fences (~40 ms together on NVIDIA Vulkan)
+    /// which would otherwise consume most of a 24fps frame budget.
+    last_scope_render: std::time::Instant,
     // Matte preview node — which Qualifier/Mask node's matte to show
     matte_preview_node: Option<klipp_nodes::NodeId>,
     // Cached pre-grade frame for instant parameter updates when paused.
@@ -636,6 +642,7 @@ impl PlaybackEngine {
             matte_preview: false,
             scope_tap_node: None,
             scope_render_mode: 0,
+            last_scope_render: std::time::Instant::now() - std::time::Duration::from_secs(1),
             matte_preview_node: None,
             cached_pregrade_frame: None,
             frame_cache: FrameCache::new(120), // ~5s at 24fps (backward history + forward prefetch)
@@ -4961,7 +4968,8 @@ impl PlaybackEngine {
 
             if let Some((cached, _w, _h)) = cached_result {
                 self.render_cache_hot.insert(key.clone(), cached.clone(), width, height);
-                if let Some(gpu) = &mut self.gpu_effects {
+                if self.should_render_scope() {
+                  if let Some(gpu) = &mut self.gpu_effects {
                     let scope_w = 720u32;
                     let scope_h = 256u32;
                     let mode = self.scope_render_mode;
@@ -4970,6 +4978,7 @@ impl PlaybackEngine {
                         GpuScopeKind::Parade => gpu.render_scope_parade(&cached, width, height, scope_w, scope_h),
                         GpuScopeKind::Histogram => gpu.render_scope_histogram(&cached, width, height, scope_w, scope_h),
                     });
+                    self.last_scope_render = std::time::Instant::now();
                     let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                     match tex {
                         Some(t) => {
@@ -4985,6 +4994,7 @@ impl PlaybackEngine {
                             fb.scope_texture_mode = mode;
                         }
                     }
+                  }
                 }
                 // Render cache stores u8; callers consume linear.
                 return u8_rgba_to_linear(&cached);
@@ -5006,7 +5016,8 @@ impl PlaybackEngine {
         // no GPU kernel (vectorscope, unknown codes) clear the
         // texture so the UI falls back to the CPU renderer in
         // `klipp-ui/widgets/scopes.rs`.
-        if let Some(gpu) = &mut self.gpu_effects {
+        if self.should_render_scope() {
+          if let Some(gpu) = &mut self.gpu_effects {
             let scope_w = 720u32;
             let scope_h = 256u32;
             let mode = self.scope_render_mode;
@@ -5015,6 +5026,7 @@ impl PlaybackEngine {
                 GpuScopeKind::Parade => gpu.render_scope_parade(&result_u8, width, height, scope_w, scope_h),
                 GpuScopeKind::Histogram => gpu.render_scope_histogram(&result_u8, width, height, scope_w, scope_h),
             });
+            self.last_scope_render = std::time::Instant::now();
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             match tex {
                 Some(t) => {
@@ -5030,6 +5042,7 @@ impl PlaybackEngine {
                     fb.scope_texture_mode = mode;
                 }
             }
+          }
         }
 
         result_linear
@@ -5094,17 +5107,26 @@ impl PlaybackEngine {
             // Render GPU scope texture from the graded frame. Modes
             // with no GPU kernel (vectorscope, unknown codes) clear
             // the texture so the UI falls back to the CPU renderer.
-            let scope_tex = if let Some(gpu) = &mut self.gpu_effects {
-                tracing::debug!("Engine: GPU scope render mode={} frame={}x{}", self.scope_render_mode, w, h);
-                let scope_w = 720u32;
-                let scope_h = 256u32;
-                let mode = self.scope_render_mode;
-                let tex_opt = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
-                    GpuScopeKind::Waveform => gpu.render_scope_waveform(&out_u8, w, h, scope_w, scope_h),
-                    GpuScopeKind::Parade => gpu.render_scope_parade(&out_u8, w, h, scope_w, scope_h),
-                    GpuScopeKind::Histogram => gpu.render_scope_histogram(&out_u8, w, h, scope_w, scope_h),
-                });
-                Some((tex_opt, scope_w, scope_h, mode))
+            // Throttled to ~10 Hz — rapid slider scrubbing fires this
+            // path on every parameter change, which would otherwise
+            // pay the scope-render cost dozens of times per second.
+            let should_render = self.should_render_scope();
+            let scope_tex = if should_render {
+                if let Some(gpu) = &mut self.gpu_effects {
+                    tracing::debug!("Engine: GPU scope render mode={} frame={}x{}", self.scope_render_mode, w, h);
+                    let scope_w = 720u32;
+                    let scope_h = 256u32;
+                    let mode = self.scope_render_mode;
+                    let tex_opt = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
+                        GpuScopeKind::Waveform => gpu.render_scope_waveform(&out_u8, w, h, scope_w, scope_h),
+                        GpuScopeKind::Parade => gpu.render_scope_parade(&out_u8, w, h, scope_w, scope_h),
+                        GpuScopeKind::Histogram => gpu.render_scope_histogram(&out_u8, w, h, scope_w, scope_h),
+                    });
+                    self.last_scope_render = std::time::Instant::now();
+                    Some((tex_opt, scope_w, scope_h, mode))
+                } else {
+                    None
+                }
             } else {
                 None
             };
@@ -5996,6 +6018,18 @@ impl PlaybackEngine {
     /// recording.
     pub fn perf_ring(&self) -> crate::perf::SharedPerfRing {
         self.perf_ring.clone()
+    }
+
+    /// Whether enough wall time has passed since the last GPU scope
+    /// render to justify another one. Colourists can't perceive
+    /// scope updates faster than ~10 Hz, and each scope render costs
+    /// two full GPU sync fences (~30-40 ms together). Capping the
+    /// refresh rate here trades ~70 ms of latency on the scope
+    /// overlay for getting every frame back inside the 24 fps
+    /// budget during playback with sliders active.
+    fn should_render_scope(&self) -> bool {
+        const SCOPE_MIN_INTERVAL_MS: u128 = 100;
+        self.last_scope_render.elapsed().as_millis() >= SCOPE_MIN_INTERVAL_MS
     }
 
     /// Wait for a video frame near `target_secs` to appear in the queue.

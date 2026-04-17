@@ -192,6 +192,19 @@ pub struct GpuEffectsPipeline {
     scope_staging_buf: Option<wgpu::Buffer>,
     scope_staging_size: u64,
     scope_params_buf: wgpu::Buffer,
+    // Cached `max_count` values used to normalise scope output. The
+    // readback that computes them is a full device.poll(Wait) sync
+    // fence (~15-20 ms on NVIDIA Vulkan); doing it every frame makes
+    // scope rendering alone cost half a 24fps frame budget. Caching
+    // across ~30 scope calls and refreshing occasionally is visually
+    // indistinguishable — max_count only drifts slowly on real
+    // footage — and drops the amortised cost by ~30×.
+    scope_wf_max_count: Option<u32>,
+    scope_pd_max_count: Option<u32>,
+    scope_hi_max_count: Option<u32>,
+    scope_wf_refresh: u32,
+    scope_pd_refresh: u32,
+    scope_hi_refresh: u32,
     // Bind group layouts
     bind_group_layout: wgpu::BindGroupLayout,         // effects: input, output, params
     transition_bgl: wgpu::BindGroupLayout,             // transitions: from, to, output, params
@@ -681,6 +694,12 @@ impl GpuEffectsPipeline {
             scope_staging_buf: None,
             scope_staging_size: 0,
             scope_params_buf,
+            scope_wf_max_count: None,
+            scope_pd_max_count: None,
+            scope_hi_max_count: None,
+            scope_wf_refresh: 0,
+            scope_pd_refresh: 0,
+            scope_hi_refresh: 0,
             bind_group_layout,
             transition_bgl,
             buf_a: None,
@@ -1040,6 +1059,13 @@ impl GpuEffectsPipeline {
     }
 
     /// Render a waveform scope as RGBA image. Returns (rgba, width, height).
+    /// Number of scope renders that reuse a cached `max_count` before
+    /// forcing a fresh readback. At ~10 Hz throttled scope refresh
+    /// (~3 renders per second) this refreshes max_count about once
+    /// every 10 seconds, which is more than fast enough to track
+    /// scene changes on any realistic footage.
+    const SCOPE_MAX_REFRESH_INTERVAL: u32 = 30;
+
     pub fn render_scope_waveform(&mut self, rgba: &[u8], frame_w: u32, frame_h: u32, out_w: u32, out_h: u32) -> Vec<u8> {
         if self.is_device_lost() {
             let _ = rgba;
@@ -1084,11 +1110,17 @@ impl GpuEffectsPipeline {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        // 3. Find max bin count for normalization
-        // (Read back bins to find max — small data, fast)
-        let max_count = {
+        // 3. Find max bin count for normalisation. On the cold path
+        // we read the bins back from GPU to find the true max; that
+        // read is a full device.poll(Wait) sync fence. On warm
+        // frames (scope_wf_refresh > 0) we reuse the cached value —
+        // visually identical for the next second of playback on any
+        // realistic footage.
+        let max_count = if self.scope_wf_refresh > 0 {
+            self.scope_wf_refresh -= 1;
+            self.scope_wf_max_count.unwrap_or(1).max(1)
+        } else {
             let bins_bytes = num_bins * 4;
-            // Ensure staging is big enough for bins too
             if self.scope_staging_size < bins_bytes {
                 self.scope_staging_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("scope_staging"), size: bins_bytes.max(out_pixels * 4),
@@ -1111,6 +1143,8 @@ impl GpuEffectsPipeline {
             let mx = bins.iter().copied().max().unwrap_or(1).max(1);
             drop(data);
             staging.unmap();
+            self.scope_wf_max_count = Some(mx);
+            self.scope_wf_refresh = Self::SCOPE_MAX_REFRESH_INTERVAL;
             mx
         };
 
@@ -1182,8 +1216,11 @@ impl GpuEffectsPipeline {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        // Find max count
-        let max_count = {
+        // Find max count — cached across frames, same as waveform.
+        let max_count = if self.scope_pd_refresh > 0 {
+            self.scope_pd_refresh -= 1;
+            self.scope_pd_max_count.unwrap_or(1).max(1)
+        } else {
             let bins_bytes = num_bins * 4;
             if self.scope_staging_size < bins_bytes {
                 self.scope_staging_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1207,6 +1244,8 @@ impl GpuEffectsPipeline {
             let mx = bins.iter().copied().max().unwrap_or(1).max(1);
             drop(data);
             staging.unmap();
+            self.scope_pd_max_count = Some(mx);
+            self.scope_pd_refresh = Self::SCOPE_MAX_REFRESH_INTERVAL;
             mx
         };
 
@@ -1275,8 +1314,11 @@ impl GpuEffectsPipeline {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        // Find max
-        let max_count = {
+        // Find max — cached across frames, same as waveform.
+        let max_count = if self.scope_hi_refresh > 0 {
+            self.scope_hi_refresh -= 1;
+            self.scope_hi_max_count.unwrap_or(1).max(1)
+        } else {
             let bins_bytes = num_bins * 4;
             if self.scope_staging_size < bins_bytes {
                 self.scope_staging_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1300,6 +1342,8 @@ impl GpuEffectsPipeline {
             let mx = bins.iter().copied().max().unwrap_or(1).max(1);
             drop(data);
             staging.unmap();
+            self.scope_hi_max_count = Some(mx);
+            self.scope_hi_refresh = Self::SCOPE_MAX_REFRESH_INTERVAL;
             mx
         };
 
