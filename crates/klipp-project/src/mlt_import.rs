@@ -156,10 +156,12 @@ fn parse_profile(node: roxmltree::Node) -> MltProfile {
         .attribute("height")
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(1080);
+    let sanitised_fps = crate::path_util::sanitize_fps(num, den);
+    let sanitised_res = crate::path_util::sanitize_resolution(width, height);
     MltProfile {
-        fps: Fps::new(num, den),
-        width,
-        height,
+        fps: sanitised_fps,
+        width: sanitised_res.width,
+        height: sanitised_res.height,
     }
 }
 

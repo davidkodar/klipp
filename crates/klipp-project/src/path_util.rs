@@ -117,6 +117,63 @@ pub fn read_to_string_capped(path: &Path, max_bytes: u64) -> Result<String, std:
 /// the process even though the file itself fit under `MAX_INPUT_FILE_BYTES`.
 pub const MAX_XML_NODES: u32 = 1_000_000;
 
+/// Largest frame dimension Klipp will accept from an untrusted import.
+/// 16384 matches the common GPU texture-size ceiling; anything above is
+/// almost certainly a malformed file or an allocation-exhaustion attempt.
+pub const MAX_FRAME_DIMENSION: u32 = 16_384;
+
+/// Largest FPS numerator we'll accept. 1_000_000 covers every sensible
+/// rational frame rate (drop-frame 30000/1001, etc.) with a wide safety
+/// margin; anything above is noise.
+pub const MAX_FPS_NUMERATOR: u32 = 1_000_000;
+
+/// Clamp an FPS read from an untrusted import into a sensible range and
+/// substitute 24/1 if either half is zero. Without this, `Fps::new(x, 0)`
+/// flowing from a malformed profile produces an infinite/NaN frame rate
+/// that corrupts every downstream timeline calculation.
+pub fn sanitize_fps(num: u32, den: u32) -> klipp_core::Fps {
+    if den == 0 || num == 0 {
+        tracing::warn!(
+            "sanitize_fps: rejecting zero fps ({num}/{den}) — substituting 24/1",
+        );
+        return klipp_core::Fps::film_24();
+    }
+    if num > MAX_FPS_NUMERATOR {
+        tracing::warn!(
+            "sanitize_fps: numerator {num} exceeds cap {MAX_FPS_NUMERATOR} — clamping",
+        );
+        return klipp_core::Fps::new(MAX_FPS_NUMERATOR, den);
+    }
+    klipp_core::Fps::new(num, den)
+}
+
+/// Clamp a frame resolution into the GPU-texture-safe range. Zero
+/// dimensions are replaced with 1080p defaults; oversize dimensions are
+/// clamped to `MAX_FRAME_DIMENSION` so a crafted file can't ask us to
+/// allocate a 10-billion-pixel buffer.
+pub fn sanitize_resolution(width: u32, height: u32) -> klipp_core::Resolution {
+    let mut w = width;
+    let mut h = height;
+    if w == 0 || h == 0 {
+        tracing::warn!(
+            "sanitize_resolution: zero dimension ({w}x{h}) — substituting 1920x1080",
+        );
+        w = 1920;
+        h = 1080;
+    }
+    if w > MAX_FRAME_DIMENSION || h > MAX_FRAME_DIMENSION {
+        tracing::warn!(
+            "sanitize_resolution: oversize ({w}x{h}) — clamping to {MAX_FRAME_DIMENSION}",
+        );
+        w = w.min(MAX_FRAME_DIMENSION);
+        h = h.min(MAX_FRAME_DIMENSION);
+    }
+    klipp_core::Resolution {
+        width: w,
+        height: h,
+    }
+}
+
 /// Parse an XML string into a roxmltree Document with explicit,
 /// security-hardened options:
 ///   * `allow_dtd: false` — reject documents that declare a DOCTYPE /

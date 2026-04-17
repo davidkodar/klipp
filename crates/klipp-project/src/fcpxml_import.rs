@@ -90,13 +90,12 @@ impl FormatInfo {
     fn to_fps(&self) -> Fps {
         // fps = 1 / frame_duration_secs = den / num (seconds)
         let (fd_num, fd_den) = self.frame_duration;
-        // Clamp to positive u32; fall back to 24/1 if anything is unusable.
         if fd_num <= 0 || fd_den <= 0 {
             return Fps::film_24();
         }
         let num_u32 = u32::try_from(fd_den).unwrap_or(24);
         let den_u32 = u32::try_from(fd_num).unwrap_or(1);
-        Fps::new(num_u32, den_u32)
+        crate::path_util::sanitize_fps(num_u32, den_u32)
     }
 }
 
@@ -521,10 +520,7 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
             .ok_or_else(|| FcpxmlImportError::MissingFormat(fref.clone()))?;
         (
             fmt.to_fps(),
-            Resolution {
-                width: fmt.width,
-                height: fmt.height,
-            },
+            crate::path_util::sanitize_resolution(fmt.width, fmt.height),
         )
     } else {
         warnings.push(
