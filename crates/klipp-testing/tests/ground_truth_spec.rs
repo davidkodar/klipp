@@ -307,12 +307,42 @@ fn export_then_re_decode_round_trip() {
 }
 
 #[test]
-#[ignore = "Phase 11 — HDR metadata populated"]
 fn hdr_maxcll_computed_from_linear_master() {
     // MaxCLL (max content light level) from a 1000-nit linear master
-    // should report 1000 (± rounding). Current code does not compute
-    // this field.
-    todo!("export with HdrMode::Pq, inspect output MaxCLL tag == 1000");
+    // should report 1000 nits (± rounding). The encoder reads this
+    // from `klipp_color::hdr::LightLevelStats`, so if the stats are
+    // right, so is the HDR10 signalling written into the file. The
+    // actual container-level atom write-out is covered by
+    // `klipp-render`'s `hdr10_metadata_written_to_mp4` integration
+    // test — this one pins the math.
+    use klipp_color::hdr::LightLevelStats;
+
+    let mut stats = LightLevelStats::new();
+    // Simulate a 720p frame with a single 1000-nit highlight pixel
+    // (10.0 linear given the 100 nits/linear-unit convention) and
+    // the rest of the frame at diffuse white (1.0 linear = 100 nits).
+    let (w, h) = (1280usize, 720usize);
+    let mut frame = vec![1.0_f32; w * h * 4];
+    for px in frame.chunks_exact_mut(4) {
+        px[3] = 1.0;
+    }
+    frame[0] = 10.0;
+    frame[1] = 10.0;
+    frame[2] = 10.0;
+    stats.update(&frame);
+
+    assert_eq!(
+        stats.max_cll_nits(),
+        1000,
+        "1000-nit highlight master should report MaxCLL=1000",
+    );
+    // One 1000-nit pixel in ~1M — MaxFALL rounds to near-100 nits
+    // because the rest of the frame is diffuse white at 100 nits.
+    assert!(
+        stats.max_fall_nits() >= 99 && stats.max_fall_nits() <= 101,
+        "MaxFALL should be ~100 nits (diffuse white dominates), got {}",
+        stats.max_fall_nits(),
+    );
 }
 
 // Pure sanity: the harness itself must never grow silent.

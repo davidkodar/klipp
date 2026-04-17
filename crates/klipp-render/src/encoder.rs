@@ -1,5 +1,6 @@
 use crate::error::RenderError;
 use crate::snapshot::SequenceSnapshot;
+use klipp_color::hdr::LightLevelStats;
 use klipp_core::{ExportSettings, ExportVideoCodec};
 use std::path::Path;
 use tracing::{debug, info, warn};
@@ -49,6 +50,16 @@ pub struct Encoder {
     audio_sample_format: Option<ffmpeg_next::format::Sample>,
     /// Subtitle stream index (if soft subtitle embedding is enabled).
     pub subtitle_stream_idx: Option<usize>,
+    /// HDR signalling mode — drives colour-space tags at `open()` and
+    /// decides whether HDR10 side-data (MaxCLL/MaxFALL + mastering
+    /// display metadata) is attached at `finalise()`.
+    hdr_mode: klipp_core::HdrMode,
+    /// Running light-level statistics fed from every linear-light
+    /// frame. MaxCLL/MaxFALL are derived from this at finalise.
+    /// Only meaningful when the caller routes frames through
+    /// [`Encoder::encode_linear_frame`]; pure u8-pixel exports leave
+    /// this at zero and skip the HDR10 side-data.
+    light_stats: LightLevelStats,
 }
 
 /// Pick the best available video encoder for the given codec.
@@ -702,6 +713,8 @@ impl Encoder {
             },
             video_codec_name,
             subtitle_stream_idx,
+            hdr_mode: settings.hdr_mode,
+            light_stats: LightLevelStats::new(),
         })
     }
 
@@ -734,15 +747,25 @@ impl Encoder {
     /// falls back to the sRGB path so the exported file has *correct*
     /// colour-space tags ([`apply_color_tags`] writes BT.2020 + the
     /// chosen transfer characteristic) but the pixel values
-    /// themselves are still sRGB-encoded. A follow-up (Phase 11)
-    /// wires in a genuine PQ/HLG transfer encode so 10-bit HDR
-    /// pixel data reaches the file.
+    /// themselves are still sRGB-encoded. A follow-up phase wires in
+    /// a genuine PQ/HLG transfer encode so 10-bit HDR pixel data
+    /// reaches the file.
+    ///
+    /// HDR10 signalling side-data (MaxCLL / MaxFALL + mastering
+    /// display metadata) is populated from linear-light statistics
+    /// accumulated here and attached to the stream at
+    /// [`Self::finalise`] when `hdr_mode != HdrMode::Sdr`.
     pub fn encode_linear_frame(
         &mut self,
         linear_rgba: &[f32],
         width: u32,
         height: u32,
     ) -> Result<(), RenderError> {
+        // Accumulate light-level statistics from the linear master
+        // before we quantise to sRGB — once we've clipped at 1.0 we
+        // can no longer recover the HDR peak. Cheap enough to run
+        // unconditionally; `LightLevelStats` fits in three f64s.
+        self.light_stats.update(linear_rgba);
         let srgb = klipp_color::display::display_transform(
             linear_rgba,
             klipp_color::display::ToneMapOp::None,
@@ -920,6 +943,26 @@ impl Encoder {
             .map_err(|e| RenderError::Encode(format!("video send_eof: {e}")))?;
         self.drain_video_packets()?;
 
+        // HDR10 signalling side-data has to land on the video
+        // stream's codecpar before write_trailer: for MP4/MOV the
+        // muxer writes the `clli` and `mdcv` atoms inside the moov
+        // box at trailer time, reading from codecpar->coded_side_data.
+        // Attach now, once the per-frame stats are final.
+        if !matches!(self.hdr_mode, klipp_core::HdrMode::Sdr) {
+            if let Err(e) = self.attach_hdr10_side_data() {
+                warn!(
+                    "HDR10 side-data attach failed ({}); file will be tagged \
+                     BT.2020/{} but MaxCLL/MaxFALL/mastering display missing",
+                    e,
+                    match self.hdr_mode {
+                        klipp_core::HdrMode::Hlg => "HLG",
+                        klipp_core::HdrMode::Pq => "PQ",
+                        klipp_core::HdrMode::Sdr => "SDR",
+                    }
+                );
+            }
+        }
+
         // Flush remaining audio buffer + encoder
         if self.audio_encoder.is_some() {
             // Encode any remaining partial audio frame
@@ -995,6 +1038,189 @@ impl Encoder {
                 .write_interleaved(&mut self.output_ctx)
                 .map_err(|e| RenderError::Encode(format!("write video packet: {e}")))?;
         }
+        Ok(())
+    }
+
+    /// Attach HDR10 signalling side-data (Content Light Level +
+    /// Mastering Display Colour Volume) to the video stream.
+    ///
+    /// Called once, at finalise time, when `hdr_mode != Sdr`. For MP4/
+    /// MOV the MOV muxer translates these into the `clli` and `mdcv`
+    /// sample-description atoms; for MKV they become container-level
+    /// `ColourMasteringMetadata` / `MaxCLL` / `MaxFALL` elements.
+    ///
+    /// Uses `av_packet_side_data_add` (new API in FFmpeg 6+), which
+    /// takes ownership of an `av_malloc`'d buffer. On success the
+    /// buffer will be freed when `avcodec_parameters_free` runs during
+    /// output-context teardown; on failure we retain ownership and
+    /// free it ourselves.
+    fn attach_hdr10_side_data(&mut self) -> Result<(), RenderError> {
+        // Locally-declared C layouts matching libavutil's
+        // `mastering_display_metadata.h`. ffmpeg-sys-next's bindgen
+        // step does not emit these structs, so we describe them here.
+        // If the C ABI ever changes this would need to move in lock-
+        // step, but these layouts have been stable since the HDR10
+        // support landed in FFmpeg ~3.3 (2017).
+        #[repr(C)]
+        #[derive(Copy, Clone)]
+        struct AvContentLightMetadata {
+            max_cll: std::os::raw::c_uint,
+            max_fall: std::os::raw::c_uint,
+        }
+
+        #[repr(C)]
+        #[derive(Copy, Clone)]
+        struct AvMasteringDisplayMetadata {
+            display_primaries: [[ffmpeg_next::ffi::AVRational; 2]; 3],
+            white_point: [ffmpeg_next::ffi::AVRational; 2],
+            min_luminance: ffmpeg_next::ffi::AVRational,
+            max_luminance: ffmpeg_next::ffi::AVRational,
+            has_primaries: std::os::raw::c_int,
+            has_luminance: std::os::raw::c_int,
+        }
+
+        // Rationalise a CIE xy coord at 1/50000 resolution — the
+        // CTA-861.3 / H.265 wire format. 0.3127 → 15635 / 50000.
+        fn xy_rat(v: f32) -> ffmpeg_next::ffi::AVRational {
+            ffmpeg_next::ffi::AVRational {
+                num: (v * 50_000.0).round() as std::os::raw::c_int,
+                den: 50_000,
+            }
+        }
+
+        // Luminance at 0.0001 cd/m² resolution — same wire format.
+        fn lum_rat(cd_m2: f32) -> ffmpeg_next::ffi::AVRational {
+            ffmpeg_next::ffi::AVRational {
+                num: (cd_m2 * 10_000.0).round() as std::os::raw::c_int,
+                den: 10_000,
+            }
+        }
+
+        use klipp_color::hdr::{
+            bt2020_primaries, DEFAULT_MASTERING_MAX_LUMA_CD_M2, DEFAULT_MASTERING_MIN_LUMA_CD_M2,
+        };
+
+        let cll_payload = AvContentLightMetadata {
+            max_cll: self.light_stats.max_cll_nits() as std::os::raw::c_uint,
+            max_fall: self.light_stats.max_fall_nits() as std::os::raw::c_uint,
+        };
+
+        let mastering_payload = AvMasteringDisplayMetadata {
+            display_primaries: [
+                [
+                    xy_rat(bt2020_primaries::RED.0),
+                    xy_rat(bt2020_primaries::RED.1),
+                ],
+                [
+                    xy_rat(bt2020_primaries::GREEN.0),
+                    xy_rat(bt2020_primaries::GREEN.1),
+                ],
+                [
+                    xy_rat(bt2020_primaries::BLUE.0),
+                    xy_rat(bt2020_primaries::BLUE.1),
+                ],
+            ],
+            white_point: [
+                xy_rat(bt2020_primaries::WHITE_D65.0),
+                xy_rat(bt2020_primaries::WHITE_D65.1),
+            ],
+            min_luminance: lum_rat(DEFAULT_MASTERING_MIN_LUMA_CD_M2),
+            max_luminance: lum_rat(DEFAULT_MASTERING_MAX_LUMA_CD_M2),
+            has_primaries: 1,
+            has_luminance: 1,
+        };
+
+        unsafe {
+            // Get a mutable pointer to the video stream's codecpar so
+            // we can attach side data directly. The muxer reads from
+            // codecpar.coded_side_data at write_trailer time for MP4.
+            let out_ptr = self.output_ctx.as_mut_ptr();
+            if out_ptr.is_null() {
+                return Err(RenderError::Encode(
+                    "output context pointer is null".into(),
+                ));
+            }
+            let stream_ptr = *(*out_ptr).streams.add(self.video_stream_idx);
+            if stream_ptr.is_null() {
+                return Err(RenderError::Encode(
+                    "video stream pointer is null".into(),
+                ));
+            }
+            let par = (*stream_ptr).codecpar;
+            if par.is_null() {
+                return Err(RenderError::Encode(
+                    "video codecpar pointer is null".into(),
+                ));
+            }
+
+            // Copy payloads into av_malloc'd buffers — ownership
+            // transfers to FFmpeg on a successful add.
+            let cll_size = std::mem::size_of::<AvContentLightMetadata>();
+            let cll_buf = ffmpeg_next::ffi::av_mallocz(cll_size) as *mut AvContentLightMetadata;
+            if cll_buf.is_null() {
+                return Err(RenderError::Encode(
+                    "av_mallocz AVContentLightMetadata".into(),
+                ));
+            }
+            *cll_buf = cll_payload;
+
+            let mastering_size = std::mem::size_of::<AvMasteringDisplayMetadata>();
+            let mastering_buf =
+                ffmpeg_next::ffi::av_mallocz(mastering_size) as *mut AvMasteringDisplayMetadata;
+            if mastering_buf.is_null() {
+                // Free the CLL buffer we already allocated — we're
+                // about to bail out and won't be attaching either.
+                ffmpeg_next::ffi::av_free(cll_buf as *mut std::os::raw::c_void);
+                return Err(RenderError::Encode(
+                    "av_mallocz AVMasteringDisplayMetadata".into(),
+                ));
+            }
+            *mastering_buf = mastering_payload;
+
+            // AV_PKT_DATA_CONTENT_LIGHT_LEVEL = 22, AV_PKT_DATA_MASTERING_DISPLAY_METADATA = 20
+            // — matches the enum values in bindings.rs (lines 6660,
+            // 6664). Same values have held since FFmpeg 3.3.
+            let cll_ret = ffmpeg_next::ffi::av_packet_side_data_add(
+                &mut (*par).coded_side_data as *mut *mut _,
+                &mut (*par).nb_coded_side_data as *mut _,
+                ffmpeg_next::ffi::AVPacketSideDataType::AV_PKT_DATA_CONTENT_LIGHT_LEVEL,
+                cll_buf as *mut std::os::raw::c_void,
+                cll_size,
+                0,
+            );
+            if cll_ret.is_null() {
+                ffmpeg_next::ffi::av_free(cll_buf as *mut std::os::raw::c_void);
+                ffmpeg_next::ffi::av_free(mastering_buf as *mut std::os::raw::c_void);
+                return Err(RenderError::Encode(
+                    "av_packet_side_data_add CONTENT_LIGHT_LEVEL failed".into(),
+                ));
+            }
+
+            let mastering_ret = ffmpeg_next::ffi::av_packet_side_data_add(
+                &mut (*par).coded_side_data as *mut *mut _,
+                &mut (*par).nb_coded_side_data as *mut _,
+                ffmpeg_next::ffi::AVPacketSideDataType::AV_PKT_DATA_MASTERING_DISPLAY_METADATA,
+                mastering_buf as *mut std::os::raw::c_void,
+                mastering_size,
+                0,
+            );
+            if mastering_ret.is_null() {
+                // CLL was already handed to FFmpeg; the mastering
+                // buffer is still ours to free.
+                ffmpeg_next::ffi::av_free(mastering_buf as *mut std::os::raw::c_void);
+                return Err(RenderError::Encode(
+                    "av_packet_side_data_add MASTERING_DISPLAY_METADATA failed".into(),
+                ));
+            }
+        }
+
+        info!(
+            "HDR10 metadata attached: MaxCLL={} nits, MaxFALL={} nits ({} frames sampled)",
+            self.light_stats.max_cll_nits(),
+            self.light_stats.max_fall_nits(),
+            self.light_stats.frame_count(),
+        );
+
         Ok(())
     }
 
@@ -1166,6 +1392,117 @@ mod tests {
 
         let meta = std::fs::metadata(&path).unwrap();
         assert!(meta.len() > 100);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// End-to-end: exporting linear frames with `HdrMode::Pq` must
+    /// attach HDR10 side-data to the output file (Content Light Level
+    /// + Mastering Display Colour Volume). MaxCLL lands on a
+    /// 1000-nit highlight pixel as the round-trip acceptance for
+    /// Phase 11's metadata polish.
+    ///
+    /// Requires ffprobe on PATH; if not available the test skips its
+    /// assertion block (same pattern as `encode_h264_10_frames`).
+    #[test]
+    #[serial]
+    fn hdr10_side_data_attached_for_pq_export() {
+        let dir = std::env::temp_dir().join("klipp_render_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test_hdr10.mp4");
+
+        let mut settings = make_settings(ExportVideoCodec::H265, path.to_str().unwrap());
+        settings.audio_codec = ExportAudioCodec::Copy;
+        settings.hdr_mode = klipp_core::HdrMode::Pq;
+        settings.bit_depth = 10;
+
+        // 320×240 synthetic "master" with one 1000-nit highlight
+        // pixel (10.0 linear) and the rest diffuse white (1.0).
+        let (w, h) = (320usize, 240usize);
+        let snapshot = SequenceSnapshot {
+            fps: 24.0,
+            fps_num: 24,
+            fps_den: 1,
+            width: w as u32,
+            height: h as u32,
+            sample_rate: 48000,
+            duration_frames: 4,
+            export_range: None,
+            video_tracks: vec![],
+            audio_tracks: vec![],
+            global_lut_path: None,
+            subtitle_tracks: vec![],
+            chapters: vec![],
+        };
+
+        let mut enc = Encoder::open(&path, &settings, &snapshot).unwrap();
+
+        let mut frame = vec![1.0_f32; w * h * 4];
+        for px in frame.chunks_exact_mut(4) {
+            px[3] = 1.0;
+        }
+        frame[0] = 10.0;
+        frame[1] = 10.0;
+        frame[2] = 10.0;
+        for _ in 0..4 {
+            enc.encode_linear_frame(&frame, w as u32, h as u32).unwrap();
+        }
+
+        enc.finalise().unwrap();
+
+        let meta = std::fs::metadata(&path).unwrap();
+        assert!(meta.len() > 100, "HDR10 output file should be non-trivial");
+
+        // Verify HDR10 side-data via ffprobe. We look for `MaxCLL`
+        // and `Mastering display metadata` in the stream-level
+        // side_data_list (ffprobe surfaces both under -show_streams).
+        let probe = std::process::Command::new("ffprobe")
+            .args([
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_frames",
+                "-read_intervals", "%+#1",
+                "-show_entries", "frame=side_data_list",
+                "-of", "json",
+            ])
+            .arg(&path)
+            .output();
+
+        if let Ok(out) = probe {
+            let json = String::from_utf8_lossy(&out.stdout);
+            // Stream-level side_data probe: ask for the streams view
+            // as well, since MP4's clli/mdcv surface as per-stream
+            // side_data rather than per-frame.
+            let stream_probe = std::process::Command::new("ffprobe")
+                .args([
+                    "-v", "error",
+                    "-select_streams", "v:0",
+                    "-show_entries", "stream_side_data_list",
+                    "-of", "json",
+                ])
+                .arg(&path)
+                .output()
+                .ok();
+            let stream_json = stream_probe
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_default();
+
+            let combined = format!("{json}\n{stream_json}");
+            assert!(
+                combined.contains("Content light level metadata")
+                    || combined.contains("MaxCLL"),
+                "expected MaxCLL side-data in ffprobe output, got: {combined}",
+            );
+            assert!(
+                combined.contains("Mastering display metadata")
+                    || combined.contains("mastering_display_metadata"),
+                "expected mastering-display side-data in ffprobe output, got: {combined}",
+            );
+            assert!(
+                combined.contains("1000"),
+                "expected MaxCLL=1000 somewhere in side-data, got: {combined}",
+            );
+        }
 
         let _ = std::fs::remove_file(&path);
     }
