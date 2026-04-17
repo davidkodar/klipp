@@ -199,21 +199,30 @@ fn saturation_zero_on_grey_is_invariant() {
 // ---- compositing -----------------------------------------------------
 
 #[test]
-#[ignore = "Phase 5 — linear blend_layer"]
 fn normal_blend_half_alpha_red_over_black_is_half_red_linear() {
     // Pure red at 50 % alpha over black, in linear space, is
-    // (0.5, 0, 0). The sRGB version gives (≈0.73, 0, 0) in linear
-    // terms — darker edges / visible gamma banding.
-    todo!("composite red with alpha=0.5 over black");
+    // (0.5, 0, 0). The sRGB version gave ≈ 0.73 linear (visibly
+    // brighter than physics), which manifested as dark edges and
+    // gamma banding on every soft transition.
+    use klipp_engine::composite::blend_layer_linear;
+    let mut dst = vec![0.0_f32, 0.0, 0.0, 1.0];
+    let src = vec![1.0_f32, 0.0, 0.0, 1.0];
+    blend_layer_linear(&mut dst, &src, 0.5, klipp_core::BlendMode::Normal);
+    let expected = vec![0.5_f32, 0.0, 0.0, 1.0];
+    assert_exact(&expected, &dst, 1e-5);
 }
 
 #[test]
-#[ignore = "Phase 5 — linear blend_layer"]
 fn multiply_blend_self_is_square_linear() {
-    // Multiply mode: (0.5 linear) * (0.5 linear) = 0.25. sRGB
-    // multiply would give ~0.137 (much darker). This is why
-    // "Multiply" in sRGB engines darkens too aggressively.
-    todo!("multiply a 0.5 linear grey by itself");
+    // Multiply: 0.5 × 0.5 = 0.25 linear. The sRGB version gave
+    // ~0.137 linear (much too dark), which is why every "Multiply"
+    // composite in sRGB engines crushes shadows.
+    use klipp_engine::composite::blend_layer_linear;
+    let mut dst = vec![0.5_f32, 0.5, 0.5, 1.0];
+    let src = vec![0.5_f32, 0.5, 0.5, 1.0];
+    blend_layer_linear(&mut dst, &src, 1.0, klipp_core::BlendMode::Multiply);
+    let expected = vec![0.25_f32, 0.25, 0.25, 1.0];
+    assert_exact(&expected, &dst, 1e-5);
 }
 
 // ---- spatial operations (looser PSNR tolerance) ----------------------

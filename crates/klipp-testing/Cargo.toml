@@ -16,3 +16,5 @@ path = "src/lib.rs"
 # pulling klipp-color transitively.
 [dev-dependencies]
 klipp-color = { workspace = true }
+klipp-core = { workspace = true }
+klipp-engine = { workspace = true }

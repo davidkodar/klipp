@@ -889,3 +889,317 @@ fn scale_rgba(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec
     let scaled = image::imageops::resize(&img, dst_w, dst_h, image::imageops::FilterType::Triangle);
     scaled.into_raw()
 }
+
+// ═════════════════════════════════════════════════════════════════
+// Linear-light compositor (CRIT-7)
+// ═════════════════════════════════════════════════════════════════
+//
+// Parallel to the u8 sRGB blend_layer / blend_chunk above. All blend
+// formulas are algebraically identical — what changes is the domain
+// the math runs in. Multiply in sRGB darkens edges aggressively
+// because 0.5*0.5 = 0.25 (correct light), but the sRGB bytes were
+// 128, which looks like "half"; doing byte-half times byte-half gives
+// the wrong visual result. In linear, the multiply produces the
+// physically correct light transmission. Every blend mode benefits
+// identically.
+//
+// No clamps inside the blend: HDR values above 1.0 are preserved —
+// the viewer or encoder resolves them at the final stage. The
+// sRGB u8 versions stay in place until Phase 10 retires them.
+
+/// Blend a source linear-f32 RGBA layer onto a destination linear
+/// buffer using the specified blend mode.
+///
+/// Matches the shape of [`blend_layer`] but operates in linear light.
+/// Same rayon chunking strategy; same AVX2 vectorisation target. The
+/// inner loop touches four f32 per pixel instead of four u8, so
+/// memory bandwidth doubles — benchmark before any larger scope.
+pub fn blend_layer_linear(dst: &mut [f32], src: &[f32], opacity: f32, mode: BlendMode) {
+    if src.len() != dst.len() {
+        return;
+    }
+
+    const MIN_CHUNK_PIXELS: usize = 4096;
+    // 4 f32 per pixel = 16 bytes; bytes-equivalent threshold.
+    const MIN_CHUNK_FLOATS: usize = MIN_CHUNK_PIXELS * 4;
+
+    if dst.len() <= MIN_CHUNK_FLOATS {
+        blend_chunk_linear(dst, src, opacity, mode);
+        return;
+    }
+
+    let threads = rayon::current_num_threads().max(1);
+    let chunk_floats = ((dst.len() / threads).max(MIN_CHUNK_FLOATS) / 4) * 4;
+
+    dst.par_chunks_mut(chunk_floats)
+        .zip(src.par_chunks(chunk_floats))
+        .for_each(|(dst_chunk, src_chunk)| {
+            blend_chunk_linear(dst_chunk, src_chunk, opacity, mode);
+        });
+}
+
+#[inline]
+fn blend_chunk_linear(dst: &mut [f32], src: &[f32], opacity: f32, mode: BlendMode) {
+    for i in (0..dst.len()).step_by(4) {
+        let sa = src[i + 3] * opacity;
+        if sa < 0.001 {
+            continue;
+        }
+        let da = dst[i + 3];
+
+        let sr = src[i];
+        let sg = src[i + 1];
+        let sb = src[i + 2];
+        let dr = dst[i];
+        let dg = dst[i + 1];
+        let db = dst[i + 2];
+
+        let (br, bg, bb) = match mode {
+            BlendMode::Normal => (sr, sg, sb),
+            // Add: HDR headroom means no clamp. The viewer tone maps.
+            BlendMode::Add => (dr + sr, dg + sg, db + sb),
+            // Multiply: physically light transmission. 0.5 * 0.5 = 0.25
+            // in linear, matching real light (sRGB Multiply of 0.5 byte
+            // values appears as ≈ 0.25 byte, which is much too dark).
+            BlendMode::Multiply => (dr * sr, dg * sg, db * sb),
+            BlendMode::Screen => (
+                1.0 - (1.0 - dr) * (1.0 - sr),
+                1.0 - (1.0 - dg) * (1.0 - sg),
+                1.0 - (1.0 - db) * (1.0 - sb),
+            ),
+            BlendMode::Overlay => (overlay_ch(dr, sr), overlay_ch(dg, sg), overlay_ch(db, sb)),
+            BlendMode::SoftLight => (
+                soft_light_ch(dr, sr),
+                soft_light_ch(dg, sg),
+                soft_light_ch(db, sb),
+            ),
+            BlendMode::HardLight => (overlay_ch(sr, dr), overlay_ch(sg, dg), overlay_ch(sb, db)),
+            BlendMode::Difference => ((dr - sr).abs(), (dg - sg).abs(), (db - sb).abs()),
+            BlendMode::Exclusion => (
+                dr + sr - 2.0 * dr * sr,
+                dg + sg - 2.0 * dg * sg,
+                db + sb - 2.0 * db * sb,
+            ),
+            BlendMode::ColorDodge => (dodge_ch(dr, sr), dodge_ch(dg, sg), dodge_ch(db, sb)),
+            BlendMode::ColorBurn => (burn_ch(dr, sr), burn_ch(dg, sg), burn_ch(db, sb)),
+            BlendMode::Darken => (dr.min(sr), dg.min(sg), db.min(sb)),
+            BlendMode::Lighten => (dr.max(sr), dg.max(sg), db.max(sb)),
+        };
+
+        // Standard "src-over" alpha compositing, in linear. No clamp —
+        // values above 1.0 are legal and propagate to later stages.
+        let out_a = sa + da * (1.0 - sa);
+        if out_a > 0.0 {
+            dst[i] = (br * sa + dr * da * (1.0 - sa)) / out_a;
+            dst[i + 1] = (bg * sa + dg * da * (1.0 - sa)) / out_a;
+            dst[i + 2] = (bb * sa + db * da * (1.0 - sa)) / out_a;
+            dst[i + 3] = out_a;
+        }
+    }
+}
+
+/// Composite a stack of linear-f32 layers into a single linear-f32
+/// output buffer. Parallel to [`composite_layers`] but no u8
+/// quantisation anywhere in the pipeline.
+pub fn composite_layers_linear(
+    layers: &[CompositeLayerLinear],
+    out_width: u32,
+    out_height: u32,
+) -> Vec<f32> {
+    let pixel_count = (out_width * out_height) as usize;
+    let mut output = vec![0f32; pixel_count * 4];
+
+    for layer in layers {
+        // Scale-mismatch fallback: if a future layer resizes in
+        // linear space we'll plumb a float-aware scaler through here.
+        // For now we assume layers arrive at the output resolution
+        // (the engine already performs playback-resolution downscale
+        // in the decoder swscale step).
+        if layer.width == out_width && layer.height == out_height {
+            blend_layer_linear(&mut output, &layer.rgba, layer.opacity, layer.blend_mode);
+        } else {
+            // Resize not implemented yet on the linear path. Drop the
+            // layer rather than silently sampling it wrong. Rare —
+            // decoder already normalises to playback resolution.
+            tracing::warn!(
+                "composite_layers_linear: layer {}x{} mismatches output {}x{} — skipped (linear resize not wired yet)",
+                layer.width, layer.height, out_width, out_height,
+            );
+        }
+    }
+    output
+}
+
+/// Linear-light variant of [`CompositeLayer`]. Data is RGBA f32 with
+/// each channel in linear-light space; alpha stays linear per sRGB.
+pub struct CompositeLayerLinear {
+    pub rgba: Vec<f32>,
+    pub width: u32,
+    pub height: u32,
+    pub opacity: f32,
+    pub blend_mode: BlendMode,
+}
+
+#[cfg(test)]
+mod linear_compositor_tests {
+    use super::*;
+    use klipp_core::BlendMode;
+
+    fn px(r: f32, g: f32, b: f32, a: f32) -> Vec<f32> {
+        vec![r, g, b, a]
+    }
+
+    fn approx(a: f32, b: f32, tol: f32) -> bool {
+        (a - b).abs() <= tol
+    }
+
+    #[test]
+    fn normal_over_transparent_is_passthrough() {
+        let mut dst = px(0.0, 0.0, 0.0, 0.0);
+        let src = px(0.5, 0.3, 0.7, 1.0);
+        blend_layer_linear(&mut dst, &src, 1.0, BlendMode::Normal);
+        assert!(approx(dst[0], 0.5, 1e-5));
+        assert!(approx(dst[1], 0.3, 1e-5));
+        assert!(approx(dst[2], 0.7, 1e-5));
+        assert!(approx(dst[3], 1.0, 1e-5));
+    }
+
+    #[test]
+    fn normal_half_alpha_red_over_black_is_half_red() {
+        // The sRGB u8 version gives ≈ 128 (which is 0.215 linear,
+        // visibly too dark). Linear gives 0.5.
+        let mut dst = px(0.0, 0.0, 0.0, 1.0);
+        let src = px(1.0, 0.0, 0.0, 1.0);
+        blend_layer_linear(&mut dst, &src, 0.5, BlendMode::Normal);
+        assert!(approx(dst[0], 0.5, 1e-5), "R = {}", dst[0]);
+        assert!(approx(dst[1], 0.0, 1e-5));
+        assert!(approx(dst[2], 0.0, 1e-5));
+    }
+
+    #[test]
+    fn multiply_self_squares_the_value() {
+        // 0.5 * 0.5 = 0.25 linear. sRGB multiply of byte 128 by byte
+        // 128 lands around byte 64 (0.137 linear) — off by nearly 2×.
+        let mut dst = px(0.5, 0.5, 0.5, 1.0);
+        let src = px(0.5, 0.5, 0.5, 1.0);
+        blend_layer_linear(&mut dst, &src, 1.0, BlendMode::Multiply);
+        for i in 0..3 {
+            assert!(approx(dst[i], 0.25, 1e-5), "channel {i} = {}", dst[i]);
+        }
+    }
+
+    #[test]
+    fn add_preserves_hdr_highlights_above_one() {
+        // sRGB u8 Add clamps to 1.0 — any further increase is lost.
+        // Linear Add passes values through so tone-mapping at the
+        // viewer can resolve them.
+        let mut dst = px(0.8, 0.8, 0.8, 1.0);
+        let src = px(0.8, 0.8, 0.8, 1.0);
+        blend_layer_linear(&mut dst, &src, 1.0, BlendMode::Add);
+        for i in 0..3 {
+            assert!(dst[i] > 1.0, "channel {i}: expected > 1.0, got {}", dst[i]);
+            assert!(approx(dst[i], 1.6, 1e-5));
+        }
+    }
+
+    #[test]
+    fn screen_white_over_anything_is_white() {
+        let mut dst = px(0.3, 0.3, 0.3, 1.0);
+        let src = px(1.0, 1.0, 1.0, 1.0);
+        blend_layer_linear(&mut dst, &src, 1.0, BlendMode::Screen);
+        for i in 0..3 {
+            assert!(approx(dst[i], 1.0, 1e-5), "channel {i} = {}", dst[i]);
+        }
+    }
+
+    #[test]
+    fn multiply_by_white_is_identity() {
+        let mut dst = px(0.3, 0.6, 0.9, 1.0);
+        let before = dst.clone();
+        let src = px(1.0, 1.0, 1.0, 1.0);
+        blend_layer_linear(&mut dst, &src, 1.0, BlendMode::Multiply);
+        for i in 0..3 {
+            assert!(approx(dst[i], before[i], 1e-5));
+        }
+    }
+
+    #[test]
+    fn difference_self_is_black() {
+        let mut dst = px(0.3, 0.6, 0.9, 1.0);
+        let src = px(0.3, 0.6, 0.9, 1.0);
+        blend_layer_linear(&mut dst, &src, 1.0, BlendMode::Difference);
+        for i in 0..3 {
+            assert!(approx(dst[i], 0.0, 1e-5), "channel {i} = {}", dst[i]);
+        }
+    }
+
+    #[test]
+    fn darken_picks_minimum_per_channel() {
+        let mut dst = px(0.2, 0.8, 0.5, 1.0);
+        let src = px(0.6, 0.3, 0.5, 1.0);
+        blend_layer_linear(&mut dst, &src, 1.0, BlendMode::Darken);
+        assert!(approx(dst[0], 0.2, 1e-5));
+        assert!(approx(dst[1], 0.3, 1e-5));
+        assert!(approx(dst[2], 0.5, 1e-5));
+    }
+
+    #[test]
+    fn lighten_picks_maximum_per_channel() {
+        let mut dst = px(0.2, 0.8, 0.5, 1.0);
+        let src = px(0.6, 0.3, 0.5, 1.0);
+        blend_layer_linear(&mut dst, &src, 1.0, BlendMode::Lighten);
+        assert!(approx(dst[0], 0.6, 1e-5));
+        assert!(approx(dst[1], 0.8, 1e-5));
+        assert!(approx(dst[2], 0.5, 1e-5));
+    }
+
+    #[test]
+    fn zero_opacity_leaves_destination_unchanged() {
+        let mut dst = px(0.3, 0.6, 0.9, 1.0);
+        let before = dst.clone();
+        let src = px(0.0, 0.0, 0.0, 1.0);
+        blend_layer_linear(&mut dst, &src, 0.0, BlendMode::Normal);
+        assert_eq!(dst, before);
+    }
+
+    #[test]
+    fn large_buffer_parallel_and_serial_agree() {
+        // Sanity check that the parallel path produces the same
+        // result as a single-threaded blend on one giant buffer.
+        // 8192 pixels ⇒ two chunks on 2+ rayon threads.
+        let n = 8192 * 4;
+        let dst_base: Vec<f32> = (0..n).map(|i| (i % 97) as f32 / 100.0).collect();
+        let src: Vec<f32> = (0..n).map(|i| ((i + 11) % 97) as f32 / 100.0).collect();
+        let mut a = dst_base.clone();
+        let mut b = dst_base.clone();
+        blend_layer_linear(&mut a, &src, 0.8, BlendMode::Overlay);
+        blend_chunk_linear(&mut b, &src, 0.8, BlendMode::Overlay);
+        for i in 0..n {
+            assert!(
+                (a[i] - b[i]).abs() < 1e-5,
+                "parallel and serial diverge at {i}: {} vs {}",
+                a[i], b[i],
+            );
+        }
+    }
+
+    #[test]
+    fn composite_layers_linear_stacks_two_layers() {
+        let bottom = CompositeLayerLinear {
+            rgba: vec![0.0, 0.0, 0.0, 1.0],
+            width: 1,
+            height: 1,
+            opacity: 1.0,
+            blend_mode: BlendMode::Normal,
+        };
+        let top = CompositeLayerLinear {
+            rgba: vec![1.0, 0.0, 0.0, 1.0],
+            width: 1,
+            height: 1,
+            opacity: 0.5,
+            blend_mode: BlendMode::Normal,
+        };
+        let out = composite_layers_linear(&[bottom, top], 1, 1);
+        assert!(approx(out[0], 0.5, 1e-5), "R = {}", out[0]);
+    }
+}
