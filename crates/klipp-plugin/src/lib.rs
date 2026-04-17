@@ -1,3 +1,46 @@
+//! OFX 1.5 plugin host: dlopen-and-bridge for third-party `.ofx.bundle`
+//! effects plugins.
+//!
+//! This is the workspace's only C-ABI FFI crate and therefore the most
+//! `unsafe`-dense. It dlopens an OFX plugin binary, exposes the OFX C
+//! API through a fixed set of suite function tables ([`property`],
+//! [`param`], [`image_effect`], [`memory`], [`message`], [`thread`],
+//! [`gpu_opengl`], [`gpu_cuda`], [`gpu_opencl`]), and bridges the
+//! plugin's GPU rendering context to our wgpu / libc / libEGL / CUDA
+//! runtimes.
+//!
+//! # Boundary rules
+//!
+//! Every `unsafe extern "C" fn` that a plugin can call goes through
+//! two guards declared in this module:
+//!
+//! * [`check_non_null!`] — early-returns `K_OFX_STAT_ERR_VALUE` for
+//!   any null pointer the plugin handed us, so a buggy plugin can't
+//!   turn us into a SIGSEGV with `*out = value`.
+//! * [`ofx_guard!`] — wraps the callback body in
+//!   `std::panic::catch_unwind`. A Rust panic unwinding across
+//!   `extern "C"` is UB on Rust 2021 and aborts on 2024 — either way
+//!   it would take the whole host down on behalf of a third-party
+//!   plugin. The guard converts any panic into
+//!   `K_OFX_STAT_ERR_FATAL` plus a `tracing::error!`.
+//!
+//! # Known outstanding issues
+//!
+//! * `param.rs`'s variadic-transmute — `paramGetValue` / `paramSetValue`
+//!   are variadic in the OFX spec but implemented here as non-variadic
+//!   and `mem::transmute`'d into the suite table. Works by coincidence
+//!   on x86-64 SysV ABI with the OpenFX C++ support lib's calling
+//!   convention, but is formally UB. Needs a per-type entry-point
+//!   redesign.
+//! * `prop_get_string_fn` returns a raw `*const c_char` that borrows
+//!   from a `CString` inside the Mutex-protected `PROP_STORE`. The
+//!   Mutex drops before the plugin sees the pointer; a subsequent
+//!   `remove_propset` / `set_string` on the same propset frees or
+//!   reallocates the underlying `CString`. Needs an append-only
+//!   handle-keyed string store.
+//!
+//! Both are tracked for a dedicated plugin-host refactor pass.
+
 /// Guard an OFX callback against plugin-supplied null pointers.
 ///
 /// Returns `K_OFX_STAT_ERR_VALUE` immediately if any listed pointer is null.
