@@ -15,7 +15,9 @@ pub fn set_gpu_power_preference(pref: Option<wgpu::PowerPreference>) {
 }
 
 use crate::BuiltinEffect;
-use tracing::{debug, info, warn};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tracing::{debug, error, info, warn};
 
 /// Definition of a single mask for GPU dispatch.
 pub struct GpuMaskDef {
@@ -162,6 +164,12 @@ pub struct GpuEffectsPipeline {
     staging_read: Option<wgpu::Buffer>,
     params_buf: wgpu::Buffer,
     current_buf_size: u64,
+    /// Set by wgpu callbacks when the device is lost or an uncaptured
+    /// error fires. Every `apply_*` / `render_*` entry short-circuits
+    /// to a safe passthrough so a flaky driver turns effects into a
+    /// no-op instead of a process-wide panic. Reset only by tearing
+    /// down and recreating the pipeline (i.e. app restart).
+    device_lost: Arc<AtomicBool>,
 }
 
 /// Maximum params size (padded to 256 bytes for alignment)
@@ -224,6 +232,27 @@ impl GpuEffectsPipeline {
                 return None;
             }
         };
+
+        // Route uncaptured validation errors and device loss to our own
+        // flag so a flaky driver doesn't abort the process. wgpu's default
+        // `on_uncaptured_error` panics; we log + mark the pipeline dead
+        // and let every subsequent apply_* pass the frame through
+        // unchanged (see `short_circuit_rgba`).
+        let device_lost = Arc::new(AtomicBool::new(false));
+        {
+            let flag = device_lost.clone();
+            device.on_uncaptured_error(Box::new(move |err| {
+                error!("GPU effects: uncaptured error: {err} — disabling GPU effects");
+                flag.store(true, Ordering::SeqCst);
+            }));
+        }
+        {
+            let flag = device_lost.clone();
+            device.set_device_lost_callback(Box::new(move |reason, msg| {
+                error!("GPU effects: device lost ({reason:?}): {msg} — disabling GPU effects");
+                flag.store(true, Ordering::SeqCst);
+            }));
+        }
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("effects_bgl"),
@@ -622,7 +651,25 @@ impl GpuEffectsPipeline {
             staging_read: None,
             params_buf,
             current_buf_size: 0,
+            device_lost,
         })
+    }
+
+    /// True once wgpu has reported a device-lost or uncaptured error.
+    /// After this flips, every frame-processing entry passes the input
+    /// through unchanged so compositing doesn't stall on a dead GPU.
+    pub fn is_device_lost(&self) -> bool {
+        self.device_lost.load(Ordering::SeqCst)
+    }
+
+    /// Mark the pipeline dead. Intended for internal call sites that
+    /// observe a sync failure (e.g. `download()` when `map_async`
+    /// returns Err) that wgpu's async callbacks may not have flagged
+    /// yet.
+    fn mark_device_lost(&self, ctx: &str) {
+        if !self.device_lost.swap(true, Ordering::SeqCst) {
+            error!("GPU effects: {ctx} — disabling GPU effects");
+        }
     }
 
     /// Ensure GPU buffers are large enough for the frame.
@@ -711,6 +758,9 @@ impl GpuEffectsPipeline {
         hue: f32,
         global_mix: f32,
     ) -> Vec<u8> {
+        if self.is_device_lost() {
+            return rgba;
+        }
         let byte_size = (width * height * 4) as u64;
         self.ensure_buffers(byte_size);
 
@@ -766,6 +816,9 @@ impl GpuEffectsPipeline {
         hue: f32,
         global_mix: f32,
     ) -> Vec<u8> {
+        if self.is_device_lost() {
+            return rgba;
+        }
         let byte_size = (width * height * 4) as u64;
         self.ensure_buffers(byte_size);
 
@@ -797,6 +850,9 @@ impl GpuEffectsPipeline {
         gain_sat: f32, gain_bri: f32,
         offset_sat: f32, offset_bri: f32,
     ) -> Vec<u8> {
+        if self.is_device_lost() {
+            return rgba;
+        }
         let byte_size = (width * height * 4) as u64;
         self.ensure_buffers(byte_size);
 
@@ -830,6 +886,9 @@ impl GpuEffectsPipeline {
         preserve_luma: bool,
         mix: f32,
     ) -> Vec<u8> {
+        if self.is_device_lost() {
+            return rgba;
+        }
         let byte_size = (width * height * 4) as u64;
         self.ensure_buffers(byte_size);
 
@@ -911,6 +970,9 @@ impl GpuEffectsPipeline {
 
     fn scope_download(&self, pixels: u64) -> Vec<u8> {
         let byte_size = pixels * 4;
+        if self.is_device_lost() {
+            return vec![0u8; byte_size as usize];
+        }
         let img_buf = self.scope_img_buf.as_ref().unwrap();
         let staging = self.scope_staging_buf.as_ref().unwrap();
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -920,16 +982,27 @@ impl GpuEffectsPipeline {
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
         self.device.poll(wgpu::Maintain::Wait);
-        rx.recv().ok().and_then(|r| r.ok());
-        let data = slice.get_mapped_range();
-        let result = data.to_vec();
-        drop(data);
-        staging.unmap();
-        result
+        match rx.recv() {
+            Ok(Ok(())) => {
+                let data = slice.get_mapped_range();
+                let result = data.to_vec();
+                drop(data);
+                staging.unmap();
+                result
+            }
+            other => {
+                self.mark_device_lost(&format!("scope_download map_async failed: {other:?}"));
+                vec![0u8; byte_size as usize]
+            }
+        }
     }
 
     /// Render a waveform scope as RGBA image. Returns (rgba, width, height).
     pub fn render_scope_waveform(&mut self, rgba: &[u8], frame_w: u32, frame_h: u32, out_w: u32, out_h: u32) -> Vec<u8> {
+        if self.is_device_lost() {
+            let _ = rgba;
+            return vec![0u8; (out_w * out_h * 4) as usize];
+        }
         let pixel_count = (frame_w * frame_h) as u64;
         let display_cols = out_w.min(frame_w);
         let num_bins = (display_cols as u64) * 256;
@@ -1025,6 +1098,10 @@ impl GpuEffectsPipeline {
 
     /// Render a parade scope as RGBA image.
     pub fn render_scope_parade(&mut self, rgba: &[u8], frame_w: u32, frame_h: u32, out_w: u32, out_h: u32) -> Vec<u8> {
+        if self.is_device_lost() {
+            let _ = rgba;
+            return vec![0u8; (out_w * out_h * 4) as usize];
+        }
         let pixel_count = (frame_w * frame_h) as u64;
         let gap = 3u32;
         let section_w = (out_w - gap * 2) / 3;
@@ -1117,6 +1194,10 @@ impl GpuEffectsPipeline {
 
     /// Render a histogram scope as RGBA image.
     pub fn render_scope_histogram(&mut self, rgba: &[u8], frame_w: u32, frame_h: u32, out_w: u32, out_h: u32) -> Vec<u8> {
+        if self.is_device_lost() {
+            let _ = rgba;
+            return vec![0u8; (out_w * out_h * 4) as usize];
+        }
         let pixel_count = (frame_w * frame_h) as u64;
         let num_bins: u64 = 4 * 256;
         let out_pixels = (out_w * out_h) as u64;
@@ -1206,6 +1287,9 @@ impl GpuEffectsPipeline {
 
     /// Apply vibrance on GPU.
     pub fn apply_vibrance_gpu(&mut self, rgba: Vec<u8>, width: u32, height: u32, amount: f32) -> Vec<u8> {
+        if self.is_device_lost() {
+            return rgba;
+        }
         let byte_size = (width * height * 4) as u64;
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().unwrap();
@@ -1219,6 +1303,9 @@ impl GpuEffectsPipeline {
 
     /// Apply 12-sector color warper on GPU.
     pub fn apply_color_warper_gpu(&mut self, rgba: Vec<u8>, width: u32, height: u32, hue_shifts: &[f32; 12], sat_shifts: &[f32; 12]) -> Vec<u8> {
+        if self.is_device_lost() {
+            return rgba;
+        }
         let byte_size = (width * height * 4) as u64;
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().unwrap();
@@ -1235,6 +1322,9 @@ impl GpuEffectsPipeline {
 
     /// Apply input transform (log-to-sRGB) on GPU using a pre-computed 1D LUT.
     pub fn apply_input_transform_gpu(&mut self, rgba: Vec<u8>, width: u32, height: u32, lut_data: &[f32; 256]) -> Vec<u8> {
+        if self.is_device_lost() {
+            return rgba;
+        }
         let byte_size = (width * height * 4) as u64;
         self.ensure_buffers(byte_size);
         let buf_a = self.buf_a.as_ref().unwrap();
@@ -1266,6 +1356,9 @@ impl GpuEffectsPipeline {
 
     /// Apply clarity (midtone unsharp mask) on GPU using 3-pass approach.
     pub fn apply_clarity_gpu(&mut self, rgba: Vec<u8>, width: u32, height: u32, amount: f32) -> Vec<u8> {
+        if self.is_device_lost() {
+            return rgba;
+        }
         let byte_size = (width * height * 4) as u64;
         let _luma_size = (width * height * 4) as u64; // store luma as u32 per pixel
         self.ensure_buffers(byte_size);
@@ -1325,6 +1418,9 @@ impl GpuEffectsPipeline {
         spatial_sigma: f32,
         color_sigma: f32,
     ) -> Vec<u8> {
+        if self.is_device_lost() {
+            return rgba;
+        }
         let byte_size = (width * height * 4) as u64;
         self.ensure_buffers(byte_size);
 
@@ -1352,6 +1448,10 @@ impl GpuEffectsPipeline {
         height: u32,
         masks: &[GpuMaskDef],
     ) -> Vec<u8> {
+        if self.is_device_lost() {
+            let _ = masks;
+            return vec![0u8; (width * height * 4) as usize];
+        }
         let byte_size = (width * height * 4) as u64;
         self.ensure_buffers(byte_size);
 
@@ -1400,6 +1500,9 @@ impl GpuEffectsPipeline {
         mix: f32,
         lut_data: &[f32; 1536], // 6 × 256
     ) -> Vec<u8> {
+        if self.is_device_lost() {
+            return rgba;
+        }
         let byte_size = (width * height * 4) as u64;
         self.ensure_buffers(byte_size);
 
@@ -1459,6 +1562,9 @@ impl GpuEffectsPipeline {
         lut_size: u32,
         opacity: f32,
     ) -> Vec<u8> {
+        if self.is_device_lost() {
+            return rgba;
+        }
         if opacity <= 0.0 {
             return rgba;
         }
@@ -1535,6 +1641,9 @@ impl GpuEffectsPipeline {
         sec_exposure: f32, sec_saturation: f32, sec_hue_shift: f32, sec_temperature: f32,
         matte_preview: bool,
     ) -> Vec<u8> {
+        if self.is_device_lost() {
+            return rgba;
+        }
         let byte_size = (width * height * 4) as u64;
         self.ensure_buffers(byte_size);
 
@@ -1586,6 +1695,9 @@ impl GpuEffectsPipeline {
         monochrome: bool,
         frame_seed: u32,
     ) -> Vec<u8> {
+        if self.is_device_lost() {
+            return rgba;
+        }
         let byte_size = (width * height * 4) as u64;
         self.ensure_buffers(byte_size);
 
@@ -1620,6 +1732,9 @@ impl GpuEffectsPipeline {
         width: u32,
         height: u32,
     ) -> Vec<u8> {
+        if self.is_device_lost() {
+            return rgba;
+        }
         if effects.is_empty() {
             return rgba;
         }
@@ -2527,6 +2642,9 @@ impl GpuEffectsPipeline {
     }
 
     fn download(&self, source: &wgpu::Buffer, byte_size: u64) -> Vec<u8> {
+        if self.is_device_lost() {
+            return vec![0u8; byte_size as usize];
+        }
         let staging = self.staging_read.as_ref().unwrap();
         let mut encoder = self
             .device
@@ -2549,8 +2667,13 @@ impl GpuEffectsPipeline {
                 staging.unmap();
                 result
             }
-            _ => {
-                warn!("GPU effects: download failed, returning zeros");
+            other => {
+                // `map_async` signalled an error (or the channel dropped
+                // without delivering one). That means the GPU state is
+                // suspect: either the buffer wasn't mapped or the device
+                // is on its way out. Flip the lost flag so subsequent
+                // calls short-circuit before they touch the device.
+                self.mark_device_lost(&format!("buffer map_async failed: {other:?}"));
                 vec![0u8; byte_size as usize]
             }
         }
@@ -2572,6 +2695,10 @@ impl GpuEffectsPipeline {
         user_param3: f32,
         user_color: [f32; 4],
     ) -> Vec<u8> {
+        if self.is_device_lost() {
+            let _ = to_rgba;
+            return from_rgba.to_vec();
+        }
         let byte_size = (width * height * 4) as u64;
         self.ensure_buffers(byte_size);
 
