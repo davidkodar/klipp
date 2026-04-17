@@ -43,6 +43,7 @@
 pub mod color_match;
 pub mod curves;
 pub mod denoise;
+pub mod display;
 pub mod huesat;
 pub mod linear;
 pub mod lut;
