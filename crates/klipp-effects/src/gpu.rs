@@ -6609,7 +6609,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-const SHADER_HSV_ADJUST: &str = "
+// HSV adjust — hue shift + saturation + value multiplier. HSV is
+// defined on any normalised RGB; fed linear values, the hue and
+// saturation semantics are the same but "value" now measures
+// physical brightness rather than sRGB code value.
+const SHADER_HSV_ADJUST: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -6624,16 +6629,17 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    let v = input[idx];
-    let r = f32(v & 0xFFu) / 255.0;
-    let g = f32((v >> 8u) & 0xFFu) / 255.0;
-    let b = f32((v >> 16u) & 0xFFu) / 255.0;
-    let a = v >> 24u;
+    let p = unpack(input[idx]);
+    let r = p.x;
+    let g = p.y;
+    let b = p.z;
 
     // RGB to HSV
     let cmax = max(r, max(g, b));
@@ -6658,7 +6664,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Apply adjustments
     h = (h + params.hue_shift + 360.0) % 360.0;
     let new_s = clamp(s * params.saturation, 0.0, 1.0);
-    let new_v = clamp(val * params.value_mult, 0.0, 1.0);
+    let new_v = val * params.value_mult;
 
     // HSV to RGB
     let c = new_v * new_s;
@@ -6675,12 +6681,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     else if h < 300.0 { rr = x; gg = 0.0; bb = c; }
     else { rr = c; gg = 0.0; bb = x; }
 
-    let ro = u32(clamp((rr + m) * 255.0, 0.0, 255.0));
-    let go = u32(clamp((gg + m) * 255.0, 0.0, 255.0));
-    let bo = u32(clamp((bb + m) * 255.0, 0.0, 255.0));
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+    output[idx] = pack(vec4<f32>(rr + m, gg + m, bb + m, p.w));
 }
-";
+"
+);
 
 const SHADER_NOISE_GENERATOR: &str = "
 struct Params {
@@ -6935,7 +6939,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-const SHADER_EQUALIZE: &str = "
+// Histogram equalisation — map the linear-luma CDF back through the
+// image so brightness distribution flattens. CPU-side CDF build
+// and the GPU lookup both operate on linear luma now; the CDF
+// indexing byte (0-255) maps to 0-1 linear rather than 0-1 sRGB.
+const SHADER_EQUALIZE: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -6947,40 +6956,35 @@ struct Params {
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
 @group(0) @binding(3) var<storage, read> cdf: array<f32>;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
 
-    let v = input[idx];
-    let r = f32(v & 0xFFu) / 255.0;
-    let g = f32((v >> 8u) & 0xFFu) / 255.0;
-    let b = f32((v >> 16u) & 0xFFu) / 255.0;
-    let a = v >> 24u;
+    let p = unpack(input[idx]);
 
-    // Compute luminance and look up equalized value from CDF
-    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    // Compute luminance and look up equalised value from CDF
+    let luma = 0.2126 * p.x + 0.7152 * p.y + 0.0722 * p.z;
     let luma_idx = u32(clamp(luma * 255.0, 0.0, 255.0));
     let eq_luma = cdf[luma_idx];
 
     // Scale RGB proportionally to match new luminance
     let scale = select(eq_luma / luma, 1.0, luma < 0.001);
-    let eq_r = clamp(r * scale, 0.0, 1.0);
-    let eq_g = clamp(g * scale, 0.0, 1.0);
-    let eq_b = clamp(b * scale, 0.0, 1.0);
+    let eq_r = p.x * scale;
+    let eq_g = p.y * scale;
+    let eq_b = p.z * scale;
 
     // Blend with original based on strength
-    let fr = r + (eq_r - r) * params.strength;
-    let fg = g + (eq_g - g) * params.strength;
-    let fb = b + (eq_b - b) * params.strength;
-
-    let ro = u32(clamp(fr * 255.0, 0.0, 255.0));
-    let go = u32(clamp(fg * 255.0, 0.0, 255.0));
-    let bo = u32(clamp(fb * 255.0, 0.0, 255.0));
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+    let fr = p.x + (eq_r - p.x) * params.strength;
+    let fg = p.y + (eq_g - p.y) * params.strength;
+    let fb = p.z + (eq_b - p.z) * params.strength;
+    output[idx] = pack(vec4<f32>(fr, fg, fb, p.w));
 }
-";
+"
+);
 
 const SHADER_LETTERBOX: &str = "
 struct Params {
@@ -7512,37 +7516,45 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 ";
 
-// ── Vibrance (saturation-weighted boost) ──────────────────────────────────────
-const SHADER_VIBRANCE: &str = "
+// Vibrance — saturation-weighted boost. Muted colours get a bigger
+// push; already-saturated colours (including skin) are protected.
+// BT.709 luma now sits in its defined domain.
+const SHADER_VIBRANCE: &str = concat!(
+    "
 struct Params { width: u32, height: u32, amount: f32, _pad: u32, }
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
-
+",
+    shader_linear_helpers_wgsl!(),
+    "
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    let pixel = input[idx];
-    let r = f32(pixel & 0xFFu) / 255.0;
-    let g = f32((pixel >> 8u) & 0xFFu) / 255.0;
-    let b = f32((pixel >> 16u) & 0xFFu) / 255.0;
-    let a = (pixel >> 24u) & 0xFFu;
-    let mx = max(max(r, g), b);
-    let mn = min(min(r, g), b);
+    let p = unpack(input[idx]);
+    let mx = max(max(p.x, p.y), p.z);
+    let mn = min(min(p.x, p.y), p.z);
     let sat = mx - mn;
-    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let luma = 0.2126 * p.x + 0.7152 * p.y + 0.0722 * p.z;
     let weight = 1.0 - clamp(sat, 0.0, 1.0);
     let boost = 1.0 + params.amount * weight;
-    let ro = u32(clamp(luma + (r - luma) * boost, 0.0, 1.0) * 255.0);
-    let go = u32(clamp(luma + (g - luma) * boost, 0.0, 1.0) * 255.0);
-    let bo = u32(clamp(luma + (b - luma) * boost, 0.0, 1.0) * 255.0);
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+    let out = vec3<f32>(
+        luma + (p.x - luma) * boost,
+        luma + (p.y - luma) * boost,
+        luma + (p.z - luma) * boost,
+    );
+    output[idx] = pack(vec4<f32>(out, p.w));
 }
-";
+"
+);
 
-// ── Color Warper (12-sector hue/sat shifting with cosine interpolation) ───────
-const SHADER_COLOR_WARPER: &str = "
+// Colour warper — 12-sector hue/sat shifting with cosine
+// interpolation between sectors. HSL operates on linear RGB; hue
+// values are colour-space-agnostic but lum in HSL is linear
+// rather than sRGB-coded (grey = 0.18).
+const SHADER_COLOR_WARPER: &str = concat!(
+    "
 struct Params {
     width: u32,
     height: u32,
@@ -7558,6 +7570,9 @@ struct Params {
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
 @group(0) @binding(2) var<uniform> params: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    "
 
 fn rgb2hsl(r: f32, g: f32, b: f32) -> vec3<f32> {
     let mx = max(max(r, g), b);
@@ -7616,12 +7631,8 @@ fn get_sat_shift(sector: u32) -> f32 {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    let pixel = input[idx];
-    let r = f32(pixel & 0xFFu) / 255.0;
-    let g = f32((pixel >> 8u) & 0xFFu) / 255.0;
-    let b = f32((pixel >> 16u) & 0xFFu) / 255.0;
-    let a = (pixel >> 24u) & 0xFFu;
-    let hsl = rgb2hsl(r, g, b);
+    let p = unpack(input[idx]);
+    let hsl = rgb2hsl(p.x, p.y, p.z);
     let h_deg = hsl.x * 360.0;
     let sector_f = h_deg / 30.0;
     let sector_low = u32(floor(sector_f)) % 12u;
@@ -7634,12 +7645,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let new_h = ((h_deg + hue_shift * sat_weight) % 360.0 + 360.0) % 360.0 / 360.0;
     let new_s = clamp(hsl.y + sat_shift * sat_weight, 0.0, 1.0);
     let rgb = hsl2rgb(new_h, new_s, hsl.z);
-    let ro = u32(clamp(rgb.x, 0.0, 1.0) * 255.0);
-    let go = u32(clamp(rgb.y, 0.0, 1.0) * 255.0);
-    let bo = u32(clamp(rgb.z, 0.0, 1.0) * 255.0);
-    output[idx] = ro | (go << 8u) | (bo << 16u) | (a << 24u);
+    output[idx] = pack(vec4<f32>(rgb, p.w));
 }
-";
+"
+);
 
 // ── Input Transform (log-to-linear + sRGB gamma) ─────────────────────────────
 // Uses a 256-entry 1D LUT per channel (pre-computed on CPU from the log format).
