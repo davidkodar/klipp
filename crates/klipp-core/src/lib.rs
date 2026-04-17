@@ -1,3 +1,36 @@
+//! Foundation types shared across the workspace.
+//!
+//! `klipp-core` is the bottom layer: every other crate depends on it and it
+//! depends on nothing Klipp-specific. It owns the vocabulary of the editor
+//! — IDs, timing primitives, event/command enums, export settings, and the
+//! transition registry — without knowing anything about playback, render,
+//! UI, or plugins.
+//!
+//! # Key types
+//!
+//! * **Identity** — [`ClipId`], [`MediaId`], [`BinId`], [`TrackId`],
+//!   [`SequenceId`], [`MarkerId`], [`TransitionId`], [`GroupId`]. All are
+//!   UUID-backed newtypes; copy-cheap, hash-cheap, compare-cheap.
+//! * **Timing** — [`RationalTime`], [`Timecode`], [`Fps`], [`TimeRange`].
+//!   See the [`time`] module for the [`RationalTime::ZERO`] gotcha
+//!   (rate = 1; never use as the LHS of arithmetic against a higher-rate
+//!   time, the result rescales down to whole seconds).
+//! * **Events** — [`AppCommand`] (UI → engine), [`AppEvent`] (engine → UI),
+//!   [`ExportSettings`] and its sibling enums for the render pipeline.
+//! * **Error** — [`KlippError`] / [`KlippResult`]. Currently under-adopted;
+//!   parts of the workspace still use `Result<_, String>`.
+//! * **Transitions** — [`TransitionKind`] + the compile-time
+//!   [`TRANSITION_SPECS`] registry. [`spec_for_kind`] falls back to
+//!   `CrossDissolve` if a variant goes unregistered, logged loudly.
+//!
+//! # Conventions
+//!
+//! * No heap allocation in hot primitives. `RationalTime` is 16 bytes;
+//!   `Fps`, `Resolution`, `Timecode` stay on the stack.
+//! * No I/O, no threads, no async. The crate is pure data.
+//! * Serde-serialised types round-trip through the `.klipp` project format
+//!   via `klipp-project`; treat any breaking rename as a migration.
+
 pub mod color_grade;
 pub mod config;
 pub mod error;

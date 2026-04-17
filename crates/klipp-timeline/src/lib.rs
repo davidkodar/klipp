@@ -1,3 +1,48 @@
+//! Sequence / track / clip data model and the magnetic-timeline editor.
+//!
+//! This crate owns the editor's document model — everything that lives in
+//! a `.klipp` project's in-memory shape — and the operations that mutate
+//! it. It depends only on `klipp-core` (for IDs, time, and keyframes) and
+//! is itself consumed by the engine, render, project, and UI crates.
+//!
+//! # Structure
+//!
+//! * [`Sequence`] — a top-level document containing an ordered set of
+//!   tracks.
+//! * [`Track`] — a lane of clips. [`TrackKind`] distinguishes Video /
+//!   Audio / Text / Subtitle. [`TrackRole`] layers a magnetic-timeline
+//!   role (Free / Primary / Connected / ConnectedStoryline) on top.
+//! * [`Clip`] — a media reference with timing ([`ClipKind`] for media /
+//!   title / generator / gap / nested sequence), fade/speed/effects state,
+//!   and keyframe tracks. `Clip` is intentionally broad; field relevance
+//!   varies by `ClipKind`.
+//! * [`Transition`] — links two clips on the same track.
+//! * [`Marker`] / [`ClipMarker`] — timeline-level and per-clip markers.
+//!
+//! # Magnetic timeline
+//!
+//! The [`magnetic`] module implements FCP-parity editing ops —
+//! `MagneticEditor::insert_primary`, `overwrite_primary`, `lift`, `blade`,
+//! `ripple_delete`, `trim_head`/`tail`, `promote_to_storyline`, …. Every
+//! mutation returns a [`magnetic_commands::MagneticEditCommand`] carrying
+//! the inverse, so the UI's undo stack can round-trip edits without
+//! needing to snapshot the full sequence.
+//!
+//! The [`flatten`] module resolves nested-sequence clips
+//! ([`ClipKind::Sequence`]) into a flat clip list for playback / render.
+//!
+//! # Invariants
+//!
+//! * Primary tracks must be gapless (enforced under
+//!   `cfg(debug_assertions)` by `Sequence::assert_primary_gapless`).
+//! * `Clip::timeline_in` and `Clip::timeline_out` must share the same
+//!   rate.
+//! * `MagneticAnchor::anchor_clip_id` must resolve to a live clip.
+//! * There is a latent parallel edit path
+//!   (`Track::blade_at` / `ripple_trim_left/right` / `ripple_remove`) that
+//!   duplicates `MagneticEditor` logic and bypasses undo — prefer the
+//!   magnetic entry points for any new call.
+
 mod clip_kind;
 pub mod flatten;
 pub mod magnetic;
