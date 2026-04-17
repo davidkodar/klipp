@@ -96,6 +96,22 @@ impl FrameBuffer {
         self.pending_ready = true;
     }
 
+    /// Write a skim preview frame *and* clear the GPU scope texture.
+    ///
+    /// Skimming bypasses the engine's scope-render path, so the GPU
+    /// scope texture from the last *playback* frame stays populated
+    /// unless we clear it here. The UI prefers a non-empty GPU
+    /// texture over the CPU renderer — without the clear, scopes
+    /// freeze on the last playback frame the moment the user starts
+    /// scrubbing. Combining the two writes into one call makes the
+    /// invariant hard to drift.
+    pub fn write_skim_frame(&mut self, rgba_data: Vec<u8>, width: u32, height: u32) {
+        self.write_frame(rgba_data, width, height);
+        self.scope_texture.clear();
+        self.scope_texture_w = 0;
+        self.scope_texture_h = 0;
+    }
+
     /// UI thread swaps pending into active — fast pointer swap, no allocation.
     pub fn swap_pending(&mut self) -> bool {
         if !self.pending_ready {
@@ -136,6 +152,36 @@ mod tests {
         // pending_data now holds what engine wrote (0x55)
         assert!(fb.pending_data.iter().all(|&b| b == 0x55));
         assert!(fb.pending_ready);
+    }
+
+    #[test]
+    fn write_skim_frame_clears_gpu_scope_texture() {
+        // The invariant: after a skim frame lands in the buffer,
+        // the stale GPU scope texture from the last playback frame
+        // must be gone so the UI falls through to the CPU scope
+        // renderer on the *current* frame.
+        let mut fb = FrameBuffer::new(4, 4);
+        // Pre-seed as if the engine had just rendered a GPU scope.
+        fb.scope_texture = vec![99u8; 720 * 256 * 4];
+        fb.scope_texture_w = 720;
+        fb.scope_texture_h = 256;
+        fb.scope_texture_mode = 0; // waveform
+
+        let skim_rgba = vec![42u8; 4 * 4 * 4];
+        fb.write_skim_frame(skim_rgba, 4, 4);
+
+        // Pending frame swapped in…
+        assert!(fb.pending_ready, "pending frame should be queued");
+        assert_eq!(fb.pending_width, 4);
+        assert_eq!(fb.pending_height, 4);
+
+        // …and the GPU scope texture is gone so the UI can use CPU.
+        assert!(fb.scope_texture.is_empty(), "GPU scope texture should clear on skim");
+        assert_eq!(fb.scope_texture_w, 0);
+        assert_eq!(fb.scope_texture_h, 0);
+        // Mode is left untouched — UI uses it to remember the user's
+        // selection; clearing the texture alone is enough to route
+        // to the CPU renderer.
     }
 
     #[test]

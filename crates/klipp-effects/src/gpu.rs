@@ -8145,3 +8145,162 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     output[idx] = ro | (go << 8u) | (bo << 16u) | (0xFFu << 24u);
 }
 ";
+
+// ═══════════════════════════════════════════════════════════════════
+// Tests
+// ═══════════════════════════════════════════════════════════════════
+//
+// The GPU scope shaders regressed silently when the storage buffers
+// flipped to linear-f32 storage (commit cc32c3d) because the
+// accumulators kept binning whatever they found in the buffer — which
+// was now scene-linear instead of display-encoded. Nothing caught it
+// because no test exercised the *production path* seam. These tests
+// close that gap: feed a known-domain frame through the real pipeline
+// and assert the peak bin lands where a colourist expects.
+
+#[cfg(test)]
+mod scope_shader_tests {
+    use super::*;
+
+    /// Build a flat sRGB-u8 RGBA frame at code value `v` for every
+    /// pixel. Alpha = 255. `v` is the sRGB display-encoded byte, i.e.
+    /// what the viewer renders — not a linear value.
+    fn flat_srgb_frame(v: u8, w: u32, h: u32) -> Vec<u8> {
+        let mut data = Vec::with_capacity((w * h * 4) as usize);
+        for _ in 0..(w * h) {
+            data.extend_from_slice(&[v, v, v, 255]);
+        }
+        data
+    }
+
+    /// Row of the scope output whose green channel is brightest.
+    /// Output layout: `[R, G, B, A]` per pixel, `out_w` columns,
+    /// `out_h` rows, row 0 at the top. Returns `(peak_row, peak_avg_g)`.
+    fn peak_row_by_green(output: &[u8], out_w: usize, out_h: usize) -> (usize, f32) {
+        let mut best = (0usize, 0.0f32);
+        for py in 0..out_h {
+            let mut sum = 0u64;
+            for px in 0..out_w {
+                let byte = (py * out_w + px) * 4 + 1; // +1 = green
+                sum += output[byte] as u64;
+            }
+            let avg = sum as f32 / out_w as f32;
+            if avg > best.1 {
+                best = (py, avg);
+            }
+        }
+        best
+    }
+
+    /// Contract: a flat sRGB-118 (canonical 18% mid-grey) frame fed
+    /// through the GPU waveform must peak at the row corresponding
+    /// to bin ~118 — i.e., around 50 IRE on a video scope.
+    ///
+    /// Skipped when no GPU is available (CI without hardware).
+    #[test]
+    fn gpu_waveform_mid_grey_peaks_at_50_ire() {
+        let Some(mut gpu) = GpuEffectsPipeline::new() else {
+            // CI without a GPU — skip rather than fail. Local runs
+            // on an NVIDIA / AMD box will exercise this path.
+            eprintln!("Skipping: no GPU available");
+            return;
+        };
+
+        let frame_w = 256u32;
+        let frame_h = 128u32;
+        let out_w = 256u32;
+        let out_h = 256u32;
+
+        let frame = flat_srgb_frame(118, frame_w, frame_h);
+        let out = gpu.render_scope_waveform(&frame, frame_w, frame_h, out_w, out_h);
+        assert_eq!(out.len(), (out_w * out_h * 4) as usize);
+
+        // Shader math: `bin = 255 - (py * 256 / out_h)`. With out_h=256
+        // that's `py = 255 - bin`. Bin 118 → py 137. Allow ±2 to
+        // absorb rounding on the linear→sRGB round-trip at the
+        // quantisation boundary.
+        let (peak_row, peak_avg) = peak_row_by_green(&out, out_w as usize, out_h as usize);
+        let expected = 255 - 118; // = 137
+        assert!(
+            (peak_row as i32 - expected as i32).abs() <= 2,
+            "mid-grey waveform peak at row {peak_row} (avg green {peak_avg:.1}), \
+             expected row {expected} ± 2 (bin 118, 50 IRE)",
+        );
+        // Peak row should actually be bright — if everything landed
+        // in the wrong bin we'd still find *some* row with the max,
+        // but it would be near the background (4–10). Require the
+        // peak green to clearly exceed the background tint.
+        assert!(
+            peak_avg > 50.0,
+            "peak row green avg {peak_avg:.1} is close to background — \
+             bins may be empty or phosphor ramp broken",
+        );
+    }
+
+    /// Second contract point: a flat sRGB-0 (pure black) frame peaks
+    /// at the *bottom* of the scope (bin 0 → py = out_h - 1). Catches
+    /// an off-by-one that would silently flip the waveform upside-down.
+    #[test]
+    fn gpu_waveform_black_peaks_at_bottom() {
+        let Some(mut gpu) = GpuEffectsPipeline::new() else {
+            eprintln!("Skipping: no GPU available");
+            return;
+        };
+        let (fw, fh, ow, oh) = (128u32, 64u32, 256u32, 256u32);
+        let frame = flat_srgb_frame(0, fw, fh);
+        let out = gpu.render_scope_waveform(&frame, fw, fh, ow, oh);
+        let (peak_row, _) = peak_row_by_green(&out, ow as usize, oh as usize);
+        // bin 0 → py = 255. Allow ±2.
+        assert!(
+            peak_row >= 253,
+            "pure-black waveform peak at row {peak_row}, expected near {}",
+            oh - 1,
+        );
+    }
+
+    /// Phosphor ramp sanity: at low density the trace reads as a
+    /// *green phosphor colour*, not white and not R- or B-dominant.
+    /// Catches channel swaps and a regression where the ramp either
+    /// collapses to white (intensity always 1) or stays black
+    /// (intensity always 0).
+    ///
+    /// We force low density by feeding a tiny frame (4×4) so the
+    /// phosphor formula `intensity = sqrt(count / (count + 3))`
+    /// lands in its coloured mid-range instead of saturating to
+    /// white-hot — the high-density saturation behaviour is itself
+    /// correct, just not what this test is after.
+    #[test]
+    fn gpu_waveform_phosphor_ramp_stays_green() {
+        let Some(mut gpu) = GpuEffectsPipeline::new() else {
+            eprintln!("Skipping: no GPU available");
+            return;
+        };
+        let (fw, fh, ow, oh) = (4u32, 4u32, 256u32, 256u32);
+        let frame = flat_srgb_frame(118, fw, fh);
+        let out = gpu.render_scope_waveform(&frame, fw, fh, ow, oh);
+
+        let (peak_row, _) = peak_row_by_green(&out, ow as usize, oh as usize);
+        let mut best = (0u8, 0u8, 0u8);
+        for px in 0..ow as usize {
+            let off = (peak_row * ow as usize + px) * 4;
+            let (r, g, b) = (out[off], out[off + 1], out[off + 2]);
+            if g > best.1 {
+                best = (r, g, b);
+            }
+        }
+        assert!(
+            best.1 >= 60,
+            "peak-row brightest green is only {} — ramp stayed dark, \
+             RGB=({},{},{})",
+            best.1, best.0, best.1, best.2,
+        );
+        // Green must meaningfully exceed R and B — otherwise the
+        // trace is either white (ramp collapsed) or off-colour.
+        assert!(
+            best.1 as i32 > best.0 as i32 + 20 && best.1 as i32 > best.2 as i32 + 20,
+            "expected green-dominant phosphor trace on peak row {peak_row}, \
+             got RGB = ({},{},{})",
+            best.0, best.1, best.2,
+        );
+    }
+}

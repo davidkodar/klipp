@@ -211,6 +211,27 @@ use tracing::{debug, error, info, warn};
 /// Overlay tracks beyond this cap still render correctly in export.
 const MAX_OVERLAY_DECODERS: usize = 4;
 
+/// Which GPU scope kernel (if any) to dispatch for a given scope
+/// render mode. Mode 2 (vectorscope) has no GPU implementation —
+/// the engine returns `None` and clears `fb.scope_texture` so the
+/// UI falls back to the CPU vectorscope renderer in
+/// `klipp-ui/widgets/scopes.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GpuScopeKind { Waveform, Parade, Histogram }
+
+/// Resolve a UI-facing scope mode code to the GPU scope kernel it
+/// should drive, or `None` when no GPU kernel applies (vectorscope,
+/// plus any future modes not yet ported to GPU).
+fn gpu_scope_kind_for_mode(mode: u8) -> Option<GpuScopeKind> {
+    match mode {
+        0 => Some(GpuScopeKind::Waveform),
+        1 => Some(GpuScopeKind::Parade),
+        // 2 = vectorscope — CPU only.
+        3 => Some(GpuScopeKind::Histogram),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackState {
     Idle,
@@ -4879,15 +4900,11 @@ impl PlaybackEngine {
                     let scope_w = 720u32;
                     let scope_h = 256u32;
                     let mode = self.scope_render_mode;
-                    // Vectorscope (mode 2) has no GPU implementation —
-                    // clear the texture so the UI falls back to the
-                    // CPU vectorscope renderer in `scopes.rs`.
-                    let tex = match mode {
-                        0 => Some(gpu.render_scope_waveform(&cached, width, height, scope_w, scope_h)),
-                        1 => Some(gpu.render_scope_parade(&cached, width, height, scope_w, scope_h)),
-                        3 => Some(gpu.render_scope_histogram(&cached, width, height, scope_w, scope_h)),
-                        _ => None,
-                    };
+                    let tex = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
+                        GpuScopeKind::Waveform => gpu.render_scope_waveform(&cached, width, height, scope_w, scope_h),
+                        GpuScopeKind::Parade => gpu.render_scope_parade(&cached, width, height, scope_w, scope_h),
+                        GpuScopeKind::Histogram => gpu.render_scope_histogram(&cached, width, height, scope_w, scope_h),
+                    });
                     let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                     match tex {
                         Some(t) => {
@@ -4916,19 +4933,19 @@ impl PlaybackEngine {
             self.render_cache_disk.put(&key, &result, width, height);
         }
 
-        // Render GPU scope texture from the graded frame — vectorscope
-        // (mode 2) has no GPU implementation, so clear the texture and
-        // let the UI fall back to the CPU vectorscope renderer.
+        // Render GPU scope texture from the graded frame. Modes with
+        // no GPU kernel (vectorscope, unknown codes) clear the
+        // texture so the UI falls back to the CPU renderer in
+        // `klipp-ui/widgets/scopes.rs`.
         if let Some(gpu) = &mut self.gpu_effects {
             let scope_w = 720u32;
             let scope_h = 256u32;
             let mode = self.scope_render_mode;
-            let tex = match mode {
-                0 => Some(gpu.render_scope_waveform(&result, width, height, scope_w, scope_h)),
-                1 => Some(gpu.render_scope_parade(&result, width, height, scope_w, scope_h)),
-                3 => Some(gpu.render_scope_histogram(&result, width, height, scope_w, scope_h)),
-                _ => None,
-            };
+            let tex = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
+                GpuScopeKind::Waveform => gpu.render_scope_waveform(&result, width, height, scope_w, scope_h),
+                GpuScopeKind::Parade => gpu.render_scope_parade(&result, width, height, scope_w, scope_h),
+                GpuScopeKind::Histogram => gpu.render_scope_histogram(&result, width, height, scope_w, scope_h),
+            });
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             match tex {
                 Some(t) => {
@@ -5006,20 +5023,19 @@ impl PlaybackEngine {
                 );
             }
 
-            // Render GPU scope texture from the graded frame —
-            // vectorscope (mode 2) has no GPU implementation, so clear
-            // the texture and let the UI fall back to the CPU renderer.
+            // Render GPU scope texture from the graded frame. Modes
+            // with no GPU kernel (vectorscope, unknown codes) clear
+            // the texture so the UI falls back to the CPU renderer.
             let scope_tex = if let Some(gpu) = &mut self.gpu_effects {
                 tracing::debug!("Engine: GPU scope render mode={} frame={}x{}", self.scope_render_mode, w, h);
                 let scope_w = 720u32;
                 let scope_h = 256u32;
                 let mode = self.scope_render_mode;
-                let tex_opt = match mode {
-                    0 => Some(gpu.render_scope_waveform(&out, w, h, scope_w, scope_h)),
-                    1 => Some(gpu.render_scope_parade(&out, w, h, scope_w, scope_h)),
-                    3 => Some(gpu.render_scope_histogram(&out, w, h, scope_w, scope_h)),
-                    _ => None,
-                };
+                let tex_opt = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
+                    GpuScopeKind::Waveform => gpu.render_scope_waveform(&out, w, h, scope_w, scope_h),
+                    GpuScopeKind::Parade => gpu.render_scope_parade(&out, w, h, scope_w, scope_h),
+                    GpuScopeKind::Histogram => gpu.render_scope_histogram(&out, w, h, scope_w, scope_h),
+                });
                 Some((tex_opt, scope_w, scope_h, mode))
             } else {
                 None
@@ -7313,6 +7329,55 @@ impl Drop for SequentialFrameDecoder {
     fn drop(&mut self) {
         if let Some(sws) = self.sws_cache.take() {
             unsafe { ffmpeg_next::ffi::sws_freeContext(sws); }
+        }
+    }
+}
+
+#[cfg(test)]
+mod scope_dispatch_tests {
+    //! These tests pin the UI-mode → GPU-kernel mapping for scope
+    //! rendering. Commit cc32c3d's linear-storage flip silently broke
+    //! the waveform domain, but a separate latent bug was that the
+    //! engine fell through to `render_scope_waveform` on *every*
+    //! non-parade, non-histogram mode — including vectorscope (mode
+    //! 2) — which produced a waveform image tagged as a vectorscope
+    //! texture. These tests would have caught that in isolation.
+    use super::{gpu_scope_kind_for_mode, GpuScopeKind};
+
+    #[test]
+    fn mode_0_is_waveform() {
+        assert_eq!(gpu_scope_kind_for_mode(0), Some(GpuScopeKind::Waveform));
+    }
+
+    #[test]
+    fn mode_1_is_parade() {
+        assert_eq!(gpu_scope_kind_for_mode(1), Some(GpuScopeKind::Parade));
+    }
+
+    #[test]
+    fn mode_2_vectorscope_is_cpu_only() {
+        // The whole point: mode 2 must *not* resolve to a GPU kernel.
+        // Returning `Some(Waveform)` here — the pre-fix behaviour —
+        // is what painted a waveform into the vectorscope tab.
+        assert_eq!(gpu_scope_kind_for_mode(2), None);
+    }
+
+    #[test]
+    fn mode_3_is_histogram() {
+        assert_eq!(gpu_scope_kind_for_mode(3), Some(GpuScopeKind::Histogram));
+    }
+
+    #[test]
+    fn unknown_modes_fall_back_to_cpu() {
+        // Any code not in {0,1,3} must return None so the engine
+        // clears `fb.scope_texture` and the UI uses the CPU path.
+        // Belt-and-braces against a future mode being added to the
+        // UI enum without the engine being taught about it.
+        for m in [4u8, 5, 10, 42, 200, 255] {
+            assert_eq!(
+                gpu_scope_kind_for_mode(m), None,
+                "unknown mode {m} should resolve to None",
+            );
         }
     }
 }

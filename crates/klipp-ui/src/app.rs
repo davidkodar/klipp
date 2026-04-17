@@ -16448,17 +16448,13 @@ impl eframe::App for KlippApp {
         // Upload pending skim frame texture
         // TODO: apply clip effects during skim (requires stable OFX render on UI thread)
         if let Some((media_id, rgba, width, height)) = self.state.browser_skim_pending.take() {
-            // Write to frame buffer so scopes update during skimming.
-            // Also clear the GPU scope texture — it's still populated
-            // from the previous playback frame, and the UI prefers a
-            // non-empty GPU texture over the CPU renderer. Clearing
-            // forces a CPU render of the fresh skim frame.
+            // `write_skim_frame` writes the frame *and* clears the
+            // GPU scope texture in one call — the scope-texture clear
+            // is what forces the UI down the CPU scope path on the
+            // fresh skim frame (see FrameBuffer::write_skim_frame).
             {
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                fb.write_frame(rgba.clone(), width, height);
-                fb.scope_texture.clear();
-                fb.scope_texture_w = 0;
-                fb.scope_texture_h = 0;
+                fb.write_skim_frame(rgba.clone(), width, height);
             }
             let image = egui::ColorImage::from_rgba_unmultiplied(
                 [width as usize, height as usize],
