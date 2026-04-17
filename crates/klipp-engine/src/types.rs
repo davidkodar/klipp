@@ -118,6 +118,21 @@ impl LinearFrame {
         }
     }
 
+    /// sRGB-encode this frame to raw RGBA u8 bytes. Mirrors the
+    /// u8 [`DecodedFrame::to_rgba`] shape — used by consumers still
+    /// on the legacy u8 byte-slice API during the multi-phase
+    /// migration.
+    pub fn to_rgba(&self) -> Vec<u8> {
+        self.to_srgb_u8().data
+    }
+
+    /// Move form of [`Self::to_rgba`]. Currently identical (the
+    /// linear data always needs conversion) but matches the legacy
+    /// [`DecodedFrame::into_rgba`] API.
+    pub fn into_rgba(self) -> Vec<u8> {
+        self.to_srgb_u8().data
+    }
+
     /// Encode this linear-light frame to sRGB u8 for display or
     /// back-compat with the legacy pipeline. Values outside
     /// `[0.0, 1.0]` are clamped at the byte boundary (*not* earlier
@@ -243,8 +258,14 @@ mod linear_frame_tests {
 }
 
 /// A bounded queue of decoded frames.
+///
+/// Internally stores [`LinearFrame`] (linear-light f32). Consumers
+/// that are still on the u8 sRGB path call [`FrameQueue::pop_u8`],
+/// which pops and converts in a single call — the consumer needn't
+/// know about the migration. Consumers that already take linear
+/// (Phase 10b+) use [`FrameQueue::pop`] directly.
 pub struct FrameQueue {
-    frames: VecDeque<DecodedFrame>,
+    frames: VecDeque<LinearFrame>,
     capacity: usize,
 }
 
@@ -256,17 +277,30 @@ impl FrameQueue {
         }
     }
 
-    pub fn push(&mut self, frame: DecodedFrame) {
+    /// Push a linear-light frame onto the queue. This is the
+    /// canonical path; the decoder produces linear natively as of
+    /// Phase 3.
+    pub fn push(&mut self, frame: LinearFrame) {
         if self.frames.len() < self.capacity {
             self.frames.push_back(frame);
         }
     }
 
-    pub fn pop(&mut self) -> Option<DecodedFrame> {
+    /// Pop the next linear frame. Use this on consumer paths that
+    /// already operate in linear light (Phase 10b+).
+    pub fn pop(&mut self) -> Option<LinearFrame> {
         self.frames.pop_front()
     }
 
-    pub fn front(&self) -> Option<&DecodedFrame> {
+    /// Back-compat pop for consumers still on the u8 sRGB path.
+    /// Pops the next frame and converts it via
+    /// [`LinearFrame::to_srgb_u8`] before handing it back. Goes
+    /// away in Phase 10b when every consumer takes linear.
+    pub fn pop_u8(&mut self) -> Option<DecodedFrame> {
+        self.frames.pop_front().map(|f| f.to_srgb_u8())
+    }
+
+    pub fn front(&self) -> Option<&LinearFrame> {
         self.frames.front()
     }
 
@@ -275,11 +309,13 @@ impl FrameQueue {
         self.frames.front().map(|f| f.pts_secs()).unwrap_or(f64::MAX)
     }
 
-    /// Pop a frame whose PTS is closest to the given time (within 40ms).
+    /// Pop a frame whose PTS is closest to the given time (within
+    /// 40ms). sRGB u8 conversion is applied so consumers on the
+    /// legacy path can consume the result directly.
     pub fn pop_at(&mut self, target_secs: f64) -> Option<DecodedFrame> {
         if let Some(front) = self.frames.front() {
             if (front.pts_secs() - target_secs).abs() < 0.040 {
-                return self.frames.pop_front();
+                return self.frames.pop_front().map(|f| f.to_srgb_u8());
             }
         }
         None

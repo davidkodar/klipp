@@ -1,4 +1,4 @@
-use crate::types::{DecodedFrame, FrameQueue, LinearFrame, SharedFrameQueue};
+use crate::types::{FrameQueue, LinearFrame, SharedFrameQueue};
 use crossbeam_channel::{Receiver, Sender};
 use klipp_color::transfer::srgb_to_linear;
 use klipp_core::RationalTime;
@@ -577,7 +577,7 @@ fn decode_thread_main(
         Ok(ctx) => ctx,
         Err(e) => {
             warn!("decode_thread: failed to open {:?}: {e}", path);
-            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(DecodedFrame::eof());
+            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(LinearFrame::eof());
             return;
         }
     };
@@ -586,7 +586,7 @@ fn decode_thread_main(
         Some(s) => s,
         None => {
             warn!("decode_thread: no video stream in {:?}", path);
-            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(DecodedFrame::eof());
+            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(LinearFrame::eof());
             return;
         }
     };
@@ -602,7 +602,7 @@ fn decode_thread_main(
         Ok(ctx) => ctx,
         Err(e) => {
             warn!("decode_thread: codec context error: {e}");
-            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(DecodedFrame::eof());
+            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(LinearFrame::eof());
             return;
         }
     };
@@ -630,7 +630,7 @@ fn decode_thread_main(
         Ok(d) => d,
         Err(e) => {
             warn!("decode_thread: video decoder error: {e}");
-            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(DecodedFrame::eof());
+            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(LinearFrame::eof());
             return;
         }
     };
@@ -824,17 +824,16 @@ fn decode_thread_main(
                 perf_transfer_us += t_transfer.elapsed().as_micros() as u64;
             }
 
-            // Stamp pts on the decoder-produced linear frame, then hand
-            // off to the (still u8) frame queue. The u8 conversion here
-            // is the single quantisation boundary remaining on the read
-            // path — later phases consume the linear frame directly and
-            // skip this step.
+            // Stamp pts on the decoder-produced linear frame, then push
+            // it straight into the queue — the queue is linear-typed
+            // as of Phase 10a. Consumers on the legacy u8 path call
+            // [`FrameQueue::pop_u8`] which does the conversion on their
+            // side; linear consumers read it directly.
             linear_frame.pts = RationalTime::from_secs_f64(pts_secs, 90000);
-            let decoded = linear_frame.to_srgb_u8();
-            let (frame_w, frame_h) = (decoded.width, decoded.height);
+            let (frame_w, frame_h) = (linear_frame.width, linear_frame.height);
 
             let t_queue = std::time::Instant::now();
-            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(decoded);
+            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(linear_frame);
             perf_queue_us += t_queue.elapsed().as_micros() as u64;
             drained_any = true;
             perf_frame_count += 1;
@@ -900,7 +899,7 @@ fn decode_thread_main(
         } else if !drained_any {
             // EOF from demuxer and no frames drained — we're done
             debug!("decode_thread: EOF reached");
-            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(DecodedFrame::eof());
+            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(LinearFrame::eof());
             eof_sent = true;
         }
     }

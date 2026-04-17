@@ -2378,7 +2378,7 @@ impl PlaybackEngine {
                             // Store the raw overlay frame WITHOUT baking clip opacity in.
                             // Clip opacity is now applied at composite time so paused
                             // opacity drags update the visible frame.
-                            self.overlay_frames.insert(track_idx, ovf);
+                            self.overlay_frames.insert(track_idx, ovf.to_srgb_u8());
                             break;
                         } else {
                             break;
@@ -4464,7 +4464,7 @@ impl PlaybackEngine {
                             continue;
                         }
                     }
-                    self.transition_frame_cache = Some(tf);
+                    self.transition_frame_cache = Some(tf.to_srgb_u8());
                     break;
                 } else {
                     break;
