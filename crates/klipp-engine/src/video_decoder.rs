@@ -1,11 +1,66 @@
-use crate::types::{DecodedFrame, FrameQueue, SharedFrameQueue};
+use crate::types::{DecodedFrame, FrameQueue, LinearFrame, SharedFrameQueue};
 use crossbeam_channel::{Receiver, Sender};
+use klipp_color::transfer::srgb_to_linear;
 use klipp_core::RationalTime;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use tracing::{debug, info, warn};
+
+/// Detect whether the decoded source pixel format carries more than
+/// 8 bits per component. Used to pick a matching swscale output
+/// format: 8-bit sources use `AV_PIX_FMT_RGBA` (8 bpc), 10+-bit
+/// sources use `AV_PIX_FMT_RGBA64LE` (16 bpc) so the extra precision
+/// reaches the linear-light conversion step instead of being
+/// quantised at swscale time.
+unsafe fn source_is_high_bit_depth(fmt: ffmpeg_next::ffi::AVPixelFormat) -> bool {
+    use ffmpeg_next::ffi::*;
+    let desc = av_pix_fmt_desc_get(fmt);
+    if desc.is_null() {
+        return false;
+    }
+    let nb = (*desc).nb_components as usize;
+    for i in 0..nb {
+        if (*desc).comp[i].depth > 8 {
+            return true;
+        }
+    }
+    false
+}
+
+/// sRGB-decode a RGBA u8 byte slice into a linear f32 RGBA buffer.
+/// Alpha stays linear (no gamma on alpha, per sRGB spec).
+fn rgba_u8_to_linear(rgba: &[u8]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(rgba.len());
+    for chunk in rgba.chunks_exact(4) {
+        out.push(srgb_to_linear(chunk[0] as f32 / 255.0));
+        out.push(srgb_to_linear(chunk[1] as f32 / 255.0));
+        out.push(srgb_to_linear(chunk[2] as f32 / 255.0));
+        out.push(chunk[3] as f32 / 255.0);
+    }
+    out
+}
+
+/// sRGB-decode a RGBA64LE u16 byte slice (little-endian, 16 bpc) into
+/// a linear f32 RGBA buffer. Used when the source is 10+-bit and
+/// swscale was configured with `AV_PIX_FMT_RGBA64LE` — the extra
+/// precision survives the sRGB decode because we're now in float.
+fn rgba64_le_to_linear(bytes: &[u8]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for chunk in bytes.chunks_exact(8) {
+        // Each pixel is 4 × u16 little-endian.
+        let r = u16::from_le_bytes([chunk[0], chunk[1]]) as f32 / 65535.0;
+        let g = u16::from_le_bytes([chunk[2], chunk[3]]) as f32 / 65535.0;
+        let b = u16::from_le_bytes([chunk[4], chunk[5]]) as f32 / 65535.0;
+        let a = u16::from_le_bytes([chunk[6], chunk[7]]) as f32 / 65535.0;
+        out.push(srgb_to_linear(r));
+        out.push(srgb_to_linear(g));
+        out.push(srgb_to_linear(b));
+        out.push(a);
+    }
+    out
+}
 
 /// Commands sent to the decode thread.
 pub enum DecodeCommand {
@@ -331,7 +386,7 @@ unsafe fn download_hw_frame(
     sws_ctx: &mut Option<*mut ffmpeg_next::ffi::SwsContext>,
     gpu_converter: Option<&mut klipp_effects::nv12_gpu::GpuNv12Converter>,
     source_rotation: i32,
-) -> Option<(Vec<u8>, u32, u32)> {
+) -> Option<LinearFrame> {
     use ffmpeg_next::ffi::*;
 
     let sw_frame = av_frame_alloc();
@@ -355,6 +410,7 @@ unsafe fn download_hw_frame(
     let src_w = (*sw_frame).width as u32;
     let src_h = (*sw_frame).height as u32;
     let sw_fmt = std::mem::transmute::<i32, AVPixelFormat>((*sw_frame).format);
+    let is_hi_bit_depth = source_is_high_bit_depth(sw_fmt);
     let (out_w, out_h) = playback_dimensions(src_w, src_h, source_rotation);
 
     // Try GPU NV12→RGBA path: only for NV12 format with an available converter
@@ -363,10 +419,12 @@ unsafe fn download_hw_frame(
         use std::sync::atomic::{AtomicBool, Ordering};
         static LOGGED: AtomicBool = AtomicBool::new(false);
         if !LOGGED.swap(true, Ordering::Relaxed) {
-            tracing::info!("download_hw_frame: format={:?}, src={}x{}, out={}x{}, rotation={}, gpu_available={}", sw_fmt, src_w, src_h, out_w, out_h, source_rotation, gpu_converter.is_some());
+            tracing::info!("download_hw_frame: format={:?}, src={}x{}, out={}x{}, rotation={}, gpu_available={}, hi_bit_depth={}", sw_fmt, src_w, src_h, out_w, out_h, source_rotation, gpu_converter.is_some(), is_hi_bit_depth);
         }
     }
-    if sw_fmt == AVPixelFormat::AV_PIX_FMT_NV12 {
+    // GPU NV12 fast path is 8-bit-only. For 10-bit sources (P010 etc.)
+    // fall through to the CPU swscale path that knows about RGBA64LE.
+    if !is_hi_bit_depth && sw_fmt == AVPixelFormat::AV_PIX_FMT_NV12 {
         if let Some(converter) = gpu_converter {
             let y_stride = (*sw_frame).linesize[0] as u32;
             let uv_stride = (*sw_frame).linesize[1] as u32;
@@ -381,13 +439,24 @@ unsafe fn download_hw_frame(
             );
 
             av_frame_free(&mut (sw_frame as *mut _));
-            return Some((rgba_data, out_w, out_h));
+            return Some(LinearFrame {
+                pts: RationalTime::zero(),
+                width: out_w,
+                height: out_h,
+                data: rgba_u8_to_linear(&rgba_data),
+                is_eof: false,
+            });
         }
     }
 
-    // Fallback: CPU swscale path (handles NV12 without GPU, P010, and other formats)
-    // swscale does resize only — rotation is applied separately via CPU rotate_rgba.
-    // Use unrotated dimensions for swscale, then rotate the RGBA output.
+    // Fallback: CPU swscale path. Bit-depth-aware output format so 10+-bit
+    // sources keep their extra precision through the YUV→RGB step.
+    let target_fmt = if is_hi_bit_depth {
+        AVPixelFormat::AV_PIX_FMT_RGBA64LE
+    } else {
+        AVPixelFormat::AV_PIX_FMT_RGBA
+    };
+    let bytes_per_pixel: usize = if is_hi_bit_depth { 8 } else { 4 };
     let (sws_out_w, sws_out_h) = playback_dimensions(src_w, src_h, 0);
     let sws = sws_getCachedContext(
         sws_ctx.unwrap_or(std::ptr::null_mut()),
@@ -396,7 +465,7 @@ unsafe fn download_hw_frame(
         sw_fmt,
         sws_out_w as i32,
         sws_out_h as i32,
-        AVPixelFormat::AV_PIX_FMT_RGBA,
+        target_fmt,
         1, // SWS_FAST_BILINEAR
         std::ptr::null_mut(),
         std::ptr::null_mut(),
@@ -408,11 +477,14 @@ unsafe fn download_hw_frame(
         return None;
     }
     if sws_ctx.is_none() {
-        info!("HW download: scaler created for {:?} {}x{} → {}x{}", sw_fmt, src_w, src_h, sws_out_w, sws_out_h);
+        info!(
+            "HW download: scaler created for {:?} {}x{} → {}x{} ({:?})",
+            sw_fmt, src_w, src_h, sws_out_w, sws_out_h, target_fmt,
+        );
     }
     *sws_ctx = Some(sws);
 
-    // Allocate output RGBA frame at playback resolution (unrotated)
+    // Allocate output frame at playback resolution (unrotated)
     let rgba_frame = av_frame_alloc();
     if rgba_frame.is_null() {
         av_frame_free(&mut (sw_frame as *mut _));
@@ -420,7 +492,7 @@ unsafe fn download_hw_frame(
     }
     (*rgba_frame).width = sws_out_w as i32;
     (*rgba_frame).height = sws_out_h as i32;
-    (*rgba_frame).format = AVPixelFormat::AV_PIX_FMT_RGBA as i32;
+    (*rgba_frame).format = target_fmt as i32;
     if av_frame_get_buffer(rgba_frame, 0) < 0 {
         av_frame_free(&mut (sw_frame as *mut _));
         av_frame_free(&mut (rgba_frame as *mut _));
@@ -439,12 +511,12 @@ unsafe fn download_hw_frame(
 
     av_frame_free(&mut (sw_frame as *mut _));
 
-    // Extract RGBA data (handle stride != width*4)
+    // Extract the raw buffer (handle stride != width*bpp).
     let stride = (*rgba_frame).linesize[0] as usize;
-    let expected_stride = (sws_out_w * 4) as usize;
+    let expected_stride = (sws_out_w as usize) * bytes_per_pixel;
     let data_slice = std::slice::from_raw_parts((*rgba_frame).data[0], stride * sws_out_h as usize);
 
-    let rgba_data = if stride == expected_stride {
+    let raw_data: Vec<u8> = if stride == expected_stride {
         data_slice.to_vec()
     } else {
         let mut buf = Vec::with_capacity(expected_stride * sws_out_h as usize);
@@ -457,13 +529,35 @@ unsafe fn download_hw_frame(
 
     av_frame_free(&mut (rgba_frame as *mut _));
 
-    // Apply CPU rotation for the swscale fallback path
-    if source_rotation != 0 {
-        let (rotated, rw, rh) = crate::engine::rotate_rgba(&rgba_data, sws_out_w, sws_out_h, source_rotation);
-        Some((rotated, rw, rh))
+    // Linearise, then rotate in float space (preserves precision) OR
+    // rotate the u8 then linearise (cheaper for 8-bit, same numerical result).
+    let linear_data = if is_hi_bit_depth {
+        let linear = rgba64_le_to_linear(&raw_data);
+        if source_rotation != 0 {
+            rotate_linear_rgba(&linear, sws_out_w, sws_out_h, source_rotation).0
+        } else {
+            linear
+        }
+    } else if source_rotation != 0 {
+        let (rotated, _rw, _rh) = crate::engine::rotate_rgba(&raw_data, sws_out_w, sws_out_h, source_rotation);
+        rgba_u8_to_linear(&rotated)
     } else {
-        Some((rgba_data, sws_out_w, sws_out_h))
-    }
+        rgba_u8_to_linear(&raw_data)
+    };
+
+    let (final_w, final_h) = if source_rotation == 90 || source_rotation == 270 {
+        (sws_out_h, sws_out_w)
+    } else {
+        (sws_out_w, sws_out_h)
+    };
+
+    Some(LinearFrame {
+        pts: RationalTime::zero(),
+        width: final_w,
+        height: final_h,
+        data: linear_data,
+        is_eof: false,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -715,7 +809,7 @@ fn decode_thread_main(
                 convert_sw_frame(&received_frame, &mut sw_scaler, &mut perf_copy_us, source_rotation)
             };
 
-            let (rgba_data, width, height) = match frame_result {
+            let mut linear_frame = match frame_result {
                 Some(result) => result,
                 None => {
                     warn!("decode_thread: frame conversion failed, skipping");
@@ -730,13 +824,14 @@ fn decode_thread_main(
                 perf_transfer_us += t_transfer.elapsed().as_micros() as u64;
             }
 
-            let decoded = DecodedFrame {
-                pts: RationalTime::from_secs_f64(pts_secs, 90000),
-                width,
-                height,
-                data: rgba_data,
-                is_eof: false,
-            };
+            // Stamp pts on the decoder-produced linear frame, then hand
+            // off to the (still u8) frame queue. The u8 conversion here
+            // is the single quantisation boundary remaining on the read
+            // path — later phases consume the linear frame directly and
+            // skip this step.
+            linear_frame.pts = RationalTime::from_secs_f64(pts_secs, 90000);
+            let decoded = linear_frame.to_srgb_u8();
+            let (frame_w, frame_h) = (decoded.width, decoded.height);
 
             let t_queue = std::time::Instant::now();
             frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(decoded);
@@ -756,7 +851,7 @@ fn decode_thread_main(
                     perf_transfer_us as f64 / 1000.0,
                     perf_copy_us as f64 / 1000.0,
                     perf_queue_us as f64 / 1000.0,
-                    width, height, hw_accel,
+                    frame_w, frame_h, hw_accel,
                 );
                 perf_decode_us = 0;
                 perf_transfer_us = 0;
@@ -817,15 +912,30 @@ fn convert_sw_frame(
     sw_scaler: &mut Option<ffmpeg_next::software::scaling::Context>,
     perf_copy_us: &mut u64,
     source_rotation: i32,
-) -> Option<(Vec<u8>, u32, u32)> {
+) -> Option<LinearFrame> {
+    // Bit-depth-aware swscale target: 8-bit sources go through RGBA (1 byte
+    // per channel); 10+-bit sources go through RGBA64LE (2 bytes per channel)
+    // so the extra precision survives the YUV→RGB conversion and reaches the
+    // linear-light decode step.
+    let is_hi_bit_depth = unsafe {
+        source_is_high_bit_depth(received_frame.format().into())
+    };
+    let target_format = if is_hi_bit_depth {
+        ffmpeg_next::format::Pixel::RGBA64LE
+    } else {
+        ffmpeg_next::format::Pixel::RGBA
+    };
+
     // swscale does resize only — use unrotated dimensions, then rotate RGBA output
     let (out_w, out_h) = playback_dimensions(received_frame.width(), received_frame.height(), 0);
     let need_scaler = match sw_scaler {
         Some(s) => {
             let inp = s.input();
+            let out = s.output();
             inp.format != received_frame.format()
                 || inp.width != received_frame.width()
                 || inp.height != received_frame.height()
+                || out.format != target_format
         }
         None => true,
     };
@@ -834,7 +944,7 @@ fn convert_sw_frame(
             received_frame.format(),
             received_frame.width(),
             received_frame.height(),
-            ffmpeg_next::format::Pixel::RGBA,
+            target_format,
             out_w,
             out_h,
             ffmpeg_next::software::scaling::Flags::FAST_BILINEAR,
@@ -842,8 +952,12 @@ fn convert_sw_frame(
             Ok(s) => {
                 if received_frame.width() != out_w || received_frame.height() != out_h {
                     info!(
-                        "decode_thread: SW scaler downscale {}x{} → {}x{}",
-                        received_frame.width(), received_frame.height(), out_w, out_h
+                        "decode_thread: SW scaler downscale {}x{} → {}x{} ({:?})",
+                        received_frame.width(),
+                        received_frame.height(),
+                        out_w,
+                        out_h,
+                        target_format,
                     );
                 }
                 *sw_scaler = Some(s);
@@ -863,12 +977,13 @@ fn convert_sw_frame(
 
     let width = rgba_frame.width();
     let height = rgba_frame.height();
+    let bytes_per_pixel = if is_hi_bit_depth { 8 } else { 4 };
     let stride = rgba_frame.stride(0);
     let data_ptr = rgba_frame.data(0);
 
     let t_copy = std::time::Instant::now();
-    let expected_stride = (width * 4) as usize;
-    let rgba_data = if stride == expected_stride {
+    let expected_stride = (width as usize) * bytes_per_pixel;
+    let raw_data: Vec<u8> = if stride == expected_stride {
         data_ptr[..expected_stride * height as usize].to_vec()
     } else {
         let mut buf = Vec::with_capacity(expected_stride * height as usize);
@@ -881,11 +996,218 @@ fn convert_sw_frame(
     };
     *perf_copy_us += t_copy.elapsed().as_micros() as u64;
 
-    // Apply CPU rotation for the software decode path
-    if source_rotation != 0 {
-        let (rotated, rw, rh) = crate::engine::rotate_rgba(&rgba_data, width, height, source_rotation);
-        Some((rotated, rw, rh))
+    // Rotation still operates on sRGB u8 via rotate_rgba. For hi-bit-depth
+    // sources we'd lose precision if we rotated the u16 buffer through the
+    // u8 helper, so: rotate *after* linearisation. For 8-bit we rotate the
+    // u8 then linearise — cheaper and bit-identical to the old output.
+    let linear_data = if is_hi_bit_depth {
+        let linear = rgba64_le_to_linear(&raw_data);
+        if source_rotation != 0 {
+            rotate_linear_rgba(&linear, width, height, source_rotation).0
+        } else {
+            linear
+        }
+    } else if source_rotation != 0 {
+        let (rotated, _rw, _rh) = crate::engine::rotate_rgba(&raw_data, width, height, source_rotation);
+        rgba_u8_to_linear(&rotated)
     } else {
-        Some((rgba_data, width, height))
+        rgba_u8_to_linear(&raw_data)
+    };
+
+    let (final_w, final_h) = if source_rotation == 90 || source_rotation == 270 {
+        (height, width)
+    } else {
+        (width, height)
+    };
+
+    Some(LinearFrame {
+        pts: RationalTime::zero(), // filled in by caller
+        width: final_w,
+        height: final_h,
+        data: linear_data,
+        is_eof: false,
+    })
+}
+
+/// Rotate a linear-f32 RGBA buffer by 90/180/270 degrees. Mirrors
+/// `engine::rotate_rgba` but stays in float precision — used on the
+/// hi-bit-depth decode path where a u8 round-trip would lose the
+/// headroom we just paid to preserve.
+fn rotate_linear_rgba(src: &[f32], w: u32, h: u32, deg: i32) -> (Vec<f32>, u32, u32) {
+    match deg {
+        90 => {
+            let mut dst = vec![0f32; src.len()];
+            let (nw, nh) = (h, w);
+            for y in 0..h {
+                for x in 0..w {
+                    let src_idx = ((y * w + x) * 4) as usize;
+                    let new_x = h - 1 - y;
+                    let new_y = x;
+                    let dst_idx = ((new_y * nw + new_x) * 4) as usize;
+                    dst[dst_idx..dst_idx + 4].copy_from_slice(&src[src_idx..src_idx + 4]);
+                }
+            }
+            (dst, nw, nh)
+        }
+        180 => {
+            let mut dst = vec![0f32; src.len()];
+            for y in 0..h {
+                for x in 0..w {
+                    let src_idx = ((y * w + x) * 4) as usize;
+                    let new_x = w - 1 - x;
+                    let new_y = h - 1 - y;
+                    let dst_idx = ((new_y * w + new_x) * 4) as usize;
+                    dst[dst_idx..dst_idx + 4].copy_from_slice(&src[src_idx..src_idx + 4]);
+                }
+            }
+            (dst, w, h)
+        }
+        270 => {
+            let mut dst = vec![0f32; src.len()];
+            let (nw, nh) = (h, w);
+            for y in 0..h {
+                for x in 0..w {
+                    let src_idx = ((y * w + x) * 4) as usize;
+                    let new_x = y;
+                    let new_y = w - 1 - x;
+                    let dst_idx = ((new_y * nw + new_x) * 4) as usize;
+                    dst[dst_idx..dst_idx + 4].copy_from_slice(&src[src_idx..src_idx + 4]);
+                }
+            }
+            (dst, nw, nh)
+        }
+        _ => (src.to_vec(), w, h),
+    }
+}
+
+#[cfg(test)]
+mod decoder_linearisation_tests {
+    use super::*;
+
+    #[test]
+    fn source_bit_depth_detection_recognises_common_formats() {
+        use ffmpeg_next::ffi::AVPixelFormat;
+        unsafe {
+            // 8-bit sources
+            assert!(!source_is_high_bit_depth(AVPixelFormat::AV_PIX_FMT_NV12));
+            assert!(!source_is_high_bit_depth(AVPixelFormat::AV_PIX_FMT_YUV420P));
+            assert!(!source_is_high_bit_depth(AVPixelFormat::AV_PIX_FMT_RGBA));
+            // 10-bit sources
+            assert!(source_is_high_bit_depth(AVPixelFormat::AV_PIX_FMT_P010LE));
+            assert!(source_is_high_bit_depth(AVPixelFormat::AV_PIX_FMT_YUV420P10LE));
+            // 16-bit
+            assert!(source_is_high_bit_depth(AVPixelFormat::AV_PIX_FMT_RGBA64LE));
+        }
+    }
+
+    #[test]
+    fn rgba_u8_to_linear_encodes_mid_grey_correctly() {
+        // sRGB 118 (≈ 18 % perceptual mid-grey) decodes to ~0.18 linear.
+        let src = vec![118u8, 118, 118, 255];
+        let linear = rgba_u8_to_linear(&src);
+        assert_eq!(linear.len(), 4);
+        assert!((linear[0] - 0.18).abs() < 0.005);
+        assert!((linear[1] - 0.18).abs() < 0.005);
+        assert!((linear[2] - 0.18).abs() < 0.005);
+        assert_eq!(linear[3], 1.0); // alpha stays linear (not gamma-decoded)
+    }
+
+    #[test]
+    fn rgba_u8_to_linear_handles_extremes() {
+        let src = vec![0u8, 0, 0, 255, 255, 255, 255, 0];
+        let linear = rgba_u8_to_linear(&src);
+        assert_eq!(linear[0], 0.0);
+        assert_eq!(linear[3], 1.0);
+        assert!((linear[4] - 1.0).abs() < 1e-4);
+        assert_eq!(linear[7], 0.0);
+    }
+
+    #[test]
+    fn rgba64_le_to_linear_preserves_precision_above_8bit() {
+        // Build an RGBA64LE pixel: values that would both land on the
+        // same u8 code value (sRGB 118) after quantisation. The
+        // underlying sRGB values are 118.0/255 and 118.2/255 — a real
+        // 10-bit source carries the second; we prove the linear decode
+        // distinguishes them.
+        fn srgb_pixel_u16(srgb_frac: f32) -> [u8; 8] {
+            let v = (srgb_frac * 65535.0).round() as u16;
+            let a = 65535u16;
+            [
+                (v & 0xFF) as u8, (v >> 8) as u8,
+                (v & 0xFF) as u8, (v >> 8) as u8,
+                (v & 0xFF) as u8, (v >> 8) as u8,
+                (a & 0xFF) as u8, (a >> 8) as u8,
+            ]
+        }
+        let mut bytes = Vec::with_capacity(16);
+        bytes.extend_from_slice(&srgb_pixel_u16(118.0 / 255.0));
+        bytes.extend_from_slice(&srgb_pixel_u16(118.2 / 255.0));
+
+        let linear = rgba64_le_to_linear(&bytes);
+        // Both pixels are close to 0.18 linear but must be distinct.
+        assert!((linear[0] - 0.18).abs() < 0.01);
+        assert!((linear[4] - 0.18).abs() < 0.01);
+        assert!(
+            linear[4] > linear[0],
+            "10-bit precision lost: both pixels decoded to {:.6}",
+            linear[0],
+        );
+    }
+
+    #[test]
+    fn rgba64_le_alpha_is_normalised_not_gamma_decoded() {
+        // A max-alpha u16 (65535) must produce 1.0 linear, not the
+        // gamma-decoded version of ~1.0.
+        let pixel = [
+            0u8, 0, // R = 0
+            0, 0, // G = 0
+            0, 0, // B = 0
+            0xFF, 0xFF, // A = 65535
+        ];
+        let linear = rgba64_le_to_linear(&pixel);
+        assert_eq!(linear[3], 1.0);
+    }
+
+    #[test]
+    fn rotate_linear_rgba_90_degrees_moves_corner() {
+        // A 2×1 frame with a red pixel then a green pixel. Rotating
+        // 90° clockwise should land the red pixel at the bottom.
+        let w: u32 = 2;
+        let h: u32 = 1;
+        let src = vec![
+            1.0f32, 0.0, 0.0, 1.0, // red
+            0.0, 1.0, 0.0, 1.0, // green
+        ];
+        let (rotated, nw, nh) = rotate_linear_rgba(&src, w, h, 90);
+        assert_eq!(nw, 1);
+        assert_eq!(nh, 2);
+        // After 90° CW: layout becomes [red row, green row] stacked.
+        // Rotation maps (x=0, y=0) red → (new_x = h-1-y = 0, new_y = x = 0)
+        // so red is at the top, green at the bottom.
+        assert_eq!(rotated[0], 1.0); // top pixel R
+        assert_eq!(rotated[4], 0.0); // bottom pixel R
+        assert_eq!(rotated[5], 1.0); // bottom pixel G
+    }
+
+    #[test]
+    fn rotate_linear_rgba_180_flips_both_axes() {
+        let w = 2;
+        let h = 2;
+        // Top-left red, rest black
+        let mut src = vec![0f32; 16];
+        src[0] = 1.0; // R of (0,0)
+        src[3] = 1.0; // A of (0,0)
+        let (rotated, nw, nh) = rotate_linear_rgba(&src, w, h, 180);
+        assert_eq!((nw, nh), (2, 2));
+        // After 180°: red should be at (1, 1) → index 12..16
+        assert_eq!(rotated[12], 1.0);
+    }
+
+    #[test]
+    fn rotate_linear_rgba_zero_is_identity() {
+        let src = vec![0.5f32; 16]; // 2x2 grey
+        let (rotated, nw, nh) = rotate_linear_rgba(&src, 2, 2, 0);
+        assert_eq!((nw, nh), (2, 2));
+        assert_eq!(rotated, src);
     }
 }
