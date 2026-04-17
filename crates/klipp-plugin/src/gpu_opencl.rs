@@ -4,6 +4,39 @@
 //! GPUs through the OpenCL ICD (Installable Client Driver) mechanism.
 //! Provides context creation, command queue management, cl_mem buffer allocation,
 //! and host↔device transfers for OFX GPU rendering.
+//!
+//! # Safety conventions
+//!
+//! Every `unsafe { }` block falls into one of three categories:
+//!
+//! 1. **Driver-API call** (the common case): `unsafe {
+//!    api.cl_create_buffer(ctx, flags, size, host_ptr, &mut err) }`
+//!    etc. Sound because:
+//!    * [`OpenClApi`] holds an `Arc<libloading::Library>` that
+//!      outlives every derived function pointer, stored on
+//!      [`OpenClRuntime::api`] for the process lifetime.
+//!    * `cl_context` / `cl_command_queue` / `cl_mem` are opaque
+//!      driver-managed handles; the driver validates them on every
+//!      entry and returns an error code on invalid arguments.
+//!    * Output pointers into Rust storage are `&mut` locals on the
+//!      caller's stack or pre-sized slices.
+//!
+//! 2. **Symbol-table lookup + transmute** inside `OpenClApi::load` —
+//!    `dlsym`s a void pointer for each named entry point and
+//!    transmutes to a typed fn pointer. Sound by the same
+//!    function-pointer / void-pointer ABI equivalence rationale as
+//!    [`gpu_cuda`] / [`gpu_opengl`].
+//!
+//! 3. **`unsafe impl Send` / `Sync`** on [`OpenClApi`] and
+//!    [`OpenClRuntime`] — the wrappers wouldn't be auto-traited as
+//!    Send/Sync because of their `*mut c_void` members. They are safe
+//!    to send across threads because the underlying OpenCL ICD is
+//!    itself thread-safe (all ICDs in real-world use have
+//!    thread-safe queues) and the Rust wrapper never mutates shared
+//!    state without external synchronisation.
+//!
+//! Individual blocks carry a `// SAFETY:` comment only when the
+//! precondition is non-obvious from the call site.
 
 use std::ffi::c_void;
 use std::sync::Arc;

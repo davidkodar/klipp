@@ -5,6 +5,33 @@
 //! OfxImageEffectOpenGLRenderSuiteV1 (clipLoadTexture/clipFreeTexture).
 //!
 //! Works with both NVIDIA (EGL_EXT_platform_device) and Mesa (AMD/Intel).
+//!
+//! # Safety conventions
+//!
+//! Every `unsafe { }` block in this file either (a) calls an EGL or GL
+//! function-pointer that was loaded from a live `libloading::Library`
+//! kept alive by the enclosing [`EglApi`] / [`GlApi`] (held by
+//! [`OpenGlRuntime`] for the process lifetime), or (b) dereferences a
+//! texture/FBO id that the plugin owns and has not yet released.
+//!
+//! * **Function-pointer blocks** (the common case) are sound as long as
+//!   the runtime outlives the call, which is enforced by having every
+//!   caller thread through an `&OpenGlRuntime` reference. The runtime
+//!   stays alive via `Arc<OpenGlRuntime>` stored in
+//!   [`GL_RUNTIME_STORE`] during render, and the host's own
+//!   `OfxHostRuntime` owns a second `Arc` that can't drop mid-render.
+//! * **Texture/FBO dereferences** (`glBindTexture`, `glDeleteTextures`,
+//!   `glFramebufferTexture2D`, …) take a `GLuint` id from a prior
+//!   plugin-facing allocation and pass it straight to the driver. The
+//!   driver validates its own ids and fails cleanly on a stale or
+//!   invalid id — no undefined behaviour on the Rust side.
+//! * **The current GL context** must be current on the calling thread
+//!   before any GL call. This is enforced by always pairing GL work
+//!   with `runtime.make_current()` at the entry point.
+//!
+//! Individual blocks carry a `// SAFETY:` comment only when the
+//! preconditions above are insufficient (e.g. pointer arithmetic,
+//! slice construction from raw memory, lifetime extensions).
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
@@ -154,6 +181,12 @@ unsafe impl Sync for GlApi {}
 
 impl EglApi {
     fn load() -> Option<Self> {
+        // SAFETY: libloading::Library::new runs the dynamic loader. Sound
+        // as long as the filename resolves to a real ELF file — if the
+        // target isn't a valid shared object the call returns Err and
+        // the `?` propagates None. The returned Library outlives every
+        // Symbol derived from it because we immediately wrap it in an
+        // Arc that's stored on Self._lib.
         let lib = unsafe {
             libloading::Library::new("libEGL.so.1")
                 .or_else(|_| libloading::Library::new("libEGL.so"))
@@ -163,12 +196,23 @@ impl EglApi {
 
         macro_rules! sym {
             ($name:expr) => {{
+                // SAFETY: lib.get() reads the symbol table of the loaded
+                // library. The $name argument is a nul-terminated byte
+                // literal built from a concrete EGL function name, so
+                // the string is valid C. We then transmute the raw
+                // void pointer to the typed function pointer expected
+                // by the struct field — sound on every platform we
+                // support because function pointers and void pointers
+                // share layout on x86_64 SysV and aarch64 AAPCS.
                 let s: libloading::Symbol<*const c_void> = unsafe { lib.get($name) }.ok()?;
                 unsafe { std::mem::transmute(*s) }
             }};
         }
         macro_rules! sym_opt {
             ($name:expr) => {{
+                // SAFETY: see `sym!` above. This variant tolerates
+                // missing symbols (returns None instead of `?`) for
+                // optional extensions like EGL_EXT_platform_device.
                 let s: Option<libloading::Symbol<*const c_void>> = unsafe { lib.get($name) }.ok();
                 s.map(|s| unsafe { std::mem::transmute(*s) })
             }};
@@ -192,6 +236,9 @@ impl EglApi {
 
 impl GlApi {
     fn load() -> Option<Self> {
+        // SAFETY: same dlopen rationale as EglApi::load — the returned
+        // Library is wrapped in an Arc that's held for the process
+        // lifetime by every derived function pointer.
         let lib = unsafe {
             libloading::Library::new("libGL.so.1")
                 .or_else(|_| libloading::Library::new("libGL.so"))
@@ -201,6 +248,8 @@ impl GlApi {
 
         macro_rules! sym {
             ($name:expr) => {{
+                // SAFETY: symbol lookup + transmute to a typed fn
+                // pointer. See EglApi's `sym!` for the full argument.
                 let s: libloading::Symbol<*const c_void> = unsafe { lib.get($name) }.ok()?;
                 unsafe { std::mem::transmute(*s) }
             }};

@@ -6,6 +6,21 @@
 //!
 //! Supports keyframe animation: parameters can have time-varying values
 //! stored as sorted keyframe lists with linear interpolation.
+//!
+//! # Safety convention for the suite callbacks
+//!
+//! Every `unsafe extern "C" fn param_*_fn` in this file is wrapped in
+//! `ofx_guard!({ ... })` + opens with `check_non_null!(handle, out,
+//! ...)`. Inside that envelope, `*out = value` / `*(out as *mut T) =
+//! value` writes are sound: the null check has already fired, and
+//! plugins that pass non-owned pointers violate the OFX spec.
+//!
+//! **The one non-obvious unsafe site** is the `PARAM_SUITE_V1`
+//! construction at the bottom of this file, where non-variadic
+//! implementations are `mem::transmute`'d into the variadic fn
+//! pointer slots the OFX ABI defines. That block carries its own
+//! long-form `// SAFETY:` comment explaining why it works in
+//! practice (and why it's formally unsound — tracked as CRIT-1).
 
 use crate::ffi::*;
 use crate::property::PropertySet;
@@ -1117,15 +1132,38 @@ unsafe extern "C" fn param_edit_end_fn(_param_set: OfxParamSetHandle) -> OfxStat
 /// Static OfxParameterSuiteV1 table.
 ///
 /// The variadic functions (paramGetValue, paramSetValue, etc.) are stored as
-/// non-variadic function pointers. This works because:
-/// 1. We transmute the fn pointer slots at suite construction time
-/// 2. The C ABI guarantees that extra arguments are simply ignored by the callee
-/// 3. Our implementations read the correct number of output args based on param type
+/// non-variadic function pointers. This is **formally unsound** and only works
+/// by coincidence — see the SAFETY comment below.
 #[allow(clippy::missing_transmute_annotations)]
 pub static PARAM_SUITE_V1: OfxParameterSuiteV1 = {
-    // Safety: transmuting non-variadic fns into variadic fn pointer slots.
-    // The OFX spec defines these as variadic for convenience, but the actual
-    // number and types of arguments are determined by the parameter type.
+    // SAFETY: this transmute is the known-unsound hack documented as a
+    // critical item in the workspace audit. The OFX spec defines
+    // paramGetValue / paramSetValue etc. as variadic C functions —
+    // `extern "C" fn(handle, ...) -> OfxStatus`. Our implementations
+    // are non-variadic and expect contiguous pointer arguments.
+    //
+    // On x86_64 SysV, a variadic caller places the first pointer arg
+    // in `rsi`, the second in `rdx`, the third in `rcx` — and also
+    // sets the `al` register to indicate the number of vector regs
+    // used. Our non-variadic callee reads `rsi` as `out` and then
+    // does `*out.add(1)` / `*out.add(2)` for multi-component params,
+    // effectively assuming the plugin has laid out its output
+    // pointers *contiguously* on its own stack.
+    //
+    // That happens to be true in the common case because the OpenFX
+    // C++ support library (which every plugin we've tested uses)
+    // passes struct fields from a single local struct, so the
+    // pointers *are* contiguous. For a hypothetical plugin that
+    // passed separate stack locals, `*out.add(1)` would write into
+    // an arbitrary location adjacent to `out_int_0` on the plugin's
+    // stack — a silent out-of-bounds write.
+    //
+    // The correct long-term fix is either a nightly `c_variadic`
+    // implementation or a redesign to per-type entry points
+    // (`paramGetValue_Double2D` etc.). Both are out-of-scope for the
+    // current audit pass and tracked as R-17 / CRIT-1. For now this
+    // transmute is the least-worst option — the alternative is
+    // plugins that simply can't talk to the host.
     unsafe {
         OfxParameterSuiteV1 {
             param_define: param_define_fn,

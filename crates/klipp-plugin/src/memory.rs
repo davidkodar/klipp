@@ -1,4 +1,19 @@
 //! OFX Memory Suite — host-managed allocation for plugins.
+//!
+//! # Safety conventions
+//!
+//! `memory_alloc_fn` allocates a zeroed heap block via `std::alloc`
+//! and records the matching `Layout` in `ALLOC_TRACKER`, keyed by
+//! the returned pointer as usize. `memory_free_fn` looks up the
+//! stored layout and calls `dealloc` — this pairs the allocation
+//! and deallocation with identical layouts, which is the
+//! correctness requirement for `std::alloc`.
+//!
+//! A plugin that passes a pointer we didn't allocate (or freed
+//! already) will miss the HashMap lookup and get
+//! `K_OFX_STAT_ERR_BAD_HANDLE` rather than a double-free. A plugin
+//! that forgets to free its allocations leaks bytes proportional to
+//! the unreleased set — no UB, just a slow leak.
 
 use crate::ffi::*;
 use std::alloc::Layout;
@@ -29,7 +44,7 @@ unsafe extern "C" fn memory_alloc_fn(
     }
     ALLOC_TRACKER
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(p as usize, layout);
     *ptr = p as *mut c_void;
     K_OFX_STAT_OK

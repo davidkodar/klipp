@@ -1,3 +1,30 @@
+//! # Safety conventions for host.rs
+//!
+//! The `unsafe { }` blocks in this file are divided between plugin
+//! lifecycle (dlopen + typed symbol lookup for the plugin's
+//! `OfxGetPlugin` / `OfxGetNumberOfPlugins` exports) and the render
+//! dispatch (calling the plugin's `main_entry` with freshly-built
+//! property sets). Both share a common rationale:
+//!
+//! * **Plugin library liveness** — every [`OfxPlugin`] holds an
+//!   `Option<Arc<libloading::Library>>`. The raw `*const OfxPluginRaw`
+//!   pointer stays valid for as long as the Arc does. Host code never
+//!   uses the raw pointer after dropping the Arc.
+//! * **Property-set handles** — opaque `*mut c_void` values that are
+//!   really addresses of `Box<PropertySet>` registered in the global
+//!   `PROP_STORE`. Derefing one through `with_propset` / `with_param`
+//!   is sound while the handle is registered; the host is the sole
+//!   writer to that store so it controls the lifetime.
+//! * **`set_host(&OfxHostC)`** hands the plugin a `*const OfxHostC`
+//!   that points into `self.c_host: Box<OfxHostC>` — the box lives
+//!   for the whole [`OfxHostRuntime`] lifetime, so the plugin can
+//!   store the pointer without fear of it moving.
+//! * **`main_entry` invocation** re-enters plugin code. Any panic
+//!   inside the plugin's suite callbacks is converted to
+//!   `K_OFX_STAT_ERR_FATAL` by the `ofx_guard!` wrapper on each
+//!   callback body, so an unwind cannot cross back through the
+//!   `extern "C"` boundary here.
+
 use crate::ffi::{self, OfxStatus};
 use crate::image_effect::{self, OfxImage};
 use crate::instance::{self, PluginInstance};

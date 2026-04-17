@@ -4,6 +4,25 @@
 //! pointer to the actual RGBA frame data via image property sets.
 //! Supports temporal clip access: plugins can request frames at arbitrary
 //! times via the frame provider callback.
+//!
+//! # Safety conventions
+//!
+//! Every suite-callback `unsafe extern "C" fn` wraps its body in
+//! `ofx_guard!({ ... })` and opens with `check_non_null!(...)` — see
+//! the crate-level docs and the property.rs module doc for the
+//! shared pattern. Within that envelope, `*out = value` writes and
+//! `CStr::from_ptr(name)` reads are sound.
+//!
+//! The `OfxImage::from_rgba_*` constructors hold a `Vec<u8>` and
+//! hand out a `*mut c_void` pointing at its heap buffer via a
+//! pointer property. The pointer stays valid as long as the
+//! `OfxImage` lives in `IMAGE_STORE` — `take_image` removes the
+//! entry before the plugin's `clipReleaseImage` can be called
+//! again, so there's no window where the plugin holds a pointer
+//! into freed storage. `update_data_pointer` re-writes the pointer
+//! property after any `Vec` reallocation would have moved the heap
+//! buffer (defensive; current code paths don't grow the Vec after
+//! creation).
 
 use crate::ffi::*;
 use crate::instance;

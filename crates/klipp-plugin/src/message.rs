@@ -1,4 +1,20 @@
 //! OFX Message + Progress Suites — plugin notifications logged via tracing.
+//!
+//! # Safety convention
+//!
+//! Each callback reads C strings supplied by the plugin
+//! (`msg_type`, `msg_id`, `format`) via `CStr::from_ptr`. Sound
+//! because the OFX spec requires the plugin to pass non-null,
+//! properly nul-terminated strings, and an unwrap-style conversion
+//! failure is impossible with `to_string_lossy` (non-UTF-8 input
+//! maps to the replacement character).
+//!
+//! These callbacks are **not** wrapped in `ofx_guard!` — they only
+//! log via `tracing::info!` and cannot panic for any ordinary
+//! reason. If a plugin passes a null `format` pointer (OFX spec
+//! violation) the unwrap inside `CStr::from_ptr` would dereference
+//! null; this is a narrow enough risk window that adding the guard
+//! is a consistency-vs-overhead judgement for a future pass.
 
 use crate::ffi::*;
 use std::ffi::{c_char, c_double, c_void, CStr};

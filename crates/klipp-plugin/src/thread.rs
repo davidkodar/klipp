@@ -3,6 +3,25 @@
 //! Plugins can use multiThread() to dispatch work across CPU cores.
 //! Thread-local storage tracks each thread's index and spawned status.
 //! Mutexes use AtomicBool spin-locks (correct for OFX's lock/unlock API).
+//!
+//! # Safety convention for mutex handles
+//!
+//! `OfxMutexHandle` is an opaque `*mut c_void` minted by
+//! `mutex_create_fn`: we `Box::new(AtomicBool::new(false))`, then
+//! `Box::into_raw` and cast to the OFX handle type. Every subsequent
+//! operation (`mutex_lock`, `mutex_unlock`, `mutex_try_lock`,
+//! `mutex_destroy`) dereferences the handle via
+//! `&*(handle as *const AtomicBool)`.
+//!
+//! **This dereference is sound only if the plugin passes a handle that
+//! originally came out of `mutex_create_fn` on this process.** A
+//! plugin that fabricates a handle value — malicious or buggy —
+//! would cause an arbitrary-memory read at the mutex location. The
+//! existing null-check catches the most common case (plugin passes
+//! `NULL`) but cannot detect a non-null, non-owned value.
+//!
+//! Tracked as FFI-4 in the audit for a future hardening pass (maintain
+//! a `HashSet<usize>` of live handles and reject unknown ones).
 
 use crate::ffi::*;
 use std::cell::Cell;

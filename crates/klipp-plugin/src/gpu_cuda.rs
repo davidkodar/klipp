@@ -4,6 +4,38 @@
 //! only the NVIDIA driver. Provides context creation, device memory
 //! allocation, stream management, and host↔device transfers for OFX
 //! GPU rendering.
+//!
+//! # Safety conventions
+//!
+//! Every `unsafe { }` block in this file falls into one of three
+//! categories and is sound under the listed preconditions:
+//!
+//! 1. **Driver-API call** (the common case):
+//!    `unsafe { api.cu_mem_alloc(&mut ptr, size) }` etc. Sound because:
+//!    * The [`CudaApi`] function pointer is alive — [`CudaApi`] holds
+//!      an `Arc<libloading::Library>` that outlives every derived
+//!      function pointer and is held for the process lifetime by
+//!      [`CudaRuntime::api`].
+//!    * The calling thread has pushed the CUDA context via
+//!      `push_context()` (mirrored by `pop_context()` on return). All
+//!      public methods on [`CudaRuntime`] wrap their body in this
+//!      push/pop pair — see `alloc_with_data`, `copy_dtoh`, `free`.
+//!    * Output pointers are into valid Rust storage (an `&mut` local
+//!      or a pre-sized slice).
+//!
+//! 2. **Symbol-table lookup + transmute** inside `CudaApi::load` —
+//!    `dlsym`s a void pointer for each named entry point and
+//!    transmutes to a typed fn pointer. Sound because function-pointer
+//!    and void-pointer ABIs match on every target we ship (x86_64
+//!    SysV, aarch64 AAPCS).
+//!
+//! 3. **Raw pointer cast from `CUdeviceptr` (u64)** when handing a
+//!    device-memory handle back to a plugin or to a subsequent driver
+//!    call. The u64 came from `cu_mem_alloc`; the driver is the
+//!    authority on its validity and errors cleanly on a stale handle.
+//!
+//! Individual blocks carry a `// SAFETY:` comment only when they do
+//! something beyond the blanket cases above.
 
 use std::ffi::{c_int, c_uint, c_void};
 use std::sync::Arc;

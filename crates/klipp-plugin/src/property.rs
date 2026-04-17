@@ -4,6 +4,35 @@
 //! a named map of typed, indexed values. The global `PROP_STORE` maps
 //! opaque `OfxPropertySetHandle` values (pointer-as-usize) to Rust
 //! `PropertySet` instances.
+//!
+//! # Safety convention for the suite callbacks
+//!
+//! Every `unsafe extern "C" fn prop_*_fn` in this file follows the
+//! same four-line pattern:
+//!
+//! 1. `ofx_guard!({ ... })` — the body runs inside `catch_unwind` so
+//!    a Rust panic never crosses the FFI boundary (see the crate-
+//!    level docs).
+//! 2. `check_non_null!(name, out, ...)` — validates pointer args per
+//!    OFX spec; returns `K_OFX_STAT_ERR_VALUE` on null instead of
+//!    segfaulting.
+//! 3. `CStr::from_ptr(name).to_string_lossy()` — sound because the
+//!    preceding null-check rules out dereferencing a null pointer,
+//!    and the OFX spec guarantees the caller passes a properly
+//!    nul-terminated C string. Non-UTF-8 names map to the Unicode
+//!    replacement character rather than failing.
+//! 4. `*out = value` / `*out.add(i) = value` — sound because the
+//!    null-check already rejected the null case; the caller supplied
+//!    a pointer they own. Individual blocks do not need separate
+//!    `// SAFETY:` comments because they all fit this pattern.
+//!
+//! The **known exception** is `prop_get_string_fn`, which returns a
+//! `*const c_char` that borrows from a `CString` inside the
+//! `PROP_STORE` mutex. The mutex drops before the plugin sees the
+//! pointer; if a parallel caller then `remove_propset`s the same set
+//! the CString is freed and the plugin holds a dangling pointer.
+//! Tracked as CRIT-3 for a dedicated fix (append-only string store
+//! keyed by propset + name).
 
 use crate::ffi::*;
 use std::collections::HashMap;
