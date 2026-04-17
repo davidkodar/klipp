@@ -3924,18 +3924,41 @@ struct Params {
 @group(0) @binding(2) var<storage, read_write> output: array<u32>;
 @group(0) @binding(3) var<uniform> params: Params;
 
+fn srgb_to_linear_component(c: f32) -> f32 {
+    if (c <= 0.04045) {
+        return c / 12.92;
+    } else {
+        return pow((c + 0.055) / 1.055, 2.4);
+    }
+}
+
+fn linear_to_srgb_component(c: f32) -> f32 {
+    if (c <= 0.0031308) {
+        return c * 12.92;
+    } else {
+        return 1.055 * pow(c, 1.0/2.4) - 0.055;
+    }
+}
+
 fn unpack(v: u32) -> vec4<f32> {
+    let r = f32(v & 0xFFu) / 255.0;
+    let g = f32((v >> 8u) & 0xFFu) / 255.0;
+    let b = f32((v >> 16u) & 0xFFu) / 255.0;
+    let a = f32((v >> 24u) & 0xFFu) / 255.0;
     return vec4<f32>(
-        f32(v & 0xFFu),
-        f32((v >> 8u) & 0xFFu),
-        f32((v >> 16u) & 0xFFu),
-        f32((v >> 24u) & 0xFFu),
+        srgb_to_linear_component(r),
+        srgb_to_linear_component(g),
+        srgb_to_linear_component(b),
+        a,
     );
 }
 
 fn pack(v: vec4<f32>) -> u32 {
-    let c = clamp(v, vec4<f32>(0.0), vec4<f32>(255.0));
-    return u32(c.x) | (u32(c.y) << 8u) | (u32(c.z) << 16u) | (u32(c.w) << 24u);
+    let r = clamp(linear_to_srgb_component(v.x), 0.0, 1.0) * 255.0;
+    let g = clamp(linear_to_srgb_component(v.y), 0.0, 1.0) * 255.0;
+    let b = clamp(linear_to_srgb_component(v.z), 0.0, 1.0) * 255.0;
+    let a = clamp(v.w, 0.0, 1.0) * 255.0;
+    return u32(r) | (u32(g) << 8u) | (u32(b) << 16u) | (u32(a) << 24u);
 }
 
 fn lerp_pixel(a: vec4<f32>, b: vec4<f32>, t: f32) -> vec4<f32> {
@@ -3988,11 +4011,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else if params.kind_id == 5u || params.kind_id == 6u {
         // Dip to colour. param0 = hold duration (0..0.45) at the midpoint.
         // colour = dip colour (default black for kind 5, white for kind 6).
+        // `params.color_*` are already in 0-1 sRGB — decode to linear
+        // so the dip crossfade works in physical light.
         let dip_color = vec4<f32>(
-            params.color_r * 255.0,
-            params.color_g * 255.0,
-            params.color_b * 255.0,
-            255.0,
+            srgb_to_linear_component(params.color_r),
+            srgb_to_linear_component(params.color_g),
+            srgb_to_linear_component(params.color_b),
+            1.0,
         );
         let hold = clamp(params.param0, 0.0, 0.45);
         let mid_start = 0.5 - hold * 0.5;
@@ -4052,11 +4077,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
         }
     } else if params.kind_id == 8u {
-        // Film Dissolve: perceptual gamma-aware dissolve (sqrt blending)
-        let f_lin = from_px / 255.0;
-        let t_lin = to_px / 255.0;
-        let blended = sqrt(f_lin * f_lin * (1.0 - p) + t_lin * t_lin * p);
-        result = blended * 255.0;
+        // Film Dissolve: square-root blending that emulates the
+        // density-stacking behaviour of film emulsions. In the
+        // linear pipeline `from_px` / `to_px` are already linear,
+        // so we drop the /255 and *255 scaling — the sqrt curve
+        // still produces the characteristic over-bright midpoint
+        // that distinguishes film dissolve from cross dissolve.
+        let blended = sqrt(from_px * from_px * (1.0 - p) + to_px * to_px * p);
+        result = blended;
         result.w = from_px.w * (1.0 - p) + to_px.w * p;
     } else if params.kind_id == 9u {
         // Blur Dissolve: dissolve + horizontal box blur peaking at midpoint
@@ -4083,11 +4111,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else if params.kind_id == 10u {
         // Flash: bright colour flash with parameterized peak.
         // param0 = intensity, param1 = peak position, color = flash colour.
+        // Decode user-supplied sRGB colour to linear.
         let flash_color = vec4<f32>(
-            params.color_r * 255.0,
-            params.color_g * 255.0,
-            params.color_b * 255.0,
-            255.0,
+            srgb_to_linear_component(params.color_r),
+            srgb_to_linear_component(params.color_g),
+            srgb_to_linear_component(params.color_b),
+            1.0,
         );
         let intensity = clamp(params.param0, 0.0, 2.0);
         let peak = clamp(params.param1, 0.05, 0.95);
@@ -4107,10 +4136,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let dissolve_start = peak * 0.8;
         let dissolve_t = clamp((p - dissolve_start) / max(1.0 - dissolve_start, 0.001), 0.0, 1.0);
         let base = lerp_pixel(from_px, to_px, dissolve_t);
+        // No 255 clamp — HDR flash may legitimately exceed 1.0 linear;
+        // the display boundary clamps at the u8 encode step.
         result = vec4<f32>(
-            min(base.x * (1.0 - flash_t) + flash_color.x * flash_t, 255.0),
-            min(base.y * (1.0 - flash_t) + flash_color.y * flash_t, 255.0),
-            min(base.z * (1.0 - flash_t) + flash_color.z * flash_t, 255.0),
+            base.x * (1.0 - flash_t) + flash_color.x * flash_t,
+            base.y * (1.0 - flash_t) + flash_color.y * flash_t,
+            base.z * (1.0 - flash_t) + flash_color.z * flash_t,
             base.w,
         );
     } else if params.kind_id == 11u {
