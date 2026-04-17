@@ -80,6 +80,36 @@ fn eval_with_modifiers(
     }
 }
 
+/// Bulk sRGB u8 RGBA → linear f32 RGBA. Alpha stays linear per sRGB
+/// spec. Used at composite call sites while grade and GPU effects
+/// still run in u8 sRGB (migrates in 10c).
+fn u8_rgba_to_linear(rgba: &[u8]) -> Vec<f32> {
+    use klipp_color::transfer::srgb_to_linear;
+    let mut out = Vec::with_capacity(rgba.len());
+    for chunk in rgba.chunks_exact(4) {
+        out.push(srgb_to_linear(chunk[0] as f32 / 255.0));
+        out.push(srgb_to_linear(chunk[1] as f32 / 255.0));
+        out.push(srgb_to_linear(chunk[2] as f32 / 255.0));
+        out.push(chunk[3] as f32 / 255.0);
+    }
+    out
+}
+
+/// Bulk linear f32 RGBA → sRGB u8 RGBA with boundary clamp. The
+/// inverse of [`u8_rgba_to_linear`]; values outside `[0.0, 1.0]`
+/// clamp at the u8 boundary, not earlier.
+fn linear_rgba_to_u8(linear: &[f32]) -> Vec<u8> {
+    use klipp_color::transfer::linear_to_srgb;
+    let mut out = Vec::with_capacity(linear.len());
+    for chunk in linear.chunks_exact(4) {
+        out.push((linear_to_srgb(chunk[0]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        out.push((linear_to_srgb(chunk[1]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        out.push((linear_to_srgb(chunk[2]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        out.push((chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+    }
+    out
+}
+
 /// Evaluate the effective clip-level opacity at a timeline position.
 /// Combines the static `BuiltinEffect::Opacity` value with opacity keyframes
 /// and any modifier stack on `ParamId::Opacity`. Returns a value in [0.0, 1.0].
@@ -364,7 +394,16 @@ pub struct PlaybackEngine {
     /// composite resolution; reallocated only on resolution change. Swapped
     /// with `FrameBuffer::pending_data` via `write_frame_swap` to eliminate
     /// the per-frame 8-33 MB allocation of the composite buffer.
-    composite_scratch: Vec<u8>,
+    /// Reused scratch buffer for the main composite loop. Linear
+    /// f32 RGBA; converted to u8 once at the end of the composite.
+    /// Each multi-track frame pulls this out via `mem::take`, blends
+    /// into it, then puts it back for the next frame to reuse —
+    /// avoids reallocating a 4K×4 f32 buffer every frame.
+    composite_scratch_linear: Vec<f32>,
+    /// u8 output pool — the sRGB-encoded final composite swapped
+    /// into `fb.pending_data`. The returned stale pending_data comes
+    /// back here so we don't churn 33 MB/frame through the allocator.
+    composite_scratch_u8: Vec<u8>,
     // Rolling shutter correction motion cache
     rsc_motion_cache: klipp_effects::rolling_shutter::MotionCache,
     // Transition decoder — secondary decoder for the partner clip during transitions
@@ -579,7 +618,8 @@ impl PlaybackEngine {
                 info!("PlaybackEngine: detected GPU vendor = {v:?}");
                 v
             },
-            composite_scratch: Vec::new(),
+            composite_scratch_linear: Vec::new(),
+            composite_scratch_u8: Vec::new(),
             rsc_motion_cache: klipp_effects::rolling_shutter::MotionCache::new(256),
             transition_decoder: None,
             transition_clip_id: None,
@@ -2395,116 +2435,120 @@ impl PlaybackEngine {
         let (final_w, final_h) = (frame.width, frame.height);
         let v1_graded = self.post_process_rgba(frame.into_rgba(), final_w, final_h);
 
-        // Composite V1 (graded) + overlay tracks (each graded via apply_clip_effects)
+        // Composite V1 (graded) + overlay tracks in linear-light f32.
+        // Inputs arrive as sRGB u8 (graded output of apply_clip_effects,
+        // which still runs u8 today — migrates in 10c). We decode to
+        // linear once per layer, blend physically, then sRGB-encode the
+        // final accumulated buffer once at the end.
         let t_composite = std::time::Instant::now();
-        let final_rgba = {
-            use crate::composite::CompositeLayer;
-            let layers = vec![
-                CompositeLayer {
-                    rgba: v1_graded,
-                    width: final_w,
-                    height: final_h,
-                    opacity: {
-                        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-                        seq.tracks.get(self.current_track_index).map(|t| t.opacity).unwrap_or(1.0)
-                    },
-                    blend_mode: klipp_core::BlendMode::Normal,
-                },
-            ];
+        let v1_opacity = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            seq.tracks.get(self.current_track_index).map(|t| t.opacity).unwrap_or(1.0)
+        };
 
-            // Gather overlay clip data while holding the sequence lock, then drop
-            // the lock before calling apply_clip_effects (which needs &mut self).
-            let overlay_clip_data: Vec<(usize, f32, Option<klipp_timeline::Clip>)> = {
-                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-                let fps_f64 = self.fps.as_f64();
-                let overlay_tracks = seq.overlay_video_tracks(self.current_track_index);
-                overlay_tracks.iter().filter_map(|(track_idx, track)| {
-                    self.overlay_frames.get(track_idx).map(|_| {
-                        let clip_opacity = track
-                            .clip_at_timecode(self.playhead)
-                            .map(|(_, clip)| evaluate_clip_opacity(clip, self.playhead, fps_f64))
-                            .unwrap_or(1.0);
-                        let effective = track.opacity * clip_opacity;
-                        let clip = track.clip_at_timecode(self.playhead).map(|(_, c)| c.clone());
-                        (*track_idx, effective, clip)
-                    })
-                }).collect()
-            };
+        // Gather overlay clip data while holding the sequence lock, then drop
+        // the lock before calling apply_clip_effects (which needs &mut self).
+        let overlay_clip_data: Vec<(usize, f32, Option<klipp_timeline::Clip>)> = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let fps_f64 = self.fps.as_f64();
+            let overlay_tracks = seq.overlay_video_tracks(self.current_track_index);
+            overlay_tracks.iter().filter_map(|(track_idx, track)| {
+                self.overlay_frames.get(track_idx).map(|_| {
+                    let clip_opacity = track
+                        .clip_at_timecode(self.playhead)
+                        .map(|(_, clip)| evaluate_clip_opacity(clip, self.playhead, fps_f64))
+                        .unwrap_or(1.0);
+                    let effective = track.opacity * clip_opacity;
+                    let clip = track.clip_at_timecode(self.playhead).map(|(_, c)| c.clone());
+                    (*track_idx, effective, clip)
+                })
+            }).collect()
+        };
 
-            // Build the composite incrementally so adjustment layers can intercept
-            // and apply their effects to the accumulated result between layers.
-            // V1 is always the first layer (already in `layers`).
-            //
-            // Reuse the pooled composite_scratch buffer from PlaybackEngine. Take
-            // ownership via mem::take — we'll put it (or the swapped pending_data
-            // buffer) back at the end.
-            let pixel_count = (final_w * final_h) as usize;
-            let needed = pixel_count * 4;
-            let mut accumulated = std::mem::take(&mut self.composite_scratch);
-            if accumulated.len() != needed {
-                accumulated.resize(needed, 0);
-            } else {
-                accumulated.fill(0);
+        // Reuse the pooled linear scratch buffer across frames.
+        let pixel_count = (final_w * final_h) as usize;
+        let needed_f = pixel_count * 4;
+        let mut accumulated_linear = std::mem::take(&mut self.composite_scratch_linear);
+        if accumulated_linear.len() != needed_f {
+            accumulated_linear.resize(needed_f, 0.0);
+        } else {
+            accumulated_linear.fill(0.0);
+        }
+
+        // Blend V1 (always the first layer) onto the zero canvas.
+        {
+            let t_blend = std::time::Instant::now();
+            let v1_linear = u8_rgba_to_linear(&v1_graded);
+            crate::composite::blend_layer_linear(
+                &mut accumulated_linear,
+                &v1_linear,
+                v1_opacity,
+                klipp_core::BlendMode::Normal,
+            );
+            let blend_ms = t_blend.elapsed().as_secs_f64() * 1000.0;
+            tracing::trace!("PERF blend_layer pass: {blend_ms:.3}ms res={final_w}x{final_h} layer=V1");
+        }
+
+        // Each overlay clip's effects are applied before compositing so every
+        // clip renders with its own colour grade, OFX chain, and builtin effects.
+        // Adjustment layers transform the accumulated composite in-place instead
+        // of blending a new layer on top.
+        for (track_idx, effective, clip) in &overlay_clip_data {
+            if *effective <= 0.001 { continue; }
+
+            // Adjustment layer: apply its effects to the accumulated composite.
+            // apply_clip_effects still runs u8 today — convert linear → u8,
+            // run, convert back. The round-trip cost is acceptable for
+            // adjustment layers (rare, not in playback hot path).
+            if let Some(clip) = clip {
+                if matches!(clip.kind, klipp_timeline::ClipKind::AdjustmentLayer) {
+                    let clip_time = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
+                    let u8_pass = linear_rgba_to_u8(&accumulated_linear);
+                    let u8_result = self.apply_clip_effects(u8_pass, final_w, final_h, clip, clip_time);
+                    accumulated_linear = u8_rgba_to_linear(&u8_result);
+                    continue;
+                }
             }
 
-            // Blend V1 (the first layer) onto the empty canvas
-            if let Some(v1_layer) = layers.first() {
+            // Regular clip: grade its frame (u8) and blend onto accumulated linear.
+            if let Some(ov_frame) = self.overlay_frames.get(track_idx) {
+                let mut ov_rgba = ov_frame.to_rgba();
+                let (ov_w, ov_h) = (ov_frame.width, ov_frame.height);
+                if let Some(clip) = clip {
+                    let clip_time = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
+                    ov_rgba = self.apply_clip_effects(ov_rgba, ov_w, ov_h, clip, clip_time);
+                }
+                // Scale if dimensions differ (u8 space, identical pixels to before)
+                let src_u8 = if ov_w == final_w && ov_h == final_h {
+                    ov_rgba
+                } else {
+                    use image::{ImageBuffer, Rgba};
+                    let img = ImageBuffer::<Rgba<u8>, _>::from_raw(ov_w, ov_h, ov_rgba)
+                        .unwrap_or_else(|| ImageBuffer::new(final_w, final_h));
+                    let scaled = image::imageops::resize(&img, final_w, final_h, image::imageops::FilterType::Triangle);
+                    scaled.into_raw()
+                };
+                let src_linear = u8_rgba_to_linear(&src_u8);
                 let t_blend = std::time::Instant::now();
-                crate::composite::blend_layer(
-                    &mut accumulated, &v1_layer.rgba, v1_layer.opacity, v1_layer.blend_mode,
+                crate::composite::blend_layer_linear(
+                    &mut accumulated_linear,
+                    &src_linear,
+                    *effective,
+                    klipp_core::BlendMode::Normal,
                 );
                 let blend_ms = t_blend.elapsed().as_secs_f64() * 1000.0;
-                tracing::trace!("PERF blend_layer pass: {blend_ms:.3}ms res={final_w}x{final_h} layer=V1");
+                tracing::trace!(
+                    "PERF blend_layer pass: {blend_ms:.3}ms res={final_w}x{final_h} \
+                     overlay_track={track_idx}",
+                );
             }
+        }
 
-            // Each overlay clip's effects are applied before compositing so every
-            // clip renders with its own color grade, OFX chain, and builtin effects.
-            // Adjustment layers transform the accumulated composite in-place instead
-            // of blending a new layer on top.
-            for (track_idx, effective, clip) in &overlay_clip_data {
-                if *effective <= 0.001 { continue; }
-
-                // Adjustment layer: apply its effects to the accumulated composite
-                if let Some(clip) = clip {
-                    if matches!(clip.kind, klipp_timeline::ClipKind::AdjustmentLayer) {
-                        let clip_time = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
-                        accumulated = self.apply_clip_effects(accumulated, final_w, final_h, clip, clip_time);
-                        continue;
-                    }
-                }
-
-                // Regular clip: grade its frame and blend onto accumulated composite
-                if let Some(ov_frame) = self.overlay_frames.get(track_idx) {
-                    let mut ov_rgba = ov_frame.to_rgba();
-                    let (ov_w, ov_h) = (ov_frame.width, ov_frame.height);
-                    if let Some(clip) = clip {
-                        let clip_time = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
-                        ov_rgba = self.apply_clip_effects(ov_rgba, ov_w, ov_h, clip, clip_time);
-                    }
-                    // Scale if dimensions differ
-                    let src = if ov_w == final_w && ov_h == final_h {
-                        ov_rgba
-                    } else {
-                        use image::{ImageBuffer, Rgba};
-                        let img = ImageBuffer::<Rgba<u8>, _>::from_raw(ov_w, ov_h, ov_rgba)
-                            .unwrap_or_else(|| ImageBuffer::new(final_w, final_h));
-                        let scaled = image::imageops::resize(&img, final_w, final_h, image::imageops::FilterType::Triangle);
-                        scaled.into_raw()
-                    };
-                    let t_blend = std::time::Instant::now();
-                    crate::composite::blend_layer(
-                        &mut accumulated, &src, *effective, klipp_core::BlendMode::Normal,
-                    );
-                    let blend_ms = t_blend.elapsed().as_secs_f64() * 1000.0;
-                    tracing::trace!(
-                        "PERF blend_layer pass: {blend_ms:.3}ms res={final_w}x{final_h} \
-                         overlay_track={track_idx}",
-                    );
-                }
-            }
-
-            accumulated
-        };
+        // Encode the final linear composite to u8 for downstream (viewer,
+        // export, cache). Single conversion per frame, at the last step.
+        let final_rgba = linear_rgba_to_u8(&accumulated_linear);
+        // Return the linear scratch to the pool for the next frame.
+        self.composite_scratch_linear = accumulated_linear;
 
         let composite_ms = t_composite.elapsed().as_secs_f64() * 1000.0;
         let overlay_count = {
@@ -2538,8 +2582,8 @@ impl PlaybackEngine {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame_swap(&mut final_rgba, final_w, final_h);
         }
-        // Return the stale buffer (formerly pending_data) to the pool.
-        self.composite_scratch = final_rgba;
+        // Return the stale buffer (formerly pending_data) to the u8 pool.
+        self.composite_scratch_u8 = final_rgba;
 
         self.frames_consumed += 1;
 
@@ -4878,9 +4922,14 @@ impl PlaybackEngine {
             // Evaluating here means paused opacity drags update the visible composite.
             let has_overlays = !self.overlay_frames.is_empty();
             if has_overlays {
-                use crate::composite::{composite_layers, CompositeLayer};
-                let mut layers = vec![CompositeLayer {
-                    rgba: std::mem::take(&mut out),
+                // Linear-light composite: each u8 layer decodes to linear
+                // once, `composite_layers_linear` blends physically, and
+                // the final linear buffer sRGB-encodes once for
+                // downstream. Fixes gamma-averaged edges on overlay
+                // composites at the paused-regrade path.
+                use crate::composite::{composite_layers_linear, CompositeLayerLinear};
+                let mut layers = vec![CompositeLayerLinear {
+                    rgba: u8_rgba_to_linear(&std::mem::take(&mut out)),
                     width: w,
                     height: h,
                     opacity: 1.0,
@@ -4897,8 +4946,8 @@ impl PlaybackEngine {
                                 .unwrap_or(1.0);
                             let effective = track.opacity * clip_opacity;
                             if effective > 0.001 {
-                                layers.push(CompositeLayer {
-                                    rgba: ov_frame.to_rgba(),
+                                layers.push(CompositeLayerLinear {
+                                    rgba: u8_rgba_to_linear(&ov_frame.to_rgba()),
                                     width: ov_frame.width,
                                     height: ov_frame.height,
                                     opacity: effective,
@@ -4908,7 +4957,8 @@ impl PlaybackEngine {
                         }
                     }
                 }
-                out = composite_layers(&layers, w, h);
+                let linear_out = composite_layers_linear(&layers, w, h);
+                out = linear_rgba_to_u8(&linear_out);
             }
 
             // Render GPU scope texture from the graded frame
