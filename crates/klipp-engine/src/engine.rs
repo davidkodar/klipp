@@ -141,11 +141,18 @@ fn eval_effect_with_modifiers(
 struct ActiveAudioSource {
     #[allow(dead_code)]
     track_index: usize,
+    /// Media file this source is currently decoding. When a clip boundary
+    /// is crossed into a clip whose media differs, we can't just seek the
+    /// existing source — its decoder is open on the previous media file
+    /// and would play the wrong audio. seek_all_audio_to_timecode checks
+    /// this and falls back to start_all_audio when it sees a mismatch.
+    media_id: MediaId,
     source: AudioSource,
 }
 /// Pre-opened audio source ready for loop swap (created by pre-seek thread).
 struct PreSeekAudioSource {
     track_index: usize,
+    media_id: MediaId,
     source: AudioSource,
     consumer: crate::audio_decoder::AudioConsumer,
 }
@@ -1797,6 +1804,7 @@ impl PlaybackEngine {
                         self.ensure_mix_pipeline(consumer, track_index);
                         self.audio_sources.push(ActiveAudioSource {
                             track_index,
+                            media_id,
                             source: AudioSource::PcmFeeder(feeder),
                         });
                         return;
@@ -1819,6 +1827,7 @@ impl PlaybackEngine {
                 self.ensure_mix_pipeline(consumer, track_index);
                 self.audio_sources.push(ActiveAudioSource {
                     track_index,
+                    media_id,
                     source: AudioSource::Decoder(adec),
                 });
             }
@@ -1871,6 +1880,33 @@ impl PlaybackEngine {
     /// Flushes the mix pipeline, bumps seek_gen, and waits for all sources to confirm.
     fn seek_all_audio_to_timecode(&mut self, tc: Timecode) {
         if self.audio_sources.is_empty() {
+            return;
+        }
+
+        // If the clip at `tc` on any track uses a different media file than
+        // the active audio source on that track, seeking won't help — the
+        // source's decoder is open on the previous file. Delegate to
+        // start_all_audio, which stops the stale sources and opens new
+        // decoders against the correct media. Without this check the user
+        // sees clip A's audio continue playing through clip B's playback
+        // whenever advance_to_next_clip enters the preroll-hit branch with
+        // a different media on the next clip.
+        let media_changed = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            self.audio_sources.iter().any(|active| {
+                let Some(track) = seq.tracks.get(active.track_index) else {
+                    return false;
+                };
+                let Some((_, clip)) = track.clip_at_timecode(tc) else {
+                    // No clip at `tc` on this track: start_all_audio will
+                    // drop the source, which is the correct outcome too.
+                    return true;
+                };
+                clip.media_id() != Some(active.media_id)
+            })
+        };
+        if media_changed {
+            self.start_all_audio(tc);
             return;
         }
 
@@ -3162,7 +3198,7 @@ impl PlaybackEngine {
             };
 
             // Collect audio track info at target position
-            let track_audio: Vec<(usize, PathBuf, f64, Vec<klipp_core::AudioEffectInstance>)> = seq
+            let track_audio: Vec<(usize, MediaId, PathBuf, f64, Vec<klipp_core::AudioEffectInstance>)> = seq
                 .tracks
                 .iter()
                 .enumerate()
@@ -3207,7 +3243,7 @@ impl PlaybackEngine {
                         .filter(|p| p.exists())
                         .unwrap_or(decode_path);
 
-                    Some((track_idx, path, source_secs, clip.audio_effects.clone()))
+                    Some((track_idx, media_id, path, source_secs, clip.audio_effects.clone()))
                 })
                 .collect();
             drop(pool);
@@ -3215,7 +3251,7 @@ impl PlaybackEngine {
 
             // Open and seek audio sources
             let mut sources = Vec::new();
-            for (track_idx, path, source_secs, audio_effects) in track_audio {
+            for (track_idx, media_id, path, source_secs, audio_effects) in track_audio {
                 // Try PCM cache
                 if let Ok((feeder, consumer)) = PcmAudioFeeder::open(&path, sample_rate, audio_effects.clone()) {
                     if source_secs > 0.01 {
@@ -3223,6 +3259,7 @@ impl PlaybackEngine {
                     }
                     sources.push(PreSeekAudioSource {
                         track_index: track_idx,
+                        media_id,
                         source: AudioSource::PcmFeeder(feeder),
                         consumer,
                     });
@@ -3235,6 +3272,7 @@ impl PlaybackEngine {
                     }
                     sources.push(PreSeekAudioSource {
                         track_index: track_idx,
+                        media_id,
                         source: AudioSource::Decoder(adec),
                         consumer,
                     });
@@ -3299,6 +3337,7 @@ impl PlaybackEngine {
                     self.ensure_mix_pipeline(ps_source.consumer, ps_source.track_index);
                     self.audio_sources.push(ActiveAudioSource {
                         track_index: ps_source.track_index,
+                        media_id: ps_source.media_id,
                         source: ps_source.source,
                     });
                 }
