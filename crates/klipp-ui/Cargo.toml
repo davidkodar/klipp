@@ -32,4 +32,5 @@ walkdir = { workspace = true }
 notify = { workspace = true }
 egui_extras = { workspace = true }
 chrono = { workspace = true }
+bytemuck = { workspace = true }
 libc = "0.2"

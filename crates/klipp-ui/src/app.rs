@@ -5211,12 +5211,25 @@ impl KlippApp {
 
                 if let Some((pcm_bytes, sample_rate, channels)) = pcm_data {
                     used_pcm = true;
-                    // SAFETY: PCM cache files are written as f32 slices by audio_cache::conform_audio
-                    let samples: &[f32] = unsafe {
-                        std::slice::from_raw_parts(
-                            pcm_bytes.as_ptr() as *const f32,
-                            pcm_bytes.len() / std::mem::size_of::<f32>(),
-                        )
+                    // Reinterpret the cache bytes as f32 samples. Using
+                    // bytemuck rather than slice::from_raw_parts: the
+                    // Vec<u8> from fs::read is only byte-aligned, and a
+                    // raw cast would produce an unaligned &[f32] — UB on
+                    // any target that enforces alignment on f32 loads.
+                    // bytemuck::try_cast_slice checks alignment and
+                    // length at runtime; on a misaligned cache we fall
+                    // back to a chunk-decode copy so the analysis still
+                    // runs instead of silently corrupting its input.
+                    let owned_samples: Vec<f32>;
+                    let samples: &[f32] = match bytemuck::try_cast_slice::<u8, f32>(&pcm_bytes) {
+                        Ok(s) => s,
+                        Err(_) => {
+                            owned_samples = pcm_bytes
+                                .chunks_exact(std::mem::size_of::<f32>())
+                                .map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+                                .collect();
+                            &owned_samples
+                        }
                     };
                     let window_samples = (sample_rate as f64 * 0.05) as usize * channels as usize; // 50ms windows
                     if window_samples == 0 { continue; }
