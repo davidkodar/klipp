@@ -95,7 +95,7 @@ pub fn load_grade_stills(project_dir: &Path) -> Vec<GradeStillData> {
             return Vec::new();
         }
     };
-    let metas: Vec<GradeStillMeta> = match serde_json::from_str(&index_str) {
+    let mut metas: Vec<GradeStillMeta> = match serde_json::from_str(&index_str) {
         Ok(v) => v,
         Err(e) => {
             warn!("Failed to parse stills index: {e}");
@@ -103,9 +103,35 @@ pub fn load_grade_stills(project_dir: &Path) -> Vec<GradeStillData> {
         }
     };
 
+    // Cap entry count so a crafted stills.json claiming a billion entries
+    // can't allocate a billion-sized Vec up front.
+    const MAX_STILLS: usize = 10_000;
+    if metas.len() > MAX_STILLS {
+        warn!(
+            "Stills index claims {} entries (cap is {MAX_STILLS}) — truncating",
+            metas.len(),
+        );
+        metas.truncate(MAX_STILLS);
+    }
+
     let stills_dir = stills_dir(project_dir);
     let mut out = Vec::with_capacity(metas.len());
     for meta in metas {
+        // Reject filenames that try to escape the stills directory via
+        // path components or absolute paths. stills.json is user-writable
+        // via the project folder, so treat it as untrusted.
+        if meta.filename.is_empty()
+            || meta.filename.contains('/')
+            || meta.filename.contains('\\')
+            || meta.filename.contains("..")
+            || Path::new(&meta.filename).is_absolute()
+        {
+            warn!(
+                "Grade still filename rejected (path components or absolute): {:?}",
+                meta.filename,
+            );
+            continue;
+        }
         let png_path = stills_dir.join(&meta.filename);
         let img = match image::open(&png_path) {
             Ok(i) => i.to_rgba8(),
