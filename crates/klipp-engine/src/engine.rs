@@ -411,6 +411,12 @@ pub struct PlaybackEngine {
     /// Current grade hash for the active clip (cached to avoid recomputing per frame).
     current_grade_hash: u64,
     current_grade_clip_id: Option<klipp_core::ClipId>,
+    /// True while a colour-grade parameter gesture is in flight. Set
+    /// by BeginNodeParamEdit, cleared by EndNodeParamEdit. Used to
+    /// skip the render cache during slider scrubbing — grade_hash
+    /// changes every tick, so the cache misses every read and pays
+    /// for a write it won't reuse.
+    in_node_param_edit: bool,
     // OFX plugin host — applies per-clip effects chain after color grade
     ofx_host: klipp_plugin::OfxHost,
     // GPU effects pipeline — compute shaders for built-in effects
@@ -650,6 +656,7 @@ impl PlaybackEngine {
             render_cache_disk,
             current_grade_hash: 0,
             current_grade_clip_id: None,
+            in_node_param_edit: false,
             ofx_host,
             gpu_effects: None, // lazily initialized on first use
             gpu_effects_failed: false,
@@ -1241,6 +1248,20 @@ impl PlaybackEngine {
                     self.update_overlay_decoders(self.playhead);
                     self.regrade_cached_frame();
                 }
+            }
+
+            // Gesture boundaries for a colour-grade parameter drag. The UI
+            // dispatches these around every slider/knob drag (see
+            // panels::node_inspector) and the UI side also uses them to
+            // bracket undo history. We piggy-back on the signal to skip the
+            // render cache while a gesture is in flight — grade_hash changes
+            // every tick during a drag, so the cache misses every read and
+            // pays for a 6 MB compressed write that will never be reused.
+            AppCommand::BeginNodeParamEdit { .. } => {
+                self.in_node_param_edit = true;
+            }
+            AppCommand::EndNodeParamEdit { .. } => {
+                self.in_node_param_edit = false;
             }
 
             // UI-side commands — engine ignores them
@@ -4926,8 +4947,16 @@ impl PlaybackEngine {
         // ── Smart render cache: check for cached graded frame ──
         // Skip render cache when overlays are present — cache keys don't represent
         // multi-clip composite state. V1-only playback still benefits from the cache.
+        //
+        // Also skip the render cache while a colour-grade slider drag is in
+        // flight. The grade hash changes every UI tick during a drag, so a
+        // read would always miss and a write would burn ~6 MB of LZ4 for an
+        // entry that never gets reused (203 evictions + 34 decompress races
+        // in a 60 s scrub session). Nulling `cache_key` makes both the read
+        // block and the write block skip naturally. Playback without an
+        // active gesture still gets the full cache benefit.
         let has_overlays = !self.overlay_frames.is_empty();
-        let cache_key = if has_overlays {
+        let cache_key = if has_overlays || self.in_node_param_edit {
             None
         } else {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
