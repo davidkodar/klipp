@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -6,9 +7,24 @@ use klipp_color::lut::LutData;
 use klipp_color::pipeline::CurveLuts;
 use klipp_effects::gpu::GpuEffectsPipeline;
 
-use crate::graph::{NodeGraph, NodeId};
+use crate::graph::{Node, NodeGraph, NodeId};
 use crate::kinds::NodeKind;
 use crate::params::NodeParams;
+
+/// Return the effective params for `node` at `clip_time_secs`. When the node has
+/// no keyframes we borrow `node.params` directly, skipping the per-frame clone
+/// that would otherwise happen on every node in the graph.
+fn params_for_frame(node: &Node, clip_time_secs: f64) -> Cow<'_, NodeParams> {
+    if node.keyframes.is_empty() {
+        Cow::Borrowed(&node.params)
+    } else {
+        let mut params = node.params.clone();
+        for (param_name, value) in node.keyframes.evaluate_all(clip_time_secs) {
+            params.apply_override(&param_name, value);
+        }
+        Cow::Owned(params)
+    }
+}
 
 /// Error during graph execution.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -319,11 +335,11 @@ impl GraphExecutor {
                 continue;
             }
 
-            // Evaluate keyframes — override params at current clip time
-            let mut params = node.params.clone();
-            for (param_name, value) in node.keyframes.evaluate_all(clip_time_secs) {
-                params.apply_override(&param_name, value);
-            }
+            // Evaluate keyframes — override params at current clip time.
+            // Borrow `node.params` directly when there are no keyframes (the
+            // common case); only clone + mutate when keyframe tracks exist.
+            let params_cow = params_for_frame(node, clip_time_secs);
+            let params = &*params_cow;
 
             // ── GPU chain fast-path ────────────────────────────────────
             // Does this node extend an active chain? If so, dispatch on
@@ -332,13 +348,13 @@ impl GraphExecutor {
             // params — a keyframe may have flipped ColorWheels into
             // log-mode (CPU-only), which we can't dispatch.
             if can_extend_chain
-                && self.node_supports_gpu_chain(&node.kind, &params)
+                && self.node_supports_gpu_chain(&node.kind, params)
                 && self.gpu.is_some()
             {
                 // Current input lives in the slot named by chain_slot_a.
                 // Dispatch reads from that slot, writes to the opposite.
                 if self.dispatch_chain_node_slots(
-                    node_id, &node.kind, &params, width, height, frame_number,
+                    node_id, &node.kind, params, width, height, frame_number,
                     /* in_is_a = */ chain_slot_a,
                 ) {
                     chain_slot_a = !chain_slot_a;
@@ -371,7 +387,7 @@ impl GraphExecutor {
             // primary input resolved from a CPU-resident Vec (or source).
             let can_start_chain = self.gpu.is_some()
                 && !bypass
-                && self.node_supports_gpu_chain(&node.kind, &params)
+                && self.node_supports_gpu_chain(&node.kind, params)
                 && Some(node_id) != matte_preview_node
                 && Some(node_id) != matte_tap;
             if can_start_chain {
@@ -383,7 +399,7 @@ impl GraphExecutor {
                 if self.start_chain(
                     node_id,
                     &node.kind,
-                    &params,
+                    params,
                     primary_cpu,
                     width,
                     height,
@@ -425,7 +441,7 @@ impl GraphExecutor {
             let output = self.execute_node(
                 node.id,
                 &node.kind,
-                &params,
+                params,
                 primary_slice,
                 secondary_slice,
                 tertiary_slice,

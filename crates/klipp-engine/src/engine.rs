@@ -411,6 +411,11 @@ pub struct PlaybackEngine {
     /// Current grade hash for the active clip (cached to avoid recomputing per frame).
     current_grade_hash: u64,
     current_grade_clip_id: Option<klipp_core::ClipId>,
+    /// Arc-cached NodeGraph for the current clip. Reused across frames while the
+    /// clip is active — a fresh Arc is constructed only when the clip switches
+    /// or the graph mutates (invalidated alongside `current_grade_hash`).
+    /// Avoids cloning ~13 nodes + edges + params every frame of `post_process_rgba_inner`.
+    current_graph_arc: Option<Arc<klipp_nodes::NodeGraph>>,
     /// True while a colour-grade parameter gesture is in flight. Set
     /// by BeginNodeParamEdit, cleared by EndNodeParamEdit. Used to
     /// skip the render cache during slider scrubbing — grade_hash
@@ -656,6 +661,7 @@ impl PlaybackEngine {
             render_cache_disk,
             current_grade_hash: 0,
             current_grade_clip_id: None,
+            current_graph_arc: None,
             in_node_param_edit: false,
             ofx_host,
             gpu_effects: None, // lazily initialized on first use
@@ -1181,8 +1187,11 @@ impl PlaybackEngine {
             }
 
             AppCommand::SequenceUpdated => {
-                // Invalidate grade hash so render cache re-checks on next frame
+                // Invalidate grade hash so render cache re-checks on next frame.
+                // Also drop the cached graph Arc — the graph may have mutated,
+                // so a fresh snapshot must be built on the next `post_process_rgba_inner`.
                 self.current_grade_hash = 0;
+                self.current_graph_arc = None;
                 // Sync per-clip volume/pan to active audio sources
                 self.sync_clip_volumes();
                 // Restart audio sources only when audio-relevant state changed.
@@ -1816,6 +1825,7 @@ impl PlaybackEngine {
         self.last_synth_frame_rendered = None;
         self.current_grade_hash = 0;
         self.current_grade_clip_id = None;
+        self.current_graph_arc = None;
 
         // Reset playhead and per-clip state
         self.playhead = RationalTime::from_frames(0, self.fps.rate());
@@ -5251,7 +5261,25 @@ impl PlaybackEngine {
         // the seq lock drops. Some() only when we actually have a clip.
         let current_clip_id: Option<klipp_core::ClipId> = clip.map(|c| c.id);
         let ofx_effects = clip.map(|c| c.effects.clone()).unwrap_or_default();
-        let node_graph = clip.map(|c| c.node_graph.clone());
+        // Reuse the cached Arc<NodeGraph> when the current clip still matches.
+        // The Arc is invalidated on SequenceUpdated (graph mutation) and on clip
+        // switch, so a cache hit here means we can skip the multi-kB node/edge/
+        // params clone entirely — we just bump the refcount.
+        let node_graph: Option<Arc<klipp_nodes::NodeGraph>> = if let Some(c) = clip {
+            let cache_hit = self.current_graph_arc.is_some()
+                && self.current_grade_clip_id == Some(c.id);
+            if cache_hit {
+                // Safe unwrap: cache_hit checks is_some().
+                Some(Arc::clone(self.current_graph_arc.as_ref().unwrap()))
+            } else {
+                let arc = Arc::new(c.node_graph.clone());
+                self.current_graph_arc = Some(Arc::clone(&arc));
+                self.current_grade_clip_id = Some(c.id);
+                Some(arc)
+            }
+        } else {
+            None
+        };
         let rsc_clip_id_hash = clip.map(|c| c.id.0.as_u64_pair().0).unwrap_or(0);
         let rsc_media_id = clip.and_then(|c| c.media_id());
         let clip_time_secs = clip.map(|_c| {
