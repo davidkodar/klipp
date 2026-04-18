@@ -1193,6 +1193,9 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
+        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+        // queue drains between submits. See submit_chain for context.
+        self.device.poll(wgpu::Maintain::Poll);
 
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
@@ -1310,6 +1313,9 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
+        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+        // queue drains between submits. See submit_chain for context.
+        self.device.poll(wgpu::Maintain::Poll);
 
         // 3. Find max bin count for normalisation. On the cold path
         // we read the bins back from GPU to find the true max; that
@@ -1369,6 +1375,9 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups((out_pixels as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
+        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+        // queue drains between submits. See submit_chain for context.
+        self.device.poll(wgpu::Maintain::Poll);
 
         self.scope_download(out_pixels)
     }
@@ -1416,6 +1425,9 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
+        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+        // queue drains between submits. See submit_chain for context.
+        self.device.poll(wgpu::Maintain::Poll);
 
         // Find max count — cached across frames, same as waveform.
         let max_count = if self.scope_pd_refresh > 0 {
@@ -1470,6 +1482,9 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups((out_pixels as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
+        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+        // queue drains between submits. See submit_chain for context.
+        self.device.poll(wgpu::Maintain::Poll);
 
         self.scope_download(out_pixels)
     }
@@ -1514,6 +1529,9 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
+        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+        // queue drains between submits. See submit_chain for context.
+        self.device.poll(wgpu::Maintain::Poll);
 
         // Find max — cached across frames, same as waveform.
         let max_count = if self.scope_hi_refresh > 0 {
@@ -1568,6 +1586,9 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups((out_pixels as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
+        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+        // queue drains between submits. See submit_chain for context.
+        self.device.poll(wgpu::Maintain::Poll);
 
         self.scope_download(out_pixels)
     }
@@ -1638,6 +1659,9 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
+        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+        // queue drains between submits. See submit_chain for context.
+        self.device.poll(wgpu::Maintain::Poll);
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
@@ -1693,6 +1717,9 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
+        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+        // queue drains between submits. See submit_chain for context.
+        self.device.poll(wgpu::Maintain::Poll);
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
@@ -1834,6 +1861,9 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
+        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+        // queue drains between submits. See submit_chain for context.
+        self.device.poll(wgpu::Maintain::Poll);
 
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
@@ -1909,6 +1939,9 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
+        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+        // queue drains between submits. See submit_chain for context.
+        self.device.poll(wgpu::Maintain::Poll);
 
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
@@ -2874,6 +2907,9 @@ impl GpuEffectsPipeline {
                         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
                         enc.copy_buffer_to_buffer(input, 0, buf_c, 0, byte_size);
                         self.queue.submit(Some(enc.finish()));
+                        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+                        // queue drains between submits. See submit_chain for context.
+                        self.device.poll(wgpu::Maintain::Poll);
                     }
 
                     let boxes = crate::blur::boxes_for_gaussian(*radius);
@@ -2945,6 +2981,9 @@ impl GpuEffectsPipeline {
                         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
                         enc.copy_buffer_to_buffer(input, 0, buf_c, 0, byte_size);
                         self.queue.submit(Some(enc.finish()));
+                        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+                        // queue drains between submits. See submit_chain for context.
+                        self.device.poll(wgpu::Maintain::Poll);
                     }
                     let boxes = crate::blur::boxes_for_gaussian(*wrap_w * *softness);
                     for &box_r in &boxes {
@@ -3006,6 +3045,9 @@ impl GpuEffectsPipeline {
                       pass.dispatch_workgroups(workgroups, 1, 1);
                     }
                     self.queue.submit(Some(enc.finish()));
+                    // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+                    // queue drains between submits. See submit_chain for context.
+                    self.device.poll(wgpu::Maintain::Poll);
                     current_in_a = !current_in_a;
                 }
                 BuiltinEffect::Invert { mix } => {
@@ -3313,6 +3355,9 @@ impl GpuEffectsPipeline {
                         pass.dispatch_workgroups(workgroups, 1, 1);
                     }
                     self.queue.submit(std::iter::once(encoder.finish()));
+                    // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+                    // queue drains between submits. See submit_chain for context.
+                    self.device.poll(wgpu::Maintain::Poll);
 
                     current_in_a = !current_in_a;
                 }
@@ -3371,6 +3416,9 @@ impl GpuEffectsPipeline {
                         pass.dispatch_workgroups(workgroups, 1, 1);
                     }
                     self.queue.submit(std::iter::once(enc.finish()));
+                    // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+                    // queue drains between submits. See submit_chain for context.
+                    self.device.poll(wgpu::Maintain::Poll);
                     current_in_a = !current_in_a;
                 }
                 BuiltinEffect::VideoStabilization { crop_ratio, zoom, .. } => {
@@ -3398,6 +3446,9 @@ impl GpuEffectsPipeline {
                         pass.dispatch_workgroups(workgroups, 1, 1);
                     }
                     self.queue.submit(std::iter::once(enc.finish()));
+                    // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+                    // queue drains between submits. See submit_chain for context.
+                    self.device.poll(wgpu::Maintain::Poll);
                     current_in_a = !current_in_a;
                 }
                 BuiltinEffect::Vibrance { .. } => {
@@ -3719,6 +3770,9 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
+        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+        // queue drains between submits. See submit_chain for context.
+        self.device.poll(wgpu::Maintain::Poll);
 
         self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
@@ -3747,6 +3801,9 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         self.queue.submit(Some(enc.finish()));
+        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+        // queue drains between submits. See submit_chain for context.
+        self.device.poll(wgpu::Maintain::Poll);
     }
 
     /// Dispatch glow blend: screen blend of blurred (buf_c) onto original (input) → output
@@ -3773,6 +3830,9 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         self.queue.submit(Some(enc.finish()));
+        // Non-blocking driver nudge so NVIDIA Vulkan's deferred-destruction
+        // queue drains between submits. See submit_chain for context.
+        self.device.poll(wgpu::Maintain::Poll);
     }
 }
 
