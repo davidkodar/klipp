@@ -315,7 +315,7 @@ pub struct PlaybackEngine {
     // Keyed by track_index (the index in sequence.tracks).
     overlay_decoders: HashMap<usize, VideoDecoder>,
     overlay_clips: HashMap<usize, usize>,        // track_index -> clip_index within that track
-    overlay_frames: HashMap<usize, crate::types::DecodedFrame>, // track_index -> latest decoded/rendered frame
+    overlay_frames: HashMap<usize, crate::types::LinearFrame>, // track_index -> latest decoded/rendered frame (linear f32 RGBA)
     overlay_synth_frame: HashMap<usize, i64>,    // track_index -> last rendered frame number (for synthetic clip caching)
     // Audio — one source per active track, mixed through mix thread
     audio_sources: Vec<ActiveAudioSource>,
@@ -2491,7 +2491,10 @@ impl PlaybackEngine {
                             // Store the raw overlay frame WITHOUT baking clip opacity in.
                             // Clip opacity is now applied at composite time so paused
                             // opacity drags update the visible frame.
-                            self.overlay_frames.insert(track_idx, ovf.to_srgb_u8());
+                            // Store linear-f32 directly — the composite path is linear,
+                            // so the old sRGB u8 round-trip (~10 ms on 1920x818) was
+                            // pure waste on the hot path.
+                            self.overlay_frames.insert(track_idx, ovf);
                             break;
                         } else {
                             break;
@@ -2590,10 +2593,12 @@ impl PlaybackEngine {
             // match the sequence size.
             if let Some(ov_frame) = self.overlay_frames.get(track_idx) {
                 let (ov_w, ov_h) = (ov_frame.width, ov_frame.height);
-                // `overlay_frames` stores sRGB u8 (DecodedFrame) —
-                // decode to linear once per overlay, then stay linear
-                // for the grade + blend.
-                let mut ov_linear = u8_rgba_to_linear(&ov_frame.data);
+                // `overlay_frames` now stores linear f32 RGBA directly —
+                // no u8↔linear round-trip on the hot path. Clone the
+                // pixel buffer once so downstream effects/blend can own
+                // it; the map keeps its authoritative copy for the
+                // next frame.
+                let mut ov_linear = ov_frame.data.clone();
                 if let Some(clip) = clip {
                     let clip_time = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
                     ov_linear = self.apply_clip_effects(ov_linear, ov_w, ov_h, clip, clip_time);
@@ -2604,7 +2609,8 @@ impl PlaybackEngine {
                     use image::{ImageBuffer, Rgba};
                     // Resize path: linear → u8 → resize → u8 → linear.
                     // Inevitable while imageops is u8-only; localised to
-                    // just the mismatched-dim case.
+                    // just the mismatched-dim case. The main case
+                    // (dims match) stays fully linear.
                     let ov_rgba = linear_rgba_to_u8(&ov_linear);
                     let img = ImageBuffer::<Rgba<u8>, _>::from_raw(ov_w, ov_h, ov_rgba)
                         .unwrap_or_else(|| ImageBuffer::new(final_w, final_h));
@@ -3225,13 +3231,17 @@ impl PlaybackEngine {
                     }
                 }
 
-                self.overlay_frames.insert(track_idx, crate::types::DecodedFrame {
+                // Title renderer is u8-only; bridge to linear once
+                // here so `overlay_frames` stays linear-native for the
+                // compositor (which runs every frame).
+                let u8_frame = crate::types::DecodedFrame {
                     data: rgba,
                     width: res.width,
                     height: res.height,
                     pts: RationalTime::from_frames(0, 24),
                     is_eof: false,
-                });
+                };
+                self.overlay_frames.insert(track_idx, u8_frame.to_linear());
                 self.overlay_clips.insert(track_idx, clip_idx);
                 self.overlay_synth_frame.insert(track_idx, current_frame);
                 continue;
@@ -3256,13 +3266,17 @@ impl PlaybackEngine {
                 // Note: clip-level opacity is NOT baked in here. It is applied at
                 // composite time so paused opacity drags update the visible frame.
 
-                self.overlay_frames.insert(track_idx, crate::types::DecodedFrame {
+                // Generator renderer is u8-only; bridge to linear once
+                // here so `overlay_frames` stays linear-native for the
+                // compositor.
+                let u8_frame = crate::types::DecodedFrame {
                     data: rgba,
                     width: res.width,
                     height: res.height,
                     pts: RationalTime::from_frames(0, 24),
                     is_eof: false,
-                });
+                };
+                self.overlay_frames.insert(track_idx, u8_frame.to_linear());
                 self.overlay_clips.insert(track_idx, clip_idx);
                 self.overlay_synth_frame.insert(track_idx, current_frame);
                 continue;
@@ -5112,8 +5126,11 @@ impl PlaybackEngine {
                                 .unwrap_or(1.0);
                             let effective = track.opacity * clip_opacity;
                             if effective > 0.001 {
+                                // overlay_frames is already linear f32 —
+                                // clone the buffer instead of doing a
+                                // 12 ms u8→linear decode per regrade.
                                 layers.push(CompositeLayerLinear {
-                                    rgba: u8_rgba_to_linear(&ov_frame.data),
+                                    rgba: ov_frame.data.clone(),
                                     width: ov_frame.width,
                                     height: ov_frame.height,
                                     opacity: effective,
