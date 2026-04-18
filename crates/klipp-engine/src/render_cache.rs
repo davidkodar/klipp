@@ -252,6 +252,13 @@ impl DiskRenderCache {
     }
 
     /// Read a cached frame from disk. Returns (rgba, width, height) or None.
+    ///
+    /// File layout (see [`Self::put`] for the writer):
+    ///   bytes 0..4   : width  (u32 little-endian)
+    ///   bytes 4..8   : height (u32 little-endian)
+    ///   bytes 8..    : LZ4 payload produced by `lz4_flex::compress_prepend_size`
+    ///                  (the payload carries its own 4-byte uncompressed-size
+    ///                  header, so we pair it with `decompress_size_prepended`).
     pub fn get(&mut self, key: &RenderCacheKey) -> Option<(Vec<u8>, u32, u32)> {
         if !self.enabled { return None; }
         let filename = key.filename();
@@ -264,8 +271,7 @@ impl DiskRenderCache {
                 // Header: width (u32) + height (u32) + LZ4 compressed RGBA
                 let width = u32::from_le_bytes([compressed[0], compressed[1], compressed[2], compressed[3]]);
                 let height = u32::from_le_bytes([compressed[4], compressed[5], compressed[6], compressed[7]]);
-                let expected_size = (width * height * 4) as usize;
-                match lz4_flex::decompress(&compressed[8..], expected_size) {
+                match lz4_flex::decompress_size_prepended(&compressed[8..]) {
                     Ok(rgba) => Some((rgba, width, height)),
                     Err(e) => {
                         warn!("Render cache decompress failed: {e}");
@@ -280,6 +286,13 @@ impl DiskRenderCache {
     }
 
     /// Store a graded frame to disk cache.
+    ///
+    /// File layout (paired with [`Self::get`]):
+    ///   bytes 0..4   : width  (u32 little-endian)
+    ///   bytes 4..8   : height (u32 little-endian)
+    ///   bytes 8..    : LZ4 payload produced by `lz4_flex::compress_prepend_size`
+    ///                  (self-describing — carries the uncompressed size in its
+    ///                  own 4-byte prefix).
     pub fn put(&mut self, key: &RenderCacheKey, rgba: &[u8], width: u32, height: u32) {
         if !self.enabled { return; }
 
@@ -608,6 +621,52 @@ mod tests {
         // total_bytes should track remaining-on-disk, which is just key2's
         // file (or nothing, if cap=1 evicts that too).
         assert!(cache.total_bytes <= cache.max_size_bytes + payload.len() as u64 + 8);
+    }
+
+    #[test]
+    fn round_trip_put_then_get() {
+        // Regression: `put` writes `compress_prepend_size` but `get` used
+        // `decompress` on `compressed[8..]` — so the 4-byte size prefix that
+        // `compress_prepend_size` embeds was fed to the raw decoder as
+        // compressed payload, producing "offset to copy is not contained in
+        // the decompressed buffer" warnings and silent cache misses.
+        //
+        // This test closes that gap: put a known buffer, read it straight
+        // back, assert the bytes match exactly — and assert the matching
+        // width/height come through.
+        let tmp = TmpDir::new("round_trip");
+        let mut cache = DiskRenderCache::new(tmp.path().to_path_buf(), 20);
+
+        let width: u32 = 64;
+        let height: u32 = 48;
+        let len = (width * height * 4) as usize;
+
+        // Non-trivial buffer: mix compressible runs with pseudo-random bytes
+        // so both LZ4 paths (back-references and literal runs) get exercised.
+        let mut rgba = vec![0u8; len];
+        let mut s: u64 = 0xC0FF_EE00_1234_5678;
+        for (i, b) in rgba.iter_mut().enumerate() {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            *b = if i % 8 < 4 { 0xAB } else { s as u8 };
+        }
+
+        let key = make_key(99);
+        cache.put(&key, &rgba, width, height);
+
+        let (got, got_w, got_h) = cache
+            .get(&key)
+            .expect("round-trip: entry must be readable after put");
+        assert_eq!(got_w, width, "width must round-trip");
+        assert_eq!(got_h, height, "height must round-trip");
+        assert_eq!(got.len(), rgba.len(), "decompressed length must match");
+        assert_eq!(got, rgba, "round-trip bytes must match input");
+
+        // Sanity: the file must still exist on disk after the successful
+        // `get` — `get` only deletes on decompress failure.
+        let path = tmp.path().join(key.filename());
+        assert!(path.exists(), "successful get must not delete the entry");
     }
 
     #[test]
