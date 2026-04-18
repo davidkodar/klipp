@@ -248,9 +248,41 @@ impl GraphExecutor {
                 && Some(node_id) != matte_preview_node
                 && Some(node_id) != matte_tap;
 
+            // Bypass tunnel: a bypass node whose primary input IS the
+            // current chain tail doesn't touch pixels, so we can rename
+            // the tail to this node and keep the chain GPU-resident.
+            // The next non-bypass chain-capable node will extend off
+            // `node.id` naturally.
+            //
+            // Preconditions matching `can_extend_chain`'s bypass-relevant
+            // guards: fan-out 1 (anything else needs a CPU copy the Arc
+            // passthrough would supply), and not a matte tap / preview
+            // (those need real data off the GPU).
+            let bypass_tunnelable = bypass
+                && node.kind != NodeKind::Source
+                && node.kind != NodeKind::Output
+                && chain_tail.is_some()
+                && primary_is_chain_tail
+                && fan_out.get(&node.id).copied().unwrap_or(0) <= 1
+                && Some(node_id) != matte_tap
+                && Some(node_id) != matte_preview_node;
+            if bypass_tunnelable {
+                // Tunnel: chain stays on GPU, tail renames to this node.
+                // Empty-Vec sentinel mirrors the chain-extend path at
+                // line ~320 — downstream sees the ID exists, and when it
+                // checks `primary_is_chain_tail` it'll be true, so the
+                // chain extends or flushes off the GPU buffer rather
+                // than reading this sentinel.
+                node_outputs.insert(node.id, Arc::new(Vec::new()));
+                chain_tail = Some(node.id);
+                // chain_slot_a unchanged — no dispatch happened
+                continue;
+            }
+
             // If a chain is live and this node can't extend it, flush
             // before proceeding. This covers:
             //   - bypass / default-param nodes consuming the chain tail
+            //     that can't tunnel (fan-out > 1, matte tap/preview)
             //   - Output node (terminal)
             //   - matte generators + multi-input nodes (CombineMattes,
             //     ApplyMatte, Blend, Layer, Mask, Qualifier) which either
@@ -2073,6 +2105,42 @@ mod tests {
 
         let frame = vec![
             100u8, 150, 200, 255, 200, 150, 100, 255, 50, 100, 150, 255, 128, 128, 128, 255,
+        ];
+        let (gpu_out, _) = gpu_executor.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+        let (cpu_out, _) = cpu_executor.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+
+        assert_eq!(gpu_out.len(), cpu_out.len());
+        for (i, (g, c)) in gpu_out.iter().zip(cpu_out.iter()).enumerate() {
+            assert!(
+                (*g as i32 - *c as i32).abs() <= 5,
+                "byte {i}: GPU chain {g} vs CPU {c} differ by > 5",
+            );
+        }
+    }
+
+    #[test]
+    fn chain_tunnels_through_bypass() {
+        // Exposure (active) → [9 default-param nodes between] → ColorBalance
+        // (active). The chain must stay GPU-resident across the bypassed
+        // nodes; output must match CPU reference.
+        let mut gpu_executor = GraphExecutor::new();
+        if gpu_executor.gpu.is_none() {
+            return;
+        }
+        let mut cpu_executor = GraphExecutor::new_cpu_only();
+
+        let mut graph = default_graph();
+        graph.nodes.iter_mut()
+            .find(|n| n.kind == NodeKind::Exposure)
+            .unwrap()
+            .params.exposure = Some(0.6);
+        graph.nodes.iter_mut()
+            .find(|n| n.kind == NodeKind::ColorBalance)
+            .unwrap()
+            .params.temperature = Some(0.2);
+
+        let frame = vec![
+            110u8, 140, 190, 255, 210, 140, 90, 255, 60, 110, 160, 255, 130, 130, 130, 255,
         ];
         let (gpu_out, _) = gpu_executor.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
         let (cpu_out, _) = cpu_executor.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
