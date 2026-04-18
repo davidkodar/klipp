@@ -92,6 +92,9 @@ notify = "6"
 # Channels / messaging between threads
 crossbeam-channel = "0.5"
 
+# Lock-free MPSC/SPSC queues (ArrayQueue used for UI→engine param change batching)
+crossbeam-queue = "0.3"
+
 # Dynamic library loading (OFX plugins)
 libloading = "0.8"
 

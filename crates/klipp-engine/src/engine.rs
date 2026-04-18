@@ -196,7 +196,8 @@ struct LoopPreSeekResult {
 }
 
 use crossbeam_channel::{Receiver, Sender};
-use klipp_core::{AppCommand, AppEvent, Fps, MediaId, RationalTime, Resolution, Timecode};
+use crossbeam_queue::ArrayQueue;
+use klipp_core::{AppCommand, AppEvent, Fps, MediaId, ParamChange, RationalTime, Resolution, Timecode};
 use klipp_media::MediaPool;
 use klipp_timeline::Sequence;
 use std::collections::HashMap;
@@ -284,10 +285,64 @@ impl FrameCache {
     }
 }
 
+/// Bound on the lock-free param-change queue. 256 entries is roughly 2 seconds
+/// of 120 Hz slider scrubbing; overflow drops oldest (see
+/// [`PlaybackEngine::drain_param_changes`]) because the user won't perceive the
+/// loss — every subsequent tick carries the current absolute value.
+pub const PARAM_CHANGE_QUEUE_CAPACITY: usize = 256;
+
+/// Drain a `ParamChange` queue into a shared `Sequence`. Pure helper — no
+/// dependency on `PlaybackEngine` state so tests can exercise it without
+/// constructing a full engine (and without the engine's audio/ffmpeg deps).
+///
+/// - Takes the sequence write lock at most once (only if the queue is
+///   non-empty).
+/// - Applies every queued change by looking up the clip across all tracks via
+///   `Sequence::all_clips_mut()`.
+/// - Invalidates `grade_hash` / `graph_arc` so the render cache and the
+///   engine's cached graph Arc rebuild on the next frame.
+///
+/// Returns the number of changes applied. Entries whose clip or node can no
+/// longer be found are silently dropped — the UI may have deleted the clip
+/// between the push and this drain.
+pub fn apply_param_changes(
+    sequence: &Arc<RwLock<Sequence>>,
+    queue: &Arc<ArrayQueue<ParamChange>>,
+    grade_hash: &mut u64,
+    graph_arc: &mut Option<Arc<klipp_nodes::NodeGraph>>,
+) -> usize {
+    // Fast path — no write lock if nothing to do. `len` on ArrayQueue is O(1).
+    if queue.is_empty() {
+        return 0;
+    }
+    let mut applied = 0usize;
+    let mut seq = sequence.write().unwrap_or_else(|e| e.into_inner());
+    while let Some(change) = queue.pop() {
+        if let Some(clip) = seq.all_clips_mut().find(|c| c.id == change.clip_id) {
+            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == change.node_id) {
+                node.params.apply_override(&change.param, change.value);
+                applied += 1;
+            }
+        }
+    }
+    if applied > 0 {
+        *grade_hash = 0;
+        *graph_arc = None;
+    }
+    applied
+}
+
 pub struct PlaybackEngine {
     cmd_rx: Receiver<AppCommand>,
     event_tx: Sender<AppEvent>,
     frame_buffer: SharedFrameBuffer,
+    /// Param changes queued by the UI's `SetNodeParam` handler. Drained at
+    /// the start of each `update_playback` (and before seek/pre-render)
+    /// so the engine sees the latest graph with exactly ONE write-lock
+    /// acquisition per frame, regardless of how many slider ticks the
+    /// UI produced. Avoids per-tick contention with the engine's long
+    /// `sequence.read()` during active grading.
+    param_change_queue: Arc<ArrayQueue<ParamChange>>,
     /// Shared per-frame performance telemetry. UI reads it for the
     /// overlay and session export; the engine writes one entry per
     /// `post_process_rgba` call. Behind a mutex because both sides
@@ -511,6 +566,29 @@ impl PlaybackEngine {
         self.spectrum_sample_rate
     }
 
+    /// Handle to the lock-free param-change queue. The UI clones this and
+    /// pushes `ParamChange` entries from its `SetNodeParam` handler (60-120 Hz
+    /// during a colour-grade scrub). The engine drains the queue once per
+    /// frame with a single write-lock acquisition — see
+    /// [`Self::drain_param_changes`]. Exposed as `Arc` so callers can clone
+    /// without cost.
+    pub fn param_change_queue(&self) -> Arc<ArrayQueue<ParamChange>> {
+        self.param_change_queue.clone()
+    }
+
+    /// Apply every queued `ParamChange` to `self.sequence`. Takes the write
+    /// lock at most once (when the first entry is popped) and releases it when
+    /// the queue is empty. Also invalidates `current_grade_hash` and
+    /// `current_graph_arc` so the render cache and node-graph Arc rebuild on
+    /// the next frame, mirroring what `AppCommand::SequenceUpdated` does.
+    ///
+    /// Called at the start of `update_playback`, once per engine tick.
+    /// Safe to call when the queue is empty — returns immediately without
+    /// taking any locks.
+    pub fn drain_param_changes(&mut self) -> usize {
+        apply_param_changes(&self.sequence, &self.param_change_queue, &mut self.current_grade_hash, &mut self.current_graph_arc)
+    }
+
     pub fn new(
         cmd_rx: Receiver<AppCommand>,
         event_tx: Sender<AppEvent>,
@@ -591,10 +669,13 @@ impl PlaybackEngine {
             klipp_title::TitleRenderer::new()
         };
 
+        let param_change_queue = Arc::new(ArrayQueue::new(PARAM_CHANGE_QUEUE_CAPACITY));
+
         Ok(Self {
             cmd_rx,
             event_tx,
             frame_buffer,
+            param_change_queue,
             perf_ring,
             state: PlaybackState::Idle,
             current_file: None,
@@ -730,12 +811,20 @@ impl PlaybackEngine {
                 }
             }
 
+            // Apply any queued slider-scrub param changes from the UI. During
+            // Pause this is the ONLY site that drains the queue (update_playback
+            // doesn't run). Cheap no-op when the queue is empty, so it's safe to
+            // call every tick.
+            let applied = self.drain_param_changes();
+
             if self.state == PlaybackState::Playing {
                 self.update_playback();
                 // Sync clip audio params periodically during playback (for keyframe animation)
                 self.sync_clip_volumes();
-            } else if self.state == PlaybackState::Paused && !had_commands {
-                // Engine is idle while paused — pre-render nearby frames into cache
+            } else if self.state == PlaybackState::Paused && !had_commands && applied == 0 {
+                // Engine is idle while paused — pre-render nearby frames into cache.
+                // Skip prerender when we just applied param changes so the next tick
+                // re-runs through the fresh graph instead of caching stale output.
                 self.prerender_cache_frames();
             }
 
@@ -2147,6 +2236,12 @@ impl PlaybackEngine {
 
     fn update_playback(&mut self) {
         let t_update = std::time::Instant::now();
+
+        // Drain UI-queued colour-grade param changes BEFORE we take any
+        // sequence read lock this frame. One write-lock acquisition per frame
+        // for the whole batch — the UI can have pushed dozens of slider ticks
+        // without contending with the long read lock that follows.
+        self.drain_param_changes();
 
         // Time-remap: sample the instantaneous speed curve and re-anchor the
         // master clock when the curve has drifted from what the clock is using.
@@ -7756,5 +7851,114 @@ mod gpu_vendor_cache_tests {
         assert!(klipp_core::GpuVendor::Amd.should_try_vaapi());
         assert!(klipp_core::GpuVendor::Intel.should_try_vaapi());
         assert!(klipp_core::GpuVendor::Unknown.should_try_vaapi());
+    }
+}
+
+#[cfg(test)]
+mod param_change_queue_tests {
+    //! Unit tests for the lock-free UI→engine param-change queue.
+    //!
+    //! Regression target: during rapid colour-grade slider scrubbing the UI
+    //! used to call `sync_sequence_to_engine()` per tick, contending with the
+    //! engine's long `sequence.read()` and stalling the UI up to 90 ms. The
+    //! queue lets us batch per-frame with a single write-lock acquisition.
+    use super::{apply_param_changes, ArrayQueue, PARAM_CHANGE_QUEUE_CAPACITY};
+    use klipp_core::{MediaId, ParamChange, RationalTime};
+    use klipp_timeline::Sequence;
+    use std::sync::{Arc, RwLock};
+
+    /// Build a Sequence with a single clip that owns the default colour-grade
+    /// node graph. Returns (shared sequence, clip id, exposure node id).
+    fn make_fixture() -> (Arc<RwLock<Sequence>>, klipp_core::ClipId, klipp_nodes::NodeId) {
+        let mut seq = Sequence::new_default();
+        let media_id = MediaId::new();
+        let duration = RationalTime::from_frames(120, 24);
+        let track = seq.tracks.iter_mut().find(|t| matches!(t.kind, klipp_timeline::TrackKind::Video))
+            .expect("default sequence has a video track");
+        let clip_id = track.append_clip(media_id, duration);
+        // Pick the Exposure node (first non-Source, non-IDT node) — it has an
+        // `exposure` param that apply_override understands.
+        let node_id = seq.all_clips()
+            .find(|c| c.id == clip_id)
+            .and_then(|c| c.node_graph.nodes.iter()
+                .find(|n| matches!(n.kind, klipp_nodes::NodeKind::Exposure))
+                .map(|n| n.id))
+            .expect("default graph has an Exposure node");
+        (Arc::new(RwLock::new(seq)), clip_id, node_id)
+    }
+
+    #[test]
+    fn param_change_queue_applies_without_flatten() {
+        let (seq, clip_id, node_id) = make_fixture();
+        let queue: Arc<ArrayQueue<ParamChange>> = Arc::new(ArrayQueue::new(32));
+        // Five consecutive slider ticks, ending on exposure=0.75.
+        for v in [0.1f32, 0.25, 0.4, 0.6, 0.75] {
+            queue.push(ParamChange {
+                clip_id,
+                node_id,
+                param: "exposure".to_string(),
+                value: v,
+            }).expect("queue not full");
+        }
+        let mut grade_hash = 0xdead_beef_dead_beefu64;
+        let mut graph_arc: Option<Arc<klipp_nodes::NodeGraph>> = Some(Arc::new(
+            seq.read().unwrap().all_clips().next().unwrap().node_graph.clone()
+        ));
+
+        let applied = apply_param_changes(&seq, &queue, &mut grade_hash, &mut graph_arc);
+
+        assert_eq!(applied, 5, "all five queued changes must apply");
+        assert!(queue.is_empty(), "queue drained after apply");
+        // Grade-hash and graph Arc must be invalidated so the engine picks up
+        // the changes on the next frame (mirrors SequenceUpdated behaviour).
+        assert_eq!(grade_hash, 0);
+        assert!(graph_arc.is_none());
+        // Final value wins.
+        let seq_r = seq.read().unwrap();
+        let clip = seq_r.all_clips().find(|c| c.id == clip_id).unwrap();
+        let node = clip.node_graph.nodes.iter().find(|n| n.id == node_id).unwrap();
+        let exposure = node.params.exposure.expect("exposure set");
+        assert!((exposure - 0.75).abs() < 1e-5, "last-write-wins: got {}", exposure);
+    }
+
+    #[test]
+    fn empty_queue_takes_no_write_lock() {
+        let (seq, _clip_id, _node_id) = make_fixture();
+        let queue: Arc<ArrayQueue<ParamChange>> = Arc::new(ArrayQueue::new(8));
+        // Hold a read lock from another "thread" (logical — we just take it
+        // here and prove apply_param_changes doesn't deadlock or block on it
+        // when the queue is empty).
+        let read_guard = seq.read().unwrap();
+        let mut grade_hash = 42u64;
+        let mut graph_arc: Option<Arc<klipp_nodes::NodeGraph>> = None;
+        let applied = apply_param_changes(&seq, &queue, &mut grade_hash, &mut graph_arc);
+        assert_eq!(applied, 0);
+        // No write-lock was taken, so grade_hash must not have been reset.
+        assert_eq!(grade_hash, 42);
+        drop(read_guard);
+    }
+
+    #[test]
+    fn unknown_clip_is_dropped_silently() {
+        let (seq, _clip_id, node_id) = make_fixture();
+        let queue: Arc<ArrayQueue<ParamChange>> = Arc::new(ArrayQueue::new(8));
+        queue.push(ParamChange {
+            clip_id: klipp_core::ClipId::new(),
+            node_id,
+            param: "exposure".into(),
+            value: 0.5,
+        }).unwrap();
+        let mut grade_hash = 0u64;
+        let mut graph_arc = None;
+        let applied = apply_param_changes(&seq, &queue, &mut grade_hash, &mut graph_arc);
+        // The unknown clip's entry was popped but not applied.
+        assert_eq!(applied, 0);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn queue_capacity_matches_documented_bound() {
+        // Pin the bound so PR review catches accidental shrinks.
+        assert_eq!(PARAM_CHANGE_QUEUE_CAPACITY, 256);
     }
 }

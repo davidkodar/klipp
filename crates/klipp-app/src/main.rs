@@ -126,6 +126,12 @@ fn main() -> Result<()> {
     // this point, so this is safe.
     let spectrum_buf = engine.spectrum_buf();
     let spectrum_sample_rate = engine.spectrum_sample_rate();
+    // Share the engine's lock-free param-change queue with the UI. The UI
+    // pushes per-slider-tick param changes here (60-120 Hz during grading);
+    // the engine drains them once per frame with a single write-lock
+    // acquisition. Avoids per-tick contention with the engine's long read
+    // lock on `Arc<RwLock<Sequence>>` during active colour grading.
+    let param_change_queue = engine.param_change_queue();
 
     let engine_handle = std::thread::Builder::new()
         .name("klipp-engine".into())
@@ -194,6 +200,7 @@ fn main() -> Result<()> {
                 spectrum_buf,
                 spectrum_sample_rate,
                 perf_ring_clone,
+                param_change_queue,
             )))
         }),
     )

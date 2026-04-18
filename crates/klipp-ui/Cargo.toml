@@ -21,6 +21,7 @@ egui = { workspace = true }
 eframe = { workspace = true }
 wgpu = { workspace = true }
 crossbeam-channel = { workspace = true }
+crossbeam-queue = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

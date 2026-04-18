@@ -16,9 +16,10 @@ use crossbeam_channel::{Receiver, Sender};
 use klipp_core::{
     AppCommand, AppEvent, ClipId, GroupId, ExportAudioCodec, ExportFormat, ExportPreset,
     EncoderPreset, ExportPresetSettings, ExportSettings, ExportVideoCodec, MarkerId, MediaId,
-    Timecode, Tool, ViewerMode, builtin_presets,
+    ParamChange, Timecode, Tool, ViewerMode, builtin_presets,
 };
 use klipp_engine::{PlaybackState, SharedFrameBuffer};
+use crossbeam_queue::ArrayQueue;
 use klipp_media::{MediaItem, ThumbnailEntry};
 use klipp_timeline::{Marker, Sequence};
 use std::path::{Path, PathBuf};
@@ -223,6 +224,13 @@ pub struct KlippApp {
     /// the performance overlay and snapshotted to JSON when the user
     /// clicks "Record Performance".
     perf_ring: klipp_engine::perf::SharedPerfRing,
+    /// Lock-free queue of colour-grade parameter changes sent to the engine.
+    /// Populated by the `SetNodeParam` handler at slider-scrub rate (60-120 Hz);
+    /// drained by the engine at the start of each frame. Bypasses the
+    /// `Arc<RwLock<Sequence>>` write lock / `flatten_sequence` rebuild path
+    /// that `sync_sequence_to_engine` takes — which would otherwise contend
+    /// with the engine's long read lock during active grading.
+    param_change_queue: Arc<ArrayQueue<ParamChange>>,
 }
 
 impl KlippApp {
@@ -237,6 +245,7 @@ impl KlippApp {
         spectrum_buf: Option<Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>>,
         spectrum_sample_rate: u32,
         perf_ring: klipp_engine::perf::SharedPerfRing,
+        param_change_queue: Arc<ArrayQueue<ParamChange>>,
     ) -> Self {
         use klipp_core::startup_timer::LogTimer;
 
@@ -357,6 +366,7 @@ impl KlippApp {
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
             scope_window_runtime: crate::widgets::scope_window::ScopeWindowRuntime::default(),
             perf_ring,
+            param_change_queue,
         };
         // Build false color LUT from loaded preferences
         app.state.false_color_lut = app.prefs.viewer.false_color_palette.build_lut();
@@ -2424,11 +2434,41 @@ impl KlippApp {
         *seq = klipp_timeline::flatten::flatten_sequence(active, &self.state.sequences);
     }
 
+    /// Fast UI-thread re-grade at reduced resolution for instant scope
+    /// feedback, WITHOUT taking the shared sequence write lock or running
+    /// `flatten_sequence`. Used on the slider-scrub path: the engine has
+    /// already been given the change via `param_change_queue` and the UI's
+    /// local `self.state.sequences[…]` mirror has been mutated, so all we
+    /// need is to refresh the scope preview buffer + bump the frame-buffer
+    /// generation.
+    fn refresh_scope_preview_fast(&mut self) {
+        self.refresh_scope_preview_inner();
+        // Don't send SequenceUpdated — would trigger the engine's audio
+        // restart + grade-cache invalidation path, which is already handled
+        // by drain_param_changes() on the engine side.
+    }
+
     /// Sync sequence and re-grade the cached frame directly on the UI thread.
     /// Zero latency — scopes see the result on the same frame as the slider change.
     fn sync_and_refresh_frame(&mut self) {
         self.sync_sequence_to_engine();
+        self.refresh_scope_preview_inner();
+        // Tell engine to re-grade at full resolution + render scope texture
+        let scope_mode = match self.state.scope_mode {
+            crate::state::ScopeMode::Waveform => 0u8,
+            crate::state::ScopeMode::Parade => 1,
+            crate::state::ScopeMode::Vectorscope => 2,
+            crate::state::ScopeMode::Histogram => 3,
+        };
+        let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: scope_mode });
+        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+    }
 
+    /// Shared scope-preview refresh used by both the slow path
+    /// (`sync_and_refresh_frame`) and the slider-scrub fast path
+    /// (`refresh_scope_preview_fast`). Does NOT touch the shared Sequence
+    /// RwLock — reads only from the UI's own `self.state.sequences` mirror.
+    fn refresh_scope_preview_inner(&mut self) {
         // Fast UI-thread re-grade at reduced resolution for instant scope feedback.
         let fb_snapshot = {
             let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
@@ -2492,16 +2532,6 @@ impl KlippApp {
             }
             fb.generation = fb.generation.wrapping_add(1);
         }
-
-        // Tell engine to re-grade at full resolution + render scope texture
-        let scope_mode = match self.state.scope_mode {
-            crate::state::ScopeMode::Waveform => 0u8,
-            crate::state::ScopeMode::Parade => 1,
-            crate::state::ScopeMode::Vectorscope => 2,
-            crate::state::ScopeMode::Histogram => 3,
-        };
-        let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: scope_mode });
-        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
     }
 
     /// Scan all cache directories and remove files not referenced by current media pool.
@@ -2606,7 +2636,16 @@ impl KlippApp {
             self.state.media_usage_cache_dirty = true;
         }
         let mut needs_refresh = false;
+        // Track whether any SetNodeParam arrived this batch. If so, take the
+        // fast refresh path (scope preview only) instead of the full
+        // sync_and_refresh_frame — the engine picked up the changes via the
+        // lock-free param_change_queue, so we don't need to flatten the
+        // sequence or take the shared RwLock's write lock on the slider path.
+        let mut node_param_scrub = false;
         for cmd in cmds {
+            if matches!(&cmd, AppCommand::SetNodeParam { .. }) {
+                node_param_scrub = true;
+            }
             if self.handle_marker_commands(&cmd, &mut needs_refresh) { continue; }
             if self.handle_transition_commands(&cmd, &mut needs_refresh) { continue; }
             if self.handle_playback_commands(&cmd, &mut needs_refresh) { continue; }
@@ -2629,9 +2668,15 @@ impl KlippApp {
             }
             let _ = self.cmd_tx.send(cmd);
         }
-        // Batch: re-grade once for all node param changes in this frame
+        // Prefer the full-sync path when ANY non-slider command needed refresh
+        // (structural changes, keyframe edits, etc.). The slider fast path is
+        // only taken when SetNodeParam was the sole trigger for refresh.
         if needs_refresh {
             self.sync_and_refresh_frame();
+        } else if node_param_scrub {
+            // Slider scrub only — engine drains param_change_queue itself, so
+            // we just need to refresh the scope preview on the UI thread.
+            self.refresh_scope_preview_fast();
         }
     }
 
@@ -8784,6 +8829,10 @@ impl KlippApp {
                 true
             }
             AppCommand::SetNodeParam { clip_id, node_id, param, value } => {
+                // Update the UI-local sequence mirror — required so the UI's
+                // own scope-preview re-grade (runs on this thread) sees the
+                // new value. This mutates `self.state.sequences[...]` only,
+                // not the shared `Arc<RwLock<Sequence>>` the engine reads.
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
@@ -8792,7 +8841,40 @@ impl KlippApp {
                         break;
                     }
                 }
-                *needs_refresh = true;
+                // Push the change onto the engine's lock-free queue. The
+                // engine drains it at the start of each frame with a SINGLE
+                // write-lock acquisition for the whole batch, avoiding the
+                // per-tick contention with the engine's long sequence read
+                // lock that the old `sync_sequence_to_engine` path caused.
+                //
+                // Overflow (256-slot bound) drops the OLDEST queued change.
+                // That's fine: the user is scrubbing, so any subsequent tick
+                // carries the current absolute value of the same parameter.
+                let mut change = Some(ParamChange {
+                    clip_id: *clip_id,
+                    node_id: *node_id,
+                    param: param.clone(),
+                    value: *value,
+                });
+                while let Some(pending) = change.take() {
+                    match self.param_change_queue.push(pending) {
+                        Ok(()) => break,
+                        Err(rejected) => {
+                            // Queue full — drop one old entry and retry.
+                            let _ = self.param_change_queue.pop();
+                            change = Some(rejected);
+                        }
+                    }
+                }
+                // Do NOT set *needs_refresh = true — that would call
+                // `sync_and_refresh_frame()` which takes the sequence write
+                // lock. The dispatcher in `send_commands` detects any
+                // SetNodeParam in the batch and calls the fast scope-preview
+                // refresh path instead.
+                //
+                // Return true so the dispatcher does NOT forward this
+                // command via cmd_tx — the engine learns of it through the
+                // param_change_queue drain, not the command channel.
                 true
             }
             AppCommand::BeginNodeParamEdit { clip_id } => {

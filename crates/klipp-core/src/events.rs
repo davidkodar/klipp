@@ -1442,3 +1442,21 @@ pub enum TrackTarget {
     /// Generate transform position keyframes.
     TransformPosition,
 }
+
+/// A single colour-grade parameter change queued by the UI for the engine.
+///
+/// Written to a lock-free `ArrayQueue` by the UI's `SetNodeParam` handler at
+/// slider-scrub rate (60-120 Hz). Drained by the engine at the start of each
+/// frame, which applies the change to the shared `Arc<RwLock<Sequence>>`
+/// with ONE write-lock acquisition per frame (not one per slider tick).
+///
+/// This path bypasses `sync_sequence_to_engine` (which rebuilds the whole
+/// flattened sequence — fine for structural edits, expensive per-tick for
+/// slider scrubbing that contends with the engine's long-held read lock).
+#[derive(Debug, Clone)]
+pub struct ParamChange {
+    pub clip_id: ClipId,
+    pub node_id: uuid::Uuid,
+    pub param: String,
+    pub value: f32,
+}
