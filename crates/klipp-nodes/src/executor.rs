@@ -353,33 +353,47 @@ impl GraphExecutor {
             {
                 // Current input lives in the slot named by chain_slot_a.
                 // Dispatch reads from that slot, writes to the opposite.
-                if self.dispatch_chain_node_slots(
+                // Some nodes (Contrast with both contrast+clarity, or
+                // Saturation with both sat+vibrance) issue TWO internal
+                // sub-dispatches in sequence — the return value reports
+                // how many slot flips the caller needs to mirror.
+                match self.dispatch_chain_node_slots(
                     node_id, &node.kind, params, width, height, frame_number,
                     /* in_is_a = */ chain_slot_a,
                 ) {
-                    chain_slot_a = !chain_slot_a;
-                    chain_tail = Some(node_id);
-                    // Record a sentinel in node_outputs so downstream
-                    // lookups know this ID exists, but leave the real
-                    // bytes in GPU. We never read this back while the
-                    // chain is live — only after a flush is triggered.
-                    // Inserting an empty Arc<Vec<f32>> is cheap and lets
-                    // us distinguish "node ran" from "node missing".
-                    node_outputs.insert(node_id, Arc::new(Vec::new()));
-                    continue;
+                    Some(n) if n >= 1 => {
+                        // Flip chain_slot_a once per sub-dispatch so it
+                        // lands on the buffer holding this node's output.
+                        for _ in 0..n {
+                            chain_slot_a = !chain_slot_a;
+                        }
+                        chain_tail = Some(node_id);
+                        // Record a sentinel in node_outputs so downstream
+                        // lookups know this ID exists, but leave the real
+                        // bytes in GPU. We never read this back while the
+                        // chain is live — only after a flush is triggered.
+                        // Inserting an empty Arc<Vec<f32>> is cheap and lets
+                        // us distinguish "node ran" from "node missing".
+                        node_outputs.insert(node_id, Arc::new(Vec::new()));
+                        continue;
+                    }
+                    _ => {
+                        // dispatch_chain_node reports it couldn't run (rare
+                        // — unexpected param shape, device-lost fallback,
+                        // or a no-op params combination that slipped past
+                        // node_supports_gpu_chain). Fall through to the
+                        // CPU-resident path. Flush chain first.
+                        self.flush_chain(
+                            &mut chain_tail,
+                            chain_slot_a,
+                            width,
+                            height,
+                            &mut node_outputs,
+                            matte_tap,
+                            &mut tapped_output,
+                        );
+                    }
                 }
-                // If dispatch_chain_node reports it couldn't run (rare —
-                // unexpected param shape, or device-lost fallback), fall
-                // through to the CPU-resident path. Flush chain first.
-                self.flush_chain(
-                    &mut chain_tail,
-                    chain_slot_a,
-                    width,
-                    height,
-                    &mut node_outputs,
-                    matte_tap,
-                    &mut tapped_output,
-                );
             }
 
             // Try to START a new chain from this node. Needs: GPU
@@ -396,7 +410,7 @@ impl GraphExecutor {
                     .filter(|arc| !arc.is_empty())
                     .map(|arc| arc.as_slice())
                     .unwrap_or(source_frame);
-                if self.start_chain(
+                if let Some(n) = self.start_chain(
                     node_id,
                     &node.kind,
                     params,
@@ -406,7 +420,10 @@ impl GraphExecutor {
                     frame_number,
                 ) {
                     chain_tail = Some(node_id);
-                    chain_slot_a = false; // output landed in buf_b
+                    // First node's input was uploaded to buf_a (in_is_a=true);
+                    // each sub-dispatch flips the output slot, so after `n`
+                    // dispatches the output lives in buf_a iff n is even.
+                    chain_slot_a = n % 2 == 0;
                     node_outputs.insert(node_id, Arc::new(Vec::new()));
                     continue;
                 }
@@ -569,8 +586,11 @@ impl GraphExecutor {
     }
 
     /// Start a new GPU chain: upload `primary_input` to `buf_a`, dispatch
-    /// this first node into `buf_b`. Returns true on success; false if
-    /// the node's GPU dispatch wasn't available (caller falls back).
+    /// this first node. Returns `Some(n)` where `n` is the number of
+    /// sub-dispatches issued (≥1 on success — the caller must flip
+    /// `chain_slot_a` exactly `n` times to track which buffer holds the
+    /// output). Returns `None` if the node's GPU dispatch wasn't
+    /// available (caller falls back).
     fn start_chain(
         &mut self,
         node_id: NodeId,
@@ -580,13 +600,13 @@ impl GraphExecutor {
         width: u32,
         height: u32,
         frame_number: u64,
-    ) -> bool {
+    ) -> Option<u32> {
         let gpu = match &mut self.gpu {
             Some(g) => g,
-            None => return false,
+            None => return None,
         };
         if gpu.is_device_lost() {
-            return false;
+            return None;
         }
         let byte_size = (width as u64) * (height as u64) * 16;
         gpu.ensure_chain_buffers(byte_size);
@@ -597,9 +617,16 @@ impl GraphExecutor {
         // cost ~2-5 ms on NVIDIA Vulkan and dominated `grade_ms` during
         // scrubbing before this.
         gpu.begin_chain();
-        // Dispatch this node with in = buf_a, out = buf_b.
-        let ok = self.dispatch_chain_node_slots(node_id, kind, params, width, height, frame_number, /* in_is_a */ true);
-        if !ok {
+        // Dispatch this node with in = buf_a, out = buf_b. The first
+        // node in a chain is always one of the whitelisted single-sub-
+        // effect kinds (start_chain is only called via can_start_chain,
+        // which is gated by node_supports_gpu_chain). Contrast and
+        // Saturation can still return Some(2) if both their sub-effects
+        // are active — mirror the net slot parity in the caller via
+        // chain_slot_a at the call site in execute_linear.
+        let dispatches = self.dispatch_chain_node_slots(node_id, kind, params, width, height, frame_number, /* in_is_a */ true);
+        let n = dispatches.unwrap_or(0);
+        if n == 0 {
             // Dispatch declined (device-lost or unexpected param). Close
             // the encoder we just opened so the next chain segment starts
             // clean. No dispatches were recorded so submit is effectively
@@ -608,10 +635,23 @@ impl GraphExecutor {
                 gpu.submit_chain();
             }
         }
-        ok
+        dispatches
     }
 
     /// Dispatch-only chain step with explicit slot selection.
+    ///
+    /// Returns `None` when the dispatch could not run (device lost,
+    /// unsupported param shape, or all sub-effect params are no-ops).
+    /// Returns `Some(n)` with `n ≥ 1` = number of sub-dispatches issued;
+    /// the caller must flip its chain_slot_a that many times.
+    ///
+    /// Most node kinds issue exactly one sub-dispatch (`Some(1)`).
+    /// `Contrast` and `Saturation` may issue TWO sub-dispatches when
+    /// both of their sub-effects are active (contrast+clarity, or
+    /// saturation+vibrance) — in that case they return `Some(2)`. This
+    /// keeps the chain GPU-resident instead of breaking mid-grade into
+    /// separate segments, saving one upload + one download fence per
+    /// extra segment (~20 ms each on scrubbing workloads).
     fn dispatch_chain_node_slots(
         &mut self,
         node_id: NodeId,
@@ -621,13 +661,13 @@ impl GraphExecutor {
         height: u32,
         frame_number: u64,
         in_is_a: bool,
-    ) -> bool {
+    ) -> Option<u32> {
         let gpu = match &mut self.gpu {
             Some(g) => g,
-            None => return false,
+            None => return None,
         };
         if gpu.is_device_lost() {
-            return false;
+            return None;
         }
 
         // Dispatch-only entries take `in_is_a`: they pick the in/out
@@ -638,19 +678,19 @@ impl GraphExecutor {
 
         match kind {
             NodeKind::InputTransform => {
-                let Some(fmt) = params.log_format else { return false };
+                let Some(fmt) = params.log_format else { return None };
                 use klipp_core::LogFormat;
                 if matches!(fmt, LogFormat::Srgb | LogFormat::Linear) {
-                    return false;
+                    return None;
                 }
                 let lut = klipp_color::build_input_transform_lut(fmt);
                 self.gpu.as_mut().unwrap()
                     .apply_input_transform_chain(in_is_a, width, height, &lut);
-                true
+                Some(1)
             }
             NodeKind::Exposure => {
                 let exp = params.exposure.unwrap_or(0.0);
-                if exp == 0.0 { return false; }
+                if exp == 0.0 { return None; }
                 self.gpu.as_mut().unwrap().apply_color_grade_chain(
                     in_is_a, width, height,
                     exp, 0.0, 1.0, 0.0, 0.0,
@@ -658,18 +698,42 @@ impl GraphExecutor {
                     (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                     0.0, 1.0,
                 );
-                true
+                Some(1)
             }
             NodeKind::Contrast => {
                 let con = params.contrast.unwrap_or(0.0);
                 let clarity = params.clarity.unwrap_or(0.0);
-                if con == 0.0 && clarity == 0.0 { return false; }
-                // Contrast (color_grade) and Clarity (3-pass) both target
-                // the same in/out slot. Running both would leave output
-                // in the wrong slot or require a buf copy — fall back to
-                // the non-chain path when both are active.
+                if con == 0.0 && clarity == 0.0 { return None; }
+                // When BOTH contrast and clarity are active, issue two
+                // sub-dispatches back-to-back inside the same chain
+                // encoder. Each sub-dispatch flips the active buffer,
+                // so the second one must read from the OPPOSITE slot
+                // that the first wrote into. Net effect: 2 slot flips,
+                // which the caller mirrors via chain_slot_a.
+                //
+                // This keeps the chain GPU-resident where the previous
+                // implementation used to bail (returning false), forcing
+                // a flush + CPU fallback + new-chain-start. That detour
+                // cost ~40 ms for both sub-effects combined; running
+                // them in-chain is essentially free (just 2 compute
+                // dispatches into the existing encoder).
                 if con != 0.0 && clarity != 0.0 {
-                    return false;
+                    // First: contrast via color_grade, reads from in_is_a,
+                    // writes to !in_is_a.
+                    self.gpu.as_mut().unwrap().apply_color_grade_chain(
+                        in_is_a, width, height,
+                        0.0, con, 1.0, 0.0, 0.0,
+                        0.0, 0.0, 0.0, 0.0,
+                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                        0.0, 1.0,
+                    );
+                    // Second: clarity reads from where color_grade wrote
+                    // (!in_is_a), writes back to in_is_a. apply_clarity_chain
+                    // uses buf_c as scratch internally (does not affect the
+                    // a/b parity) — it's a net 1-flip op like color_grade.
+                    self.gpu.as_mut().unwrap()
+                        .apply_clarity_chain(!in_is_a, width, height, clarity);
+                    return Some(2);
                 }
                 if con != 0.0 {
                     self.gpu.as_mut().unwrap().apply_color_grade_chain(
@@ -683,15 +747,26 @@ impl GraphExecutor {
                     self.gpu.as_mut().unwrap()
                         .apply_clarity_chain(in_is_a, width, height, clarity);
                 }
-                true
+                Some(1)
             }
             NodeKind::Saturation => {
                 let sat = params.saturation.unwrap_or(1.0);
                 let vib = params.vibrance.unwrap_or(0.0);
-                if sat == 1.0 && vib == 0.0 { return false; }
-                // Single-sub-effect constraint, same rationale as Contrast.
+                if sat == 1.0 && vib == 0.0 { return None; }
+                // Both sub-effects active: fuse as two in-chain dispatches.
+                // Same rationale as Contrast above — keeps the chain
+                // GPU-resident. Each *_chain call is a single-flip op.
                 if sat != 1.0 && vib != 0.0 {
-                    return false;
+                    self.gpu.as_mut().unwrap().apply_color_grade_chain(
+                        in_is_a, width, height,
+                        0.0, 0.0, sat, 0.0, 0.0,
+                        0.0, 0.0, 0.0, 0.0,
+                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                        0.0, 1.0,
+                    );
+                    self.gpu.as_mut().unwrap()
+                        .apply_vibrance_chain(!in_is_a, width, height, vib);
+                    return Some(2);
                 }
                 if sat != 1.0 {
                     self.gpu.as_mut().unwrap().apply_color_grade_chain(
@@ -705,14 +780,14 @@ impl GraphExecutor {
                     self.gpu.as_mut().unwrap()
                         .apply_vibrance_chain(in_is_a, width, height, vib);
                 }
-                true
+                Some(1)
             }
             NodeKind::ToneControls => {
                 let hi = params.highlights.unwrap_or(0.0);
                 let sh = params.shadows.unwrap_or(0.0);
                 let wh = params.whites.unwrap_or(0.0);
                 let bl = params.blacks.unwrap_or(0.0);
-                if hi == 0.0 && sh == 0.0 && wh == 0.0 && bl == 0.0 { return false; }
+                if hi == 0.0 && sh == 0.0 && wh == 0.0 && bl == 0.0 { return None; }
                 self.gpu.as_mut().unwrap().apply_color_grade_chain(
                     in_is_a, width, height,
                     0.0, 0.0, 1.0, 0.0, 0.0,
@@ -720,10 +795,10 @@ impl GraphExecutor {
                     (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
                     0.0, 1.0,
                 );
-                true
+                Some(1)
             }
             NodeKind::ColorWheels => {
-                if params.wheels_log_mode.unwrap_or(false) { return false; }
+                if params.wheels_log_mode.unwrap_or(false) { return None; }
                 let lift = klipp_color::wheel_offset_to_rgb(
                     params.lift_x.unwrap_or(0.0),
                     params.lift_y.unwrap_or(0.0),
@@ -751,7 +826,7 @@ impl GraphExecutor {
                     lift, gamma, gain, offset,
                     0.0, 1.0,
                 );
-                true
+                Some(1)
             }
             NodeKind::WheelSatBri => {
                 self.gpu.as_mut().unwrap().apply_wheel_sat_bri_chain(
@@ -765,11 +840,11 @@ impl GraphExecutor {
                     params.offset_sat.unwrap_or(0.0),
                     params.offset_bri.unwrap_or(0.0),
                 );
-                true
+                Some(1)
             }
             NodeKind::RGBCurves => {
-                let Some(curves) = params.curves.as_ref() else { return false };
-                if is_curves_identity(curves) { return false; }
+                let Some(curves) = params.curves.as_ref() else { return None };
+                if is_curves_identity(curves) { return None; }
                 // Use pre-built LUTs from prepare_clip() when available.
                 let luts = self
                     .curve_lut_cache
@@ -795,16 +870,16 @@ impl GraphExecutor {
                     in_is_a, width, height,
                     &lut_data, preserve_luma, mix,
                 );
-                true
+                Some(1)
             }
             NodeKind::HueSatCurves => {
-                let Some(huesat) = params.huesat.as_ref() else { return false };
-                if huesat.is_all_identity() { return false; }
+                let Some(huesat) = params.huesat.as_ref() else { return None };
+                if huesat.is_all_identity() { return None; }
                 let lut_data = build_huesat_lut_data(huesat);
                 let mix = params.huesat_mix.unwrap_or(1.0);
                 self.gpu.as_mut().unwrap()
                     .apply_huesat_chain(in_is_a, width, height, mix, &lut_data);
-                true
+                Some(1)
             }
             NodeKind::ColorBalance => {
                 self.gpu.as_mut().unwrap().apply_color_balance_chain(
@@ -814,10 +889,10 @@ impl GraphExecutor {
                     params.hue.unwrap_or(0.0),
                     params.global_mix.unwrap_or(1.0),
                 );
-                true
+                Some(1)
             }
             NodeKind::Lut3D => {
-                let Some(path) = params.lut_path.as_ref() else { return false };
+                let Some(path) = params.lut_path.as_ref() else { return None };
                 let lut = self
                     .lut_cache
                     .entry(path.clone())
@@ -833,11 +908,11 @@ impl GraphExecutor {
                     in_is_a, width, height,
                     &lut.data, lut.size as u32, opacity,
                 );
-                true
+                Some(1)
             }
             NodeKind::FilmGrain => {
-                let Some(grain) = params.grain.as_ref() else { return false };
-                if !grain.enabled || grain.amount <= 0.001 { return false; }
+                let Some(grain) = params.grain.as_ref() else { return None };
+                if !grain.enabled || grain.amount <= 0.001 { return None; }
                 self.gpu.as_mut().unwrap().apply_grain_chain(
                     in_is_a, width, height,
                     grain.amount, grain.size,
@@ -845,31 +920,31 @@ impl GraphExecutor {
                     grain.monochrome,
                     frame_number as u32,
                 );
-                true
+                Some(1)
             }
             NodeKind::ColorWarper => {
                 let warper = params.warper_params.clone().unwrap_or_default();
-                if warper.is_identity() { return false; }
+                if warper.is_identity() { return None; }
                 self.gpu.as_mut().unwrap().apply_color_warper_chain(
                     in_is_a, width, height,
                     &warper.hue_shifts, &warper.sat_shifts,
                 );
-                true
+                Some(1)
             }
             NodeKind::Denoise => {
                 let luma = params.denoise_luma.unwrap_or(0.0);
                 let chroma = params.denoise_chroma.unwrap_or(0.0);
                 let radius = params.denoise_radius.unwrap_or(3);
-                if luma <= 0.0 && chroma <= 0.0 { return false; }
+                if luma <= 0.0 && chroma <= 0.0 { return None; }
                 let spatial_sigma = radius as f32;
                 let color_sigma = (luma + chroma) * 0.5;
                 self.gpu.as_mut().unwrap().apply_denoise_chain(
                     in_is_a, width, height,
                     spatial_sigma, color_sigma,
                 );
-                true
+                Some(1)
             }
-            _ => false,
+            _ => None,
         }
     }
 
@@ -2188,6 +2263,83 @@ mod tests {
             assert!(
                 (*g as i32 - *c as i32).abs() <= 5,
                 "byte {i}: GPU chain {g} vs CPU {c} differ by > 5",
+            );
+        }
+    }
+
+    #[test]
+    fn chain_fuses_contrast_and_clarity() {
+        // Contrast node with BOTH `contrast` AND `clarity` active used
+        // to return false from dispatch_chain_node_slots, forcing a
+        // chain break + CPU fallback + new chain start. That split a
+        // single grade into 2-3 segments per frame (+~20 ms each).
+        //
+        // Fix: issue TWO in-chain sub-dispatches (color_grade then
+        // clarity). This test verifies the fused GPU output still
+        // matches the CPU reference within the usual ±5 tolerance.
+        let mut gpu_executor = GraphExecutor::new();
+        if gpu_executor.gpu.is_none() {
+            return;
+        }
+        let mut cpu_executor = GraphExecutor::new_cpu_only();
+
+        let mut graph = default_graph();
+        let contrast_node = graph
+            .nodes
+            .iter_mut()
+            .find(|n| n.kind == NodeKind::Contrast)
+            .unwrap();
+        contrast_node.params.contrast = Some(0.2);
+        contrast_node.params.clarity = Some(0.3);
+
+        let frame = vec![
+            110u8, 140, 190, 255, 210, 140, 90, 255, 60, 110, 160, 255, 130, 130, 130, 255,
+        ];
+        let (gpu_out, _) = gpu_executor.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+        let (cpu_out, _) = cpu_executor.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+
+        assert_eq!(gpu_out.len(), cpu_out.len());
+        for (i, (g, c)) in gpu_out.iter().zip(cpu_out.iter()).enumerate() {
+            assert!(
+                (*g as i32 - *c as i32).abs() <= 5,
+                "byte {i}: GPU chain {g} vs CPU {c} differ by > 5 \
+                 (contrast+clarity fusion)",
+            );
+        }
+    }
+
+    #[test]
+    fn chain_fuses_saturation_and_vibrance() {
+        // Saturation node with BOTH `saturation` AND `vibrance` active —
+        // same fused-dispatch fix as Contrast. Verifies the 2-dispatch
+        // fast path stays bit-compatible with the CPU reference.
+        let mut gpu_executor = GraphExecutor::new();
+        if gpu_executor.gpu.is_none() {
+            return;
+        }
+        let mut cpu_executor = GraphExecutor::new_cpu_only();
+
+        let mut graph = default_graph();
+        let sat_node = graph
+            .nodes
+            .iter_mut()
+            .find(|n| n.kind == NodeKind::Saturation)
+            .unwrap();
+        sat_node.params.saturation = Some(1.5);
+        sat_node.params.vibrance = Some(0.3);
+
+        let frame = vec![
+            110u8, 140, 190, 255, 210, 140, 90, 255, 60, 110, 160, 255, 130, 130, 130, 255,
+        ];
+        let (gpu_out, _) = gpu_executor.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+        let (cpu_out, _) = cpu_executor.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+
+        assert_eq!(gpu_out.len(), cpu_out.len());
+        for (i, (g, c)) in gpu_out.iter().zip(cpu_out.iter()).enumerate() {
+            assert!(
+                (*g as i32 - *c as i32).abs() <= 5,
+                "byte {i}: GPU chain {g} vs CPU {c} differ by > 5 \
+                 (sat+vibrance fusion)",
             );
         }
     }
