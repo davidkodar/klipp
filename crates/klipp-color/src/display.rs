@@ -191,30 +191,31 @@ fn hable(x: f32) -> f32 {
 /// Expects interleaved linear f32 RGBA; returns interleaved sRGB u8
 /// RGBA. Alpha is normalised and quantised but never gamma-encoded.
 pub fn display_transform(linear_rgba: &[f32], tone_map_op: ToneMapOp) -> Vec<u8> {
+    use rayon::prelude::*;
     assert!(
         linear_rgba.len() % 4 == 0,
         "display_transform requires RGBA-packed input",
     );
-    let mut out = Vec::with_capacity(linear_rgba.len());
-    for chunk in linear_rgba.chunks_exact(4) {
-        // Clamp negatives before the tone-map: ACES' matrix path can
-        // turn small negative channels into wildly over-bright
-        // positives (the 1.60475 coefficient in the output matrix
-        // amplifies anything it sees). The other operators already
-        // guard against negatives on their own.
-        let mapped = tone_map_rgb(
-            [chunk[0].max(0.0), chunk[1].max(0.0), chunk[2].max(0.0)],
-            tone_map_op,
-        );
-        let r = (linear_to_srgb(mapped[0]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-        let g = (linear_to_srgb(mapped[1]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-        let b = (linear_to_srgb(mapped[2]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-        let a = (chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-        out.push(r);
-        out.push(g);
-        out.push(b);
-        out.push(a);
-    }
+    // Pre-allocate the output buffer so each rayon worker writes directly
+    // into its slot — no per-chunk Vec::push allocations, no reduce step.
+    let mut out = vec![0u8; linear_rgba.len()];
+    out.par_chunks_exact_mut(4)
+        .zip(linear_rgba.par_chunks_exact(4))
+        .for_each(|(dst, chunk)| {
+            // Clamp negatives before the tone-map: ACES' matrix path can
+            // turn small negative channels into wildly over-bright
+            // positives (the 1.60475 coefficient in the output matrix
+            // amplifies anything it sees). The other operators already
+            // guard against negatives on their own.
+            let mapped = tone_map_rgb(
+                [chunk[0].max(0.0), chunk[1].max(0.0), chunk[2].max(0.0)],
+                tone_map_op,
+            );
+            dst[0] = (linear_to_srgb(mapped[0]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            dst[1] = (linear_to_srgb(mapped[1]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            dst[2] = (linear_to_srgb(mapped[2]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            dst[3] = (chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        });
     out
 }
 

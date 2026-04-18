@@ -2189,6 +2189,7 @@ version = "0.1.0"
 dependencies = [
  "klipp-core",
  "klipp-testing",
+ "rayon",
 ]
 
 [[package]]

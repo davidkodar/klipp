@@ -2657,9 +2657,17 @@ impl PlaybackEngine {
             accumulated_linear.fill(0.0);
         }
 
+        // Per-step accumulators so we can see where composite+into_rgba time
+        // actually goes when it busts the budget. Sub-millisecond on the fast
+        // path, stay zero when there are no overlays.
+        let mut ov_clone_us: u128 = 0;
+        let mut ov_grade_us: u128 = 0;
+        let mut ov_resize_us: u128 = 0;
+        let mut ov_blend_us: u128 = 0;
+
         // Blend V1 (always the first layer) onto the zero canvas. V1
         // already comes back from post_process_rgba as linear f32.
-        {
+        let v1_blend_us: u128 = {
             let t_blend = std::time::Instant::now();
             crate::composite::blend_layer_linear(
                 &mut accumulated_linear,
@@ -2667,9 +2675,10 @@ impl PlaybackEngine {
                 v1_opacity,
                 klipp_core::BlendMode::Normal,
             );
-            let blend_ms = t_blend.elapsed().as_secs_f64() * 1000.0;
-            tracing::trace!("PERF blend_layer pass: {blend_ms:.3}ms res={final_w}x{final_h} layer=V1");
-        }
+            let el = t_blend.elapsed();
+            tracing::trace!("PERF blend_layer pass: {:.3}ms res={final_w}x{final_h} layer=V1", el.as_secs_f64() * 1000.0);
+            el.as_micros()
+        };
 
         // Each overlay clip's effects are applied before compositing so every
         // clip renders with its own colour grade, OFX chain, and builtin effects.
@@ -2703,10 +2712,14 @@ impl PlaybackEngine {
                 // pixel buffer once so downstream effects/blend can own
                 // it; the map keeps its authoritative copy for the
                 // next frame.
+                let t_clone = std::time::Instant::now();
                 let mut ov_linear = ov_frame.data.clone();
+                ov_clone_us += t_clone.elapsed().as_micros();
                 if let Some(clip) = clip {
                     let clip_time = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
+                    let t_grade = std::time::Instant::now();
                     ov_linear = self.apply_clip_effects(ov_linear, ov_w, ov_h, clip, clip_time);
+                    ov_grade_us += t_grade.elapsed().as_micros();
                 }
                 let src_linear = if ov_w == final_w && ov_h == final_h {
                     ov_linear
@@ -2716,11 +2729,14 @@ impl PlaybackEngine {
                     // Inevitable while imageops is u8-only; localised to
                     // just the mismatched-dim case. The main case
                     // (dims match) stays fully linear.
+                    let t_resize = std::time::Instant::now();
                     let ov_rgba = linear_rgba_to_u8(&ov_linear);
                     let img = ImageBuffer::<Rgba<u8>, _>::from_raw(ov_w, ov_h, ov_rgba)
                         .unwrap_or_else(|| ImageBuffer::new(final_w, final_h));
                     let scaled = image::imageops::resize(&img, final_w, final_h, image::imageops::FilterType::Triangle);
-                    u8_rgba_to_linear(&scaled.into_raw())
+                    let out = u8_rgba_to_linear(&scaled.into_raw());
+                    ov_resize_us += t_resize.elapsed().as_micros();
+                    out
                 };
                 let t_blend = std::time::Instant::now();
                 crate::composite::blend_layer_linear(
@@ -2729,10 +2745,11 @@ impl PlaybackEngine {
                     *effective,
                     klipp_core::BlendMode::Normal,
                 );
-                let blend_ms = t_blend.elapsed().as_secs_f64() * 1000.0;
+                let el = t_blend.elapsed();
+                ov_blend_us += el.as_micros();
                 tracing::trace!(
-                    "PERF blend_layer pass: {blend_ms:.3}ms res={final_w}x{final_h} \
-                     overlay_track={track_idx}",
+                    "PERF blend_layer pass: {:.3}ms res={final_w}x{final_h} overlay_track={track_idx}",
+                    el.as_secs_f64() * 1000.0,
                 );
             }
         }
@@ -2742,10 +2759,12 @@ impl PlaybackEngine {
         // user-selected tone-map operator (None = identity for SDR) then
         // sRGB-encodes the result. For `ToneMapOp::None` + SDR content
         // this is bit-identical to the old linear_rgba_to_u8 path.
+        let t_display = std::time::Instant::now();
         let final_rgba = klipp_color::display::display_transform(
             &accumulated_linear,
             self.tone_map_op,
         );
+        let display_us = t_display.elapsed().as_micros();
         // Return the linear scratch to the pool for the next frame.
         self.composite_scratch_linear = accumulated_linear;
 
@@ -2763,7 +2782,13 @@ impl PlaybackEngine {
                 else { "OVER" };
             debug!(
                 "PERF blend_composite: {composite_ms:.2}ms overlays={overlay_count} \
-                 res={final_w}x{final_h} budget={budget}",
+                 res={final_w}x{final_h} budget={budget} | v1_blend={:.2} ov_clone={:.2} ov_grade={:.2} ov_resize={:.2} ov_blend={:.2} display={:.2}",
+                v1_blend_us as f64 / 1000.0,
+                ov_clone_us as f64 / 1000.0,
+                ov_grade_us as f64 / 1000.0,
+                ov_resize_us as f64 / 1000.0,
+                ov_blend_us as f64 / 1000.0,
+                display_us as f64 / 1000.0,
             );
         }
 
