@@ -2254,4 +2254,59 @@ mod tests {
             "3-node active chain should submit exactly twice (1 chain + 1 download), got {delta}",
         );
     }
+
+    #[test]
+    fn chain_reuses_bind_groups() {
+        // Verify the chain dispatch path reuses pre-allocated bind
+        // groups instead of calling `create_bind_group` per node. On
+        // NVIDIA Vulkan the old per-dispatch pattern accumulated
+        // descriptor-pool frees until the driver produced `device lost
+        // (Dropped)` in long sessions (observed 3× in production).
+        //
+        // The pool is rebuilt only when the frame buffer size changes
+        // (`ensure_buffers`). Steady-state dispatch with a constant
+        // frame size must not grow the build count.
+        let mut gpu_executor = GraphExecutor::new();
+        if gpu_executor.gpu.is_none() {
+            return;
+        }
+
+        let mut graph = default_graph();
+        graph.nodes.iter_mut()
+            .find(|n| n.kind == NodeKind::Exposure)
+            .unwrap()
+            .params.exposure = Some(0.5);
+        graph.nodes.iter_mut()
+            .find(|n| n.kind == NodeKind::Saturation)
+            .unwrap()
+            .params.saturation = Some(1.3);
+        graph.nodes.iter_mut()
+            .find(|n| n.kind == NodeKind::ColorBalance)
+            .unwrap()
+            .params.temperature = Some(0.15);
+
+        let frame = vec![
+            100u8, 150, 200, 255, 200, 150, 100, 255, 50, 100, 150, 255, 128, 128, 128, 255,
+        ];
+
+        // Warm-up: first execute() resizes buffers and populates the
+        // pool. We measure delta *after* the warm-up so the baseline
+        // captures a populated pool.
+        let _ = gpu_executor.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+        let before = gpu_executor.gpu.as_ref().unwrap().chain_bind_group_build_count();
+
+        // Run the chain several times at the same frame size. Each
+        // iteration dispatches 3 active nodes + bypassed passthroughs;
+        // none should create a new bind group.
+        for _ in 0..5 {
+            let _ = gpu_executor.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+        }
+
+        let after = gpu_executor.gpu.as_ref().unwrap().chain_bind_group_build_count();
+        assert_eq!(
+            after, before,
+            "steady-state chain dispatch must reuse pool (build count went {before} -> {after}); \
+             every `create_bind_group` in the dispatch hot path is a regression",
+        );
+    }
 }

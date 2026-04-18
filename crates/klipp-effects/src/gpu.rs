@@ -221,6 +221,38 @@ pub struct GpuEffectsPipeline {
     /// NEXT submit, so naively batching N dispatches against the single
     /// `params_buf` would have all N read whichever write landed last.
     params_ring: Vec<wgpu::Buffer>,
+    /// Pre-allocated bind groups for the 3-binding chain layout
+    /// (`bind_group_layout`). Indexed by `slot * 4 + config_idx` where
+    /// `config_idx` picks one of the four (input, output) buffer pairs
+    /// the chain dispatch entries use: AtoB, BtoA, AtoC, BtoC.
+    /// Size = `CHAIN_PARAMS_RING_SIZE * 4` = 128.
+    ///
+    /// Created at pipeline init with `buf_*` all empty so every entry is
+    /// `None`; the first `ensure_buffers` call after a frame size change
+    /// rebuilds it. We index-and-borrow instead of creating a fresh bind
+    /// group per dispatch — on NVIDIA Vulkan wgpu's deferred
+    /// descriptor-pool frees accumulate across long sessions and
+    /// eventually produce `device lost (Dropped)`, plus ~0.3 ms per
+    /// dispatch of driver overhead in the steady state.
+    chain_bg_3binding: Vec<Option<wgpu::BindGroup>>,
+    /// Pre-allocated bind groups for the huesat 4-binding layout with
+    /// `huesat_lut_buf` as the extra buffer. Used by `apply_huesat_chain`.
+    /// Size = `CHAIN_PARAMS_RING_SIZE * 2` = 64 (AtoB, BtoA only).
+    chain_bg_huesat: Vec<Option<wgpu::BindGroup>>,
+    /// Pre-allocated bind groups for the huesat layout with
+    /// `rgb_curves_lut_buf` as binding 3. Used by `apply_rgb_curves_chain`.
+    chain_bg_rgb_curves: Vec<Option<wgpu::BindGroup>>,
+    /// Pre-allocated bind groups for the huesat layout with
+    /// `input_transform_lut_buf` as binding 3. Used by
+    /// `apply_input_transform_chain`.
+    chain_bg_input_transform: Vec<Option<wgpu::BindGroup>>,
+    /// Pre-allocated bind groups for the huesat layout with `buf_c`
+    /// as binding 3. Used by `apply_clarity_chain` pass 3.
+    chain_bg_clarity_apply: Vec<Option<wgpu::BindGroup>>,
+    /// Count of `create_bind_group` calls spent building the chain bind
+    /// group pools. Used by `chain_reuses_bind_groups` to verify no new
+    /// bind groups are created during steady-state dispatch.
+    chain_bg_build_count: Arc<std::sync::atomic::AtomicU64>,
     /// Single `CommandEncoder` shared by an entire chain segment. All
     /// `*_chain` entries record into this when it's `Some`; the
     /// executor calls `begin_chain` / `submit_chain` around a chain
@@ -750,6 +782,15 @@ impl GpuEffectsPipeline {
             staging_read: None,
             params_buf,
             params_ring,
+            // Start empty; populated by `rebuild_chain_bind_group_pools`
+            // after the first `ensure_buffers` call (buf_a/b/c don't
+            // exist until then).
+            chain_bg_3binding: (0..CHAIN_PARAMS_RING_SIZE * 4).map(|_| None).collect(),
+            chain_bg_huesat: (0..CHAIN_PARAMS_RING_SIZE * 2).map(|_| None).collect(),
+            chain_bg_rgb_curves: (0..CHAIN_PARAMS_RING_SIZE * 2).map(|_| None).collect(),
+            chain_bg_input_transform: (0..CHAIN_PARAMS_RING_SIZE * 2).map(|_| None).collect(),
+            chain_bg_clarity_apply: (0..CHAIN_PARAMS_RING_SIZE * 2).map(|_| None).collect(),
+            chain_bg_build_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             chain_encoder: None,
             chain_slot_idx: 0,
             current_buf_size: 0,
@@ -812,6 +853,120 @@ impl GpuEffectsPipeline {
             mapped_at_creation: false,
         }));
         self.current_buf_size = byte_size;
+        // The pre-allocated chain bind group pools reference buf_a /
+        // buf_b / buf_c by Buffer handle; they're now stale. Rebuild.
+        self.rebuild_chain_bind_group_pools();
+    }
+
+    /// Populate the pre-allocated chain bind-group pools against the
+    /// current `buf_a` / `buf_b` / `buf_c` handles. Called after any
+    /// buffer recreation (`ensure_buffers`, clarity's on-demand `buf_c`
+    /// create). Every slot × every buffer configuration is built once
+    /// here; dispatch sites then index into the pool instead of issuing
+    /// `create_bind_group` per frame.
+    ///
+    /// Pool counts:
+    ///  - `chain_bg_3binding`: 32 slots × 4 configs = 128
+    ///  - each 4-binding pool: 32 slots × 2 configs = 64
+    ///
+    /// Configuration indexing (3-binding): 0=AtoB, 1=BtoA, 2=AtoC, 3=BtoC.
+    /// Configuration indexing (4-binding): 0=AtoB, 1=BtoA.
+    fn rebuild_chain_bind_group_pools(&mut self) {
+        let (buf_a, buf_b, buf_c) = match (self.buf_a.as_ref(), self.buf_b.as_ref(), self.buf_c.as_ref()) {
+            (Some(a), Some(b), Some(c)) => (a, b, c),
+            _ => {
+                // Buffers not yet allocated — pools stay empty and
+                // `ensure_buffers` will call us again after it creates
+                // buf_a/b/c.
+                return;
+            }
+        };
+
+        let configs_3: [(&wgpu::Buffer, &wgpu::Buffer); 4] = [
+            (buf_a, buf_b), // AtoB = 0
+            (buf_b, buf_a), // BtoA = 1
+            (buf_a, buf_c), // AtoC = 2
+            (buf_b, buf_c), // BtoC = 3
+        ];
+        let configs_4: [(&wgpu::Buffer, &wgpu::Buffer); 2] = [
+            (buf_a, buf_b), // AtoB = 0
+            (buf_b, buf_a), // BtoA = 1
+        ];
+
+        for slot in 0..CHAIN_PARAMS_RING_SIZE {
+            for (cfg_idx, (input, output)) in configs_3.iter().enumerate() {
+                let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("chain_bg_3b"),
+                    layout: &self.bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self.params_ring[slot].as_entire_binding(),
+                        },
+                    ],
+                });
+                self.chain_bg_build_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.chain_bg_3binding[slot * 4 + cfg_idx] = Some(bg);
+            }
+
+            for (cfg_idx, (input, output)) in configs_4.iter().enumerate() {
+                let idx = slot * 2 + cfg_idx;
+
+                let bg_huesat = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("chain_bg_huesat"),
+                    layout: &self.huesat_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 3, resource: self.huesat_lut_buf.as_entire_binding() },
+                    ],
+                });
+                self.chain_bg_build_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.chain_bg_huesat[idx] = Some(bg_huesat);
+
+                let bg_rgb_curves = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("chain_bg_rgb_curves"),
+                    layout: &self.huesat_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 3, resource: self.rgb_curves_lut_buf.as_entire_binding() },
+                    ],
+                });
+                self.chain_bg_build_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.chain_bg_rgb_curves[idx] = Some(bg_rgb_curves);
+
+                let bg_input_transform = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("chain_bg_input_transform"),
+                    layout: &self.huesat_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 3, resource: self.input_transform_lut_buf.as_entire_binding() },
+                    ],
+                });
+                self.chain_bg_build_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.chain_bg_input_transform[idx] = Some(bg_input_transform);
+
+                let bg_clarity_apply = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("chain_bg_clarity_apply"),
+                    layout: &self.huesat_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 3, resource: buf_c.as_entire_binding() },
+                    ],
+                });
+                self.chain_bg_build_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.chain_bg_clarity_apply[idx] = Some(bg_clarity_apply);
+            }
+        }
     }
 
     /// Create a bind group with the given input/output buffers.
@@ -1919,6 +2074,15 @@ impl GpuEffectsPipeline {
         if let Some(enc) = self.chain_encoder.take() {
             self.queue.submit(std::iter::once(enc.finish()));
             self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // Non-blocking nudge to the driver to reclaim deferred
+            // resources (command buffers, staging allocations) between
+            // chain segments. On NVIDIA Vulkan these otherwise
+            // accumulate across long sessions — paired with the
+            // pre-allocated bind group pools above, this is the second
+            // belt against the observed `device lost (Dropped)` crash.
+            // `Maintain::Poll` returns immediately — it's a hint, not a
+            // fence.
+            self.device.poll(wgpu::Maintain::Poll);
         }
     }
 
@@ -1927,6 +2091,15 @@ impl GpuEffectsPipeline {
     /// the chain path collapses per-node submits into one.
     pub fn submit_count(&self) -> u64 {
         self.submit_count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Count of chain-bind-group `create_bind_group` calls since
+    /// pipeline creation. Every bind group is built once by
+    /// `rebuild_chain_bind_group_pools` (at init time and whenever
+    /// buffers are resized); steady-state dispatch never builds more.
+    /// Used by `chain_reuses_bind_groups` to verify the pool path.
+    pub fn chain_bind_group_build_count(&self) -> u64 {
+        self.chain_bg_build_count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Claim the next ring slot for a chain dispatch. Panics if the
@@ -1978,28 +2151,25 @@ impl GpuEffectsPipeline {
     const CHAIN_ENCODER_EXPECT: &'static str =
         "chain encoder not open — begin_chain must be called before *_chain dispatches";
 
-    /// Build the 3-binding effect bind group (input, output, params-slot).
-    /// Used by every `*_chain` dispatch that needs only the standard
-    /// layout (no extra LUT / scratch buffer).
-    fn chain_bind_group(
-        &self,
-        input: &wgpu::Buffer,
-        output: &wgpu::Buffer,
-        params_slot: usize,
-    ) -> wgpu::BindGroup {
-        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.params_ring[params_slot].as_entire_binding(),
-                },
-            ],
-        })
-    }
+    /// Error for pool-lookup panics: the pool is rebuilt from
+    /// `ensure_buffers` whenever buffers are (re)created, so every
+    /// dispatch site should find a populated slot. If this ever fires
+    /// someone skipped the `ensure_chain_buffers` call ahead of the
+    /// chain, or `buf_c` wasn't created when clarity was the first
+    /// chain node.
+    const CHAIN_BG_EXPECT: &'static str =
+        "chain bind group pool not populated — ensure_chain_buffers must be called before *_chain dispatches";
+
+    /// Buffer-pair configuration indexing for the pre-allocated chain
+    /// bind group pools. The 3-binding pool stores all four variants
+    /// (AtoB=0, BtoA=1, AtoC=2, BtoC=3); the 4-binding pools only need
+    /// AtoB=0 / BtoA=1.
+    #[inline]
+    fn chain_cfg_3b_ab(in_is_a: bool) -> usize { if in_is_a { 0 } else { 1 } }
+    #[inline]
+    fn chain_cfg_3b_ac(in_is_a: bool) -> usize { if in_is_a { 2 } else { 3 } }
+    #[inline]
+    fn chain_cfg_4b(in_is_a: bool) -> usize { if in_is_a { 0 } else { 1 } }
 
     /// Dispatch-only colour-grade pass. Reads `in_is_a`-slot, writes the other.
     #[allow(clippy::too_many_arguments)]
@@ -2038,10 +2208,13 @@ impl GpuEffectsPipeline {
             hue, global_mix, _pad0: 0,
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let (input, output) = self.chain_in_out(in_is_a);
-        let bind_group = self.chain_bind_group(input, output, slot);
+        // Disjoint-field borrow: read from chain_bg_3binding while
+        // taking &mut on chain_encoder. Pool must be pre-populated.
+        let bind_group = self.chain_bg_3binding[slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
+            .as_ref()
+            .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.color_grade_pipeline, &bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.color_grade_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only colour-balance pass.
@@ -2064,10 +2237,11 @@ impl GpuEffectsPipeline {
             _pad0: 0, _pad1: 0,
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let (input, output) = self.chain_in_out(in_is_a);
-        let bind_group = self.chain_bind_group(input, output, slot);
+        let bind_group = self.chain_bg_3binding[slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
+            .as_ref()
+            .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.color_balance_pipeline, &bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.color_balance_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only wheel sat/bri pass.
@@ -2093,10 +2267,11 @@ impl GpuEffectsPipeline {
             _pad0: 0, _pad1: 0,
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let (input, output) = self.chain_in_out(in_is_a);
-        let bind_group = self.chain_bind_group(input, output, slot);
+        let bind_group = self.chain_bg_3binding[slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
+            .as_ref()
+            .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.wheel_sat_bri_pipeline, &bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.wheel_sat_bri_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only RGB curves pass. Uploads LUT, writes params, dispatches.
@@ -2120,19 +2295,11 @@ impl GpuEffectsPipeline {
             mix,
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let (input, output) = self.chain_in_out(in_is_a);
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("rgb_curves_chain_bg"),
-            layout: &self.huesat_bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.rgb_curves_lut_buf.as_entire_binding() },
-            ],
-        });
+        let bind_group = self.chain_bg_rgb_curves[slot * 2 + Self::chain_cfg_4b(in_is_a)]
+            .as_ref()
+            .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.rgb_curves_pipeline, &bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.rgb_curves_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only vibrance pass.
@@ -2149,10 +2316,11 @@ impl GpuEffectsPipeline {
         let slot = self.next_params_slot();
         self.write_chain_params(slot, &GpuVibranceParams { width, height, amount, _pad: 0 });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let (input, output) = self.chain_in_out(in_is_a);
-        let bind_group = self.chain_bind_group(input, output, slot);
+        let bind_group = self.chain_bg_3binding[slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
+            .as_ref()
+            .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.vibrance_pipeline, &bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.vibrance_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only 12-sector colour warper pass.
@@ -2173,10 +2341,11 @@ impl GpuEffectsPipeline {
             hue_shifts: *hue_shifts, sat_shifts: *sat_shifts,
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let (input, output) = self.chain_in_out(in_is_a);
-        let bind_group = self.chain_bind_group(input, output, slot);
+        let bind_group = self.chain_bg_3binding[slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
+            .as_ref()
+            .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.color_warper_pipeline, &bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.color_warper_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only input-transform (log→linear via 1D LUT) pass.
@@ -2194,19 +2363,11 @@ impl GpuEffectsPipeline {
         let slot = self.next_params_slot();
         self.write_chain_params(slot, &GpuInputTransformParams { width, height, _pad0: 0, _pad1: 0 });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let (input, output) = self.chain_in_out(in_is_a);
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("input_transform_chain_bg"),
-            layout: &self.huesat_bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.input_transform_lut_buf.as_entire_binding() },
-            ],
-        });
+        let bind_group = self.chain_bg_input_transform[slot * 2 + Self::chain_cfg_4b(in_is_a)]
+            .as_ref()
+            .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.input_transform_pipeline, &bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.input_transform_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only clarity (midtone unsharp-mask) pass. Uses `buf_c` as
@@ -2223,13 +2384,19 @@ impl GpuEffectsPipeline {
             return;
         }
         let byte_size = (width * height * 16) as u64;
-        // buf_c must exist and match the current size.
+        // buf_c must exist and match the current size. Normally
+        // `ensure_chain_buffers` has already built it at the current
+        // size via `ensure_buffers`; this branch is defensive for the
+        // case where clarity runs outside the chain (shouldn't happen).
+        // If we do recreate buf_c, rebuild the clarity/3-binding pools
+        // that reference it.
         if self.buf_c.is_none() || self.current_buf_size < byte_size {
             self.buf_c = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("buf_c"), size: byte_size,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }));
+            self.rebuild_chain_bind_group_pools();
         }
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let radius = 20u32;
@@ -2249,37 +2416,37 @@ impl GpuEffectsPipeline {
         self.write_chain_params(apply_slot, &GpuClarityApplyParams { width, height, amount, _pad: 0 });
 
         // Pass 1: horizontal blur (in RGBA → out luma scratch).
+        // 3-binding pool AtoB/BtoA at `blur_slot`.
         {
-            let (input, output) = self.chain_in_out(in_is_a);
-            let bind_group = self.chain_bind_group(input, output, blur_slot);
+            let bind_group = self.chain_bg_3binding[blur_slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
+                .as_ref()
+                .expect(Self::CHAIN_BG_EXPECT);
             let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-            Self::record_compute_dispatch(enc, &self.clarity_blur_h_pipeline, &bind_group, workgroups);
+            Self::record_compute_dispatch(enc, &self.clarity_blur_h_pipeline, bind_group, workgroups);
         }
 
         // Pass 2: vertical blur (out luma → buf_c blurred luma).
+        // The "input" here is what Pass 1 wrote to, which is buf_b when
+        // in_is_a or buf_a when !in_is_a. That's (buf_b, buf_c) or
+        // (buf_a, buf_c) respectively — AtoC/BtoC configs in the pool.
+        // Note: `!in_is_a` inverts parity because the vertical pass
+        // reads what the horizontal pass just wrote.
         {
-            let output = if in_is_a { self.buf_b.as_ref() } else { self.buf_a.as_ref() }.unwrap();
-            let buf_c = self.buf_c.as_ref().unwrap();
-            let bind_group = self.chain_bind_group(output, buf_c, blur_slot);
+            let bind_group = self.chain_bg_3binding[blur_slot * 4 + Self::chain_cfg_3b_ac(!in_is_a)]
+                .as_ref()
+                .expect(Self::CHAIN_BG_EXPECT);
             let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-            Self::record_compute_dispatch(enc, &self.clarity_blur_v_pipeline, &bind_group, workgroups);
+            Self::record_compute_dispatch(enc, &self.clarity_blur_v_pipeline, bind_group, workgroups);
         }
 
         // Pass 3: unsharp mask (in RGBA + buf_c blurred luma → out RGBA).
-        let (input, output) = self.chain_in_out(in_is_a);
-        let buf_c = self.buf_c.as_ref().unwrap();
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("clarity_apply_chain_bg"),
-            layout: &self.huesat_bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[apply_slot].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: buf_c.as_entire_binding() },
-            ],
-        });
+        // 4-binding clarity_apply pool keyed on (in_is_a) × (buf_c as
+        // binding 3).
+        let bind_group = self.chain_bg_clarity_apply[apply_slot * 2 + Self::chain_cfg_4b(in_is_a)]
+            .as_ref()
+            .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.clarity_apply_pipeline, &bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.clarity_apply_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only bilateral denoise pass.
@@ -2297,10 +2464,11 @@ impl GpuEffectsPipeline {
         let slot = self.next_params_slot();
         self.write_chain_params(slot, &DenoiseParams { width, height, spatial_sigma, color_sigma });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let (input, output) = self.chain_in_out(in_is_a);
-        let bind_group = self.chain_bind_group(input, output, slot);
+        let bind_group = self.chain_bg_3binding[slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
+            .as_ref()
+            .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.denoise_pipeline, &bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.denoise_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only hue/sat curves pass. Uploads the 6×256 LUT, writes
@@ -2320,19 +2488,11 @@ impl GpuEffectsPipeline {
         let slot = self.next_params_slot();
         self.write_chain_params(slot, &GpuHueSatParams { width, height, mix, _pad0: 0 });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let (input, output) = self.chain_in_out(in_is_a);
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("huesat_chain_bg"),
-            layout: &self.huesat_bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.huesat_lut_buf.as_entire_binding() },
-            ],
-        });
+        let bind_group = self.chain_bg_huesat[slot * 2 + Self::chain_cfg_4b(in_is_a)]
+            .as_ref()
+            .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.huesat_pipeline, &bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.huesat_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only 3D LUT pass with trilinear interpolation.
@@ -2384,6 +2544,10 @@ impl GpuEffectsPipeline {
         self.queue.write_buffer(lut_buf, 0, bytemuck::cast_slice(lut_data));
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let (input, output) = self.chain_in_out(in_is_a);
+        // NOTE: lut3d_buf is dynamically sized (different LUT dimensions
+        // produce different buffer sizes), so it's not pooled — a fresh
+        // bind group is created per dispatch. This path runs at most
+        // once per chain (≤1 3D LUT node per grade) so the cost is bounded.
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("lut3d_chain_bg"),
             layout: &self.huesat_bgl,
@@ -2421,10 +2585,11 @@ impl GpuEffectsPipeline {
             monochrome: if monochrome { 1 } else { 0 },
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
-        let (input, output) = self.chain_in_out(in_is_a);
-        let bind_group = self.chain_bind_group(input, output, slot);
+        let bind_group = self.chain_bg_3binding[slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
+            .as_ref()
+            .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
-        Self::record_compute_dispatch(enc, &self.grain_pipeline, &bind_group, workgroups);
+        Self::record_compute_dispatch(enc, &self.grain_pipeline, bind_group, workgroups);
     }
 
     // ─── Chain plumbing helpers ────────────────────────────────────────────
