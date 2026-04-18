@@ -214,6 +214,22 @@ pub struct GpuEffectsPipeline {
     buf_c: Option<wgpu::Buffer>,  // third buffer for transition "to" frame
     staging_read: Option<wgpu::Buffer>,
     params_buf: wgpu::Buffer,
+    /// Ring of uniform buffers used by chain dispatches. Every `*_chain`
+    /// entry claims a fresh slot via `next_params_slot` so the params
+    /// write in `queue.write_buffer` can't race against a later dispatch
+    /// in the same submit — wgpu orders `write_buffer` calls against the
+    /// NEXT submit, so naively batching N dispatches against the single
+    /// `params_buf` would have all N read whichever write landed last.
+    params_ring: Vec<wgpu::Buffer>,
+    /// Single `CommandEncoder` shared by an entire chain segment. All
+    /// `*_chain` entries record into this when it's `Some`; the
+    /// executor calls `begin_chain` / `submit_chain` around a chain
+    /// segment so one `queue.submit` covers every dispatch in the
+    /// segment. ~2-5 ms of NVIDIA Vulkan submit overhead per node
+    /// otherwise.
+    chain_encoder: Option<wgpu::CommandEncoder>,
+    /// Next ring slot to claim. Reset to 0 in `begin_chain`.
+    chain_slot_idx: u32,
     current_buf_size: u64,
     /// Set by wgpu callbacks when the device is lost or an uncaptured
     /// error fires. Every `apply_*` / `render_*` entry short-circuits
@@ -221,10 +237,22 @@ pub struct GpuEffectsPipeline {
     /// no-op instead of a process-wide panic. Reset only by tearing
     /// down and recreating the pipeline (i.e. app restart).
     device_lost: Arc<AtomicBool>,
+    /// Count of queue submits issued since construction. Used by the
+    /// `chain_single_submit_per_segment` test (in `klipp-nodes`) to
+    /// verify the chain batching actually collapses per-node submits
+    /// into one. Kept unconditional (rather than `#[cfg(test)]`) so
+    /// downstream-crate tests can observe it without coupling to this
+    /// crate's test harness — an atomic counter is ~free in release.
+    submit_count: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Maximum params size (padded to 256 bytes for alignment)
 const PARAMS_SIZE: u64 = 256;
+/// Number of uniform-buffer slots in the chain params ring. A maximal
+/// grade (~13 active nodes in the default graph) plus multi-pass nodes
+/// like clarity (3 slots) fits comfortably. Bump if a future graph ever
+/// asserts in `next_params_slot`.
+const CHAIN_PARAMS_RING_SIZE: usize = 32;
 const WORKGROUP_SIZE: u32 = 256;
 
 impl GpuEffectsPipeline {
@@ -608,6 +636,20 @@ impl GpuEffectsPipeline {
             mapped_at_creation: false,
         });
 
+        // Ring of per-dispatch params buffers for the chain path. Each
+        // chain dispatch claims its own slot so the params write lands
+        // in a buffer no later dispatch in the same submit reads from.
+        let params_ring: Vec<wgpu::Buffer> = (0..CHAIN_PARAMS_RING_SIZE)
+            .map(|i| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&format!("chain_params_{i}")),
+                    size: PARAMS_SIZE,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                })
+            })
+            .collect();
+
         info!("GPU effects pipeline initialized");
 
         Some(Self {
@@ -707,8 +749,12 @@ impl GpuEffectsPipeline {
             buf_c: None,
             staging_read: None,
             params_buf,
+            params_ring,
+            chain_encoder: None,
+            chain_slot_idx: 0,
             current_buf_size: 0,
             device_lost,
+            submit_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
 
@@ -1832,6 +1878,129 @@ impl GpuEffectsPipeline {
         if in_is_a { (buf_a, buf_b) } else { (buf_b, buf_a) }
     }
 
+    // ─── Chain-encoder lifecycle ──────────────────────────────────────────
+    //
+    // Every `*_chain` entry records into a single shared `CommandEncoder`
+    // so all dispatches in a chain segment flush in ONE `queue.submit`.
+    // NVIDIA Vulkan spends ~2-5 ms per submit on fence setup and barrier
+    // tracking; for a 5-node chain that's 10-20 ms that disappears with
+    // this batching.
+    //
+    // The wrinkle that forces the params ring: wgpu orders
+    // `queue.write_buffer` writes before the NEXT submit. If we recorded
+    // `write_buffer(params_A); pass_A; write_buffer(params_B); pass_B`
+    // into one encoder and submitted once, both passes would observe
+    // `params_B`. Each `*_chain` therefore claims its own slot from
+    // `params_ring` via `next_params_slot`, and the pass binds THAT slot
+    // rather than the shared `params_buf`.
+
+    /// Start a new chain segment. Resets the slot ring and opens a fresh
+    /// command encoder. If an encoder is already open (should not happen
+    /// — executor pairs begin/submit in lock-step) we submit+drop it
+    /// first so no recorded work is lost.
+    pub fn begin_chain(&mut self) {
+        if let Some(enc) = self.chain_encoder.take() {
+            // Recover from a missed submit_chain. Should be unreachable
+            // in well-formed callers.
+            self.queue.submit(std::iter::once(enc.finish()));
+            self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.chain_slot_idx = 0;
+        let enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("chain_encoder"),
+        });
+        self.chain_encoder = Some(enc);
+    }
+
+    /// Finalise the current chain segment: submit the batched encoder if
+    /// one is live. No-op when called without a prior `begin_chain`
+    /// (covers short-circuit / device-lost paths).
+    pub fn submit_chain(&mut self) {
+        if let Some(enc) = self.chain_encoder.take() {
+            self.queue.submit(std::iter::once(enc.finish()));
+            self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Count of `queue.submit` calls since pipeline creation. Used by
+    /// `chain_single_submit_per_segment` (klipp-nodes tests) to verify
+    /// the chain path collapses per-node submits into one.
+    pub fn submit_count(&self) -> u64 {
+        self.submit_count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Claim the next ring slot for a chain dispatch. Panics if the
+    /// ring is exhausted — a 32-slot ring covers every realistic grade
+    /// (the default graph has 13 nodes; multi-pass nodes claim 1 slot
+    /// per pass). If this ever fires in the wild, bump
+    /// `CHAIN_PARAMS_RING_SIZE` rather than masking with wraparound.
+    fn next_params_slot(&mut self) -> usize {
+        let idx = self.chain_slot_idx as usize;
+        assert!(
+            idx < CHAIN_PARAMS_RING_SIZE,
+            "chain params ring exhausted ({idx} >= {CHAIN_PARAMS_RING_SIZE}); bump CHAIN_PARAMS_RING_SIZE",
+        );
+        self.chain_slot_idx += 1;
+        idx
+    }
+
+    /// Write `data` to the params-ring slot at `slot_idx`. Paired with
+    /// `next_params_slot` by every `*_chain` entry.
+    fn write_chain_params<T: bytemuck::Pod>(&self, slot_idx: usize, data: &T) {
+        let bytes = bytemuck::bytes_of(data);
+        self.queue.write_buffer(&self.params_ring[slot_idx], 0, bytes);
+    }
+
+    /// Record a single compute dispatch into the supplied encoder.
+    /// Pulled out so each `*_chain` entry doesn't duplicate the
+    /// `begin_compute_pass` boilerplate. Takes the encoder separately
+    /// from `&self` so callers can hold an immutable borrow on other
+    /// fields (pipelines, LUT buffers) while recording.
+    fn record_compute_dispatch(
+        encoder: &mut wgpu::CommandEncoder,
+        pipeline: &wgpu::ComputePipeline,
+        bind_group: &wgpu::BindGroup,
+        workgroups: u32,
+    ) {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bind_group, &[]);
+        pass.dispatch_workgroups(workgroups, 1, 1);
+    }
+
+    /// Error message for inline `chain_encoder.as_mut().expect(...)` calls
+    /// at each `*_chain` dispatch site. We inline rather than wrap in a
+    /// method so callers keep the disjoint-field borrow (pipeline refs
+    /// live alongside the encoder on `self`).
+    const CHAIN_ENCODER_EXPECT: &'static str =
+        "chain encoder not open — begin_chain must be called before *_chain dispatches";
+
+    /// Build the 3-binding effect bind group (input, output, params-slot).
+    /// Used by every `*_chain` dispatch that needs only the standard
+    /// layout (no extra LUT / scratch buffer).
+    fn chain_bind_group(
+        &self,
+        input: &wgpu::Buffer,
+        output: &wgpu::Buffer,
+        params_slot: usize,
+    ) -> wgpu::BindGroup {
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.params_ring[params_slot].as_entire_binding(),
+                },
+            ],
+        })
+    }
+
     /// Dispatch-only colour-grade pass. Reads `in_is_a`-slot, writes the other.
     #[allow(clippy::too_many_arguments)]
     pub fn apply_color_grade_chain(
@@ -1858,7 +2027,8 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return;
         }
-        self.write_params(&GpuColorGradeParams {
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuColorGradeParams {
             width, height, exposure, contrast, saturation, temperature, tint,
             highlights, shadows, whites, blacks,
             lift_r: lift.0, lift_g: lift.1, lift_b: lift.2,
@@ -1869,7 +2039,9 @@ impl GpuEffectsPipeline {
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let (input, output) = self.chain_in_out(in_is_a);
-        self.dispatch(&self.color_grade_pipeline, input, output, workgroups);
+        let bind_group = self.chain_bind_group(input, output, slot);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.color_grade_pipeline, &bind_group, workgroups);
     }
 
     /// Dispatch-only colour-balance pass.
@@ -1886,13 +2058,16 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return;
         }
-        self.write_params(&GpuColorBalanceParams {
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuColorBalanceParams {
             width, height, temperature, tint, hue, global_mix,
             _pad0: 0, _pad1: 0,
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let (input, output) = self.chain_in_out(in_is_a);
-        self.dispatch(&self.color_balance_pipeline, input, output, workgroups);
+        let bind_group = self.chain_bind_group(input, output, slot);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.color_balance_pipeline, &bind_group, workgroups);
     }
 
     /// Dispatch-only wheel sat/bri pass.
@@ -1910,7 +2085,8 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return;
         }
-        self.write_params(&GpuWheelSatBriParams {
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuWheelSatBriParams {
             width, height,
             lift_sat, lift_bri, gamma_sat, gamma_bri,
             gain_sat, gain_bri, offset_sat, offset_bri,
@@ -1918,7 +2094,9 @@ impl GpuEffectsPipeline {
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let (input, output) = self.chain_in_out(in_is_a);
-        self.dispatch(&self.wheel_sat_bri_pipeline, input, output, workgroups);
+        let bind_group = self.chain_bind_group(input, output, slot);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.wheel_sat_bri_pipeline, &bind_group, workgroups);
     }
 
     /// Dispatch-only RGB curves pass. Uploads LUT, writes params, dispatches.
@@ -1935,7 +2113,8 @@ impl GpuEffectsPipeline {
             return;
         }
         self.queue.write_buffer(&self.rgb_curves_lut_buf, 0, bytemuck::cast_slice(lut_data));
-        self.write_params(&GpuRgbCurvesParams {
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuRgbCurvesParams {
             width, height,
             preserve_luma: if preserve_luma { 1 } else { 0 },
             mix,
@@ -1948,18 +2127,12 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: self.rgb_curves_lut_buf.as_entire_binding() },
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.rgb_curves_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
-        }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.rgb_curves_pipeline, &bind_group, workgroups);
     }
 
     /// Dispatch-only vibrance pass.
@@ -1973,10 +2146,13 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return;
         }
-        self.write_params(&GpuVibranceParams { width, height, amount, _pad: 0 });
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuVibranceParams { width, height, amount, _pad: 0 });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let (input, output) = self.chain_in_out(in_is_a);
-        self.dispatch(&self.vibrance_pipeline, input, output, workgroups);
+        let bind_group = self.chain_bind_group(input, output, slot);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.vibrance_pipeline, &bind_group, workgroups);
     }
 
     /// Dispatch-only 12-sector colour warper pass.
@@ -1991,13 +2167,16 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return;
         }
-        self.write_params(&GpuColorWarperParams {
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuColorWarperParams {
             width, height, _pad0: 0, _pad1: 0,
             hue_shifts: *hue_shifts, sat_shifts: *sat_shifts,
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let (input, output) = self.chain_in_out(in_is_a);
-        self.dispatch(&self.color_warper_pipeline, input, output, workgroups);
+        let bind_group = self.chain_bind_group(input, output, slot);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.color_warper_pipeline, &bind_group, workgroups);
     }
 
     /// Dispatch-only input-transform (log→linear via 1D LUT) pass.
@@ -2012,7 +2191,8 @@ impl GpuEffectsPipeline {
             return;
         }
         self.queue.write_buffer(&self.input_transform_lut_buf, 0, bytemuck::cast_slice(lut_data));
-        self.write_params(&GpuInputTransformParams { width, height, _pad0: 0, _pad1: 0 });
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuInputTransformParams { width, height, _pad0: 0, _pad1: 0 });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let (input, output) = self.chain_in_out(in_is_a);
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2021,18 +2201,12 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: self.input_transform_lut_buf.as_entire_binding() },
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.input_transform_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
-        }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.input_transform_pipeline, &bind_group, workgroups);
     }
 
     /// Dispatch-only clarity (midtone unsharp-mask) pass. Uses `buf_c` as
@@ -2060,22 +2234,38 @@ impl GpuEffectsPipeline {
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let radius = 20u32;
 
+        // Clarity is 3 passes (blur_h, blur_v, apply). Two distinct
+        // params structs (`GpuClarityBlurParams` for the blurs,
+        // `GpuClarityApplyParams` for the unsharp-mask combine) — two
+        // ring slots are sufficient since the two blur passes share the
+        // same params struct. We still claim two slots to keep each
+        // logical params write in its own backing buffer; blur_h and
+        // blur_v happen to hold identical values, so we could share,
+        // but keeping them separate simplifies reasoning and leaves
+        // room if the blur params ever diverge.
+        let blur_slot = self.next_params_slot();
+        self.write_chain_params(blur_slot, &GpuClarityBlurParams { width, height, radius, _pad: 0 });
+        let apply_slot = self.next_params_slot();
+        self.write_chain_params(apply_slot, &GpuClarityApplyParams { width, height, amount, _pad: 0 });
+
         // Pass 1: horizontal blur (in RGBA → out luma scratch).
-        self.write_params(&GpuClarityBlurParams { width, height, radius, _pad: 0 });
         {
             let (input, output) = self.chain_in_out(in_is_a);
-            self.dispatch(&self.clarity_blur_h_pipeline, input, output, workgroups);
+            let bind_group = self.chain_bind_group(input, output, blur_slot);
+            let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+            Self::record_compute_dispatch(enc, &self.clarity_blur_h_pipeline, &bind_group, workgroups);
         }
 
         // Pass 2: vertical blur (out luma → buf_c blurred luma).
         {
             let output = if in_is_a { self.buf_b.as_ref() } else { self.buf_a.as_ref() }.unwrap();
             let buf_c = self.buf_c.as_ref().unwrap();
-            self.dispatch(&self.clarity_blur_v_pipeline, output, buf_c, workgroups);
+            let bind_group = self.chain_bind_group(output, buf_c, blur_slot);
+            let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+            Self::record_compute_dispatch(enc, &self.clarity_blur_v_pipeline, &bind_group, workgroups);
         }
 
         // Pass 3: unsharp mask (in RGBA + buf_c blurred luma → out RGBA).
-        self.write_params(&GpuClarityApplyParams { width, height, amount, _pad: 0 });
         let (input, output) = self.chain_in_out(in_is_a);
         let buf_c = self.buf_c.as_ref().unwrap();
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2084,18 +2274,12 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[apply_slot].as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: buf_c.as_entire_binding() },
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.clarity_apply_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
-        }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.clarity_apply_pipeline, &bind_group, workgroups);
     }
 
     /// Dispatch-only bilateral denoise pass.
@@ -2110,10 +2294,13 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return;
         }
-        self.write_params(&DenoiseParams { width, height, spatial_sigma, color_sigma });
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &DenoiseParams { width, height, spatial_sigma, color_sigma });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let (input, output) = self.chain_in_out(in_is_a);
-        self.dispatch(&self.denoise_pipeline, input, output, workgroups);
+        let bind_group = self.chain_bind_group(input, output, slot);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.denoise_pipeline, &bind_group, workgroups);
     }
 
     /// Dispatch-only hue/sat curves pass. Uploads the 6×256 LUT, writes
@@ -2130,7 +2317,8 @@ impl GpuEffectsPipeline {
             return;
         }
         self.queue.write_buffer(&self.huesat_lut_buf, 0, bytemuck::cast_slice(lut_data));
-        self.write_params(&GpuHueSatParams { width, height, mix, _pad0: 0 });
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuHueSatParams { width, height, mix, _pad0: 0 });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let (input, output) = self.chain_in_out(in_is_a);
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2139,18 +2327,12 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: self.huesat_lut_buf.as_entire_binding() },
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.huesat_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
-        }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.huesat_pipeline, &bind_group, workgroups);
     }
 
     /// Dispatch-only 3D LUT pass with trilinear interpolation.
@@ -2167,12 +2349,20 @@ impl GpuEffectsPipeline {
             return;
         }
         if opacity <= 0.0 {
-            // No-op: copy in → out via queue buffer copy.
+            // No-op: copy in → out into the chain encoder. The batched
+            // submit runs it alongside the surrounding dispatches.
             let byte_size = (width * height * 16) as u64;
-            let (input, output) = self.chain_in_out(in_is_a);
-            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-            encoder.copy_buffer_to_buffer(input, 0, output, 0, byte_size);
-            self.queue.submit(std::iter::once(encoder.finish()));
+            // Split the shared `self` borrow: encoder is on self, buf_a/buf_b
+            // are on self. `copy_buffer_to_buffer` takes `&Buffer`, so we
+            // need to hold the buffer refs separately from the &mut encoder.
+            // wgpu::Buffer isn't Clone, but copy_buffer_to_buffer doesn't
+            // retain them, so we can re-extract each borrow in sequence by
+            // matching on the Options directly.
+            let buf_a = self.buf_a.as_ref().expect("ensure_chain_buffers must be called first");
+            let buf_b = self.buf_b.as_ref().expect("ensure_chain_buffers must be called first");
+            let (input, output) = if in_is_a { (buf_a, buf_b) } else { (buf_b, buf_a) };
+            let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+            enc.copy_buffer_to_buffer(input, 0, output, 0, byte_size);
             return;
         }
         let lut_byte_size = (lut_data.len() * 4) as u64;
@@ -2185,9 +2375,13 @@ impl GpuEffectsPipeline {
             }));
             self.lut3d_buf_size = lut_byte_size;
         }
+        // Claim the params slot first so subsequent `&self` borrows
+        // (lut_buf, chain_in_out) don't clash with the `&mut self` that
+        // `next_params_slot` needs.
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuLut3dParams { width, height, lut_size, opacity });
         let lut_buf = self.lut3d_buf.as_ref().unwrap();
         self.queue.write_buffer(lut_buf, 0, bytemuck::cast_slice(lut_data));
-        self.write_params(&GpuLut3dParams { width, height, lut_size, opacity });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let (input, output) = self.chain_in_out(in_is_a);
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2196,18 +2390,12 @@ impl GpuEffectsPipeline {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: lut_buf.as_entire_binding() },
             ],
         });
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
-            pass.set_pipeline(&self.lut3d_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups, 1, 1);
-        }
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.lut3d_pipeline, &bind_group, workgroups);
     }
 
     /// Dispatch-only film grain overlay pass.
@@ -2227,13 +2415,16 @@ impl GpuEffectsPipeline {
         if self.is_device_lost() {
             return;
         }
-        self.write_params(&GpuGrainParams {
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuGrainParams {
             width, height, amount, size, shadows, highlights, frame_seed,
             monochrome: if monochrome { 1 } else { 0 },
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let (input, output) = self.chain_in_out(in_is_a);
-        self.dispatch(&self.grain_pipeline, input, output, workgroups);
+        let bind_group = self.chain_bind_group(input, output, slot);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.grain_pipeline, &bind_group, workgroups);
     }
 
     // ─── Chain plumbing helpers ────────────────────────────────────────────
@@ -3211,6 +3402,7 @@ impl GpuEffectsPipeline {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_buffer_to_buffer(source, 0, staging, 0, byte_size);
         self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let buffer_slice = staging.slice(..byte_size);
         let (tx, rx) = std::sync::mpsc::channel();

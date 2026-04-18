@@ -575,8 +575,24 @@ impl GraphExecutor {
         let byte_size = (width as u64) * (height as u64) * 16;
         gpu.ensure_chain_buffers(byte_size);
         gpu.upload_chain_input_linear(primary_input);
+        // Open the single-submit chain encoder. Every `*_chain` dispatch
+        // records into this; `flush_chain` calls `submit_chain` to batch
+        // the whole segment into one `queue.submit`. Per-node submits
+        // cost ~2-5 ms on NVIDIA Vulkan and dominated `grade_ms` during
+        // scrubbing before this.
+        gpu.begin_chain();
         // Dispatch this node with in = buf_a, out = buf_b.
-        self.dispatch_chain_node_slots(node_id, kind, params, width, height, frame_number, /* in_is_a */ true)
+        let ok = self.dispatch_chain_node_slots(node_id, kind, params, width, height, frame_number, /* in_is_a */ true);
+        if !ok {
+            // Dispatch declined (device-lost or unexpected param). Close
+            // the encoder we just opened so the next chain segment starts
+            // clean. No dispatches were recorded so submit is effectively
+            // a no-op fence.
+            if let Some(gpu) = self.gpu.as_mut() {
+                gpu.submit_chain();
+            }
+        }
+        ok
     }
 
     /// Dispatch-only chain step with explicit slot selection.
@@ -855,10 +871,16 @@ impl GraphExecutor {
         tapped_output: &mut Option<Arc<Vec<f32>>>,
     ) {
         let Some(tail_id) = chain_tail.take() else { return };
-        let gpu = match &self.gpu {
+        // Submit the batched chain encoder BEFORE the download copy. The
+        // download's own submit acts as the read-after-write fence for
+        // the chain dispatches; without flushing the chain encoder
+        // first, those dispatches would still be unsubmitted and the
+        // staging copy would read stale/undefined memory.
+        let gpu = match self.gpu.as_mut() {
             Some(g) => g,
             None => return,
         };
+        gpu.submit_chain();
         let pixel_count = (width as usize) * (height as usize);
         let linear = gpu.download_chain_output_linear(slot_a, pixel_count);
         let arc = Arc::new(linear);
@@ -2174,5 +2196,46 @@ mod tests {
                 "default-param graph should be passthrough: orig {a}, got {b}",
             );
         }
+    }
+
+    #[test]
+    fn chain_single_submit_per_segment() {
+        // Verify the batched chain encoder collapses per-node submits into
+        // one. A 3-node active chain (Exposure → Saturation → ColorBalance)
+        // used to cost 3 dispatch submits + 1 download submit = 4. After
+        // batching it's 1 chain submit + 1 download submit = 2.
+        let mut gpu_executor = GraphExecutor::new();
+        if gpu_executor.gpu.is_none() {
+            return;
+        }
+
+        let mut graph = default_graph();
+        graph.nodes.iter_mut()
+            .find(|n| n.kind == NodeKind::Exposure)
+            .unwrap()
+            .params.exposure = Some(0.5);
+        graph.nodes.iter_mut()
+            .find(|n| n.kind == NodeKind::Saturation)
+            .unwrap()
+            .params.saturation = Some(1.3);
+        graph.nodes.iter_mut()
+            .find(|n| n.kind == NodeKind::ColorBalance)
+            .unwrap()
+            .params.temperature = Some(0.15);
+
+        let frame = vec![
+            100u8, 150, 200, 255, 200, 150, 100, 255, 50, 100, 150, 255, 128, 128, 128, 255,
+        ];
+        let before = gpu_executor.gpu.as_ref().unwrap().submit_count();
+        let _ = gpu_executor.execute(&frame, &graph, 2, 2, 0.0, 0, None, None).unwrap();
+        let after = gpu_executor.gpu.as_ref().unwrap().submit_count();
+        let delta = after - before;
+        // Expect exactly 2: one `submit_chain` for the batched chain
+        // encoder (covering all 3 active nodes), one submit inside
+        // `download` for the staging copy fence.
+        assert_eq!(
+            delta, 2,
+            "3-node active chain should submit exactly twice (1 chain + 1 download), got {delta}",
+        );
     }
 }
