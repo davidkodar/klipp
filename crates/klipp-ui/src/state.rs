@@ -462,6 +462,8 @@ pub struct AppState {
     pub is_scrubbing: bool,
     /// Saved proxy state before scrub started (restored when scrub ends).
     pub pre_scrub_use_proxies: bool,
+    /// Whether playback was running when scrub started — restored on scrub end.
+    pub pre_scrub_was_playing: bool,
     /// True while waiting for a full-res frame after a seek — viewer shows filmstrip preview.
     pub showing_thumbnail_preview: bool,
     /// Set to true when a SeekTo is sent, cleared when FrameReady arrives.
@@ -1039,6 +1041,10 @@ pub struct AppState {
     pub pending_title_data: Option<klipp_timeline::TitleData>,
     /// Title clip that needs its overlay texture refreshed on the next frame.
     pub pending_title_preview_clip: Option<klipp_core::ClipId>,
+    /// Set during scrub when no title clip is under the playhead — signals
+    /// the next `upload_title_overlay` to clear the overlay so stale titles
+    /// don't linger as the user drags past them.
+    pub pending_title_overlay_clear: bool,
     /// Clear title overlay texture (animation preset applied — text starts invisible)
     pub clear_title_overlay: bool,
 
@@ -1878,6 +1884,7 @@ impl Default for AppState {
             use_proxies: true,
             is_scrubbing: false,
             pre_scrub_use_proxies: true,
+            pre_scrub_was_playing: false,
             showing_thumbnail_preview: false,
             awaiting_seek_frame: false,
             render_cache_ranges: Vec::new(),
@@ -2153,6 +2160,7 @@ impl Default for AppState {
             available_fonts: Vec::new(),
             pending_title_data: None,
             pending_title_preview_clip: None,
+            pending_title_overlay_clear: false,
             clear_title_overlay: false,
             title_fade_duration: 0.5,
             multicam_viewer_active: false,

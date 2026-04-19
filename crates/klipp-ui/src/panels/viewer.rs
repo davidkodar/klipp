@@ -1098,6 +1098,20 @@ impl ViewerPanel {
 
         if frame.grade_still_active {
             self.draw_grade_still_split(ui, state, &frame);
+        } else if state.is_scrubbing && state.browser_skim_texture.is_some() {
+            // While scrubbing, prefer the high-quality skim decode texture
+            // over the (possibly stale or upscaled-thumbnail) video_texture.
+            // The same pipeline the media browser hover uses — produces
+            // mid-resolution preview frames at prefs.playback.skim_resolution
+            // instead of the chunky filmstrip thumbnails.
+            if let Some(tex) = &state.browser_skim_texture {
+                ui.painter().image(
+                    tex.id(),
+                    image_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
         } else {
             // Normal: draw full video frame
             if let Some(tex) = &self.video_texture {

@@ -594,7 +594,7 @@ impl TimelinePanel {
         // Range guide lines — 1px amber vertical lines at in/out points through track area
         self.draw_range_guides(&painter, state, content_rect, tracks_start_y);
 
-        self.draw_playhead(state, &painter, content_rect);
+        self.draw_playhead(ui, state, &painter, content_rect, ruler_rect, &mut cmds);
         self.draw_snap_line(state, &painter, content_rect, tracks_start_y);
 
         // --- Status bar --- (skip when embedded)
@@ -1967,28 +1967,17 @@ impl TimelinePanel {
             }
 
             let ruler_response = ui.interact(ruler_rect, ui.id().with("ruler"), egui::Sense::click_and_drag());
-            // Track scrub start/end for proxy auto-switch
-            if ruler_response.drag_started() && !state.is_scrubbing {
-                state.is_scrubbing = true;
-                state.pre_scrub_use_proxies = state.use_proxies;
-                cmds.push(AppCommand::BeginScrub);
+            if ruler_response.drag_started() {
+                self.scrub_begin(state, cmds);
             }
-            if ruler_response.drag_stopped() && state.is_scrubbing {
-                state.is_scrubbing = false;
-                cmds.push(AppCommand::EndScrub);
+            if ruler_response.drag_stopped() {
+                self.scrub_end(state, cmds);
             }
             if !overview_bar_consumed && (ruler_response.clicked() || ruler_response.dragged()) {
                 if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
                     let x_in_content = pos.x - content_rect.left() + state.timeline_scroll_x;
-                    let secs = x_in_content / state.timeline_zoom;
-                    let tc = RationalTime::from_secs_f64(secs as f64, state.fps.rate());
-                    let dur = state.sequence_duration();
-                    let clamped = if dur.value > 0 {
-                        RationalTime { value: tc.value.max(0).min(dur.value), rate: tc.rate }
-                    } else {
-                        RationalTime { value: tc.value.max(0), rate: tc.rate }
-                    };
-                    cmds.push(AppCommand::SeekTo(clamped));
+                    let target_secs = (x_in_content / state.timeline_zoom) as f64;
+                    self.scrub_to(state, cmds, target_secs);
                 }
             }
         }
@@ -2420,7 +2409,187 @@ impl TimelinePanel {
         }
     }
 
-    fn draw_playhead(&self, state: &mut AppState, painter: &egui::Painter, content_rect: egui::Rect) {
+    /// Begin a scrub gesture on the timeline (ruler click-drag or head drag).
+    /// Snapshots playback state, pauses if running, kicks off audio skim, and
+    /// emits `BeginScrub` so the engine swaps to scrub-friendly behaviour.
+    fn scrub_begin(&self, state: &mut AppState, cmds: &mut Vec<AppCommand>) {
+        if state.is_scrubbing {
+            return;
+        }
+        state.is_scrubbing = true;
+        state.pre_scrub_use_proxies = state.use_proxies;
+        state.pre_scrub_was_playing = state.playback == PlaybackState::Playing;
+        if state.pre_scrub_was_playing {
+            // Mark paused IMMEDIATELY so the smooth-playhead interpolation
+            // (`anchor + wall_elapsed * speed`) stops overwriting our direct
+            // writes, and so the engine takes the cheap idle path on each
+            // SetPlayhead instead of a blocking 50ms decoder seek per frame.
+            // The engine catches up via the Pause command we push below.
+            state.playback = PlaybackState::Paused;
+            cmds.push(AppCommand::Pause);
+        }
+        cmds.push(AppCommand::BeginScrub);
+        // Kick the audio skim session on the clip currently under the playhead
+        // so the very first drag tick already has audio available.
+        if state.audio_skimming_enabled {
+            if let Some((media_id, source_path, source_secs)) =
+                Self::scrub_clip_at_playhead(state)
+            {
+                cmds.push(AppCommand::BrowserSkimAudioStart {
+                    media_id,
+                    source_path,
+                    time_secs: source_secs,
+                });
+            }
+        }
+    }
+
+    /// Update the scrub target. Called every drag frame. Writes the visible
+    /// playhead immediately (no engine round-trip), kicks the filmstrip
+    /// preview via `awaiting_seek_frame`, pushes `SetPlayhead` so the engine
+    /// keeps its internal position in sync (cheap when idle), and updates the
+    /// audio skim session.
+    fn scrub_to(&self, state: &mut AppState, cmds: &mut Vec<AppCommand>, target_secs: f64) {
+        let dur_secs = state.sequence_duration().to_secs_f64();
+        let clamped = if dur_secs > 0.0 {
+            target_secs.clamp(0.0, dur_secs)
+        } else {
+            target_secs.max(0.0)
+        };
+        let rate = state.fps.rate();
+        let tc = klipp_core::Timecode::from_secs_f64(clamped, rate);
+
+        // Update visible playhead state directly so the head, line, and
+        // filmstrip preview track the cursor with zero engine lag.
+        // We deliberately do NOT push SetPlayhead per drag frame: the engine's
+        // SetPlayhead handler runs `seek_in_sequence` (a blocking ~50ms
+        // decoder seek) for any non-idle state, including Paused. Pushing one
+        // per frame fills the command queue and the engine catches up through
+        // stale seeks long after release. The UI is the source of truth for
+        // the playhead during scrub; the engine receives the final position
+        // exactly once in `scrub_end`.
+        state.playhead = tc;
+        state.playhead_smooth_secs = clamped;
+        state.playhead_anchor = tc;
+        state.playhead_anchor_wall = std::time::Instant::now();
+        // Kick the filmstrip preview to re-resolve at the new playhead.
+        // `show_filmstrip_preview` is gated on `awaiting_seek_frame &&
+        // !showing_thumbnail_preview` — clearing the latter forces it to
+        // re-pick the closest thumbnail every drag frame instead of getting
+        // stuck on the first one.
+        state.awaiting_seek_frame = true;
+        state.showing_thumbnail_preview = false;
+
+        // Drive the high-quality skim decode + audio skim. Same pipeline the
+        // media browser hover uses — produces mid-res preview frames at
+        // `prefs.playback.skim_resolution` instead of the upscaled-thumbnail
+        // mush. Throttled by `skim_decode_in_flight`; latest request is
+        // queued in `skim_queued_request` and dispatched when the in-flight
+        // decode finishes (in `app.rs` after drain_events).
+        if let Some((media_id, _source_path, source_secs)) = Self::scrub_clip_at_playhead(state) {
+            // Video skim — only worth requesting if there's a skim_file.
+            // Otherwise the source decode is too slow for real-time scrub
+            // and we fall back to the filmstrip preview (already kicked
+            // above via `awaiting_seek_frame`).
+            let has_skim_file = state
+                .media_pool
+                .get(&media_id)
+                .and_then(|m| m.skim_file.as_ref())
+                .is_some_and(|p| p.exists());
+            if has_skim_file {
+                if !state.skim_decode_in_flight {
+                    cmds.push(AppCommand::BrowserSkimFrame { media_id, time_secs: source_secs });
+                } else {
+                    state.skim_queued_request = Some((media_id, source_secs));
+                }
+                state.browser_skim_active_this_frame = true;
+            }
+
+            // Audio skim — same command the media browser hover uses.
+            if state.is_scrubbing && state.skim_audio_session.is_some() {
+                cmds.push(AppCommand::BrowserSkimAudioUpdate {
+                    media_id,
+                    time_secs: source_secs,
+                });
+            }
+        }
+
+        // Title / subtitle overlays — find any text-track clip at the
+        // playhead and trigger TitleRenderer (CPU rasterizer, UI-side, fast)
+        // so the overlay tracks the scrub position the same way it would
+        // during normal playback. If no title clip is present we explicitly
+        // clear the overlay so a stale title doesn't linger after dragging
+        // past the clip.
+        let title_clip = {
+            let seq = &state.sequences[state.active_sequence_idx];
+            seq.tracks.iter()
+                .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Text | klipp_timeline::TrackKind::Subtitle))
+                .find_map(|t| t.clip_at_timecode(state.playhead))
+                .filter(|(_, clip)| clip.title_data().is_some())
+                .map(|(_, clip)| clip.id)
+        };
+        match title_clip {
+            Some(id) => {
+                state.pending_title_preview_clip = Some(id);
+                state.pending_title_overlay_clear = false;
+            }
+            None => {
+                state.pending_title_overlay_clear = true;
+                state.pending_title_preview_clip = None;
+            }
+        }
+    }
+
+    /// End a scrub gesture. Stops audio skim, emits `EndScrub`, and resumes
+    /// playback if it was running before scrub started — playing from the
+    /// drop position, which the engine already knows about via `SetPlayhead`.
+    fn scrub_end(&self, state: &mut AppState, cmds: &mut Vec<AppCommand>) {
+        if !state.is_scrubbing {
+            return;
+        }
+        state.is_scrubbing = false;
+        cmds.push(AppCommand::BrowserSkimAudioEnd);
+        cmds.push(AppCommand::EndScrub);
+        // Commit the final drop position to the engine — exactly one heavy
+        // seek per gesture, instead of one per drag frame. Engine's playhead
+        // is now correct so a subsequent Play resumes from the right spot.
+        cmds.push(AppCommand::SetPlayhead(state.playhead));
+        // Reset the interpolation anchor's wall-clock to "now" so when Play
+        // is acknowledged a few frames later, the smooth interpolator doesn't
+        // jump forward by however long the engine took to ack.
+        state.playhead_anchor = state.playhead;
+        state.playhead_anchor_wall = std::time::Instant::now();
+        if state.pre_scrub_was_playing {
+            cmds.push(AppCommand::Play);
+        }
+        state.pre_scrub_was_playing = false;
+    }
+
+    /// Find the topmost video (else audio) clip under the current playhead
+    /// and return its media id, source path, and source-time in seconds.
+    /// Mirrors the logic `show_filmstrip_preview` uses so the filmstrip
+    /// preview, the audio skim, and the actual seek all reference the same
+    /// clip at the same source position.
+    fn scrub_clip_at_playhead(state: &AppState) -> Option<(klipp_core::MediaId, std::path::PathBuf, f64)> {
+        let playhead = state.playhead;
+        let playhead_secs = playhead.to_secs_f64();
+        let seq = &state.sequences[state.active_sequence_idx];
+        let pick = seq.tracks.iter()
+            .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video))
+            .find_map(|t| t.clip_at_timecode(playhead))
+            .or_else(|| seq.tracks.iter()
+                .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Audio))
+                .find_map(|t| t.clip_at_timecode(playhead))
+            )?;
+        let (_, clip) = pick;
+        let media_id = clip.media_id()?;
+        let media = state.media_pool.get(&media_id)?;
+        let source_secs = (playhead_secs - clip.timeline_in.to_secs_f64()) * clip.speed
+            + clip.source_in.to_secs_f64();
+        Some((media_id, media.path.clone(), source_secs))
+    }
+
+    fn draw_playhead(&self, ui: &mut egui::Ui, state: &mut AppState, painter: &egui::Painter, content_rect: egui::Rect, ruler_rect: egui::Rect, cmds: &mut Vec<AppCommand>) {
         let seq_dur = state.sequence_duration();
         if state.playback != PlaybackState::Idle || seq_dur.value > 0 {
             let playhead_secs = state.playhead_smooth_secs as f32;
@@ -2481,27 +2650,56 @@ impl TimelinePanel {
                     egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 80, 80)),
                 );
 
-                // Playhead head: pentagon (rectangle topped with downward-pointing
-                // tip) sitting in the ruler area. The tip aligns with the line so
-                // the user can see the exact frame the playhead is on.
+                // Playhead head — DaVinci-style pentagon (flat top, vertical
+                // sides, tapered point). Single 5-vertex convex polygon.
                 let head_color = egui::Color32::from_rgb(255, 80, 80);
-                let head_top = content_rect.top();
-                let head_w = 12.0_f32;
-                let head_h = 16.0_f32;       // total height
-                let shoulder_h = 9.0_f32;    // height of the rectangular shoulder
-                let half = head_w * 0.5;
-                let head_shape = egui::Shape::convex_polygon(
+                let half_w = 5.0_f32;             // width = 10px
+                let shoulder_h = 8.0_f32;         // rectangular body height
+                let total_h = 14.0_f32;           // total height (tip 6px below shoulder)
+                let top_y = ruler_rect.top() + 1.0;
+                let pentagon = egui::Shape::convex_polygon(
                     vec![
-                        egui::pos2(playhead_x - half, head_top),
-                        egui::pos2(playhead_x + half, head_top),
-                        egui::pos2(playhead_x + half, head_top + shoulder_h),
-                        egui::pos2(playhead_x,        head_top + head_h),
-                        egui::pos2(playhead_x - half, head_top + shoulder_h),
+                        egui::pos2(playhead_x - half_w, top_y),
+                        egui::pos2(playhead_x + half_w, top_y),
+                        egui::pos2(playhead_x + half_w, top_y + shoulder_h),
+                        egui::pos2(playhead_x,          top_y + total_h),
+                        egui::pos2(playhead_x - half_w, top_y + shoulder_h),
                     ],
                     head_color,
                     egui::Stroke::NONE,
                 );
-                painter.add(head_shape);
+                painter.add(pentagon);
+
+                // Dedicated grab zone for the head — wider than the visual
+                // shape so it's easy to grab. Registered AFTER everything
+                // else has drawn so it wins the hit-test against any other
+                // widget that might overlap the ruler area. Drives the same
+                // scrub flow as the ruler (BeginScrub → SeekTo → EndScrub).
+                let head_hit = egui::Rect::from_min_max(
+                    egui::pos2(playhead_x - half_w - 4.0, ruler_rect.top()),
+                    egui::pos2(playhead_x + half_w + 4.0, ruler_rect.top() + total_h + 2.0),
+                );
+                let head_resp = ui.interact(
+                    head_hit,
+                    ui.id().with("playhead_head_drag"),
+                    egui::Sense::click_and_drag(),
+                );
+                if head_resp.hovered() || head_resp.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                }
+                if head_resp.drag_started() {
+                    self.scrub_begin(state, cmds);
+                }
+                if head_resp.drag_stopped() {
+                    self.scrub_end(state, cmds);
+                }
+                if head_resp.dragged() || head_resp.clicked() {
+                    if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
+                        let x_in_content = pos.x - content_rect.left() + state.timeline_scroll_x;
+                        let target_secs = (x_in_content / state.timeline_zoom) as f64;
+                        self.scrub_to(state, cmds, target_secs);
+                    }
+                }
             }
         }
     }

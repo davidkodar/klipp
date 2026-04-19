@@ -2346,6 +2346,11 @@ impl KlippApp {
 
     /// Upload title overlay texture if pending. Called from update() where ctx is available.
     fn upload_title_overlay(&mut self, ctx: &egui::Context) {
+        // Explicit clear request (e.g. scrub passed beyond a title clip).
+        if self.state.pending_title_overlay_clear {
+            self.state.pending_title_overlay_clear = false;
+            self.viewer.title_overlay_texture = None;
+        }
         let clip_id = match self.state.pending_title_preview_clip.take() {
             Some(id) => id,
             None => return,
