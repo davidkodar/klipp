@@ -15104,11 +15104,21 @@ impl KlippApp {
             {
                 self.state.viewer_overlays.focus_peaking = !self.state.viewer_overlays.focus_peaking;
             }
-            // V key (bare) — toggle scopes
+            // V key (bare) — toggle scopes. Scopes only render in the Color
+            // workspace (gated in `layout.rs`), so when pressed outside it
+            // we also enter Color and turn scopes on — matches the toolbar
+            // icon behaviour and the existing "Color tab implies scopes"
+            // coupling. Inside Color the key plain-toggles scopes.
             if !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift
                 && i.key_pressed(egui::Key::V)
             {
-                self.state.show_scopes = !self.state.show_scopes;
+                if self.state.active_workspace != crate::state::Workspace::Color {
+                    self.state.active_workspace = crate::state::Workspace::Color;
+                    self.state.show_color_panel = true;
+                    self.state.show_scopes = true;
+                } else {
+                    self.state.show_scopes = !self.state.show_scopes;
+                }
             }
             // Alt+S — toggle safe-areas overlay (action + title).
             if kb.is_action_pressed("toggle_safe_areas", i) {
