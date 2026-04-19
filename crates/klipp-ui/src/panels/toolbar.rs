@@ -102,14 +102,10 @@ impl ToolbarPanel {
 
         rx -= 2.0;
 
-        // Scopes (icon 2). Scopes only render in the Color workspace
-        // (`layout.rs` gates `show_scopes_bar` on `in_color_ws`), so toggling
-        // them ON outside Color would light the icon but show nothing. Match
-        // the Color-tab behaviour: pressing this when not in Color enters
-        // Color workspace and turns scopes on; pressing it again toggles
-        // scopes within Color. Keeps the V keybinding meaningful everywhere.
+        // Scopes (icon 2). Renders in any workspace (FCP/Premiere
+        // convention). Pure show/hide toggle — does not switch workspace.
         rx -= 32.0;
-        let scopes_active = state.show_scopes && state.active_workspace == Workspace::Color;
+        let scopes_active = state.show_scopes;
         let resp = alloc_btn(ui, egui::pos2(rx, cy - 16.0), 32.0);
         let ic = icon_color(&resp, scopes_active);
         let bg = icon_bg(&resp, scopes_active);
@@ -117,13 +113,7 @@ impl ToolbarPanel {
         draw_scopes_icon(&painter, resp.rect, ic);
         styled_tooltip(&resp, theme, "Toggle Scopes", Some("V"));
         if resp.clicked() {
-            if state.active_workspace != Workspace::Color {
-                state.active_workspace = Workspace::Color;
-                state.show_color_panel = true;
-                state.show_scopes = true;
-            } else {
-                state.show_scopes = !state.show_scopes;
-            }
+            state.show_scopes = !state.show_scopes;
         }
 
         // Roles & Lanes button — hidden until the underlying feature exists

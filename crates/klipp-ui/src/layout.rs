@@ -93,8 +93,12 @@ pub(crate) fn compute_layout(
     let center_w = (center_right - center_left).max(100.0);
 
     // ── Color workspace: viewer + toggle bar + scopes + nodes ──
+    // Scopes are now allowed in any workspace (FCP/Premiere convention) so
+    // the V key / Toggle Scopes icon do something meaningful from Edit and
+    // Export too. The Color-only [Scopes/Nodes] toggle bar and the node
+    // strip stay gated to Color since they're Color-specific tooling.
     let in_color_ws = state.show_color_panel;
-    let show_scopes_bar = in_color_ws && state.show_scopes;
+    let show_scopes_bar = state.show_scopes;
     let show_nodes_bar = in_color_ws && state.show_node_strip;
 
     // In Color workspace: allocate bottom space for toggle + scopes + nodes

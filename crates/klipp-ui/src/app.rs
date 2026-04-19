@@ -15104,21 +15104,13 @@ impl KlippApp {
             {
                 self.state.viewer_overlays.focus_peaking = !self.state.viewer_overlays.focus_peaking;
             }
-            // V key (bare) — toggle scopes. Scopes only render in the Color
-            // workspace (gated in `layout.rs`), so when pressed outside it
-            // we also enter Color and turn scopes on — matches the toolbar
-            // icon behaviour and the existing "Color tab implies scopes"
-            // coupling. Inside Color the key plain-toggles scopes.
+            // V key (bare) — toggle scopes. Renders in any workspace, so
+            // this is a pure show/hide toggle independent of C (workspace
+            // switch). Matches FCP/Premiere convention.
             if !i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift
                 && i.key_pressed(egui::Key::V)
             {
-                if self.state.active_workspace != crate::state::Workspace::Color {
-                    self.state.active_workspace = crate::state::Workspace::Color;
-                    self.state.show_color_panel = true;
-                    self.state.show_scopes = true;
-                } else {
-                    self.state.show_scopes = !self.state.show_scopes;
-                }
+                self.state.show_scopes = !self.state.show_scopes;
             }
             // Alt+S — toggle safe-areas overlay (action + title).
             if kb.is_action_pressed("toggle_safe_areas", i) {
@@ -19341,7 +19333,7 @@ impl KlippApp {
                     let center_left = left_resizer_rect.max.x;
                     let center_w = viewer_rect.width();
                     let in_color_ws = self.state.show_color_panel;
-                    let show_scopes_bar = in_color_ws && self.state.show_scopes;
+                    let show_scopes_bar = self.state.show_scopes;
                     let show_nodes_bar = in_color_ws && self.state.show_node_strip;
                     let toggle_bar_h = toggle_bar_rect.height();
                     let scopes_h = scopes_rect.height();
@@ -19438,7 +19430,11 @@ impl KlippApp {
                     self.render_timeline_panel(ui, timeline_rect, all_cmds);
 
                     // ── Color workspace bottom panels ──
-                    if in_color_ws {
+                    // Render when in Color (toggle bar + scopes + nodes) OR
+                    // when scopes are toggled on from any other workspace.
+                    // The render function gates the Color-only chrome
+                    // internally on `toggle_bar_h > 0` and `color_tools_bottom`.
+                    if in_color_ws || show_scopes_bar {
                         self.render_color_workspace_bottom(
                             ctx,
                             ui,
