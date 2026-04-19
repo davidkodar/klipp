@@ -29,15 +29,55 @@ unsafe fn source_is_high_bit_depth(fmt: ffmpeg_next::ffi::AVPixelFormat) -> bool
     false
 }
 
+/// 256-entry precomputed LUT: `SRGB_U8_TO_LINEAR[b]` = linear f32 value
+/// for the u8 sample `b`. Replaces the per-channel `powf(2.4)` call that
+/// cost ~27 ms/frame at 1920×818 (measured via PERF hw_download
+/// `linear_enc`) — a LUT lookup is a single L1 load, so the conversion
+/// goes from ~5M pow calls/frame to ~5M loads/frame. Built once on first
+/// use via `OnceLock`; 1 KB of static data.
+fn srgb_u8_to_linear_lut() -> &'static [f32; 256] {
+    use std::sync::OnceLock;
+    static LUT: OnceLock<[f32; 256]> = OnceLock::new();
+    LUT.get_or_init(|| {
+        let mut lut = [0.0_f32; 256];
+        for (i, slot) in lut.iter_mut().enumerate() {
+            *slot = srgb_to_linear(i as f32 / 255.0);
+        }
+        lut
+    })
+}
+
+/// Same LUT but values pre-divided by 255 for the alpha channel (alpha
+/// stays linear per sRGB spec — no gamma decode, just /255 normalisation).
+fn u8_linear_div255_lut() -> &'static [f32; 256] {
+    use std::sync::OnceLock;
+    static LUT: OnceLock<[f32; 256]> = OnceLock::new();
+    LUT.get_or_init(|| {
+        let mut lut = [0.0_f32; 256];
+        for (i, slot) in lut.iter_mut().enumerate() {
+            *slot = i as f32 / 255.0;
+        }
+        lut
+    })
+}
+
 /// sRGB-decode a RGBA u8 byte slice into a linear f32 RGBA buffer.
 /// Alpha stays linear (no gamma on alpha, per sRGB spec).
 fn rgba_u8_to_linear(rgba: &[u8]) -> Vec<f32> {
-    let mut out = Vec::with_capacity(rgba.len());
-    for chunk in rgba.chunks_exact(4) {
-        out.push(srgb_to_linear(chunk[0] as f32 / 255.0));
-        out.push(srgb_to_linear(chunk[1] as f32 / 255.0));
-        out.push(srgb_to_linear(chunk[2] as f32 / 255.0));
-        out.push(chunk[3] as f32 / 255.0);
+    let srgb_lut = srgb_u8_to_linear_lut();
+    let a_lut = u8_linear_div255_lut();
+    let n_pixels = rgba.len() / 4;
+    let mut out = Vec::with_capacity(n_pixels * 4);
+    // SAFETY: we're writing exactly n_pixels * 4 values below.
+    unsafe { out.set_len(n_pixels * 4); }
+    // Unrolled RGB+A path per pixel. Compiler auto-vectorises this on
+    // x86_64 with AVX2 or better enabled by the default `cargo` profile.
+    for (i, chunk) in rgba.chunks_exact(4).enumerate() {
+        let o = i * 4;
+        out[o]     = srgb_lut[chunk[0] as usize];
+        out[o + 1] = srgb_lut[chunk[1] as usize];
+        out[o + 2] = srgb_lut[chunk[2] as usize];
+        out[o + 3] = a_lut[chunk[3] as usize];
     }
     out
 }
@@ -388,6 +428,19 @@ unsafe fn download_hw_frame(
     source_rotation: i32,
 ) -> Option<LinearFrame> {
     use ffmpeg_next::ffi::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // Accumulated per-stage timing across frames. Drained + logged every 60
+    // frames via `PERF hw_download`. Diagnoses the "transfer=28ms/frame"
+    // mystery by splitting it into: GPU→CPU download, NV12 GPU convert,
+    // sRGB→linear CPU encode, CPU swscale fallback.
+    static CALL_COUNT: AtomicU64 = AtomicU64::new(0);
+    static PERF_HW_DL_US: AtomicU64 = AtomicU64::new(0);
+    static PERF_NV12_CONV_US: AtomicU64 = AtomicU64::new(0);
+    static PERF_LINEAR_ENCODE_US: AtomicU64 = AtomicU64::new(0);
+    static PERF_SW_SCALE_US: AtomicU64 = AtomicU64::new(0);
+    static PERF_GPU_PATH_COUNT: AtomicU64 = AtomicU64::new(0);
+    static PERF_CPU_PATH_COUNT: AtomicU64 = AtomicU64::new(0);
 
     let sw_frame = av_frame_alloc();
     if sw_frame.is_null() {
@@ -395,7 +448,9 @@ unsafe fn download_hw_frame(
     }
 
     // Transfer from GPU to CPU (NV12 or P010)
+    let t_hw_dl = std::time::Instant::now();
     let ret = av_hwframe_transfer_data(sw_frame, hw_frame.as_ptr(), 0);
+    PERF_HW_DL_US.fetch_add(t_hw_dl.elapsed().as_micros() as u64, Ordering::Relaxed);
     if ret < 0 {
         debug!(
             "HW transfer failed: ret={ret}, frame format={}, w={}, h={}",
@@ -416,7 +471,7 @@ unsafe fn download_hw_frame(
     // Try GPU NV12→RGBA path: only for NV12 format with an available converter
     // Temporary diagnostic — log first frame only
     {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::AtomicBool;
         static LOGGED: AtomicBool = AtomicBool::new(false);
         if !LOGGED.swap(true, Ordering::Relaxed) {
             tracing::info!("download_hw_frame: format={:?}, src={}x{}, out={}x{}, rotation={}, gpu_available={}, hi_bit_depth={}", sw_fmt, src_w, src_h, out_w, out_h, source_rotation, gpu_converter.is_some(), is_hi_bit_depth);
@@ -434,20 +489,41 @@ unsafe fn download_hw_frame(
             let y_data = std::slice::from_raw_parts((*sw_frame).data[0], y_data_len);
             let uv_data = std::slice::from_raw_parts((*sw_frame).data[1], uv_data_len);
 
+            let t_nv12 = std::time::Instant::now();
             let rgba_data = converter.convert_nv12_to_rgba(
                 y_data, uv_data, src_w, src_h, y_stride, uv_stride, out_w, out_h, source_rotation as u32,
             );
+            PERF_NV12_CONV_US.fetch_add(t_nv12.elapsed().as_micros() as u64, Ordering::Relaxed);
 
             av_frame_free(&mut (sw_frame as *mut _));
+            let t_linear = std::time::Instant::now();
+            let linear = rgba_u8_to_linear(&rgba_data);
+            PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
+
+            let count = CALL_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            PERF_GPU_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+            maybe_log_hw_download_stats(
+                count,
+                &CALL_COUNT,
+                &PERF_HW_DL_US,
+                &PERF_NV12_CONV_US,
+                &PERF_LINEAR_ENCODE_US,
+                &PERF_SW_SCALE_US,
+                &PERF_GPU_PATH_COUNT,
+                &PERF_CPU_PATH_COUNT,
+            );
+
             return Some(LinearFrame {
                 pts: RationalTime::zero(),
                 width: out_w,
                 height: out_h,
-                data: rgba_u8_to_linear(&rgba_data),
+                data: linear,
                 is_eof: false,
             });
         }
     }
+    // Reaching here = CPU fallback path
+    PERF_CPU_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
 
     // Fallback: CPU swscale path. Bit-depth-aware output format so 10+-bit
     // sources keep their extra precision through the YUV→RGB step.
@@ -499,6 +575,7 @@ unsafe fn download_hw_frame(
         return None;
     }
 
+    let t_swscale = std::time::Instant::now();
     sws_scale(
         sws,
         (*sw_frame).data.as_ptr() as *const *const u8,
@@ -508,6 +585,7 @@ unsafe fn download_hw_frame(
         (*rgba_frame).data.as_ptr(),
         (*rgba_frame).linesize.as_ptr(),
     );
+    PERF_SW_SCALE_US.fetch_add(t_swscale.elapsed().as_micros() as u64, Ordering::Relaxed);
 
     av_frame_free(&mut (sw_frame as *mut _));
 
@@ -539,10 +617,16 @@ unsafe fn download_hw_frame(
             linear
         }
     } else if source_rotation != 0 {
+        let t_linear = std::time::Instant::now();
         let (rotated, _rw, _rh) = crate::engine::rotate_rgba(&raw_data, sws_out_w, sws_out_h, source_rotation);
-        rgba_u8_to_linear(&rotated)
+        let r = rgba_u8_to_linear(&rotated);
+        PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
+        r
     } else {
-        rgba_u8_to_linear(&raw_data)
+        let t_linear = std::time::Instant::now();
+        let r = rgba_u8_to_linear(&raw_data);
+        PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
+        r
     };
 
     let (final_w, final_h) = if source_rotation == 90 || source_rotation == 270 {
@@ -551,6 +635,18 @@ unsafe fn download_hw_frame(
         (sws_out_w, sws_out_h)
     };
 
+    let count = CALL_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    maybe_log_hw_download_stats(
+        count,
+        &CALL_COUNT,
+        &PERF_HW_DL_US,
+        &PERF_NV12_CONV_US,
+        &PERF_LINEAR_ENCODE_US,
+        &PERF_SW_SCALE_US,
+        &PERF_GPU_PATH_COUNT,
+        &PERF_CPU_PATH_COUNT,
+    );
+
     Some(LinearFrame {
         pts: RationalTime::zero(),
         width: final_w,
@@ -558,6 +654,44 @@ unsafe fn download_hw_frame(
         data: linear_data,
         is_eof: false,
     })
+}
+
+/// Log + reset accumulated per-stage timing every 60 frames so the
+/// download breakdown shows up in the log without being per-frame noisy.
+fn maybe_log_hw_download_stats(
+    count: u64,
+    call_count: &std::sync::atomic::AtomicU64,
+    hw_dl: &std::sync::atomic::AtomicU64,
+    nv12_conv: &std::sync::atomic::AtomicU64,
+    linear_enc: &std::sync::atomic::AtomicU64,
+    sw_scale: &std::sync::atomic::AtomicU64,
+    gpu_path: &std::sync::atomic::AtomicU64,
+    cpu_path: &std::sync::atomic::AtomicU64,
+) {
+    use std::sync::atomic::Ordering;
+    if count % 60 != 0 {
+        return;
+    }
+    let hw_us = hw_dl.swap(0, Ordering::Relaxed);
+    let nv12_us = nv12_conv.swap(0, Ordering::Relaxed);
+    let lin_us = linear_enc.swap(0, Ordering::Relaxed);
+    let sws_us = sw_scale.swap(0, Ordering::Relaxed);
+    let gpu_n = gpu_path.swap(0, Ordering::Relaxed);
+    let cpu_n = cpu_path.swap(0, Ordering::Relaxed);
+    call_count.store(0, Ordering::Relaxed);
+    let total = gpu_n + cpu_n;
+    if total == 0 {
+        return;
+    }
+    let avg = |sum: u64| sum as f64 / total as f64 / 1000.0;
+    tracing::debug!(
+        "PERF hw_download: 60 frames | path=gpu:{gpu_n}/cpu:{cpu_n} | \
+         hw_dl={:.1}ms/frame nv12_conv={:.1}ms/frame sw_scale={:.1}ms/frame linear_enc={:.1}ms/frame",
+        avg(hw_us),
+        avg(nv12_us),
+        avg(sws_us),
+        avg(lin_us),
+    );
 }
 
 // ---------------------------------------------------------------------------

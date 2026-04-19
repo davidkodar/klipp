@@ -2281,14 +2281,29 @@ impl PlaybackEngine {
         }
     }
 
+    #[allow(unused_assignments)]
     fn update_playback(&mut self) {
         let t_update = std::time::Instant::now();
+        // Per-stage timing for pinpointing where the frame budget goes.
+        // Each stage records its elapsed time; we emit one consolidated
+        // line at the end when the total exceeds 5 ms (same threshold the
+        // existing `PERF update_playback` uses).
+        let mut t_stage = std::time::Instant::now();
+        let mut stage_drain_us: u128 = 0;
+        let mut stage_clock_ramp_us: u128 = 0;
+        let mut stage_queue_pop_us: u128 = 0;
+        let mut stage_overlay_open_us: u128 = 0;
+        let mut stage_overlay_pop_us: u128 = 0;
+        let mut stage_fb_write_us: u128 = 0;
+        let mut stage_mid_us: u128 = 0;
 
         // Drain UI-queued colour-grade param changes BEFORE we take any
         // sequence read lock this frame. One write-lock acquisition per frame
         // for the whole batch — the UI can have pushed dozens of slider ticks
         // without contending with the long read lock that follows.
         self.drain_param_changes();
+        stage_drain_us = t_stage.elapsed().as_micros();
+        t_stage = std::time::Instant::now();
 
         // Time-remap: sample the instantaneous speed curve and re-anchor the
         // master clock when the curve has drifted from what the clock is using.
@@ -2331,6 +2346,8 @@ impl PlaybackEngine {
         // Frame presentation tolerance: half a frame duration (scales with FPS)
         let frame_tolerance = self.fps.frame_duration_secs() * 0.5;
         let _clock_running = self.master_clock.is_running();
+        stage_clock_ramp_us = t_stage.elapsed().as_micros();
+        t_stage = std::time::Instant::now();
 
         // Title / Generator clip path — standalone non-media clip on V1 (no decoder active)
         if self.v1_decoder.is_none() && self.current_file.is_none() {
@@ -2596,8 +2613,16 @@ impl PlaybackEngine {
             }
         }
 
+        // Measure the cost of: frame queue pop + drop-frame-if-behind loop +
+        // found_clip lookup + loop out-point detection (all the V1 decoder
+        // handling between the start and here).
+        stage_queue_pop_us = t_stage.elapsed().as_micros();
+        t_stage = std::time::Instant::now();
+
         // Check overlay decoder lifecycle — open/close as playhead moves through overlay clips
         self.update_overlay_decoders(self.playhead);
+        stage_overlay_open_us = t_stage.elapsed().as_micros();
+        t_stage = std::time::Instant::now();
 
         // Pop frames from each overlay decoder using per-clip source timing.
         // Each overlay clip has its own source_in, timeline_in, and speed, so we compute
@@ -2655,6 +2680,12 @@ impl PlaybackEngine {
                 }
             }
         }
+
+        // Overlay frame popping (walks each overlay decoder's queue, picks
+        // the frame closest to the current source time, stashes it in
+        // overlay_frames).
+        stage_overlay_pop_us = t_stage.elapsed().as_micros();
+        t_stage = std::time::Instant::now();
 
         // Grade V1's frame through the full processing pipeline (scopes, stabilization,
         // comparison mode, keyframes, global LUT) BEFORE compositing.
@@ -2845,6 +2876,13 @@ impl PlaybackEngine {
         // but restored on the next frame when no transition is active.
         let mut final_rgba = self.apply_transition_if_active(final_rgba, final_w, final_h);
 
+        // Snapshot how much time the "big middle" (post_process +
+        // composite + apply_transition) actually took. Expected ~15 ms
+        // from logs (10 grade + 5 composite); if mid >> sum of logged
+        // pieces, apply_transition or something in between is the
+        // culprit.
+        stage_mid_us = t_stage.elapsed().as_micros();
+        let t_fb_write = std::time::Instant::now();
         // Write frame to the shared FrameBuffer via swap — `final_rgba` ends up
         // holding the PREVIOUS pending_data buffer, which we return to the pool.
         // This eliminates the 8-33 MB per-frame allocation that used to be
@@ -2855,14 +2893,27 @@ impl PlaybackEngine {
         }
         // Return the stale buffer (formerly pending_data) to the u8 pool.
         self.composite_scratch_u8 = final_rgba;
+        stage_fb_write_us = t_fb_write.elapsed().as_micros();
 
         self.frames_consumed += 1;
 
         let update_ms = t_update.elapsed().as_secs_f64() * 1000.0;
         if update_ms > 5.0 {
+            // Consolidated per-stage breakdown so the "~45ms unaccounted"
+            // gap in `PERF update_playback` has a home. `grade` and
+            // `composite` are the existing PERF lines; anything else large
+            // is a new stage to investigate.
             debug!(
-                "PERF update_playback: {update_ms:.1}ms for {}x{} frame",
-                final_w, final_h
+                "PERF update_playback: {update_ms:.1}ms for {}x{} frame | \
+                 drain={:.1} clock={:.1} queue_pop={:.1} ov_open={:.1} ov_pop={:.1} mid={:.1} fb_write={:.1}",
+                final_w, final_h,
+                stage_drain_us as f64 / 1000.0,
+                stage_clock_ramp_us as f64 / 1000.0,
+                stage_queue_pop_us as f64 / 1000.0,
+                stage_overlay_open_us as f64 / 1000.0,
+                stage_overlay_pop_us as f64 / 1000.0,
+                stage_mid_us as f64 / 1000.0,
+                stage_fb_write_us as f64 / 1000.0,
             );
         }
 
@@ -6209,9 +6260,15 @@ impl PlaybackEngine {
         let lut_ms = (t5 - t4).as_secs_f64() * 1000.0;
 
         if total_ms > 2.0 {
+            // `gpu=y` means `gpu_effects` is initialized — the GRAD
+            // pipeline *could* run on GPU. Doesn't prove every node inside
+            // the node graph used GPU (some nodes may still fall back to
+            // CPU internally). `gpu=n` is a definite red flag — means GPU
+            // init failed and everything is on CPU.
+            let gpu_available = if self.gpu_effects.is_some() { "y" } else { "n" };
             debug!(
-                "PERF post_process: {:.1}ms total | seq_read={:.1}ms grade={:.1}ms ofx={:.1}ms builtin={:.1}ms lut={:.1}ms",
-                total_ms, seq_ms, grade_ms, ofx_ms, builtin_ms, lut_ms,
+                "PERF post_process: {:.1}ms total | seq_read={:.1}ms grade={:.1}ms ofx={:.1}ms builtin={:.1}ms lut={:.1}ms | gpu={}",
+                total_ms, seq_ms, grade_ms, ofx_ms, builtin_ms, lut_ms, gpu_available,
             );
         }
 
