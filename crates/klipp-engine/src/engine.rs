@@ -1270,6 +1270,41 @@ impl PlaybackEngine {
             AppCommand::SetScopeRenderMode { mode } => {
                 self.scope_render_mode = mode;
             }
+            AppCommand::RenderScopesForFrame { rgba, width, height } => {
+                // Run the same GPU scope shaders the playback pipeline uses
+                // (engine.rs:5149) on a UI-supplied RGBA frame and write the
+                // result to fb.scope_texture so the UI displays it via its
+                // existing GPU scope path. Used by media-browser hover-skim
+                // and timeline scrub so scope quality matches playback.
+                if let Some(gpu) = &mut self.gpu_effects {
+                    let scope_w = 720u32;
+                    let scope_h = 256u32;
+                    let mode = self.scope_render_mode;
+                    let tex = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
+                        GpuScopeKind::Waveform => gpu.render_scope_waveform(&rgba, width, height, scope_w, scope_h),
+                        GpuScopeKind::Parade => gpu.render_scope_parade(&rgba, width, height, scope_w, scope_h),
+                        GpuScopeKind::Histogram => gpu.render_scope_histogram(&rgba, width, height, scope_w, scope_h),
+                    });
+                    let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                    match tex {
+                        Some(t) => {
+                            fb.scope_texture = t;
+                            fb.scope_texture_w = scope_w;
+                            fb.scope_texture_h = scope_h;
+                            fb.scope_texture_mode = mode;
+                        }
+                        None => {
+                            // Mode has no GPU kernel (e.g. vectorscope) —
+                            // leave scope_texture cleared so the UI falls
+                            // back to its CPU renderer for that mode.
+                            fb.scope_texture.clear();
+                            fb.scope_texture_w = 0;
+                            fb.scope_texture_h = 0;
+                            fb.scope_texture_mode = mode;
+                        }
+                    }
+                }
+            }
             AppCommand::SetScopeTapNode { node_id, .. } => {
                 self.scope_tap_node = node_id.clone();
                 debug!("Scope tap node: {:?}", self.scope_tap_node);

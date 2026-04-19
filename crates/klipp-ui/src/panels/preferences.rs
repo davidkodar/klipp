@@ -32,6 +32,16 @@ pub struct PreferencesPanel {
     kb_search: String,
     /// Global preferences search query
     search_query: String,
+    /// "Clear all caches" — set when user clicks the button, drives the
+    /// confirmation modal. Carries the snapshot of dirs to delete so the
+    /// click result is committed even if cache sizes change between the
+    /// click and the user pressing Confirm.
+    clear_all_confirm: Option<ClearAllConfirm>,
+}
+
+struct ClearAllConfirm {
+    dirs: Vec<std::path::PathBuf>,
+    total_bytes: u64,
 }
 
 impl Default for PreferencesPanel {
@@ -41,6 +51,7 @@ impl Default for PreferencesPanel {
             remapping: None,
             kb_search: String::new(),
             search_query: String::new(),
+            clear_all_confirm: None,
         }
     }
 }
@@ -303,6 +314,9 @@ impl PreferencesPanel {
                     *prefs_dirty = true;
                 }
             });
+
+        // Render any pending confirmation modals on top of the prefs window.
+        self.show_clear_all_confirm(ctx);
 
         (open, cmds)
     }
@@ -2340,7 +2354,7 @@ impl PreferencesPanel {
         };
 
         cache_dir_row(ui, "Thumbnail cache", &mut prefs.media_cache.filmstrip_cache_dir, "~/.cache/klipp/thumbnails", dirty, "thumb_dir");
-        cache_dir_row(ui, "Waveform cache", &mut prefs.media_cache.audio_cache_dir, "~/.cache/klipp/waveforms", dirty, "wave_dir");
+        cache_dir_row(ui, "Audio cache", &mut prefs.media_cache.audio_cache_dir, "~/.cache/klipp/audio-cache", dirty, "wave_dir");
         cache_dir_row(ui, "Render cache", &mut prefs.media_cache.render_cache_dir, "~/.cache/klipp/render", dirty, "render_dir");
 
         // ── RENDER CACHE section ──
@@ -2407,8 +2421,18 @@ impl PreferencesPanel {
             .unwrap_or_else(|| klipp_cache.join("render"));
         let thumb_dir = prefs.media_cache.filmstrip_cache_dir.clone()
             .unwrap_or_else(|| klipp_cache.join("thumbnails"));
+        // The audio cache pref controls the engine's audio_cache_dir
+        // (`klipp-media/src/disk_cache.rs::audio_cache_dir`) which defaults
+        // to `audio-cache`, NOT `waveforms`. Previous default of "waveforms"
+        // was a stale path that always sized to 0 and never cleared the
+        // real ~tens-of-GB PCM data.
         let wave_dir = prefs.media_cache.audio_cache_dir.clone()
-            .unwrap_or_else(|| klipp_cache.join("waveforms"));
+            .unwrap_or_else(|| klipp_cache.join("audio-cache"));
+        // Filmstrip .strip binaries — separate from `thumbnails`. Engine
+        // path: `klipp-media/src/disk_cache.rs::filmstrip_dir`.
+        let filmstrip_dir = klipp_cache.join("filmstrips");
+        // Pre-computed audio peak data — `klipp-media/src/disk_cache.rs:285`.
+        let audio_peaks_dir = klipp_cache.join("audio-peaks");
         let skim_dir = klipp_cache.join("skim");
         let proxy_dir = prefs.proxy.proxy_cache_dir.clone()
             .unwrap_or_else(|| klipp_cache.join("proxies"));
@@ -2425,9 +2449,12 @@ impl PreferencesPanel {
         let render_size = dir_size(&render_dir);
         let thumb_size = dir_size(&thumb_dir);
         let wave_size = dir_size(&wave_dir);
+        let filmstrip_size = dir_size(&filmstrip_dir);
+        let audio_peaks_size = dir_size(&audio_peaks_dir);
         let skim_size = dir_size(&skim_dir);
         let proxy_size = dir_size(&proxy_dir);
-        let total_size = render_size + thumb_size + wave_size + skim_size + proxy_size;
+        let total_size = render_size + thumb_size + wave_size + filmstrip_size
+            + audio_peaks_size + skim_size + proxy_size;
 
         let format_size = |bytes: u64| -> String {
             if bytes >= 1_073_741_824 { format!("{:.1} GB", bytes as f64 / 1_073_741_824.0) }
@@ -2437,8 +2464,13 @@ impl PreferencesPanel {
         };
 
         let clear_btn = |ui: &mut egui::Ui, label: &str, dir: &std::path::Path| {
-            let btn_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(56.0, 24.0));
-            let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+            // `allocate_response` respects the parent's right_to_left layout
+            // and reserves the rect at the layout-managed position.
+            // (Previously used `from_min_size(ui.cursor().min, …)` which
+            // anchored the rect to the cursor's left edge — in an RTL layout
+            // that put the button OFF the widget area, so it never rendered.)
+            let resp = ui.allocate_response(egui::vec2(56.0, 24.0), egui::Sense::click());
+            let btn_rect = resp.rect;
             let bg = if resp.hovered() { egui::Color32::from_rgb(0x40, 0x28, 0x18) } else { egui::Color32::from_rgb(0x30, 0x20, 0x10) };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
             ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, Self::ACCENT));
@@ -2452,11 +2484,17 @@ impl PreferencesPanel {
         Self::setting_row_with_subtitle(ui, "Render cache", &format_size(render_size), |ui| {
             clear_btn(ui, "Clear", &render_dir);
         });
-        Self::setting_row_with_subtitle(ui, "Filmstrip thumbnails", &format_size(thumb_size), |ui| {
+        Self::setting_row_with_subtitle(ui, "Poster thumbnails", &format_size(thumb_size), |ui| {
             clear_btn(ui, "Clear", &thumb_dir);
         });
-        Self::setting_row_with_subtitle(ui, "Audio waveforms", &format_size(wave_size), |ui| {
+        Self::setting_row_with_subtitle(ui, "Filmstrip strips", &format_size(filmstrip_size), |ui| {
+            clear_btn(ui, "Clear", &filmstrip_dir);
+        });
+        Self::setting_row_with_subtitle(ui, "Audio cache (PCM)", &format_size(wave_size), |ui| {
             clear_btn(ui, "Clear", &wave_dir);
+        });
+        Self::setting_row_with_subtitle(ui, "Audio peaks", &format_size(audio_peaks_size), |ui| {
+            clear_btn(ui, "Clear", &audio_peaks_dir);
         });
         Self::setting_row_with_subtitle(ui, "Skim transcodes", &format_size(skim_size), |ui| {
             clear_btn(ui, "Clear", &skim_dir);
@@ -2471,8 +2509,8 @@ impl PreferencesPanel {
         Self::section_header(ui, "CLEANUP");
 
         Self::setting_row_with_subtitle(ui, "Orphaned cache files", "Files not used by any project", |ui| {
-            let btn_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(100.0, 24.0));
-            let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+            let resp = ui.allocate_response(egui::vec2(100.0, 24.0), egui::Sense::click());
+            let btn_rect = resp.rect;
             let bg = if resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
             ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, Self::ACCENT));
@@ -2486,19 +2524,89 @@ impl PreferencesPanel {
 
         // Clear all caches
         Self::setting_row_with_subtitle(ui, "All caches", &format_size(total_size), |ui| {
-            let btn_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(70.0, 24.0));
-            let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
+            let resp = ui.allocate_response(egui::vec2(70.0, 24.0), egui::Sense::click());
+            let btn_rect = resp.rect;
             let bg = if resp.hovered() { egui::Color32::from_rgb(0x50, 0x20, 0x10) } else { egui::Color32::from_rgb(0x40, 0x18, 0x08) };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
             ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0xe0, 0x60, 0x30)));
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear all", egui::FontId::proportional(11.0), egui::Color32::from_rgb(0xe0, 0x60, 0x30));
             if resp.clicked() {
-                for d in [&render_dir, &thumb_dir, &wave_dir, &skim_dir, &proxy_dir] {
+                // Stage the destructive action behind a confirmation modal
+                // so a stray click doesn't nuke tens of GB of regenerable
+                // cache. Per-row "Clear" buttons stay one-click — single
+                // categories are deliberate and recover quickly.
+                self.clear_all_confirm = Some(ClearAllConfirm {
+                    dirs: vec![
+                        render_dir.clone(), thumb_dir.clone(), filmstrip_dir.clone(),
+                        wave_dir.clone(), audio_peaks_dir.clone(), skim_dir.clone(),
+                        proxy_dir.clone(),
+                    ],
+                    total_bytes: total_size,
+                });
+            }
+        });
+    }
+
+    /// "Clear all caches" confirmation modal. Renders only when
+    /// `clear_all_confirm` is Some. Confirm performs the destructive
+    /// action; Cancel dismisses without deleting anything.
+    fn show_clear_all_confirm(&mut self, ctx: &egui::Context) {
+        let Some(confirm) = self.clear_all_confirm.as_ref() else { return };
+        let total_str = if confirm.total_bytes >= 1_073_741_824 {
+            format!("{:.1} GB", confirm.total_bytes as f64 / 1_073_741_824.0)
+        } else if confirm.total_bytes >= 1_048_576 {
+            format!("{:.1} MB", confirm.total_bytes as f64 / 1_048_576.0)
+        } else {
+            format!("{} KB", confirm.total_bytes / 1024)
+        };
+        let mut close = false;
+        let mut do_clear = false;
+        egui::Window::new("Delete all caches?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(380.0);
+                ui.add_space(4.0);
+                ui.label(format!(
+                    "This will permanently delete {total_str} of cached data \
+                    (render frames, thumbnails, filmstrips, audio cache, audio peaks, \
+                    skim transcodes, proxy files).",
+                ));
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Caches are regenerated automatically as needed, \
+                        but rebuilding them takes time on next playback / export.",
+                    )
+                    .color(Self::DIM_TEXT)
+                    .size(11.0),
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() { close = true; }
+                    ui.add_space(8.0);
+                    let delete_btn = egui::Button::new(
+                        egui::RichText::new("Delete all").color(egui::Color32::WHITE),
+                    )
+                    .fill(egui::Color32::from_rgb(0xc0, 0x40, 0x20));
+                    if ui.add(delete_btn).clicked() {
+                        do_clear = true;
+                        close = true;
+                    }
+                });
+            });
+        if do_clear {
+            if let Some(c) = self.clear_all_confirm.as_ref() {
+                for d in &c.dirs {
                     let _ = std::fs::remove_dir_all(d);
                     let _ = std::fs::create_dir_all(d);
                 }
             }
-        });
+        }
+        if close {
+            self.clear_all_confirm = None;
+        }
     }
 
     fn show_color(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {

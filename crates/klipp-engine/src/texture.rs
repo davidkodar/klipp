@@ -98,18 +98,19 @@ impl FrameBuffer {
 
     /// Write a skim preview frame *and* clear the GPU scope texture.
     ///
-    /// Skimming bypasses the engine's scope-render path, so the GPU
-    /// scope texture from the last *playback* frame stays populated
-    /// unless we clear it here. The UI prefers a non-empty GPU
-    /// texture over the CPU renderer — without the clear, scopes
-    /// freeze on the last playback frame the moment the user starts
-    /// scrubbing. Combining the two writes into one call makes the
-    /// invariant hard to drift.
+    /// The UI dispatches `AppCommand::RenderScopesForFrame` right after this
+    /// call (see `app.rs` — `browser_skim_pending` handler), so the engine
+    /// refills `scope_texture` with a fresh GPU-rendered scope within ~1
+    /// tick. We deliberately do NOT clear `scope_texture` here: the stale
+    /// playback scope stays visible during the handful of milliseconds
+    /// before the new one lands, which avoids the CPU-fallback flicker the
+    /// previous clear caused when the user moved the cursor quickly over a
+    /// clip (gap → CPU render → engine refill → swap, repeated per skim
+    /// frame). For modes without a GPU kernel (e.g. vectorscope) the engine
+    /// explicitly clears `scope_texture` so the UI still falls back to CPU
+    /// in that branch.
     pub fn write_skim_frame(&mut self, rgba_data: Vec<u8>, width: u32, height: u32) {
         self.write_frame(rgba_data, width, height);
-        self.scope_texture.clear();
-        self.scope_texture_w = 0;
-        self.scope_texture_h = 0;
     }
 
     /// UI thread swaps pending into active — fast pointer swap, no allocation.

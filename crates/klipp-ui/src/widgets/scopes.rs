@@ -271,7 +271,19 @@ pub fn show_scopes(
             ScopeAction::None => None,
             ScopeAction::GpuReady(image, gen) => Some((ScopeImage::Ready(image), gen)),
             ScopeAction::CpuRender(src, w, h, gen) => {
-                let step: u32 = if w > 1280 { 4 } else if w > 640 { 3 } else { 2 };
+                // CPU scope path runs when the engine's GPU scope texture
+                // isn't available — notably during media-browser hover skim
+                // and timeline scrub (write_skim_frame clears the GPU scope
+                // texture so stale playback scopes don't linger).
+                //
+                // The step decimates pixels in histogram + vectorscope to
+                // keep CPU cost bounded. Previous values (step=2/3/4) made
+                // skim scopes look noticeably sparser than the full-res GPU
+                // playback scopes. Use step=1 for HD-and-smaller frames
+                // (typical skim resolution) — vectorscope and histogram are
+                // cheap enough at 1080p; only step up at 4K+ where the per-
+                // pixel cost actually matters.
+                let step: u32 = if w > 2560 { 3 } else if w > 1920 { 2 } else { 1 };
                 let render_w = w as usize;
                 let image = match mode {
                     ScopeMode::Waveform => render_waveform_direct(&src, w, h, render_w, render_h),

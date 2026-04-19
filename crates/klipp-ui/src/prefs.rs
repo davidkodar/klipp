@@ -179,7 +179,13 @@ fn default_pre_roll() -> f32 { 2.0 }
 fn default_jkl_step() -> f32 { 2.0 }
 
 fn default_skim_resolution() -> u32 {
-    480
+    // Bumped from 480 → 720. Skim frames feed both the viewer preview
+    // *and* (via `RenderScopesForFrame`) the GPU scope render. At 480 the
+    // scope had ≈¼ the samples of a 1080p playback frame which made
+    // waveform/parade/histogram look noticeably sparser during hover
+    // skim / timeline scrub than during playback. 720 closes most of the
+    // visible gap while keeping per-frame decode cost bounded.
+    720
 }
 
 /// Default multicam sync method for aligning angles.
@@ -1580,7 +1586,7 @@ mod tests {
         assert!(rt.playback.skim_audio);
         assert_eq!(rt.playback.jkl_audio_mute_threshold, 4.0);
         assert!(!rt.playback.loop_playback);
-        assert_eq!(rt.playback.skim_resolution, 480);
+        assert_eq!(rt.playback.skim_resolution, 720);
 
         // EditingPrefs
         assert!(rt.editing.auto_create_tracks);
@@ -1758,7 +1764,7 @@ mod tests {
         // Fields with serde(default) within playback
         assert!(prefs.playback.skim_audio); // default_true
         assert!(!prefs.playback.loop_playback); // default false
-        assert_eq!(prefs.playback.skim_resolution, 480); // default_skim_resolution
+        assert_eq!(prefs.playback.skim_resolution, 720); // default_skim_resolution
         // Fields with serde(default) within general
         assert!(prefs.general.remember_inspector_layout);
         assert!(prefs.general.collapsed_sections.is_empty());
