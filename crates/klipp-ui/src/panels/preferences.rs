@@ -2418,15 +2418,28 @@ impl PreferencesPanel {
         Self::setting_row_with_subtitle(
             ui,
             "Filmstrip tile resolution",
-            "Height of per-clip filmstrip tiles on the timeline. Higher = sharper when tracks are enlarged, larger cache.",
+            "Height of each filmstrip tile on the timeline. Higher = sharper at enlarged track heights, larger cache on disk and memory. 256 is enough for ~250px tracks without upscale blur; 384/512 is for very tall tracks or 4K displays.",
             |ui| {
-                let sizes = [(48_u32, "48px"), (72, "72px"), (96, "96px"), (128, "128px"), (192, "192px")];
-                let current = sizes.iter()
+                // Dropdown covers the common presets; the DragValue below
+                // accepts any custom value from 32..=1024 so "configurable"
+                // means any integer, not just five dropdown choices.
+                let sizes = [
+                    (48_u32,  "48px (Draft)"),
+                    (72,      "72px"),
+                    (96,      "96px (Default)"),
+                    (128,     "128px"),
+                    (192,     "192px"),
+                    (256,     "256px (HD)"),
+                    (384,     "384px"),
+                    (512,     "512px (Max preset)"),
+                ];
+                let current_label = sizes.iter()
                     .find(|(v, _)| *v == prefs.media_cache.filmstrip_height)
-                    .map(|(_, l)| *l).unwrap_or("96px");
+                    .map(|(_, l)| *l)
+                    .unwrap_or("Custom");
                 egui::ComboBox::from_id_salt("filmstrip_res")
-                    .selected_text(current)
-                    .width(70.0)
+                    .selected_text(current_label)
+                    .width(160.0)
                     .show_ui(ui, |ui| {
                         for (val, label) in &sizes {
                             if ui.selectable_value(&mut prefs.media_cache.filmstrip_height, *val, *label).changed() {
@@ -2434,6 +2447,20 @@ impl PreferencesPanel {
                             }
                         }
                     });
+                ui.add_space(6.0);
+                let mut v = prefs.media_cache.filmstrip_height;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut v)
+                            .range(32..=1024)
+                            .speed(1.0)
+                            .suffix(" px"),
+                    )
+                    .changed()
+                {
+                    prefs.media_cache.filmstrip_height = v;
+                    *dirty = true;
+                }
             },
         );
 

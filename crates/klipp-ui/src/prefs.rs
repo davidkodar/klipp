@@ -746,6 +746,7 @@ impl Preferences {
                     Ok(mut value) => {
                         Self::migrate_legacy_editing_to_file_browser(&mut value);
                         Self::migrate_skim_resolution_default(&mut value);
+                        Self::migrate_filmstrip_height_default(&mut value);
                         match serde_json::from_value::<Self>(value) {
                             Ok(prefs) => {
                                 tracing::info!("Preferences loaded from {}", path.display());
@@ -800,6 +801,27 @@ impl Preferences {
                 );
                 tracing::info!(
                     "Migrated skim_resolution: 480 -> 720 (preview quality bump)"
+                );
+            }
+        }
+    }
+
+    /// Bump `media_cache.filmstrip_height` from the old defaults (48 then 96)
+    /// to the new default of 128. At enlarged track heights (>= 200px) lower
+    /// values produce visibly jagged/blurry tiles. Only rewrites the literal
+    /// old defaults — any value the user explicitly set is left alone.
+    fn migrate_filmstrip_height_default(value: &mut serde_json::Value) {
+        let Some(mc) = value.get_mut("media_cache").and_then(|v| v.as_object_mut()) else {
+            return;
+        };
+        if let Some(h) = mc.get("filmstrip_height").and_then(|v| v.as_u64()) {
+            if h == 48 || h == 96 {
+                mc.insert(
+                    "filmstrip_height".to_string(),
+                    serde_json::Value::from(128u64),
+                );
+                tracing::info!(
+                    "Migrated filmstrip_height: {} -> 128 (sharper tiles at enlarged tracks)", h
                 );
             }
         }
@@ -1150,7 +1172,7 @@ pub struct MediaCachePrefs {
 fn default_cache_size_gb() -> u32 { 20 }
 fn default_skim_quality() -> u32 { 23 }
 fn default_thumb_h() -> u32 { 256 }
-fn default_filmstrip_h() -> u32 { 96 }
+fn default_filmstrip_h() -> u32 { 128 }
 impl Default for MediaCachePrefs {
     fn default() -> Self {
         Self {
