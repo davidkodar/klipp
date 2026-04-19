@@ -1096,14 +1096,21 @@ impl ViewerPanel {
         let video_w = frame.video_w;
         let video_h = frame.video_h;
 
+        // Show the skim-decode texture ONLY while actively scrubbing AND not
+        // currently playing. Playback always takes precedence — otherwise a
+        // stuck `is_scrubbing` flag (e.g. drag_stopped missed because the
+        // pointer left the window) combined with a lingering
+        // `browser_skim_texture` would freeze the viewer on a stale skim
+        // frame while the engine is producing new live frames (scopes kept
+        // updating but the image didn't — exactly the "grade changes don't
+        // reach the viewer" symptom).
+        let use_skim_texture = state.is_scrubbing
+            && state.playback != klipp_engine::PlaybackState::Playing
+            && state.browser_skim_texture.is_some();
+
         if frame.grade_still_active {
             self.draw_grade_still_split(ui, state, &frame);
-        } else if state.is_scrubbing && state.browser_skim_texture.is_some() {
-            // While scrubbing, prefer the high-quality skim decode texture
-            // over the (possibly stale or upscaled-thumbnail) video_texture.
-            // The same pipeline the media browser hover uses — produces
-            // mid-resolution preview frames at prefs.playback.skim_resolution
-            // instead of the chunky filmstrip thumbnails.
+        } else if use_skim_texture {
             if let Some(tex) = &state.browser_skim_texture {
                 ui.painter().image(
                     tex.id(),

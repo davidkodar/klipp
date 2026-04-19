@@ -821,11 +821,23 @@ impl PlaybackEngine {
                 self.update_playback();
                 // Sync clip audio params periodically during playback (for keyframe animation)
                 self.sync_clip_volumes();
-            } else if self.state == PlaybackState::Paused && !had_commands && applied == 0 {
-                // Engine is idle while paused — pre-render nearby frames into cache.
-                // Skip prerender when we just applied param changes so the next tick
-                // re-runs through the fresh graph instead of caching stale output.
-                self.prerender_cache_frames();
+            } else if self.state == PlaybackState::Paused {
+                if applied > 0 {
+                    // Colour-grade param drag while paused — the drain updated
+                    // the graph but the viewer is still displaying the cached
+                    // graded frame from before the change. Re-run the grade
+                    // chain on `cached_pregrade_frame` so the visible frame
+                    // reflects the new values immediately. Previously this
+                    // call was missing and the pref drag produced no visible
+                    // change until the user pressed play.
+                    self.regrade_cached_frame();
+                } else if !had_commands {
+                    // Engine is genuinely idle — pre-render nearby frames
+                    // into cache. Skip prerender when we just applied param
+                    // changes so the next tick re-runs through the fresh
+                    // graph instead of caching stale output.
+                    self.prerender_cache_frames();
+                }
             }
 
             // Emit perf stats periodically

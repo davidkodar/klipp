@@ -334,13 +334,16 @@ fn audio_decode_thread(
                 seek_target = None;
             }
 
-            // Patch up the frame's channel layout if the decoder produced
-            // an empty one (PCM WAVs with unknown layout in the container).
-            // The resampler's input layout is `src_layout` (defaulted from
-            // channel count above) so anything else here causes a mismatch.
-            if frame.channel_layout().is_empty() {
-                frame.set_channel_layout(src_layout);
-            }
+            // Force the frame's channel_layout to match the resampler's
+            // configured input layout. The resampler rejects frames whose
+            // layout differs — covering both the PCM WAV case (empty
+            // layout) *and* the AC-3 / DTS case where the decoder gives
+            // back 5.1(side) while `ChannelLayout::default(6)` is plain
+            // 5.1. The old `if is_empty()` gate silently dropped every
+            // AC-3 frame and produced a silent clip; overriding
+            // unconditionally is safe because src_layout is derived from
+            // the same channel count.
+            frame.set_channel_layout(src_layout);
 
             // Pre-allocate the output frame ourselves with the rate-scaled
             // worst-case sample count. ffmpeg-next's `Context::run` would

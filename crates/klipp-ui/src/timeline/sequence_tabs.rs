@@ -135,6 +135,10 @@ pub fn show(
                 });
                 ui.close_menu();
             }
+            if ui.button("Sequence Settings...").clicked() {
+                cmds.push(AppCommand::OpenSequenceSettings { sequence_idx: i });
+                ui.close_menu();
+            }
             ui.separator();
             let can_delete = state.sequences.len() > 1;
             if ui.add_enabled(can_delete, egui::Button::new(
@@ -167,15 +171,27 @@ pub fn show(
         add_color,
     );
     if add_resp.clicked() {
-        // Add a new sequence with same settings as the active one
+        // New sequence: inherit fps from active, but resolution comes from
+        // the "New sequence resolution" pref when set (idx > 0). Idx 0 =
+        // Automatic, which keeps the historical inherit-from-active
+        // behaviour. Lets users pin a vertical/square default if their
+        // workflow is mainly that orientation.
+        use crate::panels::new_project_dialog::RESOLUTION_PRESETS;
         let active = &state.sequences[state.active_sequence_idx];
         let n = state.sequences.len() + 1;
+        let pref_idx = state.default_sequence_resolution_idx;
+        let (width, height) = if pref_idx > 0 && pref_idx < RESOLUTION_PRESETS.len() {
+            let (_, w, h) = RESOLUTION_PRESETS[pref_idx];
+            if w > 0 && h > 0 { (w, h) } else { (active.resolution.width, active.resolution.height) }
+        } else {
+            (active.resolution.width, active.resolution.height)
+        };
         cmds.push(AppCommand::AddSequence {
             name: format!("Sequence {n}"),
             fps_num: active.fps.num,
             fps_den: active.fps.den,
-            width: active.resolution.width,
-            height: active.resolution.height,
+            width,
+            height,
         });
     }
 

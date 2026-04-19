@@ -118,14 +118,33 @@ impl PcmAudioFeeder {
     /// The PCM file must be 48kHz stereo f32 interleaved (as produced by conform_audio).
     /// `audio_effects` are the per-clip DSP effects to apply before ring buffer push.
     pub fn open(pcm_path: &Path, output_rate: u32, audio_effects: Vec<AudioEffectInstance>) -> Result<(Self, AudioConsumer), PcmFeederError> {
-        let pcm_data = std::fs::read(pcm_path)
+        let pcm_bytes = std::fs::read(pcm_path)
             .map_err(|e| PcmFeederError::Open(format!("read {:?}: {e}", pcm_path)))?;
 
-        if pcm_data.len() % 4 != 0 {
+        if pcm_bytes.len() % 4 != 0 {
             return Err(PcmFeederError::Open("PCM file size not aligned to f32".into()));
         }
+        // Treat zero-length (or too-short-to-contain-a-stereo-sample) PCM
+        // files as a load failure so the engine falls back to AudioDecoder
+        // instead of silently succeeding with a feeder that produces
+        // silence. Previously a ghost 0-byte cache file was opened here,
+        // `total_floats == 0`, and the clip played mute on the timeline
+        // even though the source media had audio.
+        if pcm_bytes.len() < 16 {
+            return Err(PcmFeederError::Open(
+                format!("PCM cache file too small ({} bytes) — treating as absent", pcm_bytes.len()),
+            ));
+        }
 
-        let total_floats = pcm_data.len() / 4;
+        // Copy the raw bytes into a `Vec<f32>` — the Vec's allocation is
+        // guaranteed to be 4-byte aligned, while a plain `Vec<u8>` is only
+        // 1-byte aligned and `bytemuck::cast_slice` panics if the pointer
+        // isn't aligned to the target type. Single allocation + copy on
+        // open; the feeder thread then operates on aligned f32 samples
+        // directly with zero per-frame cost.
+        let total_floats = pcm_bytes.len() / 4;
+        let mut pcm_data = vec![0f32; total_floats];
+        bytemuck::cast_slice_mut::<f32, u8>(&mut pcm_data).copy_from_slice(&pcm_bytes);
         let total_mono_samples = total_floats / CHANNELS;
         let duration_secs = total_mono_samples as f64 / SAMPLE_RATE as f64;
 
@@ -288,7 +307,7 @@ impl std::fmt::Display for PcmFeederError {
 
 #[allow(clippy::too_many_arguments)]
 fn pcm_feed_thread(
-    pcm_data: Vec<u8>,
+    pcm_data: Vec<f32>,
     output_rate: u32,
     needs_resample: bool,
     mut producer: AudioProducer,
@@ -307,8 +326,10 @@ fn pcm_feed_thread(
     anti_click: Arc<AtomicBool>,
     audio_effects: Vec<AudioEffectInstance>,
 ) {
-    // Interpret raw bytes as f32 samples
-    let samples: &[f32] = bytemuck::cast_slice(&pcm_data);
+    // PCM data already comes in as `Vec<f32>` (converted at open() time so
+    // the buffer is guaranteed 4-byte aligned — see the comment in
+    // `PcmAudioFeeder::open`). No per-thread cast needed.
+    let samples: &[f32] = &pcm_data;
     let total_floats = samples.len();
 
     // Build audio effect chain from per-clip effects

@@ -202,6 +202,10 @@ pub struct KlippApp {
     launch_screen: crate::panels::launch_screen::LaunchScreen,
     // New Project dialog
     new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog,
+    /// "Sequence Settings…" modal — `Some` when open. Carries the per-
+    /// invocation editor state (the targeted sequence index + its current
+    /// width/height/fps being edited). `None` when closed.
+    sequence_settings_dialog: Option<crate::panels::sequence_settings_dialog::SequenceSettingsDialog>,
     // Node graph and inspector panels (Color workspace)
     node_graph_panel: crate::panels::node_graph::NodeGraphPanel,
     node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel,
@@ -358,6 +362,7 @@ impl KlippApp {
             last_window_title: String::new(),
             launch_screen: crate::panels::launch_screen::LaunchScreen::default(),
             new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog::new(None),
+            sequence_settings_dialog: None,
             node_graph_panel: crate::panels::node_graph::NodeGraphPanel::default(),
             node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel::default(),
             node_param_edit_snapshot: None,
@@ -439,6 +444,7 @@ impl KlippApp {
         app.state.default_transition_frames = app.prefs.editing.default_transition_frames;
         app.state.snap_threshold_px = app.prefs.editing.snap_threshold_px;
         app.state.zoom_step = app.prefs.editing.zoom_step;
+        app.state.default_sequence_resolution_idx = app.prefs.editing.default_sequence_resolution_idx;
         app.state.timeline_prefs = app.prefs.timeline.clone();
         app.state.viewer_prefs = app.prefs.viewer.clone();
         app.state.toast_duration_secs = app.prefs.advanced.toast_duration_secs;
@@ -1154,9 +1160,10 @@ impl KlippApp {
             return;
         }
         // Already have filmstrip on disk? Load it directly without showing the spinner.
+        let filmstrip_height = self.prefs.media_cache.filmstrip_height.max(24);
         let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
         if let Some(ref key) = cache_key {
-            if klipp_media::disk_cache::filmstrip_cache_exists(key) {
+            if klipp_media::disk_cache::filmstrip_cache_exists(key, filmstrip_height) {
                 // Load from disk cache on a background thread, skip the generating indicator
                 let tx = self.filmstrip_tx.clone();
                 let key_clone = key.clone();
@@ -1164,7 +1171,7 @@ impl KlippApp {
                 std::thread::Builder::new()
                     .name("klipp-filmstrip-cache".into())
                     .spawn(move || {
-                        match klipp_media::disk_cache::load_filmstrip_cache(&key_clone) {
+                        match klipp_media::disk_cache::load_filmstrip_cache(&key_clone, filmstrip_height) {
                             Ok(frames) => {
                                 tracing::info!("Filmstrip loaded from disk cache: {} frames for {:?}", frames.len(), path_clone);
                                 for frame in frames {
@@ -1207,13 +1214,14 @@ impl KlippApp {
         let generate_if_missing = self.state.project_auto_filmstrips
             .unwrap_or(self.prefs.editing.auto_generate_filmstrips);
         let interval = (duration_secs / 400.0).clamp(0.2, 1.5);
+        let filmstrip_height = self.prefs.media_cache.filmstrip_height.max(24);
         std::thread::Builder::new()
             .name("klipp-filmstrip".into())
             .spawn(move || {
                 // Try loading from disk cache first
                 if let Some(ref key) = cache_key {
-                    if klipp_media::disk_cache::filmstrip_cache_exists(key) {
-                        match klipp_media::disk_cache::load_filmstrip_cache(key) {
+                    if klipp_media::disk_cache::filmstrip_cache_exists(key, filmstrip_height) {
+                        match klipp_media::disk_cache::load_filmstrip_cache(key, filmstrip_height) {
                             Ok(frames) => {
                                 tracing::info!("Filmstrip loaded from cache: {} frames for {:?}", frames.len(), path);
                                 for frame in frames {
@@ -1242,7 +1250,7 @@ impl KlippApp {
                 // Generate from source and collect frames for cache write
                 let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
                 let frames_clone = frames.clone();
-                match klipp_engine::generate_filmstrip_incremental(&path, duration_secs, interval, 48, |time, rgba, w, h| {
+                match klipp_engine::generate_filmstrip_incremental(&path, duration_secs, interval, filmstrip_height, |time, rgba, w, h| {
                     let frame = klipp_media::FilmstripFrame {
                         time_secs: time,
                         rgba,
@@ -10504,6 +10512,120 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::RegenerateAudioCacheForAll => {
+                // Walk the media pool, clear stale audio_cache references, and
+                // re-trigger conform for every item with audio. Used when the
+                // user wipes on-disk caches via the prefs Clear buttons —
+                // without this, MediaItems still reference deleted PCM files
+                // and timeline playback either falls back to the slower
+                // ffmpeg decode path or produces silence depending on the
+                // engine's state.
+                let to_regen: Vec<(klipp_core::MediaId, std::path::PathBuf)> = self
+                    .state
+                    .media_pool
+                    .all()
+                    .filter(|m| m.has_audio && !m.is_still)
+                    .map(|m| (m.id, m.path.clone()))
+                    .collect();
+                for id in to_regen.iter().map(|(id, _)| *id) {
+                    if let Some(item) = self.state.media_pool.get_mut(&id) {
+                        item.audio_cache = None;
+                    }
+                }
+                let count = to_regen.len();
+                for (id, path) in to_regen {
+                    self.spawn_audio_conform(id, path);
+                }
+                if count > 0 {
+                    self.state.toast.show(format!("Regenerating audio cache for {count} media item(s)…"));
+                }
+                true
+            }
+            AppCommand::RegenerateFilmstripsForAll => {
+                // Wipe in-memory filmstrip textures + in-progress map and
+                // re-spawn filmstrip generation for every pool item.
+                let to_regen: Vec<(klipp_core::MediaId, std::path::PathBuf, klipp_core::RationalTime)> = self
+                    .state
+                    .media_pool
+                    .all()
+                    .filter(|m| !m.is_still)
+                    .map(|m| (m.id, m.path.clone(), m.duration))
+                    .collect();
+                for id in to_regen.iter().map(|(id, _, _)| *id) {
+                    self.state.filmstrip_textures.remove(&id);
+                    self.state.filmstrip_in_progress.remove(&id);
+                    self.state.thumbnail_cache.set_filmstrip(id, Vec::new());
+                }
+                let count = to_regen.len();
+                if count > 0 {
+                    self.state.filmstrip_generating = true;
+                    self.state.filmstrip_generate_start = std::time::Instant::now();
+                }
+                for (id, path, duration) in to_regen {
+                    self.spawn_filmstrip(id, path, duration);
+                }
+                if count > 0 {
+                    self.state.toast.show(format!("Regenerating filmstrips for {count} media item(s)…"));
+                }
+                true
+            }
+            AppCommand::RegenerateSkimTranscodesForAll => {
+                // Clear stale skim_file references and queue a fresh skim
+                // transcode for each media item. The pump in update() picks
+                // these up the same way it does on first import.
+                let mut count = 0usize;
+                let ids: Vec<klipp_core::MediaId> = self
+                    .state
+                    .media_pool
+                    .all()
+                    .filter(|m| !m.is_still)
+                    .map(|m| m.id)
+                    .collect();
+                for id in &ids {
+                    if let Some(item) = self.state.media_pool.get_mut(id) {
+                        item.skim_file = None;
+                    }
+                    self.state.pending_skim_transcodes.push(*id);
+                    count += 1;
+                }
+                if count > 0 {
+                    self.state.toast.show(format!("Regenerating skim transcodes for {count} media item(s)…"));
+                }
+                true
+            }
+            AppCommand::OpenSequenceSettings { sequence_idx } => {
+                if let Some(seq) = self.state.sequences.get(*sequence_idx) {
+                    self.sequence_settings_dialog = Some(
+                        crate::panels::sequence_settings_dialog::SequenceSettingsDialog::open(
+                            *sequence_idx,
+                            seq.resolution.width,
+                            seq.resolution.height,
+                            seq.fps.num,
+                            seq.fps.den,
+                        ),
+                    );
+                }
+                true
+            }
+            AppCommand::SetSequenceResolution { sequence_idx, width, height } => {
+                if *sequence_idx < self.state.sequences.len() && *width > 0 && *height > 0 {
+                    let res = klipp_core::Resolution { width: *width, height: *height };
+                    self.state.sequences[*sequence_idx].resolution = res;
+                    self.state.dirty = true;
+                }
+                true
+            }
+            AppCommand::SetSequenceFps { sequence_idx, fps_num, fps_den } => {
+                if *sequence_idx < self.state.sequences.len() && *fps_num > 0 && *fps_den > 0 {
+                    self.state.sequences[*sequence_idx].fps = klipp_core::Fps::new(*fps_num, *fps_den);
+                    if *sequence_idx == self.state.active_sequence_idx {
+                        // Engine reads `state.fps` for the active sequence.
+                        self.state.fps = self.state.sequences[*sequence_idx].fps;
+                    }
+                    self.state.dirty = true;
+                }
+                true
+            }
             AppCommand::ReorderSequences { from_idx, to_idx } => {
                 let len = self.state.sequences.len();
                 if *from_idx < len && *to_idx < len && from_idx != to_idx {
@@ -11476,7 +11598,16 @@ impl KlippApp {
                     };
                     let mid = *media_id;
                     let t = *time_secs;
-                    let skim_res = self.prefs.playback.skim_resolution;
+                    // Decode resolution: use the larger of the pref-capped
+                    // value and (source_height, 1080 cap). Previously fixed
+                    // to `prefs.playback.skim_resolution` (480/720) which
+                    // threw away pixels on every 1080p+ source — now that
+                    // the skim file itself is source-height (capped 1080),
+                    // decoding at 720 is a needless downsample. Cap keeps
+                    // CPU bounded on 6K+ sources.
+                    let source_height = item.resolution.height.max(240);
+                    let skim_res = self.prefs.playback.skim_resolution
+                        .max(source_height.min(1080));
                     let event_tx = self.proxy_event_tx.clone();
                     self.state.skim_decode_in_flight = true;
                     self.state.skim_decode_started_at = Some(std::time::Instant::now());
@@ -16368,7 +16499,14 @@ impl eframe::App for KlippApp {
                     } else {
                         item.path.clone()
                     };
-                    let skim_res = self.prefs.playback.skim_resolution;
+                    // Decode at source-height (capped 1080) rather than the
+                    // flat 480/720 skim_resolution pref, so 1080p+ skim files
+                    // render at their native resolution instead of being
+                    // downsampled. See matching logic in the BrowserSkimFrame
+                    // command handler above.
+                    let source_height = item.resolution.height.max(240);
+                    let skim_res = self.prefs.playback.skim_resolution
+                        .max(source_height.min(1080));
                     let event_tx = self.proxy_event_tx.clone();
                     self.state.skim_decode_in_flight = true;
                     self.state.skim_decode_started_at = Some(std::time::Instant::now());
@@ -17426,6 +17564,20 @@ impl KlippApp {
             let source_path = item.path.clone();
             let duration_secs = item.duration.to_secs_f64();
             let filename = item.filename.clone();
+            // Skim transcode resolution: target = source height (capped at
+            // 1080 for ≥4K sources so the file stays bounded on disk). For
+            // anything ≤1080p, skim is source-resolution. Previous hardcoded
+            // `scale_cuda=960:-2` gave every clip a 960×?? skim regardless
+            // of source — that's 540p for 1080p input, 540p for 4K, which
+            // is the root of "skim looks like shit" complaints.
+            //
+            // The QP/CRF value comes from the `skim_transcode_quality` pref
+            // (values 18 High / 23 Standard / 28 Low / 32 Draft) — which
+            // the UI already exposed but was ignored. Previously hardcoded
+            // to 30 regardless of setting.
+            let source_height = item.resolution.height.max(2);
+            let target_height = source_height.min(1080);
+            let skim_quality = self.prefs.media_cache.skim_transcode_quality;
 
             // Use content-based cache key for skim path
             let skim_dir = dirs::cache_dir()
@@ -17498,14 +17650,20 @@ impl KlippApp {
                 let src = source_path.to_str().unwrap_or("");
                 let dst = skim_path.to_str().unwrap_or("");
 
-                // Try NVENC first (GPU), fall back to libx264 (CPU)
-                // QP 30 for lightweight preview quality (QP 18 was overkill at ~50Mbps)
+                // Scale filter — width auto-computed, height is target.
+                // The `-2` tells ffmpeg to compute the matching dimension
+                // rounded to a multiple of 2 (h.264 requires even sizes).
+                let nvenc_vf = format!("scale_cuda=-2:{target_height}");
+                let cpu_vf = format!("scale=-2:{target_height}");
+                let qp_str = skim_quality.to_string();
+
+                // Try NVENC first (GPU), fall back to libx264 (CPU).
                 let result = run_ffmpeg(&[
                     "-y", "-hwaccel", "cuda",
                     "-i", src,
                     "-c:v", "h264_nvenc", "-g", "1", "-preset", "p1",
-                    "-rc", "constqp", "-qp", "30",
-                    "-an", "-vf", "scale_cuda=960:-2", dst,
+                    "-rc", "constqp", "-qp", &qp_str,
+                    "-an", "-vf", &nvenc_vf, dst,
                 ]);
 
                 let result = match &result {
@@ -17514,9 +17672,9 @@ impl KlippApp {
                         tracing::info!("NVENC skim transcode failed, falling back to libx264");
                         run_ffmpeg(&[
                             "-y", "-i", src,
-                            "-c:v", "libx264", "-g", "1", "-crf", "30",
+                            "-c:v", "libx264", "-g", "1", "-crf", &qp_str,
                             "-preset", "ultrafast",
-                            "-an", "-vf", "scale=960:-2", dst,
+                            "-an", "-vf", &cpu_vf, dst,
                         ])
                     }
                 };
@@ -18967,6 +19125,24 @@ impl KlippApp {
                 &self.theme,
             ) {
                 cmds.push(cmd);
+            }
+        }
+
+        // 4c1a. Sequence Settings dialog (resolution + frame rate). The
+        // original values are sourced from the targeted sequence at render
+        // time so the dialog can detect what actually changed and emit
+        // commands only for those fields.
+        if let Some(dlg) = self.sequence_settings_dialog.as_mut() {
+            let (orig_w, orig_h, orig_n, orig_d) = self
+                .state
+                .sequences
+                .get(dlg.sequence_idx)
+                .map(|s| (s.resolution.width, s.resolution.height, s.fps.num, s.fps.den))
+                .unwrap_or((0, 0, 0, 0));
+            let (still_open, dlg_cmds) = dlg.show(ctx, orig_w, orig_h, orig_n, orig_d);
+            cmds.extend(dlg_cmds);
+            if !still_open {
+                self.sequence_settings_dialog = None;
             }
         }
 

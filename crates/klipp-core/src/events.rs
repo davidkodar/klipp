@@ -458,6 +458,25 @@ pub enum AppCommand {
     RenameSequence { sequence_idx: usize, new_name: String },
     DeleteSequence { sequence_idx: usize },
     ReorderSequences { from_idx: usize, to_idx: usize },
+    /// Change a sequence's frame size. Goes through the undo history because
+    /// changing the canvas reshapes how every clip composites.
+    SetSequenceResolution { sequence_idx: usize, width: u32, height: u32 },
+    /// Change a sequence's frame rate. Affects timecode display, render, and
+    /// new-clip rate inheritance. Undoable for the same reason as resolution.
+    SetSequenceFps { sequence_idx: usize, fps_num: u32, fps_den: u32 },
+    /// UI: open the "Sequence Settings…" modal for the given sequence.
+    OpenSequenceSettings { sequence_idx: usize },
+    /// Re-trigger audio conform (PCM + peaks) for every media item in the
+    /// pool that has audio. Used by the "Clear" buttons in the cache prefs
+    /// tab so deleting on-disk caches also kicks off regeneration instead of
+    /// leaving items pointing at deleted files.
+    RegenerateAudioCacheForAll,
+    /// Re-trigger filmstrip thumbnail generation for every media item that
+    /// has a filmstrip, after the on-disk cache has been wiped.
+    RegenerateFilmstripsForAll,
+    /// Re-queue skim transcode generation for every media item, after the
+    /// on-disk skim cache has been wiped.
+    RegenerateSkimTranscodesForAll,
 
     // Workspace
     CreateWorkspace { path: PathBuf, name: String },

@@ -87,12 +87,17 @@ fn filmstrip_dir() -> PathBuf {
         .unwrap_or_else(|| cache_base_dir().join("filmstrips"))
 }
 
-fn filmstrip_path(cache_key: &str) -> PathBuf {
-    filmstrip_dir().join(format!("{cache_key}.strip"))
+fn filmstrip_path(cache_key: &str, height: u32) -> PathBuf {
+    // Height is part of the filename so filmstrips at different tile
+    // resolutions coexist in the cache. Without this, bumping the
+    // filmstrip_height pref would silently reuse the old low-res cache
+    // (content hash is identical for the same source file) and changes
+    // wouldn't take effect until the user manually cleared the cache.
+    filmstrip_dir().join(format!("{cache_key}.{height}.strip"))
 }
 
-pub fn filmstrip_cache_exists(cache_key: &str) -> bool {
-    filmstrip_path(cache_key).exists()
+pub fn filmstrip_cache_exists(cache_key: &str, height: u32) -> bool {
+    filmstrip_path(cache_key, height).exists()
 }
 
 pub fn write_filmstrip_cache(
@@ -105,9 +110,10 @@ pub fn write_filmstrip_cache(
     let dir = filmstrip_dir();
     ensure_dir(&dir)?;
 
+    let height = frames[0].height;
     // Write to .tmp then rename for atomicity
-    let final_path = filmstrip_path(cache_key);
-    let tmp_path = dir.join(format!("{cache_key}.strip.tmp"));
+    let final_path = filmstrip_path(cache_key, height);
+    let tmp_path = dir.join(format!("{cache_key}.{height}.strip.tmp"));
 
     let file = std::fs::File::create(&tmp_path)?;
     let mut w = BufWriter::new(file);
@@ -146,8 +152,8 @@ pub fn write_filmstrip_cache(
     Ok(())
 }
 
-pub fn load_filmstrip_cache(cache_key: &str) -> std::io::Result<Vec<FilmstripFrame>> {
-    let path = filmstrip_path(cache_key);
+pub fn load_filmstrip_cache(cache_key: &str, height: u32) -> std::io::Result<Vec<FilmstripFrame>> {
+    let path = filmstrip_path(cache_key, height);
     let file = std::fs::File::open(&path)?;
     let mut r = BufReader::new(file);
 
@@ -365,22 +371,55 @@ fn audio_cache_dir() -> PathBuf {
 }
 
 /// Check if audio conform cache exists for a content-based key.
-/// Falls back to checking the old MediaId-based filename if the new one doesn't exist.
+///
+/// A cache entry only counts as "existing" when *both* files are non-empty.
+/// A prior conform thread crashing after `fs::File::create` (which creates a
+/// 0-byte file) but before the write could leave ghost entries on disk —
+/// the cache-hit path then loads zero samples and the clip plays silent.
+/// Here we treat zero-byte or sub-header-sized files as missing and delete
+/// them so the caller regenerates instead of re-using a broken entry.
+/// Falls back to the old MediaId-based filenames if the new ones don't exist.
 pub fn audio_conform_cache_exists(cache_key: &str, media_id: klipp_core::MediaId) -> (bool, PathBuf, PathBuf) {
     let dir = audio_cache_dir();
     let pcm = dir.join(format!("{cache_key}.pcm"));
     let peaks = dir.join(format!("{cache_key}.peaks"));
-    if pcm.exists() && peaks.exists() {
+    if is_valid_conform_pair(&pcm, &peaks) {
         return (true, pcm, peaks);
     }
     // Fallback: old MediaId-based filenames
     let pcm_old = dir.join(format!("{media_id}.pcm"));
     let peaks_old = dir.join(format!("{media_id}.peaks"));
-    if pcm_old.exists() && peaks_old.exists() {
+    if is_valid_conform_pair(&pcm_old, &peaks_old) {
         return (true, pcm_old, peaks_old);
     }
     // Return the new paths for generation
     (false, pcm, peaks)
+}
+
+/// Both files must exist AND have a plausible minimum size. A PCM file
+/// with fewer than 2 stereo f32 samples (16 bytes) is useless; a peaks
+/// file with fewer than one min/max pair (8 bytes) is useless. Files
+/// failing the check are unlinked so the caller regenerates cleanly
+/// instead of cache-hitting zero-byte ghosts.
+fn is_valid_conform_pair(pcm: &Path, peaks: &Path) -> bool {
+    const PCM_MIN_BYTES: u64 = 16;   // 2 stereo f32 samples
+    const PEAKS_MIN_BYTES: u64 = 8;  // 1 (min,max) f32 pair
+    let pcm_ok = std::fs::metadata(pcm)
+        .map(|m| m.len() >= PCM_MIN_BYTES)
+        .unwrap_or(false);
+    let peaks_ok = std::fs::metadata(peaks)
+        .map(|m| m.len() >= PEAKS_MIN_BYTES)
+        .unwrap_or(false);
+    if pcm_ok && peaks_ok {
+        return true;
+    }
+    // At least one file is missing / too small — unlink both so the
+    // next conform run starts from a clean slate. Errors are intentionally
+    // ignored: if the file doesn't exist, remove_file returns Err; we
+    // don't care, the end state we want is "file is gone".
+    let _ = std::fs::remove_file(pcm);
+    let _ = std::fs::remove_file(peaks);
+    false
 }
 
 // ── Skim transcode cache (content-based keys) ──

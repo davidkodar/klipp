@@ -418,6 +418,11 @@ pub struct AppState {
     pub snap_threshold_px: f32,
     /// Zoom step multiplier (synced from prefs).
     pub zoom_step: f32,
+    /// Default resolution preset index for new sequences (mirrored from
+    /// `prefs.editing.default_sequence_resolution_idx`). Index into
+    /// `panels::new_project_dialog::RESOLUTION_PRESETS`. 0 = Automatic
+    /// (inherit from active sequence). Used by the timeline "+" button.
+    pub default_sequence_resolution_idx: usize,
     /// Toast duration in seconds (synced from prefs).
     pub toast_duration_secs: f64,
     /// Modal backdrop opacity (synced from prefs).
@@ -1862,6 +1867,7 @@ impl Default for AppState {
             viewer_prefs: Default::default(),
             snap_threshold_px: 10.0,
             zoom_step: 1.5,
+            default_sequence_resolution_idx: 0,
             toast_duration_secs: 2.2,
             modal_backdrop_alpha: 120,
             scope_quality: Default::default(),

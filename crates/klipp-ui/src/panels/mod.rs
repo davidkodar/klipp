@@ -15,6 +15,7 @@ pub mod project_notes;
 pub mod file_info;
 pub mod preferences;
 pub mod render_queue;
+pub mod sequence_settings_dialog;
 pub mod status_bar;
 pub mod subtitle_editor;
 pub mod timeline;

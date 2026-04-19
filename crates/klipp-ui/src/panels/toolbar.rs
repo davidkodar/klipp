@@ -441,6 +441,10 @@ impl ToolbarPanel {
             ui.separator();
             if ui.add(egui::Button::new("Close Project").shortcut_text("Ctrl+W")).clicked() { cmds.push(AppCommand::CloseProject); ui.close_menu(); }
             if ui.button("Project Properties...").clicked() { state.show_project_info = true; ui.close_menu(); }
+            if ui.button("Sequence Settings...").clicked() {
+                cmds.push(AppCommand::OpenSequenceSettings { sequence_idx: state.active_sequence_idx });
+                ui.close_menu();
+            }
             let has_offline = !state.offline_media_ids.is_empty();
             if ui.add_enabled(has_offline, egui::Button::new("Relink Media...")).clicked() { cmds.push(AppCommand::ShowRelinkDialog); ui.close_menu(); }
             // Consolidate Project: copy the project + all media into a new

@@ -161,11 +161,18 @@ pub fn conform_audio_to_paths(
             }
             drained_any = true;
 
-            // Patch up empty channel_layout on the decoded frame — see
-            // the long comment in `klipp_engine::audio_decoder` for why.
-            if frame.channel_layout().is_empty() {
-                frame.set_channel_layout(src_layout);
-            }
+            // Force the frame's channel_layout to match what the resampler
+            // was built with. The resampler rejects frames whose layout
+            // differs from the one it was configured for — including the
+            // subtle 5.1-vs-5.1(side) case that AC-3 audio typically
+            // decodes to while `ChannelLayout::default(6)` gives plain
+            // 5.1. Previously this branch only patched *empty* layouts;
+            // non-empty-but-mismatched layouts were silently rejected and
+            // every frame dropped, producing a 0-byte PCM cache and a
+            // silent clip. Overriding is safe: src_layout was derived from
+            // the same channel count as the frame, so we're just
+            // normalising the layout-order enum, not remapping channels.
+            frame.set_channel_layout(src_layout);
             // Pre-allocate the output buffer at the rate-scaled worst-case
             // size. ffmpeg-next's `Context::run` would otherwise allocate
             // it at `input.samples()` count, which silently truncates the
@@ -230,17 +237,26 @@ pub fn conform_audio_to_paths(
     let duration_secs =
         total_mono_samples as f64 / CONFORM_SAMPLE_RATE as f64;
 
-    // Write raw PCM to disk
+    // Write raw PCM to disk atomically (write to .tmp, then rename). This
+    // prevents the ghost-file failure mode where the conform thread crashes
+    // after `fs::File::create` but before the write finishes, leaving a
+    // zero-byte file on disk that the next cache-hit check would happily
+    // load as empty audio. If we crash mid-write, only the .tmp exists and
+    // the next conform call starts from a clean slate.
     let pcm_bytes: &[u8] = bytemuck::cast_slice(&all_samples);
-    std::fs::write(pcm_path, pcm_bytes)?;
+    let pcm_tmp = pcm_path.with_extension("pcm.tmp");
+    std::fs::write(&pcm_tmp, pcm_bytes)?;
+    std::fs::rename(&pcm_tmp, pcm_path)?;
 
     // Generate waveform peaks (min/max per PEAK_BIN_SIZE mono samples)
     let peaks = generate_peaks(&all_samples, CONFORM_CHANNELS as usize, PEAK_BIN_SIZE);
 
-    // Serialize peaks as raw f32 pairs
+    // Serialize peaks as raw f32 pairs (atomic write — see PCM above).
     let peaks_flat: Vec<f32> = peaks.iter().flat_map(|&(min, max)| [min, max]).collect();
     let peaks_bytes: &[u8] = bytemuck::cast_slice(&peaks_flat);
-    std::fs::write(peaks_path, peaks_bytes)?;
+    let peaks_tmp = peaks_path.with_extension("peaks.tmp");
+    std::fs::write(&peaks_tmp, peaks_bytes)?;
+    std::fs::rename(&peaks_tmp, peaks_path)?;
 
     let elapsed = start.elapsed();
     let pcm_size_mb = pcm_bytes.len() as f64 / (1024.0 * 1024.0);
@@ -299,7 +315,13 @@ pub fn load_peaks(peaks_path: &Path) -> Result<Vec<(f32, f32)>, std::io::Error> 
             "peaks file size not aligned to f32 pairs",
         ));
     }
-    let floats: &[f32] = bytemuck::cast_slice(&bytes);
+    // `Vec<u8>` from `std::fs::read` is only 1-byte aligned; bytemuck panics
+    // on `cast_slice` when the underlying pointer isn't aligned to the
+    // target type's alignment (4 bytes for f32). Allocate a `Vec<f32>`
+    // (guaranteed 4-byte aligned) and copy via the reverse cast.
+    let total_floats = bytes.len() / 4;
+    let mut floats = vec![0f32; total_floats];
+    bytemuck::cast_slice_mut::<f32, u8>(&mut floats).copy_from_slice(&bytes);
     let peaks: Vec<(f32, f32)> = floats.chunks_exact(2).map(|c| (c[0], c[1])).collect();
     Ok(peaks)
 }

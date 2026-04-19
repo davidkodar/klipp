@@ -538,6 +538,14 @@ pub struct EditingPrefs {
     /// Colour applied to markers created by scene detection.
     #[serde(default = "default_scene_marker_color")]
     pub scene_detect_marker_color: klipp_core::MarkerColor,
+    /// Default resolution preset index for new sequences. Index into
+    /// `panels::new_project_dialog::RESOLUTION_PRESETS`. Index 0 is
+    /// "Automatic (from first clip)" — keeps the existing behaviour of
+    /// inheriting from the active sequence / first imported clip. Other
+    /// indexes pin a specific preset (HD, vertical, square, etc.) so
+    /// every new sequence starts at a known frame size.
+    #[serde(default)]
+    pub default_sequence_resolution_idx: usize,
 }
 
 fn default_undo_limit() -> usize {
@@ -587,6 +595,7 @@ impl Default for EditingPrefs {
             scene_detect_sensitivity: default_scene_sensitivity(),
             scene_detect_min_gap_secs: default_scene_min_gap(),
             scene_detect_marker_color: default_scene_marker_color(),
+            default_sequence_resolution_idx: 0, // Automatic
         }
     }
 }
@@ -736,6 +745,7 @@ impl Preferences {
                 match parsed {
                     Ok(mut value) => {
                         Self::migrate_legacy_editing_to_file_browser(&mut value);
+                        Self::migrate_skim_resolution_default(&mut value);
                         match serde_json::from_value::<Self>(value) {
                             Ok(prefs) => {
                                 tracing::info!("Preferences loaded from {}", path.display());
@@ -771,6 +781,30 @@ impl Preferences {
     /// own preferences tab. The legacy fields lived in `EditingPrefs` from
     /// the original "everything related to editing-mode UI lives here"
     /// design until users (rightly) couldn't find them.
+    /// Bump `playback.skim_resolution` from the old default of 480 to the
+    /// new default of 720. Existing prefs files have 480 saved literally and
+    /// `serde(default)` only fills in *missing* fields, so users who set up
+    /// Klipp before the default change are stuck on the old, visibly worse
+    /// preview quality. Only migrates the literal old default — any value
+    /// the user explicitly set (including 480 if they really wanted it,
+    /// chose anything other than 480, or anything > 480) is left alone.
+    fn migrate_skim_resolution_default(value: &mut serde_json::Value) {
+        let Some(playback) = value.get_mut("playback").and_then(|v| v.as_object_mut()) else {
+            return;
+        };
+        if let Some(res) = playback.get("skim_resolution").and_then(|v| v.as_u64()) {
+            if res == 480 {
+                playback.insert(
+                    "skim_resolution".to_string(),
+                    serde_json::Value::from(720u64),
+                );
+                tracing::info!(
+                    "Migrated skim_resolution: 480 -> 720 (preview quality bump)"
+                );
+            }
+        }
+    }
+
     fn migrate_legacy_editing_to_file_browser(value: &mut serde_json::Value) {
         // Field names that moved from `editing.*` to `file_browser.*`.
         const MIGRATED_FIELDS: &[&str] = &[
@@ -1102,6 +1136,13 @@ pub struct MediaCachePrefs {
     /// Poster thumbnail height in pixels.
     #[serde(default = "default_thumb_h")]
     pub thumbnail_height: u32,
+    /// Filmstrip tile height in pixels. Each tile in the timeline clip's
+    /// mini-strip is decoded and cached at this height. Too-low values
+    /// look blurry when track height is increased; too-high values eat
+    /// disk and memory. Previously hardcoded to 48 — visibly poor on
+    /// enlarged tracks (200px+ look 4× upscaled).
+    #[serde(default = "default_filmstrip_h")]
+    pub filmstrip_height: u32,
     /// Legacy field — replaced by max_cache_size_gb.
     #[serde(default)]
     pub max_cache_size_mb: u32,
@@ -1109,6 +1150,7 @@ pub struct MediaCachePrefs {
 fn default_cache_size_gb() -> u32 { 20 }
 fn default_skim_quality() -> u32 { 23 }
 fn default_thumb_h() -> u32 { 256 }
+fn default_filmstrip_h() -> u32 { 96 }
 impl Default for MediaCachePrefs {
     fn default() -> Self {
         Self {
@@ -1116,6 +1158,7 @@ impl Default for MediaCachePrefs {
             max_cache_size_gb: default_cache_size_gb(),
             skim_transcode_quality: default_skim_quality(),
             thumbnail_height: default_thumb_h(),
+            filmstrip_height: default_filmstrip_h(),
             max_cache_size_mb: 0,
         }
     }

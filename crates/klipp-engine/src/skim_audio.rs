@@ -42,7 +42,13 @@ fn load_pcm_cached(pcm_path: &std::path::Path) -> Option<Arc<Vec<f32>>> {
         return None;
     }
 
-    let pcm_data: Vec<f32> = bytemuck::cast_slice(&raw).to_vec();
+    // Raw bytes from `std::fs::read` are only 1-byte aligned; bytemuck
+    // panics on `cast_slice` when the underlying pointer isn't 4-byte
+    // aligned. Allocate a `Vec<f32>` (guaranteed 4-byte aligned) and copy
+    // the bytes in via the reverse cast — same final result, alignment-safe.
+    let total_floats = raw.len() / 4;
+    let mut pcm_data = vec![0f32; total_floats];
+    bytemuck::cast_slice_mut::<f32, u8>(&mut pcm_data).copy_from_slice(&raw);
     let duration = pcm_data.len() as f64 / (PCM_RATE as f64 * CHANNELS as f64);
     debug!("skim_audio: loaded {:.1}s PCM from {:?}", duration, pcm_path);
 
@@ -348,9 +354,12 @@ pub fn decode_audio_to_pcm(source_path: &std::path::Path) -> Option<Arc<Vec<f32>
                       all_samples: &mut Vec<f32>,
                       src_layout: ffmpeg_next::ChannelLayout,
                       src_rate: u32| {
-        if frame.channel_layout().is_empty() {
-            frame.set_channel_layout(src_layout);
-        }
+        // Force the frame's channel_layout to match the resampler's
+        // configured input layout — fixes AC-3 5.1(side) vs default 5.1
+        // mismatch that would otherwise make every frame rejected by the
+        // resampler. See the long comment in `audio_cache::conform_audio`
+        // and `audio_decoder::audio_decode_thread` for the full story.
+        frame.set_channel_layout(src_layout);
         // Worst-case output sample count for this input frame, plus a
         // small safety margin (matches FFmpeg's own internal `+ 32`
         // padding in swr_convert_frame's auto-allocation path).

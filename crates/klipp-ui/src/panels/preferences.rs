@@ -316,7 +316,7 @@ impl PreferencesPanel {
             });
 
         // Render any pending confirmation modals on top of the prefs window.
-        self.show_clear_all_confirm(ctx);
+        self.show_clear_all_confirm(ctx, &mut cmds);
 
         (open, cmds)
     }
@@ -751,6 +751,25 @@ impl PreferencesPanel {
 
         // ── DEFAULTS section ──
         Self::section_header(ui, "DEFAULTS");
+
+        Self::setting_row_with_subtitle(ui, "New sequence resolution", "Used when no clip is available to inherit from", |ui| {
+            use crate::panels::new_project_dialog::RESOLUTION_PRESETS;
+            let idx = prefs.editing.default_sequence_resolution_idx.min(RESOLUTION_PRESETS.len() - 1);
+            let label = RESOLUTION_PRESETS[idx].0;
+            egui::ComboBox::from_id_salt("default_seq_res")
+                .selected_text(label)
+                .width(220.0)
+                .show_ui(ui, |ui| {
+                    for (i, (name, _, _)) in RESOLUTION_PRESETS.iter().enumerate() {
+                        // Hide "Custom..." — preset must be a concrete size.
+                        if *name == "Custom..." { continue; }
+                        if ui.selectable_label(prefs.editing.default_sequence_resolution_idx == i, *name).clicked() {
+                            prefs.editing.default_sequence_resolution_idx = i;
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
 
         Self::setting_row(ui, "Default transition", |ui| {
             // Currently only Cross Dissolve is implemented
@@ -2396,6 +2415,28 @@ impl PreferencesPanel {
                 });
         });
 
+        Self::setting_row_with_subtitle(
+            ui,
+            "Filmstrip tile resolution",
+            "Height of per-clip filmstrip tiles on the timeline. Higher = sharper when tracks are enlarged, larger cache.",
+            |ui| {
+                let sizes = [(48_u32, "48px"), (72, "72px"), (96, "96px"), (128, "128px"), (192, "192px")];
+                let current = sizes.iter()
+                    .find(|(v, _)| *v == prefs.media_cache.filmstrip_height)
+                    .map(|(_, l)| *l).unwrap_or("96px");
+                egui::ComboBox::from_id_salt("filmstrip_res")
+                    .selected_text(current)
+                    .width(70.0)
+                    .show_ui(ui, |ui| {
+                        for (val, label) in &sizes {
+                            if ui.selectable_value(&mut prefs.media_cache.filmstrip_height, *val, *label).changed() {
+                                *dirty = true;
+                            }
+                        }
+                    });
+            },
+        );
+
         Self::setting_row(ui, "Skim transcode quality", |ui| {
             let qualities = [(18_u32, "High"), (23, "Standard"), (28, "Low"), (32, "Draft")];
             let current = qualities.iter()
@@ -2463,44 +2504,64 @@ impl PreferencesPanel {
             else { format!("{} B", bytes) }
         };
 
-        let clear_btn = |ui: &mut egui::Ui, label: &str, dir: &std::path::Path| {
-            // `allocate_response` respects the parent's right_to_left layout
-            // and reserves the rect at the layout-managed position.
-            // (Previously used `from_min_size(ui.cursor().min, …)` which
-            // anchored the rect to the cursor's left edge — in an RTL layout
-            // that put the button OFF the widget area, so it never rendered.)
+        // Renders a "Clear" button at the layout-managed position and
+        // returns whether it was clicked. Disk wipe + regeneration dispatch
+        // is handled per-row below so each row can push its own regen
+        // command (audio, filmstrip, skim) — without that, wiping caches
+        // leaves the in-memory MediaPool pointing at deleted files and
+        // playback either uses the slow ffmpeg fallback or goes silent.
+        let clear_btn = |ui: &mut egui::Ui, label: &str| -> bool {
             let resp = ui.allocate_response(egui::vec2(56.0, 24.0), egui::Sense::click());
             let btn_rect = resp.rect;
             let bg = if resp.hovered() { egui::Color32::from_rgb(0x40, 0x28, 0x18) } else { egui::Color32::from_rgb(0x30, 0x20, 0x10) };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
             ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, Self::ACCENT));
             ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(11.0), Self::ACCENT);
-            if resp.clicked() {
-                let _ = std::fs::remove_dir_all(dir);
-                let _ = std::fs::create_dir_all(dir);
-            }
+            resp.clicked()
+        };
+        let wipe_dir = |dir: &std::path::Path| {
+            let _ = std::fs::remove_dir_all(dir);
+            let _ = std::fs::create_dir_all(dir);
         };
 
         Self::setting_row_with_subtitle(ui, "Render cache", &format_size(render_size), |ui| {
-            clear_btn(ui, "Clear", &render_dir);
+            if clear_btn(ui, "Clear") { wipe_dir(&render_dir); }
         });
         Self::setting_row_with_subtitle(ui, "Poster thumbnails", &format_size(thumb_size), |ui| {
-            clear_btn(ui, "Clear", &thumb_dir);
+            if clear_btn(ui, "Clear") {
+                wipe_dir(&thumb_dir);
+                cmds.push(AppCommand::RegenerateFilmstripsForAll);
+            }
         });
         Self::setting_row_with_subtitle(ui, "Filmstrip strips", &format_size(filmstrip_size), |ui| {
-            clear_btn(ui, "Clear", &filmstrip_dir);
+            if clear_btn(ui, "Clear") {
+                wipe_dir(&filmstrip_dir);
+                cmds.push(AppCommand::RegenerateFilmstripsForAll);
+            }
         });
         Self::setting_row_with_subtitle(ui, "Audio cache (PCM)", &format_size(wave_size), |ui| {
-            clear_btn(ui, "Clear", &wave_dir);
+            if clear_btn(ui, "Clear") {
+                wipe_dir(&wave_dir);
+                cmds.push(AppCommand::RegenerateAudioCacheForAll);
+            }
         });
         Self::setting_row_with_subtitle(ui, "Audio peaks", &format_size(audio_peaks_size), |ui| {
-            clear_btn(ui, "Clear", &audio_peaks_dir);
+            if clear_btn(ui, "Clear") {
+                wipe_dir(&audio_peaks_dir);
+                // Peaks are written by the same conform pass that writes PCM.
+                cmds.push(AppCommand::RegenerateAudioCacheForAll);
+            }
         });
         Self::setting_row_with_subtitle(ui, "Skim transcodes", &format_size(skim_size), |ui| {
-            clear_btn(ui, "Clear", &skim_dir);
+            if clear_btn(ui, "Clear") {
+                wipe_dir(&skim_dir);
+                cmds.push(AppCommand::RegenerateSkimTranscodesForAll);
+            }
         });
         Self::setting_row_with_subtitle(ui, "Proxy files", &format_size(proxy_size), |ui| {
-            clear_btn(ui, "Clear", &proxy_dir);
+            // Proxies are large and slow to generate — auto-regen would be
+            // surprising. User can re-trigger via media browser context menu.
+            if clear_btn(ui, "Clear") { wipe_dir(&proxy_dir); }
         });
 
         ui.add_space(4.0);
@@ -2547,10 +2608,24 @@ impl PreferencesPanel {
         });
     }
 
+    /// Commands to push when the "Clear all caches" modal's Confirm button
+    /// fires. These re-trigger generation of audio / filmstrips / skim for
+    /// every existing media item in the pool, so wiping caches doesn't
+    /// leave the project pointing at deleted files. Proxies are not
+    /// auto-regenerated — they're large and slow, user opts in via the
+    /// media browser context menu.
+    pub fn clear_all_regen_commands() -> Vec<AppCommand> {
+        vec![
+            AppCommand::RegenerateAudioCacheForAll,
+            AppCommand::RegenerateFilmstripsForAll,
+            AppCommand::RegenerateSkimTranscodesForAll,
+        ]
+    }
+
     /// "Clear all caches" confirmation modal. Renders only when
     /// `clear_all_confirm` is Some. Confirm performs the destructive
     /// action; Cancel dismisses without deleting anything.
-    fn show_clear_all_confirm(&mut self, ctx: &egui::Context) {
+    fn show_clear_all_confirm(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
         let Some(confirm) = self.clear_all_confirm.as_ref() else { return };
         let total_str = if confirm.total_bytes >= 1_073_741_824 {
             format!("{:.1} GB", confirm.total_bytes as f64 / 1_073_741_824.0)
@@ -2603,6 +2678,11 @@ impl PreferencesPanel {
                     let _ = std::fs::create_dir_all(d);
                 }
             }
+            // Re-trigger generation for every existing media item so the
+            // pool stops referencing deleted files. Audio is the most
+            // user-visible — without this, timeline playback loses sound
+            // until the user re-imports each clip.
+            cmds.extend(Self::clear_all_regen_commands());
         }
         if close {
             self.clear_all_confirm = None;
