@@ -95,17 +95,44 @@ fn u8_rgba_to_linear(rgba: &[u8]) -> Vec<f32> {
     out
 }
 
+/// 4096-entry LUT: quantise a clamped linear f32 sample to 12 bits, then
+/// look up the encoded sRGB u8. Replaces a per-channel `powf(1/2.4)` call.
+/// 4 KB static, fits in L1 — ~10× faster than the scalar form, measured
+/// at ~25 ms/frame on 1920×818 prior to LUT. 12-bit intermediate
+/// resolution is more than enough for u8 output (256 levels).
+fn linear_to_srgb_u8_lut() -> &'static [u8; 4096] {
+    use std::sync::OnceLock;
+    use klipp_color::transfer::linear_to_srgb;
+    static LUT: OnceLock<[u8; 4096]> = OnceLock::new();
+    LUT.get_or_init(|| {
+        let mut lut = [0u8; 4096];
+        for (i, slot) in lut.iter_mut().enumerate() {
+            let x = i as f32 / 4095.0;
+            *slot = (linear_to_srgb(x).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        }
+        lut
+    })
+}
+
 /// Bulk linear f32 RGBA → sRGB u8 RGBA with boundary clamp. The
 /// inverse of [`u8_rgba_to_linear`]; values outside `[0.0, 1.0]`
 /// clamp at the u8 boundary, not earlier.
+#[inline]
 fn linear_rgba_to_u8(linear: &[f32]) -> Vec<u8> {
-    use klipp_color::transfer::linear_to_srgb;
-    let mut out = Vec::with_capacity(linear.len());
-    for chunk in linear.chunks_exact(4) {
-        out.push((linear_to_srgb(chunk[0]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-        out.push((linear_to_srgb(chunk[1]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-        out.push((linear_to_srgb(chunk[2]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-        out.push((chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+    let lut = linear_to_srgb_u8_lut();
+    let n_pixels = linear.len() / 4;
+    let mut out = Vec::with_capacity(n_pixels * 4);
+    // SAFETY: we write exactly n_pixels * 4 bytes below.
+    unsafe { out.set_len(n_pixels * 4); }
+    // Clamp → quantise to 12 bits → LUT lookup. Alpha stays linear per
+    // sRGB spec (no gamma), so its "LUT" is just the clamp+scale.
+    for (i, chunk) in linear.chunks_exact(4).enumerate() {
+        let q = |v: f32| -> usize { (v.clamp(0.0, 1.0) * 4095.0 + 0.5) as usize };
+        let o = i * 4;
+        out[o]     = lut[q(chunk[0])];
+        out[o + 1] = lut[q(chunk[1])];
+        out[o + 2] = lut[q(chunk[2])];
+        out[o + 3] = (chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
     }
     out
 }
@@ -2874,7 +2901,12 @@ impl PlaybackEngine {
         // If a transition is active this may build a new Vec — in that case
         // the composite_scratch pool contribution is lost for this frame
         // but restored on the next frame when no transition is active.
+        let t_transition = std::time::Instant::now();
         let mut final_rgba = self.apply_transition_if_active(final_rgba, final_w, final_h);
+        let transition_ms = t_transition.elapsed().as_secs_f64() * 1000.0;
+        if transition_ms > 2.0 {
+            debug!("PERF apply_transition: {transition_ms:.1}ms");
+        }
 
         // Snapshot how much time the "big middle" (post_process +
         // composite + apply_transition) actually took. Expected ~15 ms
@@ -5172,12 +5204,19 @@ impl PlaybackEngine {
     }
 
     fn post_process_rgba(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
+        let t_wrap_start = std::time::Instant::now();
         self.ensure_gpu_effects();
+        let t_ensure_gpu = t_wrap_start.elapsed();
+
         // The pregrade frame cache, the render cache, and the UI
         // pregrade_data all still speak sRGB u8 — keep one local bridge
         // to serve those consumers. This is a single encode per frame
         // (down from five before the linear-edge-to-edge refactor).
+        let t_bridge = std::time::Instant::now();
         let rgba_u8 = linear_rgba_to_u8(&linear_rgba);
+        let t_bridge_u8 = t_bridge.elapsed();
+
+        let t_pregrade = std::time::Instant::now();
         let rgba_arc = Arc::new(rgba_u8);
         self.cached_pregrade_frame = Some((Arc::clone(&rgba_arc), width, height));
         self.frame_cache.insert(self.playhead.value, Arc::clone(&rgba_arc), width, height);
@@ -5185,6 +5224,7 @@ impl PlaybackEngine {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.pregrade_data = rgba_arc;
         }
+        let t_pregrade_ms = t_pregrade.elapsed();
 
         // ── Smart render cache: check for cached graded frame ──
         // Skip render cache when overlays are present — cache keys don't represent
@@ -5197,6 +5237,7 @@ impl PlaybackEngine {
         // in a 60 s scrub session). Nulling `cache_key` makes both the read
         // block and the write block skip naturally. Playback without an
         // active gesture still gets the full cache benefit.
+        let t_key_lookup = std::time::Instant::now();
         let has_overlays = !self.overlay_frames.is_empty();
         let cache_key = if has_overlays || self.in_node_param_edit {
             None
@@ -5272,21 +5313,42 @@ impl PlaybackEngine {
             }
         }
 
+        // Key computation + hot/disk lookup is done now; everything above was
+        // cache-check and potential cache-hit early return. If we reach
+        // here it was a miss and we're running the real grade pipeline.
+        let t_key_lookup_ms = t_key_lookup.elapsed();
+        let t_inner = std::time::Instant::now();
         let result_linear = self.post_process_rgba_inner(linear_rgba, width, height);
+        let t_inner_ms = t_inner.elapsed();
 
         // Store in render cache (both hot and cold) + render the GPU
         // scope texture. Both speak u8 — one encode at the tail of the
         // function, matched by one decode at the cache-hit path above.
+        let t_reencode = std::time::Instant::now();
         let result_u8 = linear_rgba_to_u8(&result_linear);
+        let t_reencode_ms = t_reencode.elapsed();
+
+        let t_cache_put = std::time::Instant::now();
+        // Skip the render cache write during steady-state forward playback.
+        // The cache exists to speed up scrub-back-to-a-position-you've-seen
+        // and re-grade-while-paused — neither happens during forward playback.
+        // Writing on every playback frame burned 11-23 ms/frame in disk LZ4
+        // compress + 6 MB result_u8.clone() for the hot insert. Skipping
+        // during Playing recovers that. Pause / scrub / one-shot grade
+        // refresh still write to cache as before.
         if let Some(key) = cache_key {
-            self.render_cache_hot.insert(key.clone(), result_u8.clone(), width, height);
-            self.render_cache_disk.put(&key, &result_u8, width, height);
+            if self.state != PlaybackState::Playing {
+                self.render_cache_hot.insert(key.clone(), result_u8.clone(), width, height);
+                self.render_cache_disk.put(&key, &result_u8, width, height);
+            }
         }
+        let t_cache_put_ms = t_cache_put.elapsed();
 
         // Render GPU scope texture from the graded frame. Modes with
         // no GPU kernel (vectorscope, unknown codes) clear the
         // texture so the UI falls back to the CPU renderer in
         // `klipp-ui/widgets/scopes.rs`.
+        let t_scope = std::time::Instant::now();
         if self.should_render_scope() {
           if let Some(gpu) = &mut self.gpu_effects {
             let scope_w = 720u32;
@@ -5314,6 +5376,28 @@ impl PlaybackEngine {
                 }
             }
           }
+        }
+        let t_scope_ms = t_scope.elapsed();
+
+        let wrap_total_ms = t_wrap_start.elapsed().as_secs_f64() * 1000.0;
+        if wrap_total_ms > 5.0 {
+            // Breakdown of the OUTER post_process_rgba wrapper. The `inner`
+            // number matches the existing `PERF post_process` line (the
+            // grade/ofx/builtin/lut pipeline). The rest is pure overhead
+            // of the wrapper: sRGB bridge, pregrade bookkeeping, render
+            // cache key/get/put, GPU scope shader.
+            debug!(
+                "PERF post_process_wrap: {:.1}ms total | ensure_gpu={:.1} bridge_u8={:.1} pregrade={:.1} key_lookup={:.1} inner={:.1} reencode={:.1} cache_put={:.1} scope={:.1}",
+                wrap_total_ms,
+                t_ensure_gpu.as_secs_f64() * 1000.0,
+                t_bridge_u8.as_secs_f64() * 1000.0,
+                t_pregrade_ms.as_secs_f64() * 1000.0,
+                t_key_lookup_ms.as_secs_f64() * 1000.0,
+                t_inner_ms.as_secs_f64() * 1000.0,
+                t_reencode_ms.as_secs_f64() * 1000.0,
+                t_cache_put_ms.as_secs_f64() * 1000.0,
+                t_scope_ms.as_secs_f64() * 1000.0,
+            );
         }
 
         result_linear
