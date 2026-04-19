@@ -59,8 +59,20 @@ fn migrate_graph(graph: &mut NodeGraph) {
 }
 
 /// Result of loading a project: sequences, media pool, color settings,
-/// active sequence ID, created_at, free-form project notes.
-pub type LoadResult = (Vec<Sequence>, MediaPool, crate::save::ColorSettings, Option<String>, Option<String>, String);
+/// active sequence ID, created_at, free-form project notes, optional
+/// timeline zoom (px-per-second) and optional timeline scroll position.
+/// The two view-state fields round-trip through `project.json` so e.g.
+/// "Fit Timeline to Window" persists across sessions.
+pub type LoadResult = (
+    Vec<Sequence>,
+    MediaPool,
+    crate::save::ColorSettings,
+    Option<String>,
+    Option<String>,
+    String,
+    Option<f32>,
+    Option<f32>,
+);
 
 pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     let project_path = dir.join("project.json");
@@ -218,7 +230,16 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
     };
 
     info!("Project loaded from {:?} ({} sequence(s))", dir, sequences.len());
-    Ok((sequences, media_pool, color_settings, project.active_sequence_id, project.created_at, project.notes))
+    Ok((
+        sequences,
+        media_pool,
+        color_settings,
+        project.active_sequence_id,
+        project.created_at,
+        project.notes,
+        project.timeline_zoom,
+        project.timeline_scroll_x,
+    ))
 }
 
 

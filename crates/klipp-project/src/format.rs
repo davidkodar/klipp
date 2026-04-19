@@ -25,6 +25,14 @@ pub struct ProjectJson {
     /// Free-form project notes (shot list, delivery specs, etc.).
     #[serde(default)]
     pub notes: String,
+    /// Last timeline zoom (px-per-second) when the project was saved.
+    /// Restored on load so view state survives across sessions — including
+    /// the result of "Fit Timeline to Window". `None` for legacy files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_zoom: Option<f32>,
+    /// Last horizontal timeline scroll position when saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline_scroll_x: Option<f32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -48,10 +48,14 @@ pub fn save_project_with_color(
     created_at: Option<&str>,
     notes: &str,
 ) -> Result<(), String> {
-    save_project_with_color_and_backups(dir, sequences, media_pool, color, active_sequence_id, created_at, notes, 5)
+    save_project_with_color_and_backups(dir, sequences, media_pool, color, active_sequence_id, created_at, notes, 5, None, None)
 }
 
-/// Save with configurable backup count.
+/// Save with configurable backup count and optional view state
+/// (`timeline_zoom`, `timeline_scroll_x`) so timeline zoom/scroll —
+/// including the result of "Fit Timeline to Window" — round-trips
+/// across save/load.
+#[allow(clippy::too_many_arguments)]
 pub fn save_project_with_color_and_backups(
     dir: &Path,
     sequences: &[Sequence],
@@ -61,6 +65,8 @@ pub fn save_project_with_color_and_backups(
     created_at: Option<&str>,
     notes: &str,
     backup_count: u32,
+    timeline_zoom: Option<f32>,
+    timeline_scroll_x: Option<f32>,
 ) -> Result<(), String> {
     // Create directory structure
     std::fs::create_dir_all(dir.join("media"))
@@ -79,6 +85,8 @@ pub fn save_project_with_color_and_backups(
         sequences: sequences.iter().map(|s| sequence_to_json(s, color, dir)).collect(),
         active_sequence_id: active_sequence_id.map(|s| s.to_string()),
         notes: notes.to_string(),
+        timeline_zoom,
+        timeline_scroll_x,
     };
 
     let project_json = serde_json::to_string_pretty(&project)

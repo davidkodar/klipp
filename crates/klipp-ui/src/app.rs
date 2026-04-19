@@ -14316,7 +14316,7 @@ impl KlippApp {
             auto_generate_skim: self.state.project_auto_skim,
         };
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
-        match klipp_project::save_project_with_color_and_backups(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count) {
+        match klipp_project::save_project_with_color_and_backups(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x)) {
             Ok(()) => {
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
@@ -14382,7 +14382,8 @@ impl KlippApp {
 
     fn do_open_project_inner(&mut self, path: &std::path::Path) {
         match klipp_project::load_project(path) {
-            Ok((sequences, media_pool, color_settings, active_id, created_at, notes)) => {
+            Ok((sequences, media_pool, color_settings, active_id, created_at, notes,
+                timeline_zoom, timeline_scroll_x)) => {
                 self.state.fps = sequences.first().map(|s| s.fps).unwrap_or(klipp_core::Fps { num: 24, den: 1 });
                 let active_idx = active_id.as_deref()
                     .and_then(|id| sequences.iter().position(|s| s.id.to_string() == id))
@@ -14392,6 +14393,15 @@ impl KlippApp {
                 self.state.created_at = created_at;
                 self.state.project_notes = notes;
                 self.state.media_pool = media_pool;
+                // Restore saved timeline view-state (zoom + scroll). Legacy
+                // project files don't carry these — leave the in-memory
+                // defaults alone in that case.
+                if let Some(z) = timeline_zoom {
+                    self.state.timeline_zoom = z.clamp(0.1, 2000.0);
+                }
+                if let Some(sx) = timeline_scroll_x {
+                    self.state.timeline_scroll_x = sx.max(0.0);
+                }
 
                 // Fix media resolutions for rotated videos (phone portrait clips)
                 // Older projects may have stored raw codec dimensions without rotation
@@ -16556,7 +16566,7 @@ impl eframe::App for KlippApp {
                     auto_generate_skim: self.state.project_auto_skim,
                 };
                 let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
-                match klipp_project::save_project_with_color(&autosave_path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes) {
+                match klipp_project::save_project_with_color_and_backups(&autosave_path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x)) {
                     Ok(()) => {
                         tracing::info!("Auto-saved to {:?}", autosave_path);
                         self.state.toast.show("Auto-saved");
