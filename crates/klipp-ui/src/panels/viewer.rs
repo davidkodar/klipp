@@ -46,8 +46,11 @@ impl ViewerPanel {
         ui.painter().rect_filled(panel_rect, 0.0, egui::Color32::BLACK);
         ui.advance_cursor_after_rect(panel_rect);
 
-        // Reserve space: scrub bar (4px) + playbar (40px)
-        let scrub_h = 4.0;
+        // Reserve space: scrub bar lane (16px — gives the playhead ball
+        // 14px of vertical room without being clipped by the letterbox above
+        // or the playbar below) + playbar (40px). The visible track inside
+        // the lane is still a thin 4px strip; the rest is breathing room.
+        let scrub_h = 16.0;
         let playbar_h = 40.0;
         let bottom_h = scrub_h + playbar_h;
         let viewer_rect = egui::Rect::from_min_max(
@@ -941,10 +944,6 @@ impl ViewerPanel {
             fg_painter.rect_filled(image_rect, 0.0,
                 egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100));
 
-            // Accent border
-            fg_painter.rect_stroke(image_rect.shrink(1.0), 0.0,
-                egui::Stroke::new(2.0_f32, egui::Color32::from_rgba_unmultiplied(56, 132, 244, 180)));
-
             // Edit mode badge
             let badge_galley = ui.painter().layout_no_wrap(
                 "Text Editing \u{2014} Esc to exit".to_string(),
@@ -1212,8 +1211,17 @@ impl ViewerPanel {
     ) {
         let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
 
-        // Track background
-        ui.painter().rect_filled(rect, 0.0, theme.bg_raised);
+        // Visible track is a thin strip centred vertically inside the wider
+        // scrub lane. The lane's extra height exists purely so the playhead
+        // ball can sit on top of the track without being clipped above/below.
+        let track_h = 4.0_f32;
+        let track_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.min.x, rect.center().y - track_h * 0.5),
+            egui::vec2(rect.width(), track_h),
+        );
+
+        // Track background — full width.
+        ui.painter().rect_filled(track_rect, 0.0, theme.bg_raised);
 
         // Progress fill
         let dur_secs = state.sequence_duration().to_secs_f64();
@@ -1223,17 +1231,19 @@ impl ViewerPanel {
             0.0
         };
 
-        let fill_w = progress * rect.width();
+        let fill_w = progress * track_rect.width();
         if fill_w > 0.0 {
             ui.painter().rect_filled(
-                egui::Rect::from_min_size(rect.min, egui::vec2(fill_w, rect.height())),
+                egui::Rect::from_min_size(track_rect.min, egui::vec2(fill_w, track_rect.height())),
                 0.0,
                 theme.accent,
             );
         }
 
-        // Playhead head (11x11 circle)
-        let head_x = rect.min.x + fill_w;
+        // Playhead head (11x11 circle) — drawn at the centre of the wider
+        // lane so its full diameter has clear vertical room above and below
+        // the visible track strip.
+        let head_x = track_rect.min.x + fill_w;
         let head_center = egui::pos2(head_x, rect.center().y);
         ui.painter().circle_filled(head_center, 7.0, theme.accent_glow);
         ui.painter().circle_filled(head_center, 5.5, theme.accent);
@@ -1241,7 +1251,8 @@ impl ViewerPanel {
         // Scrub interaction
         if resp.dragged() || resp.clicked() {
             if let Some(pos) = resp.interact_pointer_pos() {
-                let t = ((pos.x - rect.min.x) / rect.width()).clamp(0.0, 1.0) as f64;
+                let t = ((pos.x - track_rect.min.x) / track_rect.width().max(1.0))
+                    .clamp(0.0, 1.0) as f64;
                 let target_secs = t * dur_secs;
                 let target_tc = klipp_core::Timecode::from_secs_f64(target_secs, state.fps.rate());
                 cmds.push(AppCommand::SeekTo(target_tc));
@@ -1674,12 +1685,10 @@ impl ViewerPanel {
         image_rect: egui::Rect,
         cmds: &mut Vec<AppCommand>,
     ) {
-        // Tracking placement mode: amber border + click to place
+        // Tracking placement mode: badge + click to place. The mode badge
+        // alone signals tracking — no inner border that would compete with
+        // the outer panel chrome.
         if state.tracking_mode {
-            // Amber border
-            let border_stroke = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(0xe8, 0xa0, 0x20));
-            ui.painter().rect_stroke(image_rect.shrink(1.0), 0.0, border_stroke);
-
             // "TRACKING" label top-left
             let label_pos = egui::pos2(image_rect.left() + 8.0, image_rect.top() + 8.0);
             let label_bg = egui::Rect::from_min_size(label_pos, egui::vec2(80.0, 18.0));

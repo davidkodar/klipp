@@ -49,6 +49,8 @@ thread_local! {
     ]);
     static TL_SELECTION_COLOR: std::cell::Cell<[u8; 3]> = const { std::cell::Cell::new([255, 200, 0]) };
     static TL_SELECTION_BORDER_WIDTH: std::cell::Cell<f32> = const { std::cell::Cell::new(3.0) };
+    static TL_CLIP_LABEL_BG: std::cell::Cell<[u8; 3]> = const { std::cell::Cell::new([28, 30, 36]) };
+    static TL_CLIP_LABEL_TEXT: std::cell::Cell<[u8; 3]> = const { std::cell::Cell::new([220, 220, 225]) };
 }
 
 /// Sync timeline prefs into thread-locals at start of each show() call.
@@ -59,6 +61,18 @@ fn sync_timeline_prefs(prefs: &crate::prefs::TimelinePrefs) {
     TL_CLIP_COLORS.with(|c| *c.borrow_mut() = prefs.clip_colors.clone());
     TL_SELECTION_COLOR.set(prefs.clip_selection_color);
     TL_SELECTION_BORDER_WIDTH.set(prefs.clip_selection_border_width);
+    TL_CLIP_LABEL_BG.set(prefs.clip_label_bg_color);
+    TL_CLIP_LABEL_TEXT.set(prefs.clip_label_text_color);
+}
+
+fn clip_label_bg_color() -> egui::Color32 {
+    let [r, g, b] = TL_CLIP_LABEL_BG.get();
+    egui::Color32::from_rgb(r, g, b)
+}
+
+fn clip_label_text_color() -> egui::Color32 {
+    let [r, g, b] = TL_CLIP_LABEL_TEXT.get();
+    egui::Color32::from_rgb(r, g, b)
 }
 
 /// Selection border colour configured in TimelinePrefs.
@@ -112,6 +126,23 @@ fn clip_color_bright(index: usize) -> egui::Color32 {
         let c = colors[index % colors.len()];
         egui::Color32::from_rgb(c[0].saturating_add(30), c[1].saturating_add(30), c[2].saturating_add(30))
     })
+}
+
+/// Bottom label strip for clips (DaVinci/FCP-style). The filename is drawn
+/// in this strip so it never obscures the filmstrip or waveform. Returns
+/// None only when the clip row is too short to accommodate the strip.
+const CLIP_LABEL_STRIP_H: f32 = 14.0;
+fn clip_label_strip_rect(
+    clip_rect: egui::Rect,
+    _track_kind: klipp_timeline::TrackKind,
+) -> Option<egui::Rect> {
+    if clip_rect.height() < CLIP_LABEL_STRIP_H + 18.0 {
+        return None;
+    }
+    Some(egui::Rect::from_min_max(
+        egui::pos2(clip_rect.left(), clip_rect.bottom() - CLIP_LABEL_STRIP_H),
+        clip_rect.right_bottom(),
+    ))
 }
 
 /// All geometry computed once per frame at the start of show().
@@ -2449,6 +2480,28 @@ impl TimelinePanel {
                     ],
                     egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 80, 80)),
                 );
+
+                // Playhead head: pentagon (rectangle topped with downward-pointing
+                // tip) sitting in the ruler area. The tip aligns with the line so
+                // the user can see the exact frame the playhead is on.
+                let head_color = egui::Color32::from_rgb(255, 80, 80);
+                let head_top = content_rect.top();
+                let head_w = 12.0_f32;
+                let head_h = 16.0_f32;       // total height
+                let shoulder_h = 9.0_f32;    // height of the rectangular shoulder
+                let half = head_w * 0.5;
+                let head_shape = egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(playhead_x - half, head_top),
+                        egui::pos2(playhead_x + half, head_top),
+                        egui::pos2(playhead_x + half, head_top + shoulder_h),
+                        egui::pos2(playhead_x,        head_top + head_h),
+                        egui::pos2(playhead_x - half, head_top + shoulder_h),
+                    ],
+                    head_color,
+                    egui::Stroke::NONE,
+                );
+                painter.add(head_shape);
             }
         }
     }
@@ -3290,53 +3343,81 @@ impl TimelinePanel {
                     );
                 }
             } else if let Some(media) = clip.media_id().and_then(|mid| state.media_pool.get(&mid)) {
-                let font_size = if matches!(track_kind, TrackKind::Audio) { 10.0 } else { 11.0 };
-                let max_text_width = clip_rect.width() - 8.0;
+                let is_audio_clip = matches!(track_kind, TrackKind::Audio);
+                let font_size = if is_audio_clip { 10.0 } else { 11.0 };
                 let label = if is_offline {
                     format!("\u{26A0} offline: {}", media.filename)
                 } else {
                     media.filename.clone()
                 };
-                let is_audio_clip = matches!(track_kind, TrackKind::Audio);
-                let label_color = if is_offline {
-                    egui::Color32::from_rgb(255, 180, 80)
-                } else if is_audio_clip {
-                    // Semi-transparent white so it doesn't overwhelm the waveform
-                    egui::Color32::from_rgba_premultiplied(220, 220, 220, 200)
+                // DaVinci/FCP-style label strip beneath the content (filmstrip
+                // or waveform) so the name never obscures the visual payload.
+                // Falls back to a shadowed overlay when the clip is too short
+                // to reserve a dedicated strip.
+                let label_strip = clip_label_strip_rect(clip_rect, track_kind);
+                if let Some(strip) = label_strip {
+                    painter.rect_filled(strip, 0.0, clip_label_bg_color());
+                    painter.line_segment(
+                        [strip.left_top(), strip.right_top()],
+                        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(0, 0, 0, 160)),
+                    );
+                    let max_text_width = strip.width() - 10.0;
+                    if max_text_width > 10.0 {
+                        let label_color = if is_offline {
+                            egui::Color32::from_rgb(255, 180, 80)
+                        } else {
+                            clip_label_text_color()
+                        };
+                        let truncated = truncate_text(&label, max_text_width, font_size);
+                        painter.text(
+                            egui::pos2(strip.left() + 5.0, strip.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            truncated,
+                            egui::FontId::proportional(font_size),
+                            label_color,
+                        );
+                    }
                 } else {
-                    egui::Color32::WHITE
-                };
-                // Audio clips: position label near top so it sits above the waveform
-                let text_y = if is_audio_clip {
-                    clip_rect.top() + 7.0
-                } else {
-                    clip_rect.center().y
-                };
-                let text_pos =
-                    egui::pos2(clip_rect.left() + 4.0, text_y);
-                let truncated = truncate_text(&label, max_text_width, font_size);
-                let font = egui::FontId::proportional(font_size);
-                // Draw dark outline/shadow for readability on any background
-                let shadow_offsets: &[(f32, f32)] = &[
-                    (-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0),
-                ];
-                let shadow_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 200);
-                for &(dx, dy) in shadow_offsets {
+                    let max_text_width = clip_rect.width() - 8.0;
+                    let label_color = if is_offline {
+                        egui::Color32::from_rgb(255, 180, 80)
+                    } else if is_audio_clip {
+                        // Semi-transparent white so it doesn't overwhelm the waveform
+                        egui::Color32::from_rgba_premultiplied(220, 220, 220, 200)
+                    } else {
+                        egui::Color32::WHITE
+                    };
+                    // Audio clips: position label near top so it sits above the waveform
+                    let text_y = if is_audio_clip {
+                        clip_rect.top() + 7.0
+                    } else {
+                        clip_rect.center().y
+                    };
+                    let text_pos = egui::pos2(clip_rect.left() + 4.0, text_y);
+                    let truncated = truncate_text(&label, max_text_width, font_size);
+                    let font = egui::FontId::proportional(font_size);
+                    // Draw dark outline/shadow for readability on any background
+                    let shadow_offsets: &[(f32, f32)] = &[
+                        (-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0),
+                    ];
+                    let shadow_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 200);
+                    for &(dx, dy) in shadow_offsets {
+                        painter.text(
+                            egui::pos2(text_pos.x + dx, text_pos.y + dy),
+                            egui::Align2::LEFT_CENTER,
+                            truncated.clone(),
+                            font.clone(),
+                            shadow_color,
+                        );
+                    }
                     painter.text(
-                        egui::pos2(text_pos.x + dx, text_pos.y + dy),
+                        text_pos,
                         egui::Align2::LEFT_CENTER,
-                        truncated.clone(),
-                        font.clone(),
-                        shadow_color,
+                        truncated,
+                        font,
+                        label_color,
                     );
                 }
-                painter.text(
-                    text_pos,
-                    egui::Align2::LEFT_CENTER,
-                    truncated,
-                    font,
-                    label_color,
-                );
 
                 // Proxy badge [P] — orange pill when using proxy for this clip
                 if media.proxy_ready && state.use_proxies && clip_rect.width() > 30.0 {
@@ -4062,10 +4143,17 @@ impl TimelinePanel {
                                 220,
                             );
 
-                            let clip_painter = painter.with_clip_rect(clip_rect);
-                            let center_y = clip_rect.center().y;
-                            let half_h = clip_rect.height() * 0.48; // nearly full height
-                            let w = clip_rect.width();
+                            // Confine the waveform to the content area above
+                            // the bottom label strip (if one is reserved).
+                            let label_strip = clip_label_strip_rect(clip_rect, track_kind);
+                            let wave_rect = match label_strip {
+                                Some(lr) => egui::Rect::from_min_max(clip_rect.left_top(), egui::pos2(clip_rect.right(), lr.top())),
+                                None => clip_rect,
+                            };
+                            let clip_painter = painter.with_clip_rect(wave_rect);
+                            let center_y = wave_rect.center().y;
+                            let half_h = wave_rect.height() * 0.48; // nearly full height
+                            let w = wave_rect.width();
 
                             // Per-track amplitude zoom (#50). Default 1.0 when
                             // no entry for this track. Clamp guards against
@@ -4126,7 +4214,7 @@ impl TimelinePanel {
                             //      peak=1.0   -> sqrt(1.0)=1.0     -> 100% of height
                             let num_cols = (w as usize).max(1);
                             for col in 0..num_cols {
-                                let x = clip_rect.left() + col as f32;
+                                let x = wave_rect.left() + col as f32;
                                 let peak_idx = col * clip_peaks.len() / num_cols;
                                 let (pmin, pmax) = clip_peaks[peak_idx.min(clip_peaks.len() - 1)];
 
@@ -4180,13 +4268,21 @@ impl TimelinePanel {
 
         // Draw thumbnail/filmstrip background for video/text/subtitle clips
         if track_kind != TrackKind::Audio {
+            // Reserve bottom strip for the filename label (drawn later in
+            // draw_clip_badges). Filmstrip tiles and compound thumbnails are
+            // confined to the rect above that strip.
+            let label_strip = clip_label_strip_rect(clip_rect, track_kind);
+            let strip_rect = match label_strip {
+                Some(lr) => egui::Rect::from_min_max(clip_rect.left_top(), egui::pos2(clip_rect.right(), lr.top())),
+                None => clip_rect,
+            };
             // Compound clip: resolve inner media per tile and stitch together
             // a strip from those inner clips' filmstrips. Keeps the existing
             // per-MediaId cache; no new storage.
             if let ClipKind::Sequence { sequence_id } = &clip.kind {
                 draw_compound_filmstrip(
                     painter,
-                    clip_rect,
+                    strip_rect,
                     clip,
                     *sequence_id,
                     &state.sequences,
@@ -4215,26 +4311,26 @@ impl TimelinePanel {
                     let frame_w = first_tex.size()[0] as f32;
                     let frame_h = first_tex.size()[1] as f32;
                     let frame_aspect = frame_w / frame_h.max(1.0);
-                    let tile_h = clip_rect.height();
+                    let tile_h = strip_rect.height();
                     let tile_w = tile_h * frame_aspect;
 
-                    let clip_painter = painter.with_clip_rect(clip_rect);
+                    let clip_painter = painter.with_clip_rect(strip_rect);
 
                     // Only draw tiles that are actually visible in the viewport
-                    let num_tiles = ((clip_rect.width() / tile_w).ceil() as usize).max(1);
+                    let num_tiles = ((strip_rect.width() / tile_w).ceil() as usize).max(1);
                     let view_left = content_rect.left();
                     let view_right = content_rect.right();
 
                     // Compute first/last visible tile indices
-                    let first_visible = if clip_rect.left() >= view_left {
+                    let first_visible = if strip_rect.left() >= view_left {
                         0
                     } else {
-                        ((view_left - clip_rect.left()) / tile_w).floor() as usize
+                        ((view_left - strip_rect.left()) / tile_w).floor() as usize
                     };
-                    let last_visible = if clip_rect.right() <= view_right {
+                    let last_visible = if strip_rect.right() <= view_right {
                         num_tiles
                     } else {
-                        (((view_right - clip_rect.left()) / tile_w).ceil() as usize).min(num_tiles)
+                        (((view_right - strip_rect.left()) / tile_w).ceil() as usize).min(num_tiles)
                     };
 
                     let sep_w = 1.0_f32;
@@ -4242,15 +4338,15 @@ impl TimelinePanel {
                     let mut visible_count = 0usize;
 
                     for ti in first_visible..last_visible {
-                        let x0 = clip_rect.left() + ti as f32 * tile_w;
+                        let x0 = strip_rect.left() + ti as f32 * tile_w;
                         let x1 = if ti == num_tiles - 1 {
-                            clip_rect.right()
+                            strip_rect.right()
                         } else {
                             x0 + tile_w
                         };
 
                         let tile_center_x = (x0 + x1) * 0.5;
-                        let frac = ((tile_center_x - clip_rect.left()) / clip_rect.width().max(1.0)) as f64;
+                        let frac = ((tile_center_x - strip_rect.left()) / strip_rect.width().max(1.0)) as f64;
                         let source_time = clip_in_secs + frac * (clip_out_secs - clip_in_secs);
 
                         let idx = match filmstrip.binary_search_by(|f| {
@@ -4276,15 +4372,15 @@ impl TimelinePanel {
 
                         if draw_sep {
                             clip_painter.line_segment(
-                                [egui::pos2(x0, clip_rect.top()), egui::pos2(x0, clip_rect.bottom())],
+                                [egui::pos2(x0, strip_rect.top()), egui::pos2(x0, strip_rect.bottom())],
                                 egui::Stroke::new(sep_w, egui::Color32::from_rgba_premultiplied(0, 0, 0, 140)),
                             );
                         }
 
                         let (_, ref tex) = filmstrip[idx];
                         let tile_rect = egui::Rect::from_min_max(
-                            egui::pos2(img_x0, clip_rect.top()),
-                            egui::pos2(x1, clip_rect.bottom()),
+                            egui::pos2(img_x0, strip_rect.top()),
+                            egui::pos2(x1, strip_rect.bottom()),
                         );
                         // Draw dark base behind the frame so dark content is still distinguishable
                         clip_painter.rect_filled(tile_rect, 0.0, egui::Color32::from_rgb(35, 35, 40));
@@ -4300,8 +4396,8 @@ impl TimelinePanel {
                         // Subtle bottom gradient to lift dark frames
                         let grad_h = 4.0;
                         let grad_rect = egui::Rect::from_min_max(
-                            egui::pos2(img_x0, clip_rect.bottom() - grad_h),
-                            egui::pos2(x1, clip_rect.bottom()),
+                            egui::pos2(img_x0, strip_rect.bottom() - grad_h),
+                            egui::pos2(x1, strip_rect.bottom()),
                         );
                         clip_painter.rect_filled(
                             grad_rect,
@@ -4323,8 +4419,8 @@ impl TimelinePanel {
                             .unwrap_or(true);
                         if let Some(min_iv) = min_interval {
                             if secs_per_tile < min_iv * 0.5 && !state.filmstrip_generating && debounce_ok {
-                                let vis_start_frac = ((first_visible as f32 * tile_w) / clip_rect.width().max(1.0)) as f64;
-                                let vis_end_frac = ((last_visible as f32 * tile_w) / clip_rect.width().max(1.0)).min(1.0) as f64;
+                                let vis_start_frac = ((first_visible as f32 * tile_w) / strip_rect.width().max(1.0)) as f64;
+                                let vis_end_frac = ((last_visible as f32 * tile_w) / strip_rect.width().max(1.0)).min(1.0) as f64;
                                 let range_start = clip_in_secs + vis_start_frac * (clip_out_secs - clip_in_secs);
                                 let range_end = clip_in_secs + vis_end_frac * (clip_out_secs - clip_in_secs);
                                 let new_interval = secs_per_tile.max(0.5);
@@ -4345,8 +4441,8 @@ impl TimelinePanel {
                     let (r, g, b) = CLIP_COLORS[clip_index % CLIP_COLORS.len()];
                     let tint_h = 3.0;
                     let tint_rect = egui::Rect::from_min_max(
-                        clip_rect.left_top(),
-                        egui::pos2(clip_rect.right(), clip_rect.top() + tint_h),
+                        strip_rect.left_top(),
+                        egui::pos2(strip_rect.right(), strip_rect.top() + tint_h),
                     );
                     painter.rect_filled(
                         tint_rect,
@@ -4360,7 +4456,7 @@ impl TimelinePanel {
                 if let Some(tex) = clip.media_id().and_then(|mid| state.thumbnail_textures.get(&mid)) {
                     painter.image(
                         tex.id(),
-                        clip_rect,
+                        strip_rect,
                         egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                         filmstrip_tint,
                     );
@@ -4375,8 +4471,15 @@ impl TimelinePanel {
                 }
             }
         } else {
-            // Non-video clip (audio, etc): fill background, then poster frame, then waveform on top
-            painter.rect_filled(clip_rect, 3.0, fill_color);
+            // Non-video clip (audio, etc): fill background, then poster frame, then waveform on top.
+            // The waveform/poster area stops above the filename label strip so
+            // the name never overlaps the waveform.
+            let label_strip = clip_label_strip_rect(clip_rect, track_kind);
+            let content_rect = match label_strip {
+                Some(lr) => egui::Rect::from_min_max(clip_rect.left_top(), egui::pos2(clip_rect.right(), lr.top())),
+                None => clip_rect,
+            };
+            painter.rect_filled(content_rect, 3.0, fill_color);
 
             // Poster frame thumbnail for audio clips linked to video
             if let Some(linked_id) = clip.linked_clip_id {
@@ -4385,14 +4488,14 @@ impl TimelinePanel {
                     .and_then(|c| c.media_id());
                 if let Some(mid) = linked_media_id {
                     if let Some(tex) = state.thumbnail_textures.get(&mid) {
-                        let thumb_h = clip_rect.height();
+                        let thumb_h = content_rect.height();
                         let aspect = tex.size()[0] as f32 / tex.size()[1] as f32;
                         let thumb_w = (thumb_h * aspect).min(40.0);
                         let thumb_rect = egui::Rect::from_min_size(
-                            clip_rect.left_top(),
+                            content_rect.left_top(),
                             egui::vec2(thumb_w, thumb_h),
                         );
-                        let clip_painter = painter.with_clip_rect(clip_rect);
+                        let clip_painter = painter.with_clip_rect(content_rect);
                         clip_painter.image(
                             tex.id(),
                             thumb_rect,

@@ -894,11 +894,22 @@ fn render_grid_view(
             // Hover skim (grid view: white scrubber line over thumbnail)
             handle_hover_skim(ui, state, &thumb_rect, item, cmds, true);
 
-            // ── Info area (below thumbnail) ──
-            let info_y = thumb_rect.max.y + 4.0;
+            // ── Label strip (attached to thumbnail, DaVinci-style) ──
+            let label_strip_h = 18.0_f32;
+            let label_strip = egui::Rect::from_min_size(
+                egui::pos2(card_pos.x, thumb_rect.max.y),
+                egui::vec2(card_w, label_strip_h),
+            );
+            let [lr, lg, lb] = state.timeline_prefs.clip_label_bg_color;
+            let [tr, tg, tb] = state.timeline_prefs.clip_label_text_color;
+            ui.painter().rect_filled(label_strip, 0.0, egui::Color32::from_rgb(lr, lg, lb));
+            ui.painter().line_segment(
+                [label_strip.left_top(), label_strip.right_top()],
+                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(0, 0, 0, 160)),
+            );
             let text_max_w = card_w - 24.0;
 
-            // Filename (single line, truncated)
+            // Filename rendered inside the label strip, vertically centered.
             let display_name = truncate_to_width(
                 &item.filename,
                 egui::FontId::proportional(11.0),
@@ -906,17 +917,17 @@ fn render_grid_view(
                 ui,
             );
             ui.painter().text(
-                egui::pos2(card_pos.x + 6.0, info_y),
-                egui::Align2::LEFT_TOP,
+                egui::pos2(card_pos.x + 6.0, label_strip.center().y),
+                egui::Align2::LEFT_CENTER,
                 &display_name,
                 egui::FontId::proportional(11.0),
-                theme.text_primary,
+                egui::Color32::from_rgb(tr, tg, tb),
             );
 
-            // Used indicator
+            // Used indicator — dot at the right edge of the label strip.
             if is_media_used(state, item.id) {
                 ui.painter().circle_filled(
-                    egui::pos2(card_rect.max.x - 10.0, info_y + 6.0),
+                    egui::pos2(card_rect.max.x - 10.0, label_strip.center().y),
                     3.0,
                     egui::Color32::from_rgb(232, 160, 32),
                 );
@@ -926,7 +937,7 @@ fn render_grid_view(
             // duration · fps.
             let dur_str = format_duration(&item.duration);
             let fps_str = format_fps(&item.fps);
-            let meta_y = info_y + 16.0;
+            let meta_y = label_strip.max.y + 2.0;
             let mut meta_x = card_pos.x + 6.0;
             if item.rating > 0 {
                 let stars = "\u{2605}".repeat(item.rating as usize);

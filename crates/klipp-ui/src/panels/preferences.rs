@@ -2747,6 +2747,28 @@ impl PreferencesPanel {
             " px",
             dirty,
         );
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Clip Label Strip").strong().size(12.0));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Background colour:");
+            let bg = &mut prefs.timeline.clip_label_bg_color;
+            let mut c = egui::Color32::from_rgb(bg[0], bg[1], bg[2]);
+            if ui.color_edit_button_srgba(&mut c).changed() {
+                *bg = [c.r(), c.g(), c.b()];
+                *dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Text colour:");
+            let tx = &mut prefs.timeline.clip_label_text_color;
+            let mut c = egui::Color32::from_rgb(tx[0], tx[1], tx[2]);
+            if ui.color_edit_button_srgba(&mut c).changed() {
+                *tx = [c.r(), c.g(), c.b()];
+                *dirty = true;
+            }
+        });
     }
 
     fn show_viewer(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {

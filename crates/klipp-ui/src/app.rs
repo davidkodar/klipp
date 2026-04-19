@@ -19535,37 +19535,10 @@ impl KlippApp {
         viewer_rect: egui::Rect,
         all_cmds: &mut Vec<AppCommand>,
     ) {
-        // Cinematic elevation: shadow painted on the parent (unclipped) painter so it
-        // bleeds into surrounding panels — allocate_clipped_ui below would otherwise
-        // clip it to viewer_rect. Then Frame handles fill/stroke/margin/rounding.
-        // Asymmetric: rounded on the left/top/bottom edges, square on the right
-        // edge so the viewer sits flush against the right resizer with no
-        // bg_viewer strip showing through. Used for both the shadow shape and the
-        // Frame outline below.
-        let rounding = egui::Rounding {
-            nw: 8.0,
-            sw: 8.0,
-            ne: 0.0,
-            se: 0.0,
-        };
-        let shadow = egui::epaint::Shadow {
-            offset: egui::vec2(0.0, 12.0),
-            blur: 40.0,
-            spread: 0.0,
-            color: egui::Color32::from_black_alpha(115),
-        };
-        // Clip the shadow painter so the 40px blur cannot bleed rightward past
-        // the viewer's right edge into the resizer strip and the inspector's
-        // left edge. Left/top/bottom bleed is still allowed (correct — the
-        // viewer should still cast a shadow into the surrounding panels there).
-        let shadow_painter = ui.painter().with_clip_rect(
-            egui::Rect::from_min_max(
-                egui::pos2(f32::NEG_INFINITY, f32::NEG_INFINITY),
-                egui::pos2(viewer_rect.max.x, f32::INFINITY),
-            ),
-        );
-        shadow_painter.add(shadow.as_shape(viewer_rect, rounding));
-
+        // DaVinci/FCP-style: the viewer fills its panel rect flush — no
+        // rounded corners, no stroke, no drop shadow, no inner margin. The
+        // only divider between this panel and its neighbours is the panel
+        // resizer; we don't add a competing border here.
         crate::ui_util::allocate_clipped_ui(ui, viewer_rect, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             ui.spacing_mut().window_margin = egui::Margin::ZERO;
@@ -19581,9 +19554,7 @@ impl KlippApp {
             }
             let frame = egui::Frame::none()
                 .fill(self.theme.bg_viewer)
-                .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_white_alpha(18)))
-                .inner_margin(egui::Margin { left: 12.0, right: 0.0, top: 12.0, bottom: 12.0 })
-                .rounding(rounding);
+                .inner_margin(egui::Margin::ZERO);
             frame.show(ui, |ui| {
                 ui.set_min_size(ui.available_size());
                 let panel_cmds = self.viewer.show(ui, &mut self.state, &self.theme);
