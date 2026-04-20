@@ -215,6 +215,13 @@ impl GraphExecutor {
             *fan_out.entry(edge.from_node).or_insert(0) += 1;
         }
 
+        // NodeId → &Node index. The topo walk below resolves every
+        // node id in `order` to its full Node. A linear scan per step
+        // (`graph.nodes.iter().find(...)`) was O(N²) across the walk;
+        // grade stacks of 10-20 nodes run every frame during scrub.
+        let node_by_id: HashMap<NodeId, &Node> =
+            graph.nodes.iter().map(|n| (n.id, n)).collect();
+
         // 2. Map: NodeId → linear-light output buffer (Arc-shared for zero-copy
         //    passthrough of bypassed / default-param nodes).
         let mut node_outputs: HashMap<NodeId, Arc<Vec<f32>>> = HashMap::new();
@@ -232,7 +239,7 @@ impl GraphExecutor {
         // 3. Execute nodes in topo order
         for node_id in order {
             let t_node = std::time::Instant::now();
-            let node = match graph.nodes.iter().find(|n| n.id == node_id) {
+            let node = match node_by_id.get(&node_id).copied() {
                 Some(n) => n,
                 None => continue,
             };
@@ -927,10 +934,31 @@ impl GraphExecutor {
                     .lut_cache
                     .entry(path.clone())
                     .or_insert_with(|| {
-                        Arc::new(
-                            klipp_color::load_lut(path)
-                                .unwrap_or(LutData { size: 2, data: vec![0.0; 24] }),
-                        )
+                        // Fall back to a 2x2x2 IDENTITY LUT when the
+                        // file can't be read — previously this was an
+                        // all-zero LUT (size=2, data=vec![0.0; 24])
+                        // which silently rendered the clip black with
+                        // no warning. Identity passthrough keeps the
+                        // image visible and the warn log points at the
+                        // broken path so the user can relink.
+                        match klipp_color::load_lut(path) {
+                            Ok(lut) => Arc::new(lut),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Lut3D: load failed for {:?}: {} — passing through",
+                                    path, e,
+                                );
+                                Arc::new(LutData {
+                                    size: 2,
+                                    data: vec![
+                                        0.0, 0.0, 0.0,  1.0, 0.0, 0.0,
+                                        0.0, 1.0, 0.0,  1.0, 1.0, 0.0,
+                                        0.0, 0.0, 1.0,  1.0, 0.0, 1.0,
+                                        0.0, 1.0, 1.0,  1.0, 1.0, 1.0,
+                                    ],
+                                })
+                            }
+                        }
                     })
                     .clone();
                 let opacity = params.lut_opacity.unwrap_or(1.0);

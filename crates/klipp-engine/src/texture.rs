@@ -156,13 +156,23 @@ mod tests {
     }
 
     #[test]
-    fn write_skim_frame_clears_gpu_scope_texture() {
-        // The invariant: after a skim frame lands in the buffer,
-        // the stale GPU scope texture from the last playback frame
-        // must be gone so the UI falls through to the CPU scope
-        // renderer on the *current* frame.
+    fn write_skim_frame_preserves_gpu_scope_texture() {
+        // The CURRENT invariant (committed in f5d11d6 "Match scope
+        // quality during skim to playback"): write_skim_frame must
+        // NOT clear the previous GPU scope texture. The UI keeps
+        // displaying the stale scope for the handful of ms before
+        // the fresh scope lands, which avoids the CPU-fallback
+        // flicker the old clear-on-skim path caused when the user
+        // moved the cursor quickly over a clip. A fresh scope is
+        // then dispatched by the app via AppCommand::RenderScopesForFrame
+        // (see app.rs — browser_skim_pending handler) against the
+        // same RGBA, so the skim scope ends up matching playback
+        // pixel-for-pixel.
+        //
+        // The PREVIOUS invariant (clear on skim) is intentionally
+        // gone; keep this test to prevent a regression that
+        // re-introduces the flicker.
         let mut fb = FrameBuffer::new(4, 4);
-        // Pre-seed as if the engine had just rendered a GPU scope.
         fb.scope_texture = vec![99u8; 720 * 256 * 4];
         fb.scope_texture_w = 720;
         fb.scope_texture_h = 256;
@@ -171,18 +181,20 @@ mod tests {
         let skim_rgba = vec![42u8; 4 * 4 * 4];
         fb.write_skim_frame(skim_rgba, 4, 4);
 
-        // Pending frame swapped in…
+        // Pending frame swapped in correctly.
         assert!(fb.pending_ready, "pending frame should be queued");
         assert_eq!(fb.pending_width, 4);
         assert_eq!(fb.pending_height, 4);
 
-        // …and the GPU scope texture is gone so the UI can use CPU.
-        assert!(fb.scope_texture.is_empty(), "GPU scope texture should clear on skim");
-        assert_eq!(fb.scope_texture_w, 0);
-        assert_eq!(fb.scope_texture_h, 0);
-        // Mode is left untouched — UI uses it to remember the user's
-        // selection; clearing the texture alone is enough to route
-        // to the CPU renderer.
+        // Scope texture must be PRESERVED so the UI can keep
+        // drawing the previous scope until the fresh one arrives.
+        assert_eq!(
+            fb.scope_texture.len(), 720 * 256 * 4,
+            "GPU scope texture must survive skim write — clearing it caused flicker"
+        );
+        assert_eq!(fb.scope_texture_w, 720);
+        assert_eq!(fb.scope_texture_h, 256);
+        assert_eq!(fb.scope_texture_mode, 0);
     }
 
     #[test]

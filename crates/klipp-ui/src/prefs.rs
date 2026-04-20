@@ -1821,7 +1821,7 @@ mod tests {
         assert!(rt.media_cache.filmstrip_cache_dir.is_none());
         assert!(rt.media_cache.audio_cache_dir.is_none());
         assert_eq!(rt.media_cache.max_cache_size_gb, 20);
-        assert_eq!(rt.media_cache.skim_transcode_quality, 23);
+        assert_eq!(rt.media_cache.skim_transcode_quality, 30);
         assert_eq!(rt.media_cache.thumbnail_height, 256);
 
         // ColorPrefs

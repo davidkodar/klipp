@@ -507,6 +507,21 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         cache.put(&key_c, &rgba_4mb, 1024, 1024);
 
+        // Guard against running under a filled /tmp — CachyOS defaults
+        // tmpfs to 50% of RAM and a leftover test artefact (or a
+        // debug-session orphan like the 8 GB `test_concat.mkv` this
+        // session produced) can push /tmp to 100% and make every put
+        // silently fail with ENOSPC. Without this guard the real
+        // assertion below reads as a mysterious "index.len == 0",
+        // hiding the actual environment problem.
+        if cache.total_bytes == 0 {
+            eprintln!(
+                "SKIP eviction_uses_index_not_walkdir: /tmp write failed (likely ENOSPC — \
+                 check `df -h /tmp` and clean up leftovers)"
+            );
+            return;
+        }
+
         // After the third insert, total should be <= cap (eviction ran).
         assert!(
             cache.total_bytes <= cache.max_size_bytes,

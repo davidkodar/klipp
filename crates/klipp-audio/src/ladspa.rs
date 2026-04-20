@@ -251,11 +251,15 @@ pub fn scan_ladspa_library(path: &Path) -> Vec<LadspaPluginInfo> {
 
     // Guard descriptor iteration with catch_unwind so a single broken plugin
     // inside a bundle-style .so doesn't abort the whole discovery walk.
+    // Upper bound: LADSPA bundles in practice expose 1-50 descriptors;
+    // cap at 4096 so a broken or malicious plugin that returns non-null
+    // for every index can't hang discovery indefinitely.
+    const LADSPA_DESCRIPTOR_CAP: usize = 4096;
     let path_buf = path.to_path_buf();
     let df = *descriptor_fn;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut plugins = Vec::new();
-        for i in 0..u32::MAX as usize {
+        for i in 0..LADSPA_DESCRIPTOR_CAP {
             let raw = unsafe { df(i as c_ulong) };
             if raw.is_null() {
                 break;
@@ -264,6 +268,12 @@ pub fn scan_ladspa_library(path: &Path) -> Vec<LadspaPluginInfo> {
             if let Some(info) = unsafe { extract_plugin_info(&path_buf, desc) } {
                 plugins.push(info);
             }
+        }
+        if plugins.len() == LADSPA_DESCRIPTOR_CAP {
+            tracing::warn!(
+                "LADSPA: {} hit {}-descriptor cap — plugin may be non-terminating",
+                path_buf.display(), LADSPA_DESCRIPTOR_CAP,
+            );
         }
         plugins
     }));

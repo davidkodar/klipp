@@ -1509,8 +1509,9 @@ mod tests {
         let idx = (1 * 4 + 1) * 4;
         rgba[idx] = 200; rgba[idx + 1] = 200; rgba[idx + 2] = 200;
         let result = apply_dilate(rgba, 4, 4, 1);
-        // Neighboring pixels should have picked up the bright value
-        let neighbor_idx = (0 * 4 + 0) * 4; // (0,0) is in radius of (1,1)
+        // Neighboring pixels should have picked up the bright value.
+        // Index of pixel (0,0).R at (y*4+x)*4 stride = 0.
+        let neighbor_idx = 0usize;
         assert_eq!(result[neighbor_idx], 200);
     }
 
@@ -1521,8 +1522,9 @@ mod tests {
         let idx = (1 * 4 + 1) * 4;
         rgba[idx] = 10; rgba[idx + 1] = 10; rgba[idx + 2] = 10;
         let result = apply_erode(rgba, 4, 4, 1);
-        // Neighboring pixels should have picked up the dark value
-        let neighbor_idx = (0 * 4 + 0) * 4;
+        // Neighboring pixels should have picked up the dark value.
+        // Index of pixel (0,0).R at (y*4+x)*4 stride = 0.
+        let neighbor_idx = 0usize;
         assert_eq!(result[neighbor_idx], 10);
     }
 
