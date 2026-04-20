@@ -17,8 +17,6 @@
 //!   time, the result rescales down to whole seconds).
 //! * **Events** — [`AppCommand`] (UI → engine), [`AppEvent`] (engine → UI),
 //!   [`ExportSettings`] and its sibling enums for the render pipeline.
-//! * **Error** — [`KlippError`] / [`KlippResult`]. Currently under-adopted;
-//!   parts of the workspace still use `Result<_, String>`.
 //! * **Transitions** — [`TransitionKind`] + the compile-time
 //!   [`TRANSITION_SPECS`] registry. [`spec_for_kind`] falls back to
 //!   `CrossDissolve` if a variant goes unregistered, logged loudly.
@@ -33,7 +31,6 @@
 
 pub mod color_grade;
 pub mod config;
-pub mod error;
 pub mod events;
 pub mod generator;
 pub mod gpu_vendor;
@@ -49,7 +46,6 @@ pub mod time;
 pub mod transition_registry;
 pub mod types;
 
-pub use error::{KlippError, KlippResult};
 pub use color_grade::{ColorWarperParams, CurveSet, FilmGrainSettings, HueSatCurves, Mask, MaskKeyframes, MaskShape, MaskStack, QualifierSettings};
 pub use keyframe::{Interpolation, Keyframe};
 pub use events::{AppCommand, AppEvent, AudioParam, ChapterSnapshot, EncoderPreset, ExportAudioCodec, ExportFormat, ExportSettings, ExportVideoCodec, HdrMode, MarkerColor, ParamChange, RateControl, ToneMapOp, Tool, TrackTarget, VideoParam, ViewerMode};

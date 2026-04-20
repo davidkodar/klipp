@@ -124,17 +124,20 @@ impl OpenClApi {
         };
         let lib = Arc::new(lib);
 
+        // `Symbol<T>` picks up the struct field's fn-pointer type via
+        // inference; deref copies the fn pointer out. See matching
+        // comment in `gpu_cuda.rs::load`. Replaces the previous
+        // transmute-through-*const c_void idiom.
         macro_rules! load_sym {
             ($name:expr) => {{
-                let sym: libloading::Symbol<*const c_void> = unsafe { lib.get($name) }.ok()?;
-                unsafe { std::mem::transmute(*sym) }
+                let sym = unsafe { lib.get($name) }.ok()?;
+                *sym
             }};
         }
 
         macro_rules! load_sym_opt {
             ($name:expr) => {{
-                let sym: Option<libloading::Symbol<*const c_void>> = unsafe { lib.get($name) }.ok();
-                sym.map(|s| unsafe { std::mem::transmute(*s) })
+                unsafe { lib.get($name) }.ok().map(|s| *s)
             }};
         }
 

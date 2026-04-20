@@ -126,7 +126,6 @@ fn main() -> Result<()> {
             skim_consumer.clone(),
             perf_ring.clone(),
         )
-        .map_err(|e| anyhow::anyhow!("Failed to create playback engine: {e}"))?
     };
     engine.set_foreground_activity(Arc::clone(&foreground_activity));
     // Cloned again here so the move-into-closure for eframe below

@@ -199,13 +199,13 @@ impl EglApi {
                 // SAFETY: lib.get() reads the symbol table of the loaded
                 // library. The $name argument is a nul-terminated byte
                 // literal built from a concrete EGL function name, so
-                // the string is valid C. We then transmute the raw
-                // void pointer to the typed function pointer expected
-                // by the struct field — sound on every platform we
-                // support because function pointers and void pointers
-                // share layout on x86_64 SysV and aarch64 AAPCS.
-                let s: libloading::Symbol<*const c_void> = unsafe { lib.get($name) }.ok()?;
-                unsafe { std::mem::transmute(*s) }
+                // the string is valid C. `Symbol<T>`'s T is inferred
+                // from the struct field's fn-pointer type; deref copies
+                // the fn pointer (Copy) out of the Symbol. The Library
+                // is retained via `_lib: lib` so the pointer stays
+                // valid for the struct's lifetime.
+                let s = unsafe { lib.get($name) }.ok()?;
+                *s
             }};
         }
         macro_rules! sym_opt {
@@ -213,8 +213,7 @@ impl EglApi {
                 // SAFETY: see `sym!` above. This variant tolerates
                 // missing symbols (returns None instead of `?`) for
                 // optional extensions like EGL_EXT_platform_device.
-                let s: Option<libloading::Symbol<*const c_void>> = unsafe { lib.get($name) }.ok();
-                s.map(|s| unsafe { std::mem::transmute(*s) })
+                unsafe { lib.get($name) }.ok().map(|s| *s)
             }};
         }
 
@@ -248,10 +247,12 @@ impl GlApi {
 
         macro_rules! sym {
             ($name:expr) => {{
-                // SAFETY: symbol lookup + transmute to a typed fn
-                // pointer. See EglApi's `sym!` for the full argument.
-                let s: libloading::Symbol<*const c_void> = unsafe { lib.get($name) }.ok()?;
-                unsafe { std::mem::transmute(*s) }
+                // SAFETY: symbol lookup; `Symbol<T>`'s T is inferred
+                // from the struct field's fn-pointer type, deref copies
+                // the fn pointer out. See EglApi's `sym!` for the full
+                // argument.
+                let s = unsafe { lib.get($name) }.ok()?;
+                *s
             }};
         }
 

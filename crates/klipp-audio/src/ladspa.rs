@@ -389,6 +389,10 @@ pub struct LadspaEffect {
     /// Scratch for control OUTPUT ports we don't surface (discarded).
     control_out_sinks: Vec<f32>,
     control_out_indices: Vec<usize>,
+    /// Index into `control_out_sinks` for a control-output port named
+    /// "latency" (LADSPA v1's de-facto convention for plugins that
+    /// introduce delay). `None` when the plugin doesn't expose one.
+    latency_slot: Option<usize>,
 
     info: LadspaPluginInfo,
 
@@ -453,10 +457,15 @@ impl LadspaEffect {
         }
 
         // Discover audio/control port indices so we can size our buffers.
+        // Also remember the slot (within control_out_sinks) of a
+        // control-output port named "latency" — LADSPA v1's de-facto
+        // convention for reporting plugin delay to the host. Matched
+        // case-insensitively; trimmed of whitespace.
         let desc = unsafe { &*descriptor_ptr };
         let mut audio_in_indices = Vec::new();
         let mut audio_out_indices = Vec::new();
         let mut control_out_indices = Vec::new();
+        let mut latency_slot: Option<usize> = None;
         for i in 0..desc.port_count as usize {
             let pd = unsafe { *desc.port_descriptors.add(i) };
             let is_input = (pd & LADSPA_PORT_INPUT) != 0;
@@ -468,7 +477,15 @@ impl LadspaEffect {
             } else if is_audio && is_output {
                 audio_out_indices.push(i);
             } else if is_control && is_output {
+                let slot = control_out_indices.len();
                 control_out_indices.push(i);
+                if latency_slot.is_none() {
+                    let name_ptr = unsafe { *desc.port_names.add(i) };
+                    let name = unsafe { cstr_to_string(name_ptr) };
+                    if name.trim().eq_ignore_ascii_case("latency") {
+                        latency_slot = Some(slot);
+                    }
+                }
             }
         }
 
@@ -488,6 +505,7 @@ impl LadspaEffect {
             audio_out_indices,
             control_out_sinks,
             control_out_indices,
+            latency_slot,
             info,
             last_in_ptrs: Vec::new(),
             last_out_ptrs: Vec::new(),
@@ -683,10 +701,26 @@ impl AudioEffect for LadspaEffect {
     }
 
     fn latency_samples(&self) -> u32 {
-        // LADSPA v1 has no standard latency port. The de-facto convention is
-        // a control OUTPUT port named "latency" — we don't surface those
-        // (they're routed to the sink). Report 0.
-        0
+        // LADSPA v1 has no dedicated latency field. The de-facto
+        // convention is a control-OUTPUT port literally named "latency"
+        // that the plugin writes on every `run()`. At construction we
+        // scan port names and remember the slot (if any); here we read
+        // the most recent value the plugin wrote there.
+        //
+        // The value is in samples. Some plugins report fractional
+        // latency (look-ahead windows); round half-up and clamp to
+        // non-negative. Plugins without a latency port report 0.
+        match self.latency_slot {
+            Some(slot) => {
+                let samples = self.control_out_sinks[slot];
+                if samples.is_finite() && samples > 0.0 {
+                    (samples + 0.5) as u32
+                } else {
+                    0
+                }
+            }
+            None => 0,
+        }
     }
 
     fn serialize_params(&self) -> Vec<(String, f32)> {

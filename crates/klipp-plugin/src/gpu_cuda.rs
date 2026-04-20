@@ -109,10 +109,18 @@ impl CudaApi {
         };
         let lib = Arc::new(lib);
 
+        // The target field's type (`CuInitFn`, etc.) is inferred from
+        // the struct literal below, so `Symbol<T>` lands at the right
+        // fn-pointer type. Previously we loaded `Symbol<*const c_void>`
+        // and transmuted — ABI-identical on x86_64 but fragile and
+        // triggers clippy::missing_transmute_annotations. Deref copies
+        // the fn pointer (Copy) out of the Symbol; the Library is
+        // retained via `_lib: lib` below so the pointer stays valid
+        // for the struct's lifetime.
         macro_rules! load_sym {
             ($name:expr) => {{
-                let sym: libloading::Symbol<*const c_void> = unsafe { lib.get($name) }.ok()?;
-                unsafe { std::mem::transmute(*sym) }
+                let sym = unsafe { lib.get($name) }.ok()?;
+                *sym
             }};
         }
 

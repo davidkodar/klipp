@@ -669,7 +669,12 @@ impl PlaybackEngine {
         repaint_cb: Box<dyn Fn() + Send>,
         skim_consumer: crate::audio_output::SkimConsumer,
         perf_ring: crate::perf::SharedPerfRing,
-    ) -> Result<Self, klipp_core::KlippError> {
+    ) -> Self {
+        // Infallible today — every fallible probe inside logs + falls back
+        // to a None/default. Previously wrapped in `Result<Self,
+        // klipp_core::KlippError>` but no code path ever returned `Err`,
+        // so callers had a dead `.map_err(...)?` branch. Plain `Self`
+        // makes the lack of failure mode explicit.
         info!("PlaybackEngine: initializing (ffmpeg-next backend)");
 
         // Probe cpal sample rate (don't start the stream yet — we start it per-clip)
@@ -742,7 +747,7 @@ impl PlaybackEngine {
 
         let param_change_queue = Arc::new(ArrayQueue::new(PARAM_CHANGE_QUEUE_CAPACITY));
 
-        Ok(Self {
+        Self {
             cmd_rx,
             event_tx,
             frame_buffer,
@@ -853,7 +858,7 @@ impl PlaybackEngine {
             preroll_decoder: None,
             preroll_clip_index: None,
             preroll_source_in: 0.0,
-        })
+        }
     }
 
     /// Install the shared foreground-activity signal. The engine
