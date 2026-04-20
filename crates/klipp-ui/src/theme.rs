@@ -202,6 +202,8 @@ impl KlippTheme {
     pub fn apply_fonts_with_size(&self, ctx: &egui::Context, base_size: f32) {
         use egui::{FontFamily, FontId, TextStyle};
 
+        install_unicode_fallback_fonts(ctx);
+
         let mut style = (*ctx.style()).clone();
         style.text_styles.insert(
             TextStyle::Body,
@@ -225,6 +227,80 @@ impl KlippTheme {
         );
         ctx.set_style(style);
     }
+}
+
+/// Register system fallback fonts so egui renders characters outside
+/// the bundled font's Latin coverage. Two symptoms without this:
+///   * Info icon ⓘ (U+24D8, Enclosed Alphanumerics) shows as a
+///     tofu rectangle — egui's default font has no glyph.
+///   * Fullwidth pipe ｜ (U+FF5C, commonly found in YouTube-scraped
+///     filenames) shows as tofu — same reason.
+///
+/// We append (not replace) so egui's primary font still wins for
+/// Latin glyphs. The two fallbacks ordered by coverage:
+///   1. DejaVu Sans — broad Latin/symbol/box-drawing coverage,
+///      fills in ⓘ and most Unicode symbols.
+///   2. Noto Sans CJK — CJK ideographs, fullwidth forms (｜),
+///      Japanese/Chinese/Korean glyphs in media filenames.
+///
+/// Both are tried at common Linux paths; missing fonts are skipped
+/// silently so headless/minimal installs still run.
+fn install_unicode_fallback_fonts(ctx: &egui::Context) {
+    use egui::{FontData, FontFamily};
+
+    let mut defs = egui::FontDefinitions::default();
+
+    fn try_load_first(paths: &[&str]) -> Option<Vec<u8>> {
+        for p in paths {
+            if let Ok(bytes) = std::fs::read(p) {
+                return Some(bytes);
+            }
+        }
+        None
+    }
+
+    // DejaVu Sans — symbols / Enclosed Alphanumerics / Box Drawing.
+    const DEJAVU_PATHS: &[&str] = &[
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ];
+    if let Some(bytes) = try_load_first(DEJAVU_PATHS) {
+        defs.font_data.insert(
+            "klipp_fallback_dejavu".to_owned(),
+            FontData::from_owned(bytes),
+        );
+        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+            defs.families
+                .entry(family)
+                .or_default()
+                .push("klipp_fallback_dejavu".to_owned());
+        }
+    }
+
+    // Noto Sans CJK — fullwidth punctuation, CJK ideographs in
+    // media filenames (｜, 「」, Japanese subs, etc.). The .ttc
+    // holds JP/SC/TC/KR/HK variants; index 0 is JP, which is fine
+    // as a generic CJK fallback (all variants share Han + fullwidth
+    // coverage for what media filenames throw at us).
+    const CJK_PATHS: &[&str] = &[
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    ];
+    if let Some(bytes) = try_load_first(CJK_PATHS) {
+        let mut data = FontData::from_owned(bytes);
+        data.index = 0;
+        defs.font_data.insert("klipp_fallback_cjk".to_owned(), data);
+        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+            defs.families
+                .entry(family)
+                .or_default()
+                .push("klipp_fallback_cjk".to_owned());
+        }
+    }
+
+    ctx.set_fonts(defs);
 }
 
 // ── Fixed size constants ──

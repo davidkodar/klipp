@@ -79,29 +79,62 @@ impl PreferencesPanel {
         let mut open = true;
         let mut cmds = Vec::new();
 
-        // Modal backdrop
+        // Modal backdrop. Paint inside an Area so egui registers it
+        // in `area_order` — layers that go through `ctx.layer_painter`
+        // directly bypass `area_order` and end up in the *straggler*
+        // queue after all registered areas within the same Order,
+        // which drew the backdrop ON TOP OF the Preferences window
+        // (and dimmed the window itself).
+        //
+        // With the Area approach: backdrop is registered first, then
+        // the Preferences Window is registered. Within Foreground,
+        // `wants_to_be_on_top` (set by Window interaction) sorts
+        // windows above non-interacted areas — so the Window paints
+        // on top of the backdrop. Tooltips (Order::Tooltip) then
+        // render above everything.
+        //
+        // Alpha: the user's `modal_backdrop_alpha` pref defaults to
+        // 120 (~47% dim) which is too light to feel modal when the
+        // app behind has 4K-bright content. Floor at 200 (~78%) for
+        // Preferences specifically.
+        let backdrop_alpha = prefs.advanced.modal_backdrop_alpha.max(200);
+        let screen = ctx.screen_rect();
         egui::Area::new(egui::Id::new("prefs_modal_backdrop"))
             .fixed_pos(egui::pos2(0.0, 0.0))
-            .order(egui::Order::PanelResizeLine)
+            .order(egui::Order::Foreground)
+            .interactable(true)
             .show(ctx, |ui| {
-                let screen = ctx.screen_rect();
                 let resp = ui.allocate_rect(screen, egui::Sense::click());
-                ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(prefs.advanced.modal_backdrop_alpha));
+                // `painter_at` bypasses the Ui's incidental clip_rect
+                // (which is 0×0 before `allocate_rect` commits) so the
+                // fill definitely covers the full screen.
+                ui.painter_at(screen).rect_filled(
+                    screen,
+                    0.0,
+                    egui::Color32::from_black_alpha(backdrop_alpha),
+                );
                 if resp.clicked() { open = false; }
             });
 
-        let screen = ctx.screen_rect();
         let win_w = 900.0_f32.min(screen.width() - 40.0);
         let win_h = 650.0_f32.min(screen.height() - 40.0);
 
+        // Fixed-size, movable modal. `.resizable(true)` with
+        // `.title_bar(false)` gave broken UX — top edge doubled as
+        // a resize handle that collided with the custom title strip
+        // ("grab and shrink upward" bug), and side-edge resize
+        // flickered because the window couldn't reconcile user drag
+        // with auto-fit content. Fixed sizing eliminates all three
+        // resize bugs. `movable(true)` keeps drag-to-move active
+        // anywhere on the frame so the user can still reposition.
         egui::Window::new("Preferences")
             .title_bar(false)
-            .resizable(true)
+            .resizable(false)
             .collapsible(false)
+            .movable(true)
+            .order(egui::Order::Foreground)
             .default_width(win_w)
             .default_height(win_h)
-            .min_width(700.0)
-            .min_height(400.0)
             .default_pos(egui::pos2(screen.center().x - win_w / 2.0, screen.center().y - win_h / 2.0))
             .frame(egui::Frame::window(&ctx.style()).fill(egui::Color32::from_rgb(0x14, 0x14, 0x18)).rounding(10.0).inner_margin(0.0))
             .show(ctx, |ui| {
@@ -267,14 +300,20 @@ impl PreferencesPanel {
                     });
                 });
 
-                // ── Bottom bar (painted on top layer to cover scrollbar bleed) ──
+                // ── Bottom bar ──
+                // Painted on the Preferences window's own layer
+                // (Foreground) and LAST within this show closure —
+                // draw order guarantees it covers scrollbar bleed
+                // from the content area above without needing a
+                // higher layer. The previous Order::Tooltip trick
+                // put this bar ABOVE real tooltips (the Skim quality
+                // ⓘ tooltip appeared behind the Reset / Done buttons)
+                // — always keep UI chrome below the Tooltip layer.
                 let bottom_rect = egui::Rect::from_min_max(
                     egui::pos2(win_rect.left(), content_bottom),
                     win_rect.max,
                 );
-                let bottom_painter = ui.painter().clone().with_layer_id(
-                    egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("prefs_bottom_bar")),
-                );
+                let bottom_painter = ui.painter().clone();
                 bottom_painter.rect_filled(bottom_rect, egui::Rounding { nw: 0.0, ne: 0.0, sw: 10.0, se: 10.0 }, egui::Color32::from_rgb(0x18, 0x18, 0x1c));
                 // Separator line
                 bottom_painter.line_segment(
@@ -430,43 +469,83 @@ impl PreferencesPanel {
     }
 
     fn setting_row_inner(ui: &mut egui::Ui, label: &str, subtitle: Option<&str>, add_right: impl FnOnce(&mut egui::Ui)) {
-        let row_h = if subtitle.is_some() { 48.0 } else { 36.0 };
+        // Pre-measure the subtitle so the row grows to fit its
+        // wrapped height instead of clipping past the right-side
+        // widgets. Allow up to 3 lines — beyond that the subtitle
+        // belongs in a dialog or tooltip, not inline.
+        const LABEL_PAD_X: f32 = 14.0;
+        const SUBTITLE_TOP: f32 = 28.0;  // first subtitle line baseline offset from row.top
+        const SUBTITLE_LINE_H: f32 = 14.0;
+        const MAX_SUBTITLE_ROWS: usize = 3;
+        const WIDGET_AREA_W: f32 = 250.0;
+
+        let (row_h, subtitle_galley) = if let Some(sub) = subtitle {
+            let mut job = egui::text::LayoutJob::default();
+            job.append(
+                sub,
+                0.0,
+                egui::text::TextFormat {
+                    font_id: egui::FontId::proportional(10.0),
+                    color: Self::DIM_TEXT,
+                    ..Default::default()
+                },
+            );
+            job.wrap = egui::text::TextWrapping {
+                max_width: (ui.available_width() - LABEL_PAD_X * 2.0).max(0.0),
+                max_rows: MAX_SUBTITLE_ROWS,
+                break_anywhere: false,
+                overflow_character: Some('\u{2026}'),
+            };
+            let g = ui.ctx().fonts(|f| f.layout_job(job));
+            let rows = g.rows.len().max(1);
+            let h = SUBTITLE_TOP + rows as f32 * SUBTITLE_LINE_H + 4.0;
+            (h.max(48.0), Some(g))
+        } else {
+            (36.0, None)
+        };
+
         let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
         ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
         // Subtle separator
         ui.painter().line_segment(
-            [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
+            [egui::pos2(rect.left() + LABEL_PAD_X, rect.bottom()), egui::pos2(rect.right() - LABEL_PAD_X, rect.bottom())],
             egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
         );
-        // Label (+ optional subtitle)
-        if let Some(sub) = subtitle {
+        // Label (+ optional multi-line subtitle)
+        if let Some(g) = subtitle_galley {
             ui.painter().text(
-                egui::pos2(rect.left() + 14.0, rect.top() + 16.0),
+                egui::pos2(rect.left() + LABEL_PAD_X, rect.top() + 16.0),
                 egui::Align2::LEFT_CENTER,
                 label,
                 egui::FontId::proportional(12.0),
                 Self::NORMAL_TEXT,
             );
-            ui.painter().text(
-                egui::pos2(rect.left() + 14.0, rect.top() + 34.0),
-                egui::Align2::LEFT_CENTER,
-                sub,
-                egui::FontId::proportional(10.0),
+            ui.painter().galley(
+                egui::pos2(rect.left() + LABEL_PAD_X, rect.top() + SUBTITLE_TOP),
+                g,
                 Self::DIM_TEXT,
             );
         } else {
             ui.painter().text(
-                egui::pos2(rect.left() + 14.0, rect.center().y),
+                egui::pos2(rect.left() + LABEL_PAD_X, rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 label,
                 egui::FontId::proportional(12.0),
                 Self::NORMAL_TEXT,
             );
         }
-        // Right-aligned widget area
+        // Right-aligned widget area. When a subtitle is present,
+        // pin the widget to the TOP band of the row (at the label's
+        // vertical level) so the subtitle wrapping below has the
+        // full row width to itself.
+        let widget_bottom = if subtitle.is_some() {
+            rect.top() + 26.0
+        } else {
+            rect.bottom() - 4.0
+        };
         let widget_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.right() - 250.0, rect.top() + 4.0),
-            egui::pos2(rect.right() - 14.0, rect.bottom() - 4.0),
+            egui::pos2(rect.right() - WIDGET_AREA_W, rect.top() + 4.0),
+            egui::pos2(rect.right() - LABEL_PAD_X, widget_bottom),
         );
         let mut widget_ui = ui.new_child(egui::UiBuilder::new().max_rect(widget_rect));
         widget_ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2542,6 +2621,9 @@ impl PreferencesPanel {
             let current = qualities.iter()
                 .find(|(v, _)| *v == prefs.media_cache.skim_transcode_quality)
                 .map(|(_, l)| *l).unwrap_or("Standard");
+            // Layout is right-to-left inside the widget area — add
+            // the ComboBox FIRST so it lands on the right, then the
+            // ⓘ icon lands to its left.
             egui::ComboBox::from_id_salt("skim_q")
                 .selected_text(current)
                 .width(90.0)
@@ -2552,6 +2634,34 @@ impl PreferencesPanel {
                         }
                     }
                 });
+            ui.add_space(6.0);
+            // Small info badge — shows a size-expectations cheat
+            // sheet on hover. Users can gauge disk cost before
+            // changing the preset, which the dropdown's single
+            // word label can't convey.
+            ui.label(
+                egui::RichText::new("\u{24D8}")  // ⓘ circled small letter i
+                    .size(13.0)
+                    .color(Self::DIM_TEXT),
+            ).on_hover_text(
+                "Skim is a hover-preview proxy: 1080p H.264 with a \
+                 short GOP for fast per-frame seek. Source resolution \
+                 barely affects size — skim always downscales to 1080p. \
+                 Frame rate and duration are what matter.\n\n\
+                 Approximate size per hour of source (Standard):\n\
+                 \u{2022}  1080p 30 fps   ~ 4 GB\n\
+                 \u{2022}  1080p 60 fps   ~ 8 GB\n\
+                 \u{2022}  4K   30 fps   ~ 6 GB  (downscaled)\n\
+                 \u{2022}  4K   60 fps   ~12 GB  (downscaled)\n\
+                 \u{2022}  4K HDR 60 fps ~14 GB  (tonemap adds ~20%)\n\n\
+                 Presets:\n\
+                 \u{2022}  High     — ~2x Standard, near-transparent quality\n\
+                 \u{2022}  Standard — FCP / DaVinci proxy equivalent\n\
+                 \u{2022}  Low      — ~0.5x Standard, visible compression\n\
+                 \u{2022}  Draft    — ~0.25x Standard, blocky but viable\n\n\
+                 Cache is regenerated on demand — delete anytime in the \
+                 Cache panel to reclaim space.",
+            );
         });
 
         // ── CACHE SIZES section ──
