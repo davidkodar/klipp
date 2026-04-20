@@ -4611,19 +4611,22 @@ impl KlippApp {
                     new_timeline_in,
                 } => {
                     if self.clip_track_is_locked(clip_id) { return true; }
-                    // Timeline already moved both the clip and its linked partner during drag.
-                    // Here we just record undo history and sync.
-                    // Find group_id and compute delta before moving
-                    let (group_id, delta) = {
+                    // Snapshot the link/group info and compute the delta before
+                    // we start mutating. The linked partner (set up by
+                    // ImportMediaLinked for A/V pairs) must follow the primary
+                    // by the same delta so linked clips stay phase-locked.
+                    let (group_id, linked_id, delta) = {
                         let clip = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
                             .flat_map(|t| t.clips.iter())
                             .find(|c| c.id == *clip_id);
                         match clip {
-                            Some(c) => (c.group_id, *new_timeline_in - c.timeline_in),
-                            None => (None, klipp_core::RationalTime { value: 0, rate: 1 }),
+                            Some(c) => (c.group_id, c.linked_clip_id, *new_timeline_in - c.timeline_in),
+                            None => (None, None, klipp_core::RationalTime { value: 0, rate: 1 }),
                         }
                     };
 
+                    // Move primary clip and capture its old/new bounds.
+                    let mut primary_history: Option<(klipp_core::RationalTime, klipp_core::RationalTime, klipp_core::RationalTime, klipp_core::RationalTime)> = None;
                     if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
                         .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
                     {
@@ -4633,23 +4636,70 @@ impl KlippApp {
                             let dur = clip.duration();
                             clip.timeline_in = *new_timeline_in;
                             clip.timeline_out = *new_timeline_in + dur;
-                            self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyMoveClip {
-                                clip_id: *clip_id,
-                                old_timeline_in: old_in,
-                                old_timeline_out: old_out,
-                                new_timeline_in: clip.timeline_in,
-                                new_timeline_out: clip.timeline_out,
-                            } });
+                            primary_history = Some((old_in, old_out, clip.timeline_in, clip.timeline_out));
                         }
                         track.sort_clips();
                     }
 
-                    // Propagate move to grouped clips
+                    // Move the linked partner by the same delta — but skip if
+                    // it's on a locked track, or if it's already in the same
+                    // group (group propagation below would double-move it).
+                    let partner_in_same_group = match (linked_id, group_id) {
+                        (Some(lid), Some(gid)) => self.state.sequences[self.state.active_sequence_idx]
+                            .tracks.iter()
+                            .flat_map(|t| t.clips.iter())
+                            .find(|c| c.id == lid)
+                            .is_some_and(|c| c.group_id == Some(gid)),
+                        _ => false,
+                    };
+                    let mut linked_partner: Option<crate::history::LinkedMovePartner> = None;
+                    if let Some(lid) = linked_id {
+                        if !partner_in_same_group && !self.clip_track_is_locked(&lid) && delta.value != 0 {
+                            if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
+                                .find(|t| t.clips.iter().any(|c| c.id == lid))
+                            {
+                                if let Some(lclip) = track.find_clip_mut(lid) {
+                                    let old_in = lclip.timeline_in;
+                                    let old_out = lclip.timeline_out;
+                                    lclip.timeline_in += delta;
+                                    lclip.timeline_out += delta;
+                                    linked_partner = Some(crate::history::LinkedMovePartner {
+                                        partner_id: lid,
+                                        old_timeline_in: old_in,
+                                        old_timeline_out: old_out,
+                                        new_timeline_in: lclip.timeline_in,
+                                        new_timeline_out: lclip.timeline_out,
+                                    });
+                                }
+                                track.sort_clips();
+                            }
+                        }
+                    }
+
+                    if let Some((old_in, old_out, new_in, new_out)) = primary_history {
+                        self.state.history.push(HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: EditCommand::LegacyMoveClip {
+                                clip_id: *clip_id,
+                                old_timeline_in: old_in,
+                                old_timeline_out: old_out,
+                                new_timeline_in: new_in,
+                                new_timeline_out: new_out,
+                                linked_partner,
+                            },
+                        });
+                    }
+
+                    // Propagate move to grouped clips (skip primary AND the
+                    // already-moved linked partner to avoid double-moving).
                     if let Some(gid) = group_id {
                         if delta.value != 0 {
                             for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                                 for clip in &mut track.clips {
-                                    if clip.group_id == Some(gid) && clip.id != *clip_id {
+                                    if clip.group_id == Some(gid)
+                                        && clip.id != *clip_id
+                                        && Some(clip.id) != linked_id
+                                    {
                                         clip.timeline_in += delta;
                                         clip.timeline_out += delta;
                                     }
@@ -4674,6 +4724,8 @@ impl KlippApp {
                             let old_in = clip.timeline_in;
                             let old_out = clip.timeline_out;
                             let dur = clip.duration();
+                            let linked_id = clip.linked_clip_id;
+                            let delta = new_in - old_in;
                             let mut moved_clip = clip.clone();
                             moved_clip.timeline_in = new_in;
                             moved_clip.timeline_out = new_in + dur;
@@ -4684,6 +4736,34 @@ impl KlippApp {
                                 dst_track.sort_clips();
                             }
 
+                            // Shift the linked partner on its own track by the
+                            // same delta (A/V partners live on different track
+                            // kinds, so the partner doesn't cross tracks — only
+                            // its timeline bounds move).
+                            let mut linked_partner: Option<crate::history::LinkedMovePartner> = None;
+                            if let Some(lid) = linked_id {
+                                if !self.clip_track_is_locked(&lid) && delta.value != 0 {
+                                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
+                                        .find(|t| t.clips.iter().any(|c| c.id == lid))
+                                    {
+                                        if let Some(lclip) = track.find_clip_mut(lid) {
+                                            let p_old_in = lclip.timeline_in;
+                                            let p_old_out = lclip.timeline_out;
+                                            lclip.timeline_in += delta;
+                                            lclip.timeline_out += delta;
+                                            linked_partner = Some(crate::history::LinkedMovePartner {
+                                                partner_id: lid,
+                                                old_timeline_in: p_old_in,
+                                                old_timeline_out: p_old_out,
+                                                new_timeline_in: lclip.timeline_in,
+                                                new_timeline_out: lclip.timeline_out,
+                                            });
+                                        }
+                                        track.sort_clips();
+                                    }
+                                }
+                            }
+
                             self.state.history.push(HistoryEntry { sequence_idx: self.state.active_sequence_idx, command: EditCommand::LegacyMoveClipToTrack {
                                 clip: moved_clip,
                                 old_timeline_in: old_in,
@@ -4691,6 +4771,7 @@ impl KlippApp {
                                 new_timeline_in: new_in,
                                 from_track: from,
                                 to_track: to,
+                                linked_partner,
                             } });
                             self.sync_sequence_to_engine();
                             // Force engine to re-evaluate decoders at current playhead
@@ -13539,7 +13620,7 @@ impl KlippApp {
                     track.sort_clips();
                 }
             }
-            EditCommand::LegacyMoveClip { clip_id, old_timeline_in, old_timeline_out, .. } => {
+            EditCommand::LegacyMoveClip { clip_id, old_timeline_in, old_timeline_out, linked_partner, .. } => {
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
                     .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
                 {
@@ -13548,6 +13629,17 @@ impl KlippApp {
                         clip.timeline_out = *old_timeline_out;
                     }
                     track.sort_clips();
+                }
+                if let Some(p) = linked_partner {
+                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
+                        .find(|t| t.clips.iter().any(|c| c.id == p.partner_id))
+                    {
+                        if let Some(clip) = track.find_clip_mut(p.partner_id) {
+                            clip.timeline_in = p.old_timeline_in;
+                            clip.timeline_out = p.old_timeline_out;
+                        }
+                        track.sort_clips();
+                    }
                 }
             }
             EditCommand::LegacyTrimClip {
@@ -13719,7 +13811,7 @@ impl KlippApp {
                     track.remove_clip(clip.id);
                 }
             }
-            EditCommand::LegacyMoveClipToTrack { clip, old_timeline_in, old_timeline_out, from_track, to_track, .. } => {
+            EditCommand::LegacyMoveClipToTrack { clip, old_timeline_in, old_timeline_out, from_track, to_track, linked_partner, .. } => {
                 // Undo: move clip back from to_track to from_track with original position
                 if let Some(dst) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*to_track) {
                     dst.remove_clip(clip.id);
@@ -13730,6 +13822,17 @@ impl KlippApp {
                     restored.timeline_out = *old_timeline_out;
                     src.clips.push(restored);
                     src.sort_clips();
+                }
+                if let Some(p) = linked_partner {
+                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
+                        .find(|t| t.clips.iter().any(|c| c.id == p.partner_id))
+                    {
+                        if let Some(clip) = track.find_clip_mut(p.partner_id) {
+                            clip.timeline_in = p.old_timeline_in;
+                            clip.timeline_out = p.old_timeline_out;
+                        }
+                        track.sort_clips();
+                    }
                 }
             }
             EditCommand::Magnetic(cmd) => {
@@ -13946,7 +14049,7 @@ impl KlippApp {
                     track.ripple_remove(removed_clip.id);
                 }
             }
-            EditCommand::LegacyMoveClip { clip_id, new_timeline_in, new_timeline_out, .. } => {
+            EditCommand::LegacyMoveClip { clip_id, new_timeline_in, new_timeline_out, linked_partner, .. } => {
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
                     .find(|t| t.clips.iter().any(|c| c.id == *clip_id))
                 {
@@ -13955,6 +14058,17 @@ impl KlippApp {
                         clip.timeline_out = *new_timeline_out;
                     }
                     track.sort_clips();
+                }
+                if let Some(p) = linked_partner {
+                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
+                        .find(|t| t.clips.iter().any(|c| c.id == p.partner_id))
+                    {
+                        if let Some(clip) = track.find_clip_mut(p.partner_id) {
+                            clip.timeline_in = p.new_timeline_in;
+                            clip.timeline_out = p.new_timeline_out;
+                        }
+                        track.sort_clips();
+                    }
                 }
             }
             EditCommand::LegacyTrimClip {
@@ -14120,7 +14234,7 @@ impl KlippApp {
                     track.sort_clips();
                 }
             }
-            EditCommand::LegacyMoveClipToTrack { clip, from_track, to_track, new_timeline_in, .. } => {
+            EditCommand::LegacyMoveClipToTrack { clip, from_track, to_track, new_timeline_in, linked_partner, .. } => {
                 // Redo: move from from_track to to_track at new position
                 if let Some(src) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(*from_track) {
                     src.remove_clip(clip.id);
@@ -14132,6 +14246,17 @@ impl KlippApp {
                     moved.timeline_out = *new_timeline_in + dur;
                     dst.clips.push(moved);
                     dst.sort_clips();
+                }
+                if let Some(p) = linked_partner {
+                    if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
+                        .find(|t| t.clips.iter().any(|c| c.id == p.partner_id))
+                    {
+                        if let Some(clip) = track.find_clip_mut(p.partner_id) {
+                            clip.timeline_in = p.new_timeline_in;
+                            clip.timeline_out = p.new_timeline_out;
+                        }
+                        track.sort_clips();
+                    }
                 }
             }
             EditCommand::Magnetic(cmd) => {

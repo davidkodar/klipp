@@ -65,6 +65,19 @@ impl KeyframeSnapshot {
     }
 }
 
+/// Records how a linked partner clip moved alongside a primary move so
+/// undo/redo can put both clips back atomically. The partner stays on
+/// its own track (linked A/V pairs cross track kinds), only its
+/// timeline bounds shift.
+#[derive(Debug, Clone)]
+pub struct LinkedMovePartner {
+    pub partner_id: ClipId,
+    pub old_timeline_in: RationalTime,
+    pub old_timeline_out: RationalTime,
+    pub new_timeline_in: RationalTime,
+    pub new_timeline_out: RationalTime,
+}
+
 #[derive(Debug, Clone)]
 pub enum EditCommand {
     // === LEGACY (Free tracks only — existing behaviour unchanged) ===
@@ -96,6 +109,10 @@ pub enum EditCommand {
         old_timeline_out: RationalTime,
         new_timeline_in: RationalTime,
         new_timeline_out: RationalTime,
+        /// Linked A/V partner that moved by the same delta. `None` when the
+        /// clip had no linked partner or the partner was already carried
+        /// by group propagation (avoids double-moving in undo/redo).
+        linked_partner: Option<LinkedMovePartner>,
     },
     LegacyTrimClip {
         clip_id: ClipId,
@@ -166,6 +183,10 @@ pub enum EditCommand {
         new_timeline_in: RationalTime,
         from_track: usize,
         to_track: usize,
+        /// Linked A/V partner that moved by the same delta on its own
+        /// track (the partner doesn't cross tracks — only timeline bounds
+        /// shift). `None` when no linked partner exists.
+        linked_partner: Option<LinkedMovePartner>,
     },
 
     // === MAGNETIC (Primary/Connected tracks) ===
