@@ -19,6 +19,11 @@ pub(crate) struct LayoutRects {
     pub left_resizer_rect: egui::Rect,
     pub inspector_rect: egui::Rect,
     pub right_resizer_rect: egui::Rect,
+    /// Left half of the top viewer row — the Source Viewer.
+    pub source_viewer_rect: egui::Rect,
+    /// Right half of the top viewer row — the Program Viewer.
+    /// Historically named `viewer_rect` back when Klipp had a single viewer;
+    /// kept under that name to minimise downstream churn.
     pub viewer_rect: egui::Rect,
     pub h_resizer_rect: egui::Rect,
     pub curve_editor_rect: egui::Rect,
@@ -178,10 +183,21 @@ pub(crate) fn compute_layout(
         egui::vec2(center_w, theme::RESIZER_THICKNESS),
     );
 
-    // Viewer (top of center, above horizontal resizer)
+    // Viewer row (top of center, above horizontal resizer). Split 50/50
+    // into Source (left) and Program (right) with a thin gutter between —
+    // standard Premiere/Avid/Resolve-Edit convention. Equal sizes make
+    // three-point-edit frame comparison visually balanced.
+    let viewer_row_top = main_top;
+    let viewer_row_bottom = h_resizer_rect.min.y;
+    let viewer_gutter = theme::RESIZER_THICKNESS;
+    let half_w = ((center_w - viewer_gutter) * 0.5).max(0.0);
+    let source_viewer_rect = egui::Rect::from_min_max(
+        egui::pos2(center_left, viewer_row_top),
+        egui::pos2(center_left + half_w, viewer_row_bottom),
+    );
     let viewer_rect = egui::Rect::from_min_max(
-        egui::pos2(center_left, main_top),
-        egui::pos2(center_left + center_w, h_resizer_rect.min.y),
+        egui::pos2(center_left + half_w + viewer_gutter, viewer_row_top),
+        egui::pos2(center_left + center_w, viewer_row_bottom),
     );
 
     LayoutRects {
@@ -192,6 +208,7 @@ pub(crate) fn compute_layout(
         left_resizer_rect,
         inspector_rect,
         right_resizer_rect,
+        source_viewer_rect,
         viewer_rect,
         h_resizer_rect,
         curve_editor_rect,
@@ -252,6 +269,26 @@ mod tests {
         state.show_browser_panel = false;
         let rects = compute_layout(test_full_rect(), &layout, &state);
         assert_eq!(rects.browser_rect.width(), 0.0);
+    }
+
+    #[test]
+    fn test_source_and_program_viewers_are_equal_width() {
+        let layout = LayoutState::default();
+        let state = AppState::default();
+        let rects = compute_layout(test_full_rect(), &layout, &state);
+        let diff = (rects.source_viewer_rect.width() - rects.viewer_rect.width()).abs();
+        assert!(diff < 0.01, "source and program viewers should have equal widths (diff = {diff})");
+    }
+
+    #[test]
+    fn test_source_viewer_left_of_program_with_gutter() {
+        let layout = LayoutState::default();
+        let state = AppState::default();
+        let rects = compute_layout(test_full_rect(), &layout, &state);
+        assert!(rects.source_viewer_rect.max.x <= rects.viewer_rect.min.x,
+            "source viewer must sit to the left of the program viewer");
+        assert!(rects.source_viewer_rect.max.x < rects.viewer_rect.min.x,
+            "source and program viewers must have a gutter between them");
     }
 
     #[test]

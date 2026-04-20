@@ -2,7 +2,7 @@ use crate::icons::Icon;
 use crate::inspector::video_tab::{find_transform_index, get_transform, TransformParams};
 use crate::state::{AppState, TransformHandle, ViewerTransformDrag};
 use crate::theme::KlippTheme;
-use klipp_core::{AppCommand, Fps, RationalTime, ViewerMode};
+use klipp_core::{AppCommand, Fps, RationalTime};
 use klipp_engine::PlaybackState;
 
 /// Per-frame state computed once at the top of `show_program_viewer`.
@@ -58,75 +58,57 @@ impl ViewerPanel {
             egui::pos2(panel_rect.max.x, panel_rect.max.y - bottom_h),
         );
 
-        // Source/Program toggle (top-left of viewer)
-        {
-            let toggle_y = panel_rect.min.y + 4.0;
-            let toggle_x = panel_rect.min.x + 8.0;
+        // Side-by-side dual viewer: this panel is always the Program
+        // Viewer. Source content lives in its own panel
+        // (`render_source_viewer_placeholder` in app.rs). The legacy
+        // Program/Source toggle is gone — `viewer_mode` is retained as a
+        // focus/intent hint for keyboard handlers (e.g. I/O marks
+        // targeting source vs sequence) but no longer drives visibility
+        // here.
+        self.show_program_viewer(ui, state, theme, viewer_rect, &mut cmds);
 
-            let prog_active = state.viewer_mode == ViewerMode::Program;
-            let src_active = state.viewer_mode == ViewerMode::Source;
-
-            // Program button
-            let prog_rect = egui::Rect::from_min_size(
-                egui::pos2(toggle_x, toggle_y),
-                egui::vec2(60.0, 18.0),
-            );
-            let prog_resp = ui.allocate_rect(prog_rect, egui::Sense::click());
-            let prog_color = if prog_active { theme.text_accent } else { theme.text_dim };
-            ui.painter().text(
-                prog_rect.center(), egui::Align2::CENTER_CENTER,
-                "Program", egui::FontId::proportional(10.0), prog_color,
-            );
-            if prog_resp.clicked() {
-                cmds.push(AppCommand::SetViewerMode(ViewerMode::Program));
-            }
-
-            // Source button
-            let src_rect = egui::Rect::from_min_size(
-                egui::pos2(toggle_x + 64.0, toggle_y),
-                egui::vec2(50.0, 18.0),
-            );
-            let src_resp = ui.allocate_rect(src_rect, egui::Sense::click());
-            let src_color = if src_active { theme.text_accent } else { theme.text_dim };
-            ui.painter().text(
-                src_rect.center(), egui::Align2::CENTER_CENTER,
-                "Source", egui::FontId::proportional(10.0), src_color,
-            );
-            if src_resp.clicked() {
-                cmds.push(AppCommand::SetViewerMode(ViewerMode::Source));
-            }
-
-            // Underline active tab
-            if prog_active {
-                ui.painter().hline(prog_rect.x_range(), prog_rect.max.y, egui::Stroke::new(2.0_f32, theme.accent));
-            } else {
-                ui.painter().hline(src_rect.x_range(), src_rect.max.y, egui::Stroke::new(2.0_f32, theme.accent));
-            }
-        }
-
-        match state.viewer_mode {
-            ViewerMode::Program => {
-                self.show_program_viewer(ui, state, theme, viewer_rect, &mut cmds);
-            }
-            ViewerMode::Source => {
-                self.show_source_viewer(ui, state, viewer_rect, &mut cmds);
-            }
-        }
-
-        // ── Scrub bar ──
-        let scrub_rect = egui::Rect::from_min_size(
+        // ── Scrub bar + Play bar (shared transport chrome) ──
+        let chrome_rect = egui::Rect::from_min_size(
             egui::pos2(panel_rect.min.x, viewer_rect.max.y),
-            egui::vec2(panel_rect.width(), scrub_h),
+            egui::vec2(panel_rect.width(), bottom_h),
+        );
+        let chrome_cmds = self.draw_transport_chrome(ui, state, theme, chrome_rect);
+        cmds.extend(chrome_cmds);
+
+        cmds
+    }
+
+    /// Draw the scrub bar + play bar (transport chrome) within the given
+    /// rect. The scrub bar gets the top 16 px, the play bar the remaining
+    /// 40 px below it — matching the fixed heights used inside
+    /// `ViewerPanel::show`. Exposed so side-by-side layouts (Source Viewer)
+    /// can render matching chrome under their own video rects.
+    ///
+    /// For now both call sites mutate the same Program-viewer state (playhead,
+    /// playback, editing_timecode). Per-viewer transport routing will be
+    /// introduced when the source playhead and source decoder land; until
+    /// then, clicking a Source-side transport button acts on the timeline,
+    /// which is acceptable for the placeholder phase.
+    pub fn draw_transport_chrome(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        theme: &KlippTheme,
+        rect: egui::Rect,
+    ) -> Vec<AppCommand> {
+        const SCRUB_H: f32 = 16.0;
+        const PLAYBAR_H: f32 = 40.0;
+        let mut cmds = Vec::new();
+        let scrub_rect = egui::Rect::from_min_size(
+            rect.min,
+            egui::vec2(rect.width(), SCRUB_H),
         );
         self.draw_scrub_bar(ui, state, theme, scrub_rect, &mut cmds);
-
-        // ── Playbar ──
         let playbar_rect = egui::Rect::from_min_size(
-            egui::pos2(panel_rect.min.x, scrub_rect.max.y),
-            egui::vec2(panel_rect.width(), playbar_h),
+            egui::pos2(rect.min.x, scrub_rect.max.y),
+            egui::vec2(rect.width(), PLAYBAR_H),
         );
         self.draw_playbar(ui, state, theme, playbar_rect, &mut cmds);
-
         cmds
     }
 
@@ -2614,7 +2596,7 @@ impl ViewerPanel {
         }
     }
 
-    fn show_source_viewer(
+    pub fn show_source_viewer(
         &mut self,
         ui: &mut egui::Ui,
         state: &AppState,

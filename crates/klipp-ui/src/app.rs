@@ -3794,7 +3794,22 @@ impl KlippApp {
                 }
                 AppCommand::InsertSourceAtPlayhead | AppCommand::OverwriteEdit => {
                     if let Some(mid) = self.state.source_media_id {
-                        if let Some(item) = self.state.media_pool.get(&mid).cloned() {
+                        if self.maybe_prompt_framerate_mismatch(&mid, cmd.clone()) {
+                            return true;
+                        }
+                        self.suppress_fps_prompt = false;
+                        let Some(item) = self.state.media_pool.get(&mid).cloned() else {
+                            self.state.toast.show("Source clip is no longer in the media pool");
+                            return true;
+                        };
+                        {
+                            if item.offline {
+                                self.state.toast.show(format!(
+                                    "Cannot edit '{}' — media is offline",
+                                    item.filename
+                                ));
+                                return true;
+                            }
                             let raw_in = item.default_source_in.unwrap_or(Timecode { value: 0, rate: item.duration.rate });
                             let raw_out = item.default_source_out.unwrap_or(item.duration);
                             // If in/out are equal or both zero, use the full clip
@@ -3810,65 +3825,57 @@ impl KlippApp {
                             } else {
                                 klipp_timeline::TrackKind::Video
                             };
-                            let timeline_in = self.state.sequences[self.state.active_sequence_idx].in_point.unwrap_or(self.state.playhead);
-                            if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
-                                .find(|t| t.kind == target_kind)
-                            {
-                                let new_id = klipp_core::ClipId::new();
-                                let new_clip = klipp_timeline::Clip {
-                                    id: new_id,
-                                    kind: klipp_timeline::ClipKind::Media { media_id: mid },
+                            let seq_idx = self.state.active_sequence_idx;
+                            let has_target_track = self.state.sequences[seq_idx].tracks.iter()
+                                .any(|t| t.kind == target_kind);
+                            if !has_target_track {
+                                self.state.toast.show(if is_audio_only {
+                                    "No audio track in sequence"
+                                } else {
+                                    "No video track in sequence"
+                                });
+                                return true;
+                            }
+                            let timeline_in = self.state.sequences[seq_idx].in_point.unwrap_or(self.state.playhead);
+                            let new_clip = klipp_timeline::Clip::media(
+                                mid,
+                                timeline_in,
+                                timeline_in + dur,
+                                source_in,
+                                source_out,
+                            );
+                            let new_id = new_clip.id;
+
+                            // Magnetic path: video clip, primary track exists, primary matches
+                            // target kind, magnetic timeline enabled. Everything else falls
+                            // through to the legacy track.clips path.
+                            let primary_idx = self.state.sequences[seq_idx].primary_track_index();
+                            let use_magnetic = !is_audio_only
+                                && primary_idx.is_some_and(|idx| {
+                                    self.is_magnetic_track(idx)
+                                        && self.state.sequences[seq_idx].tracks[idx].kind == target_kind
+                                });
+
+                            if use_magnetic {
+                                self.apply_source_magnetic_edit(
+                                    seq_idx,
+                                    &item,
+                                    mid,
+                                    new_clip,
                                     timeline_in,
-                                    timeline_out: timeline_in + dur,
+                                    dur,
                                     source_in,
                                     source_out,
-                                    node_graph: klipp_nodes::NodeGraph::default(),
-                                    effects: Vec::new(),
-                                    builtin_effects: Vec::new(),
-                                    builtin_effects_enabled: Vec::new(),
-                                    linked_clip_id: None,
-                                    group_id: None,
-                                    magnetic_anchor: None,
-                                    gain: 1.0,
-                                    volume: 1.0,
-                                    pan: 0.0,
-                                    fade_in_secs: 0.0,
-                                    fade_out_secs: 0.0,
-                                    fade_in_curve: klipp_timeline::FadeCurve::default(),
-                                    fade_out_curve: klipp_timeline::FadeCurve::default(),
-                                    channel_config: klipp_timeline::ChannelConfig::default(),
-                                    volume_keyframes: Vec::new(),
-                                    pan_keyframes: Vec::new(),
-                                    gain_keyframes: Vec::new(),
-                                    opacity_keyframes: Vec::new(),
-                                    transform_pos_x_keyframes: Vec::new(),
-                                    transform_pos_y_keyframes: Vec::new(),
-                                    transform_scale_keyframes: Vec::new(),
-                                    transform_rotation_keyframes: Vec::new(),
-                                    clip_markers: Vec::new(),
-                                    effect_keyframes: std::collections::HashMap::new(),
-                                    role: klipp_core::ClipRole::default(),
-                                    param_modifiers: std::collections::HashMap::new(),
-                                    speed: 1.0,
-                                    speed_keyframes: Vec::new(),
-                                    source_rotation: 0,
-                                    enabled: true,
-                                    solo: false,
-                                    grade_versions: Vec::new(),
-                                    active_grade_version: None,
-                                    multicam_group: None,
-                                    multicam_angle: 0,
-                                    multicam_cuts: Vec::new(),
-                                    audio_effects: Vec::new(),
-                                    stabilization_data: None,
-                                    smoothed_trajectory: None,
-                                    track_points: Vec::new(),
-                                };
+                                    klipp_timeline::magnetic::EditMode::Overwrite,
+                                );
+                            } else if let Some(track) = self.state.sequences[seq_idx].tracks.iter_mut()
+                                .find(|t| t.kind == target_kind)
+                            {
                                 Self::overwrite_insert_clip_on_track(track, new_clip);
-                                self.state.selected_clip = Some(new_id);
-                                self.state.dirty = true;
-                                self.sync_sequence_to_engine();
                             }
+                            self.state.selected_clip = Some(new_id);
+                            self.state.dirty = true;
+                            self.sync_sequence_to_engine();
                         }
                     }
                     return true;
@@ -3876,7 +3883,22 @@ impl KlippApp {
                 AppCommand::InsertEdit => {
                     // Ripple insert: push existing clips right, then insert source clip
                     if let Some(mid) = self.state.source_media_id {
-                        if let Some(item) = self.state.media_pool.get(&mid).cloned() {
+                        if self.maybe_prompt_framerate_mismatch(&mid, cmd.clone()) {
+                            return true;
+                        }
+                        self.suppress_fps_prompt = false;
+                        let Some(item) = self.state.media_pool.get(&mid).cloned() else {
+                            self.state.toast.show("Source clip is no longer in the media pool");
+                            return true;
+                        };
+                        {
+                            if item.offline {
+                                self.state.toast.show(format!(
+                                    "Cannot edit '{}' — media is offline",
+                                    item.filename
+                                ));
+                                return true;
+                            }
                             let raw_in = item.default_source_in.unwrap_or(Timecode { value: 0, rate: item.duration.rate });
                             let raw_out = item.default_source_out.unwrap_or(item.duration);
                             let (source_in, source_out) = if raw_in >= raw_out {
@@ -3891,114 +3913,124 @@ impl KlippApp {
                             } else {
                                 klipp_timeline::TrackKind::Video
                             };
-                            let timeline_in = self.state.sequences[self.state.active_sequence_idx].in_point.unwrap_or(self.state.playhead);
-                            if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut()
+                            let seq_idx = self.state.active_sequence_idx;
+                            let has_target_track = self.state.sequences[seq_idx].tracks.iter()
+                                .any(|t| t.kind == target_kind);
+                            if !has_target_track {
+                                self.state.toast.show(if is_audio_only {
+                                    "No audio track in sequence"
+                                } else {
+                                    "No video track in sequence"
+                                });
+                                return true;
+                            }
+                            let timeline_in = self.state.sequences[seq_idx].in_point.unwrap_or(self.state.playhead);
+                            let new_clip = klipp_timeline::Clip::media(
+                                mid,
+                                timeline_in,
+                                timeline_in + dur,
+                                source_in,
+                                source_out,
+                            );
+                            let new_id = new_clip.id;
+
+                            let primary_idx = self.state.sequences[seq_idx].primary_track_index();
+                            let use_magnetic = !is_audio_only
+                                && primary_idx.is_some_and(|idx| {
+                                    self.is_magnetic_track(idx)
+                                        && self.state.sequences[seq_idx].tracks[idx].kind == target_kind
+                                });
+
+                            if use_magnetic {
+                                self.apply_source_magnetic_edit(
+                                    seq_idx,
+                                    &item,
+                                    mid,
+                                    new_clip,
+                                    timeline_in,
+                                    dur,
+                                    source_in,
+                                    source_out,
+                                    klipp_timeline::magnetic::EditMode::Insert,
+                                );
+                            } else if let Some(track) = self.state.sequences[seq_idx].tracks.iter_mut()
                                 .find(|t| t.kind == target_kind)
                             {
-                                // Ripple: shift all clips at or after timeline_in to the right by dur
+                                // Legacy ripple: shift clips at/after timeline_in right by dur.
+                                // NOTE: legacy straddle handling is a known pre-existing bug —
+                                // straddle is shifted rather than split. Magnetic path above
+                                // handles it correctly.
                                 for clip in &mut track.clips {
                                     if clip.timeline_in >= timeline_in {
                                         clip.timeline_in += dur;
                                         clip.timeline_out += dur;
                                     } else if clip.timeline_out > timeline_in {
-                                        // Clip spans the insert point — split it
-                                        // For simplicity, just shift it right (overwrite would split)
                                         clip.timeline_in += dur;
                                         clip.timeline_out += dur;
                                     }
                                 }
-                                let new_id = klipp_core::ClipId::new();
-                                let new_clip = klipp_timeline::Clip {
-                                    id: new_id,
-                                    kind: klipp_timeline::ClipKind::Media { media_id: mid },
-                                    timeline_in,
-                                    timeline_out: timeline_in + dur,
-                                    source_in,
-                                    source_out,
-                                    node_graph: klipp_nodes::NodeGraph::default(),
-                                    effects: Vec::new(),
-                                    builtin_effects: Vec::new(),
-                                    builtin_effects_enabled: Vec::new(),
-                                    linked_clip_id: None,
-                                    group_id: None,
-                                    magnetic_anchor: None,
-                                    gain: 1.0,
-                                    volume: 1.0,
-                                    pan: 0.0,
-                                    fade_in_secs: 0.0,
-                                    fade_out_secs: 0.0,
-                                    fade_in_curve: klipp_timeline::FadeCurve::default(),
-                                    fade_out_curve: klipp_timeline::FadeCurve::default(),
-                                    channel_config: klipp_timeline::ChannelConfig::default(),
-                                    volume_keyframes: Vec::new(),
-                                    pan_keyframes: Vec::new(),
-                                    gain_keyframes: Vec::new(),
-                                    opacity_keyframes: Vec::new(),
-                                    transform_pos_x_keyframes: Vec::new(),
-                                    transform_pos_y_keyframes: Vec::new(),
-                                    transform_scale_keyframes: Vec::new(),
-                                    transform_rotation_keyframes: Vec::new(),
-                                    clip_markers: Vec::new(),
-                                    effect_keyframes: std::collections::HashMap::new(),
-                                    role: klipp_core::ClipRole::default(),
-                                    param_modifiers: std::collections::HashMap::new(),
-                                    speed: 1.0,
-                                    speed_keyframes: Vec::new(),
-                                    source_rotation: 0,
-                                    enabled: true,
-                                    solo: false,
-                                    grade_versions: Vec::new(),
-                                    active_grade_version: None,
-                                    multicam_group: None,
-                                    multicam_angle: 0,
-                                    multicam_cuts: Vec::new(),
-                                    audio_effects: Vec::new(),
-                                    stabilization_data: None,
-                                    smoothed_trajectory: None,
-                                    track_points: Vec::new(),
-                                };
                                 track.clips.push(new_clip);
                                 track.sort_clips();
-                                self.state.selected_clip = Some(new_id);
-                                self.state.dirty = true;
-                                self.sync_sequence_to_engine();
                             }
+                            self.state.selected_clip = Some(new_id);
+                            self.state.dirty = true;
+                            self.sync_sequence_to_engine();
                         }
                     }
                     return true;
                 }
                 AppCommand::LiftEdit => {
                     // Remove content between sequence in/out, leave gap
-                    if let (Some(in_pt), Some(out_pt)) = (self.state.sequences[self.state.active_sequence_idx].in_point, self.state.sequences[self.state.active_sequence_idx].out_point) {
-                        if in_pt < out_pt {
-                            for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                                Self::lift_range(track, in_pt, out_pt);
-                            }
-                            self.state.dirty = true;
-                            self.sync_sequence_to_engine();
+                    let (in_pt, out_pt) = match (
+                        self.state.sequences[self.state.active_sequence_idx].in_point,
+                        self.state.sequences[self.state.active_sequence_idx].out_point,
+                    ) {
+                        (Some(i), Some(o)) => (i, o),
+                        _ => {
+                            self.state.toast.show("Set sequence In and Out points first");
+                            return true;
                         }
+                    };
+                    if in_pt >= out_pt {
+                        self.state.toast.show("Out point must be after In point");
+                        return true;
                     }
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        Self::lift_range(track, in_pt, out_pt);
+                    }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
                     return true;
                 }
                 AppCommand::ExtractEdit => {
                     // Remove content between sequence in/out, ripple left to close gap
-                    if let (Some(in_pt), Some(out_pt)) = (self.state.sequences[self.state.active_sequence_idx].in_point, self.state.sequences[self.state.active_sequence_idx].out_point) {
-                        if in_pt < out_pt {
-                            let gap = out_pt - in_pt;
-                            for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                                Self::lift_range(track, in_pt, out_pt);
-                                // Ripple: shift clips at or after out_pt left by gap
-                                for clip in &mut track.clips {
-                                    if clip.timeline_in >= out_pt {
-                                        clip.timeline_in -= gap;
-                                        clip.timeline_out -= gap;
-                                    }
-                                }
+                    let (in_pt, out_pt) = match (
+                        self.state.sequences[self.state.active_sequence_idx].in_point,
+                        self.state.sequences[self.state.active_sequence_idx].out_point,
+                    ) {
+                        (Some(i), Some(o)) => (i, o),
+                        _ => {
+                            self.state.toast.show("Set sequence In and Out points first");
+                            return true;
+                        }
+                    };
+                    if in_pt >= out_pt {
+                        self.state.toast.show("Out point must be after In point");
+                        return true;
+                    }
+                    let gap = out_pt - in_pt;
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        Self::lift_range(track, in_pt, out_pt);
+                        // Ripple: shift clips at or after out_pt left by gap
+                        for clip in &mut track.clips {
+                            if clip.timeline_in >= out_pt {
+                                clip.timeline_in -= gap;
+                                clip.timeline_out -= gap;
                             }
-                            self.state.dirty = true;
-                            self.sync_sequence_to_engine();
                         }
                     }
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
                     return true;
                 }
                 // Magnetic: Ripple trim head to playhead
@@ -4325,12 +4357,11 @@ impl KlippApp {
         subclip.waveform_data = None;
         subclip.audio_cache = None;
 
-        let subclip_id = subclip.id;
-        self.state.media_pool.add(subclip);
+        self.state.media_pool.add(subclip.clone());
         self.state.history.push(HistoryEntry {
             sequence_idx: self.state.active_sequence_idx,
             command: crate::history::EditCommand::CreateSubclip {
-                subclip_id,
+                subclip,
                 parent_id: source_media_id,
             },
         });
@@ -13839,6 +13870,23 @@ impl KlippApp {
                 klipp_timeline::magnetic::MagneticEditor::apply_inverse(
                     &mut self.state.sequences[self.state.active_sequence_idx], cmd);
             }
+            EditCommand::SourceLinkedInsert {
+                video_command,
+                audio_track_index,
+                audio_clips_before,
+                ..
+            } => {
+                klipp_timeline::magnetic::MagneticEditor::apply_inverse(
+                    &mut self.state.sequences[self.state.active_sequence_idx],
+                    video_command,
+                );
+                if let Some(track) = self.state.sequences[self.state.active_sequence_idx]
+                    .tracks
+                    .get_mut(*audio_track_index)
+                {
+                    track.clips = audio_clips_before.clone();
+                }
+            }
             EditCommand::AddMediaToPool { item } => {
                 // Undo import: remove the item from pool
                 self.state.media_pool.remove(&item.id);
@@ -13899,10 +13947,8 @@ impl KlippApp {
                     }
                 }
             }
-            EditCommand::CreateSubclip { subclip_id, parent_id: _ } => {
-                // Undo: drop the subclip from the pool. Redo isn't wired for
-                // MVP — the user recreates via the source-viewer button.
-                self.state.media_pool.remove(subclip_id);
+            EditCommand::CreateSubclip { subclip, parent_id: _ } => {
+                self.state.media_pool.remove(&subclip.id);
             }
             EditCommand::SetRange { old_in, old_out, .. } => {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
@@ -14263,6 +14309,23 @@ impl KlippApp {
                 klipp_timeline::magnetic::MagneticEditor::apply_forward(
                     &mut self.state.sequences[self.state.active_sequence_idx], cmd);
             }
+            EditCommand::SourceLinkedInsert {
+                video_command,
+                audio_track_index,
+                audio_clips_after,
+                ..
+            } => {
+                klipp_timeline::magnetic::MagneticEditor::apply_forward(
+                    &mut self.state.sequences[self.state.active_sequence_idx],
+                    video_command,
+                );
+                if let Some(track) = self.state.sequences[self.state.active_sequence_idx]
+                    .tracks
+                    .get_mut(*audio_track_index)
+                {
+                    track.clips = audio_clips_after.clone();
+                }
+            }
             EditCommand::AddMediaToPool { item } => {
                 // Redo import: re-add the item
                 self.state.media_pool.add(item.clone());
@@ -14323,11 +14386,8 @@ impl KlippApp {
                     }
                 }
             }
-            EditCommand::CreateSubclip { .. } => {
-                // Redo is not wired for subclip creation in MVP — the
-                // subclip's MediaItem is not stored in the history entry
-                // so we can't recreate it. `label()` surfaces "Create
-                // Subclip" but redo is a no-op.
+            EditCommand::CreateSubclip { subclip, parent_id: _ } => {
+                self.state.media_pool.add(subclip.clone());
             }
             EditCommand::SetRange { new_in, new_out, .. } => {
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
@@ -14433,6 +14493,108 @@ impl KlippApp {
                 }
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
+            }
+        }
+    }
+
+    /// Perform a Source-Viewer three-point edit (Insert or Overwrite) on the
+    /// magnetic primary track, wiring up a linked audio partner on a
+    /// connected audio track when the source has audio. Pushes exactly one
+    /// history entry — `EditCommand::SourceLinkedInsert` when an audio
+    /// partner was created, else `EditCommand::Magnetic`.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_source_magnetic_edit(
+        &mut self,
+        seq_idx: usize,
+        item: &klipp_media::MediaItem,
+        mid: klipp_core::MediaId,
+        mut new_clip: klipp_timeline::Clip,
+        timeline_in: Timecode,
+        dur: Timecode,
+        source_in: Timecode,
+        source_out: Timecode,
+        mode: klipp_timeline::magnetic::EditMode,
+    ) {
+        let has_linked_audio = item.has_audio;
+        let video_clip_id = new_clip.id;
+
+        // Pre-generate audio clip id so the video clip can carry
+        // linked_clip_id into the magnetic command for later undo.
+        let audio_clip_id = if has_linked_audio {
+            let aid = klipp_core::ClipId::new();
+            new_clip.linked_clip_id = Some(aid);
+            Some(aid)
+        } else {
+            None
+        };
+
+        // Locate or auto-create the audio track BEFORE the magnetic edit so
+        // we can snapshot its clip list — magnetic's connected-track cascade
+        // may move anchored A1 clips, and the snapshot captures the true
+        // pre-edit state.
+        let audio_track_info: Option<(usize, Vec<klipp_timeline::Clip>)> = if has_linked_audio {
+            let existing = self.state.sequences[seq_idx].tracks.iter()
+                .position(|t| t.kind == klipp_timeline::TrackKind::Audio);
+            let ai = existing.unwrap_or_else(|| {
+                let seq = &mut self.state.sequences[seq_idx];
+                let audio_count = seq.tracks.iter()
+                    .filter(|t| t.kind == klipp_timeline::TrackKind::Audio)
+                    .count();
+                seq.add_audio_track(format!("Audio {}", audio_count + 1));
+                seq.tracks.iter()
+                    .position(|t| t.kind == klipp_timeline::TrackKind::Audio)
+                    .expect("audio track just added")
+            });
+            let before = self.state.sequences[seq_idx].tracks[ai].clips.clone();
+            Some((ai, before))
+        } else {
+            None
+        };
+
+        let result = klipp_timeline::magnetic::MagneticEditor::three_point_edit(
+            &mut self.state.sequences[seq_idx],
+            new_clip,
+            timeline_in,
+            true,
+            mode,
+        );
+
+        match (audio_clip_id, audio_track_info) {
+            (Some(aid), Some((ai, audio_clips_before))) => {
+                let mut audio_clip = klipp_timeline::Clip::media(
+                    mid,
+                    timeline_in,
+                    timeline_in + dur,
+                    source_in,
+                    source_out,
+                );
+                audio_clip.id = aid;
+                audio_clip.linked_clip_id = Some(video_clip_id);
+                // overwrite_insert_clip_on_track is safe for both modes:
+                // for Insert, any anchored A1 clips have already been
+                // cascaded by the magnetic primary edit, leaving a clean
+                // slot; for non-anchored overlap, overwrite semantics
+                // prevent pile-up. A per-mode audio ripple is a future
+                // polish tracked separately.
+                if let Some(track) = self.state.sequences[seq_idx].tracks.get_mut(ai) {
+                    Self::overwrite_insert_clip_on_track(track, audio_clip);
+                }
+                let audio_clips_after = self.state.sequences[seq_idx].tracks[ai].clips.clone();
+                self.state.history.push(HistoryEntry {
+                    sequence_idx: seq_idx,
+                    command: EditCommand::SourceLinkedInsert {
+                        video_command: result.command,
+                        audio_track_index: ai,
+                        audio_clips_before,
+                        audio_clips_after,
+                    },
+                });
+            }
+            _ => {
+                self.state.history.push(HistoryEntry {
+                    sequence_idx: seq_idx,
+                    command: EditCommand::Magnetic(result.command),
+                });
             }
         }
     }
@@ -20491,6 +20653,7 @@ impl KlippApp {
                         left_resizer_rect,
                         inspector_rect,
                         right_resizer_rect,
+                        source_viewer_rect,
                         viewer_rect,
                         h_resizer_rect,
                         curve_editor_rect,
@@ -20542,6 +20705,7 @@ impl KlippApp {
                     let color_tools_bottom = in_color_ws
                         && self.state.color_tools_position == crate::state::ColorToolsPosition::Bottom;
 
+                    self.render_source_viewer_placeholder(ui, source_viewer_rect, all_cmds);
                     self.render_viewer_panel(ui, viewer_rect, all_cmds);
 
                     // Compute bottom-panel scope cursor data (shared by overlay + bottom panel)
@@ -20714,6 +20878,52 @@ impl KlippApp {
             );
             all_cmds.extend(panel_cmds);
         });
+    }
+
+    /// Paint the Source Viewer panel — video area on top (delegated to
+    /// `ViewerPanel::show_source_viewer`, which handles skim-texture
+    /// preview, metadata card, In/Out markers, and edit buttons) plus the
+    /// shared transport chrome (scrub bar + play bar) below.
+    ///
+    /// The transport chrome currently routes to the timeline playhead
+    /// because per-viewer routing isn't wired yet. That's the next piece
+    /// of the source-decoder / source-playhead work.
+    fn render_source_viewer_placeholder(
+        &mut self,
+        ui: &mut egui::Ui,
+        source_viewer_rect: egui::Rect,
+        all_cmds: &mut Vec<AppCommand>,
+    ) {
+        // Must match the transport-chrome heights inside `draw_transport_chrome`.
+        const BOTTOM_H: f32 = 16.0 + 40.0;
+
+        let video_rect = egui::Rect::from_min_max(
+            source_viewer_rect.min,
+            egui::pos2(source_viewer_rect.max.x, source_viewer_rect.max.y - BOTTOM_H),
+        );
+        let chrome_rect = egui::Rect::from_min_size(
+            egui::pos2(source_viewer_rect.min.x, video_rect.max.y),
+            egui::vec2(source_viewer_rect.width(), BOTTOM_H),
+        );
+
+        // Black letterbox behind the source viewer content.
+        ui.painter_at(video_rect).rect_filled(video_rect, 0.0, egui::Color32::BLACK);
+
+        // Delegate the video-area rendering to the existing ViewerPanel
+        // helper — same skim texture, same metadata card, same In/Out
+        // markers, same edit buttons users already saw when clicking the
+        // old "Source" toggle. No duplicated logic.
+        self.viewer.show_source_viewer(ui, &self.state, video_rect, all_cmds);
+
+        // Reuse the same scrub bar + play bar the Program Viewer renders,
+        // so both viewers share identical transport chrome.
+        let chrome_cmds = self.viewer.draw_transport_chrome(
+            ui,
+            &mut self.state,
+            &self.theme,
+            chrome_rect,
+        );
+        all_cmds.extend(chrome_cmds);
     }
 
     fn render_viewer_panel(

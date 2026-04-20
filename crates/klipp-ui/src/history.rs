@@ -192,6 +192,20 @@ pub enum EditCommand {
     // === MAGNETIC (Primary/Connected tracks) ===
     Magnetic(klipp_timeline::magnetic_commands::MagneticEditCommand),
 
+    /// Source-viewer three-point edit that inserted a video clip on the
+    /// primary track and a linked audio partner on a connected audio
+    /// track, as a single atomic action. The video side rides on the
+    /// magnetic command; the audio track is captured as full
+    /// before/after clip-list snapshots because
+    /// `overwrite_insert_clip_on_track` does not emit ripple records and
+    /// snapshotting is simpler than synthesising per-clip records.
+    SourceLinkedInsert {
+        video_command: klipp_timeline::magnetic_commands::MagneticEditCommand,
+        audio_track_index: usize,
+        audio_clips_before: Vec<Clip>,
+        audio_clips_after: Vec<Clip>,
+    },
+
     LegacySlipClip {
         clip_id: ClipId,
         old_source_in: RationalTime,
@@ -254,11 +268,11 @@ pub enum EditCommand {
     BatchRenameMediaItems {
         changes: Vec<(MediaId, String, String)>,
     },
-    /// Subclip created from a zone on `parent_id`. Undo drops the subclip
-    /// from the pool by id. Redo is not wired for MVP — users recreate via
-    /// the source-viewer button.
+    /// Subclip created from a zone on `parent_id`. Full `subclip`
+    /// MediaItem is carried so redo can re-insert it verbatim (same id,
+    /// same zone, same name). Undo drops it from the pool.
     CreateSubclip {
-        subclip_id: MediaId,
+        subclip: klipp_media::MediaItem,
         parent_id: MediaId,
     },
 
@@ -372,6 +386,7 @@ impl EditCommand {
             EditCommand::LegacyCutClip { .. } => "Cut Clip",
             EditCommand::LegacyPasteClip { .. } => "Paste Clip",
             EditCommand::Magnetic(cmd) => cmd.label(),
+            EditCommand::SourceLinkedInsert { video_command, .. } => video_command.label(),
             EditCommand::AddMediaToPool { .. } => "Import Media",
             EditCommand::RemoveMediaFromPool { .. } => "Remove Media",
             EditCommand::MoveMediaToBin { .. } => "Move to Bin",
