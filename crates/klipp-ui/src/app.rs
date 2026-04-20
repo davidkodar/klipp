@@ -206,6 +206,14 @@ pub struct KlippApp {
     /// invocation editor state (the targeted sequence index + its current
     /// width/height/fps being edited). `None` when closed.
     sequence_settings_dialog: Option<crate::panels::sequence_settings_dialog::SequenceSettingsDialog>,
+    /// "Change Project Frame Rate?" modal. `Some` when the user is being
+    /// asked whether to adopt an imported clip's fps; holds the deferred
+    /// append/import command that will be re-dispatched on confirm.
+    framerate_mismatch_dialog: Option<crate::panels::framerate_mismatch_dialog::FrameRateMismatchDialog>,
+    /// One-shot bypass for the fps-mismatch prompt. Set after the user has
+    /// already answered the dialog so the re-dispatched append does not
+    /// re-open it. Cleared the moment the next append handler runs.
+    suppress_fps_prompt: bool,
     // Node graph and inspector panels (Color workspace)
     node_graph_panel: crate::panels::node_graph::NodeGraphPanel,
     node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel,
@@ -378,6 +386,8 @@ impl KlippApp {
             launch_screen: crate::panels::launch_screen::LaunchScreen::default(),
             new_project_dialog: crate::panels::new_project_dialog::NewProjectDialog::new(None),
             sequence_settings_dialog: None,
+            framerate_mismatch_dialog: None,
+            suppress_fps_prompt: false,
             node_graph_panel: crate::panels::node_graph::NodeGraphPanel::default(),
             node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel::default(),
             node_param_edit_snapshot: None,
@@ -7858,6 +7868,65 @@ impl KlippApp {
         }
     }
 
+    /// If placing `media_id` onto the active sequence would introduce a
+    /// video clip whose fps differs from the sequence's, opens the
+    /// "Change Project Frame Rate?" modal and stashes `pending_cmd` for
+    /// re-dispatch when the user answers. Returns `true` when the caller
+    /// should abort the current handler (the append is deferred).
+    ///
+    /// Skipped when:
+    /// - the one-shot bypass is set (prompt was just answered),
+    /// - the media has no video track (audio-only),
+    /// - the sequence has no video clips yet (silent first-clip auto-set
+    ///   path in the append handler already handles this), or
+    /// - fps already matches.
+    fn maybe_prompt_framerate_mismatch(
+        &mut self,
+        media_id: &klipp_core::MediaId,
+        pending_cmd: AppCommand,
+    ) -> bool {
+        if self.suppress_fps_prompt {
+            return false;
+        }
+        let (media_fps, is_video) = match self.state.media_pool.get(media_id) {
+            Some(item) => (
+                item.fps,
+                !item.video_codec.is_empty()
+                    && item.resolution.width > 0
+                    && item.resolution.height > 0,
+            ),
+            None => return false,
+        };
+        if !is_video {
+            return false;
+        }
+        let seq_idx = self.state.active_sequence_idx;
+        let Some(seq) = self.state.sequences.get(seq_idx) else {
+            return false;
+        };
+        let has_video_clips = seq
+            .tracks
+            .iter()
+            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .any(|t| !t.clips.is_empty());
+        if !has_video_clips {
+            return false;
+        }
+        let sequence_fps = seq.fps;
+        if media_fps == sequence_fps {
+            return false;
+        }
+        self.framerate_mismatch_dialog = Some(
+            crate::panels::framerate_mismatch_dialog::FrameRateMismatchDialog {
+                sequence_idx: seq_idx,
+                media_fps,
+                sequence_fps,
+                pending_cmd,
+            },
+        );
+        true
+    }
+
     fn handle_media_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         // INLINE: LoadMediaFile uses two-phase dispatch. It conditionally returns
         // true (duplicate found, skip engine) or false (stage pending_media_path
@@ -7939,6 +8008,10 @@ impl KlippApp {
                     true
                 }
                 AppCommand::AppendClip { media_id } => {
+                    if self.maybe_prompt_framerate_mismatch(media_id, cmd.clone()) {
+                        return true;
+                    }
+                    self.suppress_fps_prompt = false;
                     if let Some(item) = self.state.media_pool.get(media_id) {
                         let duration = item.duration;
                         let is_audio_only = item.video_codec.is_empty();
@@ -7984,6 +8057,10 @@ impl KlippApp {
                     true
                 }
                 AppCommand::AppendClipToTrack { media_id, track_index } => {
+                    if self.maybe_prompt_framerate_mismatch(media_id, cmd.clone()) {
+                        return true;
+                    }
+                    self.suppress_fps_prompt = false;
                     if let Some(item) = self.state.media_pool.get(media_id) {
                         let duration = item.duration;
                         // Auto-set sequence resolution + FPS from first video clip
@@ -8043,6 +8120,10 @@ impl KlippApp {
                     true
                 }
                 AppCommand::ImportMediaLinked { media_id } => {
+                    if self.maybe_prompt_framerate_mismatch(media_id, cmd.clone()) {
+                        return true;
+                    }
+                    self.suppress_fps_prompt = false;
                     if let Some(item) = self.state.media_pool.get(media_id).cloned() {
                         // Auto-set sequence resolution + FPS from first video clip
                         if !item.video_codec.is_empty() && item.resolution.width > 0 && item.resolution.height > 0 {
@@ -19887,6 +19968,37 @@ impl KlippApp {
             cmds.extend(dlg_cmds);
             if !still_open {
                 self.sequence_settings_dialog = None;
+            }
+        }
+
+        // 4c1a-bis. Frame-rate mismatch prompt. When the user drops a clip
+        // whose fps differs from the active sequence's (and the sequence
+        // already has clips), the append handler defers and opens this
+        // modal. Re-dispatch the stashed command on Change / Don't Change
+        // with `suppress_fps_prompt` set so the handler does not re-prompt.
+        if let Some(dlg) = self.framerate_mismatch_dialog.as_mut() {
+            if let Some(choice) = dlg.show(ctx) {
+                use crate::panels::framerate_mismatch_dialog::FrameRateMismatchChoice;
+                let pending = dlg.pending_cmd.clone();
+                let seq_idx = dlg.sequence_idx;
+                let media_fps = dlg.media_fps;
+                self.framerate_mismatch_dialog = None;
+                match choice {
+                    FrameRateMismatchChoice::Change => {
+                        cmds.push(AppCommand::SetSequenceFps {
+                            sequence_idx: seq_idx,
+                            fps_num: media_fps.num,
+                            fps_den: media_fps.den,
+                        });
+                        self.suppress_fps_prompt = true;
+                        cmds.push(pending);
+                    }
+                    FrameRateMismatchChoice::DontChange => {
+                        self.suppress_fps_prompt = true;
+                        cmds.push(pending);
+                    }
+                    FrameRateMismatchChoice::Cancel => {}
+                }
             }
         }
 
