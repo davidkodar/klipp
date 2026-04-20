@@ -16,8 +16,11 @@ pub enum SortBy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum BrowserViewMode {
-    #[default]
     List,
+    /// Default: card layout with thumbnail on top, truncated filename below
+    /// — the Resolve / Premiere convention. List view stays available as the
+    /// dense option for power-user browsing of large bins.
+    #[default]
     Grid,
 }
 
@@ -334,6 +337,40 @@ fn is_media_used(state: &AppState, media_id: MediaId) -> bool {
     state.media_usage_cache.get(&media_id).copied().unwrap_or(0) > 0
 }
 
+/// Paint two non-conflicting "usage state" indicators on a media tile,
+/// matching the Resolve convention:
+///   * `loaded_in_source` → 2px accent border around the thumbnail rect.
+///   * `on_timeline`      → 3px solid red bar across the bottom edge of
+///     the thumbnail. Red because it must read instantly against any
+///     thumbnail content; the accent amber is reserved for selection /
+///     focus signalling so red carves out its own meaning ("in use").
+/// Both can be visible at once. Drawn in this order so the bottom 3px
+/// of the source-loaded border is overpainted by the red bar — desired,
+/// because the bar is the higher-information signal at that edge.
+fn paint_usage_badges(
+    painter: &egui::Painter,
+    thumb_rect: egui::Rect,
+    accent: egui::Color32,
+    loaded_in_source: bool,
+    on_timeline: bool,
+) {
+    if loaded_in_source {
+        painter.rect_stroke(
+            thumb_rect,
+            3.0,
+            egui::Stroke::new(2.0, accent),
+        );
+    }
+    if on_timeline {
+        let bar_h = 3.0_f32;
+        let bar = egui::Rect::from_min_max(
+            egui::pos2(thumb_rect.min.x, thumb_rect.max.y - bar_h),
+            thumb_rect.max,
+        );
+        painter.rect_filled(bar, 0.0, egui::Color32::from_rgb(220, 50, 50));
+    }
+}
+
 /// Dim a thumbnail and overlay an OFFLINE pill in the top-left corner.
 /// Used by both list and grid views to flag media whose source file is
 /// no longer present at the stored path.
@@ -577,6 +614,15 @@ fn render_list_view(
             if item.offline {
                 paint_offline_badge(ui.painter(), thumb_rect);
             }
+
+            // Usage indicators: source-loaded border + on-timeline dot.
+            paint_usage_badges(
+                ui.painter(),
+                thumb_rect,
+                theme.accent,
+                state.source_media_id == Some(item.id),
+                is_media_used(state, item.id),
+            );
 
             // Hover skim (list view: use whole row as skim area)
             handle_hover_skim(ui, state, &row_rect, item, cmds, false);
@@ -890,6 +936,15 @@ fn render_grid_view(
             if item.offline {
                 paint_offline_badge(ui.painter(), thumb_rect);
             }
+
+            // Usage indicators: source-loaded border + on-timeline dot.
+            paint_usage_badges(
+                ui.painter(),
+                thumb_rect,
+                theme.accent,
+                state.source_media_id == Some(item.id),
+                is_media_used(state, item.id),
+            );
 
             // Hover skim (grid view: white scrubber line over thumbnail)
             handle_hover_skim(ui, state, &thumb_rect, item, cmds, true);

@@ -755,7 +755,7 @@ impl Default for BrowserPanel {
             smart_bin_filter: SmartBinFilter::None,
             min_rating_filter: None,
             color_label_filter: 0,
-            browser_view_mode: media_tab::BrowserViewMode::List,
+            browser_view_mode: media_tab::BrowserViewMode::default(),
             renaming_bin: None,
             creating_bin: None,
             effects_category: effects_tab::EffectCategory::All,
