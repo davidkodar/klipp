@@ -596,15 +596,19 @@ impl KlippApp {
             let _ = app.prefs.save();
         }
 
-        // Discover OFX plugins at startup
+        // U-5: use the cached plugin_infos instead of spinning up a
+        // throwaway OfxHost just to extract metadata. The engine
+        // creates its own host for live invocation; this path only
+        // needs the read-only list for the effects registry + UI.
         {
-            let _t = LogTimer::new("ui: OfxHost::discover_plugins (duplicate)");
-            let mut ofx_host = klipp_plugin::OfxHost::new();
-            let count = ofx_host.discover_plugins();
-            app.state.available_plugins = ofx_host.plugin_infos();
+            let _t = LogTimer::new("ui: OfxHost plugin_infos (cached)");
+            app.state.available_plugins = klipp_plugin::plugin_infos_cached();
             app.state.effect_registry.merge_ofx_plugins(&app.state.available_plugins);
-            tracing::info!("OFX: discovered {} plugin(s), {} total effects in registry", count, app.state.effect_registry.effects.len());
-            // ofx_host dropped here — UI doesn't need to keep it; engine has its own
+            tracing::info!(
+                "OFX: {} cached plugin(s), {} total effects in registry",
+                app.state.available_plugins.len(),
+                app.state.effect_registry.effects.len()
+            );
         }
 
         // Discover LADSPA plugins at startup (cheap — dlopen+iterate only).
@@ -788,33 +792,34 @@ impl KlippApp {
                         self.state.playhead_anchor_wall = std::time::Instant::now();
                     }
                 }
-                AppEvent::MediaLoaded {
-                    media_id,
-                    path,
-                    duration,
-                    fps,
-                    resolution,
-                    video_codec,
-                    audio_codec,
-                    has_audio,
-                    file_size_bytes,
-                    sample_rate,
-                    audio_channels,
-                    is_still,
-                    file_modified_at,
-                    media_created_at,
-                    colour_space,
-                    source_rotation,
-                    camera_make,
-                    camera_model,
-                    encoder,
-                    bit_depth,
-                    video_bitrate_kbps,
-                    audio_bitrate_kbps,
-                    color_primaries,
-                    color_transfer,
-                    pixel_format,
-                } => {
+                AppEvent::MediaLoaded(payload) => {
+                    let klipp_core::MediaLoadedPayload {
+                        media_id,
+                        path,
+                        duration,
+                        fps,
+                        resolution,
+                        video_codec,
+                        audio_codec,
+                        has_audio,
+                        file_size_bytes,
+                        sample_rate,
+                        audio_channels,
+                        is_still,
+                        file_modified_at,
+                        media_created_at,
+                        colour_space,
+                        source_rotation,
+                        camera_make,
+                        camera_model,
+                        encoder,
+                        bit_depth,
+                        video_bitrate_kbps,
+                        audio_bitrate_kbps,
+                        color_primaries,
+                        color_transfer,
+                        pixel_format,
+                    } = *payload;
                     let filename = path
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
@@ -21352,7 +21357,15 @@ impl KlippApp {
                 });
             }
         });
-        ui.ctx().request_repaint();
+        // U-6: only drive a repaint when something's actually moving.
+        // Engine thread calls ctx.request_repaint on every frame write,
+        // and UI interactions (sliders, drags) already trigger paints
+        // via egui. An idle colour workspace needs no refresh — the
+        // unconditional repaint here used to pin the whole UI at max
+        // FPS whenever the panel was visible.
+        if self.state.playback == PlaybackState::Playing || self.state.is_scrubbing {
+            ui.ctx().request_repaint();
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -21412,7 +21425,12 @@ impl KlippApp {
                 self.state.scope_cursor_show,
             );
         });
-        ui.ctx().request_repaint();
+        // U-6: same guard as render_color_ws_bottom_tools. Scopes only
+        // need to animate while playback or scrubbing is live; static
+        // views don't need 60 Hz repaints.
+        if self.state.playback == PlaybackState::Playing || self.state.is_scrubbing {
+            ui.ctx().request_repaint();
+        }
     }
 
     fn render_color_ws_scope_settings_dropdown(

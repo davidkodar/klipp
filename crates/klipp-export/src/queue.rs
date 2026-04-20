@@ -145,7 +145,7 @@ impl RenderQueue {
         self.jobs.push(RenderJob {
             id,
             label,
-            output_path: output_path.clone(),
+            output_path,
             settings,
             status: RenderJobStatus::Queued,
             progress: 0.0,
@@ -392,10 +392,11 @@ impl RenderQueue {
         let cancel_clone = cancel.clone();
         let progress_clone = progress.clone();
         let render_stage = Arc::new(std::sync::Mutex::new(String::new()));
-        let loudness_result_shared = Arc::new(std::sync::Mutex::new(None::<String>));
+        // P-9: we only need one Arc handle on this side; the thread
+        // below moves it into the ExportJob.
+        let loudness_result_clone = Arc::new(std::sync::Mutex::new(None::<String>));
         let hw_info_clone = hw_info.clone();
         let render_stage_clone = render_stage.clone();
-        let loudness_result_clone = loudness_result_shared.clone();
         let (event_tx, event_rx) = crossbeam_channel::unbounded();
 
         let handle = std::thread::Builder::new()

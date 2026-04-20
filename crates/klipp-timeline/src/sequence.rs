@@ -715,7 +715,7 @@ impl Track {
             multicam_group: clip.multicam_group,
             multicam_angle: clip.multicam_angle,
             multicam_cuts: clip.multicam_cuts.clone(),
-            audio_effects: clip.audio_effects.clone(),
+            audio_effects: clip.audio_effects,
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),

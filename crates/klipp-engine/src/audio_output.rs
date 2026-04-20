@@ -41,20 +41,38 @@ pub fn set_skim_consumer(skim: &SkimConsumer, consumer: Option<ringbuf::HeapCons
 }
 
 /// Probe the default cpal output device sample rate. Returns 48000 if unavailable.
+///
+/// U-5: cached in a process-wide OnceLock. cpal's default-device
+/// enumeration is surprisingly expensive — a cold probe on ALSA /
+/// PipeWire can take 10-40 ms. The engine and the UI used to each
+/// call this independently at startup (see the
+/// "probe_sample_rate (duplicate)" LogTimer label in klipp-ui); the
+/// cache means whichever thread wins the race does the work once
+/// and the other becomes a ~100 ns atomic load. The default device
+/// doesn't hot-swap mid-process in any backend we support, so
+/// caching for the process lifetime is safe.
 pub fn probe_sample_rate() -> u32 {
-    use cpal::traits::{DeviceTrait, HostTrait};
-    let host = cpal::default_host();
-    host.default_output_device()
-        .and_then(|d| d.default_output_config().ok())
-        .map(|c| c.sample_rate().0)
-        .unwrap_or(48000)
+    static CACHED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        use cpal::traits::{DeviceTrait, HostTrait};
+        let host = cpal::default_host();
+        host.default_output_device()
+            .and_then(|d| d.default_output_config().ok())
+            .map(|c| c.sample_rate().0)
+            .unwrap_or(48000)
+    })
 }
 
 /// Check if an audio output device is available.
+///
+/// U-5: OnceLock-cached, same rationale as `probe_sample_rate`.
 pub fn probe_audio_available() -> bool {
-    use cpal::traits::HostTrait;
-    let host = cpal::default_host();
-    host.default_output_device().is_some()
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        use cpal::traits::HostTrait;
+        let host = cpal::default_host();
+        host.default_output_device().is_some()
+    })
 }
 
 /// Detailed info about a single output audio device, suitable for showing

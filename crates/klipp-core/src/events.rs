@@ -1333,6 +1333,38 @@ impl MarkerColor {
     }
 }
 
+/// Payload for [`AppEvent::MediaLoaded`]. See the T-4 note on the
+/// variant itself for the rationale on boxing this out.
+#[derive(Debug, Clone)]
+pub struct MediaLoadedPayload {
+    pub media_id: MediaId,
+    pub path: PathBuf,
+    pub duration: Timecode,
+    pub fps: Fps,
+    pub resolution: Resolution,
+    pub video_codec: String,
+    pub audio_codec: String,
+    pub has_audio: bool,
+    pub file_size_bytes: u64,
+    pub sample_rate: Option<u32>,
+    pub audio_channels: Option<u16>,
+    pub is_still: bool,
+    pub file_modified_at: Option<u64>,
+    pub media_created_at: Option<u64>,
+    pub colour_space: u8,
+    pub source_rotation: i32,
+    // Extended metadata
+    pub camera_make: Option<String>,
+    pub camera_model: Option<String>,
+    pub encoder: Option<String>,
+    pub bit_depth: Option<u8>,
+    pub video_bitrate_kbps: Option<u32>,
+    pub audio_bitrate_kbps: Option<u32>,
+    pub color_primaries: Option<String>,
+    pub color_transfer: Option<String>,
+    pub pixel_format: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     // Playback state
@@ -1342,35 +1374,14 @@ pub enum AppEvent {
     PlayheadMoved(Timecode),
     LoopedBack,
 
-    // Media
-    MediaLoaded {
-        media_id: MediaId,
-        path: PathBuf,
-        duration: Timecode,
-        fps: Fps,
-        resolution: Resolution,
-        video_codec: String,
-        audio_codec: String,
-        has_audio: bool,
-        file_size_bytes: u64,
-        sample_rate: Option<u32>,
-        audio_channels: Option<u16>,
-        is_still: bool,
-        file_modified_at: Option<u64>,
-        media_created_at: Option<u64>,
-        colour_space: u8,
-        source_rotation: i32,
-        // Extended metadata
-        camera_make: Option<String>,
-        camera_model: Option<String>,
-        encoder: Option<String>,
-        bit_depth: Option<u8>,
-        video_bitrate_kbps: Option<u32>,
-        audio_bitrate_kbps: Option<u32>,
-        color_primaries: Option<String>,
-        color_transfer: Option<String>,
-        pixel_format: Option<String>,
-    },
+    // Media. T-4: the payload is carried by a separate struct behind
+    // a Box so the AppEvent enum stays small — 25 fields (8× Option<String>)
+    // inlined made every variant ~344 B, including the 60 Hz
+    // FrameReady variant that doesn't carry any payload. Boxing pushes
+    // AppEvent down to 32 B and the MediaLoaded payload is
+    // heap-allocated on the rare occasions a media file is loaded
+    // (once per import, not per frame).
+    MediaLoaded(Box<MediaLoadedPayload>),
     MediaLoadFailed {
         media_id: MediaId,
         error: String,

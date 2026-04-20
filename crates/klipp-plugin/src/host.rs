@@ -1720,6 +1720,30 @@ impl OfxHostRuntime {
     pub fn plugin_infos(&self) -> Vec<OfxPluginInfo> {
         self.plugins.iter().map(|p| p.info()).collect()
     }
+}
+
+/// Return the list of OFX plugin metadata discovered on the default
+/// search paths, cached for the process lifetime.
+///
+/// U-5: consumers that only need the metadata (inspector menus,
+/// effect registry merge) can call this instead of constructing
+/// their own `OfxHost` — discovery is expensive (directory walks +
+/// dlopen of every bundle) and the engine already runs it once.
+/// The engine still creates its own host for live invocation;
+/// this cache is for read-only consumers.
+pub fn plugin_infos_cached() -> Vec<OfxPluginInfo> {
+    static CACHED: std::sync::OnceLock<Vec<OfxPluginInfo>> = std::sync::OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            let mut host = OfxHost::new();
+            host.discover_plugins();
+            host.plugin_infos()
+        })
+        .clone()
+}
+
+// Re-open the impl block closed above to preserve the rest of the methods.
+impl OfxHost {
 
     pub fn host_propset_handle(&self) -> ffi::OfxPropertySetHandle {
         self.host_propset_handle

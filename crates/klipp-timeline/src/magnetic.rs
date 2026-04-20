@@ -638,8 +638,8 @@ impl MagneticEditor {
         let insert_cmd = MagneticEditCommand::InsertPrimary {
             inserted_clip: sequence.tracks[primary_idx].clips[insert_idx].clone(),
             track_index: primary_idx,
-            rippled_clips: rippled_clips.clone(),
-            cascaded_clips: cascaded_clips.clone(),
+            rippled_clips,
+            cascaded_clips,
         };
 
         MagneticResult {
@@ -932,7 +932,7 @@ impl MagneticEditor {
         let new_anchor = MagneticAnchor {
             anchor_clip_id,
             offset,
-            alignment: alignment.clone(),
+            alignment,
         };
 
         // Position doesn't change on connect

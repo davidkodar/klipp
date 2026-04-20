@@ -6881,36 +6881,38 @@ impl PlaybackEngine {
                     }
                 }
 
-                let _ = self.event_tx.send(AppEvent::MediaLoaded {
-                    media_id,
-                    path,
-                    duration: self.duration,
-                    fps: self.fps,
-                    resolution: Resolution {
-                        width: video_w,
-                        height: video_h,
+                let _ = self.event_tx.send(AppEvent::MediaLoaded(Box::new(
+                    klipp_core::MediaLoadedPayload {
+                        media_id,
+                        path,
+                        duration: self.duration,
+                        fps: self.fps,
+                        resolution: Resolution {
+                            width: video_w,
+                            height: video_h,
+                        },
+                        video_codec,
+                        audio_codec,
+                        has_audio,
+                        file_size_bytes,
+                        sample_rate,
+                        audio_channels,
+                        is_still,
+                        file_modified_at,
+                        media_created_at,
+                        colour_space,
+                        source_rotation,
+                        camera_make,
+                        camera_model,
+                        encoder,
+                        bit_depth,
+                        video_bitrate_kbps,
+                        audio_bitrate_kbps,
+                        color_primaries: color_primaries_name,
+                        color_transfer: color_transfer_name,
+                        pixel_format: pixel_format_name,
                     },
-                    video_codec,
-                    audio_codec,
-                    has_audio,
-                    file_size_bytes,
-                    sample_rate,
-                    audio_channels,
-                    is_still,
-                    file_modified_at,
-                    media_created_at,
-                    colour_space,
-                    source_rotation,
-                    camera_make,
-                    camera_model,
-                    encoder,
-                    bit_depth,
-                    video_bitrate_kbps,
-                    audio_bitrate_kbps,
-                    color_primaries: color_primaries_name,
-                    color_transfer: color_transfer_name,
-                    pixel_format: pixel_format_name,
-                });
+                )));
 
                 self.grab_first_frame();
                 (self.repaint_cb)();

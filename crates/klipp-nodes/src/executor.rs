@@ -1477,7 +1477,7 @@ impl GraphExecutor {
                 let white_u8 = vec![255u8; graded_u8.len()];
                 let matte_rgba_u8 = match secondary_input {
                     Some(s) => linear_rgba_to_u8(s),
-                    None => white_u8.clone(),
+                    None => white_u8,
                 };
                 let ungraded_u8 = match tertiary_input {
                     Some(t) => linear_rgba_to_u8(t),

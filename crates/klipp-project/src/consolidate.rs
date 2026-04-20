@@ -476,7 +476,9 @@ pub fn consolidate_project(
         return Err(ConsolidateError::SourceNotFound(source_project_dir.to_path_buf()));
     }
     if options.dest_dir.exists() {
-        return Err(ConsolidateError::DestinationExists(options.dest_dir.clone()));
+        // P-9: clippy flagged the clone as redundant — we partial-move
+        // `dest_dir` out; `options` isn't used again on this error path.
+        return Err(ConsolidateError::DestinationExists(options.dest_dir));
     }
 
     let plan = build_copy_plan(media_pool, sequences, color_settings, &options);

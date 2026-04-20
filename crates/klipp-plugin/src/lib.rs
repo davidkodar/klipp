@@ -107,8 +107,8 @@ pub mod test_plugin;
 pub mod thread;
 
 pub use host::{
-    AppliedEffect, OfxCategory, OfxHost, OfxHostRuntime, OfxPluginInfo, OfxValue, OfxValueExt,
-    PluginError,
+    plugin_infos_cached, AppliedEffect, OfxCategory, OfxHost, OfxHostRuntime, OfxPluginInfo,
+    OfxValue, OfxValueExt, PluginError,
 };
 pub use param::{ParamDescriptor, ParamType, ParamValue};
 pub use image_effect::FrameProviderFn;
