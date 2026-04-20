@@ -53,6 +53,7 @@ pub mod audio_output;
 pub mod audio_source;
 pub mod composite;
 pub mod engine;
+pub mod ffmpeg_caps;
 pub mod mix_thread;
 pub mod perf;
 pub mod render_cache;

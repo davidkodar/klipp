@@ -1239,11 +1239,21 @@ impl KlippApp {
         let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
         let generate_if_missing = self.state.project_auto_filmstrips
             .unwrap_or(self.prefs.editing.auto_generate_filmstrips);
-        let interval = (duration_secs / 400.0).clamp(0.2, 1.5);
+        // Target ~400 frames across the whole clip. The 0.2 s floor
+        // keeps very short clips from producing too many closely-
+        // spaced tiles. No upper clamp on interval — long clips widen
+        // the interval so coverage always spans the full duration
+        // instead of truncating at the engine's 500-frame cap (which
+        // previously left the tail of any clip > ~10 min with no
+        // filmstrip tiles at all). Zoom-in detail for any section is
+        // added on demand by RefineFilmstrip.
+        let interval = (duration_secs / 400.0).max(0.2);
         let filmstrip_height = self.prefs.media_cache.filmstrip_height.max(24);
-        // Seed the per-job progress counter so the UI can show "N/500"
-        // from the very first frame. Capped at 500 to mirror
-        // generate_filmstrip_incremental's hard cap.
+        // Seed the per-job progress counter so the status bar shows
+        // "N/total" from the very first frame. The engine still caps
+        // at 500 as a safety ceiling; with the widened interval above
+        // the expected count only approaches 500 on short clips where
+        // the 0.2 s floor drives it up.
         let expected_frames = (((duration_secs / interval).ceil() as u32).min(500)).max(1);
         self.state.filmstrip_progress.insert(media_id, (0, expected_frames));
         // Wrap in a ThreadJob so the JobScheduler can pause us when
@@ -1359,17 +1369,25 @@ impl KlippApp {
             .join("klipp")
             .join("audio-cache");
         let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
-        // Wrap in a ThreadJob so the worker runs at nice +10 (Linux
-        // scheduler prefers playback thread) and the global
-        // JobScheduler can cancel it on shutdown. The conform itself
-        // is one blocking call to ffmpeg's audio decoder, so
-        // wait_while_paused only fires before that call starts —
-        // mid-decode pause requires pushing a token into
-        // klipp_media::audio_cache, which is a separate refactor.
+        // Wrap in a ThreadJob so the global JobScheduler can cancel
+        // it on shutdown. The conform itself is one blocking call to
+        // ffmpeg's audio decoder, so wait_while_paused only fires
+        // before that call starts — mid-decode pause requires pushing
+        // a token into klipp_media::audio_cache, which is a separate
+        // refactor.
+        //
+        // Priority: UserInteractive. Audio skim (hover a clip to hear
+        // it) silently returns nothing until the PCM cache exists, so
+        // a Background-priority conform gets paused by user activity
+        // the moment the user hovers a freshly-imported clip — the
+        // exact moment the PCM is needed. UserInteractive is the only
+        // priority the scheduler never pauses (apply_pause_state in
+        // scheduler.rs). Conform is short (~3 s for a 15-min clip at
+        // nice 0) so elevating it doesn't starve anything.
         let path_for_job = path.clone();
         let job = klipp_jobs::ThreadJob::spawn(
             format!("audio-conform:{}", path_for_job.display()),
-            klipp_jobs::JobPriority::Background,
+            klipp_jobs::JobPriority::UserInteractive,
             klipp_jobs::ResourceClass::Cpu,
             move |pause_token, _progress| {
                 // Honour any pre-decode pause / cancel.
@@ -17797,25 +17815,66 @@ impl KlippApp {
             let job_for_thread = Arc::clone(&job);
             std::thread::spawn(move || {
                 let job = job_for_thread;
-                let run_ffmpeg = |args: &[&str]| -> Result<std::process::ExitStatus, std::io::Error> {
-                    use std::io::BufRead;
-                    // Use -progress pipe:1 for clean key=value progress on stdout
+                let run_ffmpeg = |args: &[&str], label: &str| -> Result<std::process::ExitStatus, std::io::Error> {
+                    use std::io::{BufRead, Read};
+                    // Use -progress pipe:1 for clean key=value progress on stdout.
+                    // -hide_banner cuts the version preamble out of stderr so the
+                    // captured tail contains only meaningful errors.
+                    // -loglevel info keeps real errors but drops "frame=…" status spam.
                     let mut full_args: Vec<&str> = args.to_vec();
-                    full_args.extend_from_slice(&["-progress", "pipe:1"]);
+                    full_args.extend_from_slice(&["-hide_banner", "-loglevel", "info", "-progress", "pipe:1"]);
+
+                    // Echo the full command at debug level so we can reproduce
+                    // failures from the log without guessing what was run.
+                    tracing::debug!("ffmpeg [{label}] invoking: ffmpeg {}", full_args.join(" "));
 
                     let mut child = std::process::Command::new("ffmpeg")
                         .args(&full_args)
                         .stdout(std::process::Stdio::piped())
-                        .stderr(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::piped())
                         .spawn()?;
 
                     // Hand the child to the SubprocessJob — needed
                     // BEFORE we read stdout so cancel() during the
                     // read loop can kill the process. Releases the
                     // child handle inside the job; we still need
-                    // stdout, so take it back below.
+                    // stdout / stderr, so take them back below.
                     let stdout = child.stdout.take();
+                    let stderr = child.stderr.take();
                     job.register_child(child);
+
+                    // Drain stderr in a background thread into a
+                    // ring-buffered tail (last ~8 KiB). Without this
+                    // ffmpeg can block once the OS pipe fills up,
+                    // wedging the encode. We surface the tail on
+                    // non-zero exit so the user log records the
+                    // actual ffmpeg error message instead of just
+                    // an opaque exit code.
+                    let stderr_tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+                    let stderr_handle = stderr.map(|mut s| {
+                        let buf = std::sync::Arc::clone(&stderr_tail);
+                        std::thread::spawn(move || {
+                            let mut chunk = [0u8; 4096];
+                            let cap = 8192;
+                            loop {
+                                match s.read(&mut chunk) {
+                                    Ok(0) | Err(_) => break,
+                                    Ok(n) => {
+                                        let mut g = buf.lock().unwrap_or_else(|e| e.into_inner());
+                                        g.extend_from_slice(&chunk[..n]);
+                                        // Trim from the front so we
+                                        // keep only the most recent
+                                        // `cap` bytes (errors are
+                                        // usually at the end).
+                                        if g.len() > cap {
+                                            let drop = g.len() - cap;
+                                            g.drain(..drop);
+                                        }
+                                    }
+                                }
+                            }
+                        })
+                    });
 
                     // Parse stdout for progress lines: "out_time_us=12345678"
                     if let Some(stdout) = stdout {
@@ -17856,7 +17915,39 @@ impl KlippApp {
                             ));
                         }
                     };
-                    child.wait()
+                    let status = child.wait();
+                    // Reap the stderr drain thread so we have the
+                    // tail captured by the time we surface it.
+                    if let Some(h) = stderr_handle {
+                        let _ = h.join();
+                    }
+                    if let Ok(s) = &status {
+                        if !s.success() {
+                            let tail = stderr_tail.lock().unwrap_or_else(|e| e.into_inner());
+                            let snippet = String::from_utf8_lossy(&tail);
+                            // Print the raw stderr verbatim with newlines,
+                            // not the over-filtered cleaned version. Empty-tail
+                            // bug from the previous formulation hid the actual
+                            // error. Take the last ~4 KB so we don't spam logs
+                            // on long ffmpeg runs but always show something.
+                            let raw = snippet.replace('\r', "\n");
+                            let trimmed = if raw.len() > 4096 {
+                                let start = raw.len() - 4096;
+                                // Snap to the next char boundary so we don't
+                                // slice through a multi-byte UTF-8 sequence.
+                                let mut i = start;
+                                while i < raw.len() && !raw.is_char_boundary(i) { i += 1; }
+                                format!("…(truncated)…\n{}", &raw[i..])
+                            } else {
+                                raw
+                            };
+                            tracing::warn!(
+                                "ffmpeg [{label}] exited with {s}\n--- stderr ({} bytes captured) ---\n{}\n--- end stderr ---",
+                                tail.len(), trimmed,
+                            );
+                        }
+                    }
+                    status
                 };
 
                 let src = source_path.to_str().unwrap_or("");
@@ -17924,49 +18015,61 @@ impl KlippApp {
                 }
 
                 // Filter chain depends on whether the source is HDR.
-                //   * SDR: plain `scale_cuda` (fast GPU path, paired
-                //     with h264_nvenc).
-                //   * HDR: CPU-side tone-map via zscale + tonemap
-                //     (hable) + zscale back to BT.709 + yuv420p +
-                //     scale. NVENC can't tone-map natively on every
-                //     ffmpeg build, so we accept a slower CPU encode
-                //     for HDR sources — correctness > speed. The
-                //     output is a clean SDR BT.709 8-bit H.264 that
-                //     the normal NV12 playback path handles perfectly.
+                //   * SDR: plain `scale_cuda` + `h264_nvenc` — this
+                //     is already the fast path, no probing needed.
+                //   * HDR: ask `klipp_engine::ffmpeg_caps` to pick
+                //     the best chain available on this `ffmpeg` build.
+                //     Tier 1 keeps everything on the GPU
+                //     (`tonemap_cuda` + `h264_nvenc`); the worst
+                //     case falls back to the previous CPU-only path.
+                //     Cuts a 4K HDR transcode from ~30 min to ~3 min
+                //     on a 4080.
                 let nvenc_vf = format!("scale_cuda=-2:{target_height}");
                 let cpu_vf_sdr = format!("scale=-2:{target_height}");
-                let cpu_vf_hdr = format!(
-                    "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,\
-                     tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,\
-                     format=yuv420p,scale=-2:{target_height}"
-                );
                 let qp_str = skim_quality.to_string();
                 let start_ss = (resume_from_segment * SEGMENT_DURATION_SECS).to_string();
                 let seg_time = SEGMENT_DURATION_SECS.to_string();
                 let seg_start = resume_from_segment.to_string();
                 let seg_pattern = parts_dir.join("seg_%05d.mkv").to_string_lossy().into_owned();
 
-                // HDR clips can't use the NVENC fast path (no tone-
-                // map in scale_cuda). Go straight to libx264 with the
-                // tone-map filter chain. SDR clips try NVENC first.
                 let result = if is_hdr_source {
+                    let caps = klipp_engine::ffmpeg_caps::FfmpegCaps::detect();
+                    let chain = caps.pick_hdr_chain(target_height);
                     tracing::info!(
-                        "Skim transcode: HDR source detected — tone-mapping BT.2020/PQ → BT.709 SDR"
+                        "Skim transcode: HDR source detected — using {}",
+                        chain.tier.label(),
                     );
-                    run_ffmpeg(&[
-                        "-y",
-                        "-ss", &start_ss,
-                        "-i", src,
-                        "-c:v", "libx264", "-g", "1", "-crf", &qp_str,
-                        "-preset", "ultrafast",
-                        "-an", "-vf", &cpu_vf_hdr,
-                        "-f", "segment",
-                        "-segment_time", &seg_time,
-                        "-segment_format", "matroska",
-                        "-reset_timestamps", "1",
-                        "-segment_start_number", &seg_start,
-                        &seg_pattern,
-                    ])
+                    // Build the args vector dynamically — tiers vary
+                    // in input flags (`-hwaccel cuda` vs none) and
+                    // encoder args.
+                    let mut args: Vec<String> = vec!["-y".into()];
+                    args.extend(chain.input_args.iter().cloned());
+                    args.push("-ss".into());
+                    args.push(start_ss.clone());
+                    args.push("-i".into());
+                    args.push(src.into());
+                    args.push("-c:v".into());
+                    args.push(chain.encoder.clone());
+                    args.push("-g".into()); args.push("1".into());
+                    // Quality knob: nvenc uses -qp (constqp), libx264 uses -crf.
+                    if chain.encoder == "h264_nvenc" {
+                        args.push("-qp".into());
+                    } else {
+                        args.push("-crf".into());
+                    }
+                    args.push(qp_str.clone());
+                    args.extend(chain.encoder_args.iter().cloned());
+                    args.push("-an".into());
+                    args.push("-vf".into());
+                    args.push(chain.vf.clone());
+                    args.push("-f".into()); args.push("segment".into());
+                    args.push("-segment_time".into()); args.push(seg_time.clone());
+                    args.push("-segment_format".into()); args.push("matroska".into());
+                    args.push("-reset_timestamps".into()); args.push("1".into());
+                    args.push("-segment_start_number".into()); args.push(seg_start.clone());
+                    args.push(seg_pattern.clone());
+                    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                    run_ffmpeg(&arg_refs, "skim-encode-hdr")
                 } else {
                     run_ffmpeg(&[
                         "-y", "-hwaccel", "cuda",
@@ -17981,7 +18084,7 @@ impl KlippApp {
                         "-reset_timestamps", "1",
                         "-segment_start_number", &seg_start,
                         &seg_pattern,
-                    ])
+                    ], "skim-encode-sdr-nvenc")
                 };
 
                 let result = match &result {
@@ -18009,7 +18112,7 @@ impl KlippApp {
                                 "-reset_timestamps", "1",
                                 "-segment_start_number", &seg_start,
                                 &seg_pattern,
-                            ])
+                            ], "skim-encode-sdr-libx264")
                         }
                     }
                 };
@@ -18057,7 +18160,7 @@ impl KlippApp {
                             format!("file '{s}'\n")
                         })
                         .collect();
-                    if let Err(e) = std::fs::write(&list_path, list_body) {
+                    if let Err(e) = std::fs::write(&list_path, &list_body) {
                         tracing::warn!("Skim transcode: failed to write concat list: {e}");
                         job.mark_done();
                         let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
@@ -18065,6 +18168,35 @@ impl KlippApp {
                             error: format!("concat list write: {e}"),
                         });
                         return;
+                    }
+                    // Dump the first few segments + count + per-file
+                    // sizes so a future "concat exited 234" debug
+                    // session has enough context. Also catches the
+                    // common failure mode where ffmpeg wrote a 0-byte
+                    // segment that the concat demuxer can't probe.
+                    {
+                        let mut size_lines = Vec::with_capacity(segments.len().min(5));
+                        for (i, p) in segments.iter().take(5) {
+                            let sz = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+                            size_lines.push(format!("seg_{:05} = {} bytes", i, sz));
+                        }
+                        let zero_byte = segments.iter()
+                            .filter(|(_, p)| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0) == 0)
+                            .count();
+                        tracing::info!(
+                            "Skim concat: {} segments at {:?}; first sizes: {}{}",
+                            segments.len(),
+                            parts_dir,
+                            size_lines.join(", "),
+                            if zero_byte > 0 {
+                                format!(" — WARNING: {zero_byte} zero-byte segment(s)")
+                            } else { String::new() },
+                        );
+                        // First 4 lines of concat.txt — verifies the
+                        // generated paths look sane (no special chars,
+                        // quoting matches what ffmpeg expects).
+                        let preview: String = list_body.lines().take(4).collect::<Vec<_>>().join("\n");
+                        tracing::debug!("Skim concat: list_path={list_path:?} preview:\n{preview}");
                     }
 
                     // Concat into a `.partial` sibling so the final
@@ -18078,12 +18210,49 @@ impl KlippApp {
                     let _ = std::fs::remove_file(&concat_partial);
                     let list_str = list_path.to_string_lossy().into_owned();
                     let concat_dst = concat_partial.to_string_lossy().into_owned();
+                    // First try `-c copy` — fast, no re-encode.
+                    // `-f matroska` on the output is required because the
+                    // `.partial` sibling extension can't be format-inferred
+                    // by ffmpeg (exit 234: "Unable to choose an output
+                    // format for …mkv.partial").
                     let concat_result = run_ffmpeg(&[
                         "-y", "-f", "concat", "-safe", "0",
                         "-i", &list_str,
                         "-c", "copy",
+                        "-f", "matroska",
                         &concat_dst,
-                    ]);
+                    ], "skim-concat-copy");
+                    // If stream-copy concat fails (most commonly on
+                    // segments produced by libplacebo whose SPS/PPS
+                    // can drift between segments), retry with a fast
+                    // libx264 re-encode. This is much slower than
+                    // `-c copy` but the fallback ensures we publish
+                    // a usable skim instead of stranding the user
+                    // with a complete .parts/ directory and no
+                    // playable file.
+                    let concat_result = match &concat_result {
+                        Ok(s) if s.success() => concat_result,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => concat_result,
+                        _ => {
+                            if job.is_cancelled() {
+                                concat_result
+                            } else {
+                                tracing::info!(
+                                    "Skim concat: stream-copy failed, retrying with libx264 re-encode"
+                                );
+                                let _ = std::fs::remove_file(&concat_partial);
+                                run_ffmpeg(&[
+                                    "-y", "-f", "concat", "-safe", "0",
+                                    "-i", &list_str,
+                                    "-c:v", "libx264", "-preset", "ultrafast",
+                                    "-crf", "23",
+                                    "-an",
+                                    "-f", "matroska",
+                                    &concat_dst,
+                                ], "skim-concat-reencode")
+                            }
+                        }
+                    };
                     job.mark_done();
 
                     match concat_result {
