@@ -1,3 +1,42 @@
+//! Audio decoder thread: ffmpeg demux + decode + resample →
+//! interleaved f32 stereo samples in a lock-free ring buffer that
+//! cpal's output callback reads from.
+//!
+//! # Two-phase decode rule
+//!
+//! Same `send_packet` / `receive_frame` asymmetry as the video
+//! decoder — drain receive_frame to `EAGAIN` before every
+//! send_packet, and if send_packet returns `EAGAIN` stash the
+//! packet and retry after the next drain. See the
+//! [`crate::video_decoder`] module header for the full rationale.
+//! Silent packet loss here shows up as a clipped tail at the end
+//! of every audio region and progressive A/V drift.
+//!
+//! # Resampled-frame `data(0).len()` is NOT the usable size
+//!
+//! FFmpeg aligns resampler output to a buffer-internal linesize
+//! that may be padded beyond the actual sample count. Reading all
+//! of `resampled.data(0)` includes this padding and produces loud
+//! clicks or clipping in the output. Use
+//! `resampled.samples() * channels * size_of::<f32>()` as the byte
+//! count instead.
+//!
+//! # Resampler lifetime
+//!
+//! The [`ffmpeg_next::software::resampling::Context`] is rebuilt
+//! after every seek. Its internal state is time-continuous, so
+//! reusing it across a discontinuity in the input stream produces
+//! smearing between the two sides of the jump.
+//!
+//! # Channel layout
+//!
+//! Incoming frames may declare a non-default channel layout
+//! (5.1(side), quad, etc.). The resampler must be configured with
+//! the frame's actual layout, not the default for its channel
+//! count — otherwise it rejects every frame and the output is
+//! silent. See the conform_audio / audio_decoder / skim_audio
+//! paths for the "override on every setup" pattern.
+
 use crossbeam_channel::{Receiver, Sender};
 use klipp_audio::dsp::{AudioEffectChain, AudioProcessContext};
 use klipp_core::AudioEffectInstance;

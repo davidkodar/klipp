@@ -1,3 +1,66 @@
+//! Top-level export coordinator.
+//!
+//! # Dataflow
+//!
+//! ```text
+//!   Sequence + ExportSettings
+//!           │
+//!           ▼
+//!   SequenceSnapshot          ← immutable copy-for-rendering
+//!           │   (tracks, clip refs, node graphs, audio levels,
+//!           │    markers, subtitles — everything the render
+//!           │    needs without holding the editor's RwLock)
+//!           │
+//!           ├──────► RenderPipeline  (one per VIDEO track)
+//!           │              │
+//!           │              ├──► RenderDecoder  (one per clip, on demand)
+//!           │              │       │
+//!           │              │       ▼    decode + linear convert
+//!           │              │    linear-f32 frame
+//!           │              │       │
+//!           │              │       ▼
+//!           │              ├──► Stage (effects + grade chain, GPU)
+//!           │              │       │
+//!           │              │       ▼
+//!           │              └──► track-local composite
+//!           │                      │
+//!           │                      ▼
+//!           │               FrameCompositor  (blend tracks + overlay)
+//!           │                      │
+//!           │                      ▼
+//!           │                 display_transform
+//!           │                      │
+//!           │                      ▼
+//!           ├─────────────► Encoder (video side: YUV convert + x264/nvenc/…)
+//!           │
+//!           └──────► AudioMixdown  (all audio tracks in one pass)
+//!                          │
+//!                          ├──► RenderDecoder (per audio clip)
+//!                          │       │
+//!                          │       ▼   decode + resample + DSP chain
+//!                          │    interleaved f32 stereo
+//!                          │       │
+//!                          ▼       ▼
+//!                     per-track mix → master
+//!                          │
+//!                          ▼
+//!                      Encoder (audio side: aac/opus/…)
+//! ```
+//!
+//! The encoder muxes a single output file with video + audio +
+//! subtitle streams. Subtitles come from the snapshot's
+//! `subtitle_tracks` and the per-clip `ClipKindSnapshot::Subtitle`
+//! variants (soft-embedded or burned-in depending on
+//! `ExportSettings`).
+//!
+//! # Gap-11 invariant: one pipeline per video track
+//!
+//! Each video track has its own [`RenderPipeline`] instance, not
+//! a shared one. Each pipeline tracks `begin_clip` / `end_clip`
+//! state for chain optimisation; sharing would bleed per-clip
+//! grade parameters across tracks. See the `HashMap<TrackId,
+//! RenderPipeline>` in `ExportJob`.
+
 use crate::audio_mixdown::AudioMixdown;
 use crate::clip_decoder::RenderDecoder;
 use crate::compositor::FrameCompositor;

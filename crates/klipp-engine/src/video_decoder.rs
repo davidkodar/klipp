@@ -1,3 +1,46 @@
+//! Video decoder thread: ffmpeg demux + decode + colour convert →
+//! [`FrameQueue`]. Owns one `ffmpeg_next::format::context::Input`
+//! plus a `ffmpeg_next::decoder::Video` and drives them on a
+//! dedicated OS thread; the playback engine only talks to it via
+//! [`DecodeCommand`] and the queue.
+//!
+//! # Two-phase decode rule
+//!
+//! FFmpeg's `avcodec_send_packet` / `avcodec_receive_frame` pair is
+//! **asymmetric** under the hood: the decoder may buffer several
+//! input packets before producing a frame, and may produce several
+//! frames from one packet. Mixing `send` and `receive` in a naïve
+//! loop dead-locks on `EAGAIN`, and worst of all silently drops
+//! packets when the send loses data after a queue-full refusal.
+//!
+//! Every send/receive site in this crate MUST follow:
+//!
+//! 1. **Drain first**: call `decoder.receive_frame(&mut f)` in a
+//!    tight loop until it returns `EAGAIN`. Process each frame.
+//! 2. **Then send**: call `decoder.send_packet(&p)`. If it returns
+//!    `EAGAIN`, the packet is NOT consumed — stash it, drain again,
+//!    retry. Never `let _ = send_packet(...)`; silent drops make
+//!    A/V desync symptoms that are impossible to diagnose after the
+//!    fact.
+//! 3. **Non-target stream packets**: when the demuxed packet belongs
+//!    to a stream we're not decoding (e.g. audio packets in the
+//!    video decoder), do NOT `continue` the outer loop; fall through
+//!    to the next demux step so the two-phase cycle stays intact.
+//!
+//! # Bit depth
+//!
+//! 8-bit sources → `AV_PIX_FMT_RGBA` (1 byte/channel through swscale).
+//! 10+-bit sources → `AV_PIX_FMT_RGBA64LE` (2 bytes/channel) so the
+//! extra precision reaches the linear-light conversion step without
+//! being quantised at swscale time.
+//!
+//! # Hardware paths
+//!
+//! Decoder selection is CUDA NVDEC → VAAPI → software. VAAPI is
+//! currently broken on NVIDIA for AV1/VP9 (all-zero frames from the
+//! nvidia-vaapi-driver), so those codecs skip directly to software
+//! even when VAAPI is available. See `open_gpu_decoder`.
+
 use crate::types::{FrameQueue, LinearFrame, SharedFrameQueue};
 use crossbeam_channel::{Receiver, Sender};
 use klipp_color::transfer::srgb_to_linear;
