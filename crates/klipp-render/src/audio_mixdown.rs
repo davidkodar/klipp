@@ -87,8 +87,36 @@ impl AudioMixdown {
     }
 
     /// Get the interleaved stereo f32 audio samples for one video frame.
-    /// Returns exactly `samples_per_frame * 2` floats (stereo).
+    /// Returns exactly `samples_per_frame * 2` floats (stereo), clamped
+    /// to `[-1.0, 1.0]` so the encoder gets legal values.
+    ///
+    /// Use [`Self::get_frame_audio_unclamped`] instead for loudness
+    /// measurement — LUFS metering expects the raw summed mix, and
+    /// clamping first caps any over-1.0 energy and under-reports
+    /// integrated loudness on hot material (R-3).
     pub fn get_frame_audio(&mut self, frame_num: u64) -> Vec<f32> {
+        let mut mixed = self.mix_frame(frame_num);
+        for s in &mut mixed {
+            *s = s.clamp(-1.0, 1.0);
+        }
+        mixed
+    }
+
+    /// Get the interleaved stereo f32 audio samples without the
+    /// output-stage `[-1.0, 1.0]` clamp. Only use this for loudness
+    /// measurement — the encoder MUST get the clamped form so samples
+    /// land in the codec's legal input range.
+    ///
+    /// R-3: LUFS was previously measured on the clamped output, which
+    /// capped the apparent loudness of any over-full-scale summed mix.
+    /// The meter then reported a value below the real integrated LUFS,
+    /// loudness-normalize computed too much make-up gain, and the
+    /// encoded file came in LOUDER than the requested target.
+    pub fn get_frame_audio_unclamped(&mut self, frame_num: u64) -> Vec<f32> {
+        self.mix_frame(frame_num)
+    }
+
+    fn mix_frame(&mut self, frame_num: u64) -> Vec<f32> {
         let stereo_samples = self.samples_per_frame * 2;
         let mut mixed = vec![0.0f32; stereo_samples];
 
@@ -135,11 +163,6 @@ impl AudioMixdown {
                     mixed[i + 1] += r * pan_r;
                 }
             }
-        }
-
-        // Clamp to [-1.0, 1.0]
-        for s in &mut mixed {
-            *s = s.clamp(-1.0, 1.0);
         }
 
         mixed

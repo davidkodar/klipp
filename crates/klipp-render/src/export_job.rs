@@ -71,7 +71,7 @@ use crate::snapshot::{ClipKindSnapshot, SequenceSnapshot, SubtitleClipSnapshot};
 use crate::stage::ClipContext;
 use klipp_core::{ClipId, ExportSettings};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tracing::info;
@@ -171,8 +171,21 @@ impl ExportJob {
 
         let mut compositor = FrameCompositor::new();
         let mut audio_mixdown = AudioMixdown::new(&self.snapshot)?;
+
+        // R-5: encode to a `.partial` sibling so the final path only
+        // appears after a clean finalise. Crash / power loss / kill -9
+        // now leaves a `.partial` next to the target instead of a
+        // truncated but official-looking output file. We compose the
+        // sibling by appending `.partial` to the full filename so the
+        // original extension (mp4 / mov / mkv) survives for ffmpeg's
+        // muxer inference + any downstream stale-cleanup tooling.
+        let partial_path = partial_path_for(&self.output_path);
+        // Remove any stale partial from a prior aborted run so the
+        // encoder opens cleanly instead of refusing because the file
+        // already exists on some muxer backends.
+        let _ = std::fs::remove_file(&partial_path);
         let mut encoder =
-            Encoder::open(&self.output_path, &self.settings, &self.snapshot)?;
+            Encoder::open(&partial_path, &self.settings, &self.snapshot)?;
 
         // Pre-open all clip decoders (seek to their start positions)
         let mut decoders: HashMap<ClipId, RenderDecoder> = HashMap::new();
@@ -225,7 +238,12 @@ impl ExportJob {
                 if self.cancel.load(Ordering::Relaxed) {
                     return Err(RenderError::Cancelled);
                 }
-                let audio = measure_mixdown.get_frame_audio(frame_num);
+                // R-3: feed the UN-clamped summed mix to the LUFS meter
+                // so over-1.0 energy is measured as-is. Clamping first
+                // (the old behaviour via get_frame_audio) capped the
+                // apparent loudness of hot mixes and caused
+                // loudness-normalize to over-shoot the requested target.
+                let audio = measure_mixdown.get_frame_audio_unclamped(frame_num);
                 meter.process(&audio);
                 // Report measurement progress (roughly first ~10-15% of total work)
                 if i % 100 == 0 && measure_total > 0 {
@@ -288,9 +306,11 @@ impl ExportJob {
         for frame_num in start_frame..end_frame {
             // Check cancellation
             if self.cancel.load(Ordering::Relaxed) {
-                // Clean up partial file
+                // Clean up partial file (atomic-export: we were writing
+                // to partial_path, not output_path — nothing ever landed
+                // at output_path, so only the `.partial` needs to go).
                 drop(encoder);
-                let _ = std::fs::remove_file(&self.output_path);
+                let _ = std::fs::remove_file(&partial_path);
                 info!("ExportJob {}: cancelled at frame {}", self.id, frame_num);
                 return Err(RenderError::Cancelled);
             }
@@ -380,7 +400,34 @@ impl ExportJob {
             )?;
         }
 
+        // `encoder.finalise()` consumes the encoder, writes the
+        // trailer, and flushes the muxer to disk. After this returns
+        // Ok the `.partial` file is a fully-valid container.
         encoder.finalise()?;
+
+        // R-5: atomic publish. The rename is the single observable
+        // moment when the output path appears — concurrent readers
+        // never see a truncated MP4.
+        //
+        // `fs::rename` is atomic within the same filesystem (rename(2)
+        // on Linux). If `output_path` already exists (e.g. a previous
+        // export to the same name that the UI forgot to gate on
+        // DestinationExists) the rename overwrites it atomically.
+        // A cross-filesystem move would fail — ExportJob validates the
+        // dest dir earlier, so this only matters for pathological
+        // edge cases; we log + keep the `.partial` in place so the
+        // user can finish the move manually.
+        if let Err(e) = std::fs::rename(&partial_path, &self.output_path) {
+            tracing::warn!(
+                "ExportJob {}: rename {:?} → {:?} failed: {e}. The finished \
+                 encode is at the .partial path; rename manually.",
+                self.id, partial_path, self.output_path,
+            );
+            return Err(RenderError::Encode(format!(
+                "publish rename failed: {e} (encode complete at {:?})",
+                partial_path
+            )));
+        }
 
         info!(
             "ExportJob {}: complete, {} frames → {:?}",
@@ -528,6 +575,16 @@ impl ExportJob {
 // ═══════════════════════════════════════════════════════════════════
 
 /// Compute fitted dimensions and centering offset to fit `(src_w, src_h)`
+/// R-5: derive the `.partial` sibling path for atomic export. Appends
+/// `.partial` to the full filename so the original extension survives
+/// (ffmpeg's muxer selection + any downstream stale-cleanup tool that
+/// greps for the base name + `.partial`).
+fn partial_path_for(final_path: &Path) -> PathBuf {
+    let mut buf = final_path.as_os_str().to_owned();
+    buf.push(".partial");
+    PathBuf::from(buf)
+}
+
 /// into `(target_w, target_h)` while preserving aspect ratio.
 /// Returns (fitted_w, fitted_h, offset_x, offset_y).
 /// Fitted dimensions are forced even for YUV420p chroma subsampling compatibility.
@@ -755,8 +812,35 @@ mod tests {
 
         let result = job.run();
         assert!(matches!(result, Err(RenderError::Cancelled)));
-        // Partial file should be removed
-        assert!(!path.exists(), "partial file should be cleaned up");
+        // R-5: the final path never appears on a cancelled run (we
+        // write to the `.partial` sibling and only rename on success).
+        assert!(!path.exists(), "output path should not appear on cancel");
+        // And the `.partial` sibling must also be cleaned up so the
+        // next run starts clean.
+        let partial = partial_path_for(&path);
+        assert!(
+            !partial.exists(),
+            ".partial should be cleaned up on cancel, still exists at {:?}",
+            partial,
+        );
+    }
+
+    #[test]
+    fn partial_path_for_preserves_extension() {
+        assert_eq!(
+            partial_path_for(Path::new("/tmp/video.mp4")),
+            PathBuf::from("/tmp/video.mp4.partial"),
+        );
+        assert_eq!(
+            partial_path_for(Path::new("/tmp/video.mov")),
+            PathBuf::from("/tmp/video.mov.partial"),
+        );
+        // No extension — still appends .partial so the muxer can't
+        // accidentally pick it up as a finished artefact.
+        assert_eq!(
+            partial_path_for(Path::new("/tmp/nameonly")),
+            PathBuf::from("/tmp/nameonly.partial"),
+        );
     }
 
     #[test]

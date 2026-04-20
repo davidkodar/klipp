@@ -49,7 +49,14 @@ pub struct RenderDecoder {
     skip_until_secs: f64,
     /// Source time (seconds) at which this clip ends.
     source_end_secs: f64,
-    /// fps of the sequence — used for half-frame tolerance in skip logic.
+    /// Source stream's average frame rate — used for the half-frame
+    /// tolerance in skip / EOF logic. R-9: this was previously the
+    /// SEQUENCE fps, which produced an off-by-half tolerance whenever
+    /// a 60 fps source rendered into a 24 fps sequence (or the reverse)
+    /// — the tolerance window was wrong by a factor of up to 2.5× and
+    /// caused sporadic duplicate / missing source frames near clip
+    /// boundaries. The tolerance compares against source-time PTS so
+    /// the natural unit is source fps.
     fps: f64,
     /// Source rotation in degrees (0, 90, 180, 270) — applied after decode.
     source_rotation: i32,
@@ -85,6 +92,19 @@ impl RenderDecoder {
         let time_base = video_stream.time_base();
         let time_base_secs =
             time_base.numerator() as f64 / time_base.denominator() as f64;
+
+        // R-9: extract the SOURCE stream's avg_frame_rate for the
+        // half-frame tolerance. Falls back to the caller-supplied fps
+        // (which is the sequence fps) if the stream doesn't declare a
+        // valid rate — better an approximate tolerance than zero.
+        let source_fps = {
+            let r = video_stream.avg_frame_rate();
+            if r.numerator() > 0 && r.denominator() > 0 {
+                r.numerator() as f64 / r.denominator() as f64
+            } else {
+                fps
+            }
+        };
 
         let mut codec_ctx =
             ffmpeg_next::codec::context::Context::from_parameters(video_stream.parameters())
@@ -162,7 +182,7 @@ impl RenderDecoder {
             time_base_secs,
             skip_until_secs: source_start_secs,
             source_end_secs,
-            fps,
+            fps: source_fps,
             source_rotation,
             demuxer_eof: false,
             decoder_eof: false,
