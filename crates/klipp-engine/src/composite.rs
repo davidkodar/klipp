@@ -66,6 +66,36 @@ pub fn blend_layer(dst: &mut [u8], src: &[u8], opacity: f32, mode: BlendMode) {
 /// with AVX2 instructions (enabled via `target-cpu=native` rustflag).
 #[inline]
 fn blend_chunk(dst: &mut [u8], src: &[u8], opacity: f32, mode: BlendMode) {
+    // Fast path: Normal mode at full opacity. Skips the 13-mode match and
+    // the per-channel float round-trip; fully-opaque source pixels reduce
+    // to a 4-byte memcpy. Titles, captions and most overlay clips hit this
+    // path — the dominant composite case in a typical edit.
+    if matches!(mode, BlendMode::Normal) && opacity >= 1.0 {
+        for i in (0..dst.len()).step_by(4) {
+            let sa = src[i + 3];
+            if sa == 0 {
+                continue;
+            }
+            if sa == 255 {
+                dst[i..i + 4].copy_from_slice(&src[i..i + 4]);
+                continue;
+            }
+            // Partial alpha — standard alpha compositing, but with sa already
+            // = src_alpha/255 (opacity == 1.0 is a no-op).
+            let sa_f = sa as f32 / 255.0;
+            let da_f = dst[i + 3] as f32 / 255.0;
+            let out_a = sa_f + da_f * (1.0 - sa_f);
+            if out_a > 0.0 {
+                let inv = 1.0 - sa_f;
+                dst[i] = (((src[i] as f32 * sa_f + dst[i] as f32 * da_f * inv) / out_a).clamp(0.0, 255.0)) as u8;
+                dst[i + 1] = (((src[i + 1] as f32 * sa_f + dst[i + 1] as f32 * da_f * inv) / out_a).clamp(0.0, 255.0)) as u8;
+                dst[i + 2] = (((src[i + 2] as f32 * sa_f + dst[i + 2] as f32 * da_f * inv) / out_a).clamp(0.0, 255.0)) as u8;
+                dst[i + 3] = (out_a * 255.0) as u8;
+            }
+        }
+        return;
+    }
+
     for i in (0..dst.len()).step_by(4) {
         let sa = (src[i + 3] as f32 / 255.0) * opacity;
         if sa < 0.001 { continue; }

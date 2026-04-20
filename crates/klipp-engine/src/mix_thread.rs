@@ -207,6 +207,11 @@ fn mix_loop(
     // Per-track temporary buffer for reading from staging
     let chunk_samples = 1024; // 512 stereo frames ≈ 10.7ms at 48kHz
     let mut drain_buf = vec![0.0f32; 8192];
+    // Reused across loop iterations — the inner `Vec<f32>`s are resized to
+    // `read_size` (never exceeds `chunk_samples`) before each pop_slice and
+    // truncated to the actual filled length afterwards. Saves ~8 MB/s of
+    // allocator traffic at 10 tracks × 200 Hz × 4 KB.
+    let mut track_buffers: Vec<Vec<f32>> = Vec::new();
 
     loop {
         // Process commands
@@ -266,20 +271,22 @@ fn mix_loop(
 
         let read_size = chunk_samples.min(vacant);
 
-        // Read from each staging consumer
-        let mut track_buffers: Vec<Vec<f32>> = Vec::with_capacity(stagings.len());
+        // Read from each staging consumer. Reuse `track_buffers` across
+        // iterations — resize_with trims or extends to match the current
+        // staging count (handles ClearAll shrinking stagings mid-stream).
+        track_buffers.resize_with(stagings.len(), Vec::new);
         let mut any_data = false;
 
-        for staging in &mut stagings {
-            let mut buf = vec![0.0f32; read_size];
-            let filled = staging.consumer.pop_slice(&mut buf);
+        for (i, staging) in stagings.iter_mut().enumerate() {
+            let buf = &mut track_buffers[i];
+            buf.resize(read_size, 0.0);
+            let filled = staging.consumer.pop_slice(buf);
             if filled > 0 {
                 any_data = true;
                 buf.truncate(filled);
             } else {
                 buf.clear();
             }
-            track_buffers.push(buf);
         }
 
         if !any_data {

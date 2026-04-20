@@ -298,6 +298,9 @@ impl ExportJob {
             None => false,
         };
         let fit_target = self.settings.resolution.as_ref().map(|r| (r.width & !1, r.height & !1));
+        // Single swscale Context cached across every frame of the export —
+        // dimensions are fixed for the run (see FitScaler docs).
+        let mut fit_scaler = FitScaler::new();
 
         let codec_label = self.settings.video_codec.label();
         Self::set_stage(&self.render_stage, &format!("Encoding video ({codec_label})\u{2026}"));
@@ -360,7 +363,7 @@ impl ExportJob {
             // ─── Encode video frame (with aspect-preserving fit if needed) ──
             if needs_fit {
                 let (tw, th) = fit_target.unwrap();
-                let padded = fit_and_pad_rgba(&processed, self.snapshot.width, self.snapshot.height, tw, th)?;
+                let padded = fit_and_pad_rgba(&mut fit_scaler, &processed, self.snapshot.width, self.snapshot.height, tw, th)?;
                 encoder.encode_video_frame(&padded, tw, th)?;
             } else {
                 encoder.encode_video_frame(&processed, self.snapshot.width, self.snapshot.height)?;
@@ -612,11 +615,49 @@ fn fit_to_target(src_w: u32, src_h: u32, target_w: u32, target_h: u32) -> (u32, 
     (fitted_w, fitted_h, offset_x, offset_y)
 }
 
+/// Cached swscale Context for `fit_and_pad_rgba`. The source and target
+/// dimensions are fixed for the duration of an export, so we build the
+/// ffmpeg scaler exactly once per run instead of per frame. Keyed on the
+/// full tuple so a dimension change (shouldn't happen mid-export, but
+/// defensive) transparently rebuilds.
+struct FitScaler {
+    context: Option<ffmpeg_next::software::scaling::Context>,
+    key: Option<(u32, u32, u32, u32)>,
+}
+
+impl FitScaler {
+    fn new() -> Self {
+        Self { context: None, key: None }
+    }
+
+    fn get(
+        &mut self,
+        src_w: u32,
+        src_h: u32,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> Result<&mut ffmpeg_next::software::scaling::Context, RenderError> {
+        let key = (src_w, src_h, dst_w, dst_h);
+        if self.key != Some(key) {
+            self.context = Some(
+                ffmpeg_next::software::scaling::Context::get(
+                    ffmpeg_next::format::Pixel::RGBA, src_w, src_h,
+                    ffmpeg_next::format::Pixel::RGBA, dst_w, dst_h,
+                    ffmpeg_next::software::scaling::Flags::LANCZOS,
+                ).map_err(|e| RenderError::Encode(format!("fit scaler: {e}")))?,
+            );
+            self.key = Some(key);
+        }
+        Ok(self.context.as_mut().unwrap())
+    }
+}
+
 /// Take an RGBA buffer at (src_w, src_h) and return a new RGBA buffer at
 /// (target_w, target_h) with the source content fitted in the center
 /// preserving aspect ratio, padded with opaque black on the unused area.
 /// Uses ffmpeg swscale (Lanczos) for the resize step.
 fn fit_and_pad_rgba(
+    scaler: &mut FitScaler,
     src: &[u8],
     src_w: u32,
     src_h: u32,
@@ -627,11 +668,7 @@ fn fit_and_pad_rgba(
 
     // If fitted equals target, just resize directly (no padding needed)
     if fitted_w == target_w && fitted_h == target_h {
-        let mut scaler = ffmpeg_next::software::scaling::Context::get(
-            ffmpeg_next::format::Pixel::RGBA, src_w, src_h,
-            ffmpeg_next::format::Pixel::RGBA, target_w, target_h,
-            ffmpeg_next::software::scaling::Flags::LANCZOS,
-        ).map_err(|e| RenderError::Encode(format!("fit scaler: {e}")))?;
+        let sws = scaler.get(src_w, src_h, target_w, target_h)?;
         let mut src_frame = ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::RGBA, src_w, src_h);
         let stride = src_frame.stride(0);
         let row_bytes = src_w as usize * 4;
@@ -639,7 +676,7 @@ fn fit_and_pad_rgba(
             src_frame.data_mut(0)[i * stride..i * stride + row_bytes].copy_from_slice(chunk);
         }
         let mut dst_frame = ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::RGBA, target_w, target_h);
-        scaler.run(&src_frame, &mut dst_frame).map_err(|e| RenderError::Encode(format!("fit scale: {e}")))?;
+        sws.run(&src_frame, &mut dst_frame).map_err(|e| RenderError::Encode(format!("fit scale: {e}")))?;
         let dst_stride = dst_frame.stride(0);
         let dst_row = target_w as usize * 4;
         let mut out = vec![0u8; target_w as usize * target_h as usize * 4];
@@ -650,11 +687,7 @@ fn fit_and_pad_rgba(
     }
 
     // Resize source to fitted dimensions
-    let mut scaler = ffmpeg_next::software::scaling::Context::get(
-        ffmpeg_next::format::Pixel::RGBA, src_w, src_h,
-        ffmpeg_next::format::Pixel::RGBA, fitted_w, fitted_h,
-        ffmpeg_next::software::scaling::Flags::LANCZOS,
-    ).map_err(|e| RenderError::Encode(format!("fit scaler: {e}")))?;
+    let sws = scaler.get(src_w, src_h, fitted_w, fitted_h)?;
     let mut src_frame = ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::RGBA, src_w, src_h);
     let stride = src_frame.stride(0);
     let row_bytes = src_w as usize * 4;
@@ -662,7 +695,7 @@ fn fit_and_pad_rgba(
         src_frame.data_mut(0)[i * stride..i * stride + row_bytes].copy_from_slice(chunk);
     }
     let mut fitted_frame = ffmpeg_next::frame::Video::new(ffmpeg_next::format::Pixel::RGBA, fitted_w, fitted_h);
-    scaler.run(&src_frame, &mut fitted_frame).map_err(|e| RenderError::Encode(format!("fit scale: {e}")))?;
+    sws.run(&src_frame, &mut fitted_frame).map_err(|e| RenderError::Encode(format!("fit scale: {e}")))?;
 
     // Create black canvas at target dims (opaque black: R=0 G=0 B=0 A=255)
     let target_pixels = target_w as usize * target_h as usize;
