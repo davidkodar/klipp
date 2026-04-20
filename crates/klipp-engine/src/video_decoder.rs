@@ -366,6 +366,55 @@ static MAX_PB_HEIGHT_PREF: std::sync::atomic::AtomicU32 = std::sync::atomic::Ato
 static FRAME_QUEUE_SIZE_PREF: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(16);
 static DECODE_THREADS_PREF: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Optimised-playback policy. Encoded as a u8 atomic so the engine
+/// can read it lock-free from the playback path:
+///   0 = Auto (default) — use skim when source > 1080p OR > 30fps,
+///       fall back to source otherwise.
+///   1 = AlwaysOriginal — never substitute, even for heavy 4K60 sources.
+///   2 = AlwaysOptimized — always use skim if available.
+/// Unrecognised values fall back to Auto so a future enum extension
+/// degrades gracefully.
+static OPTIMISED_PLAYBACK_PREF: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn set_optimised_playback_mode(mode: u8) {
+    OPTIMISED_PLAYBACK_PREF.store(mode, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn optimised_playback_mode() -> u8 {
+    OPTIMISED_PLAYBACK_PREF.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Decide whether the playback decoder should open the skim file
+/// instead of the original source. Pure function — separated from the
+/// engine so it's unit-testable. Three inputs:
+///   * `mode`: 0 Auto / 1 AlwaysOriginal / 2 AlwaysOptimized.
+///   * `source_height`, `source_fps`: source media stats.
+///   * `skim_ready`: whether a finalised skim file exists on disk.
+///
+/// Heuristic in Auto mode: any one of "taller than 1080p" or "faster
+/// than ~30 fps" pushes us off real-time on the current pipeline, so
+/// substitute the skim when it's available.
+pub fn should_use_skim_for_playback(
+    mode: u8,
+    source_height: u32,
+    source_fps: f64,
+    skim_ready: bool,
+) -> bool {
+    match mode {
+        1 => false, // AlwaysOriginal
+        2 => skim_ready,
+        _ => {
+            // Auto. Only meaningful when the skim file is actually on disk —
+            // we don't want to silently swallow play because the proxy is
+            // still being generated.
+            if !skim_ready { return false; }
+            let too_big = source_height > 1080;
+            let too_fast = source_fps > 30.5;
+            too_big || too_fast
+        }
+    }
+}
+
 /// Set whether hardware decode (NVDEC / VAAPI) is enabled from preferences.
 pub fn set_hardware_decode(enabled: bool) {
     HARDWARE_DECODE_PREF.store(enabled, std::sync::atomic::Ordering::Relaxed);
@@ -425,6 +474,7 @@ unsafe fn download_hw_frame(
     hw_frame: &ffmpeg_next::frame::Video,
     sws_ctx: &mut Option<*mut ffmpeg_next::ffi::SwsContext>,
     gpu_converter: Option<&mut klipp_effects::nv12_gpu::GpuNv12Converter>,
+    gpu_p010: &mut Option<klipp_effects::p010_gpu::GpuP010Converter>,
     source_rotation: i32,
 ) -> Option<LinearFrame> {
     use ffmpeg_next::ffi::*;
@@ -477,6 +527,69 @@ unsafe fn download_hw_frame(
             tracing::info!("download_hw_frame: format={:?}, src={}x{}, out={}x{}, rotation={}, gpu_available={}, hi_bit_depth={}", sw_fmt, src_w, src_h, out_w, out_h, source_rotation, gpu_converter.is_some(), is_hi_bit_depth);
         }
     }
+    // GPU P010 fast path — 10-bit YUV with optional HDR (PQ/BT.2020).
+    // Lazy-created so SDR-only sessions never pay the wgpu init cost.
+    // The shader handles BT.2020 → BT.709 gamut conversion + PQ EOTF
+    // + Hable tone-map for HDR sources, or BT.709 + sRGB for SDR-10.
+    // Outputs sRGB-u8 RGBA so the rest of the engine consumes it via
+    // the existing rgba_u8_to_linear LUT (same path as NV12 below).
+    if sw_fmt == AVPixelFormat::AV_PIX_FMT_P010LE && is_hi_bit_depth {
+        if gpu_p010.is_none() {
+            *gpu_p010 = klipp_effects::p010_gpu::GpuP010Converter::new();
+            if gpu_p010.is_some() {
+                tracing::info!("decode_thread: GPU P010→RGBA converter active");
+            } else {
+                tracing::info!("decode_thread: GPU P010 converter unavailable, falling back to CPU swscale");
+            }
+        }
+        if let Some(converter) = gpu_p010.as_mut() {
+            // Detect HDR (PQ + BT.2020) from the frame's colorspace
+            // metadata. AVCOL_TRC_SMPTE2084 (PQ) and AVCOL_PRI_BT2020
+            // both signal HDR; AVCOL_TRC_ARIB_STD_B67 is HLG, also HDR.
+            let trc = (*sw_frame).color_trc as i32;
+            let pri = (*sw_frame).color_primaries as i32;
+            let is_hdr = trc == AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084 as i32
+                || trc == AVColorTransferCharacteristic::AVCOL_TRC_ARIB_STD_B67 as i32
+                || pri == AVColorPrimaries::AVCOL_PRI_BT2020 as i32;
+
+            let y_stride = (*sw_frame).linesize[0] as u32;
+            let uv_stride = (*sw_frame).linesize[1] as u32;
+            let y_data_len = (y_stride * src_h) as usize;
+            let uv_data_len = (uv_stride * (src_h / 2)) as usize;
+            let y_data = std::slice::from_raw_parts((*sw_frame).data[0], y_data_len);
+            let uv_data = std::slice::from_raw_parts((*sw_frame).data[1], uv_data_len);
+
+            let t_p010 = std::time::Instant::now();
+            let rgba_data = converter.convert_p010_to_rgba(
+                y_data, uv_data, src_w, src_h, y_stride, uv_stride, out_w, out_h, source_rotation as u32, is_hdr,
+            );
+            // Reuse the NV12 perf bucket — the meaning is identical
+            // (GPU YUV→RGBA encode time per frame).
+            PERF_NV12_CONV_US.fetch_add(t_p010.elapsed().as_micros() as u64, Ordering::Relaxed);
+
+            av_frame_free(&mut (sw_frame as *mut _));
+            let t_linear = std::time::Instant::now();
+            let linear = rgba_u8_to_linear(&rgba_data);
+            PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
+
+            let count = CALL_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            PERF_GPU_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+            maybe_log_hw_download_stats(
+                count, &CALL_COUNT, &PERF_HW_DL_US, &PERF_NV12_CONV_US,
+                &PERF_LINEAR_ENCODE_US, &PERF_SW_SCALE_US,
+                &PERF_GPU_PATH_COUNT, &PERF_CPU_PATH_COUNT,
+            );
+
+            return Some(LinearFrame {
+                pts: RationalTime::zero(),
+                width: out_w,
+                height: out_h,
+                data: linear,
+                is_eof: false,
+            });
+        }
+    }
+
     // GPU NV12 fast path is 8-bit-only. For 10-bit sources (P010 etc.)
     // fall through to the CPU swscale path that knows about RGBA64LE.
     if !is_hi_bit_depth && sw_fmt == AVPixelFormat::AV_PIX_FMT_NV12 {
@@ -795,6 +908,16 @@ fn decode_thread_main(
         None
     };
 
+    // GPU P010→RGBA converter — handles 10-bit HDR/SDR sources that
+    // NVDEC produces in P010 (semi-planar 16-bit YUV with 10 valid
+    // bits in the upper bits). Without this we'd fall back to CPU
+    // sws_scale which is ~21 ms / 4K frame AND mishandles HDR
+    // colorspace (BT.2020 chroma decoded as BT.709, PQ samples
+    // decoded as sRGB → green/magenta blotches in HDR clips).
+    // Lazy-created on first 10-bit frame so SDR-only sessions don't
+    // pay the wgpu init cost.
+    let mut gpu_p010: Option<klipp_effects::p010_gpu::GpuP010Converter> = None;
+
     let tb_num = time_base.numerator() as f64;
     let tb_den = time_base.denominator() as f64;
     let tb_f64 = if tb_den != 0.0 { tb_num / tb_den } else { 1.0 / 90000.0 };
@@ -938,7 +1061,7 @@ fn decode_thread_main(
             let t_transfer = std::time::Instant::now();
             let frame_result = if is_hw_frame {
                 hw_active_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                unsafe { download_hw_frame(&received_frame, &mut hw_scaler, gpu_nv12.as_mut(), source_rotation) }
+                unsafe { download_hw_frame(&received_frame, &mut hw_scaler, gpu_nv12.as_mut(), &mut gpu_p010, source_rotation) }
             } else {
                 convert_sw_frame(&received_frame, &mut sw_scaler, &mut perf_copy_us, source_rotation)
             };
@@ -1342,5 +1465,75 @@ mod decoder_linearisation_tests {
         let (rotated, nw, nh) = rotate_linear_rgba(&src, 2, 2, 0);
         assert_eq!((nw, nh), (2, 2));
         assert_eq!(rotated, src);
+    }
+
+    // ─── should_use_skim_for_playback ──────────────────────────────
+    // Pure decision function: takes pref mode + source media stats +
+    // skim-readiness, returns whether the playback decoder should
+    // open the skim instead of the source. Tested in isolation so
+    // the engine call site can stay a one-liner.
+
+    #[test]
+    fn auto_uses_skim_for_4k60_when_skim_ready() {
+        // Mode 0 (Auto), 4K60 source, skim built — must substitute.
+        assert!(should_use_skim_for_playback(0, 2160, 60.0, true));
+    }
+
+    #[test]
+    fn auto_uses_skim_for_4k30_when_skim_ready() {
+        // 4K resolution alone is enough to swap.
+        assert!(should_use_skim_for_playback(0, 2160, 30.0, true));
+    }
+
+    #[test]
+    fn auto_uses_skim_for_1080p60_when_skim_ready() {
+        // 60 fps alone is enough to swap.
+        assert!(should_use_skim_for_playback(0, 1080, 60.0, true));
+    }
+
+    #[test]
+    fn auto_keeps_source_for_1080p30() {
+        // Comfortable for the current pipeline — no swap.
+        assert!(!should_use_skim_for_playback(0, 1080, 29.97, true));
+    }
+
+    #[test]
+    fn auto_keeps_source_when_skim_not_ready() {
+        // Even a heavy 4K60 source plays from original until skim
+        // finishes. (Engine should still try to start the skim
+        // transcode in the background.)
+        assert!(!should_use_skim_for_playback(0, 2160, 60.0, false));
+    }
+
+    #[test]
+    fn always_original_never_swaps_even_for_4k60() {
+        // Mode 1 explicit — user wants source quality at all costs.
+        assert!(!should_use_skim_for_playback(1, 2160, 60.0, true));
+    }
+
+    #[test]
+    fn always_optimized_swaps_whenever_skim_exists() {
+        // Mode 2 — even on a 720p30 source we use skim if available.
+        assert!(should_use_skim_for_playback(2, 720, 23.976, true));
+        // …but not if the skim hasn't been built yet.
+        assert!(!should_use_skim_for_playback(2, 720, 23.976, false));
+    }
+
+    #[test]
+    fn unknown_mode_falls_back_to_auto() {
+        // Defensive default — a future enum variant we forgot to
+        // teach the decoder about should NOT brick playback.
+        assert_eq!(
+            should_use_skim_for_playback(99, 2160, 60.0, true),
+            should_use_skim_for_playback(0, 2160, 60.0, true),
+        );
+    }
+
+    #[test]
+    fn fps_threshold_is_just_above_30() {
+        // Boundary: NTSC 29.97 stays on source; PAL 50 / 60 swaps.
+        assert!(!should_use_skim_for_playback(0, 1080, 29.97, true));
+        assert!(should_use_skim_for_playback(0, 1080, 50.0, true));
+        assert!(should_use_skim_for_playback(0, 1080, 59.94, true));
     }
 }

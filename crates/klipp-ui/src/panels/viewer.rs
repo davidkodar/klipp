@@ -1636,6 +1636,22 @@ impl ViewerPanel {
                 "  lut         {:.2} ms",
                 avg.lut_ms,
             ),
+            // Wrap-stage timings — populated by `update_wrap_stages`
+            // even when no grade is applied. Always non-zero on a
+            // playing clip; surfaces "where did the frame budget
+            // actually go" without requiring a grade chain.
+            format!(
+                "  bridge u8   {:.2} ms",
+                avg.bridge_u8_ms,
+            ),
+            format!(
+                "  reencode    {:.2} ms",
+                avg.reencode_ms,
+            ),
+            format!(
+                "  scope       {:.2} ms",
+                avg.scope_ms,
+            ),
             format!(
                 "Drops:  {} in last 1s · {} total",
                 state.perf_drops_last_sec, state.perf_dropped_frames,

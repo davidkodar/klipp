@@ -153,16 +153,32 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             // Filmstrip generation progress
             if state.filmstrip_generating {
                 let elapsed = state.filmstrip_generate_start.elapsed().as_secs_f64();
-                let current_frames = state.filmstrip_in_progress.iter().next()
-                    .and_then(|id| state.thumbnail_cache.filmstrip(id))
-                    .map(|f| f.len())
-                    .unwrap_or(0);
+                // Per-job N/expected: prefer the live counter we
+                // increment per FilmstripResult::Frame, fall back to
+                // the thumbnail-cache count if the counter wasn't
+                // seeded (older queued jobs).
+                let active_id = state.filmstrip_in_progress.iter().next().copied();
+                let (current_frames, expected_frames) = active_id
+                    .and_then(|id| state.filmstrip_progress.get(&id).copied())
+                    .map(|(d, t)| (d as usize, t as usize))
+                    .unwrap_or_else(|| {
+                        let d = active_id
+                            .and_then(|id| state.thumbnail_cache.filmstrip(&id))
+                            .map(|f| f.len())
+                            .unwrap_or(0);
+                        (d, 0)
+                    });
                 let done = state.filmstrip_completed;
                 let total = state.filmstrip_total_queued;
-                let progress_text = if total > 1 {
-                    format!("Filmstrip {}/{} — {} frames ({:.0}s)", done + 1, total, current_frames, elapsed)
+                let frames_label = if expected_frames > 0 {
+                    format!("{}/{} frames", current_frames, expected_frames)
                 } else {
-                    format!("Filmstrip — {} frames ({:.0}s)", current_frames, elapsed)
+                    format!("{} frames", current_frames)
+                };
+                let progress_text = if total > 1 {
+                    format!("Filmstrip {}/{} — {} ({:.0}s)", done + 1, total, frames_label, elapsed)
+                } else {
+                    format!("Filmstrip — {} ({:.0}s)", frames_label, elapsed)
                 };
                 ui.label(
                     egui::RichText::new(progress_text)

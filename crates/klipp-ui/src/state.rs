@@ -672,6 +672,11 @@ pub struct AppState {
     pub filmstrip_total_queued: usize,
     /// Number of filmstrip jobs completed in this batch.
     pub filmstrip_completed: usize,
+    /// Per-job frame progress: media_id → (frames_done, frames_expected).
+    /// Updated on every `FilmstripResult::Frame`. Cleared on `Done`.
+    /// Drives the "N/500" indicator in the status bar so the user can
+    /// tell how much of a 4K filmstrip is still pending.
+    pub filmstrip_progress: std::collections::HashMap<MediaId, (u32, u32)>,
 
     // Global LUT
     pub global_lut_path: Option<PathBuf>,
@@ -2045,6 +2050,7 @@ impl Default for AppState {
             filmstrip_queue: Vec::new(),
             filmstrip_total_queued: 0,
             filmstrip_completed: 0,
+            filmstrip_progress: std::collections::HashMap::new(),
             playhead_anchor: Timecode::zero(),
             playhead_anchor_wall: std::time::Instant::now(),
             playhead_speed: 1.0,

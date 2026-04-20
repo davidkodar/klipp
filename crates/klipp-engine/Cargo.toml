@@ -14,6 +14,7 @@ klipp-audio = { workspace = true }
 klipp-color = { workspace = true }
 klipp-plugin = { workspace = true }
 klipp-title = { workspace = true }
+klipp-jobs = { path = "../klipp-jobs" }
 ffmpeg-next = { workspace = true }
 cpal = { workspace = true }
 ringbuf = { workspace = true }

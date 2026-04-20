@@ -39,6 +39,7 @@ pub mod gpu;
 pub mod gpu_scopes;
 mod light;
 pub mod nv12_gpu;
+pub mod p010_gpu;
 mod opacity;
 pub mod rolling_shutter;
 pub mod scene_detect;

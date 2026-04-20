@@ -106,7 +106,15 @@ fn main() -> Result<()> {
     // post-processed frame, UI reads for the overlay + session dump.
     let perf_ring = klipp_engine::perf::shared();
 
-    let engine = {
+    // Shared foreground-activity signal — engine writes is_playing /
+    // is_scrubbing on state transitions, UI bumps last_input_at_us
+    // on every input event, the background JobScheduler reads to
+    // pause/resume filmstrip + skim transcode + audio conform jobs
+    // whenever the user is busy. Built here in main so engine and UI
+    // share the same Arc.
+    let foreground_activity = klipp_jobs::ForegroundActivity::new();
+
+    let mut engine = {
         let _t = LogTimer::new("PlaybackEngine::new (TOTAL)");
         PlaybackEngine::new(
             cmd_rx,
@@ -120,17 +128,16 @@ fn main() -> Result<()> {
         )
         .map_err(|e| anyhow::anyhow!("Failed to create playback engine: {e}"))?
     };
+    engine.set_foreground_activity(Arc::clone(&foreground_activity));
+    // Cloned again here so the move-into-closure for eframe below
+    // gets its own handle.
+    let foreground_for_ui = Arc::clone(&foreground_activity);
 
     // Grab the spectrum PCM handle BEFORE `engine` is moved into the engine
     // thread. The mix thread is already running inside the engine struct at
     // this point, so this is safe.
     let spectrum_buf = engine.spectrum_buf();
     let spectrum_sample_rate = engine.spectrum_sample_rate();
-    // Share the engine's lock-free param-change queue with the UI. The UI
-    // pushes per-slider-tick param changes here (60-120 Hz during grading);
-    // the engine drains them once per frame with a single write-lock
-    // acquisition. Avoids per-tick contention with the engine's long read
-    // lock on `Arc<RwLock<Sequence>>` during active colour grading.
     let param_change_queue = engine.param_change_queue();
 
     let engine_handle = std::thread::Builder::new()
@@ -201,6 +208,7 @@ fn main() -> Result<()> {
                 spectrum_sample_rate,
                 perf_ring_clone,
                 param_change_queue,
+                foreground_for_ui,
             )))
         }),
     )

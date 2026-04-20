@@ -1614,6 +1614,7 @@ impl BrowserPanel {
                     |_time, rgba, w, h| {
                         frames.push((rgba, w, h));
                     },
+                    None, // small browser preview — not worth scheduler overhead
                 );
                 let _ = tx.send(FileFilmstripResult {
                     path,

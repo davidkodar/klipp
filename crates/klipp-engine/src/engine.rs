@@ -83,14 +83,52 @@ fn eval_with_modifiers(
 /// Bulk sRGB u8 RGBA → linear f32 RGBA. Alpha stays linear per sRGB
 /// spec. Used at composite call sites while grade and GPU effects
 /// still run in u8 sRGB (migrates in 10c).
-fn u8_rgba_to_linear(rgba: &[u8]) -> Vec<f32> {
+/// 256-entry LUT: u8 sRGB code → f32 linear. Replaces a per-channel
+/// `srgb_to_linear` (which is a `powf(2.4)`) with a 1 KB table that
+/// fits in L1. Saved 23-46 ms per cache-hit frame at 1080p — the
+/// scalar form was the silent dominant cost on the render-cache hit
+/// path during playback.
+fn srgb_u8_to_linear_lut() -> &'static [f32; 256] {
+    use std::sync::OnceLock;
     use klipp_color::transfer::srgb_to_linear;
-    let mut out = Vec::with_capacity(rgba.len());
-    for chunk in rgba.chunks_exact(4) {
-        out.push(srgb_to_linear(chunk[0] as f32 / 255.0));
-        out.push(srgb_to_linear(chunk[1] as f32 / 255.0));
-        out.push(srgb_to_linear(chunk[2] as f32 / 255.0));
-        out.push(chunk[3] as f32 / 255.0);
+    static LUT: OnceLock<[f32; 256]> = OnceLock::new();
+    LUT.get_or_init(|| {
+        let mut lut = [0.0f32; 256];
+        for (i, slot) in lut.iter_mut().enumerate() {
+            *slot = srgb_to_linear(i as f32 / 255.0);
+        }
+        lut
+    })
+}
+
+/// 256-entry LUT: u8 alpha → f32 (just `/255.0`). Same shape as the
+/// sRGB LUT for codegen symmetry — no gamma applied, per sRGB spec.
+fn alpha_u8_to_f32_lut() -> &'static [f32; 256] {
+    use std::sync::OnceLock;
+    static LUT: OnceLock<[f32; 256]> = OnceLock::new();
+    LUT.get_or_init(|| {
+        let mut lut = [0.0f32; 256];
+        for (i, slot) in lut.iter_mut().enumerate() {
+            *slot = i as f32 / 255.0;
+        }
+        lut
+    })
+}
+
+#[inline]
+fn u8_rgba_to_linear(rgba: &[u8]) -> Vec<f32> {
+    let srgb_lut = srgb_u8_to_linear_lut();
+    let alpha_lut = alpha_u8_to_f32_lut();
+    let n_pixels = rgba.len() / 4;
+    let mut out = Vec::with_capacity(n_pixels * 4);
+    // SAFETY: we write exactly n_pixels * 4 floats below.
+    unsafe { out.set_len(n_pixels * 4); }
+    for (i, chunk) in rgba.chunks_exact(4).enumerate() {
+        let o = i * 4;
+        out[o]     = srgb_lut[chunk[0] as usize];
+        out[o + 1] = srgb_lut[chunk[1] as usize];
+        out[o + 2] = srgb_lut[chunk[2] as usize];
+        out[o + 3] = alpha_lut[chunk[3] as usize];
     }
     out
 }
@@ -225,6 +263,7 @@ struct LoopPreSeekResult {
 use crossbeam_channel::{Receiver, Sender};
 use crossbeam_queue::ArrayQueue;
 use klipp_core::{AppCommand, AppEvent, Fps, MediaId, ParamChange, RationalTime, Resolution, Timecode};
+use klipp_jobs::ForegroundActivity;
 use klipp_media::MediaPool;
 use klipp_timeline::Sequence;
 use std::collections::HashMap;
@@ -504,6 +543,11 @@ pub struct PlaybackEngine {
     /// changes every tick, so the cache misses every read and pays
     /// for a write it won't reuse.
     in_node_param_edit: bool,
+    /// Shared signal that background jobs read to decide whether to
+    /// yield. Engine writes `is_playing` on play/pause transitions.
+    /// Optional so legacy constructors / tests still work; when
+    /// `None`, all writes are no-ops.
+    foreground_activity: Option<Arc<ForegroundActivity>>,
     // OFX plugin host — applies per-clip effects chain after color grade
     ofx_host: klipp_plugin::OfxHost,
     // GPU effects pipeline — compute shaders for built-in effects
@@ -751,7 +795,12 @@ impl PlaybackEngine {
             frames_consumed: 0,
             last_playback_log: std::time::Instant::now(),
             color_pipeline: klipp_color::ColorPipeline::new(),
-            graph_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
+            // GraphExecutor MUST have its own GPU pipeline — `new_cpu_only`
+            // forces every node onto the CPU and turns the entire grade
+            // chain into a 60-90 ms/frame stall during slider scrub.
+            // (The engine has its own `gpu_effects` for scope/wrap; the
+            // two pipelines are independent for now. TODO share via Arc.)
+            graph_executor: klipp_nodes::GraphExecutor::new(),
             bypass_color_grade: false,
             compare_stabilization: false,
             compare_effect_active: false,
@@ -771,6 +820,7 @@ impl PlaybackEngine {
             current_grade_clip_id: None,
             current_graph_arc: None,
             in_node_param_edit: false,
+            foreground_activity: None,
             ofx_host,
             gpu_effects: None, // lazily initialized on first use
             gpu_effects_failed: false,
@@ -806,6 +856,38 @@ impl PlaybackEngine {
         })
     }
 
+    /// Install the shared foreground-activity signal. The engine
+    /// writes `is_playing` whenever its `state` flips to/from
+    /// `PlaybackState::Playing`, plus `is_scrubbing` on scrub
+    /// gestures. Background jobs read this signal to know when to
+    /// yield. Idempotent — the latest call wins.
+    pub fn set_foreground_activity(&mut self, fg: Arc<ForegroundActivity>) {
+        // Bring the signal into immediate sync with current engine
+        // state so a fresh installation doesn't lie about what's
+        // happening right now.
+        fg.set_playing(self.state == PlaybackState::Playing);
+        fg.set_scrubbing(self.is_scrubbing);
+        self.foreground_activity = Some(fg);
+    }
+
+    /// Helper: mirror the current `state == Playing` to the
+    /// foreground signal (no-op when no signal installed). Called
+    /// after every `self.state = ...` write so the signal stays
+    /// truthful without us having to thread it through every call
+    /// site.
+    fn sync_foreground_playing(&self) {
+        if let Some(fg) = &self.foreground_activity {
+            fg.set_playing(self.state == PlaybackState::Playing);
+        }
+    }
+
+    /// Helper: mirror `is_scrubbing` to the foreground signal.
+    fn sync_foreground_scrubbing(&self) {
+        if let Some(fg) = &self.foreground_activity {
+            fg.set_scrubbing(self.is_scrubbing);
+        }
+    }
+
     pub fn run(mut self) {
         info!("Engine thread starting");
 
@@ -815,6 +897,15 @@ impl PlaybackEngine {
             } else {
                 Duration::from_millis(8)
             };
+
+            // Mirror current state to the foreground-activity signal
+            // every iteration so background jobs always see fresh
+            // truth without us having to thread `sync_foreground_*`
+            // through every play/pause/scrub call site. The scheduler
+            // polls at 50 ms; we update faster than that so it never
+            // misses a transition.
+            self.sync_foreground_playing();
+            self.sync_foreground_scrubbing();
 
             // Collect all pending commands, coalescing seeks
             let mut commands = Vec::new();
@@ -2721,12 +2812,15 @@ impl PlaybackEngine {
         // linear — feed it directly, skipping the pre-refactor round-
         // trip via `frame.into_rgba().to_linear()`.
         let (final_w, final_h) = (frame.width, frame.height);
+        let t_pp_full = std::time::Instant::now();
         let v1_graded_linear = self.post_process_rgba(frame.data, final_w, final_h);
+        let pp_full_us = t_pp_full.elapsed().as_micros();
 
         // Composite V1 (graded) + overlay tracks in linear-light f32.
         // Every layer is already linear (post_process_rgba, apply_clip_
         // effects, and LinearFrame all speak linear now), so we blend
         // without any u8⇄linear seams in the hot loop.
+        let t_composite_full = std::time::Instant::now();
         let t_composite = std::time::Instant::now();
         let v1_opacity = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
@@ -2897,13 +2991,16 @@ impl PlaybackEngine {
             );
         }
 
+        let composite_full_us = t_composite_full.elapsed().as_micros();
+
         // Check for active transition and blend if needed.
         // If a transition is active this may build a new Vec — in that case
         // the composite_scratch pool contribution is lost for this frame
         // but restored on the next frame when no transition is active.
         let t_transition = std::time::Instant::now();
         let mut final_rgba = self.apply_transition_if_active(final_rgba, final_w, final_h);
-        let transition_ms = t_transition.elapsed().as_secs_f64() * 1000.0;
+        let transition_us = t_transition.elapsed().as_micros();
+        let transition_ms = transition_us as f64 / 1000.0;
         if transition_ms > 2.0 {
             debug!("PERF apply_transition: {transition_ms:.1}ms");
         }
@@ -2914,6 +3011,18 @@ impl PlaybackEngine {
         // pieces, apply_transition or something in between is the
         // culprit.
         stage_mid_us = t_stage.elapsed().as_micros();
+        let mid_accounted_us = pp_full_us + composite_full_us + transition_us;
+        let mid_gap_us = stage_mid_us.saturating_sub(mid_accounted_us);
+        let mid_ms = stage_mid_us as f64 / 1000.0;
+        if mid_ms > 20.0 {
+            debug!(
+                "PERF mid_breakdown: {mid_ms:.1}ms total | pp={pp:.1} composite={cp:.1} transition={tr:.1} gap={gap:.1}",
+                pp = pp_full_us as f64 / 1000.0,
+                cp = composite_full_us as f64 / 1000.0,
+                tr = transition_us as f64 / 1000.0,
+                gap = mid_gap_us as f64 / 1000.0,
+            );
+        }
         let t_fb_write = std::time::Instant::now();
         // Write frame to the shared FrameBuffer via swap — `final_rgba` ends up
         // holding the PREVIOUS pending_data buffer, which we return to the pool.
@@ -4993,6 +5102,30 @@ impl PlaybackEngine {
         }
     }
 
+    /// Smart linear-f32 RGBA → sRGB-u8 RGBA encode. Routes to the
+    /// GPU compute shader for frames ≥ 1080p when a GPU pipeline is
+    /// available, falls back to the CPU LUT for everything else.
+    ///
+    /// At 4K the GPU path is ~20× faster (40-90 ms CPU LUT → 3-5 ms
+    /// GPU readback). At HD or smaller the CPU LUT wins because the
+    /// PCIe round-trip exceeds the encode cost. The threshold is set
+    /// at 1080p — that's the breakeven point measured on the user's
+    /// RTX 4080 hardware.
+    fn linear_rgba_to_u8_smart(&mut self, linear: &[f32], width: u32, height: u32) -> Vec<u8> {
+        const GPU_THRESHOLD_PIXELS: u64 = 1920 * 1080;
+        let pixel_count = (width as u64) * (height as u64);
+        if pixel_count >= GPU_THRESHOLD_PIXELS {
+            if let Some(gpu) = &mut self.gpu_effects {
+                if let Some(out) = gpu.linear_rgba_to_u8_gpu(linear, width, height) {
+                    return out;
+                }
+                // GPU rejected (device-lost / short input) — fall
+                // through to CPU LUT.
+            }
+        }
+        linear_rgba_to_u8(linear)
+    }
+
     /// Lazily initialize GPU effects pipeline on first use.
     /// This defers the ~1-2s shader compilation cost from startup to the first frame
     /// that actually needs GPU processing.
@@ -5208,21 +5341,43 @@ impl PlaybackEngine {
         self.ensure_gpu_effects();
         let t_ensure_gpu = t_wrap_start.elapsed();
 
-        // The pregrade frame cache, the render cache, and the UI
-        // pregrade_data all still speak sRGB u8 — keep one local bridge
-        // to serve those consumers. This is a single encode per frame
-        // (down from five before the linear-edge-to-edge refactor).
+        // The pregrade encode feeds three consumers — `cached_pregrade_
+        // frame` (compare-mode snapshot), `frame_cache` (scrub-back),
+        // and `fb.pregrade_data` (UI scope-preview during slider scrub).
+        // None of them are touched during pure forward playback. At 4K
+        // the encode + 32 MB allocation is 40-90 ms/frame, and that
+        // single line is the dominant cost in the grade-disabled hot
+        // path. Skip when:
+        //   * we're playing forward (state == Playing), AND
+        //   * no compare-mode is active (compare reads pregrade_data),
+        //     AND
+        //   * the user isn't actively node-param-editing (UI scope
+        //     preview reads pregrade_data on every slider tick).
+        // Pause / scrub / compare / grade-edit still pay the encode.
+        let pregrade_needed = self.state != PlaybackState::Playing
+            || self.compare_stabilization
+            || self.compare_effect_active
+            || self.in_node_param_edit;
         let t_bridge = std::time::Instant::now();
-        let rgba_u8 = linear_rgba_to_u8(&linear_rgba);
+        let rgba_u8 = if pregrade_needed {
+            // Routes large frames (≥ 1080p) through the GPU compute
+            // shader; HD-and-smaller stay on CPU LUT. At 4K this is
+            // the difference between 40-90 ms and 3-5 ms.
+            self.linear_rgba_to_u8_smart(&linear_rgba, width, height)
+        } else {
+            Vec::new()
+        };
         let t_bridge_u8 = t_bridge.elapsed();
 
         let t_pregrade = std::time::Instant::now();
-        let rgba_arc = Arc::new(rgba_u8);
-        self.cached_pregrade_frame = Some((Arc::clone(&rgba_arc), width, height));
-        self.frame_cache.insert(self.playhead.value, Arc::clone(&rgba_arc), width, height);
-        {
-            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-            fb.pregrade_data = rgba_arc;
+        if pregrade_needed {
+            let rgba_arc = Arc::new(rgba_u8);
+            self.cached_pregrade_frame = Some((Arc::clone(&rgba_arc), width, height));
+            self.frame_cache.insert(self.playhead.value, Arc::clone(&rgba_arc), width, height);
+            {
+                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                fb.pregrade_data = rgba_arc;
+            }
         }
         let t_pregrade_ms = t_pregrade.elapsed();
 
@@ -5270,16 +5425,22 @@ impl PlaybackEngine {
 
         // Check hot cache first, then disk cache
         if let Some(ref key) = cache_key {
+            let t_hit_lookup = std::time::Instant::now();
+            let mut hit_source = "miss";
             let cached_result = self.render_cache_hot.get(key)
                 .filter(|(_, w, h)| *w == width && *h == height)
-                .map(|(data, w, h)| (data.to_vec(), w, h))
+                .map(|(data, w, h)| { hit_source = "hot"; (data.to_vec(), w, h) })
                 .or_else(|| {
                     self.render_cache_disk.get(key)
                         .filter(|(_, w, h)| *w == width && *h == height)
+                        .inspect(|_| { hit_source = "disk"; })
                 });
+            let t_hit_lookup_ms = t_hit_lookup.elapsed().as_secs_f64() * 1000.0;
 
             if let Some((cached, _w, _h)) = cached_result {
+                let t_hit_insert = std::time::Instant::now();
                 self.render_cache_hot.insert(key.clone(), cached.clone(), width, height);
+                let t_hit_insert_ms = t_hit_insert.elapsed().as_secs_f64() * 1000.0;
                 if self.should_render_scope() {
                   if let Some(gpu) = &mut self.gpu_effects {
                     let scope_w = 720u32;
@@ -5308,8 +5469,22 @@ impl PlaybackEngine {
                     }
                   }
                 }
-                // Render cache stores u8; callers consume linear.
-                return u8_rgba_to_linear(&cached);
+                let t_hit_decode = std::time::Instant::now();
+                let linear_out = u8_rgba_to_linear(&cached);
+                let t_hit_decode_ms = t_hit_decode.elapsed().as_secs_f64() * 1000.0;
+                let hit_total_ms = t_wrap_start.elapsed().as_secs_f64() * 1000.0;
+                if hit_total_ms > 5.0 {
+                    debug!(
+                        "PERF post_process_hit: {hit_total_ms:.1}ms source={hit_source} | \
+                         bridge_u8={:.1} pregrade={:.1} lookup={:.1} insert={:.1} decode={:.1}",
+                        t_bridge_u8.as_secs_f64() * 1000.0,
+                        t_pregrade_ms.as_secs_f64() * 1000.0,
+                        t_hit_lookup_ms,
+                        t_hit_insert_ms,
+                        t_hit_decode_ms,
+                    );
+                }
+                return linear_out;
             }
         }
 
@@ -5321,23 +5496,36 @@ impl PlaybackEngine {
         let result_linear = self.post_process_rgba_inner(linear_rgba, width, height);
         let t_inner_ms = t_inner.elapsed();
 
-        // Store in render cache (both hot and cold) + render the GPU
-        // scope texture. Both speak u8 — one encode at the tail of the
-        // function, matched by one decode at the cache-hit path above.
+        // The reencode (`result_u8`) feeds two consumers — the render
+        // cache (`cache_put`) and the scope renderer. Both are
+        // independently gated:
+        //   * `cache_put` skips during Playing (see below).
+        //   * scope is throttled at ~10 Hz and skipped when not visible
+        //     (`should_render_scope`).
+        // So during steady-state playback with cache_put off and scope
+        // throttle off, `result_u8` is wholly unused. At 4K the encode
+        // is 40-90 ms / frame — the second-largest single cost in the
+        // wrap. Compute it lazily so the common playback frame pays
+        // zero CPU u8 conversion.
+        let cache_put_active = cache_key.is_some() && self.state != PlaybackState::Playing;
+        let scope_active = self.should_render_scope() && self.gpu_effects.is_some()
+            && gpu_scope_kind_for_mode(self.scope_render_mode).is_some();
+        let need_result_u8 = cache_put_active || scope_active;
+
         let t_reencode = std::time::Instant::now();
-        let result_u8 = linear_rgba_to_u8(&result_linear);
+        let result_u8 = if need_result_u8 {
+            // Same GPU/CPU split as the bridge_u8 path above —
+            // ≥ 1080p hits the compute shader, smaller stays CPU.
+            self.linear_rgba_to_u8_smart(&result_linear, width, height)
+        } else {
+            Vec::new()
+        };
         let t_reencode_ms = t_reencode.elapsed();
 
         let t_cache_put = std::time::Instant::now();
-        // Skip the render cache write during steady-state forward playback.
-        // The cache exists to speed up scrub-back-to-a-position-you've-seen
-        // and re-grade-while-paused — neither happens during forward playback.
-        // Writing on every playback frame burned 11-23 ms/frame in disk LZ4
-        // compress + 6 MB result_u8.clone() for the hot insert. Skipping
-        // during Playing recovers that. Pause / scrub / one-shot grade
-        // refresh still write to cache as before.
-        if let Some(key) = cache_key {
-            if self.state != PlaybackState::Playing {
+        // Render-cache write is paused-only (see `cache_put_active`).
+        if cache_put_active {
+            if let Some(key) = cache_key {
                 self.render_cache_hot.insert(key.clone(), result_u8.clone(), width, height);
                 self.render_cache_disk.put(&key, &result_u8, width, height);
             }
@@ -5398,6 +5586,19 @@ impl PlaybackEngine {
                 t_cache_put_ms.as_secs_f64() * 1000.0,
                 t_scope_ms.as_secs_f64() * 1000.0,
             );
+        }
+
+        // Surface wrap-stage timings to the live perf overlay. The
+        // grade-only sample pushed by `post_process_rgba_inner` shows
+        // 0 for everything when the user has no grade applied — this
+        // patch fills in the bridge/reencode/scope numbers so the
+        // overlay always reports something useful for any clip.
+        if let Ok(mut ring) = self.perf_ring.lock() {
+            ring.update_wrap_stages(crate::perf::WrapStages {
+                bridge_u8_ms: t_bridge_u8.as_secs_f64() as f32 * 1000.0,
+                reencode_ms: t_reencode_ms.as_secs_f64() as f32 * 1000.0,
+                scope_ms: t_scope_ms.as_secs_f64() as f32 * 1000.0,
+            });
         }
 
         result_linear
@@ -6378,6 +6579,15 @@ impl PlaybackEngine {
             lut_ms: lut_ms as f32,
             total_ms: total_ms as f32,
             dropped,
+            // Wrap-level stages aren't known here — `post_process_rgba`
+            // (the wrapper) updates them in the most-recent sample
+            // after we return. Defaulted to 0 so cache-hit paths
+            // that skip the wrapper still produce a valid sample.
+            bridge_u8_ms: 0.0,
+            reencode_ms: 0.0,
+            scope_ms: 0.0,
+            composite_ms: 0.0,
+            update_playback_ms: 0.0,
         };
         if let Ok(mut ring) = self.perf_ring.lock() {
             ring.push(sample);
@@ -6465,8 +6675,31 @@ impl PlaybackEngine {
                         }
                     }
                 }
-                // Skim files are video-only (for browser hover preview) — never use for playback.
-                // Original source file:
+                // 2. Optimised playback: substitute the skim file for the
+                //    source when the source is too heavy for real-time
+                //    playback on the current pipeline. Mirrors
+                //    DaVinci Optimized Media + FCP Proxy. Pure decision
+                //    in `should_use_skim_for_playback` (unit-tested);
+                //    we just feed it the inputs and pick the path.
+                if let Some(ref skim_path) = item.skim_file {
+                    let mode = crate::video_decoder::optimised_playback_mode();
+                    let skim_ready = skim_path.exists();
+                    if crate::video_decoder::should_use_skim_for_playback(
+                        mode,
+                        item.resolution.height,
+                        item.fps.as_f64(),
+                        skim_ready,
+                    ) {
+                        tracing::info!(
+                            "resolve_media_path: using skim ({} {}x{}@{:.2} fps) for {}",
+                            match mode { 1 => "AlwaysOriginal", 2 => "AlwaysOptimized", _ => "Auto" },
+                            item.resolution.width, item.resolution.height,
+                            item.fps.as_f64(), item.filename,
+                        );
+                        return skim_path.clone();
+                    }
+                }
+                // 3. Original source file.
                 item.path.clone()
             })
     }
@@ -7650,12 +7883,19 @@ pub fn generate_thumbnail_at_size_non_black(
 
 /// Generate filmstrip thumbnails incrementally with GPU acceleration (CUDA → VAAPI → CPU fallback).
 /// Calls `on_frame` for each generated frame. Returns the total number of frames generated.
+///
+/// Optional `pause_token` (when callers integrate with the global
+/// [`klipp_jobs::JobScheduler`]) is checked between frames so the
+/// scheduler can SIGSTOP-style suspend filmstrip work whenever the
+/// user starts playback / scrubbing. When `None`, behaves as before
+/// (back-compat for callers that don't yet wire a token).
 pub fn generate_filmstrip_incremental(
     path: &std::path::Path,
     duration_secs: f64,
     interval_secs: f64,
     target_height: u32,
     mut on_frame: impl FnMut(f64, Vec<u8>, u32, u32),
+    pause_token: Option<Arc<klipp_jobs::PauseToken>>,
 ) -> Result<usize, String> {
     let mut format_ctx = ffmpeg_next::format::input(path)
         .map_err(|e| format!("ffmpeg open: {e}"))?;
@@ -7713,8 +7953,22 @@ pub fn generate_filmstrip_incremental(
             break;
         }
 
+        // Cooperative pause point — the scheduler signals here when
+        // the user starts playback / scrubbing. Returns instantly
+        // when not paused. Cancellation also lands here so we exit
+        // gracefully mid-strip instead of running the entire 500-
+        // frame batch.
+        if let Some(ref token) = pause_token {
+            token.wait_while_paused();
+            if token.is_cancelled() {
+                tracing::info!("Filmstrip: cancelled at frame {} of {} for {:?}", i, num_frames, path);
+                break;
+            }
+        }
+
         // Throttle: yield between frames so playback decode isn't starved.
         // GPU decode is fast so use shorter sleep; CPU needs more breathing room.
+        // Kept as a backstop for callers that don't wire a pause_token.
         if i > 0 {
             let sleep_ms = if is_hw { 10 } else { 100 };
             std::thread::sleep(std::time::Duration::from_millis(sleep_ms));

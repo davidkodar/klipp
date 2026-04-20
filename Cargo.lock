@@ -2162,6 +2162,7 @@ dependencies = [
  "ffmpeg-next",
  "klipp-core",
  "klipp-engine",
+ "klipp-jobs",
  "klipp-media",
  "klipp-timeline",
  "klipp-title",
@@ -2231,6 +2232,7 @@ dependencies = [
  "klipp-color",
  "klipp-core",
  "klipp-effects",
+ "klipp-jobs",
  "klipp-media",
  "klipp-nodes",
  "klipp-plugin",
@@ -2259,6 +2261,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "klipp-jobs"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "klipp-media"
 version = "0.1.0"
 dependencies = [
@@ -2280,6 +2292,7 @@ dependencies = [
  "serde",
  "thiserror 1.0.69",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -2399,6 +2412,7 @@ dependencies = [
  "klipp-effects",
  "klipp-engine",
  "klipp-export",
+ "klipp-jobs",
  "klipp-media",
  "klipp-nodes",
  "klipp-plugin",

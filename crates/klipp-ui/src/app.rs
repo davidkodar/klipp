@@ -235,6 +235,15 @@ pub struct KlippApp {
     /// that `sync_sequence_to_engine` takes — which would otherwise contend
     /// with the engine's long read lock during active grading.
     param_change_queue: Arc<ArrayQueue<ParamChange>>,
+    /// Shared atomic foreground-activity signal — engine writes
+    /// `is_playing`, UI bumps `touch_input` on every input event,
+    /// background `JobScheduler` reads to decide pause/resume.
+    foreground_activity: Arc<klipp_jobs::ForegroundActivity>,
+    /// Background job scheduler — pauses filmstrip / skim transcode /
+    /// audio conform jobs whenever the user is busy. Lifetime tied
+    /// to the app — dropped on exit; surviving subprocess jobs are
+    /// killed by their `cancel()` impl on Drop.
+    job_scheduler: Arc<klipp_jobs::JobScheduler>,
 }
 
 impl KlippApp {
@@ -250,6 +259,7 @@ impl KlippApp {
         spectrum_sample_rate: u32,
         perf_ring: klipp_engine::perf::SharedPerfRing,
         param_change_queue: Arc<ArrayQueue<ParamChange>>,
+        foreground_activity: Arc<klipp_jobs::ForegroundActivity>,
     ) -> Self {
         use klipp_core::startup_timer::LogTimer;
 
@@ -306,6 +316,11 @@ impl KlippApp {
         // and silently broke audio output. The cache is now populated
         // lazily on first visit to the Audio HW preferences tab — the
         // 5-50ms hitch is acceptable for a one-time UI interaction.
+
+        // Capture the scheduler policy from prefs BEFORE moving
+        // `prefs` into the struct literal below.
+        let initial_scheduler_policy =
+            prefs.playback.background_performance.to_scheduler_policy();
 
         let mut app = Self {
             cmd_tx,
@@ -372,6 +387,14 @@ impl KlippApp {
             scope_window_runtime: crate::widgets::scope_window::ScopeWindowRuntime::default(),
             perf_ring,
             param_change_queue,
+            // Engine writes is_playing/is_scrubbing to this Arc; the
+            // scheduler below reads from the same Arc to know when
+            // the user is busy. Both ends share state without locks.
+            foreground_activity: Arc::clone(&foreground_activity),
+            job_scheduler: klipp_jobs::JobScheduler::new(
+                foreground_activity,
+                initial_scheduler_policy,
+            ),
         };
         // Build false color LUT from loaded preferences
         app.state.false_color_lut = app.prefs.viewer.false_color_palette.build_lut();
@@ -455,6 +478,9 @@ impl KlippApp {
         klipp_engine::video_decoder::set_max_playback_height(app.prefs.system.max_playback_height);
         klipp_engine::video_decoder::set_frame_queue_size(app.prefs.system.frame_queue_size);
         klipp_engine::video_decoder::set_decode_threads(app.prefs.system.decode_threads);
+        klipp_engine::video_decoder::set_optimised_playback_mode(
+            app.prefs.playback.optimised_playback.to_engine_mode(),
+        );
         klipp_engine::audio_output::set_preferred_device(app.prefs.audio_hardware.output_device.clone());
         // TODO: background_render pref — when true, pre-render complex timeline
         // sections in a background thread. No background render system exists yet;
@@ -1215,10 +1241,23 @@ impl KlippApp {
             .unwrap_or(self.prefs.editing.auto_generate_filmstrips);
         let interval = (duration_secs / 400.0).clamp(0.2, 1.5);
         let filmstrip_height = self.prefs.media_cache.filmstrip_height.max(24);
-        std::thread::Builder::new()
-            .name("klipp-filmstrip".into())
-            .spawn(move || {
-                // Try loading from disk cache first
+        // Seed the per-job progress counter so the UI can show "N/500"
+        // from the very first frame. Capped at 500 to mirror
+        // generate_filmstrip_incremental's hard cap.
+        let expected_frames = (((duration_secs / interval).ceil() as u32).min(500)).max(1);
+        self.state.filmstrip_progress.insert(media_id, (0, expected_frames));
+        // Wrap in a ThreadJob so the JobScheduler can pause us when
+        // foreground playback / scrubbing kicks in. The pause check
+        // lives inside `generate_filmstrip_incremental`'s per-frame
+        // loop; this thread blocks on it cooperatively.
+        let path_for_job = path.clone();
+        let job = klipp_jobs::ThreadJob::spawn(
+            format!("filmstrip:{}", path_for_job.display()),
+            klipp_jobs::JobPriority::Background,
+            klipp_jobs::ResourceClass::Nvdec,
+            move |pause_token, _progress| {
+                // Try loading from disk cache first — fast path,
+                // doesn't touch the decoder or pause point.
                 if let Some(ref key) = cache_key {
                     if klipp_media::disk_cache::filmstrip_cache_exists(key, filmstrip_height) {
                         match klipp_media::disk_cache::load_filmstrip_cache(key, filmstrip_height) {
@@ -1250,20 +1289,46 @@ impl KlippApp {
                 // Generate from source and collect frames for cache write
                 let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
                 let frames_clone = frames.clone();
-                match klipp_engine::generate_filmstrip_incremental(&path, duration_secs, interval, filmstrip_height, |time, rgba, w, h| {
-                    let frame = klipp_media::FilmstripFrame {
-                        time_secs: time,
-                        rgba,
-                        width: w,
-                        height: h,
-                    };
-                    frames_clone.lock().unwrap_or_else(|e| e.into_inner()).push(frame.clone());
-                    let _ = tx.send(FilmstripResult::Frame {
-                        media_id,
-                        frame,
-                    });
-                }) {
+                // Clone the token before handing one copy to the
+                // generator — we need the original to check
+                // `is_cancelled()` after the call returns. Without
+                // this guard a clip removed mid-strip writes a
+                // partial cache that the next session mistakes for
+                // a complete strip.
+                let pause_token_for_check = Arc::clone(&pause_token);
+                match klipp_engine::generate_filmstrip_incremental(
+                    &path,
+                    duration_secs,
+                    interval,
+                    filmstrip_height,
+                    |time, rgba, w, h| {
+                        let frame = klipp_media::FilmstripFrame {
+                            time_secs: time,
+                            rgba,
+                            width: w,
+                            height: h,
+                        };
+                        frames_clone.lock().unwrap_or_else(|e| e.into_inner()).push(frame.clone());
+                        let _ = tx.send(FilmstripResult::Frame {
+                            media_id,
+                            frame,
+                        });
+                    },
+                    Some(pause_token),
+                ) {
                     Ok(count) => {
+                        // Skip the cache write when the generator
+                        // exited early due to cancellation — partial
+                        // caches would otherwise pose as complete on
+                        // next launch and never get re-generated.
+                        if pause_token_for_check.is_cancelled() {
+                            tracing::info!(
+                                "Filmstrip: cancelled at {count} frames for {:?} — skipping partial cache write",
+                                path,
+                            );
+                            let _ = tx.send(FilmstripResult::Done { media_id });
+                            return;
+                        }
                         tracing::info!("Filmstrip: generated {count} frames for {:?}", path);
                         // Write to cache
                         if let Some(ref key) = cache_key {
@@ -1281,8 +1346,9 @@ impl KlippApp {
                         let _ = tx.send(FilmstripResult::Done { media_id });
                     }
                 }
-            })
-            .ok();
+            },
+        );
+        self.job_scheduler.submit(job as Arc<dyn klipp_jobs::BackgroundJob>);
     }
 
     fn spawn_audio_conform(&mut self, media_id: MediaId, path: PathBuf) {
@@ -1293,9 +1359,28 @@ impl KlippApp {
             .join("klipp")
             .join("audio-cache");
         let cache_key = klipp_media::disk_cache::compute_cache_key(&path);
-        std::thread::Builder::new()
-            .name("klipp-audio-conform".into())
-            .spawn(move || {
+        // Wrap in a ThreadJob so the worker runs at nice +10 (Linux
+        // scheduler prefers playback thread) and the global
+        // JobScheduler can cancel it on shutdown. The conform itself
+        // is one blocking call to ffmpeg's audio decoder, so
+        // wait_while_paused only fires before that call starts —
+        // mid-decode pause requires pushing a token into
+        // klipp_media::audio_cache, which is a separate refactor.
+        let path_for_job = path.clone();
+        let job = klipp_jobs::ThreadJob::spawn(
+            format!("audio-conform:{}", path_for_job.display()),
+            klipp_jobs::JobPriority::Background,
+            klipp_jobs::ResourceClass::Cpu,
+            move |pause_token, _progress| {
+                // Honour any pre-decode pause / cancel.
+                pause_token.wait_while_paused();
+                if pause_token.is_cancelled() {
+                    let _ = tx.send(AudioConformResult::Failed {
+                        media_id,
+                        error: "cancelled before start".into(),
+                    });
+                    return;
+                }
                 // Ensure cache directory exists
                 if let Err(e) = std::fs::create_dir_all(&cache_dir) {
                     tracing::warn!("Failed to create audio cache dir: {e}");
@@ -1341,15 +1426,24 @@ impl KlippApp {
                         }
                         Err(e) => {
                             tracing::warn!("Failed to load cached peaks, re-conforming: {e}");
-                            do_conform(media_id, &path, &cache_dir, &cache_key, &tx);
+                            // One more pre-decode pause check before
+                            // the heavy operation.
+                            pause_token.wait_while_paused();
+                            if !pause_token.is_cancelled() {
+                                do_conform(media_id, &path, &cache_dir, &cache_key, &tx);
+                            }
                         }
                     }
                     return;
                 }
 
-                do_conform(media_id, &path, &cache_dir, &cache_key, &tx);
-            })
-            .ok();
+                pause_token.wait_while_paused();
+                if !pause_token.is_cancelled() {
+                    do_conform(media_id, &path, &cache_dir, &cache_key, &tx);
+                }
+            },
+        );
+        self.job_scheduler.submit(job as Arc<dyn klipp_jobs::BackgroundJob>);
 
         fn do_conform(
             media_id: MediaId,
@@ -1815,6 +1909,13 @@ impl KlippApp {
                     self.state.thumbnail_cache.push_filmstrip_frame(media_id, frame);
                     // Clear cached textures so they get rebuilt with the new frame
                     self.state.filmstrip_textures.remove(&media_id);
+                    // Bump per-job progress (frames_done, frames_expected).
+                    // The expected count was set at spawn time from the
+                    // duration / interval calculation; here we just
+                    // increment the completed-frames counter.
+                    if let Some(prog) = self.state.filmstrip_progress.get_mut(&media_id) {
+                        prog.0 += 1;
+                    }
                 }
                 Ok(FilmstripResult::Done { media_id }) => {
                     let count = self.state.thumbnail_cache
@@ -1823,6 +1924,7 @@ impl KlippApp {
                         .unwrap_or(0);
                     tracing::info!("Filmstrip complete for {:?}: {count} frames", media_id);
                     self.state.filmstrip_in_progress.remove(&media_id);
+                    self.state.filmstrip_progress.remove(&media_id);
                     self.state.filmstrip_completed += 1;
                     if self.state.filmstrip_queue.is_empty() && self.state.filmstrip_in_progress.is_empty() {
                         self.state.filmstrip_generating = false;
@@ -11745,6 +11847,7 @@ impl KlippApp {
                                         });
                                     }
                                 },
+                                None, // refine path — not yet wrapped in a ThreadJob
                             );
                         })
                         .ok();
@@ -16326,6 +16429,33 @@ fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPrese
 
 impl eframe::App for KlippApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Bump the foreground-activity signal whenever the user
+        // *interacts* — clicks, keys, scrolls, drags. Plain pointer
+        // motion intentionally does NOT count: a user reading the UI
+        // with the mouse drifting around shouldn't keep the skim-
+        // transcode / filmstrip / audio-conform jobs paused forever.
+        let had_interaction = ctx.input(|i| {
+            // Held button = drag in flight → user is busy.
+            if i.pointer.any_down() { return true; }
+            // Discrete events that count as "interaction". Explicitly
+            // exclude PointerMoved + MouseMoved + WindowFocused —
+            // those fire constantly during normal use without
+            // signalling intent.
+            i.events.iter().any(|e| {
+                use egui::Event as E;
+                !matches!(
+                    e,
+                    E::PointerMoved(_)
+                        | E::MouseMoved(_)
+                        | E::WindowFocused(_)
+                        | E::PointerGone
+                )
+            })
+        });
+        if had_interaction {
+            self.foreground_activity.touch_input();
+        }
+
         // Main-thread heartbeat. Logs once every 30 s with the running
         // frame count. During normal use the log is full of PERF lines so
         // this is noise; when the UI freezes, the gap after the last
@@ -16659,9 +16789,18 @@ impl eframe::App for KlippApp {
             self.state.multicam_show_angles = self.prefs.editing.multicam_show_angles;
             // Sync engine statics
             klipp_engine::video_decoder::set_hardware_decode(self.prefs.system.hardware_decode);
+            klipp_engine::video_decoder::set_optimised_playback_mode(
+                self.prefs.playback.optimised_playback.to_engine_mode(),
+            );
             let _ = self.cmd_tx.send(AppCommand::SetLutTetrahedral(
                 self.prefs.color.lut_interpolation == crate::prefs::LutInterpolation::Tetrahedral,
             ));
+            // Push the background-performance pref into the live
+            // scheduler so user changes take effect immediately
+            // (without waiting for the next app launch).
+            self.job_scheduler.set_policy(
+                self.prefs.playback.background_performance.to_scheduler_policy(),
+            );
             // Rebuild false color LUT if palette changed
             self.state.false_color_lut = self.prefs.viewer.false_color_palette.build_lut();
             // Sync collapsed inspector sections to prefs
@@ -17579,15 +17718,39 @@ impl KlippApp {
             let target_height = source_height.min(1080);
             let skim_quality = self.prefs.media_cache.skim_transcode_quality;
 
+            // Detect HDR source (PQ/HLG/BT.2020). For HDR clips we
+            // need to tone-map down to BT.709 SDR during the skim
+            // encode — otherwise the resulting H.264 8-bit file
+            // carries HDR metadata that the playback NV12 path
+            // decodes as SDR, producing green/magenta blotches in
+            // the viewer (the visible regression that prompted this
+            // fix). The downstream cache key includes a `.hdrtm`
+            // marker so old non-tone-mapped HDR skims are
+            // invalidated rather than re-used.
+            let is_hdr_source = matches!(
+                item.colour_space,
+                klipp_media::ColourSpace::Hdr10 | klipp_media::ColourSpace::Hlg,
+            );
+
             // Use content-based cache key for skim path
             let skim_dir = dirs::cache_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
                 .join("klipp")
                 .join("skim");
             let _ = std::fs::create_dir_all(&skim_dir);
+            // HDR-aware cache key: append `.hdrtm` for tone-mapped
+            // HDR skims so old (broken) HDR skims that were encoded
+            // without tone-mapping become "not found" and get
+            // re-generated cleanly. SDR keys are unchanged.
+            let base_key = klipp_media::disk_cache::compute_cache_key(&source_path)
+                .unwrap_or_else(|| media_id.to_string());
+            let cache_key = if is_hdr_source {
+                format!("{base_key}.hdrtm")
+            } else {
+                base_key
+            };
             let skim_path = klipp_media::disk_cache::skim_transcode_path(
-                &klipp_media::disk_cache::compute_cache_key(&source_path)
-                    .unwrap_or_else(|| media_id.to_string()),
+                &cache_key,
                 media_id,
             );
 
@@ -17610,10 +17773,30 @@ impl KlippApp {
             }
 
             self.state.skim_transcoding.insert(media_id);
-            self.state.skim_transcode_status = Some((filename, 0.0));
+            self.state.skim_transcode_status = Some((filename.clone(), 0.0));
+
+            // Wrap the transcode in a SubprocessJob so the global
+            // JobScheduler can SIGSTOP it the moment the user starts
+            // playback / scrubbing. Critical for 4K60 clips where
+            // ffmpeg saturates NVDEC + NVENC + disk and would
+            // otherwise starve foreground decode for minutes.
+            //
+            // The job owns the *current* child PID. When the NVENC
+            // attempt fails and we fall back to libx264, we
+            // re-register the new child onto the same job so any
+            // pause set during the gap is preserved (see
+            // `register_child` for the gap-cancel/pause handling).
+            let job = klipp_jobs::SubprocessJob::new(
+                format!("skim-transcode:{filename}"),
+                klipp_jobs::JobPriority::Background,
+                klipp_jobs::ResourceClass::GpuMixed,
+            );
+            self.job_scheduler.submit(job.clone() as Arc<dyn klipp_jobs::BackgroundJob>);
 
             let event_tx = self.proxy_event_tx.clone();
+            let job_for_thread = Arc::clone(&job);
             std::thread::spawn(move || {
+                let job = job_for_thread;
                 let run_ffmpeg = |args: &[&str]| -> Result<std::process::ExitStatus, std::io::Error> {
                     use std::io::BufRead;
                     // Use -progress pipe:1 for clean key=value progress on stdout
@@ -17626,8 +17809,16 @@ impl KlippApp {
                         .stderr(std::process::Stdio::null())
                         .spawn()?;
 
+                    // Hand the child to the SubprocessJob — needed
+                    // BEFORE we read stdout so cancel() during the
+                    // read loop can kill the process. Releases the
+                    // child handle inside the job; we still need
+                    // stdout, so take it back below.
+                    let stdout = child.stdout.take();
+                    job.register_child(child);
+
                     // Parse stdout for progress lines: "out_time_us=12345678"
-                    if let Some(stdout) = child.stdout.take() {
+                    if let Some(stdout) = stdout {
                         let reader = std::io::BufReader::new(stdout);
                         for line in reader.lines().map_while(Result::ok) {
                             if let Some(val) = line.strip_prefix("out_time_us=") {
@@ -17635,6 +17826,7 @@ impl KlippApp {
                                     if duration_secs > 0.0 && us > 0 {
                                         let secs = us as f64 / 1_000_000.0;
                                         let progress = (secs / duration_secs).clamp(0.0, 1.0) as f32;
+                                        job.set_progress(progress);
                                         let _ = event_tx.send(AppEvent::SkimTranscodeProgress {
                                             media_id,
                                             progress,
@@ -17644,59 +17836,322 @@ impl KlippApp {
                             }
                         }
                     }
+                    // Pull the child back out of the job so we can
+                    // wait() on it. Cancel-while-running is now
+                    // racy: if cancel() landed first it took the
+                    // child and killed it; take_child returns None;
+                    // we synthesise an exit status indicating
+                    // termination so the outer flow doesn't try the
+                    // libx264 fallback for a cancelled run.
+                    let mut child = match job.take_child() {
+                        Some(c) => c,
+                        None => {
+                            // Cancelled — fabricate a non-success
+                            // status so the caller treats it as
+                            // failure and (importantly) doesn't fall
+                            // through to libx264.
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::Interrupted,
+                                "skim transcode cancelled",
+                            ));
+                        }
+                    };
                     child.wait()
                 };
 
                 let src = source_path.to_str().unwrap_or("");
-                let dst = skim_path.to_str().unwrap_or("");
 
-                // Scale filter — width auto-computed, height is target.
-                // The `-2` tells ffmpeg to compute the matching dimension
-                // rounded to a multiple of 2 (h.264 requires even sizes).
+                // ─── Crash-safe segment-based encode ───────────────
+                // Encode in 30-second chunks into a `<skim>.parts/`
+                // directory. Each segment finalises independently, so
+                // a killed run leaves N complete segments + at most
+                // one partial. The next spawn detects this and resumes
+                // from segment N (re-encoding 30s of overlap rather
+                // than the entire 5-minute file). On success we concat
+                // the segments back into one MKV via stream-copy and
+                // atomically rename into the final skim path.
+                const SEGMENT_DURATION_SECS: u32 = 30;
+                let parts_dir = {
+                    let stem = skim_path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("skim");
+                    let mut p = skim_path.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+                    p.push(format!("{stem}.parts"));
+                    p
+                };
+                let _ = std::fs::create_dir_all(&parts_dir);
+
+                // Count segments. Last one is treated as suspect (may
+                // have been mid-write when killed) so we re-encode
+                // from there.
+                let resume_from_segment: u32 = {
+                    let entries: Vec<_> = std::fs::read_dir(&parts_dir).ok()
+                        .map(|rd| rd.filter_map(|e| e.ok())
+                            .filter(|e| {
+                                let n = e.file_name();
+                                let s = n.to_string_lossy();
+                                s.starts_with("seg_") && s.ends_with(".mkv")
+                            })
+                            .collect())
+                        .unwrap_or_default();
+                    let total = entries.len() as u32;
+                    // Drop the highest-numbered segment as potentially
+                    // partial. If 0 segments exist, start from 0.
+                    if total > 0 {
+                        let last = entries.iter()
+                            .filter_map(|e| {
+                                let n = e.file_name();
+                                let s = n.to_string_lossy();
+                                let stem = s.strip_suffix(".mkv")?.strip_prefix("seg_")?;
+                                stem.parse::<u32>().ok()
+                            })
+                            .max()
+                            .unwrap_or(0);
+                        // Delete the last segment (may be partial).
+                        let last_path = parts_dir.join(format!("seg_{:05}.mkv", last));
+                        let _ = std::fs::remove_file(&last_path);
+                        last
+                    } else {
+                        0
+                    }
+                };
+                if resume_from_segment > 0 {
+                    tracing::info!(
+                        "Skim transcode: resuming {:?} from segment {} ({}s in)",
+                        source_path, resume_from_segment,
+                        resume_from_segment * SEGMENT_DURATION_SECS,
+                    );
+                }
+
+                // Filter chain depends on whether the source is HDR.
+                //   * SDR: plain `scale_cuda` (fast GPU path, paired
+                //     with h264_nvenc).
+                //   * HDR: CPU-side tone-map via zscale + tonemap
+                //     (hable) + zscale back to BT.709 + yuv420p +
+                //     scale. NVENC can't tone-map natively on every
+                //     ffmpeg build, so we accept a slower CPU encode
+                //     for HDR sources — correctness > speed. The
+                //     output is a clean SDR BT.709 8-bit H.264 that
+                //     the normal NV12 playback path handles perfectly.
                 let nvenc_vf = format!("scale_cuda=-2:{target_height}");
-                let cpu_vf = format!("scale=-2:{target_height}");
+                let cpu_vf_sdr = format!("scale=-2:{target_height}");
+                let cpu_vf_hdr = format!(
+                    "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,\
+                     tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,\
+                     format=yuv420p,scale=-2:{target_height}"
+                );
                 let qp_str = skim_quality.to_string();
+                let start_ss = (resume_from_segment * SEGMENT_DURATION_SECS).to_string();
+                let seg_time = SEGMENT_DURATION_SECS.to_string();
+                let seg_start = resume_from_segment.to_string();
+                let seg_pattern = parts_dir.join("seg_%05d.mkv").to_string_lossy().into_owned();
 
-                // Try NVENC first (GPU), fall back to libx264 (CPU).
-                let result = run_ffmpeg(&[
-                    "-y", "-hwaccel", "cuda",
-                    "-i", src,
-                    "-c:v", "h264_nvenc", "-g", "1", "-preset", "p1",
-                    "-rc", "constqp", "-qp", &qp_str,
-                    "-an", "-vf", &nvenc_vf, dst,
-                ]);
+                // HDR clips can't use the NVENC fast path (no tone-
+                // map in scale_cuda). Go straight to libx264 with the
+                // tone-map filter chain. SDR clips try NVENC first.
+                let result = if is_hdr_source {
+                    tracing::info!(
+                        "Skim transcode: HDR source detected — tone-mapping BT.2020/PQ → BT.709 SDR"
+                    );
+                    run_ffmpeg(&[
+                        "-y",
+                        "-ss", &start_ss,
+                        "-i", src,
+                        "-c:v", "libx264", "-g", "1", "-crf", &qp_str,
+                        "-preset", "ultrafast",
+                        "-an", "-vf", &cpu_vf_hdr,
+                        "-f", "segment",
+                        "-segment_time", &seg_time,
+                        "-segment_format", "matroska",
+                        "-reset_timestamps", "1",
+                        "-segment_start_number", &seg_start,
+                        &seg_pattern,
+                    ])
+                } else {
+                    run_ffmpeg(&[
+                        "-y", "-hwaccel", "cuda",
+                        "-ss", &start_ss,
+                        "-i", src,
+                        "-c:v", "h264_nvenc", "-g", "1", "-preset", "p1",
+                        "-rc", "constqp", "-qp", &qp_str,
+                        "-an", "-vf", &nvenc_vf,
+                        "-f", "segment",
+                        "-segment_time", &seg_time,
+                        "-segment_format", "matroska",
+                        "-reset_timestamps", "1",
+                        "-segment_start_number", &seg_start,
+                        &seg_pattern,
+                    ])
+                };
 
                 let result = match &result {
                     Ok(status) if status.success() => result,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => result,
                     _ => {
-                        tracing::info!("NVENC skim transcode failed, falling back to libx264");
-                        run_ffmpeg(&[
-                            "-y", "-i", src,
-                            "-c:v", "libx264", "-g", "1", "-crf", &qp_str,
-                            "-preset", "ultrafast",
-                            "-an", "-vf", &cpu_vf, dst,
-                        ])
+                        if job.is_cancelled() {
+                            result
+                        } else {
+                            tracing::info!("NVENC skim transcode failed, falling back to libx264");
+                            // Fallback uses the SDR filter chain
+                            // (HDR sources never reach this branch —
+                            // they go straight to the libx264 + tone-
+                            // map path above).
+                            run_ffmpeg(&[
+                                "-y",
+                                "-ss", &start_ss,
+                                "-i", src,
+                                "-c:v", "libx264", "-g", "1", "-crf", &qp_str,
+                                "-preset", "ultrafast",
+                                "-an", "-vf", &cpu_vf_sdr,
+                                "-f", "segment",
+                                "-segment_time", &seg_time,
+                                "-segment_format", "matroska",
+                                "-reset_timestamps", "1",
+                                "-segment_start_number", &seg_start,
+                                &seg_pattern,
+                            ])
+                        }
                     }
                 };
 
-                match result {
-                    Ok(status) if status.success() => {
-                        let _ = event_tx.send(AppEvent::SkimTranscodeComplete {
-                            media_id,
-                            path: skim_path,
-                        });
-                    }
-                    Ok(status) => {
+                // Encode phase done. Now (on success) concat the
+                // segments into one MKV. On failure or cancel, leave
+                // the parts dir for the next spawn to resume from.
+                let encode_succeeded = matches!(&result, Ok(s) if s.success());
+
+                if encode_succeeded {
+                    // Build the concat list. Segments numbered from 0
+                    // upwards — collect, sort, write `file '...'`
+                    // lines for ffmpeg's concat demuxer.
+                    let mut segments: Vec<(u32, std::path::PathBuf)> = std::fs::read_dir(&parts_dir).ok()
+                        .map(|rd| rd.filter_map(|e| e.ok())
+                            .filter_map(|e| {
+                                let n = e.file_name();
+                                let s = n.to_string_lossy();
+                                let stem = s.strip_suffix(".mkv")?.strip_prefix("seg_")?;
+                                let idx: u32 = stem.parse().ok()?;
+                                Some((idx, e.path()))
+                            })
+                            .collect())
+                        .unwrap_or_default();
+                    segments.sort_by_key(|(i, _)| *i);
+
+                    if segments.is_empty() {
+                        tracing::warn!("Skim transcode: encode succeeded but no segments found in {:?}", parts_dir);
+                        job.mark_done();
                         let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
                             media_id,
-                            error: format!("ffmpeg exited with {}", status),
+                            error: "no segments produced".into(),
                         });
+                        return;
                     }
-                    Err(e) => {
+
+                    // ffmpeg concat demuxer needs single-quoted paths
+                    // with internal `'` escaped as `'\''`. Our paths
+                    // come from a sanitised cache key so they
+                    // shouldn't contain quotes, but escape defensively.
+                    let list_path = parts_dir.join("concat.txt");
+                    let list_body: String = segments.iter()
+                        .map(|(_, p)| {
+                            let s = p.to_string_lossy().replace('\'', r"'\''");
+                            format!("file '{s}'\n")
+                        })
+                        .collect();
+                    if let Err(e) = std::fs::write(&list_path, list_body) {
+                        tracing::warn!("Skim transcode: failed to write concat list: {e}");
+                        job.mark_done();
                         let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
                             media_id,
-                            error: format!("Failed to run ffmpeg: {}", e),
+                            error: format!("concat list write: {e}"),
                         });
+                        return;
+                    }
+
+                    // Concat into a `.partial` sibling so the final
+                    // path is updated atomically only after the
+                    // concat completes.
+                    let mut concat_partial = skim_path.clone();
+                    concat_partial.set_extension(format!(
+                        "{}.partial",
+                        skim_path.extension().and_then(|s| s.to_str()).unwrap_or("mkv")
+                    ));
+                    let _ = std::fs::remove_file(&concat_partial);
+                    let list_str = list_path.to_string_lossy().into_owned();
+                    let concat_dst = concat_partial.to_string_lossy().into_owned();
+                    let concat_result = run_ffmpeg(&[
+                        "-y", "-f", "concat", "-safe", "0",
+                        "-i", &list_str,
+                        "-c", "copy",
+                        &concat_dst,
+                    ]);
+                    job.mark_done();
+
+                    match concat_result {
+                        Ok(s) if s.success() => {
+                            // Publish atomically; only now the cache
+                            // is observable to any future spawn as
+                            // a complete file.
+                            if let Err(e) = std::fs::rename(&concat_partial, &skim_path) {
+                                tracing::warn!(
+                                    "Skim transcode: failed to publish {:?} → {:?}: {e}",
+                                    concat_partial, skim_path,
+                                );
+                                let _ = std::fs::remove_file(&concat_partial);
+                                let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
+                                    media_id,
+                                    error: format!("publish rename failed: {e}"),
+                                });
+                            } else {
+                                // Successful — clean up the per-source
+                                // parts dir so we don't leak disk.
+                                let _ = std::fs::remove_dir_all(&parts_dir);
+                                let _ = event_tx.send(AppEvent::SkimTranscodeComplete {
+                                    media_id,
+                                    path: skim_path,
+                                });
+                            }
+                        }
+                        Ok(s) => {
+                            let _ = std::fs::remove_file(&concat_partial);
+                            let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
+                                media_id,
+                                error: format!("concat ffmpeg exited with {s}"),
+                            });
+                        }
+                        Err(e) => {
+                            let _ = std::fs::remove_file(&concat_partial);
+                            let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
+                                media_id,
+                                error: format!("concat ffmpeg failed: {e}"),
+                            });
+                        }
+                    }
+                } else {
+                    // Encode failed or was cancelled. Mark job done so
+                    // the scheduler reaps it. Leave parts dir intact —
+                    // a future spawn (after restart, or when the user
+                    // toggles the source back in) will resume from
+                    // the highest complete segment.
+                    job.mark_done();
+                    match result {
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                            tracing::info!("Skim transcode cancelled — parts preserved for resume");
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
+                                media_id,
+                                error: format!("Failed to run ffmpeg: {}", e),
+                            });
+                        }
+                        Ok(s) => {
+                            // Non-zero exit but not cancelled — log,
+                            // emit failure, but still preserve parts
+                            // for the next attempt to resume.
+                            let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
+                                media_id,
+                                error: format!("ffmpeg exited with {s}"),
+                            });
+                        }
                     }
                 }
             });

@@ -7,6 +7,7 @@ edition = "2021"
 klipp-core = { workspace = true }
 klipp-ui = { workspace = true }
 klipp-engine = { workspace = true }
+klipp-jobs = { path = "../klipp-jobs" }
 klipp-timeline = { workspace = true }
 klipp-media = { workspace = true }
 klipp-title = { workspace = true }

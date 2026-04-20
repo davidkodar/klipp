@@ -628,6 +628,70 @@ impl PreferencesPanel {
             }
         });
 
+        Self::setting_row_with_subtitle(
+            ui,
+            "Background performance",
+            "How background work yields when you play / scrub / interact",
+            |ui| {
+                use crate::prefs::BackgroundPerformance;
+                let current = match prefs.playback.background_performance {
+                    BackgroundPerformance::Defer => "Defer",
+                    BackgroundPerformance::Balanced => "Balanced",
+                    BackgroundPerformance::MaxThroughput => "Max throughput",
+                };
+                egui::ComboBox::from_id_salt("background_perf")
+                    .selected_text(current)
+                    .width(140.0)
+                    .show_ui(ui, |ui| {
+                        for (val, label) in [
+                            (BackgroundPerformance::Defer, "Defer (recommended)"),
+                            (BackgroundPerformance::Balanced, "Balanced"),
+                            (BackgroundPerformance::MaxThroughput, "Max throughput"),
+                        ] {
+                            if ui.selectable_value(
+                                &mut prefs.playback.background_performance,
+                                val,
+                                label,
+                            ).changed() {
+                                *dirty = true;
+                            }
+                        }
+                    });
+            },
+        );
+
+        Self::setting_row_with_subtitle(
+            ui,
+            "Optimised playback",
+            "Use the lighter skim file for playback when source media is too heavy (mirrors DaVinci Optimised Media / FCP Proxy)",
+            |ui| {
+                use crate::prefs::OptimisedPlayback;
+                let current = match prefs.playback.optimised_playback {
+                    OptimisedPlayback::Auto => "Auto",
+                    OptimisedPlayback::AlwaysOriginal => "Always original",
+                    OptimisedPlayback::AlwaysOptimized => "Always optimised",
+                };
+                egui::ComboBox::from_id_salt("optimised_playback")
+                    .selected_text(current)
+                    .width(160.0)
+                    .show_ui(ui, |ui| {
+                        for (val, label) in [
+                            (OptimisedPlayback::Auto, "Auto (recommended)"),
+                            (OptimisedPlayback::AlwaysOriginal, "Always original"),
+                            (OptimisedPlayback::AlwaysOptimized, "Always optimised"),
+                        ] {
+                            if ui.selectable_value(
+                                &mut prefs.playback.optimised_playback,
+                                val,
+                                label,
+                            ).changed() {
+                                *dirty = true;
+                            }
+                        }
+                    });
+            },
+        );
+
         // ── TRANSPORT section ──
         Self::section_header(ui, "TRANSPORT");
 

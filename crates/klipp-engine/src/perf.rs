@@ -60,6 +60,34 @@ pub struct PerfSample {
     /// wall-clock budget. Computed per-sample; not retroactively
     /// updated if later frames catch up.
     pub dropped: bool,
+
+    /// CPU sRGB-u8 → linear-f32 bridge feeding the pregrade caches
+    /// (4-90 ms at 4K depending on whether the GPU bridge handles
+    /// it). Useful even when the user has no grade applied.
+    pub bridge_u8_ms: f32,
+    /// CPU/GPU linear-f32 → sRGB-u8 reencode feeding the scope and
+    /// render cache. Same scaling as `bridge_u8_ms`.
+    pub reencode_ms: f32,
+    /// GPU scope render (waveform / parade / histogram). 10 Hz
+    /// throttled — most frames see 0.0.
+    pub scope_ms: f32,
+    /// CPU composite + tonemap — V1 + overlays blend into the final
+    /// RGBA buffer. Independent of grade. Reserved; not yet wired.
+    pub composite_ms: f32,
+    /// Wall-clock for the entire `update_playback` tick — the most
+    /// honest "actual" number for the overlay because it captures
+    /// stages outside the grade pipeline (decode wait, fb_write,
+    /// command drain). Reserved; not yet wired.
+    pub update_playback_ms: f32,
+}
+
+/// Plain-data carrier for `PerfRing::update_wrap_stages`. Stages
+/// the outer `post_process_rgba` measures that aren't visible from
+/// inside `post_process_rgba_inner`.
+pub struct WrapStages {
+    pub bridge_u8_ms: f32,
+    pub reencode_ms: f32,
+    pub scope_ms: f32,
 }
 
 impl PerfSample {
@@ -120,6 +148,30 @@ impl PerfRing {
             self.samples[self.head] = sample;
         }
         self.head = (self.head + 1) % self.capacity;
+    }
+
+    /// Patch the most recent sample with wrap-stage timings that
+    /// the inner-grade push didn't know about. Called from the
+    /// outer `post_process_rgba` after the wrapper finishes its own
+    /// stage timing (bridge_u8, reencode, scope). Lets the overlay
+    /// surface meaningful per-frame numbers even when the user has
+    /// no grade applied (where the inner stages would all read 0).
+    /// No-op if the ring has never been pushed to (engine just
+    /// started).
+    pub fn update_wrap_stages(&mut self, stages: WrapStages) {
+        if self.samples.is_empty() { return; }
+        // The most-recently-written sample is at `(head + capacity - 1) % capacity`
+        // when the ring has wrapped, else at `head - 1` when it hasn't.
+        let last_idx = if self.samples.len() < self.capacity {
+            self.head.saturating_sub(1)
+        } else {
+            (self.head + self.capacity - 1) % self.capacity
+        };
+        if let Some(s) = self.samples.get_mut(last_idx) {
+            s.bridge_u8_ms = stages.bridge_u8_ms;
+            s.reencode_ms = stages.reencode_ms;
+            s.scope_ms = stages.scope_ms;
+        }
     }
 
     /// Iterate samples in insertion order (oldest first), up to the
@@ -189,6 +241,9 @@ impl PerfRing {
             avg.ofx_ms += s.ofx_ms;
             avg.builtin_ms += s.builtin_ms;
             avg.lut_ms += s.lut_ms;
+            avg.bridge_u8_ms += s.bridge_u8_ms;
+            avg.reencode_ms += s.reencode_ms;
+            avg.scope_ms += s.scope_ms;
             if s.dropped {
                 avg.dropped_count += 1;
             }
@@ -199,6 +254,9 @@ impl PerfRing {
         avg.ofx_ms /= n;
         avg.builtin_ms /= n;
         avg.lut_ms /= n;
+        avg.bridge_u8_ms /= n;
+        avg.reencode_ms /= n;
+        avg.scope_ms /= n;
         avg.sample_count = recent.len();
         avg
     }
@@ -262,6 +320,9 @@ pub struct PerfAverages {
     pub ofx_ms: f32,
     pub builtin_ms: f32,
     pub lut_ms: f32,
+    pub bridge_u8_ms: f32,
+    pub reencode_ms: f32,
+    pub scope_ms: f32,
     pub dropped_count: u32,
     pub sample_count: usize,
 }
@@ -323,6 +384,11 @@ mod tests {
             lut_ms: 0.2,
             total_ms,
             dropped,
+            bridge_u8_ms: 0.0,
+            reencode_ms: 0.0,
+            scope_ms: 0.0,
+            composite_ms: 0.0,
+            update_playback_ms: 0.0,
         }
     }
 
@@ -401,5 +467,58 @@ mod tests {
         assert_eq!(s.frame_budget_ms(), None);
         s.target_fps = 24.0;
         assert!((s.frame_budget_ms().unwrap() - 41.666_668).abs() < 1e-3);
+    }
+
+    #[test]
+    fn update_wrap_stages_patches_latest_sample() {
+        // The grade-only push fills bridge_u8/reencode/scope = 0.
+        // The wrap then patches them in. Overlay should see the
+        // updated values on its next read.
+        let mut r = PerfRing::with_capacity(8);
+        r.push(sample(0.0, false));
+        r.update_wrap_stages(WrapStages {
+            bridge_u8_ms: 7.5,
+            reencode_ms: 6.2,
+            scope_ms: 0.7,
+        });
+        let last = r.iter_chronological().last().unwrap();
+        assert_eq!(last.bridge_u8_ms, 7.5);
+        assert_eq!(last.reencode_ms, 6.2);
+        assert_eq!(last.scope_ms, 0.7);
+    }
+
+    #[test]
+    fn update_wrap_stages_targets_latest_after_wraparound() {
+        // When the ring has wrapped past capacity, "latest" lives at
+        // (head + capacity - 1) % capacity. Verify the helper picks
+        // the right slot.
+        let mut r = PerfRing::with_capacity(3);
+        r.push(sample(1.0, false));
+        r.push(sample(2.0, false));
+        r.push(sample(3.0, false));
+        r.push(sample(4.0, false)); // overwrites slot 0; head wraps
+        r.update_wrap_stages(WrapStages {
+            bridge_u8_ms: 11.1,
+            reencode_ms: 22.2,
+            scope_ms: 33.3,
+        });
+        let last = r.iter_chronological().last().unwrap();
+        assert_eq!(last.total_ms, 4.0);
+        assert_eq!(last.bridge_u8_ms, 11.1);
+        assert_eq!(last.reencode_ms, 22.2);
+        assert_eq!(last.scope_ms, 33.3);
+    }
+
+    #[test]
+    fn update_wrap_stages_noop_on_empty_ring() {
+        // Engine just started, no samples pushed yet. update_wrap_stages
+        // must not panic.
+        let mut r = PerfRing::new();
+        r.update_wrap_stages(WrapStages {
+            bridge_u8_ms: 1.0,
+            reencode_ms: 2.0,
+            scope_ms: 3.0,
+        });
+        assert_eq!(r.len(), 0);
     }
 }

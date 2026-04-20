@@ -165,6 +165,20 @@ pub struct PlaybackPrefs {
     /// Pre-render complex sections in background.
     #[serde(default = "default_true")]
     pub background_render: bool,
+    /// How aggressively background work (skim transcode, filmstrip
+    /// generation, audio conform) yields when the user is playing /
+    /// scrubbing / interacting. The default is the "editor stays
+    /// responsive" mode.
+    #[serde(default)]
+    pub background_performance: BackgroundPerformance,
+    /// Whether the playback decoder substitutes the lower-res skim
+    /// file for source media that would otherwise stutter at full
+    /// resolution (4K60 etc.). Mirrors DaVinci's "Optimized Media"
+    /// and FCP's "Proxy" toggle. Auto = swap when source > 1080p OR
+    /// > 30 fps AND skim is on disk; AlwaysOriginal = never swap;
+    /// AlwaysOptimized = swap whenever a skim exists.
+    #[serde(default)]
+    pub optimised_playback: OptimisedPlayback,
     /// Pre-roll duration in seconds before playback starts.
     #[serde(default = "default_pre_roll")]
     pub pre_roll_duration: f32,
@@ -186,6 +200,65 @@ fn default_skim_resolution() -> u32 {
     // skim / timeline scrub than during playback. 720 closes most of the
     // visible gap while keeping per-frame decode cost bounded.
     720
+}
+
+/// How aggressively background jobs (skim transcode, filmstrip,
+/// audio conform) yield to foreground activity. Maps 1:1 onto
+/// [`klipp_jobs::SchedulerPolicy`]; kept as a separate type so the
+/// pref serialisation doesn't depend on the jobs crate's exact
+/// variant names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum BackgroundPerformance {
+    /// Pause background work whenever the user plays / scrubs /
+    /// interacts. Default — keeps the editor instantly responsive.
+    #[default]
+    Defer,
+    /// Same as Defer for now (placeholder for a future "throttle but
+    /// don't fully pause" mode that uses partial chunks).
+    Balanced,
+    /// Never pause background work. Use when you want the fastest
+    /// possible cache build and don't mind a less-responsive editor.
+    MaxThroughput,
+}
+
+impl BackgroundPerformance {
+    pub fn to_scheduler_policy(self) -> klipp_jobs::SchedulerPolicy {
+        match self {
+            BackgroundPerformance::Defer => klipp_jobs::SchedulerPolicy::Defer,
+            BackgroundPerformance::Balanced => klipp_jobs::SchedulerPolicy::Balanced,
+            BackgroundPerformance::MaxThroughput => klipp_jobs::SchedulerPolicy::MaxThroughput,
+        }
+    }
+}
+
+/// User-facing optimised-playback mode. Maps to the engine's
+/// `set_optimised_playback_mode(u8)` — kept as its own enum so the
+/// pref serialisation doesn't depend on engine internal numbering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum OptimisedPlayback {
+    /// Use skim file when source > 1080p OR > 30 fps AND a skim is
+    /// available. The most common "just works" choice.
+    #[default]
+    Auto,
+    /// Always play the original source file, even when it stutters.
+    /// Pick this when you specifically need to inspect 4K detail.
+    AlwaysOriginal,
+    /// Always use the skim file when one exists, even for clips
+    /// that would have played fine from source. Lowest-spec / battery-
+    /// saver choice.
+    AlwaysOptimized,
+}
+
+impl OptimisedPlayback {
+    /// Map onto the engine-side u8 atomic. Kept as a method so the
+    /// numbering can shift without touching every call site.
+    pub fn to_engine_mode(self) -> u8 {
+        match self {
+            OptimisedPlayback::Auto => 0,
+            OptimisedPlayback::AlwaysOriginal => 1,
+            OptimisedPlayback::AlwaysOptimized => 2,
+        }
+    }
 }
 
 /// Default multicam sync method for aligning angles.
@@ -701,6 +774,8 @@ impl Default for PlaybackPrefs {
             skim_resolution: default_skim_resolution(),
             playback_quality: Default::default(),
             background_render: true,
+            background_performance: BackgroundPerformance::default(),
+            optimised_playback: OptimisedPlayback::default(),
             pre_roll_duration: default_pre_roll(),
             jkl_speed_step: default_jkl_step(),
             dim_ui_on_play: true,
