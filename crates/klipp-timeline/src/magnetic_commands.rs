@@ -20,6 +20,16 @@ pub enum MagneticEditCommand {
         track_index: usize,
         overwritten_clips: Vec<Clip>,
         trimmed_clips: Vec<RippleRecord>,
+        /// T-8: when the new clip straddles an existing clip, the
+        /// straddled clip is split into fresh-id left + right remnants.
+        /// Those remnants need to be re-inserted verbatim by
+        /// apply_forward — before this field, apply_forward only had
+        /// the trimmed_clips ripple records (positions only) to work
+        /// with, and `set_clip_position(remnant_id, …)` silently
+        /// no-oped because the remnant didn't exist in the sequence at
+        /// replay time. Stored here as full Clip values so redo
+        /// reconstructs the remnant exactly.
+        split_remnants: Vec<Clip>,
     },
     RippleDelete {
         removed_clip: Clip,
@@ -39,6 +49,21 @@ pub enum MagneticEditCommand {
         gap_clip: Clip,
         track_index: usize,
         position: usize,
+        /// T-1: clips whose magnetic_anchor referenced the lifted clip
+        /// and were disconnected as part of the lift. On undo the
+        /// anchors are restored from these records so the connected
+        /// clips re-attach to the re-inserted primary clip.
+        disconnected_clips: Vec<(ClipId, usize, MagneticAnchor)>,
+        /// T-1: storylines whose anchor was the lifted clip; demoted
+        /// to Connected at lift time, restored on undo.
+        disconnected_storylines: Vec<(usize, MagneticAnchor)>,
+        /// T-3: partner clips (via `linked_clip_id`) whose link pointed
+        /// at the lifted clip. Their `linked_clip_id` is cleared here
+        /// and restored on undo. Lift doesn't delete the partner (V↔A
+        /// pair is broken, not removed), so a dangling id would make
+        /// the partner's visual pairing silently drop on the next
+        /// clip-id lookup.
+        unlinked_partners: Vec<(ClipId, usize)>,
     },
     AppendPrimary {
         appended_clip: Clip,

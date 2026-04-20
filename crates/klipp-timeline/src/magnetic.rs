@@ -240,6 +240,12 @@ impl MagneticEditor {
 
         let mut overwritten_clips = Vec::new();
         let mut trimmed_clips = Vec::new();
+        // T-8: full Clip values for split-case remnants so redo can
+        // reconstruct them. Overlap-left/right trimmed clips keep their
+        // original ClipId (they're the same clip with a shortened
+        // in/out) so they DON'T need to live here — the trimmed_clips
+        // RippleRecord already tells apply_forward how to move them.
+        let mut split_remnants: Vec<Clip> = Vec::new();
         let mut new_clips_list: Vec<Clip> = Vec::new();
 
         let track = &sequence.tracks[primary_idx];
@@ -268,6 +274,7 @@ impl MagneticEditor {
                     new_in: left.timeline_in,
                     new_out: left.timeline_out,
                 });
+                split_remnants.push(left.clone());
                 new_clips_list.push(left);
 
                 // The new clip goes in the middle
@@ -286,6 +293,7 @@ impl MagneticEditor {
                     new_in: right.timeline_in,
                     new_out: right.timeline_out,
                 });
+                split_remnants.push(right.clone());
                 new_clips_list.push(right);
             } else if cin < region_in && cout > region_in {
                 // Overlaps left — trim tail
@@ -345,6 +353,7 @@ impl MagneticEditor {
                 track_index: primary_idx,
                 overwritten_clips,
                 trimmed_clips,
+                split_remnants,
             },
         }
     }
@@ -469,6 +478,48 @@ impl MagneticEditor {
         let gap_clone = gap.clone();
         let position = clip_idx;
 
+        // T-1 + T-3: before replacing the clip with a gap, scan the
+        // sequence for any dangling references to the lifted clip id:
+        //   • Individual clip anchors (magnetic_anchor) on any track
+        //   • Connected-storyline anchors on other tracks
+        //   • `linked_clip_id` partners (e.g. the audio half of a V+A pair)
+        //
+        // For each, clear the reference and record enough state to
+        // restore it on undo. Mirrors the ripple_delete pattern — lift
+        // is "soft delete replaced by a gap" so external references
+        // should be treated the same way as a hard delete.
+        let mut disconnected_clips: Vec<(ClipId, usize, MagneticAnchor)> = Vec::new();
+        let mut disconnected_storylines: Vec<(usize, MagneticAnchor)> = Vec::new();
+        let mut unlinked_partners: Vec<(ClipId, usize)> = Vec::new();
+        for (ti, track) in sequence.tracks.iter_mut().enumerate() {
+            if track.magnetic_role == TrackRole::ConnectedStoryline {
+                if let Some(ref anchor) = track.storyline_anchor {
+                    if anchor.anchor_clip_id == clip_id {
+                        disconnected_storylines.push((ti, anchor.clone()));
+                        track.storyline_anchor = None;
+                        track.magnetic_role = TrackRole::Connected;
+                    }
+                }
+            }
+            for clip in &mut track.clips {
+                if clip.id == clip_id {
+                    // This is the clip about to be replaced by the
+                    // gap — skip here, the gap replace happens below.
+                    continue;
+                }
+                if let Some(ref anchor) = clip.magnetic_anchor {
+                    if anchor.anchor_clip_id == clip_id {
+                        disconnected_clips.push((clip.id, ti, anchor.clone()));
+                        clip.magnetic_anchor = None;
+                    }
+                }
+                if clip.linked_clip_id == Some(clip_id) {
+                    unlinked_partners.push((clip.id, ti));
+                    clip.linked_clip_id = None;
+                }
+            }
+        }
+
         // Replace with gap
         sequence.tracks[track_idx].clips[clip_idx] = gap;
 
@@ -483,6 +534,9 @@ impl MagneticEditor {
                 gap_clip: gap_clone,
                 track_index: track_idx,
                 position,
+                disconnected_clips,
+                disconnected_storylines,
+                unlinked_partners,
             },
         }
     }
@@ -651,17 +705,28 @@ impl MagneticEditor {
 
         let offset = at_time - original.timeline_in;
 
+        // T-2: left half INHERITS the original ClipId. This keeps any
+        // external clip/storyline anchored to the original id anchored
+        // to the visually-continuous "first half" of the clip — without
+        // this change blade was turning every external anchor into a
+        // dangling reference (both halves previously got fresh ids).
+        // Linked-clip partners on other tracks also continue to resolve
+        // because linked_clip_id on those partners still points at the
+        // original id, which is now the left half.
         let mut left_clip = original.clone();
-        left_clip.id = ClipId::new();
         left_clip.timeline_out = at_time;
         left_clip.source_out = original.source_in + offset;
-        // Left keeps magnetic_anchor
+        // Left keeps magnetic_anchor (and its id).
 
         let mut right_clip = original.clone();
         right_clip.id = ClipId::new();
         right_clip.timeline_in = at_time;
         right_clip.source_in = original.source_in + offset;
-        right_clip.magnetic_anchor = None; // Right half gets None
+        // Right keeps magnetic_anchor too (the anchor is a relationship
+        // TO some other clip — both halves sit at the anchored location,
+        // so both should stay connected). Dropping it on the right half
+        // was a stale T-2 design choice that made connected-clip edits
+        // silently lose the connection after every blade.
 
         // Replace original with left + right
         sequence.tracks[track_idx].clips.remove(clip_idx);
@@ -784,22 +849,34 @@ impl MagneticEditor {
         sequence.tracks[track_idx].clips[clip_idx].timeline_out = new_timeline_out;
         sequence.tracks[track_idx].clips[clip_idx].source_out = new_source_out;
 
-        // Ripple downstream clips on the same track
-        let mut rippled_clips = Vec::new();
-        let track = &mut sequence.tracks[track_idx];
-        for c in &mut track.clips[(clip_idx + 1)..] {
-            let old_in = c.timeline_in;
-            let old_out = c.timeline_out;
-            c.timeline_in += delta;
-            c.timeline_out += delta;
-            rippled_clips.push(RippleRecord {
-                clip_id: c.id,
-                old_in,
-                old_out,
-                new_in: c.timeline_in,
-                new_out: c.timeline_out,
-            });
-        }
+        // T-6: on primary tracks, defer ripple to repack_primary so the
+        // gapless invariant is enforced consistently with trim_head. The
+        // old ad-hoc ripple did happen to produce a gapless result when
+        // the track was already gapless going in, but it silently drifted
+        // when a pre-existing gap existed (e.g. leftover state from a
+        // past inconsistency) and the debug_assert at the bottom would
+        // then fire. Non-primary tracks keep the ad-hoc ripple because
+        // they're allowed to have gaps and expect position continuity.
+        let rippled_clips = if sequence.tracks[track_idx].magnetic_role == TrackRole::Primary {
+            repack_primary(sequence)
+        } else {
+            let mut records = Vec::new();
+            let track = &mut sequence.tracks[track_idx];
+            for c in &mut track.clips[(clip_idx + 1)..] {
+                let old_in = c.timeline_in;
+                let old_out = c.timeline_out;
+                c.timeline_in += delta;
+                c.timeline_out += delta;
+                records.push(RippleRecord {
+                    clip_id: c.id,
+                    old_in,
+                    old_out,
+                    new_in: c.timeline_in,
+                    new_out: c.timeline_out,
+                });
+            }
+            records
+        };
 
         let cascaded_clips = Self::cascade_all_connected(sequence, &rippled_clips);
 
@@ -1293,7 +1370,9 @@ impl MagneticEditor {
                 track_index,
                 overwritten_clips,
                 trimmed_clips,
+                split_remnants,
             } => {
+                let _ = split_remnants; // remnants are removed below by id.
                 // Remove inserted clip
                 sequence.tracks[*track_index].remove_clip(inserted_clip.id);
                 // Restore trimmed clips to old positions
@@ -1368,6 +1447,9 @@ impl MagneticEditor {
                 gap_clip,
                 track_index,
                 position,
+                disconnected_clips,
+                disconnected_storylines,
+                unlinked_partners,
             } => {
                 // Replace gap with original clip
                 let pos = *position;
@@ -1375,6 +1457,30 @@ impl MagneticEditor {
                     && sequence.tracks[*track_index].clips[pos].id == gap_clip.id
                 {
                     sequence.tracks[*track_index].clips[pos] = removed_clip.clone();
+                }
+                // T-1: re-attach clips that were anchored to the lifted
+                // clip. Find each by id since the containing track is
+                // cached as a hint but the clip may have moved.
+                for (cid, _ti, anchor) in disconnected_clips {
+                    if let Some((ti2, ci2)) = sequence.find_clip(*cid) {
+                        sequence.tracks[ti2].clips[ci2].magnetic_anchor =
+                            Some(anchor.clone());
+                    }
+                }
+                // T-1: re-promote storylines that were demoted.
+                for (ti2, anchor) in disconnected_storylines {
+                    sequence.tracks[*ti2].magnetic_role = TrackRole::ConnectedStoryline;
+                    sequence.tracks[*ti2].storyline_anchor = Some(anchor.clone());
+                }
+                // T-3: restore linked_clip_id on partner clips. The
+                // `linked_clip_id` always pointed at the lifted clip's
+                // id (`removed_clip.id`), which is stable across undo
+                // because we re-insert the same Clip instance.
+                for (pid, _ti) in unlinked_partners {
+                    if let Some((pti, pci)) = sequence.find_clip(*pid) {
+                        sequence.tracks[pti].clips[pci].linked_clip_id =
+                            Some(removed_clip.id);
+                    }
                 }
             }
             MagneticEditCommand::AppendPrimary {
@@ -1556,12 +1662,35 @@ impl MagneticEditor {
                 track_index,
                 overwritten_clips,
                 trimmed_clips,
+                split_remnants,
             } => {
                 // Remove overwritten clips
                 for oc in overwritten_clips {
                     sequence.tracks[*track_index].remove_clip(oc.id);
                 }
-                // Apply trims
+                // T-8: re-insert split remnants (straddle case). The
+                // previous implementation relied on the trimmed_clips
+                // RippleRecord alone — but that only stores positions,
+                // and set_clip_position silently no-opped because the
+                // remnant clip_ids were synthesised fresh in
+                // overwrite_primary and don't exist after apply_inverse
+                // wiped them. Insert at each remnant's timeline_in so
+                // repack_primary at the end enforces the gapless
+                // invariant.
+                for remnant in split_remnants {
+                    let track = &sequence.tracks[*track_index];
+                    let pos = track
+                        .clips
+                        .iter()
+                        .position(|c| c.timeline_in >= remnant.timeline_in)
+                        .unwrap_or(track.clips.len());
+                    sequence.tracks[*track_index]
+                        .clips
+                        .insert(pos, remnant.clone());
+                }
+                // Apply trims (overlap-left / overlap-right case, where
+                // the trimmed clip kept its original ClipId so
+                // set_clip_position does find it).
                 for rr in trimmed_clips {
                     sequence.set_clip_position(rr.clip_id, rr.new_in, rr.new_out);
                 }
@@ -1617,11 +1746,29 @@ impl MagneticEditor {
                 gap_clip,
                 track_index,
                 position,
+                disconnected_clips,
+                disconnected_storylines,
+                unlinked_partners,
                 ..
             } => {
                 let pos = *position;
                 if pos < sequence.tracks[*track_index].clips.len() {
                     sequence.tracks[*track_index].clips[pos] = gap_clip.clone();
+                }
+                // Re-apply the disconnection side-effects (T-1 + T-3).
+                for (cid, _ti, _anchor) in disconnected_clips {
+                    if let Some((ti2, ci2)) = sequence.find_clip(*cid) {
+                        sequence.tracks[ti2].clips[ci2].magnetic_anchor = None;
+                    }
+                }
+                for (ti2, _anchor) in disconnected_storylines {
+                    sequence.tracks[*ti2].magnetic_role = TrackRole::Connected;
+                    sequence.tracks[*ti2].storyline_anchor = None;
+                }
+                for (pid, _ti) in unlinked_partners {
+                    if let Some((pti, pci)) = sequence.find_clip(*pid) {
+                        sequence.tracks[pti].clips[pci].linked_clip_id = None;
+                    }
                 }
             }
             MagneticEditCommand::AppendPrimary {
@@ -2493,6 +2640,136 @@ mod tests {
         assert_eq!(seq.tracks[0].clips[1].id, clip1_id);
         assert_eq!(seq.tracks[0].clips[1].timeline_in, tc(24));
         assert_eq!(seq.tracks[0].clips[1].timeline_out, tc(48));
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // T-1: lift clears + restores magnetic_anchor on external clips
+    // ─────────────────────────────────────────────────────────────
+    #[test]
+    fn test_lift_clears_dangling_external_anchor_and_restores_on_undo() {
+        // Primary [A, B], Connected [X anchored to A]. Lift A. X's
+        // anchor must be cleared (otherwise it dangles at A's id).
+        // Undo must reattach X to A.
+        let mut seq = make_sequence_with_connected(&[(0, 24), (24, 48)], &[(0, 24)]);
+        let primary_a_id = seq.tracks[1].clips[0].id;
+        let connected_x_id = seq.tracks[0].clips[0].id;
+
+        MagneticEditor::connect_clip(
+            &mut seq,
+            connected_x_id,
+            primary_a_id,
+            AnchorAlignment::StartAligned,
+        );
+        assert!(
+            seq.tracks[0].clips[0].magnetic_anchor.is_some(),
+            "pre-condition: X should be anchored"
+        );
+
+        let result = MagneticEditor::lift(&mut seq, primary_a_id);
+
+        // X's anchor is cleared.
+        assert!(
+            seq.tracks[0].clips[0].magnetic_anchor.is_none(),
+            "T-1: lift must clear dangling external anchor"
+        );
+
+        // Undo restores it.
+        MagneticEditor::apply_inverse(&mut seq, &result.command);
+        assert!(
+            seq.tracks[0].clips[0].magnetic_anchor.is_some(),
+            "T-1 undo: lift apply_inverse must restore external anchor"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // T-2: blade left half inherits id, both halves keep anchor
+    // ─────────────────────────────────────────────────────────────
+    #[test]
+    fn test_blade_left_half_inherits_original_id() {
+        let mut seq = make_sequence(&[(0, 48)]);
+        let original_id = seq.tracks[0].clips[0].id;
+
+        MagneticEditor::blade(&mut seq, original_id, tc(24));
+
+        // Left half (index 0) must keep the original id so external
+        // anchors pointing at it continue to resolve. Right half gets
+        // a fresh id.
+        assert_eq!(
+            seq.tracks[0].clips[0].id, original_id,
+            "T-2: blade left half must inherit the original ClipId"
+        );
+        assert_ne!(
+            seq.tracks[0].clips[1].id, original_id,
+            "T-2: blade right half must have a fresh ClipId"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // T-3: lift clears + restores linked_clip_id on partner clips
+    // ─────────────────────────────────────────────────────────────
+    #[test]
+    fn test_lift_clears_linked_partner_and_restores_on_undo() {
+        // Two tracks with a linked pair; lift the primary-track clip
+        // and confirm the partner's linked_clip_id is cleared, then
+        // restored on undo.
+        let mut seq = make_sequence_with_connected(&[(0, 24)], &[(0, 24)]);
+        // link primary[0] ↔ connected[0] (V+A style)
+        let primary_id = seq.tracks[1].clips[0].id;
+        let connected_id = seq.tracks[0].clips[0].id;
+        seq.tracks[1].clips[0].linked_clip_id = Some(connected_id);
+        seq.tracks[0].clips[0].linked_clip_id = Some(primary_id);
+
+        let result = MagneticEditor::lift(&mut seq, primary_id);
+
+        // Partner's linked_clip_id is cleared.
+        let partner = seq.tracks[0].clips.iter().find(|c| c.id == connected_id).unwrap();
+        assert!(
+            partner.linked_clip_id.is_none(),
+            "T-3: lift must clear partner's linked_clip_id"
+        );
+
+        // Undo restores it to the original primary id.
+        MagneticEditor::apply_inverse(&mut seq, &result.command);
+        let partner = seq.tracks[0].clips.iter().find(|c| c.id == connected_id).unwrap();
+        assert_eq!(
+            partner.linked_clip_id, Some(primary_id),
+            "T-3 undo: linked_clip_id must be restored"
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // T-8: OverwritePrimary straddle-case round-trip via redo
+    // ─────────────────────────────────────────────────────────────
+    #[test]
+    fn test_apply_forward_overwrite_primary_straddle_roundtrip() {
+        // Straddle: new clip 30..42 splits clip 24..48 into two
+        // fresh-id remnants. Before T-8, apply_forward didn't
+        // re-insert the remnants (the trimmed_clips ripple records
+        // referenced ids that didn't exist in the sequence at replay
+        // time, so set_clip_position no-opped). Now split_remnants
+        // carries the full clip values.
+        let mut seq = make_sequence(&[(0, 24), (24, 48), (48, 72)]);
+        let new_clip = media_clip(0, 12);
+        let result = MagneticEditor::overwrite_primary(&mut seq, new_clip, tc(30));
+
+        let post_len = seq.tracks[0].clips.len();
+        assert!(
+            post_len >= 4,
+            "straddle should produce at least [A, left_remnant, new_clip, right_remnant, …]"
+        );
+
+        // undo → forward → same state.
+        MagneticEditor::apply_inverse(&mut seq, &result.command);
+        MagneticEditor::apply_forward(&mut seq, &result.command);
+        assert_eq!(
+            seq.tracks[0].clips.len(),
+            post_len,
+            "T-8: apply_forward after undo must reconstruct the split remnants"
+        );
+
+        // undo again → back to original 3 clips.
+        MagneticEditor::apply_inverse(&mut seq, &result.command);
+        assert_eq!(seq.tracks[0].clips.len(), 3);
     }
 
     #[test]
