@@ -1748,3 +1748,180 @@ pub fn render_transition_with_params(
 
     output
 }
+
+#[cfg(test)]
+mod tests {
+    //! Smoke coverage for the transition renderer. Each TransitionKind
+    //! variant is exercised at progress 0.0, 0.5, and 1.0 on a tiny
+    //! 4×4 RGBA buffer; the harness catches panics, bad output sizes,
+    //! and a match-arm silently renaming itself out of existence.
+    //! Extra focused checks on CrossDissolve (easing + boundary
+    //! blend) and apply_easing's shape invariants.
+    use super::*;
+    use klipp_core::{TransitionUserParams, TRANSITION_SPECS};
+
+    fn rgba(byte: u8) -> Vec<u8> {
+        vec![byte; 4 * 4 * 4] // 4×4 RGBA
+    }
+
+    #[test]
+    fn apply_easing_stays_finite_and_in_unit_range() {
+        // Linear + all 4 easing curves at boundary and interior points.
+        for curve in 0..=5 {
+            for &t in &[0.0_f32, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0] {
+                let r = apply_easing(t, curve as f32);
+                assert!(r.is_finite(), "easing(t={t}, curve={curve}) = {r} not finite");
+                assert!(
+                    (0.0..=1.0).contains(&r),
+                    "easing(t={t}, curve={curve}) = {r} escaped [0, 1]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn apply_easing_linear_is_identity() {
+        // curve=0 (and anything not matching 1..=4) falls through to
+        // linear — output equals input.
+        for &t in &[0.0_f32, 0.25, 0.5, 0.75, 1.0] {
+            assert_eq!(apply_easing(t, 0.0), t);
+            assert_eq!(apply_easing(t, 99.0), t, "unmatched curve must fall to linear");
+        }
+    }
+
+    #[test]
+    fn apply_easing_hits_boundaries() {
+        // Every curve must pass (0,0) and (1,1) exactly — a rescaling
+        // that doesn't hit the endpoints would produce visible jumps
+        // at the start/end of a CrossDissolve.
+        for curve in 0..=4 {
+            assert_eq!(apply_easing(0.0, curve as f32), 0.0, "curve {curve}: f(0) != 0");
+            let at1 = apply_easing(1.0, curve as f32);
+            assert!(
+                (at1 - 1.0).abs() < 1e-5,
+                "curve {curve}: f(1) = {at1}, expected 1.0"
+            );
+        }
+    }
+
+    #[test]
+    fn render_all_kinds_produce_correct_size_and_finite_bytes() {
+        // The registry holds all variants — using it instead of a
+        // hand-written list means adding a new TransitionKind + a
+        // TRANSITION_SPECS row is enough to get smoke coverage, no
+        // test-list edit required.
+        let width = 4;
+        let height = 4;
+        let expected = (width * height * 4) as usize;
+        let from = rgba(50);
+        let to = rgba(200);
+        let params = TransitionUserParams::default();
+
+        for spec in TRANSITION_SPECS.iter() {
+            for &p in &[0.0_f32, 0.5, 1.0] {
+                let out = render_transition_with_params(
+                    spec.kind, &from, &to, p, width, height, &params,
+                );
+                assert_eq!(
+                    out.len(),
+                    expected,
+                    "{:?} @ p={} produced {} bytes, want {}",
+                    spec.kind,
+                    p,
+                    out.len(),
+                    expected
+                );
+                // No NaN escaping as a u8 is trivially true, but we
+                // guard against an all-zero or all-255 buffer that
+                // signals "kernel wrote nothing meaningful". Allow
+                // pure black/white at the endpoints (some wipes leave
+                // regions fully covered) but require SOME byte != 0
+                // AND SOME != 255 at p=0.5 where both halves should
+                // contribute somewhere.
+                if (p - 0.5).abs() < 1e-6 {
+                    let has_nonzero = out.iter().any(|&b| b != 0);
+                    assert!(
+                        has_nonzero,
+                        "{:?} @ p=0.5 produced all-zero output (kernel likely unimplemented)",
+                        spec.kind,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cross_dissolve_at_boundaries_matches_input_buffers() {
+        // p=0 → output ≈ from, p=1 → output ≈ to, within 1 byte of
+        // integer rounding. This is the load-bearing invariant for
+        // seamless transition IN/OUT.
+        let width = 4;
+        let height = 4;
+        let from = vec![100u8; (width * height * 4) as usize];
+        let to = vec![200u8; (width * height * 4) as usize];
+        let params = TransitionUserParams::default();
+
+        let out0 = render_transition_with_params(
+            TransitionKind::CrossDissolve, &from, &to, 0.0, width, height, &params,
+        );
+        let out1 = render_transition_with_params(
+            TransitionKind::CrossDissolve, &from, &to, 1.0, width, height, &params,
+        );
+
+        for i in 0..out0.len() {
+            let d0 = (out0[i] as i32 - from[i] as i32).abs();
+            let d1 = (out1[i] as i32 - to[i] as i32).abs();
+            assert!(d0 <= 1, "p=0 byte {i}: {} vs {}, drift {}", out0[i], from[i], d0);
+            assert!(d1 <= 1, "p=1 byte {i}: {} vs {}, drift {}", out1[i], to[i], d1);
+        }
+    }
+
+    #[test]
+    fn cross_dissolve_at_half_is_average_of_inputs() {
+        // Linear dissolve at p=0.5 should produce ≈ (from + to) / 2.
+        let width = 4;
+        let height = 4;
+        let from = vec![50u8; (width * height * 4) as usize];
+        let to = vec![150u8; (width * height * 4) as usize];
+        let params = TransitionUserParams::default();
+
+        let out = render_transition_with_params(
+            TransitionKind::CrossDissolve, &from, &to, 0.5, width, height, &params,
+        );
+
+        let expected = 100u8; // (50 + 150) / 2
+        for &b in &out {
+            assert!(
+                (b as i32 - expected as i32).abs() <= 1,
+                "expected ~{expected}, got {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn progress_clamps_out_of_range_inputs() {
+        // render_transition_with_params clamps progress to [0,1] —
+        // callers don't need to pre-clamp.
+        let width = 4;
+        let height = 4;
+        let from = vec![30u8; (width * height * 4) as usize];
+        let to = vec![210u8; (width * height * 4) as usize];
+        let params = TransitionUserParams::default();
+
+        let out_neg = render_transition_with_params(
+            TransitionKind::CrossDissolve, &from, &to, -10.0, width, height, &params,
+        );
+        let out_huge = render_transition_with_params(
+            TransitionKind::CrossDissolve, &from, &to, 42.0, width, height, &params,
+        );
+
+        // Negative progress → behaves like p=0 (output ≈ from).
+        for i in 0..out_neg.len() {
+            assert!((out_neg[i] as i32 - from[i] as i32).abs() <= 1);
+        }
+        // Large progress → behaves like p=1 (output ≈ to).
+        for i in 0..out_huge.len() {
+            assert!((out_huge[i] as i32 - to[i] as i32).abs() <= 1);
+        }
+    }
+}

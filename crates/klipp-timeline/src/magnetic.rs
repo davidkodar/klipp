@@ -2496,6 +2496,94 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_inverse_overwrite_primary_full_replace_roundtrip() {
+        // Simplest OverwritePrimary shape: the new clip exactly replaces
+        // an existing clip (no trim, no split). Round-trip cycle: save
+        // state → overwrite_primary → apply_inverse → state equal →
+        // apply_forward → state equal to post-overwrite → apply_inverse
+        // again → still equal to original.
+        //
+        // The "completely inside" branch is the only shape of
+        // overwrite_primary whose apply_forward is trivially correct —
+        // overwritten clips are removed, no remnants are synthesised,
+        // so `trimmed_clips` is empty and apply_forward has nothing to
+        // bring back. The trim and split shapes produce remnant clips
+        // with fresh ClipIds; apply_forward's
+        // `set_clip_position(trimmed.clip_id, ...)` then no-ops because
+        // the id doesn't exist in the sequence yet. See T-8 in the
+        // audit tracker — "OverwritePrimary apply_inverse is heuristic
+        // + untested" — for the broader regression this test partially
+        // covers.
+        let mut seq = make_sequence(&[(0, 24), (24, 48), (48, 72)]);
+
+        let orig: Vec<(ClipId, RationalTime, RationalTime)> = seq.tracks[0]
+            .clips
+            .iter()
+            .map(|c| (c.id, c.timeline_in, c.timeline_out))
+            .collect();
+
+        // new_clip is exactly 24 frames long, overwrite at frame 24 →
+        // region 24..48 exactly equals clip 1. clip 1 is "completely
+        // inside" the region, so it's removed; no trims, no splits.
+        let new_clip = media_clip(0, 24);
+        let new_clip_id = new_clip.id;
+        let result = MagneticEditor::overwrite_primary(&mut seq, new_clip, tc(24));
+        assert!(
+            matches!(result.command, MagneticEditCommand::OverwritePrimary { .. }),
+            "overwrite_primary must emit OverwritePrimary command"
+        );
+
+        let post_len = seq.tracks[0].clips.len();
+        assert!(
+            seq.tracks[0].clips.iter().any(|c| c.id == new_clip_id),
+            "inserted clip must be on the track after overwrite"
+        );
+        // Same number of clips — clip 1 removed, new clip inserted.
+        assert_eq!(post_len, orig.len());
+
+        // apply_inverse → restore every original clip at its original
+        // position, inserted clip gone.
+        MagneticEditor::apply_inverse(&mut seq, &result.command);
+        assert_eq!(
+            seq.tracks[0].clips.len(),
+            orig.len(),
+            "apply_inverse must restore original clip count"
+        );
+        assert!(
+            !seq.tracks[0].clips.iter().any(|c| c.id == new_clip_id),
+            "inserted clip must be gone after apply_inverse"
+        );
+        for (id, want_in, want_out) in &orig {
+            let c = seq.tracks[0]
+                .clips
+                .iter()
+                .find(|c| c.id == *id)
+                .unwrap_or_else(|| panic!("original clip {:?} missing after inverse", id));
+            assert_eq!(c.timeline_in, *want_in, "clip {:?} timeline_in drift", id);
+            assert_eq!(c.timeline_out, *want_out, "clip {:?} timeline_out drift", id);
+        }
+
+        // apply_forward → state back to post-overwrite.
+        MagneticEditor::apply_forward(&mut seq, &result.command);
+        assert_eq!(seq.tracks[0].clips.len(), post_len);
+        assert!(
+            seq.tracks[0].clips.iter().any(|c| c.id == new_clip_id),
+            "inserted clip must be back after apply_forward"
+        );
+
+        // Second apply_inverse → back to originals (confirms the
+        // command is idempotent under an even number of toggles, the
+        // invariant undo/redo cycling relies on).
+        MagneticEditor::apply_inverse(&mut seq, &result.command);
+        assert_eq!(seq.tracks[0].clips.len(), orig.len());
+        for (id, want_in, want_out) in &orig {
+            let c = seq.tracks[0].clips.iter().find(|c| c.id == *id).unwrap();
+            assert_eq!(c.timeline_in, *want_in);
+            assert_eq!(c.timeline_out, *want_out);
+        }
+    }
+
+    #[test]
     fn test_apply_inverse_blade() {
         let mut seq = make_sequence(&[(0, 48)]);
         let clip_id = seq.tracks[0].clips[0].id;

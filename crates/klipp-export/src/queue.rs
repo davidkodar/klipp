@@ -464,3 +464,152 @@ impl RenderQueue {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Smoke tests for the queue-level bookkeeping. `add_job` is NOT
+    //! exercised here — it calls `start_next_jobs` which spawns an OS
+    //! thread that runs real ffmpeg via klipp_render::ExportJob; testing
+    //! that end-to-end needs fixture media files and is out of scope for
+    //! a smoke pass. Instead we construct RenderJob values directly (all
+    //! fields are `pub`) and drive only the synchronous state methods:
+    //! `cancel_job`, `remove_job`, `clear_completed`, `kill_active`,
+    //! `queued_count`, `has_active_job`, `active_job_progress`.
+    use super::*;
+
+    fn fake_job(status: RenderJobStatus) -> RenderJob {
+        RenderJob {
+            id: Uuid::new_v4(),
+            label: "fake".into(),
+            output_path: PathBuf::from("/tmp/klipp-test-fake.mp4"),
+            settings: ExportSettings::default(),
+            status,
+            progress: 0.0,
+            created_at: std::time::Instant::now(),
+            started_at: None,
+            completed_at: None,
+            error: None,
+            total_frames: 100,
+            frames_done: 0,
+            hw_info: String::new(),
+            timeline_fps: 24.0,
+            render_stage: String::new(),
+            loudness_result: None,
+        }
+    }
+
+    #[test]
+    fn new_queue_is_empty() {
+        let q = RenderQueue::new();
+        assert!(q.jobs.is_empty());
+        assert_eq!(q.queued_count(), 0);
+        assert!(!q.has_active_job());
+        assert!(q.active_job_progress().is_none());
+        assert_eq!(q.max_parallel, 2, "documented NVENC-session default");
+    }
+
+    #[test]
+    fn default_matches_new() {
+        let a = RenderQueue::default();
+        let b = RenderQueue::new();
+        assert_eq!(a.jobs.len(), b.jobs.len());
+        assert_eq!(a.max_parallel, b.max_parallel);
+    }
+
+    #[test]
+    fn clear_completed_keeps_non_terminal_only() {
+        let mut q = RenderQueue::new();
+        q.jobs.push(fake_job(RenderJobStatus::Queued));
+        q.jobs.push(fake_job(RenderJobStatus::Rendering));
+        q.jobs.push(fake_job(RenderJobStatus::Complete));
+        q.jobs.push(fake_job(RenderJobStatus::Failed));
+        q.jobs.push(fake_job(RenderJobStatus::Cancelled));
+        q.clear_completed();
+        assert_eq!(q.jobs.len(), 2);
+        assert!(q.jobs.iter().all(|j| matches!(
+            j.status,
+            RenderJobStatus::Queued | RenderJobStatus::Rendering
+        )));
+    }
+
+    #[test]
+    fn cancel_queued_job_marks_cancelled() {
+        let mut q = RenderQueue::new();
+        let mut j = fake_job(RenderJobStatus::Queued);
+        let id = j.id;
+        j.id = id;
+        q.jobs.push(j);
+
+        q.cancel_job(id);
+        assert_eq!(q.jobs[0].status, RenderJobStatus::Cancelled);
+    }
+
+    #[test]
+    fn cancel_unknown_id_noops() {
+        let mut q = RenderQueue::new();
+        q.jobs.push(fake_job(RenderJobStatus::Queued));
+        let original_status = q.jobs[0].status.clone();
+
+        q.cancel_job(Uuid::new_v4()); // some other uuid
+
+        assert_eq!(q.jobs[0].status, original_status);
+    }
+
+    #[test]
+    fn remove_queued_job_drops_it() {
+        let mut q = RenderQueue::new();
+        let mut queued = fake_job(RenderJobStatus::Queued);
+        let queued_id = queued.id;
+        queued.id = queued_id;
+        q.jobs.push(queued);
+        q.jobs.push(fake_job(RenderJobStatus::Complete));
+
+        q.remove_job(queued_id);
+
+        assert_eq!(q.jobs.len(), 1);
+        assert_eq!(q.jobs[0].status, RenderJobStatus::Complete);
+    }
+
+    #[test]
+    fn remove_rendering_job_is_refused() {
+        // Rendering jobs must be cancelled first — remove_job is a no-op
+        // on a live render to avoid orphaning the worker thread.
+        let mut q = RenderQueue::new();
+        let mut rendering = fake_job(RenderJobStatus::Rendering);
+        let rid = rendering.id;
+        rendering.id = rid;
+        q.jobs.push(rendering);
+
+        q.remove_job(rid);
+
+        assert_eq!(q.jobs.len(), 1, "rendering job must not be removable");
+        assert_eq!(q.jobs[0].status, RenderJobStatus::Rendering);
+    }
+
+    #[test]
+    fn remove_unknown_id_noops() {
+        let mut q = RenderQueue::new();
+        q.jobs.push(fake_job(RenderJobStatus::Complete));
+
+        q.remove_job(Uuid::new_v4());
+
+        assert_eq!(q.jobs.len(), 1);
+    }
+
+    #[test]
+    fn kill_active_on_empty_is_safe() {
+        let mut q = RenderQueue::new();
+        q.kill_active();
+        assert!(!q.has_active_job());
+    }
+
+    #[test]
+    fn queued_count_reflects_queued_status_only() {
+        let mut q = RenderQueue::new();
+        q.jobs.push(fake_job(RenderJobStatus::Queued));
+        q.jobs.push(fake_job(RenderJobStatus::Queued));
+        q.jobs.push(fake_job(RenderJobStatus::Rendering));
+        q.jobs.push(fake_job(RenderJobStatus::Complete));
+        assert_eq!(q.queued_count(), 2);
+    }
+}
