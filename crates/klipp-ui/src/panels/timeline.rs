@@ -75,6 +75,29 @@ fn clip_label_text_color() -> egui::Color32 {
     egui::Color32::from_rgb(r, g, b)
 }
 
+/// Pick a `(text, outline)` colour pair that stays readable on the given
+/// background. Uses perceived luminance so any user-chosen selection
+/// colour (amber, neon blue, magenta, …) still renders legibly: light
+/// backgrounds get dark text with a soft white halo, dark backgrounds
+/// get light text with a soft black halo.
+fn contrast_pair_for(bg: egui::Color32) -> (egui::Color32, egui::Color32) {
+    let r = bg.r() as f32 / 255.0;
+    let g = bg.g() as f32 / 255.0;
+    let b = bg.b() as f32 / 255.0;
+    let lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    if lum > 0.5 {
+        (
+            egui::Color32::from_rgb(20, 20, 22),
+            egui::Color32::from_rgba_premultiplied(255, 255, 255, 180),
+        )
+    } else {
+        (
+            egui::Color32::WHITE,
+            egui::Color32::from_rgba_premultiplied(0, 0, 0, 200),
+        )
+    }
+}
+
 /// Selection border colour configured in TimelinePrefs.
 fn selection_color() -> egui::Color32 {
     let [r, g, b] = TL_SELECTION_COLOR.get();
@@ -3553,25 +3576,54 @@ impl TimelinePanel {
                 // Falls back to a shadowed overlay when the clip is too short
                 // to reserve a dedicated strip.
                 let label_strip = clip_label_strip_rect(clip_rect, track_kind);
+                let is_selected = state.selected_clip == Some(clip.id)
+                    || state.selected_clips.contains(&clip.id);
                 if let Some(strip) = label_strip {
-                    painter.rect_filled(strip, 0.0, clip_label_bg_color());
+                    // When the clip is selected, paint the label strip in the
+                    // same accent colour as the selection border so the label
+                    // reads as part of the highlighted chip. Offline clips
+                    // keep their amber warning tint regardless.
+                    let strip_bg = if is_offline {
+                        clip_label_bg_color()
+                    } else if is_selected {
+                        selection_color()
+                    } else {
+                        clip_label_bg_color()
+                    };
+                    painter.rect_filled(strip, 0.0, strip_bg);
                     painter.line_segment(
                         [strip.left_top(), strip.right_top()],
                         egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(0, 0, 0, 160)),
                     );
                     let max_text_width = strip.width() - 10.0;
                     if max_text_width > 10.0 {
-                        let label_color = if is_offline {
-                            egui::Color32::from_rgb(255, 180, 80)
+                        let (label_color, outline_color, draw_outline) = if is_offline {
+                            (egui::Color32::from_rgb(255, 180, 80), egui::Color32::TRANSPARENT, false)
+                        } else if is_selected {
+                            let (fg, bg) = contrast_pair_for(strip_bg);
+                            (fg, bg, true)
                         } else {
-                            clip_label_text_color()
+                            (clip_label_text_color(), egui::Color32::TRANSPARENT, false)
                         };
                         let truncated = truncate_text(&label, max_text_width, font_size);
+                        let text_pos = egui::pos2(strip.left() + 5.0, strip.center().y);
+                        let font = egui::FontId::proportional(font_size);
+                        if draw_outline {
+                            for &(dx, dy) in &[(-1.0f32, 0.0f32), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                                painter.text(
+                                    egui::pos2(text_pos.x + dx, text_pos.y + dy),
+                                    egui::Align2::LEFT_CENTER,
+                                    truncated.clone(),
+                                    font.clone(),
+                                    outline_color,
+                                );
+                            }
+                        }
                         painter.text(
-                            egui::pos2(strip.left() + 5.0, strip.center().y),
+                            text_pos,
                             egui::Align2::LEFT_CENTER,
                             truncated,
-                            egui::FontId::proportional(font_size),
+                            font,
                             label_color,
                         );
                     }
