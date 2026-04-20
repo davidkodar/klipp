@@ -2520,10 +2520,15 @@ impl TimelinePanel {
                 .and_then(|m| m.skim_file.as_ref())
                 .is_some_and(|p| p.exists());
             if has_skim_file {
+                // Timeline playhead scrub previews into the Program Viewer.
                 if !state.skim_decode_in_flight {
-                    cmds.push(AppCommand::BrowserSkimFrame { media_id, time_secs: source_secs });
+                    cmds.push(AppCommand::BrowserSkimFrame {
+                        media_id,
+                        time_secs: source_secs,
+                        target: klipp_core::ViewerMode::Program,
+                    });
                 } else {
-                    state.skim_queued_request = Some((media_id, source_secs));
+                    state.skim_queued_request = Some((media_id, source_secs, klipp_core::ViewerMode::Program));
                 }
                 state.browser_skim_active_this_frame = true;
             }
@@ -3909,29 +3914,28 @@ impl TimelinePanel {
                                 .is_some_and(|p| p.exists());
 
                             if has_skim_file {
+                                // Timeline filmstrip hover previews into the
+                                // Program Viewer (it represents what the
+                                // timeline output would be at that point).
                                 if !state.skim_decode_in_flight {
                                     cmds.push(AppCommand::BrowserSkimFrame {
                                         media_id: inner_media_id,
                                         time_secs: inner_source_secs,
+                                        target: klipp_core::ViewerMode::Program,
                                     });
                                 } else {
                                     state.skim_queued_request =
-                                        Some((inner_media_id, inner_source_secs));
+                                        Some((inner_media_id, inner_source_secs, klipp_core::ViewerMode::Program));
                                 }
                             }
 
-                            if state.browser_skim_texture.is_none() {
-                                if let Some(tex) =
-                                    state.thumbnail_textures.get(&inner_media_id)
-                                {
-                                    state.browser_skim_texture = Some(tex.clone());
-                                    state.browser_skim_media_id = Some(inner_media_id);
-                                }
-                            } else {
-                                state.browser_skim_media_id = Some(inner_media_id);
-                            }
-
-                            state.source_media_id = Some(inner_media_id);
+                            // Poster fallback intentionally omitted: writing it to
+                            // `browser_skim_texture` would surface the timeline
+                            // filmstrip preview in the Source Viewer, which is
+                            // wrong (filmstrip hover is a Program Viewer concern).
+                            // No skim file → no fast preview; the Program Viewer
+                            // keeps showing the engine's frame at the actual
+                            // playhead.
 
                             painter.line_segment(
                                 [
@@ -4001,41 +4005,29 @@ impl TimelinePanel {
                                 cmds.push(AppCommand::BrowserSkimFrame {
                                     media_id,
                                     time_secs: skim_time,
+                                    target: klipp_core::ViewerMode::Program,
                                 });
                             } else {
-                                state.skim_queued_request = Some((media_id, skim_time));
+                                state.skim_queued_request = Some((media_id, skim_time, klipp_core::ViewerMode::Program));
                             }
                         }
 
-                        // Auto-restart video skim if texture was cleared but hover is still active.
-                        // Mirrors the audio skim auto-restart pattern — protects against texture
-                        // clearing during single-frame hover misses (e.g. after zoom changes the
-                        // clip's screen rect).
-                        if state.browser_skim_texture.is_none()
-                            && has_skim_file
-                            && !state.skim_decode_in_flight
-                        {
+                        // Auto-restart video skim if hover is still active and no
+                        // decode is in flight (single-frame hover misses, e.g.
+                        // after zoom changes the clip's screen rect).
+                        if has_skim_file && !state.skim_decode_in_flight {
                             cmds.push(AppCommand::BrowserSkimFrame {
                                 media_id,
                                 time_secs: skim_time,
+                                target: klipp_core::ViewerMode::Program,
                             });
                         }
 
-                        // Fallback: poster thumbnail
-                        if state.browser_skim_texture.is_none() {
-                            if let Some(tex) = state.thumbnail_textures.get(&media_id) {
-                                state.browser_skim_texture = Some(tex.clone());
-                                state.browser_skim_media_id = Some(media_id);
-                            }
-                        } else {
-                            state.browser_skim_media_id = Some(media_id);
-                        }
-
-                        // Stay in Program mode during timeline skimming — the skim frame
-                        // goes through the frame buffer → video_texture path, which uses
-                        // the correct media resolution for letterboxing (WYSIWYG).
-                        // Only set source_media_id for skim cleanup tracking.
-                        state.source_media_id = Some(media_id);
+                        // Poster fallback intentionally omitted — see matching
+                        // comment above the V1 filmstrip hover path. Filmstrip
+                        // hover targets the Program Viewer; falling back to a
+                        // poster via `browser_skim_texture` would route through
+                        // the Source Viewer's overlay path instead.
 
                         // Draw skim position indicator on clip
                         painter.line_segment(

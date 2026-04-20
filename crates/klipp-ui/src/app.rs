@@ -32,6 +32,15 @@ struct ThumbnailResult {
     height: u32,
 }
 
+/// First-frame decode result for the Source Viewer. The id lets the UI
+/// drop the result if the user has since loaded a different clip.
+struct SourceFrameResult {
+    media_id: MediaId,
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
 enum FilmstripResult {
     /// A single frame generated incrementally
     Frame {
@@ -158,6 +167,8 @@ pub struct KlippApp {
     timeline: TimelinePanel,
     thumb_tx: Sender<ThumbnailResult>,
     thumb_rx: Receiver<ThumbnailResult>,
+    source_frame_tx: Sender<SourceFrameResult>,
+    source_frame_rx: Receiver<SourceFrameResult>,
     filmstrip_tx: Sender<FilmstripResult>,
     filmstrip_rx: Receiver<FilmstripResult>,
     audio_conform_tx: Sender<AudioConformResult>,
@@ -272,6 +283,7 @@ impl KlippApp {
         use klipp_core::startup_timer::LogTimer;
 
         let (thumb_tx, thumb_rx) = crossbeam_channel::unbounded();
+        let (source_frame_tx, source_frame_rx) = crossbeam_channel::unbounded();
         let (filmstrip_tx, filmstrip_rx) = crossbeam_channel::unbounded();
         let (audio_conform_tx, audio_conform_rx) = crossbeam_channel::unbounded();
         let (proxy_event_tx, proxy_event_rx) = crossbeam_channel::unbounded();
@@ -357,6 +369,8 @@ impl KlippApp {
             },
             thumb_tx,
             thumb_rx,
+            source_frame_tx,
+            source_frame_rx,
             filmstrip_tx,
             filmstrip_rx,
             audio_conform_tx,
@@ -1829,6 +1843,80 @@ impl KlippApp {
                 }
             }
         });
+    }
+
+    /// Kick off a background decode of a single frame for the given media
+    /// at `seek_secs` and pipe the result through `source_frame_tx`. No-op
+    /// if the media is offline, missing on disk, or has no video stream.
+    /// Used both for the initial first-frame preview on load and for each
+    /// scrub-bar update on the Source Viewer.
+    fn start_source_frame_decode_at(&self, media_id: MediaId, seek_secs: f64) {
+        let Some(item) = self.state.media_pool.get(&media_id) else { return; };
+        if item.offline || !item.path.exists() {
+            return;
+        }
+        // Audio-only media has no video frame to decode. (A waveform
+        // display for audio-only sources is a future enhancement.)
+        if item.video_codec.is_empty()
+            || item.resolution.width == 0
+            || item.resolution.height == 0
+        {
+            return;
+        }
+        let path = item.path.clone();
+        let tx = self.source_frame_tx.clone();
+        std::thread::spawn(move || {
+            // Decode at 1920px on the long edge — source rect is at most
+            // half the center column, so anything bigger is wasted upload
+            // bandwidth. ffmpeg's seek lands on the nearest keyframe;
+            // generate_thumbnail_at_size handles the precise-seek dance
+            // internally for us.
+            match klipp_engine::generate_thumbnail_at_size(&path, seek_secs, 1920) {
+                Ok((rgba, width, height)) => {
+                    let _ = tx.send(SourceFrameResult {
+                        media_id,
+                        rgba,
+                        width,
+                        height,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Source frame decode failed for {:?} @ {:.3}s: {}",
+                        path,
+                        seek_secs,
+                        e
+                    );
+                }
+            }
+        });
+    }
+
+    /// Drain queued source-viewer first-frame decodes and upload to a GPU
+    /// texture. Stale results (`media_id` doesn't match the currently
+    /// loaded source) are dropped so a slow decode of an earlier clip
+    /// can't overwrite the texture for the current one.
+    fn drain_source_frame(&mut self, ctx: &egui::Context) {
+        while let Ok(result) = self.source_frame_rx.try_recv() {
+            if self.state.source_media_id != Some(result.media_id) {
+                continue;
+            }
+            let pixels: Vec<egui::Color32> = result
+                .rgba
+                .chunks_exact(4)
+                .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
+                .collect();
+            let image = egui::ColorImage {
+                size: [result.width as usize, result.height as usize],
+                pixels,
+            };
+            let handle = ctx.load_texture(
+                "klipp-source-frame",
+                image,
+                egui::TextureOptions::LINEAR,
+            );
+            self.state.source_video_texture = Some((result.media_id, handle));
+        }
     }
 
     fn drain_thumbnails(&mut self) {
@@ -3770,6 +3858,30 @@ impl KlippApp {
                     self.state.source_media_id = Some(*media_id);
                     self.state.source_playhead = Timecode::zero();
                     self.state.viewer_mode = ViewerMode::Source;
+                    // Drop any frame texture from the previous clip so the
+                    // viewer doesn't flash a stale image while the new
+                    // first-frame decode is in flight.
+                    if !matches!(&self.state.source_video_texture, Some((mid, _)) if mid == media_id) {
+                        self.state.source_video_texture = None;
+                    }
+                    self.start_source_frame_decode_at(*media_id, 0.0);
+                    return true;
+                }
+                AppCommand::SeekSource(tc) => {
+                    let Some(mid) = self.state.source_media_id else {
+                        return true;
+                    };
+                    let secs = tc.to_secs_f64();
+                    // Clamp to media duration so the scrub bar can't hand
+                    // us an out-of-range time on a near-rounding edge.
+                    let clamped_secs = if let Some(item) = self.state.media_pool.get(&mid) {
+                        let dur = item.duration.to_secs_f64();
+                        secs.clamp(0.0, dur)
+                    } else {
+                        secs.max(0.0)
+                    };
+                    self.state.source_playhead = Timecode::from_secs_f64(clamped_secs, tc.rate);
+                    self.start_source_frame_decode_at(mid, clamped_secs);
                     return true;
                 }
                 AppCommand::SetSourceInPoint(tc) => {
@@ -11939,7 +12051,7 @@ impl KlippApp {
                 }
                 true
             }
-            AppCommand::BrowserSkimFrame { media_id, time_secs } => {
+            AppCommand::BrowserSkimFrame { media_id, time_secs, target } => {
                 if let Some(item) = self.state.media_pool.get(media_id) {
                     // Prefer skim file (all keyframes, fast seek), fall back to source
                     let decode_path = if let Some(skim_path) = item.skim_file.as_ref().filter(|p| p.exists()) {
@@ -11949,6 +12061,7 @@ impl KlippApp {
                     };
                     let mid = *media_id;
                     let t = *time_secs;
+                    let dst = *target;
                     // Decode resolution: use the larger of the pref-capped
                     // value and (source_height, 1080 cap). Previously fixed
                     // to `prefs.playback.skim_resolution` (480/720) which
@@ -11970,6 +12083,7 @@ impl KlippApp {
                                     rgba,
                                     width: w,
                                     height: h,
+                                    target: dst,
                                 });
                             }
                             Err(e) => {
@@ -11980,6 +12094,7 @@ impl KlippApp {
                                     rgba: Vec::new(),
                                     width: 0,
                                     height: 0,
+                                    target: dst,
                                 });
                             }
                         }
@@ -17046,7 +17161,7 @@ impl eframe::App for KlippApp {
 
         // If a skim decode just finished and there's a queued request, dispatch it immediately
         if !self.state.skim_decode_in_flight {
-            if let Some((mid, time)) = self.state.skim_queued_request.take() {
+            if let Some((mid, time, target)) = self.state.skim_queued_request.take() {
                 if let Some(item) = self.state.media_pool.get(&mid) {
                     let decode_path = if let Some(skim_path) = item.skim_file.as_ref().filter(|p| p.exists()) {
                         skim_path.clone()
@@ -17072,6 +17187,7 @@ impl eframe::App for KlippApp {
                                     rgba,
                                     width: w,
                                     height: h,
+                                    target,
                                 });
                             }
                             Err(e) => {
@@ -17081,6 +17197,7 @@ impl eframe::App for KlippApp {
                                     rgba: Vec::new(),
                                     width: 0,
                                     height: 0,
+                                    target,
                                 });
                             }
                         }
@@ -17089,6 +17206,7 @@ impl eframe::App for KlippApp {
             }
         }
         self.drain_thumbnails();
+        self.drain_source_frame(ctx);
         // Keep repainting while filmstrip is generating so timeline updates progressively
         if self.state.filmstrip_generating {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -17334,33 +17452,45 @@ impl eframe::App for KlippApp {
             self.handle_skim_transcode(mid);
         }
 
-        // Upload pending skim frame texture
-        // TODO: apply clip effects during skim (requires stable OFX render on UI thread)
-        if let Some((media_id, rgba, width, height)) = self.state.browser_skim_pending.take() {
-            // `write_skim_frame` writes the frame *and* clears the
-            // GPU scope texture so stale playback scopes don't linger on
-            // screen while we wait for fresh ones (see
-            // FrameBuffer::write_skim_frame). We then immediately dispatch
-            // a GPU scope render against the same RGBA so the engine
-            // refills `scope_texture` with the same code path / quality
-            // playback uses — skim scopes match playback scopes pixel-for-
-            // pixel instead of falling back to the lower-quality CPU path.
-            {
-                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                fb.write_skim_frame(rgba.clone(), width, height);
+        // Route the pending skim frame based on the explicit target the
+        // dispatch site stamped on the request:
+        //
+        //   * `ViewerMode::Program` — timeline playhead scrub or
+        //     timeline filmstrip hover. The frame represents what the
+        //     timeline output is or would be. Write to the engine's
+        //     frame buffer so the Program Viewer paints it and scopes
+        //     refresh.
+        //
+        //   * `ViewerMode::Source`  — media-browser bin hover. The frame
+        //     is a transient overlay for the Source Viewer and must not
+        //     touch the engine frame buffer or it would contaminate the
+        //     Program Viewer.
+        //
+        // A timeline-side skim can never leak into the Source Viewer and
+        // a bin-side skim can never leak into the Program Viewer.
+        if let Some((media_id, rgba, width, height, target)) = self.state.browser_skim_pending.take() {
+            match target {
+                klipp_core::ViewerMode::Program => {
+                    {
+                        let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                        fb.write_skim_frame(rgba.clone(), width, height);
+                    }
+                    let _ = self.cmd_tx.send(AppCommand::RenderScopesForFrame {
+                        rgba,
+                        width,
+                        height,
+                    });
+                }
+                klipp_core::ViewerMode::Source => {
+                    let image = egui::ColorImage::from_rgba_unmultiplied(
+                        [width as usize, height as usize],
+                        &rgba,
+                    );
+                    let tex = ctx.load_texture("browser_skim", image, egui::TextureOptions::LINEAR);
+                    self.state.browser_skim_texture = Some(tex);
+                    self.state.browser_skim_media_id = Some(media_id);
+                }
             }
-            let _ = self.cmd_tx.send(AppCommand::RenderScopesForFrame {
-                rgba: rgba.clone(),
-                width,
-                height,
-            });
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [width as usize, height as usize],
-                &rgba,
-            );
-            let tex = ctx.load_texture("browser_skim", image, egui::TextureOptions::LINEAR);
-            self.state.browser_skim_texture = Some(tex);
-            self.state.browser_skim_media_id = Some(media_id);
         }
 
         let mut all_cmds = Vec::new();
@@ -17887,9 +18017,17 @@ impl eframe::App for KlippApp {
             }
         }
 
-        // 11a. Skim cleanup: if no panel set the skim flag this frame, clear skim state
+        // 11a. Skim cleanup: if no panel set the skim flag this frame, tear
+        // down whatever skim state is still alive. The trigger now includes
+        // the audio session because timeline-side skim (target=Program)
+        // writes the frame into the engine's `frame_buffer` and never
+        // touches `browser_skim_media_id` — without the audio-session
+        // clause, ending a timeline scrub or filmstrip hover would leave
+        // the audio skim playing forever.
         let lost_focus = !ctx.input(|i| i.viewport().focused.unwrap_or(true));
-        if (!self.state.browser_skim_active_this_frame && self.state.browser_skim_media_id.is_some()) || lost_focus {
+        let any_skim_state_alive = self.state.browser_skim_media_id.is_some()
+            || self.state.skim_audio_session.is_some();
+        if (!self.state.browser_skim_active_this_frame && any_skim_state_alive) || lost_focus {
             if self.state.browser_skim_media_id.is_some() {
                 self.state.browser_skim_texture = None;
                 self.state.browser_skim_media_id = None;
@@ -18855,9 +18993,9 @@ impl KlippApp {
                         .unwrap_or_default();
                     tracing::warn!("Skim transcode failed for {}: {}", filename, error);
                 }
-                AppEvent::BrowserSkimFrameReady { media_id, rgba, width, height } => {
+                AppEvent::BrowserSkimFrameReady { media_id, rgba, width, height, target } => {
                     if !rgba.is_empty() && width > 0 && height > 0 {
-                        self.state.browser_skim_pending = Some((media_id, rgba, width, height));
+                        self.state.browser_skim_pending = Some((media_id, rgba, width, height, target));
                     }
                     // Always reset — flag must never stay stuck regardless of decode outcome
                     self.state.skim_decode_in_flight = false;
@@ -20916,12 +21054,14 @@ impl KlippApp {
         self.viewer.show_source_viewer(ui, &self.state, video_rect, all_cmds);
 
         // Reuse the same scrub bar + play bar the Program Viewer renders,
-        // so both viewers share identical transport chrome.
+        // routing scrub-bar drags and the timecode display to the source
+        // playhead via `ViewerMode::Source`.
         let chrome_cmds = self.viewer.draw_transport_chrome(
             ui,
             &mut self.state,
             &self.theme,
             chrome_rect,
+            klipp_core::ViewerMode::Source,
         );
         all_cmds.extend(chrome_cmds);
     }

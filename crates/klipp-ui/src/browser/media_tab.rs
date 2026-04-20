@@ -1,7 +1,7 @@
 use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
-use klipp_core::{AppCommand, MediaId, ViewerMode};
+use klipp_core::{AppCommand, MediaId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortBy {
@@ -1204,15 +1204,17 @@ fn handle_hover_skim(
         .is_some_and(|p| p.exists());
 
     if has_skim_file {
-        // Layer 3: Request full-resolution frame from skim file
+        // Layer 3: Request full-resolution frame from skim file. Bin
+        // hover targets the Source Viewer.
         if !state.skim_decode_in_flight {
             cmds.push(AppCommand::BrowserSkimFrame {
                 media_id: item.id,
                 time_secs: skim_time,
+                target: klipp_core::ViewerMode::Source,
             });
         } else {
             // Queue latest position so it's picked up when current decode finishes
-            state.skim_queued_request = Some((item.id, skim_time));
+            state.skim_queued_request = Some((item.id, skim_time, klipp_core::ViewerMode::Source));
         }
     }
 
@@ -1229,10 +1231,14 @@ fn handle_hover_skim(
         state.browser_skim_media_id = Some(item.id);
     }
 
-    // Switch viewer to Source mode directly (not via command queue — needs to take
-    // effect THIS frame so the viewer renders the skim texture)
-    state.viewer_mode = ViewerMode::Source;
-    state.source_media_id = Some(item.id);
+    // Hover is a transient preview only — it must NOT commit the hovered
+    // clip as the loaded source (that's what single-click → LoadSourceMedia
+    // does). Previously we wrote `source_media_id` here, which clobbered
+    // any committed clip the moment the user's mouse passed over a
+    // different bin item; the skim cleanup at the end of the frame
+    // wouldn't restore the original. The Source Viewer's render path now
+    // pairs `browser_skim_texture` (transient hover) with the committed
+    // `source_media_id`, so hovering overlays without overwriting.
 
     // Draw white scrubber line (grid view)
     if draw_scrubber {

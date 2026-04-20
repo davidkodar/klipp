@@ -678,6 +678,10 @@ pub enum AppCommand {
     SetSourceInPoint(RationalTime),
     SetSourceOutPoint(RationalTime),
     InsertSourceAtPlayhead,
+    /// Seek the Source Viewer to an absolute media-relative time.
+    /// Updates `source_playhead` and triggers a frame re-decode at that
+    /// position so the source viewer's display follows the scrub.
+    SeekSource(RationalTime),
     /// Create a subclip from the source media's current IN/OUT zone. The new
     /// MediaItem inherits codec/fps/resolution from the parent, reuses the
     /// parent's path, and carries its own default_source_in/out matching the
@@ -1033,7 +1037,12 @@ pub enum AppCommand {
     RegenerateSkimTranscode { media_id: MediaId },
     /// Force-regenerate filmstrip thumbnails (deletes existing cache first).
     RegenerateFilmstrip { media_id: MediaId },
-    BrowserSkimFrame { media_id: MediaId, time_secs: f64 },
+    /// Decode a single skim frame at `time_secs` for `media_id`. `target`
+    /// selects which viewer the resulting frame is destined for so the
+    /// upload path can route it correctly: timeline scrub / filmstrip
+    /// hover = `Program`; media-browser bin hover = `Source`. The
+    /// returned `BrowserSkimFrameReady` event carries the same target.
+    BrowserSkimFrame { media_id: MediaId, time_secs: f64, target: ViewerMode },
 
     // Browser audio skimming
     /// Begin an audio skim session for a media item (mouse enters skimmable clip).
@@ -1444,7 +1453,7 @@ pub enum AppEvent {
     SkimTranscodeFailed { media_id: MediaId, error: String },
 
     // Browser skim frame
-    BrowserSkimFrameReady { media_id: MediaId, rgba: Vec<u8>, width: u32, height: u32 },
+    BrowserSkimFrameReady { media_id: MediaId, rgba: Vec<u8>, width: u32, height: u32, target: ViewerMode },
 
     // Video stabilization
     StabilizationProgress { clip_id: ClipId, progress: f32 },

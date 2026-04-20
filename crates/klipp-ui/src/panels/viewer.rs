@@ -2,7 +2,7 @@ use crate::icons::Icon;
 use crate::inspector::video_tab::{find_transform_index, get_transform, TransformParams};
 use crate::state::{AppState, TransformHandle, ViewerTransformDrag};
 use crate::theme::KlippTheme;
-use klipp_core::{AppCommand, Fps, RationalTime};
+use klipp_core::{AppCommand, Fps, RationalTime, ViewerMode};
 use klipp_engine::PlaybackState;
 
 /// Per-frame state computed once at the top of `show_program_viewer`.
@@ -72,7 +72,7 @@ impl ViewerPanel {
             egui::pos2(panel_rect.min.x, viewer_rect.max.y),
             egui::vec2(panel_rect.width(), bottom_h),
         );
-        let chrome_cmds = self.draw_transport_chrome(ui, state, theme, chrome_rect);
+        let chrome_cmds = self.draw_transport_chrome(ui, state, theme, chrome_rect, ViewerMode::Program);
         cmds.extend(chrome_cmds);
 
         cmds
@@ -84,17 +84,19 @@ impl ViewerPanel {
     /// `ViewerPanel::show`. Exposed so side-by-side layouts (Source Viewer)
     /// can render matching chrome under their own video rects.
     ///
-    /// For now both call sites mutate the same Program-viewer state (playhead,
-    /// playback, editing_timecode). Per-viewer transport routing will be
-    /// introduced when the source playhead and source decoder land; until
-    /// then, clicking a Source-side transport button acts on the timeline,
-    /// which is acceptable for the placeholder phase.
+    /// `viewer_kind` selects which playhead the scrub bar and play-bar
+    /// timecode reflect (Program → timeline; Source → source clip). For
+    /// now the transport buttons (play/pause, step, skip, etc.) still
+    /// target the timeline regardless of `viewer_kind` — real source
+    /// playback needs a persistent engine decoder, which is a separate
+    /// follow-up.
     pub fn draw_transport_chrome(
         &mut self,
         ui: &mut egui::Ui,
         state: &mut AppState,
         theme: &KlippTheme,
         rect: egui::Rect,
+        viewer_kind: ViewerMode,
     ) -> Vec<AppCommand> {
         const SCRUB_H: f32 = 16.0;
         const PLAYBAR_H: f32 = 40.0;
@@ -103,12 +105,12 @@ impl ViewerPanel {
             rect.min,
             egui::vec2(rect.width(), SCRUB_H),
         );
-        self.draw_scrub_bar(ui, state, theme, scrub_rect, &mut cmds);
+        self.draw_scrub_bar(ui, state, theme, scrub_rect, viewer_kind, &mut cmds);
         let playbar_rect = egui::Rect::from_min_size(
             egui::pos2(rect.min.x, scrub_rect.max.y),
             egui::vec2(rect.width(), PLAYBAR_H),
         );
-        self.draw_playbar(ui, state, theme, playbar_rect, &mut cmds);
+        self.draw_playbar(ui, state, theme, playbar_rect, viewer_kind, &mut cmds);
         cmds
     }
 
@@ -1078,39 +1080,20 @@ impl ViewerPanel {
         let video_w = frame.video_w;
         let video_h = frame.video_h;
 
-        // Show the skim-decode texture ONLY while actively scrubbing AND not
-        // currently playing. Playback always takes precedence — otherwise a
-        // stuck `is_scrubbing` flag (e.g. drag_stopped missed because the
-        // pointer left the window) combined with a lingering
-        // `browser_skim_texture` would freeze the viewer on a stale skim
-        // frame while the engine is producing new live frames (scopes kept
-        // updating but the image didn't — exactly the "grade changes don't
-        // reach the viewer" symptom).
-        let use_skim_texture = state.is_scrubbing
-            && state.playback != klipp_engine::PlaybackState::Playing
-            && state.browser_skim_texture.is_some();
-
+        // Program viewer paints only its own output. The `browser_skim_texture`
+        // is a hover-preview surface that belongs to the Source Viewer in
+        // the dual-viewer layout — showing it here would duplicate the
+        // preview onto the Program side, which was the single-viewer-era
+        // behaviour.
         if frame.grade_still_active {
             self.draw_grade_still_split(ui, state, &frame);
-        } else if use_skim_texture {
-            if let Some(tex) = &state.browser_skim_texture {
-                ui.painter().image(
-                    tex.id(),
-                    image_rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-            }
-        } else {
-            // Normal: draw full video frame
-            if let Some(tex) = &self.video_texture {
-                ui.painter().image(
-                    tex.id(),
-                    image_rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-            }
+        } else if let Some(tex) = &self.video_texture {
+            ui.painter().image(
+                tex.id(),
+                image_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
         }
 
         // Draw title overlay (separate texture, alpha-blended on top of video)
@@ -1210,6 +1193,7 @@ impl ViewerPanel {
         state: &AppState,
         theme: &KlippTheme,
         rect: egui::Rect,
+        viewer_kind: ViewerMode,
         cmds: &mut Vec<AppCommand>,
     ) {
         let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
@@ -1226,10 +1210,26 @@ impl ViewerPanel {
         // Track background — full width.
         ui.painter().rect_filled(track_rect, 0.0, theme.bg_raised);
 
-        // Progress fill
-        let dur_secs = state.sequence_duration().to_secs_f64();
+        // Per-viewer playhead/duration. Source uses the loaded media's
+        // total duration; Program uses the sequence duration.
+        let (dur_secs, current_secs, rate): (f64, f64, u32) = match viewer_kind {
+            ViewerMode::Program => (
+                state.sequence_duration().to_secs_f64(),
+                state.playhead_smooth_secs,
+                state.fps.rate(),
+            ),
+            ViewerMode::Source => {
+                let media = state
+                    .source_media_id
+                    .and_then(|mid| state.media_pool.get(&mid));
+                let dur = media.map(|m| m.duration.to_secs_f64()).unwrap_or(0.0);
+                let cur = state.source_playhead.to_secs_f64();
+                let rate = media.map(|m| m.fps.rate()).unwrap_or(state.fps.rate());
+                (dur, cur, rate)
+            }
+        };
         let progress = if dur_secs > 0.0 {
-            (state.playhead_smooth_secs / dur_secs).clamp(0.0, 1.0) as f32
+            (current_secs / dur_secs).clamp(0.0, 1.0) as f32
         } else {
             0.0
         };
@@ -1251,14 +1251,19 @@ impl ViewerPanel {
         ui.painter().circle_filled(head_center, 7.0, theme.accent_glow);
         ui.painter().circle_filled(head_center, 5.5, theme.accent);
 
-        // Scrub interaction
-        if resp.dragged() || resp.clicked() {
+        // Scrub interaction — emit a per-viewer seek so each scrub bar
+        // moves only its own playhead.
+        if (resp.dragged() || resp.clicked()) && dur_secs > 0.0 {
             if let Some(pos) = resp.interact_pointer_pos() {
                 let t = ((pos.x - track_rect.min.x) / track_rect.width().max(1.0))
                     .clamp(0.0, 1.0) as f64;
                 let target_secs = t * dur_secs;
-                let target_tc = klipp_core::Timecode::from_secs_f64(target_secs, state.fps.rate());
-                cmds.push(AppCommand::SeekTo(target_tc));
+                let target_tc = klipp_core::Timecode::from_secs_f64(target_secs, rate);
+                let cmd = match viewer_kind {
+                    ViewerMode::Program => AppCommand::SeekTo(target_tc),
+                    ViewerMode::Source => AppCommand::SeekSource(target_tc),
+                };
+                cmds.push(cmd);
             }
         }
     }
@@ -1269,6 +1274,7 @@ impl ViewerPanel {
         state: &mut AppState,
         theme: &KlippTheme,
         rect: egui::Rect,
+        viewer_kind: ViewerMode,
         cmds: &mut Vec<AppCommand>,
     ) {
         let enabled = state.playback != PlaybackState::Idle;
@@ -1278,8 +1284,18 @@ impl ViewerPanel {
         // Background
         ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgb(24, 24, 30));
 
-        // ── Left: Timecode ──
-        let tc_str = format_timecode_hmsf(state.playhead_smooth_secs, state.fps.rate());
+        // ── Left: Timecode ── (per-viewer: source clip time vs. timeline time)
+        let (tc_secs, tc_rate) = match viewer_kind {
+            ViewerMode::Program => (state.playhead_smooth_secs, state.fps.rate()),
+            ViewerMode::Source => {
+                let media = state
+                    .source_media_id
+                    .and_then(|mid| state.media_pool.get(&mid));
+                let rate = media.map(|m| m.fps.rate()).unwrap_or(state.fps.rate());
+                (state.source_playhead.to_secs_f64(), rate)
+            }
+        };
+        let tc_str = format_timecode_hmsf(tc_secs, tc_rate);
         if state.editing_timecode {
             let tc_rect = egui::Rect::from_min_size(
                 egui::pos2(rect.min.x + 8.0, cy - 12.0),
@@ -1304,12 +1320,20 @@ impl ViewerPanel {
                 state.editing_timecode = false;
             }
         } else {
+            // Click-to-edit is Program-only: typing a timecode emits
+            // `SeekTo` which targets the timeline, so allowing it on the
+            // source side would silently seek the wrong viewer.
+            let sense = if viewer_kind == ViewerMode::Program {
+                egui::Sense::click()
+            } else {
+                egui::Sense::hover()
+            };
             let tc_resp = ui.allocate_rect(
                 egui::Rect::from_min_size(
                     egui::pos2(rect.min.x + 8.0, rect.min.y),
                     egui::vec2(110.0, rect.height()),
                 ),
-                egui::Sense::click(),
+                sense,
             );
             ui.painter().text(
                 egui::pos2(rect.min.x + 12.0, cy),
@@ -2603,8 +2627,20 @@ impl ViewerPanel {
         viewer_rect: egui::Rect,
         cmds: &mut Vec<AppCommand>,
     ) {
-        // If a skim texture is available, show it as the video frame (letterboxed)
-        if let Some(tex) = &state.browser_skim_texture {
+        // Resolve which texture to paint into the source video rect:
+        //   1. The browser/timeline hover-skim texture, when active.
+        //      Hover is a transient overlay and must win so the user can
+        //      preview any clip without losing what's loaded.
+        //   2. The decoded first-frame of the committed source clip,
+        //      gated on its MediaId matching `source_media_id` so a
+        //      stale frame from a previous load never flashes.
+        // Falling all the way through paints the metadata card.
+        let committed_tex = state
+            .source_video_texture
+            .as_ref()
+            .and_then(|(mid, tex)| (Some(*mid) == state.source_media_id).then_some(tex));
+        let active_tex = state.browser_skim_texture.as_ref().or(committed_tex);
+        if let Some(tex) = active_tex {
             let tex_size = tex.size_vec2();
             if tex_size.x > 0.0 && tex_size.y > 0.0 {
                 let video_aspect = tex_size.x / tex_size.y;

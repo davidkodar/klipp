@@ -453,9 +453,14 @@ pub struct AppState {
     /// Whether speed dialog reverse is checked.
     pub speed_dialog_reverse: bool,
 
-    // Phase 4: Source monitor
+    // Source viewer
     pub source_media_id: Option<MediaId>,
     pub source_playhead: Timecode,
+    /// First-frame texture for the currently-loaded source clip. The
+    /// `MediaId` is paired with the texture so a stale frame from a
+    /// previous load is dropped the moment the user switches clips,
+    /// rather than briefly flashing the old image.
+    pub source_video_texture: Option<(MediaId, egui::TextureHandle)>,
 
     // Media browser multi-select
     pub selected_media_ids: std::collections::HashSet<MediaId>,
@@ -517,13 +522,21 @@ pub struct AppState {
     /// When the last skim transcode finished (for "Done" display)
     pub skim_transcode_done_at: Option<std::time::Instant>,
     /// Pending skim frame RGBA to upload as texture (media_id, rgba, width, height)
-    pub browser_skim_pending: Option<(MediaId, Vec<u8>, u32, u32)>,
+    /// `(media_id, rgba, width, height, target)` — pending skim frame
+    /// awaiting upload. `target` decides whether it lands in the
+    /// engine's frame buffer (Program) or the source viewer's overlay
+    /// texture (Source).
+    pub browser_skim_pending: Option<(MediaId, Vec<u8>, u32, u32, klipp_core::ViewerMode)>,
     /// True while a skim decode thread is running (prevents spawning more threads)
     pub skim_decode_in_flight: bool,
     /// When the current skim decode was started (for watchdog timeout reset)
     pub skim_decode_started_at: Option<std::time::Instant>,
     /// Latest skim request queued while a decode was in flight (media_id, time_secs)
-    pub skim_queued_request: Option<(MediaId, f64)>,
+    /// `(media_id, time_secs, target)` — queued skim request waiting
+    /// for the in-flight decode to finish. `target` follows the request
+    /// through the queue so the eventual response routes to the correct
+    /// viewer.
+    pub skim_queued_request: Option<(MediaId, f64, klipp_core::ViewerMode)>,
     /// Set to true each frame if hover skim is active (used to clear texture when mouse leaves)
     pub browser_skim_active_this_frame: bool,
     /// Media IDs that need skim transcode started (queued during drain_events)
@@ -1899,6 +1912,7 @@ impl Default for AppState {
             speed_dialog_reverse: false,
             source_media_id: None,
             source_playhead: Timecode::zero(),
+            source_video_texture: None,
             selected_media_ids: std::collections::HashSet::new(),
             last_clicked_media_id: None,
             use_proxies: true,
