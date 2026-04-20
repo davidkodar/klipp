@@ -2529,7 +2529,16 @@ impl PreferencesPanel {
         );
 
         Self::setting_row(ui, "Skim transcode quality", |ui| {
-            let qualities = [(18_u32, "High"), (23, "Standard"), (28, "Low"), (32, "Draft")];
+            // Quality maps to H.264 CRF / NVENC QP: lower number =
+            // higher quality + larger file. 30 is the FCP ProRes
+            // Proxy / DaVinci DNxHR LB equivalent — industry
+            // standard for a hover-preview proxy.
+            let qualities = [
+                (24_u32, "High"),
+                (30, "Standard"),
+                (34, "Low"),
+                (38, "Draft"),
+            ];
             let current = qualities.iter()
                 .find(|(v, _)| *v == prefs.media_cache.skim_transcode_quality)
                 .map(|(_, l)| *l).unwrap_or("Standard");

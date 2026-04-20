@@ -822,6 +822,7 @@ impl Preferences {
                         Self::migrate_legacy_editing_to_file_browser(&mut value);
                         Self::migrate_skim_resolution_default(&mut value);
                         Self::migrate_filmstrip_height_default(&mut value);
+                        Self::migrate_skim_quality_default(&mut value);
                         match serde_json::from_value::<Self>(value) {
                             Ok(prefs) => {
                                 tracing::info!("Preferences loaded from {}", path.display());
@@ -885,6 +886,29 @@ impl Preferences {
     /// to the new default of 128. At enlarged track heights (>= 200px) lower
     /// values produce visibly jagged/blurry tiles. Only rewrites the literal
     /// old defaults — any value the user explicitly set is left alone.
+    /// Bump `media_cache.skim_transcode_quality` from the old default of
+    /// 23 (visually-transparent CRF/QP) to 30 (industry-standard proxy
+    /// quality). 23 combined with the encoder's `-g 1` flag produced
+    /// ~50 GB skim files for 35-min 4K clips — 5× what FCP or DaVinci
+    /// write. Only rewrites the literal old default; anything the user
+    /// explicitly set is left alone.
+    fn migrate_skim_quality_default(value: &mut serde_json::Value) {
+        let Some(mc) = value.get_mut("media_cache").and_then(|v| v.as_object_mut()) else {
+            return;
+        };
+        if let Some(q) = mc.get("skim_transcode_quality").and_then(|v| v.as_u64()) {
+            if q == 23 {
+                mc.insert(
+                    "skim_transcode_quality".to_string(),
+                    serde_json::Value::from(30u64),
+                );
+                tracing::info!(
+                    "Migrated skim_transcode_quality: 23 -> 30 (proxy-size defaults)"
+                );
+            }
+        }
+    }
+
     fn migrate_filmstrip_height_default(value: &mut serde_json::Value) {
         let Some(mc) = value.get_mut("media_cache").and_then(|v| v.as_object_mut()) else {
             return;
@@ -1245,7 +1269,14 @@ pub struct MediaCachePrefs {
     pub max_cache_size_mb: u32,
 }
 fn default_cache_size_gb() -> u32 { 20 }
-fn default_skim_quality() -> u32 { 23 }
+// 30 lands at ~industry-proxy bitrate (FCP ProRes Proxy / DaVinci
+// DNxHR LB equivalent, ~10 GB for a 35-min 4K clip). The previous
+// default of 23 was "visually transparent" quality — when paired
+// with the encoder's `-g 1` setting that forces every frame to be
+// a keyframe, it ballooned 1080p skim output to ~50 GB on the same
+// clip. Users who want finer detail can still select High (24) in
+// the Cache prefs.
+fn default_skim_quality() -> u32 { 30 }
 fn default_thumb_h() -> u32 { 256 }
 fn default_filmstrip_h() -> u32 { 128 }
 impl Default for MediaCachePrefs {

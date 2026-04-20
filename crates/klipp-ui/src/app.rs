@@ -18050,7 +18050,15 @@ impl KlippApp {
                     args.push(src.into());
                     args.push("-c:v".into());
                     args.push(chain.encoder.clone());
-                    args.push("-g".into()); args.push("1".into());
+                    // GOP 15. `-g 1` (every frame a keyframe) gave
+                    // instant per-frame seek but produced ~5× the
+                    // bitrate of an FCP/DaVinci proxy. A 15-frame
+                    // GOP keeps worst-case hover seek under ~30 ms
+                    // on the skim decoder while matching industry
+                    // proxy sizes. Paired with the Standard CRF the
+                    // skim for a 35-min 4K clip drops from ~50 GB
+                    // to the ~10 GB range.
+                    args.push("-g".into()); args.push("15".into());
                     // Quality knob: nvenc uses -qp (constqp), libx264 uses -crf.
                     if chain.encoder == "h264_nvenc" {
                         args.push("-qp".into());
@@ -18075,7 +18083,7 @@ impl KlippApp {
                         "-y", "-hwaccel", "cuda",
                         "-ss", &start_ss,
                         "-i", src,
-                        "-c:v", "h264_nvenc", "-g", "1", "-preset", "p1",
+                        "-c:v", "h264_nvenc", "-g", "15", "-preset", "p1",
                         "-rc", "constqp", "-qp", &qp_str,
                         "-an", "-vf", &nvenc_vf,
                         "-f", "segment",
@@ -18103,7 +18111,7 @@ impl KlippApp {
                                 "-y",
                                 "-ss", &start_ss,
                                 "-i", src,
-                                "-c:v", "libx264", "-g", "1", "-crf", &qp_str,
+                                "-c:v", "libx264", "-g", "15", "-crf", &qp_str,
                                 "-preset", "ultrafast",
                                 "-an", "-vf", &cpu_vf_sdr,
                                 "-f", "segment",
@@ -18238,14 +18246,22 @@ impl KlippApp {
                                 concat_result
                             } else {
                                 tracing::info!(
-                                    "Skim concat: stream-copy failed, retrying with libx264 re-encode"
+                                    "Skim concat: stream-copy failed, retrying with libx264 re-encode @ crf {qp_str}"
                                 );
                                 let _ = std::fs::remove_file(&concat_partial);
+                                // Match the primary encoder's quality
+                                // knob (skim_transcode_quality pref, same
+                                // value the first-pass nvenc/libx264
+                                // used). The previous hardcoded crf 23
+                                // was visually-transparent quality —
+                                // stricter than the segments themselves
+                                // — and produced 3x-bloated output
+                                // (e.g. 71 GB for a 35-min clip).
                                 run_ffmpeg(&[
                                     "-y", "-f", "concat", "-safe", "0",
                                     "-i", &list_str,
                                     "-c:v", "libx264", "-preset", "ultrafast",
-                                    "-crf", "23",
+                                    "-crf", &qp_str,
                                     "-an",
                                     "-f", "matroska",
                                     &concat_dst,
@@ -18274,6 +18290,30 @@ impl KlippApp {
                                 // Successful — clean up the per-source
                                 // parts dir so we don't leak disk.
                                 let _ = std::fs::remove_dir_all(&parts_dir);
+                                // Prune the pre-`.hdrtm` sibling if we
+                                // just published the HDR variant. No
+                                // reader consults the old path once the
+                                // new one exists; without this the
+                                // orphaned file lingers forever (seen:
+                                // 23 GB non-hdrtm next to 71 GB hdrtm
+                                // on the same source file).
+                                if let Some(stem) = skim_path.file_stem().and_then(|s| s.to_str()) {
+                                    if let Some(base) = stem.strip_suffix(".hdrtm") {
+                                        let old = skim_path.with_file_name(format!("{base}.mkv"));
+                                        if old.exists() {
+                                            match std::fs::remove_file(&old) {
+                                                Ok(()) => tracing::info!(
+                                                    "Skim transcode: pruned stale pre-hdrtm sibling {:?}",
+                                                    old,
+                                                ),
+                                                Err(e) => tracing::warn!(
+                                                    "Skim transcode: failed to prune stale sibling {:?}: {e}",
+                                                    old,
+                                                ),
+                                            }
+                                        }
+                                    }
+                                }
                                 let _ = event_tx.send(AppEvent::SkimTranscodeComplete {
                                     media_id,
                                     path: skim_path,
