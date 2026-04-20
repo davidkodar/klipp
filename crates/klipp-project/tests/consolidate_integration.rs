@@ -271,6 +271,88 @@ fn consolidate_source_not_found_error() {
     assert!(matches!(err, ConsolidateError::SourceNotFound(_)));
 }
 
+/// Regression test for CRIT-9 (symlink exfiltration via consolidate).
+/// A hostile project can point a MediaItem.path at a symlink whose
+/// target is a sensitive file on the victim's machine (e.g.
+/// ~/.ssh/id_rsa). A naive `fs::copy` follows the symlink and bakes
+/// the target bytes into the consolidated output folder that the
+/// victim is about to ship. consolidate_project must refuse.
+#[test]
+#[cfg(unix)]
+fn consolidate_refuses_symlinked_media_source() {
+    use std::os::unix::fs::symlink;
+
+    let source_dir = tmp_path("sym_src");
+    std::fs::create_dir_all(&source_dir).unwrap();
+
+    // Stand in for the victim's private data.
+    let sensitive = tmp_path("sym_sensitive");
+    std::fs::create_dir_all(&sensitive).unwrap();
+    let secret_path = sensitive.join("victim_private_key.bin");
+    std::fs::write(&secret_path, b"SECRET BYTES MUST NOT LEAK").unwrap();
+
+    // Hostile media-pool entry: a symlink in a project-looking dir
+    // that resolves to the sensitive file.
+    let media_dir = tmp_path("sym_media");
+    std::fs::create_dir_all(&media_dir).unwrap();
+    let link_path = media_dir.join("clip.mov");
+    symlink(&secret_path, &link_path).unwrap();
+
+    let mut pool = MediaPool::new();
+    pool.add(make_media_item(link_path.clone()));
+
+    let dest = tmp_path("sym_dest");
+
+    let result = run_consolidate(&source_dir, &pool, dest.clone())
+        .expect("consolidate itself should still succeed with the media skipped");
+
+    // The hostile file must NOT have been copied.
+    let would_be_copied = dest.join("media").join("clip.mov");
+    assert!(
+        !would_be_copied.exists(),
+        "symlinked source leaked into consolidated folder at {}",
+        would_be_copied.display()
+    );
+
+    // A warning surfaced so the user knows why the clip is missing.
+    assert!(
+        result.warnings.iter().any(|w| {
+            let w = w.to_lowercase();
+            w.contains("symlink") || w.contains("exfiltration")
+        }),
+        "expected a symlink warning, got: {:?}",
+        result.warnings
+    );
+
+    // And the sensitive bytes never appear anywhere under dest/media.
+    // (consolidate only writes file bytes there; project.json + bins
+    // live one level up and don't carry arbitrary payloads.)
+    fn scan_for_secret(dir: &std::path::Path) {
+        for entry in std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let ft = entry.file_type().unwrap();
+            if ft.is_dir() {
+                scan_for_secret(&path);
+            } else if ft.is_file() {
+                let contents = std::fs::read(&path).unwrap_or_default();
+                assert!(
+                    !contents.windows(6).any(|w| w == b"SECRET"),
+                    "sensitive bytes leaked into {}",
+                    path.display()
+                );
+            }
+        }
+    }
+    if dest.join("media").exists() {
+        scan_for_secret(&dest.join("media"));
+    }
+
+    std::fs::remove_dir_all(&source_dir).ok();
+    std::fs::remove_dir_all(&sensitive).ok();
+    std::fs::remove_dir_all(&media_dir).ok();
+    std::fs::remove_dir_all(&dest).ok();
+}
+
 #[test]
 fn consolidate_rollback_when_source_file_missing_mid_copy() {
     // Simulate a copy failure: add a media item whose `path` exists during

@@ -74,10 +74,34 @@ pub enum ConsolidateError {
         dst: PathBuf,
         err: std::io::Error,
     },
+    /// A source path pointed to by the project turned into a symlink
+    /// between planning and copy. Refusing is a defense-in-depth
+    /// backstop for the plan-time check; if this fires it means
+    /// either a race or a filesystem oddity and we'd rather abort
+    /// than follow the symlink.
+    #[error("Refused symlinked source {src} mid-copy — potential exfiltration")]
+    SymlinkRefused { src: PathBuf },
     #[error("Project save failed after copying: {0}")]
     SaveFailed(String),
     #[error("Archive failed at {zip_path}: {err}")]
     ArchiveFailed { zip_path: PathBuf, err: String },
+}
+
+/// Is `path`'s final component a symbolic link?
+///
+/// Uses `symlink_metadata` so this only flags the leaf — symlinked
+/// *directory* components in the ancestry (e.g. `/home/u/nas` being
+/// a symlink while the leaf `clip.mov` is a regular file under it)
+/// are fine. We only refuse when the consolidate is about to copy
+/// the contents of a link itself, which is the exfiltration vector.
+///
+/// Returns `false` for anything we can't metadata-stat (the caller
+/// has already done an `exists()` check, so a stat failure here is
+/// rare; being permissive in that edge avoids a false-refuse).
+fn is_symlinked_leaf(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
 }
 
 /// One planned file copy. Built up-front before any disk writes so the copy
@@ -150,6 +174,20 @@ fn build_copy_plan(
             offline_skipped.push(item.path.display().to_string());
             continue;
         }
+        if is_symlinked_leaf(&item.path) {
+            // Refuse: a hostile .klipp can point `item.path` at
+            // ~/.ssh/id_rsa (or similar) via a symlink, and a naive
+            // fs::copy would bake the target bytes into the
+            // consolidated folder that the victim is about to
+            // ship. Warn + skip; the consolidated project lists
+            // the clip as offline.
+            warnings.push(format!(
+                "Refused symlinked media source (potential exfiltration): {}",
+                item.path.display()
+            ));
+            offline_skipped.push(item.path.display().to_string());
+            continue;
+        }
         let filename = item
             .path
             .file_name()
@@ -166,7 +204,12 @@ fn build_copy_plan(
         // Proxy (opt-in)
         if options.include_proxies {
             if let Some(proxy) = &item.proxy_path {
-                if item.proxy_ready && proxy.exists() {
+                if item.proxy_ready && proxy.exists() && is_symlinked_leaf(proxy) {
+                    warnings.push(format!(
+                        "Refused symlinked proxy (potential exfiltration): {}",
+                        proxy.display()
+                    ));
+                } else if item.proxy_ready && proxy.exists() {
                     let pname = proxy
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
@@ -189,6 +232,12 @@ fn build_copy_plan(
         if options.include_skims {
             if let Some(skim) = &item.skim_file {
                 if skim.exists() {
+                    if is_symlinked_leaf(skim) {
+                        warnings.push(format!(
+                            "Refused symlinked skim (potential exfiltration): {}",
+                            skim.display()
+                        ));
+                    } else {
                     let sname = skim
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
@@ -203,6 +252,7 @@ fn build_copy_plan(
                         item.id,
                         options.dest_dir.join("media").join("skims").join(&dst),
                     );
+                    }
                 }
             }
         }
@@ -210,6 +260,13 @@ fn build_copy_plan(
 
     // Global LUT
     let lut_new_path = match &color_settings.global_lut_path {
+        Some(lut) if lut.exists() && is_symlinked_leaf(lut) => {
+            warnings.push(format!(
+                "Refused symlinked global LUT (potential exfiltration): {}",
+                lut.display()
+            ));
+            None
+        }
         Some(lut) if lut.exists() => {
             let lname = lut
                 .file_name()
@@ -247,6 +304,12 @@ fn build_copy_plan(
                         if !p.exists() {
                             warnings.push(format!(
                                 "Title texture not found on disk, skipped: {tex}"
+                            ));
+                            continue;
+                        }
+                        if is_symlinked_leaf(p) {
+                            warnings.push(format!(
+                                "Refused symlinked title texture (potential exfiltration): {tex}"
                             ));
                             continue;
                         }
@@ -332,6 +395,15 @@ fn execute_copy_plan(
     let total = plan.items.len();
     for (idx, item) in plan.items.iter().enumerate() {
         let dst = item.dst_path(dest_dir);
+        // TOCTOU backstop: `build_copy_plan` rejected symlinked
+        // leaves but a malicious process could swap the source out
+        // between plan and copy. Re-check here and abort the whole
+        // consolidate rather than risk copying a link's target.
+        if is_symlinked_leaf(&item.src) {
+            return Err(ConsolidateError::SymlinkRefused {
+                src: item.src.clone(),
+            });
+        }
         if let Err(err) = std::fs::copy(&item.src, &dst) {
             return Err(ConsolidateError::CopyFailed {
                 src: item.src.clone(),
