@@ -779,13 +779,44 @@ impl LaunchScreen {
                     // Mini timeline strip
                     draw_timeline_strip(ui, bar_rect, &rp.name);
 
-                    // Project name
+                    // Reserve space for the right-aligned timestamp
+                    // FIRST so the name + meta can be truncated to
+                    // fit whatever is left. Without this, long names
+                    // or meta strings would either overflow into the
+                    // timestamp area or paint past the card edge.
                     let text_x = rect.min.x + pad + 48.0;
-                    ui.painter().text(
-                        egui::pos2(text_x, rect.min.y + 12.0),
-                        egui::Align2::LEFT_TOP,
+                    let icon_size_right = 9.0;
+                    let time_str: String = rp.last_saved.as_deref()
+                        .map(relative_time)
+                        .unwrap_or_default();
+                    let time_reserved = if time_str.is_empty() {
+                        0.0
+                    } else {
+                        let g = ui.painter().layout_no_wrap(
+                            time_str.clone(),
+                            egui::FontId::proportional(11.0),
+                            theme.text_dim,
+                        );
+                        g.size().x + icon_size_right + 3.0
+                    };
+                    // Missing-media badge sits right of the name;
+                    // reserve ~24 px so truncation doesn't collide
+                    // with it.
+                    let badge_reserved = if rp.missing_media == Some(true) { 26.0 } else { 0.0 };
+                    let text_right_limit = rect.max.x - pad - time_reserved - 12.0;
+                    let text_max_w = (text_right_limit - text_x - badge_reserved).max(0.0);
+
+                    // Project name (truncated to available width)
+                    let name_galley = layout_truncated(
+                        ui.painter(),
                         &rp.name,
                         egui::FontId::proportional(13.0),
+                        theme.text_primary,
+                        text_max_w,
+                    );
+                    ui.painter().galley(
+                        egui::pos2(text_x, rect.min.y + 12.0),
+                        name_galley.clone(),
                         theme.text_primary,
                     );
 
@@ -800,49 +831,53 @@ impl LaunchScreen {
                         format!("{meta}  \u{00B7}  {counts}")
                     };
                     if !combined.is_empty() {
-                        ui.painter().text(
-                            egui::pos2(text_x, rect.min.y + 30.0),
-                            egui::Align2::LEFT_TOP,
+                        let g = layout_truncated(
+                            ui.painter(),
                             &combined,
                             egui::FontId::monospace(10.0),
+                            theme.text_dim,
+                            text_max_w,
+                        );
+                        ui.painter().galley(
+                            egui::pos2(text_x, rect.min.y + 30.0),
+                            g,
                             theme.text_dim,
                         );
                     }
 
-                    // Missing media warning (right of name)
+                    // Missing media warning (right of the rendered
+                    // name — use the truncated galley's actual width
+                    // so the badge doesn't overshoot).
                     if rp.missing_media == Some(true) {
-                        let warn_x = text_x + ui.painter().layout_no_wrap(
-                            rp.name.clone(),
-                            egui::FontId::proportional(13.0),
-                            theme.text_primary,
-                        ).size().x + 8.0;
+                        let warn_x = text_x + name_galley.size().x + 8.0;
                         draw_missing_media_badge(ui, egui::pos2(warn_x + 18.0, rect.min.y + 6.0));
                     }
 
                     // Timestamp (right-aligned) with clock icon
-                    if let Some(ref saved) = rp.last_saved {
-                        let time_str = relative_time(saved);
-                        if !time_str.is_empty() {
-                            let time_galley = ui.painter().layout_no_wrap(
-                                time_str.clone(),
-                                egui::FontId::proportional(11.0),
-                                theme.text_dim,
-                            );
-                            let text_w = time_galley.size().x;
-                            let text_right = rect.max.x - pad;
-                            let icon_size = 9.0;
-                            let text_left = text_right - text_w;
-                            let icon_x = text_left - icon_size - 3.0;
-                            let icon_cy = rect.center().y;
-                            draw_clock_icon(ui.painter(), egui::pos2(icon_x + icon_size / 2.0, icon_cy), icon_size, theme.text_dim);
-                            ui.painter().text(
-                                egui::pos2(text_right, icon_cy),
-                                egui::Align2::RIGHT_CENTER,
-                                &time_str,
-                                egui::FontId::proportional(11.0),
-                                theme.text_dim,
-                            );
-                        }
+                    if !time_str.is_empty() {
+                        let time_galley = ui.painter().layout_no_wrap(
+                            time_str.clone(),
+                            egui::FontId::proportional(11.0),
+                            theme.text_dim,
+                        );
+                        let text_w = time_galley.size().x;
+                        let text_right = rect.max.x - pad;
+                        let text_left = text_right - text_w;
+                        let icon_x = text_left - icon_size_right - 3.0;
+                        let icon_cy = rect.center().y;
+                        draw_clock_icon(
+                            ui.painter(),
+                            egui::pos2(icon_x + icon_size_right / 2.0, icon_cy),
+                            icon_size_right,
+                            theme.text_dim,
+                        );
+                        ui.painter().text(
+                            egui::pos2(text_right, icon_cy),
+                            egui::Align2::RIGHT_CENTER,
+                            &time_str,
+                            egui::FontId::proportional(11.0),
+                            theme.text_dim,
+                        );
                     }
 
                     if resp.clicked() {
@@ -1068,46 +1103,50 @@ impl LaunchScreen {
         let left_x = rect.min.x + 10.0;
         let max_w = rect.width() - 20.0;
 
-        // Project name
-        let name_galley = ui.painter().layout_no_wrap(
-            rp.name.clone(),
+        // Project name. Truncate with an ellipsis if the title
+        // wouldn't fit the card width — hard-clipping via clip_rect
+        // chopped letters mid-glyph on long names.
+        let name_galley = layout_truncated(
+            ui.painter(),
+            &rp.name,
             egui::FontId::proportional(13.0),
             theme.text_primary,
+            max_w,
         );
-        let name_rect = egui::Rect::from_min_size(
-            egui::pos2(left_x, info_top),
-            egui::vec2(max_w, name_galley.size().y),
-        );
-        ui.painter().with_clip_rect(name_rect).galley(
+        ui.painter().galley(
             egui::pos2(left_x, info_top),
             name_galley,
             theme.text_primary,
         );
 
-        // Metadata line (fps, resolution, duration, size)
+        // Metadata line (fps, resolution, duration, size). Truncate
+        // when the joined string would overflow — the "7.1 GB" tail
+        // on the 4K/long-clip card was rendering past the card edge.
         let meta = build_meta_string(rp);
         let mut y_cursor = info_top + 18.0;
         if !meta.is_empty() {
-            ui.painter().text(
-                egui::pos2(left_x, y_cursor),
-                egui::Align2::LEFT_TOP,
+            let g = layout_truncated(
+                ui.painter(),
                 &meta,
                 egui::FontId::monospace(9.5),
                 theme.text_dim,
+                max_w,
             );
+            ui.painter().galley(egui::pos2(left_x, y_cursor), g, theme.text_dim);
             y_cursor += 13.0;
         }
 
         // Counts line (clips, tracks)
         let counts = build_counts_string(rp);
         if !counts.is_empty() {
-            ui.painter().text(
-                egui::pos2(left_x, y_cursor),
-                egui::Align2::LEFT_TOP,
+            let g = layout_truncated(
+                ui.painter(),
                 &counts,
                 egui::FontId::proportional(9.5),
                 theme.text_dim,
+                max_w,
             );
+            ui.painter().galley(egui::pos2(left_x, y_cursor), g, theme.text_dim);
             y_cursor += 13.0;
         }
 
@@ -1118,11 +1157,18 @@ impl LaunchScreen {
                 let icon_size = 8.0;
                 let icon_center = egui::pos2(left_x + icon_size / 2.0, y_cursor + 5.5);
                 draw_clock_icon(ui.painter(), icon_center, icon_size, theme.text_secondary);
-                ui.painter().text(
-                    egui::pos2(left_x + icon_size + 4.0, y_cursor),
-                    egui::Align2::LEFT_TOP,
+                // Remaining width after the icon + its gap.
+                let text_max_w = (max_w - icon_size - 4.0).max(0.0);
+                let g = layout_truncated(
+                    ui.painter(),
                     &time_str,
                     egui::FontId::proportional(10.0),
+                    theme.text_secondary,
+                    text_max_w,
+                );
+                ui.painter().galley(
+                    egui::pos2(left_x + icon_size + 4.0, y_cursor),
+                    g,
                     theme.text_secondary,
                 );
             }
@@ -1169,6 +1215,36 @@ impl LaunchScreen {
 }
 
 // ── Helpers ──
+
+/// Lay out a single-line galley that truncates with an ellipsis when
+/// the text wouldn't fit `max_w`. Project-card fields (name,
+/// fps·res·dur·size, clip/track counts, timestamp) all use this so
+/// nothing ever paints past the card's right edge.
+fn layout_truncated(
+    painter: &egui::Painter,
+    text: &str,
+    font: egui::FontId,
+    color: egui::Color32,
+    max_w: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        text,
+        0.0,
+        egui::text::TextFormat {
+            font_id: font,
+            color,
+            ..Default::default()
+        },
+    );
+    job.wrap = egui::text::TextWrapping {
+        max_width: max_w.max(0.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('\u{2026}'),
+    };
+    painter.layout_job(job)
+}
 
 fn format_size_compact(bytes: u64) -> String {
     if bytes < 1024 * 1024 {

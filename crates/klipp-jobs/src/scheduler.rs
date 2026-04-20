@@ -93,8 +93,16 @@ impl JobScheduler {
         let mut jobs = self.inner.jobs.lock().unwrap_or_else(|e| e.into_inner());
         // If the scheduler is currently in "paused" state (because
         // user is busy), pause the freshly-added job too so it
-        // doesn't race ahead before the monitor catches it.
-        if self.inner.paused_currently.load(Ordering::Acquire) {
+        // doesn't race ahead before the monitor catches it. Must
+        // mirror the exemption in `apply_pause_state` — UserInteractive
+        // jobs (e.g. audio conform kicked on project load) are never
+        // paused; without this guard a project-open while the user
+        // was busy would pause the conform here and it would stay
+        // paused forever since `apply_pause_state`'s resume branch
+        // also skips UserInteractive.
+        if self.inner.paused_currently.load(Ordering::Acquire)
+            && job.priority() != JobPriority::UserInteractive
+        {
             job.pause();
         }
         jobs.push(job);
