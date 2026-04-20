@@ -385,8 +385,18 @@ fn register_asset_media(
 }
 
 /// Parse `<marker>` children of a clip element, returning ClipMarkers with
-/// `time_secs` in source-time (relative to the clip's `start`).
-fn parse_clip_markers(clip_node: roxmltree::Node<'_, '_>, seq_fps: Fps) -> Vec<ClipMarker> {
+/// `time_secs` in clip-local time — i.e. offset from the clip's
+/// `source_in`, matching Klipp's `ClipMarker.time_secs` convention
+/// ("Time relative to clip's source_in"). FCPXML's `<marker start="...">`
+/// is absolute source time within the asset, so we subtract the clip's
+/// `source_in` here at import time. Before this, markers landed at
+/// absolute positions and consumers had to remember to subtract
+/// `source_in` downstream (they typically didn't — F-170).
+fn parse_clip_markers(
+    clip_node: roxmltree::Node<'_, '_>,
+    seq_fps: Fps,
+    source_in_secs: f64,
+) -> Vec<ClipMarker> {
     let mut out = Vec::new();
     for m in clip_node
         .children()
@@ -396,20 +406,18 @@ fn parse_clip_markers(clip_node: roxmltree::Node<'_, '_>, seq_fps: Fps) -> Vec<C
             Some(v) => v,
             None => continue,
         };
-        // Marker `start` is in source-time (within the asset), relative to
-        // the asset's time origin. Klipp's ClipMarker.time_secs is relative
-        // to the clip's source_in, so subtract source_in_secs at render time
-        // — here we just record the start as reported.
         let time = match parse_fcpxml_time(start_attr, seq_fps) {
             Ok(t) => t,
             Err(_) => continue,
         };
+        // Rebase: FCPXML absolute → Klipp clip-local.
+        let clip_local_secs = time.to_secs_f64() - source_in_secs;
         let name = m
             .attribute("value")
             .map(|s| s.to_string())
             .unwrap_or_default();
         out.push(ClipMarker {
-            time_secs: time.to_secs_f64(),
+            time_secs: clip_local_secs,
             name,
             color: MarkerColor::Blue,
         });
@@ -460,7 +468,7 @@ fn parse_clip_element(
     if let Some(enabled) = node.attribute("enabled") {
         clip.enabled = enabled != "0";
     }
-    clip.clip_markers = parse_clip_markers(node, seq_fps);
+    clip.clip_markers = parse_clip_markers(node, seq_fps, source_in.to_secs_f64());
 
     // Warn about known-unsupported child elements so the user isn't surprised.
     for child in node.children().filter(|n| n.is_element()) {

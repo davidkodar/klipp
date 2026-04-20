@@ -482,7 +482,14 @@ fn render_pane_scope(
                     super::scopes::render_lufs_history(lufs_history, lufs_target, render_w, render_h)
                 }
                 ScopeType::Spectrogram => {
-                    super::scopes::render_audio_spectrogram(spectrum_history, render_w, render_h)
+                    // F-156: dB floor is per-pane so each pane can
+                    // pick its own dynamic range.
+                    super::scopes::render_audio_spectrogram(
+                        spectrum_history,
+                        render_w,
+                        render_h,
+                        pane.settings.spectrogram_db_floor,
+                    )
                 }
                 _ => unreachable!("is_audio_only gates this match"),
             };
@@ -613,6 +620,71 @@ fn render_pane_scope(
             }
         } else if pane.scope_type == ScopeType::Histogram {
             painter.image(tex.id(), r, uv, egui::Color32::WHITE);
+        } else if pane.scope_type == ScopeType::Spectrogram {
+            // F-157: dedicated spectrogram branch. Fills the full
+            // content rect (no Waveform-style AXIS_W margin) and
+            // overlays time-axis labels + dB-floor reference along
+            // the bottom edge. Previously fell through to the
+            // Waveform/Parade paint with scale overlays that
+            // don't apply to a frequency-vs-time plot.
+            painter.image(tex.id(), r, uv, egui::Color32::WHITE);
+
+            // Time axis — approximate, since history capacity (300
+            // slices) combined with ~33 ms refresh cadence yields
+            // ~10 s of rolling window. Five tick labels along the
+            // bottom: -10s, -8s, -5s, -2s, now.
+            let label_font = egui::FontId::monospace(9.0);
+            let label_color = egui::Color32::from_rgba_unmultiplied(245, 180, 60, 200);
+            let shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180);
+            let bottom_pad = 2.0;
+            let ticks: &[(f32, &str)] = &[
+                (0.00, "-10s"),
+                (0.20, "-8s"),
+                (0.50, "-5s"),
+                (0.80, "-2s"),
+                (1.00, "now"),
+            ];
+            for (frac, label) in ticks {
+                let x = r.min.x + frac * r.width();
+                let y = r.max.y - bottom_pad - 1.0;
+                let align = if *frac < 0.01 {
+                    egui::Align2::LEFT_BOTTOM
+                } else if *frac > 0.99 {
+                    egui::Align2::RIGHT_BOTTOM
+                } else {
+                    egui::Align2::CENTER_BOTTOM
+                };
+                // Drop-shadow for legibility against the bright
+                // high-magnitude regions.
+                painter.text(
+                    egui::pos2(x + 1.0, y + 1.0),
+                    align,
+                    *label,
+                    label_font.clone(),
+                    shadow_color,
+                );
+                painter.text(egui::pos2(x, y), align, *label, label_font.clone(), label_color);
+            }
+
+            // dB-floor reference in top-right — "-72 … 0 dBFS" so
+            // users know what the colour gradient maps to.
+            let floor = pane.settings.spectrogram_db_floor;
+            let db_label = format!("{floor:.0} … 0 dBFS");
+            let tr = egui::pos2(r.max.x - 4.0, r.min.y + 2.0);
+            painter.text(
+                egui::pos2(tr.x + 1.0, tr.y + 1.0),
+                egui::Align2::RIGHT_TOP,
+                &db_label,
+                label_font.clone(),
+                shadow_color,
+            );
+            painter.text(
+                tr,
+                egui::Align2::RIGHT_TOP,
+                &db_label,
+                label_font,
+                label_color,
+            );
         } else {
             // Waveform/Parade: scope image in trace area + scale overlay
             let scale = pane.settings.scale;
@@ -782,9 +854,27 @@ fn draw_pane_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindo
             ui.small("Green band = \u{00B1}1 LU around the loudness target.");
         }
         ScopeType::Spectrogram => {
-            ui.label("No settings available.");
-            ui.small("Scrolling FFT waterfall — ~10 s of history.");
-            ui.small("x = time, y = frequency (log), colour = magnitude.");
+            // F-156: configurable dB floor. Lower = more dynamic range
+            // visible (deeper noise floor), higher = compresses loud-
+            // only view. Range floored at -96 (engine clamp) and
+            // -12 (meaningful minimum dynamic range).
+            ui.horizontal(|ui| {
+                ui.label("dB floor:");
+                let mut v = state.panes[pane_idx].settings.spectrogram_db_floor;
+                if ui.add(
+                    egui::DragValue::new(&mut v)
+                        .range(-96.0..=-12.0)
+                        .speed(0.5)
+                        .suffix(" dBFS")
+                        .fixed_decimals(0),
+                ).changed() {
+                    state.panes[pane_idx].settings.spectrogram_db_floor = v;
+                }
+            });
+            let floor = state.panes[pane_idx].settings.spectrogram_db_floor;
+            ui.small(format!("Scrolling FFT waterfall — ~10 s of history."));
+            ui.small(format!("x = time (oldest left), y = freq (log)."));
+            ui.small(format!("colour = dB magnitude, {floor:.0} … 0 dBFS."));
         }
     }
 

@@ -1595,16 +1595,38 @@ mod tests {
 
     #[test]
     fn render_spectrogram_correct_size() {
-        let history = vec![vec![0.5f32; 256]; 10];
-        let img = render_audio_spectrogram(&history, 300, 200);
+        // Slices now carry dB values (F-156). A mid-band -36 dBFS
+        // signal with the default -72 floor maps to ~0.5 magnitude.
+        let history = vec![vec![-36.0f32; 256]; 10];
+        let img = render_audio_spectrogram(&history, 300, 200, -72.0);
         assert_eq!(img.size, [300, 200]);
         assert_eq!(img.pixels.len(), 300 * 200);
     }
 
     #[test]
     fn render_spectrogram_empty_doesnt_panic() {
-        let img = render_audio_spectrogram(&[], 300, 200);
+        let img = render_audio_spectrogram(&[], 300, 200, -72.0);
         assert_eq!(img.size, [300, 200]);
+    }
+
+    #[test]
+    fn render_spectrogram_honours_db_floor() {
+        // A signal at -50 dBFS: with floor -72 it's clearly audible
+        // (≥ mid-range magnitude); with floor -24 it's BELOW the
+        // floor and renders at the silence colour. Spot-check the
+        // magnitude_to_color output at the middle-newest pixel.
+        let history = vec![vec![-50.0f32; 256]; 1];
+        let wide_floor_img = render_audio_spectrogram(&history, 4, 256, -72.0);
+        let narrow_floor_img = render_audio_spectrogram(&history, 4, 256, -24.0);
+        // Sample an arbitrary non-bottom pixel on the rightmost
+        // column; both histories contain a single slice so x = w-1.
+        let idx = 128 * 4 + 3;
+        assert!(
+            wide_floor_img.pixels[idx].r() > narrow_floor_img.pixels[idx].r()
+                || wide_floor_img.pixels[idx].g() > narrow_floor_img.pixels[idx].g()
+                || wide_floor_img.pixels[idx].b() > narrow_floor_img.pixels[idx].b(),
+            "wider floor should light up more pixel magnitude",
+        );
     }
 
     #[test]
@@ -1874,15 +1896,18 @@ pub(crate) fn render_lufs_history(
 /// magnitude via a 5-stop heat-map gradient.
 ///
 /// `history` is oldest-first — the most recent slice lands on the right
-/// edge. Each slice is a `Vec<f32>` of per-bin magnitudes in the closed
-/// range `[0.0, 1.0]`; the caller (`app.rs` spectrum refresh loop) is
-/// responsible for normalising raw dBFS bins into this range.
+/// edge. Each slice is a `Vec<f32>` of per-bin dBFS values (clamped to
+/// `[-96.0, 0.0]` by the app-side FFT). `db_floor` sets the lower bound
+/// of the displayed dynamic range; anything softer renders as the
+/// darkest colour. Passing `db_floor = -72.0` reproduces the old
+/// hardcoded behaviour.
 ///
 /// Empty `history` returns a background-only image at the requested size.
 pub fn render_audio_spectrogram(
     history: &[Vec<f32>],
     width: usize,
     height: usize,
+    db_floor: f32,
 ) -> egui::ColorImage {
     use egui::Color32;
     let w = width.max(1);
@@ -1893,6 +1918,11 @@ pub fn render_audio_spectrogram(
     if history.is_empty() {
         return egui::ColorImage { size: [w, h], pixels };
     }
+
+    // Clamp the floor to a usable range so a pref set to 0 or positive
+    // doesn't produce a divide-by-zero. Upper bound always 0 dBFS.
+    let floor = db_floor.min(-1.0).max(-96.0);
+    let db_range = -floor;
 
     let n_slices = history.len();
     for (slice_idx, slice) in history.iter().enumerate() {
@@ -1907,7 +1937,9 @@ pub fn render_audio_spectrogram(
             w - 1
         };
         let n_bins = slice.len();
-        for (bin_idx, &mag) in slice.iter().enumerate() {
+        for (bin_idx, &db) in slice.iter().enumerate() {
+            // Normalise dB → [0, 1] per the configured floor.
+            let mag = ((db - floor) / db_range).clamp(0.0, 1.0);
             // bin 0 = lowest freq, render at the bottom → invert Y.
             let y_frac = if n_bins > 1 {
                 bin_idx as f32 / (n_bins - 1) as f32

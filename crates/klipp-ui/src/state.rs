@@ -1540,7 +1540,15 @@ pub struct PaneScopeSettings {
     /// Waveform: base trace colour in monochrome mode (Green/Yellow/White/Classic).
     #[serde(default)]
     pub waveform_paint_mode: WaveformPaintMode,
+    /// Spectrogram: lower bound of the dynamic range in dBFS. Anything
+    /// softer than this maps to the darkest colour. Default -72 matches
+    /// the old hardcoded value; commonly-useful range is -48 (loud-only
+    /// view) to -96 (full noise floor). Upper bound is always 0 dBFS.
+    #[serde(default = "default_spectrogram_db_floor")]
+    pub spectrogram_db_floor: f32,
 }
+
+fn default_spectrogram_db_floor() -> f32 { -72.0 }
 
 impl Default for PaneScopeSettings {
     fn default() -> Self {
@@ -1575,6 +1583,7 @@ impl Default for PaneScopeSettings {
             show_iq_lines: false,
             histogram_scale: HistogramScale::Sqrt,
             waveform_paint_mode: WaveformPaintMode::Green,
+            spectrogram_db_floor: default_spectrogram_db_floor(),
         }
     }
 }

@@ -1088,19 +1088,13 @@ impl KlippApp {
 
                 // ── Spectrogram history slice ──
                 //
-                // `spectrum_bins` is in dBFS (clamped to -96..=0 by
-                // `compute_spectrum`). Map the useful dynamic range
-                // [-72 dB, 0 dB] onto [0.0, 1.0] so the waterfall's
-                // colour mapping has sensible contrast (-96 → black near
-                // the silence floor would wash out the interesting
-                // signal). Cap history at 300 slices ≈ ~10s at 30fps.
-                const MIN_DB: f32 = -72.0;
-                const MAX_DB: f32 = 0.0;
-                const DB_RANGE: f32 = MAX_DB - MIN_DB;
-                let slice: Vec<f32> = self.state.spectrum_bins
-                    .iter()
-                    .map(|&db| ((db - MIN_DB) / DB_RANGE).clamp(0.0, 1.0))
-                    .collect();
+                // Store the raw dBFS bins (clamped to -96..=0 by
+                // `compute_spectrum`). The per-pane normalisation from
+                // dB floor → [0, 1] now happens in render_audio_spectrogram
+                // so that each pane's `spectrogram_db_floor` pref (F-156)
+                // can independently set its contrast range. Cap history
+                // at 300 slices ≈ ~10 s at 30 fps.
+                let slice: Vec<f32> = self.state.spectrum_bins.clone();
                 self.state.spectrum_history.push_back(slice);
                 if self.state.spectrum_history.len() > 300 {
                     self.state.spectrum_history.pop_front();
@@ -10870,6 +10864,45 @@ impl KlippApp {
                 self.spawn_audio_sync(*clip_id);
                 true
             }
+            AppCommand::SetAudioReferenceByMedia { media_id } => {
+                // Resolve to the first timeline clip using this media.
+                // The by-media variants (F-160) let the bin context menu
+                // offer the same audio-sync commands without the user
+                // having to hunt for a specific clip on the timeline.
+                let mid = *media_id;
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let found = seq.tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.media_id() == Some(mid))
+                    .map(|c| c.id);
+                match found {
+                    Some(clip_id) => {
+                        self.state.audio_reference_clip_id = Some(clip_id);
+                        self.state.toast.show("Audio reference set.".to_string());
+                    }
+                    None => {
+                        self.state.toast.show(
+                            "No timeline clip uses this media — add it to the timeline first.".to_string()
+                        );
+                    }
+                }
+                true
+            }
+            AppCommand::AlignToAudioReferenceByMedia { media_id } => {
+                let mid = *media_id;
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let found = seq.tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.media_id() == Some(mid))
+                    .map(|c| c.id);
+                match found {
+                    Some(clip_id) => self.spawn_audio_sync(clip_id),
+                    None => self.state.toast.show(
+                        "No timeline clip uses this media — add it to the timeline first.".to_string()
+                    ),
+                }
+                true
+            }
             // Markers — handled by handle_marker_commands
             // Linked clips
             AppCommand::UnlinkClip { clip_id } => {
@@ -18658,9 +18691,15 @@ impl KlippApp {
                             }
                         }
                     }
-                    // #63 Tier-1: run post-export shell command with
-                    // {file}/{dir} substitution. Fire-and-forget — we don't
-                    // capture output, and any launch error is logged only.
+                    // F-163: run post-export shell command with {file}/{dir}
+                    // substitution. Previously fire-and-forget — spawn()
+                    // returned immediately and any command failure was
+                    // invisible. Now we pipe stdout + stderr, wait for
+                    // the process in a detached thread, and log the exit
+                    // code plus a tail of stderr on non-zero exit so
+                    // users can diagnose a broken hook instead of
+                    // wondering why the file never appeared on their
+                    // rsync target.
                     let tmpl = self.prefs.export.post_export_command.trim();
                     if !tmpl.is_empty() {
                         let dir = output_path
@@ -18674,9 +18713,45 @@ impl KlippApp {
                         match std::process::Command::new("bash")
                             .arg("-c")
                             .arg(&cmd)
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
                             .spawn()
                         {
-                            Ok(_) => tracing::info!("post_export_command launched: {cmd}"),
+                            Ok(child) => {
+                                tracing::info!("post_export_command launched: {cmd}");
+                                // Reap the process off the UI thread so
+                                // a long-running hook doesn't block the
+                                // event loop; the exit code is logged
+                                // when it terminates.
+                                let cmd_for_log = cmd.clone();
+                                std::thread::spawn(move || {
+                                    match child.wait_with_output() {
+                                        Ok(out) if out.status.success() => {
+                                            tracing::info!(
+                                                "post_export_command completed (exit 0): {cmd_for_log}"
+                                            );
+                                        }
+                                        Ok(out) => {
+                                            // Trim stderr to a sane tail — a
+                                            // verbose tool could dump MB of
+                                            // text to the log otherwise.
+                                            let stderr = String::from_utf8_lossy(&out.stderr);
+                                            let tail: String = stderr.lines().rev().take(10)
+                                                .collect::<Vec<_>>().into_iter().rev()
+                                                .collect::<Vec<_>>().join("\n");
+                                            tracing::warn!(
+                                                "post_export_command exited with {} ({cmd_for_log})\n--- stderr tail ---\n{}\n--- end stderr ---",
+                                                out.status, tail,
+                                            );
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "post_export_command wait failed ({cmd_for_log}): {e}"
+                                            );
+                                        }
+                                    }
+                                });
+                            }
                             Err(e) => tracing::warn!(
                                 "post_export_command failed to launch ({cmd}): {e}"
                             ),
@@ -22811,10 +22886,18 @@ fn decode_title_animation(kind: u8, speed: f32) -> klipp_timeline::TitleAnimatio
 }
 
 /// Write transform_pos_x/y_keyframes for scroll/crawl animations, or clear
-/// them for Static/Typewriter. Speed is honoured only as a hint — the travel
-/// always spans the full clip duration (so shorter clips scroll faster).
-/// Position offsets use the same pixel-offset convention as other
-/// transform_pos_x/y_keyframes in this codebase (0 = centred).
+/// them for Static/Typewriter. Position offsets use the same pixel-offset
+/// convention as the rest of the codebase (0 = centred).
+///
+/// F-173: `speed_px_per_sec` now drives the keyframe span. Travel is always
+/// edge-to-edge (`2 * frame_height` for vertical scroll, `2 * frame_width`
+/// for horizontal crawl); `span = travel / speed` sets the keyframe
+/// duration. If the computed span exceeds the clip duration, we fall back
+/// to the clip-bounded behaviour (text off-screen before the clip ends is
+/// confusing; pro NLEs cap here too). Speed ≤ 0 also falls back. The
+/// previous behaviour always used the full clip duration regardless of
+/// the user-set speed, so the slider in the inspector changed the stored
+/// value but not the rendered motion.
 fn apply_title_animation_keyframes(
     clip: &mut klipp_timeline::Clip,
     animation: &klipp_timeline::TitleAnimationType,
@@ -22835,33 +22918,49 @@ fn apply_title_animation_keyframes(
         tangent_in: (0.0, 0.0),
     };
 
+    // Compute the keyframe span: how long the scroll motion takes.
+    // Returns min(clip_dur, travel/speed); fallback to clip_dur if
+    // speed invalid.
+    let span_for = |speed_px_per_sec: f32, travel_px: f32| -> f64 {
+        if speed_px_per_sec > 0.0 && travel_px > 0.0 {
+            let by_speed = travel_px as f64 / speed_px_per_sec as f64;
+            by_speed.min(clip_dur_secs).max(0.001)
+        } else {
+            clip_dur_secs
+        }
+    };
+
     match animation {
-        T::ScrollUp { .. } => {
+        T::ScrollUp { speed_px_per_sec } => {
+            let span = span_for(*speed_px_per_sec, 2.0 * frame_height);
             clip.transform_pos_x_keyframes.clear();
             clip.transform_pos_y_keyframes = vec![
                 mk_linear_kf(0.0, frame_height),
-                mk_linear_kf(clip_dur_secs, -frame_height),
+                mk_linear_kf(span, -frame_height),
             ];
         }
-        T::ScrollDown { .. } => {
+        T::ScrollDown { speed_px_per_sec } => {
+            let span = span_for(*speed_px_per_sec, 2.0 * frame_height);
             clip.transform_pos_x_keyframes.clear();
             clip.transform_pos_y_keyframes = vec![
                 mk_linear_kf(0.0, -frame_height),
-                mk_linear_kf(clip_dur_secs, frame_height),
+                mk_linear_kf(span, frame_height),
             ];
         }
-        T::CrawlLeft { .. } => {
+        T::CrawlLeft { speed_px_per_sec } => {
+            let span = span_for(*speed_px_per_sec, 2.0 * frame_width);
             clip.transform_pos_y_keyframes.clear();
             clip.transform_pos_x_keyframes = vec![
                 mk_linear_kf(0.0, frame_width),
-                mk_linear_kf(clip_dur_secs, -frame_width),
+                mk_linear_kf(span, -frame_width),
             ];
         }
-        T::CrawlRight { .. } => {
+        T::CrawlRight { speed_px_per_sec } => {
+            let span = span_for(*speed_px_per_sec, 2.0 * frame_width);
             clip.transform_pos_y_keyframes.clear();
             clip.transform_pos_x_keyframes = vec![
                 mk_linear_kf(0.0, -frame_width),
-                mk_linear_kf(clip_dur_secs, frame_width),
+                mk_linear_kf(span, frame_width),
             ];
         }
         T::Typewriter { .. } | T::Static => {

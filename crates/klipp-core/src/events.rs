@@ -965,6 +965,12 @@ pub enum AppCommand {
     /// Cross-correlate the given clip's audio with the current reference clip
     /// and shift its timeline position to align them.
     AlignToAudioReference { clip_id: ClipId },
+    /// F-160 — bin-scoped variants of the two above. The handler resolves
+    /// `media_id` to the first timeline clip using that media and
+    /// forwards to `SetAudioReference` / `AlignToAudioReference`. If no
+    /// clip uses this media, emits a toast and no-ops.
+    SetAudioReferenceByMedia { media_id: MediaId },
+    AlignToAudioReferenceByMedia { media_id: MediaId },
 
     // Audio recording (#60)
     /// Arm / un-arm a track for recording. Only one track is armed at a time

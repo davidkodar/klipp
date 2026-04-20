@@ -1427,6 +1427,18 @@ fn show_context_menu(
         });
         ui.close_menu();
     }
+    // F-160: bin-side audio sync entries. The by-media variants
+    // resolve to the first timeline clip using this media at
+    // handler time; if no clip uses it yet they surface a toast.
+    ui.separator();
+    if ui.button("Set as Audio Reference").clicked() {
+        cmds.push(AppCommand::SetAudioReferenceByMedia { media_id });
+        ui.close_menu();
+    }
+    if ui.button("Align to Audio Reference").clicked() {
+        cmds.push(AppCommand::AlignToAudioReferenceByMedia { media_id });
+        ui.close_menu();
+    }
     ui.separator();
     if ui.button("Properties\u{2026}").clicked() {
         cmds.push(AppCommand::OpenClipProperties { media_id });

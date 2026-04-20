@@ -5582,11 +5582,18 @@ impl TimelinePanel {
                     }
                 }
 
-                // Reveal source in media browser
+                // Reveal source in media browser + open in external app —
+                // both are media-scoped actions, so they share the same
+                // `media_id()` gate. Keeps parity with the bin context
+                // menu's "Open in External App" entry (F-72 → F-155).
                 if let Some(clip) = clip_info {
                     if let Some(mid) = clip.media_id() {
                         if ui.button("Reveal Source in Browser").clicked() {
                             cmds.push(AppCommand::RevealMediaInBrowser { media_id: mid });
+                            ui.close_menu();
+                        }
+                        if ui.button("Open in External App").clicked() {
+                            cmds.push(AppCommand::OpenInExternalApp { media_id: mid });
                             ui.close_menu();
                         }
                     }
