@@ -74,6 +74,7 @@ impl DecodedFrame {
             height: self.height,
             data,
             is_eof: self.is_eof,
+            gpu_source: None,
         }
     }
 }
@@ -98,6 +99,16 @@ pub struct LinearFrame {
     /// `width * height * 4`.
     pub data: Vec<f32>,
     pub is_eof: bool,
+    /// GPU-resident mirror of `data`, attached by the decoder when
+    /// the GPU-resident decode path is active (`KLIPP_GPU_FRAMES=1`
+    /// today; default when phase 4d consumes it directly).
+    ///
+    /// When `Some`, the grade chain (phase 4d) can bind the
+    /// underlying `wgpu::Buffer` as a compute-shader input without
+    /// re-uploading `data`. When `None`, downstream consumers MUST
+    /// use `data` — every current consumer already does, so `None`
+    /// is the backwards-compatible default.
+    pub gpu_source: Option<std::sync::Arc<crate::frame::GpuFrame>>,
 }
 
 impl LinearFrame {
@@ -115,7 +126,19 @@ impl LinearFrame {
             height: 0,
             data: Vec::new(),
             is_eof: true,
+            gpu_source: None,
         }
+    }
+
+    /// Attach a GPU-resident mirror of the frame data. The caller
+    /// asserts `gpu_source`'s underlying `wgpu::Buffer` holds RGBA8
+    /// pixels equivalent to `data`'s linear-f32 RGBA at the same
+    /// `width × height`. Used by the decoder's GPU-resident path
+    /// (phase 4c) so phase 4d's grade chain can bind the buffer
+    /// directly.
+    pub fn with_gpu_source(mut self, gpu: std::sync::Arc<crate::frame::GpuFrame>) -> Self {
+        self.gpu_source = Some(gpu);
+        self
     }
 
     /// sRGB-encode this frame to raw RGBA u8 bytes. Mirrors the
@@ -248,6 +271,7 @@ mod linear_frame_tests {
             height: 1,
             data: vec![2.5, 0.5, 0.18, 1.0],
             is_eof: false,
+            gpu_source: None,
         };
         assert_eq!(frame.data[0], 2.5);
         let back = frame.to_srgb_u8();

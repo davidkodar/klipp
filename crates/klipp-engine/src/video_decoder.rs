@@ -41,6 +41,7 @@
 //! nvidia-vaapi-driver), so those codecs skip directly to software
 //! even when VAAPI is available. See `open_gpu_decoder`.
 
+use crate::frame::{Frame, GpuFrame};
 use crate::types::{FrameQueue, LinearFrame, SharedFrameQueue};
 use crossbeam_channel::{Receiver, Sender};
 use klipp_color::transfer::srgb_to_linear;
@@ -50,6 +51,24 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use tracing::{debug, info, warn};
+
+/// Gate for the GPU-resident decode path. When on, NV12 / P010
+/// hardware-decode output stays on the GPU as an `Arc<wgpu::Buffer>`
+/// and the decoded `LinearFrame` carries a `gpu_source` attachment
+/// alongside the usual CPU `data`. Phase 4d's grade chain binds the
+/// buffer directly; until then this is a no-op for playback — same
+/// shader dispatch, same readback, just the buffer lingers for the
+/// consumer.
+///
+/// Read once per process via `OnceLock` so the env check doesn't
+/// poke syscalls on the decode hot path.
+fn should_attach_gpu_source() -> bool {
+    use std::sync::OnceLock;
+    static GATE: OnceLock<bool> = OnceLock::new();
+    *GATE.get_or_init(|| {
+        std::env::var("KLIPP_GPU_FRAMES").ok().as_deref() == Some("1")
+    })
+}
 
 /// Detect whether the decoded source pixel format carries more than
 /// 8 bits per component. Used to pick a matching swscale output
@@ -603,9 +622,30 @@ unsafe fn download_hw_frame(
             let uv_data = std::slice::from_raw_parts((*sw_frame).data[1], uv_data_len);
 
             let t_p010 = std::time::Instant::now();
-            let rgba_data = converter.convert_p010_to_rgba(
-                y_data, uv_data, src_w, src_h, y_stride, uv_stride, out_w, out_h, source_rotation as u32, is_hdr,
-            );
+            // Same shader dispatch either way. With the gate on we
+            // also hold an `Arc<Buffer>` of the output so the frame
+            // can carry a `gpu_source` for phase 4d's grade chain;
+            // the readback cost is identical to the legacy path.
+            let (rgba_data, gpu_source) = if should_attach_gpu_source() {
+                let buffer = converter.convert_p010_to_rgba_on_gpu(
+                    y_data, uv_data, src_w, src_h, y_stride, uv_stride,
+                    out_w, out_h, source_rotation as u32, is_hdr,
+                );
+                let device = converter.device();
+                let queue = converter.queue();
+                let readback = Frame::Gpu(GpuFrame::new(
+                    device.clone(), queue.clone(), Arc::clone(&buffer), out_w, out_h,
+                ));
+                let bytes = readback.into_cpu().data;
+                let attach = Arc::new(GpuFrame::new(device, queue, buffer, out_w, out_h));
+                (bytes, Some(attach))
+            } else {
+                let bytes = converter.convert_p010_to_rgba(
+                    y_data, uv_data, src_w, src_h, y_stride, uv_stride,
+                    out_w, out_h, source_rotation as u32, is_hdr,
+                );
+                (bytes, None)
+            };
             // Reuse the NV12 perf bucket — the meaning is identical
             // (GPU YUV→RGBA encode time per frame).
             PERF_NV12_CONV_US.fetch_add(t_p010.elapsed().as_micros() as u64, Ordering::Relaxed);
@@ -629,6 +669,7 @@ unsafe fn download_hw_frame(
                 height: out_h,
                 data: linear,
                 is_eof: false,
+                gpu_source,
             });
         }
     }
@@ -646,9 +687,26 @@ unsafe fn download_hw_frame(
             let uv_data = std::slice::from_raw_parts((*sw_frame).data[1], uv_data_len);
 
             let t_nv12 = std::time::Instant::now();
-            let rgba_data = converter.convert_nv12_to_rgba(
-                y_data, uv_data, src_w, src_h, y_stride, uv_stride, out_w, out_h, source_rotation as u32,
-            );
+            let (rgba_data, gpu_source) = if should_attach_gpu_source() {
+                let buffer = converter.convert_nv12_to_rgba_on_gpu(
+                    y_data, uv_data, src_w, src_h, y_stride, uv_stride,
+                    out_w, out_h, source_rotation as u32,
+                );
+                let device = converter.device();
+                let queue = converter.queue();
+                let readback = Frame::Gpu(GpuFrame::new(
+                    device.clone(), queue.clone(), Arc::clone(&buffer), out_w, out_h,
+                ));
+                let bytes = readback.into_cpu().data;
+                let attach = Arc::new(GpuFrame::new(device, queue, buffer, out_w, out_h));
+                (bytes, Some(attach))
+            } else {
+                let bytes = converter.convert_nv12_to_rgba(
+                    y_data, uv_data, src_w, src_h, y_stride, uv_stride,
+                    out_w, out_h, source_rotation as u32,
+                );
+                (bytes, None)
+            };
             PERF_NV12_CONV_US.fetch_add(t_nv12.elapsed().as_micros() as u64, Ordering::Relaxed);
 
             av_frame_free(&mut (sw_frame as *mut _));
@@ -675,6 +733,7 @@ unsafe fn download_hw_frame(
                 height: out_h,
                 data: linear,
                 is_eof: false,
+                gpu_source,
             });
         }
     }
@@ -809,6 +868,7 @@ unsafe fn download_hw_frame(
         height: final_h,
         data: linear_data,
         is_eof: false,
+        gpu_source: None,
     })
 }
 
@@ -1325,6 +1385,7 @@ fn convert_sw_frame(
         height: final_h,
         data: linear_data,
         is_eof: false,
+        gpu_source: None,
     })
 }
 
