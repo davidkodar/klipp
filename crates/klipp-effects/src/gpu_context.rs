@@ -89,4 +89,22 @@ impl GpuContext {
     pub fn queue(&self) -> std::sync::Arc<wgpu::Queue> {
         std::sync::Arc::clone(&self.queue)
     }
+
+    /// Return the process-wide shared context, lazily initialised on
+    /// first call. Once the context exists, every subsequent
+    /// `GpuNv12Converter::new`, `GpuP010Converter::new`, and
+    /// `GpuEffectsPipeline::new` re-uses the same `wgpu::Device` —
+    /// the prerequisite for GPU-resident decode → grade hand-off.
+    ///
+    /// Returns `None` if the first initialisation fails (no adapter,
+    /// etc.) and caches that failure for the process lifetime so we
+    /// don't retry a broken driver on every decoder spawn. On such
+    /// systems the `*::new()` paths fall back to creating private
+    /// devices (the pre-phase-4a behaviour).
+    pub fn shared() -> Option<&'static GpuContext> {
+        use std::sync::OnceLock;
+        // Outer option caches init failure; inner is the actual context.
+        static SHARED: OnceLock<Option<GpuContext>> = OnceLock::new();
+        SHARED.get_or_init(GpuContext::new).as_ref()
+    }
 }

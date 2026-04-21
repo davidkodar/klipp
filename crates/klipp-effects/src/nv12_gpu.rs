@@ -145,15 +145,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 ";
 
 impl GpuNv12Converter {
-    /// Create a new GPU NV12 converter with its own wgpu device.
-    /// Returns `None` if no suitable GPU adapter is found.
+    /// Create a new GPU NV12 converter. Shares the process-wide
+    /// `GpuContext` with every other GPU-using type in the engine
+    /// (the effects pipeline and the P010 converter), so buffers it
+    /// produces can be bound directly as grade-chain inputs without
+    /// a device-to-device copy.
     ///
-    /// Prefer [`Self::with_context`] when the caller already has a
-    /// `GpuContext` — sharing a device is what makes GPU-resident
-    /// hand-off into the effects pipeline possible.
+    /// Returns `None` if no suitable GPU adapter exists (falls back
+    /// to CPU conversion at the caller). When the shared context's
+    /// initial setup has already failed for this process, this will
+    /// not retry — see `GpuContext::shared`.
     pub fn new() -> Option<Self> {
-        let ctx = crate::gpu_context::GpuContext::new()?;
-        Self::with_context(&ctx)
+        let ctx = crate::gpu_context::GpuContext::shared()?;
+        Self::with_context(ctx)
     }
 
     /// Create an NV12 converter that reuses an existing `GpuContext`.

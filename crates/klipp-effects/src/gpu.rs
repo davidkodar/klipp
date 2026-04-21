@@ -100,8 +100,12 @@ struct ScopeReadSlot {
 
 /// GPU effects pipeline — holds device, queue, compute pipelines, and reusable buffers.
 pub struct GpuEffectsPipeline {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    // Arc-wrapped so the effects pipeline can share its device with
+    // klipp-effects' NV12/P010 converters (and any future GPU-using
+    // type) through `GpuContext`. Internal call sites deref
+    // transparently via Arc's Deref<Target = wgpu::Device>.
+    device: std::sync::Arc<wgpu::Device>,
+    queue: std::sync::Arc<wgpu::Queue>,
     // Compute pipelines — effects (2-buffer: input, output, params)
     opacity_pipeline: wgpu::ComputePipeline,
     blur_h_pipeline: wgpu::ComputePipeline,
@@ -330,62 +334,31 @@ const CHAIN_PARAMS_RING_SIZE: usize = 32;
 const WORKGROUP_SIZE: u32 = 256;
 
 impl GpuEffectsPipeline {
-    /// Create a new GPU effects pipeline. Returns `None` if no suitable GPU is found.
+    /// Create a new GPU effects pipeline, sharing the process-wide
+    /// `GpuContext` with the NV12/P010 converters. Returns `None` if
+    /// no suitable GPU is found.
+    ///
+    /// The `GPU_POWER_PREF` override is honoured via
+    /// `GpuContext::shared`'s policy (HighPerformance by default) —
+    /// the unification means every GPU-using type gets the same
+    /// adapter, which is the prerequisite for cross-type buffer
+    /// handoff in phase 4's grade chain.
     pub fn new() -> Option<Self> {
-        // Ensure Vulkan ICD is discoverable (some distros put it in /usr/share not /etc)
-        if std::env::var("VK_DRIVER_FILES").is_err() {
-            let icd_path = "/usr/share/vulkan/icd.d/nvidia_icd.json";
-            if std::path::Path::new(icd_path).exists() {
-                std::env::set_var("VK_DRIVER_FILES", icd_path);
-                debug!("GPU effects: set VK_DRIVER_FILES={icd_path}");
-            }
-        }
+        let ctx = crate::gpu_context::GpuContext::shared()?;
+        Self::with_context(ctx)
+    }
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            flags: wgpu::InstanceFlags::from_build_config() & !wgpu::InstanceFlags::VALIDATION,
-            ..Default::default()
-        });
+    /// Create a new GPU effects pipeline that shares an existing
+    /// `GpuContext`. Enables device-local handoff from the decoder
+    /// converters into the grade chain without a CPU round-trip.
+    pub fn with_context(ctx: &crate::gpu_context::GpuContext) -> Option<Self> {
+        Self::build_from_device_queue(ctx.device(), ctx.queue())
+    }
 
-        let power_pref = GPU_POWER_PREF.lock().ok()
-            .and_then(|g| *g)
-            .unwrap_or(wgpu::PowerPreference::HighPerformance);
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: power_pref,
-            force_fallback_adapter: false,
-            compatible_surface: None,
-        }));
-
-        let adapter = match adapter {
-            Some(a) => a,
-            None => {
-                warn!("GPU effects: no suitable adapter found — falling back to CPU");
-                return None;
-            }
-        };
-
-        let adapter_info = adapter.get_info();
-        info!(
-            "GPU effects: {} ({:?})",
-            adapter_info.name, adapter_info.backend
-        );
-
-        let (device, queue) = match pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("klipp-effects"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                ..Default::default()
-            },
-            None,
-        )) {
-            Ok(dq) => dq,
-            Err(e) => {
-                warn!("GPU effects: device creation failed: {e} — falling back to CPU");
-                return None;
-            }
-        };
-
+    fn build_from_device_queue(
+        device: std::sync::Arc<wgpu::Device>,
+        queue: std::sync::Arc<wgpu::Queue>,
+    ) -> Option<Self> {
         // Route uncaptured validation errors and device loss to our own
         // flag so a flaky driver doesn't abort the process. wgpu's default
         // `on_uncaptured_error` panics; we log + mark the pipeline dead

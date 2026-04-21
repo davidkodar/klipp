@@ -255,12 +255,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "#;
 
 impl GpuP010Converter {
-    /// Create a P010 converter with its own wgpu device. Prefer
-    /// [`Self::with_context`] when a shared `GpuContext` is
-    /// available.
+    /// Create a new GPU P010 converter. Shares the process-wide
+    /// `GpuContext` — see `GpuNv12Converter::new` for the rationale.
     pub fn new() -> Option<Self> {
-        let ctx = crate::gpu_context::GpuContext::new()?;
-        Self::with_context(&ctx)
+        let ctx = crate::gpu_context::GpuContext::shared()?;
+        Self::with_context(ctx)
     }
 
     /// Create a P010 converter that reuses an existing `GpuContext`.
