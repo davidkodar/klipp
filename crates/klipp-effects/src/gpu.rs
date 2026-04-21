@@ -1900,6 +1900,133 @@ impl GpuEffectsPipeline {
         }
     }
 
+    /// Encode the grade chain's final linear-f32 output (currently in
+    /// `buf_a` when `slot_a = true`, `buf_b` otherwise) to sRGB-u8
+    /// RGBA, then copy the result into the caller-supplied
+    /// `wgpu::Texture`. No CPU readback — the texture is immediately
+    /// bindable by another consumer on the same device
+    /// (egui-wgpu's viewer, for example).
+    ///
+    /// The target texture must be `Rgba8Unorm` (not sRGB — our
+    /// shader output bytes are already sRGB-encoded, we don't want a
+    /// second decode-on-sample) with `TEXTURE_BINDING | COPY_DST`
+    /// usage and dimensions `width × height`. Misconfigured targets
+    /// return `false` without dispatching.
+    ///
+    /// Returns `false` on device-lost / misconfigured target; the
+    /// caller's CPU-download + egui-upload fallback should kick in.
+    pub fn encode_grade_to_texture(
+        &mut self,
+        slot_a: bool,
+        width: u32,
+        height: u32,
+        target: &wgpu::Texture,
+    ) -> bool {
+        if self.is_device_lost() { return false; }
+        let pixel_count = (width as u64) * (height as u64);
+        if pixel_count == 0 { return true; }
+        let out_bytes = pixel_count * 4;
+
+        // Target validation — surface misconfigurations loudly
+        // instead of corrupting the display.
+        let size = target.size();
+        if size.width != width || size.height != height {
+            tracing::warn!(
+                "encode_grade_to_texture: target size {}x{} != requested {width}x{height}",
+                size.width, size.height,
+            );
+            return false;
+        }
+        if target.format() != wgpu::TextureFormat::Rgba8Unorm {
+            tracing::warn!(
+                "encode_grade_to_texture: target format {:?} must be Rgba8Unorm",
+                target.format(),
+            );
+            return false;
+        }
+        // wgpu's `copy_buffer_to_texture` requires `bytes_per_row` to
+        // be a multiple of `COPY_BYTES_PER_ROW_ALIGNMENT` (256).
+        // Our output buffer is tightly packed (width * 4 bytes/row),
+        // so any width whose byte pitch isn't a multiple of 256
+        // would silently corrupt the copy under the release-build
+        // validation disable. Reject up front.
+        let bytes_per_row = width * 4;
+        if bytes_per_row % wgpu::COPY_BYTES_PER_ROW_ALIGNMENT != 0 {
+            tracing::warn!(
+                "encode_grade_to_texture: width {width} (pitch {bytes_per_row} B) \
+                 not a multiple of COPY_BYTES_PER_ROW_ALIGNMENT={}. \
+                 Real video frames ≥ 64 px wide always meet this.",
+                wgpu::COPY_BYTES_PER_ROW_ALIGNMENT,
+            );
+            return false;
+        }
+
+        // Need our reusable u8 output buffer at the right size.
+        if self.bridge_u8_out_size < out_bytes {
+            self.bridge_u8_out_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("bridge_u8_out"),
+                size: out_bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            }));
+            self.bridge_u8_out_size = out_bytes;
+        }
+
+        let src_buf = if slot_a {
+            self.buf_a.as_ref()
+        } else {
+            self.buf_b.as_ref()
+        }.expect("chain buffers must be initialised before encode_grade_to_texture");
+        let out_buf = self.bridge_u8_out_buf.as_ref().unwrap();
+
+        self.write_params(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 });
+
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("encode_grade_to_texture_bg"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: src_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: out_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+        let workgroups = (pixel_count as u32).div_ceil(WORKGROUP_SIZE);
+        let mut encoder = self.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: Some("encode_grade_to_texture") },
+        );
+        {
+            let mut pass = encoder.begin_compute_pass(
+                &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
+            );
+            pass.set_pipeline(&self.bridge_u8_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        // Copy the packed-u32 buffer straight into the texture. The
+        // buffer layout matches `Rgba8Unorm`'s row-major RGBA bytes
+        // byte-for-byte (R in bits 0-7 of each u32, then G, B, A).
+        encoder.copy_buffer_to_texture(
+            wgpu::ImageCopyBuffer {
+                buffer: out_buf,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::ImageCopyTexture {
+                texture: target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
     /// GPU bridge: packed sRGB-u8 RGBA (`array<u32>`) → linear-f32
     /// RGBA (`array<vec4<f32>>`). Reads an *external* input buffer
     /// (typically the output of `convert_*_to_rgba_on_gpu`) and writes
