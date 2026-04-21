@@ -1100,13 +1100,24 @@ impl ViewerPanel {
         // behaviour.
         if frame.grade_still_active {
             self.draw_grade_still_split(ui, state, &frame);
-        } else if let Some(tex) = &self.video_texture {
-            ui.painter().image(
-                tex.id(),
-                image_rect,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
+        } else {
+            // Prefer the engine's GPU-resident output (`gpu_texture_id`)
+            // when registered — it's already on the same wgpu device
+            // as egui-wgpu, so sampling is a single texture read with
+            // no PCIe download. Fall back to the legacy CPU-uploaded
+            // `video_texture` when the GPU path isn't live (env gate
+            // off, eframe running glow, shared device not installed,
+            // or this frame's grade hasn't finished yet).
+            let image_id = self.gpu_texture_id
+                .or_else(|| self.video_texture.as_ref().map(|t| t.id()));
+            if let Some(id) = image_id {
+                ui.painter().image(
+                    id,
+                    image_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
         }
 
         // Draw title overlay (separate texture, alpha-blended on top of video)
