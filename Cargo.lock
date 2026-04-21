@@ -2240,11 +2240,13 @@ dependencies = [
  "klipp-title",
  "klipp-transitions",
  "lz4_flex",
+ "pollster 0.3.0",
  "rayon",
  "ringbuf",
  "serde_json",
  "tracing",
  "walkdir",
+ "wgpu",
 ]
 
 [[package]]

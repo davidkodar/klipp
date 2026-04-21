@@ -19,6 +19,7 @@ ffmpeg-next = { workspace = true }
 cpal = { workspace = true }
 ringbuf = { workspace = true }
 bytemuck = { workspace = true }
+wgpu = { workspace = true }
 crossbeam-channel = { workspace = true }
 crossbeam-queue = { workspace = true }
 tracing = { workspace = true }
@@ -28,3 +29,6 @@ lz4_flex = { workspace = true }
 serde_json = { workspace = true }
 walkdir = { workspace = true }
 dirs = { workspace = true }
+
+[dev-dependencies]
+pollster = "0.3"
