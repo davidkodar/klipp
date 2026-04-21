@@ -281,6 +281,19 @@ use tracing::{debug, error, info, warn};
 /// diagnostics; nothing load-bearing reads it.
 pub static ENGINE_TICK: AtomicU64 = AtomicU64::new(0);
 
+/// Gate for the GPU-resident viewer output path. When on, the engine
+/// mirrors the graded frame into `FrameBuffer.gpu_output` on the
+/// shared wgpu device so the UI can sample it directly without a
+/// CPU upload. Off by default while the UI-side wiring matures. Read
+/// once per process via `OnceLock`.
+fn should_publish_gpu_viewer() -> bool {
+    use std::sync::OnceLock;
+    static GATE: OnceLock<bool> = OnceLock::new();
+    *GATE.get_or_init(|| {
+        std::env::var("KLIPP_GPU_VIEWER").ok().as_deref() == Some("1")
+    })
+}
+
 /// Maximum number of live overlay decoders during playback.
 /// Prevents runaway decoder spawning on projects with many video tracks.
 /// Overlay tracks beyond this cap still render correctly in export.
@@ -5745,6 +5758,31 @@ impl PlaybackEngine {
                 reencode_ms: t_reencode_ms.as_secs_f64() as f32 * 1000.0,
                 scope_ms: t_scope_ms.as_secs_f64() as f32 * 1000.0,
             });
+        }
+
+        // Mirror the graded output into `FrameBuffer.gpu_output` when
+        // the viewer-GPU path is wired and a shared wgpu device is
+        // available. The UI picks this texture up via its egui
+        // `TextureId` registration and samples it directly — no
+        // `fb.data` upload. CPU `fb.data` is still populated above
+        // so the fallback path keeps working if the UI hasn't
+        // registered the texture yet.
+        //
+        // Width constraint: `w × 4` must be a multiple of
+        // `COPY_BYTES_PER_ROW_ALIGNMENT` (256). Every playback
+        // resolution meets this (1920 × 4 = 7680, ...), but scope-
+        // preview or odd downscales might not — skip silently in
+        // that case.
+        if should_publish_gpu_viewer() && (width * 4) % 256 == 0 {
+            if let Some(gpu) = self.graph_executor.gpu_pipeline_mut() {
+                let device = gpu.device();
+                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                let tex = fb.ensure_gpu_output(&device, width, height);
+                drop(fb);
+                if let Some(tex) = tex {
+                    let _ = gpu.linear_rgba_to_texture_gpu(&result_linear, width, height, &tex);
+                }
+            }
         }
 
         result_linear

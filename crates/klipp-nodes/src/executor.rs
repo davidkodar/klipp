@@ -196,6 +196,14 @@ impl GraphExecutor {
         self.gpu.is_some()
     }
 
+    /// Mutable accessor to the underlying GPU pipeline (if any).
+    /// Used by the engine's post_process to encode the final graded
+    /// frame into a viewer-bindable texture on the same device.
+    /// Returns `None` if GPU init failed or hasn't been attempted yet.
+    pub fn gpu_pipeline_mut(&mut self) -> Option<&mut GpuEffectsPipeline> {
+        self.gpu.as_mut()
+    }
+
     /// Pre-build curve LUTs for all RGBCurves nodes at clip start.
     /// Called from begin_clip() to avoid rebuilding every frame.
     pub fn prepare_clip(&mut self, graph: &NodeGraph) {

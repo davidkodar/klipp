@@ -1900,6 +1900,42 @@ impl GpuEffectsPipeline {
         }
     }
 
+    /// Clone the Arc-wrapped wgpu device. Pair with
+    /// `FrameBuffer::ensure_gpu_output` when routing the final
+    /// graded frame into a viewer-bindable texture on the shared
+    /// device.
+    pub fn device(&self) -> std::sync::Arc<wgpu::Device> {
+        std::sync::Arc::clone(&self.device)
+    }
+
+    /// Encode an externally-provided linear-f32 RGBA buffer directly
+    /// into a `wgpu::Texture`. Same output as
+    /// `encode_grade_to_texture` but input is a CPU slice uploaded
+    /// to `buf_a` here — useful at the legacy post_process_rgba
+    /// boundary that still downloads the grade chain's result as
+    /// `Vec<f32>`. Later: the chain skips the download entirely and
+    /// `encode_grade_to_texture` reads the slot directly.
+    ///
+    /// Same target constraints as `encode_grade_to_texture`:
+    /// `Rgba8Unorm`, matching size, `width * 4 % 256 == 0`.
+    pub fn linear_rgba_to_texture_gpu(
+        &mut self,
+        linear_rgba: &[f32],
+        width: u32,
+        height: u32,
+        target: &wgpu::Texture,
+    ) -> bool {
+        let pixel_count = (width as u64) * (height as u64);
+        if linear_rgba.len() < (pixel_count * 4) as usize {
+            return false;
+        }
+        let byte_size = pixel_count * 16;
+        self.ensure_buffers(byte_size);
+        let buf_a = self.buf_a.as_ref().expect("ensure_buffers established buf_a");
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(linear_rgba));
+        self.encode_grade_to_texture(true, width, height, target)
+    }
+
     /// Encode the grade chain's final linear-f32 output (currently in
     /// `buf_a` when `slot_a = true`, `buf_b` otherwise) to sRGB-u8
     /// RGBA, then copy the result into the caller-supplied
