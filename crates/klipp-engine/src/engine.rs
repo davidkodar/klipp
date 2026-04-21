@@ -2892,7 +2892,10 @@ impl PlaybackEngine {
         // trip via `frame.into_rgba().to_linear()`.
         let (final_w, final_h) = (frame.width, frame.height);
         let t_pp_full = std::time::Instant::now();
-        let v1_graded_linear = self.post_process_rgba(frame.data, final_w, final_h);
+        let gpu_source = frame.gpu_source.clone();
+        let v1_graded_linear = self.post_process_rgba_with_gpu_source(
+            frame.data, final_w, final_h, gpu_source.as_ref(),
+        );
         let pp_full_us = t_pp_full.elapsed().as_micros();
 
         // Composite V1 (graded) + overlay tracks in linear-light f32.
@@ -4558,7 +4561,10 @@ impl PlaybackEngine {
                 // post_process_rgba so the hot path stays in linear.
                 let rgba_u8 = linear_rgba_to_u8(&frame.data);
                 self.frame_cache.insert(self.playhead.value, Arc::new(rgba_u8), w, h);
-                let final_linear = self.post_process_rgba(frame.data, w, h);
+                let gpu_source = frame.gpu_source.clone();
+                let final_linear = self.post_process_rgba_with_gpu_source(
+                    frame.data, w, h, gpu_source.as_ref(),
+                );
                 let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, w, h);
@@ -4616,7 +4622,10 @@ impl PlaybackEngine {
                     // stepping; post_process_rgba stays linear.
                     let rgba_u8 = linear_rgba_to_u8(&frame.data);
                     self.frame_cache.insert(self.playhead.value, Arc::new(rgba_u8), w, h);
-                    let final_linear = self.post_process_rgba(frame.data, w, h);
+                    let gpu_source = frame.gpu_source.clone();
+                    let final_linear = self.post_process_rgba_with_gpu_source(
+                        frame.data, w, h, gpu_source.as_ref(),
+                    );
                     let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
                     let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                     fb.write_frame(final_rgba, w, h);
@@ -4698,7 +4707,10 @@ impl PlaybackEngine {
                     if frame_num >= target_frame && !found_target {
                         found_target = true;
                         self.playhead = RationalTime { value: frame_num, rate: self.playhead.rate };
-                        let final_linear = self.post_process_rgba(frame.data, w, h);
+                        let gpu_source = frame.gpu_source.clone();
+                        let final_linear = self.post_process_rgba_with_gpu_source(
+                            frame.data, w, h, gpu_source.as_ref(),
+                        );
                         let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
                         let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                         fb.write_frame(final_rgba, w, h);
@@ -4974,7 +4986,10 @@ impl PlaybackEngine {
                 // LinearFrame carries linear natively — feed it
                 // straight into post_process_rgba, display-transform
                 // once at the viewer seam.
-                let final_linear = self.post_process_rgba(frame.data, w, h);
+                let gpu_source = frame.gpu_source.clone();
+                let final_linear = self.post_process_rgba_with_gpu_source(
+                    frame.data, w, h, gpu_source.as_ref(),
+                );
                 let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, w, h);
@@ -5413,6 +5428,35 @@ impl PlaybackEngine {
         } else {
             rgba
         }
+    }
+
+    /// Phase 4d.3 companion to `post_process_rgba`: call this when the
+    /// frame you're handing in carries a GPU-resident mirror
+    /// (`LinearFrame.gpu_source`). It primes the grade chain's
+    /// `buf_a` directly from the on-GPU u8 buffer via the
+    /// `bridge_u8_to_linear` compute shader — the CPU upload that
+    /// `start_chain` would otherwise do is skipped entirely.
+    ///
+    /// Falls through to the normal `post_process_rgba` path when
+    /// `gpu_source` is `None`, priming fails, or the GPU pipeline
+    /// isn't available.
+    fn post_process_rgba_with_gpu_source(
+        &mut self,
+        linear_rgba: Vec<f32>,
+        width: u32,
+        height: u32,
+        gpu_source: Option<&std::sync::Arc<crate::frame::GpuFrame>>,
+    ) -> Vec<f32> {
+        if let Some(gpu_src) = gpu_source {
+            // Single-shot: consumed by the first `start_chain` inside
+            // the executor. If it returns false (device lost, size
+            // mismatch, no GPU) the normal CPU upload path runs —
+            // correctness preserved, just no perf win.
+            let _ = self.graph_executor.prime_chain_from_gpu_u8_buffer(
+                &gpu_src.rgba_buffer, width, height,
+            );
+        }
+        self.post_process_rgba(linear_rgba, width, height)
     }
 
     fn post_process_rgba(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
