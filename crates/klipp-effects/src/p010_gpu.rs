@@ -255,38 +255,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "#;
 
 impl GpuP010Converter {
+    /// Create a P010 converter with its own wgpu device. Prefer
+    /// [`Self::with_context`] when a shared `GpuContext` is
+    /// available.
     pub fn new() -> Option<Self> {
-        if std::env::var("VK_DRIVER_FILES").is_err() {
-            let icd_path = "/usr/share/vulkan/icd.d/nvidia_icd.json";
-            if std::path::Path::new(icd_path).exists() {
-                std::env::set_var("VK_DRIVER_FILES", icd_path);
-            }
-        }
+        let ctx = crate::gpu_context::GpuContext::new()?;
+        Self::with_context(&ctx)
+    }
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            flags: wgpu::InstanceFlags::from_build_config() & !wgpu::InstanceFlags::VALIDATION,
-            ..Default::default()
-        });
-
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            force_fallback_adapter: false,
-            compatible_surface: None,
-        }))?;
-
-        let adapter_info = adapter.get_info();
-        info!("P010 GPU converter: {} ({:?})", adapter_info.name, adapter_info.backend);
-
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("klipp-p010"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
-                ..Default::default()
-            },
-            None,
-        )).ok()?;
+    /// Create a P010 converter that reuses an existing `GpuContext`.
+    /// Enables GPU-resident decode → grade chain handoff in phase 4.
+    pub fn with_context(ctx: &crate::gpu_context::GpuContext) -> Option<Self> {
+        let device = ctx.device.clone();
+        let queue = ctx.queue.clone();
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("p010_bgl"),
@@ -354,8 +335,8 @@ impl GpuP010Converter {
         info!("P010 GPU converter initialized");
 
         Some(Self {
-            device: std::sync::Arc::new(device),
-            queue: std::sync::Arc::new(queue),
+            device,
+            queue,
             pipeline, bind_group_layout,
             y_buf: None, uv_buf: None, output_buf: None, staging_buf: None,
             params_buf,
