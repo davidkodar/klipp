@@ -340,6 +340,57 @@ const PARAMS_SIZE: u64 = 256;
 const CHAIN_PARAMS_RING_SIZE: usize = 32;
 const WORKGROUP_SIZE: u32 = 256;
 
+/// Maximum time to spin waiting for a `map_async` callback before
+/// giving up. 2 s is far longer than any real GPU operation needs,
+/// but short enough that a genuine hang gets flagged before the
+/// engine watchdog notices.
+const MAP_POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Poll the device until a `map_async` callback has delivered a
+/// result on the provided channel, or the 2-second timeout expires.
+///
+/// Replaces the classic `submit → map_async → device.poll(Wait) →
+/// rx.recv()` pattern. On a UI-shared device `Maintain::Wait` never
+/// returns (the UI's egui paint + present submits keep the queue
+/// non-empty), and even `WaitForSubmissionIndex` doesn't reliably
+/// drive the mapping callback past the submission's completion on
+/// the wgpu-22 Vulkan backend. Polling with `Maintain::Poll`
+/// explicitly processes ready callbacks without blocking, so the
+/// engine thread can't get starved by UI traffic.
+///
+/// Returns the channel's result on success, or
+/// `Err(RecvError)`-style substitute when the timeout expires so
+/// callers can treat it as a device-lost-equivalent and fall back.
+fn poll_until_mapped(
+    device: &wgpu::Device,
+    rx: &std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
+) -> Result<Result<(), wgpu::BufferAsyncError>, std::sync::mpsc::RecvTimeoutError> {
+    let start = std::time::Instant::now();
+    loop {
+        // Non-blocking poll. On wgpu-22, `Maintain::Poll` drives
+        // completed submissions' map callbacks — critical because
+        // without it the callback never fires even though the GPU
+        // work is done.
+        device.poll(wgpu::Maintain::Poll);
+        match rx.try_recv() {
+            Ok(v) => return Ok(v),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Err(std::sync::mpsc::RecvTimeoutError::Disconnected);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if start.elapsed() >= MAP_POLL_TIMEOUT {
+                    return Err(std::sync::mpsc::RecvTimeoutError::Timeout);
+                }
+                // Yield the thread briefly so we're not 100%-CPU
+                // while waiting. 100 µs is fine-grained enough to
+                // catch sub-millisecond readbacks yet cheap enough
+                // not to pile up syscalls.
+                std::thread::sleep(std::time::Duration::from_micros(100));
+            }
+        }
+    }
+}
+
 impl GpuEffectsPipeline {
     /// Create a new GPU effects pipeline, sharing the process-wide
     /// `GpuContext` with the NV12/P010 converters. Returns `None` if
@@ -1297,12 +1348,11 @@ impl GpuEffectsPipeline {
         let staging = self.scope_staging_buf.as_ref().unwrap();
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_buffer_to_buffer(img_buf, 0, staging, 0, byte_size);
-        let submit_idx = self.queue.submit(std::iter::once(encoder.finish()));
+        self.queue.submit(std::iter::once(encoder.finish()));
         let slice = staging.slice(..byte_size);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
-        match rx.recv() {
+        match poll_until_mapped(&self.device, &rx) {
             Ok(Ok(())) => {
                 let data = slice.get_mapped_range();
                 let result = data.to_vec();
@@ -1352,7 +1402,20 @@ impl GpuEffectsPipeline {
         // mapped from an even older frame (skipped consume). Drain it
         // synchronously — rare, only on pathological frame stalls.
         if self.scope_img_slots[slot_idx].pending_rx.is_some() {
-            self.device.poll(wgpu::Maintain::Wait);
+            // Poll-loop instead of blocking Wait for shared-device safety.
+            // See `poll_until_mapped`. A brief spin is fine here —
+            // this is a rare drain path, not a hot-frame path.
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_millis(500);
+            loop {
+                self.device.poll(wgpu::Maintain::Poll);
+                if start.elapsed() >= timeout { break; }
+                // Can't easily try_recv an Option<Receiver> without taking
+                // ownership; 2 ms backoff is fine for a slot drain.
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                // Caller's `try_consume_slot` will pick the result up.
+                break;
+            }
             Self::try_consume_slot(&mut self.scope_img_slots[slot_idx], &mut self.scope_last_img);
         }
 
@@ -1401,7 +1464,20 @@ impl GpuEffectsPipeline {
     fn flush_scope_slots(&mut self) {
         for i in 0..2 {
             if self.scope_img_slots[i].pending_rx.is_some() {
-                self.device.poll(wgpu::Maintain::Wait);
+                // Poll-loop instead of blocking Wait for shared-device safety.
+            // See `poll_until_mapped`. A brief spin is fine here —
+            // this is a rare drain path, not a hot-frame path.
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_millis(500);
+            loop {
+                self.device.poll(wgpu::Maintain::Poll);
+                if start.elapsed() >= timeout { break; }
+                // Can't easily try_recv an Option<Receiver> without taking
+                // ownership; 2 ms backoff is fine for a slot drain.
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                // Caller's `try_consume_slot` will pick the result up.
+                break;
+            }
                 Self::try_consume_slot(&mut self.scope_img_slots[i], &mut self.scope_last_img);
             }
         }
@@ -1522,12 +1598,11 @@ impl GpuEffectsPipeline {
             let staging = self.scope_staging_buf.as_ref().unwrap();
             let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
             enc.copy_buffer_to_buffer(bins_buf, 0, staging, 0, bins_bytes);
-            let submit_idx = self.queue.submit(std::iter::once(enc.finish()));
+            self.queue.submit(std::iter::once(enc.finish()));
             let slice = staging.slice(..bins_bytes);
             let (tx, rx) = std::sync::mpsc::channel();
             slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-            self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
-            rx.recv().ok().and_then(|r| r.ok());
+            let _ = poll_until_mapped(&self.device, &rx);
             let data = slice.get_mapped_range();
             let bins: &[u32] = bytemuck::cast_slice(&data);
             let mx = bins.iter().copied().max().unwrap_or(1).max(1);
@@ -1645,12 +1720,11 @@ impl GpuEffectsPipeline {
             let staging = self.scope_staging_buf.as_ref().unwrap();
             let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
             enc.copy_buffer_to_buffer(bins_buf, 0, staging, 0, bins_bytes);
-            let submit_idx = self.queue.submit(std::iter::once(enc.finish()));
+            self.queue.submit(std::iter::once(enc.finish()));
             let slice = staging.slice(..bins_bytes);
             let (tx, rx) = std::sync::mpsc::channel();
             slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-            self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
-            rx.recv().ok().and_then(|r| r.ok());
+            let _ = poll_until_mapped(&self.device, &rx);
             let data = slice.get_mapped_range();
             let bins: &[u32] = bytemuck::cast_slice(&data);
             let mx = bins.iter().copied().max().unwrap_or(1).max(1);
@@ -1749,12 +1823,11 @@ impl GpuEffectsPipeline {
             let staging = self.scope_staging_buf.as_ref().unwrap();
             let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
             enc.copy_buffer_to_buffer(bins_buf, 0, staging, 0, bins_bytes);
-            let submit_idx = self.queue.submit(std::iter::once(enc.finish()));
+            self.queue.submit(std::iter::once(enc.finish()));
             let slice = staging.slice(..bins_bytes);
             let (tx, rx) = std::sync::mpsc::channel();
             slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-            self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
-            rx.recv().ok().and_then(|r| r.ok());
+            let _ = poll_until_mapped(&self.device, &rx);
             let data = slice.get_mapped_range();
             let bins: &[u32] = bytemuck::cast_slice(&data);
             let mx = bins.iter().copied().max().unwrap_or(1).max(1);
@@ -1877,24 +1950,27 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         encoder.copy_buffer_to_buffer(out_buf, 0, staging, 0, out_bytes);
-        let submit_idx = self.queue.submit(std::iter::once(encoder.finish()));
+        self.queue.submit(std::iter::once(encoder.finish()));
         self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        // Map + wait + read.
+        // Map + poll-loop + read.
         //
-        // `Maintain::Wait` waits for the WHOLE queue to drain — on a
-        // device shared with the UI thread (phase 5a), the UI's
-        // continuous egui submits make that never happen and the
-        // engine thread hangs forever (ENGINE_WATCHDOG STALLED at
-        // stage=PostProcessReencode). `WaitForSubmissionIndex` waits
-        // only for our specific submission to finish, so it returns
-        // as soon as our compute + copy is done regardless of what
-        // UI has queued behind it.
+        // On a device shared with the UI thread (phase 5a), neither
+        // `Maintain::Wait` nor `Maintain::WaitForSubmissionIndex`
+        // reliably unblocks here — the first waits for the whole
+        // queue which UI never stops filling, and the second doesn't
+        // guarantee the `map_async` callback has actually been
+        // invoked even after the submission itself is done.
+        //
+        // Instead we poll repeatedly with `Maintain::Poll` (non-
+        // blocking — returns after processing ready callbacks) and
+        // try-recv the channel, yielding the thread between ticks.
+        // A 2-second safety timeout surfaces genuinely lost submits
+        // instead of hanging the engine thread forever.
         let slice = staging.slice(..out_bytes);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
-        match rx.recv() {
+        match poll_until_mapped(&self.device, &rx) {
             Ok(Ok(())) => {
                 let data = slice.get_mapped_range();
                 let result = data.to_vec();
@@ -3218,19 +3294,14 @@ impl GpuEffectsPipeline {
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flush_chain_dl") })
         });
         encoder.copy_buffer_to_buffer(source_buf, 0, staging, 0, byte_size);
-        let submit_idx = self.queue.submit(std::iter::once(encoder.finish()));
+        self.queue.submit(std::iter::once(encoder.finish()));
         self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let slice = staging.slice(..byte_size);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        // WaitForSubmissionIndex, not Wait: under a device shared with
-        // the UI thread, a naive `Wait` never returns because UI keeps
-        // queuing egui work indefinitely. See `linear_rgba_to_u8_gpu`
-        // for the full rationale.
-        self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
 
-        match rx.recv() {
+        match poll_until_mapped(&self.device, &rx) {
             Ok(Ok(())) => {
                 let data = slice.get_mapped_range();
                 let linear: &[f32] = bytemuck::cast_slice(&data);
@@ -4212,7 +4283,7 @@ impl GpuEffectsPipeline {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_buffer_to_buffer(source, 0, staging, 0, byte_size);
-        let submit_idx = self.queue.submit(std::iter::once(encoder.finish()));
+        self.queue.submit(std::iter::once(encoder.finish()));
         self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let buffer_slice = staging.slice(..byte_size);
@@ -4220,12 +4291,8 @@ impl GpuEffectsPipeline {
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        // WaitForSubmissionIndex instead of Wait: with a UI-shared
-        // device the whole-queue Wait never returns because UI keeps
-        // submitting. See `linear_rgba_to_u8_gpu` for the writeup.
-        self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
 
-        match rx.recv() {
+        match poll_until_mapped(&self.device, &rx) {
             Ok(Ok(())) => {
                 let data = buffer_slice.get_mapped_range();
                 let result = data.to_vec();

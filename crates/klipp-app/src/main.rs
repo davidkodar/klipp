@@ -261,33 +261,38 @@ fn main() -> Result<()> {
             mark("eframe creator callback entered");
             let _t = LogTimer::new("KlippApp::new (TOTAL)");
 
-            // Install eframe-wgpu's device as the process-wide shared
-            // GpuContext. Runs before any engine-thread GPU call
-            // (the engine initialises GPU effects lazily, on the first
-            // rendered frame — which can't happen until the UI has
-            // drawn at least once). After this, the decoder, grade
-            // chain, and the viewer all live on one wgpu::Device,
-            // enabling GPU-resident handoff of the final graded
-            // texture to egui without a CPU round-trip.
+            // Optionally install eframe-wgpu's device as the shared
+            // `GpuContext` so the engine + decoder submit onto the
+            // same wgpu device the UI is rendering on. This enables
+            // the zero-copy viewer handoff, but on wgpu-22 Vulkan +
+            // NVIDIA it deadlocks: engine readbacks call
+            // `device.poll(...)`, and the shared queue is kept non-
+            // empty forever by the UI thread's continuous egui
+            // submits — our poll never returns, the engine thread
+            // hangs at PostProcessReencode, and the app is unusable.
             //
-            // Failure here means eframe-wgpu didn't set up a wgpu
-            // backend (e.g. running with --renderer glow) — engine
-            // falls back to creating its own private device, same as
-            // before.
-            if let Some(rs) = cc.wgpu_render_state.as_ref() {
-                let ctx = klipp_effects::gpu_context::GpuContext::from_existing(
-                    std::sync::Arc::clone(&rs.device),
-                    std::sync::Arc::clone(&rs.queue),
-                );
-                match klipp_effects::gpu_context::GpuContext::install_shared(ctx) {
-                    Ok(()) => info!("GpuContext: installed eframe-wgpu device as shared"),
-                    Err(_) => warn!(
-                        "GpuContext: shared slot was already populated — \
-                         engine will use its own device, viewer will use eframe's"
-                    ),
+            // Gated behind `KLIPP_SHARED_GPU_DEVICE=1` so the default
+            // run keeps the separate-device behaviour. When wgpu /
+            // egui-wgpu lifetime semantics get stronger and the poll
+            // loop can make progress independent of UI pressure we
+            // flip the default.
+            let want_shared = std::env::var("KLIPP_SHARED_GPU_DEVICE").ok().as_deref() == Some("1");
+            if want_shared {
+                if let Some(rs) = cc.wgpu_render_state.as_ref() {
+                    let ctx = klipp_effects::gpu_context::GpuContext::from_existing(
+                        std::sync::Arc::clone(&rs.device),
+                        std::sync::Arc::clone(&rs.queue),
+                    );
+                    match klipp_effects::gpu_context::GpuContext::install_shared(ctx) {
+                        Ok(()) => info!("GpuContext: installed eframe-wgpu device as shared"),
+                        Err(_) => warn!(
+                            "GpuContext: shared slot was already populated — \
+                             engine will use its own device, viewer will use eframe's"
+                        ),
+                    }
+                } else {
+                    warn!("CreationContext has no wgpu_render_state — running without device unification");
                 }
-            } else {
-                warn!("CreationContext has no wgpu_render_state — running without device unification");
             }
 
             Ok(Box::new(klipp_ui::KlippApp::new(

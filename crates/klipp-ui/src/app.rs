@@ -2203,6 +2203,22 @@ impl KlippApp {
             fb.swap_pending();
             self.state.render_cache_ranges = fb.render_cache_ranges.clone();
             if !fb.dirty {
+                // Debug for the fullscreen "frozen frame" hunt: if
+                // upload_frame_to_egui skips every tick during
+                // fullscreen, the engine isn't producing new frames
+                // or pending isn't propagating. Log at 1 Hz so the
+                // stream is readable.
+                if self.state.fullscreen_viewer {
+                    use std::sync::atomic::{AtomicU64, Ordering};
+                    static SKIP: AtomicU64 = AtomicU64::new(0);
+                    let n = SKIP.fetch_add(1, Ordering::Relaxed);
+                    if n % 60 == 0 {
+                        tracing::debug!(
+                            "UPLOAD_FRAME_SKIP n={} fullscreen=true dirty=false gen={} pending_ready={} playback={:?}",
+                            n, fb.generation, fb.pending_ready, self.state.playback,
+                        );
+                    }
+                }
                 return;
             }
             let w = fb.width as usize;

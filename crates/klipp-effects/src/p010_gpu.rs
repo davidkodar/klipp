@@ -452,17 +452,32 @@ impl GpuP010Converter {
             pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
         }
         encoder.copy_buffer_to_buffer(output_buf, 0, staging, 0, output_size);
-        let submit_idx = self.queue.submit(std::iter::once(encoder.finish()));
+        self.queue.submit(std::iter::once(encoder.finish()));
 
-        // WaitForSubmissionIndex instead of Wait: shared-device-with-UI
-        // would deadlock on whole-queue Wait.
+        // Non-blocking poll loop: blocking Wait / WaitForSubmissionIndex
+        // deadlock against the UI thread's continuous submits when
+        // the device is shared. See gpu.rs::poll_until_mapped.
         let buffer_slice = staging.slice(..output_size);
         let (tx, rx) = std::sync::mpsc::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| { let _ = tx.send(result); });
-        self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
+        let map_result = {
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(2);
+            loop {
+                self.device.poll(wgpu::Maintain::Poll);
+                match rx.try_recv() {
+                    Ok(v) => break Some(v),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => break None,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        if start.elapsed() >= timeout { break None; }
+                        std::thread::sleep(std::time::Duration::from_micros(100));
+                    }
+                }
+            }
+        };
 
-        match rx.recv() {
-            Ok(Ok(())) => {
+        match map_result {
+            Some(Ok(())) => {
                 let data = buffer_slice.get_mapped_range();
                 let result = data.to_vec();
                 drop(data);
