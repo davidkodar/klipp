@@ -51,7 +51,14 @@ pub enum ExecutorError {
 /// [`GraphExecutor::execute_linear`], which skips the bracket at the boundary.
 pub struct GraphExecutor {
     /// Optional GPU pipeline for accelerated node execution.
+    /// Lazily populated by `ensure_gpu()` on first use so we don't
+    /// force-init `GpuContext::shared()` from the engine thread
+    /// before the UI has had a chance to install its own device.
     gpu: Option<GpuEffectsPipeline>,
+    /// Latches once `ensure_gpu()` has tried to build the pipeline
+    /// (success or failure). Prevents retrying a failed init on
+    /// every frame.
+    gpu_init_attempted: bool,
     /// Cache of loaded LUT data keyed by file path.
     lut_cache: HashMap<PathBuf, Arc<LutData>>,
     /// Cache of pre-built curve LUTs keyed by node ID.
@@ -98,15 +105,37 @@ fn linear_rgba_to_u8(linear: &[f32]) -> Vec<u8> {
 
 impl GraphExecutor {
     pub fn new() -> Self {
-        let gpu = GpuEffectsPipeline::new();
-        if gpu.is_none() {
-            tracing::info!("GraphExecutor: GPU unavailable, using CPU fallback for all nodes");
-        }
+        // GPU pipeline is lazily initialised on first use (see
+        // `ensure_gpu`). Constructing it here would call
+        // `GpuContext::shared()` — which may run on the engine
+        // thread before the UI has had a chance to install its own
+        // wgpu device via `GpuContext::install_shared`. Once the
+        // shared slot is populated the UI's install is a no-op and
+        // the engine + UI end up on separate devices, defeating the
+        // whole point of device unification.
         Self {
-            gpu,
+            gpu: None,
+            gpu_init_attempted: false,
             lut_cache: HashMap::new(),
             curve_lut_cache: HashMap::new(),
             gpu_chain_preseeded: false,
+        }
+    }
+
+    /// Lazily create the `GpuEffectsPipeline` on first use. Once the
+    /// shared `GpuContext` is populated (either by the UI host or by
+    /// the first lazy init here), every subsequent call re-uses it.
+    /// Caches init failure so we don't retry on every frame.
+    fn ensure_gpu(&mut self) {
+        if self.gpu.is_some() || self.gpu_init_attempted {
+            return;
+        }
+        self.gpu_init_attempted = true;
+        self.gpu = GpuEffectsPipeline::new();
+        if self.gpu.is_none() {
+            tracing::info!(
+                "GraphExecutor: GPU unavailable, using CPU fallback for all nodes"
+            );
         }
     }
 
@@ -114,6 +143,9 @@ impl GraphExecutor {
     pub fn new_cpu_only() -> Self {
         Self {
             gpu: None,
+            // Mark "attempted" so `ensure_gpu()` is a no-op —
+            // `new_cpu_only` explicitly wants CPU-only.
+            gpu_init_attempted: true,
             lut_cache: HashMap::new(),
             curve_lut_cache: HashMap::new(),
             gpu_chain_preseeded: false,
@@ -143,6 +175,7 @@ impl GraphExecutor {
         width: u32,
         height: u32,
     ) -> bool {
+        self.ensure_gpu();
         let gpu = match self.gpu.as_mut() {
             Some(g) => g,
             None => return false,
@@ -239,6 +272,7 @@ impl GraphExecutor {
         matte_tap: Option<NodeId>,
         matte_preview_node: Option<NodeId>,
     ) -> Result<(Vec<f32>, Option<Vec<f32>>), ExecutorError> {
+        self.ensure_gpu();
         let t_total = std::time::Instant::now();
         let mut per_node_ms: Vec<(String, f64)> = Vec::new();
         let mut chain_flush_count: u32 = 0;
