@@ -131,6 +131,20 @@ impl FrameBuffer {
         self.data.fill(0);
         self.dirty = true;
     }
+
+    /// Borrowed view of the currently-displayed frame as a `FrameRef`.
+    /// Always returns `Cpu` today; phase 3 of the GPU-residency plan
+    /// will return `Gpu` when NVDEC produces GPU-resident frames
+    /// directly. Callers that don't need raw `data` access should
+    /// prefer this accessor — it's the seam the rest of the plan
+    /// migrates to.
+    pub fn frame_ref(&self) -> crate::frame::FrameRef<'_> {
+        crate::frame::FrameRef::Cpu(crate::frame::CpuFrameRef {
+            data: &self.data,
+            width: self.width,
+            height: self.height,
+        })
+    }
 }
 
 pub type SharedFrameBuffer = Arc<Mutex<FrameBuffer>>;
