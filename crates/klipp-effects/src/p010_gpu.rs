@@ -25,8 +25,8 @@
 use tracing::{info, warn};
 
 pub struct GpuP010Converter {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    device: std::sync::Arc<wgpu::Device>,
+    queue: std::sync::Arc<wgpu::Queue>,
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     y_buf: Option<wgpu::Buffer>,
@@ -354,11 +354,26 @@ impl GpuP010Converter {
         info!("P010 GPU converter initialized");
 
         Some(Self {
-            device, queue, pipeline, bind_group_layout,
+            device: std::sync::Arc::new(device),
+            queue: std::sync::Arc::new(queue),
+            pipeline, bind_group_layout,
             y_buf: None, uv_buf: None, output_buf: None, staging_buf: None,
             params_buf,
             cached_y_size: 0, cached_uv_size: 0, cached_output_size: 0,
         })
+    }
+
+    /// Clone the Arc-wrapped wgpu device. Pair with [`Self::queue`]
+    /// and the buffer returned from
+    /// [`Self::convert_p010_to_rgba_on_gpu`] to assemble a
+    /// `klipp_engine::GpuFrame`.
+    pub fn device(&self) -> std::sync::Arc<wgpu::Device> {
+        std::sync::Arc::clone(&self.device)
+    }
+
+    /// Clone the Arc-wrapped wgpu queue. See [`Self::device`].
+    pub fn queue(&self) -> std::sync::Arc<wgpu::Queue> {
+        std::sync::Arc::clone(&self.queue)
     }
 
     fn ensure_buf(buf: &mut Option<wgpu::Buffer>, cached: &mut u64, size: u64, label: &str, usage: wgpu::BufferUsages, device: &wgpu::Device) {
@@ -477,6 +492,100 @@ impl GpuP010Converter {
                 vec![0u8; output_size as usize]
             }
         }
+    }
+
+    /// GPU-resident variant of [`Self::convert_p010_to_rgba`]: runs
+    /// the P010→RGBA compute shader (BT.2020+PQ tone-map when
+    /// `is_hdr`, BT.709 otherwise) and returns the output
+    /// `wgpu::Buffer` without downloading to CPU. Freshly allocated
+    /// per call (flagged `STORAGE | COPY_SRC`) so the caller can
+    /// retain the buffer across subsequent conversions and/or feed
+    /// it into the grade chain as a compute-shader input in phase 4.
+    ///
+    /// Pair with [`Self::device`] / [`Self::queue`] to assemble a
+    /// `klipp_engine::GpuFrame`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn convert_p010_to_rgba_on_gpu(
+        &mut self,
+        y_data: &[u8],
+        uv_data: &[u8],
+        src_width: u32,
+        src_height: u32,
+        y_stride: u32,
+        uv_stride: u32,
+        dst_width: u32,
+        dst_height: u32,
+        rotation: u32,
+        is_hdr: bool,
+    ) -> std::sync::Arc<wgpu::Buffer> {
+        let y_size = y_data.len() as u64;
+        let uv_size = uv_data.len() as u64;
+        let output_size = (dst_width * dst_height * 4) as u64;
+
+        Self::ensure_buf(
+            &mut self.y_buf, &mut self.cached_y_size, y_size,
+            "p010_y", wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            &self.device,
+        );
+        Self::ensure_buf(
+            &mut self.uv_buf, &mut self.cached_uv_size, uv_size,
+            "p010_uv", wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            &self.device,
+        );
+
+        // Fresh output buffer per call — we're handing ownership to
+        // the caller, so the internal `output_buf` cache isn't safe
+        // to reuse here.
+        let output_buf = std::sync::Arc::new(self.device.create_buffer(
+            &wgpu::BufferDescriptor {
+                label: Some("p010_out_gpu_resident"),
+                size: output_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            },
+        ));
+
+        let y_buf = self.y_buf.as_ref().unwrap();
+        let uv_buf = self.uv_buf.as_ref().unwrap();
+
+        self.queue.write_buffer(y_buf, 0, y_data);
+        self.queue.write_buffer(uv_buf, 0, uv_data);
+
+        let params = P010Params {
+            src_width, src_height, dst_width, dst_height,
+            y_stride, uv_stride, rotation,
+            is_hdr: if is_hdr { 1 } else { 0 },
+        };
+        self.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: y_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: uv_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: output_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+
+        let workgroups_x = dst_width.div_ceil(16);
+        let workgroups_y = dst_height.div_ceil(16);
+
+        let mut encoder = self.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: None },
+        );
+        {
+            let mut pass = encoder.begin_compute_pass(
+                &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
+            );
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        output_buf
     }
 }
 
