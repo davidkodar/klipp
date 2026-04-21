@@ -56,6 +56,14 @@ pub struct GraphExecutor {
     lut_cache: HashMap<PathBuf, Arc<LutData>>,
     /// Cache of pre-built curve LUTs keyed by node ID.
     curve_lut_cache: HashMap<NodeId, Arc<CurveLuts>>,
+    /// Phase 4d: when true, `start_chain` skips the
+    /// `upload_chain_input_linear` call because `buf_a` was already
+    /// seeded with linear RGBA — typically by
+    /// `prime_chain_from_gpu_u8_buffer` bridging a decoder's u8
+    /// output in-place. Consumed (cleared) by the first
+    /// `start_chain` so a second chain segment within the same
+    /// `execute_linear` call falls back to the normal upload path.
+    gpu_chain_preseeded: bool,
 }
 
 // ── u8 ↔ linear bracket helpers ─────────────────────────────────────────────
@@ -98,6 +106,7 @@ impl GraphExecutor {
             gpu,
             lut_cache: HashMap::new(),
             curve_lut_cache: HashMap::new(),
+            gpu_chain_preseeded: false,
         }
     }
 
@@ -107,7 +116,42 @@ impl GraphExecutor {
             gpu: None,
             lut_cache: HashMap::new(),
             curve_lut_cache: HashMap::new(),
+            gpu_chain_preseeded: false,
         }
+    }
+
+    /// Seed the GPU chain's `buf_a` from an external u8 RGBA buffer
+    /// via the `bridge_u8_to_linear_into_chain` compute shader. After
+    /// this returns `true`, the next call to `execute_linear` on
+    /// this executor can skip the initial
+    /// `upload_chain_input_linear` — the `start_chain` helper picks
+    /// up `gpu_chain_preseeded` and just dispatches, reading from
+    /// the already-populated `buf_a`.
+    ///
+    /// Eliminates the CPU round-trip that phase 4c left in place:
+    /// no ~5 ms PCIe upload, no u8→linear conversion on CPU. This
+    /// is the operation where the plan doc's 12.6 ms → <4 ms target
+    /// for a single-node grade gets paid for.
+    ///
+    /// Returns `false` if the GPU pipeline is absent or the bridge
+    /// pre-conditions aren't met (input undersized, device lost).
+    /// Callers fall back to the normal `execute_linear(&cpu_frame,
+    /// ...)` path in that case.
+    pub fn prime_chain_from_gpu_u8_buffer(
+        &mut self,
+        input_u8: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        let gpu = match self.gpu.as_mut() {
+            Some(g) => g,
+            None => return false,
+        };
+        let ok = gpu.bridge_u8_to_linear_into_chain(input_u8, width, height);
+        if ok {
+            self.gpu_chain_preseeded = true;
+        }
+        ok
     }
 
     /// True iff the executor owns a GPU pipeline. When false, every
@@ -647,7 +691,16 @@ impl GraphExecutor {
         }
         let byte_size = (width as u64) * (height as u64) * 16;
         gpu.ensure_chain_buffers(byte_size);
-        gpu.upload_chain_input_linear(primary_input);
+        // Phase 4d: when `buf_a` was pre-seeded on-GPU (via
+        // `prime_chain_from_gpu_u8_buffer`), skip the CPU upload —
+        // it's a no-op at best, a stale overwrite at worst. The flag
+        // is single-shot so a second chain segment within the same
+        // `execute_linear` falls back to normal upload.
+        if self.gpu_chain_preseeded {
+            self.gpu_chain_preseeded = false;
+        } else {
+            gpu.upload_chain_input_linear(primary_input);
+        }
         // Open the single-submit chain encoder. Every `*_chain` dispatch
         // records into this; `flush_chain` calls `submit_chain` to batch
         // the whole segment into one `queue.submit`. Per-node submits
