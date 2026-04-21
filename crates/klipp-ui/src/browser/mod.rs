@@ -667,6 +667,13 @@ pub struct BrowserPanel {
     /// on first hover via a background thread that calls
     /// `generate_filmstrip_incremental`. Keyed by file path.
     file_filmstrip_textures: HashMap<std::path::PathBuf, Vec<egui::TextureHandle>>,
+    /// Deferred-drop ring for texture handles this panel replaces or
+    /// clears. Same contract as `AppState::deferred_texture_drops`
+    /// but local to the browser so we don't have to plumb AppState
+    /// through every BrowserPanel method. Rotated at the start of
+    /// each browser render via `rotate_deferred_drops`.
+    deferred_texture_drops: [Vec<egui::TextureHandle>; 3],
+    deferred_texture_drops_slot: usize,
     file_filmstrip_pending: HashSet<std::path::PathBuf>,
     file_filmstrip_tx: crossbeam_channel::Sender<FileFilmstripResult>,
     file_filmstrip_rx: crossbeam_channel::Receiver<FileFilmstripResult>,
@@ -794,6 +801,8 @@ impl Default for BrowserPanel {
             file_skim_tx,
             file_skim_rx,
             file_filmstrip_textures: HashMap::new(),
+            deferred_texture_drops: [Vec::new(), Vec::new(), Vec::new()],
+            deferred_texture_drops_slot: 0,
             file_filmstrip_pending: HashSet::new(),
             file_filmstrip_tx,
             file_filmstrip_rx,
@@ -815,6 +824,34 @@ impl Default for BrowserPanel {
 }
 
 impl BrowserPanel {
+    /// Stash a `TextureHandle` so its underlying wgpu::Texture is
+    /// held across the current frame's submit+present cycle.
+    /// Matching helper for `AppState::defer_drop_texture` — egui-wgpu
+    /// cannot tolerate dropping handles whose IDs are still in the
+    /// current paint list, so every `_texture = None` and every
+    /// HashMap-replace on texture fields in this panel goes through
+    /// here.
+    fn defer_drop_texture(&mut self, h: egui::TextureHandle) {
+        let slot = self.deferred_texture_drops_slot;
+        self.deferred_texture_drops[slot].push(h);
+    }
+
+    /// Extend the deferred-drop bucket from an iterator of handles.
+    fn defer_drop_textures(&mut self, it: impl IntoIterator<Item = egui::TextureHandle>) {
+        let slot = self.deferred_texture_drops_slot;
+        self.deferred_texture_drops[slot].extend(it);
+    }
+
+    /// Rotate the deferred-drop ring. Called at the top of `show` so
+    /// handles stashed two frames ago are released here — by which
+    /// point every submit that could have referenced them has
+    /// completed on the GPU.
+    fn rotate_deferred_drops(&mut self) {
+        let next = (self.deferred_texture_drops_slot + 1) % 3;
+        self.deferred_texture_drops[next].clear();
+        self.deferred_texture_drops_slot = next;
+    }
+
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -824,6 +861,7 @@ impl BrowserPanel {
         files_pinned: &mut bool,
         files_split_ratio: &mut f32,
     ) -> Vec<AppCommand> {
+        self.rotate_deferred_drops();
         let mut cmds = Vec::new();
 
         // Clear files_panel_focused on state every frame. The Files tab's
@@ -1311,13 +1349,21 @@ impl BrowserPanel {
         }
         self.files_current_path = path.clone();
         self.files_entries_dirty = true;
-        self.file_thumb_textures.clear();
+        // Route cleared TextureHandles through the deferred-drop
+        // ring so in-flight submits can't hit destroyed textures.
+        let drained_thumbs: Vec<_> = self.file_thumb_textures.drain().map(|(_, h)| h).collect();
+        self.defer_drop_textures(drained_thumbs);
         self.file_thumb_pending.clear();
         self.file_thumb_failed.clear();
         self.file_audio_peaks.clear();
         self.file_audio_pending.clear();
         self.file_audio_failed.clear();
-        self.file_filmstrip_textures.clear();
+        let drained_strips: Vec<_> = self
+            .file_filmstrip_textures
+            .drain()
+            .flat_map(|(_, v)| v.into_iter())
+            .collect();
+        self.defer_drop_textures(drained_strips);
         self.file_filmstrip_pending.clear();
         // Selection doesn't carry across folders.
         self.files_selected.clear();
@@ -1376,13 +1422,21 @@ impl BrowserPanel {
         self.files_loading = false;
         self.files_error = None;
         self.files_receiver = None;
-        self.file_thumb_textures.clear();
+        // Route cleared TextureHandles through the deferred-drop
+        // ring so in-flight submits can't hit destroyed textures.
+        let drained_thumbs: Vec<_> = self.file_thumb_textures.drain().map(|(_, h)| h).collect();
+        self.defer_drop_textures(drained_thumbs);
         self.file_thumb_pending.clear();
         self.file_thumb_failed.clear();
         self.file_audio_peaks.clear();
         self.file_audio_pending.clear();
         self.file_audio_failed.clear();
-        self.file_filmstrip_textures.clear();
+        let drained_strips: Vec<_> = self
+            .file_filmstrip_textures
+            .drain()
+            .flat_map(|(_, v)| v.into_iter())
+            .collect();
+        self.defer_drop_textures(drained_strips);
         self.file_filmstrip_pending.clear();
         self.files_selected.clear();
         self.files_selection_anchor = None;
@@ -1398,13 +1452,21 @@ impl BrowserPanel {
     /// keys (path+size+mtime) auto-invalidate per file.
     fn refresh_files(&mut self) {
         self.files_entries_dirty = true;
-        self.file_thumb_textures.clear();
+        // Route cleared TextureHandles through the deferred-drop
+        // ring so in-flight submits can't hit destroyed textures.
+        let drained_thumbs: Vec<_> = self.file_thumb_textures.drain().map(|(_, h)| h).collect();
+        self.defer_drop_textures(drained_thumbs);
         self.file_thumb_pending.clear();
         self.file_thumb_failed.clear();
         self.file_audio_peaks.clear();
         self.file_audio_pending.clear();
         self.file_audio_failed.clear();
-        self.file_filmstrip_textures.clear();
+        let drained_strips: Vec<_> = self
+            .file_filmstrip_textures
+            .drain()
+            .flat_map(|(_, v)| v.into_iter())
+            .collect();
+        self.defer_drop_textures(drained_strips);
         self.file_filmstrip_pending.clear();
     }
 
@@ -1427,7 +1489,9 @@ impl BrowserPanel {
             };
             let name = format!("file_thumb_{}", result.path.display());
             let tex = crate::app::alloc_texture_logged(ctx, &name, image, egui::TextureOptions::LINEAR);
-            self.file_thumb_textures.insert(result.path, tex);
+            if let Some(old) = self.file_thumb_textures.insert(result.path, tex) {
+                self.defer_drop_texture(old);
+            }
         }
     }
 
@@ -1501,6 +1565,9 @@ impl BrowserPanel {
                     image,
                     egui::TextureOptions::LINEAR,
                 );
+                if let Some((_, old)) = self.file_skim_texture.take() {
+                    self.defer_drop_texture(old);
+                }
                 self.file_skim_texture = Some((result.path.clone(), tex));
             }
 
@@ -1577,8 +1644,9 @@ impl BrowserPanel {
                         }
                     })
                     .collect();
-                self.file_filmstrip_textures
-                    .insert(result.path, textures);
+                if let Some(old_vec) = self.file_filmstrip_textures.insert(result.path, textures) {
+                    self.defer_drop_textures(old_vec);
+                }
             }
         }
     }
@@ -3753,7 +3821,14 @@ impl BrowserPanel {
         // 3. If no video row was hovered this frame, drop the live skim
         //    texture so the previously-skimmed row reverts to its poster.
         if !any_video_row_hovered && self.file_skim_texture.is_some() {
-            self.file_skim_texture = None;
+            // Route the handle through the deferred-drop ring — the
+            // current frame's submit still references its texture id
+            // via the paint list built earlier this frame, and a bare
+            // drop trips egui-wgpu's "Texture has been destroyed"
+            // validation.
+            if let Some((_, h)) = self.file_skim_texture.take() {
+                self.defer_drop_texture(h);
+            }
         }
 
         // ── Audio hover skim — apply requests captured during the row loop ──
