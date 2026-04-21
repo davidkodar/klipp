@@ -260,7 +260,7 @@ impl ViewerPanel {
         let logo_tex = self.logo_texture.get_or_insert_with(|| {
             let png_bytes = include_bytes!("../../../../assets/icons/klipp_app_icons/png/dark/klipp-dark-128.png");
             let image = crate::ui_util::decode_png_or_fallback(png_bytes);
-            ui.ctx().load_texture("klipp_viewer_logo", image, egui::TextureOptions::LINEAR)
+            crate::app::alloc_texture_logged(ui.ctx(), "klipp_viewer_logo", image, egui::TextureOptions::LINEAR)
         });
         let logo_size = 48.0;
         let logo_rect = egui::Rect::from_center_size(
@@ -376,8 +376,10 @@ impl ViewerPanel {
                 .map(|px| egui::Color32::from_rgba_premultiplied(px[0], px[1], px[2], px[3]))
                 .collect();
             let image = egui::ColorImage { size: [sw, sh], pixels };
-            still.texture = Some(ui.ctx().load_texture(
-                format!("grade_still_{}", still_idx),
+            let name = format!("grade_still_{}", still_idx);
+            still.texture = Some(crate::app::alloc_texture_logged(
+                ui.ctx(),
+                &name,
                 image,
                 egui::TextureOptions::LINEAR,
             ));

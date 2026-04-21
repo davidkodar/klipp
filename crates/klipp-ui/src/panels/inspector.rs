@@ -262,7 +262,7 @@ fn get_lut_preview(
     let name = path.file_stem()
         .map(|s| format!("lut_preview_{}", s.to_string_lossy()))
         .unwrap_or_else(|| "lut_preview".into());
-    let handle = ctx.load_texture(&name, image, egui::TextureOptions::LINEAR);
+    let handle = crate::app::alloc_texture_logged(ctx, &name, image, egui::TextureOptions::LINEAR);
     ctx.data_mut(|d| {
         let mut cache = d.get_temp::<LutPreviewCache>(cache_id)
             .unwrap_or_default();

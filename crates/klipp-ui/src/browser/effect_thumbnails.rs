@@ -223,8 +223,10 @@ impl ThumbnailRenderer {
                 pixels,
             };
 
-            let texture = ctx.load_texture(
-                format!("fx_thumb_{}", result.effect_name),
+            let name = format!("fx_thumb_{}", result.effect_name);
+            let texture = crate::app::alloc_texture_logged(
+                ctx,
+                &name,
                 image,
                 egui::TextureOptions::LINEAR,
             );

@@ -513,6 +513,31 @@ pub struct AppState {
     pub toast: crate::widgets::toast::ToastState,
     pub drag_drop: crate::drag_drop::DragDropState,
 
+    // Deferred texture drops. egui-wgpu destroys the underlying
+    // `wgpu::Texture` synchronously both when a `TextureHandle` is
+    // dropped AND when `TextureHandle::set` is called with an image
+    // whose dimensions differ from the current texture — in the
+    // latter case the handle is reused but the wgpu::Texture backing
+    // it is replaced. The crash surfaces as
+    // "Texture with 'egui_texid_Managed(N)' has been destroyed"
+    // during the next `Queue::submit` that still references the old
+    // ID from a pending command buffer. glow tolerated this;
+    // wgpu validation does not.
+    //
+    // We hold handles we intend to drop in a three-slot ring (two
+    // full frames of deferral). At the start of every `update()` the
+    // slot index advances and the newly-current slot is cleared —
+    // dropping the handles stashed there ~2 frames earlier, by which
+    // point every submit that could have referenced them has
+    // completed on the GPU.
+    //
+    // Every `TextureHandle::set` with a potentially changing frame
+    // size must be size-guarded: if the new image differs, take the
+    // old handle, push it here, and allocate fresh. The helper
+    // `KlippApp::upload_texture_deferred` implements this pattern.
+    pub deferred_texture_drops: [Vec<egui::TextureHandle>; 3],
+    pub deferred_texture_drops_slot: usize,
+
     // Browser skimming
     pub browser_skim_texture: Option<egui::TextureHandle>,
     pub browser_skim_media_id: Option<MediaId>,
@@ -1935,6 +1960,8 @@ impl Default for AppState {
             file_browser_audio_skim_enabled: true,
             toast: crate::widgets::toast::ToastState::default(),
             drag_drop: crate::drag_drop::DragDropState::default(),
+            deferred_texture_drops: [Vec::new(), Vec::new(), Vec::new()],
+            deferred_texture_drops_slot: 0,
             browser_skim_texture: None,
             browser_skim_media_id: None,
             skim_transcoding: std::collections::HashSet::new(),

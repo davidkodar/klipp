@@ -1912,6 +1912,12 @@ impl KlippApp {
     /// texture. Stale results (`media_id` doesn't match the currently
     /// loaded source) are dropped so a slow decode of an earlier clip
     /// can't overwrite the texture for the current one.
+    ///
+    /// Uses the deferred-drop ring for replaced handles: under
+    /// eframe-wgpu, dropping the old TextureHandle in the same frame
+    /// that a submit still references its ID triggers a "Texture has
+    /// been destroyed" validation panic. Jumping between media
+    /// browser clips hits this exact path with every skim.
     fn drain_source_frame(&mut self, ctx: &egui::Context) {
         while let Ok(result) = self.source_frame_rx.try_recv() {
             if self.state.source_media_id != Some(result.media_id) {
@@ -1926,12 +1932,35 @@ impl KlippApp {
                 size: [result.width as usize, result.height as usize],
                 pixels,
             };
-            let handle = ctx.load_texture(
-                "klipp-source-frame",
-                image,
-                egui::TextureOptions::LINEAR,
+            let new_size = egui::vec2(result.width as f32, result.height as f32);
+            // Reuse the existing handle only when the incoming frame
+            // matches (same media, same size). Different media or a
+            // size change requires a fresh handle with the old one
+            // routed through the deferred-drop ring.
+            let can_reuse = matches!(
+                &self.state.source_video_texture,
+                Some((mid, tex)) if *mid == result.media_id && tex.size_vec2() == new_size
             );
-            self.state.source_video_texture = Some((result.media_id, handle));
+            if can_reuse {
+                if let Some((_, ref mut tex)) = self.state.source_video_texture {
+                    tex.set(image, egui::TextureOptions::LINEAR);
+                }
+            } else {
+                if let Some((_, old)) = self.state.source_video_texture.take() {
+                    tracing::debug!(
+                        "TEX_DEFER_DROP id={:?} name=klipp-source-frame reason=source_media_or_size_change",
+                        old.id(),
+                    );
+                    self.defer_drop_texture(old);
+                }
+                let handle = alloc_texture_logged(
+                    ctx,
+                    "klipp-source-frame",
+                    image,
+                    egui::TextureOptions::LINEAR,
+                );
+                self.state.source_video_texture = Some((result.media_id, handle));
+            }
         }
     }
 
@@ -2141,14 +2170,19 @@ impl KlippApp {
                                         .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
                                         .collect();
                                     let image = egui::ColorImage { size: [fw, fh], pixels };
-                                    // Upload as viewer texture — bilinear upscale handles the rest
-                                    if let Some(ref mut tex) = self.viewer.video_texture {
-                                        tex.set(image, egui::TextureOptions::LINEAR);
-                                    } else {
-                                        self.viewer.video_texture = Some(ctx.load_texture(
-                                            "klipp-video-preview", image, egui::TextureOptions::LINEAR,
-                                        ));
-                                    }
+                                    // Upload as viewer texture — bilinear upscale handles the rest.
+                                    // Must go through upload_texture_deferred: a size change on
+                                    // viewer.video_texture (e.g. 720p thumbnail → 1080p frame)
+                                    // would otherwise trip egui-wgpu's destroy-mid-submit race.
+                                    let drops_slot = self.state.deferred_texture_drops_slot;
+                                    upload_texture_deferred(
+                                        ctx,
+                                        &mut self.viewer.video_texture,
+                                        &mut self.state.deferred_texture_drops[drops_slot],
+                                        "klipp-video-preview",
+                                        image,
+                                        egui::TextureOptions::LINEAR,
+                                    );
                                     self.state.showing_thumbnail_preview = true;
                                     ctx.request_repaint();
                                 }
@@ -2445,16 +2479,21 @@ impl KlippApp {
             pixels,
         };
 
-        // Reuse existing texture handle to avoid GPU allocation per frame
-        if let Some(ref mut tex) = self.viewer.video_texture {
-            tex.set(image, egui::TextureOptions::LINEAR);
-        } else {
-            self.viewer.video_texture = Some(ctx.load_texture(
-                "klipp-video-frame",
-                image,
-                egui::TextureOptions::LINEAR,
-            ));
-        }
+        // Reuse existing texture handle when dimensions match; fall
+        // through to a fresh alloc + deferred-drop when the frame
+        // size changes (clip switch, skim → playback transitions).
+        // Must go through upload_texture_deferred — a raw `set()`
+        // with a size change triggers egui-wgpu's destroy-mid-submit
+        // validation crash.
+        let drops_slot = self.state.deferred_texture_drops_slot;
+        upload_texture_deferred(
+            ctx,
+            &mut self.viewer.video_texture,
+            &mut self.state.deferred_texture_drops[drops_slot],
+            "klipp-video-frame",
+            image,
+            egui::TextureOptions::LINEAR,
+        );
         let texture_ms = t_texture.elapsed().as_secs_f64() * 1000.0;
 
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
@@ -2580,8 +2619,13 @@ impl KlippApp {
 
     /// Mark a title clip for overlay texture refresh on the next frame.
     fn render_title_to_viewer(&mut self, clip_id: klipp_core::ClipId) {
-        // Clear old overlay immediately to prevent ghosting during position/alignment changes
-        self.viewer.title_overlay_texture = None;
+        // Clear old overlay immediately to prevent ghosting during position/alignment changes.
+        // Route the drop through the deferred-drop ring — a bare `= None`
+        // here would drop the handle while the current submit may still
+        // reference its texture ID.
+        if let Some(old) = self.viewer.title_overlay_texture.take() {
+            self.defer_drop_texture(old);
+        }
         self.state.pending_title_preview_clip = Some(clip_id);
     }
 
@@ -2590,7 +2634,9 @@ impl KlippApp {
         // Explicit clear request (e.g. scrub passed beyond a title clip).
         if self.state.pending_title_overlay_clear {
             self.state.pending_title_overlay_clear = false;
-            self.viewer.title_overlay_texture = None;
+            if let Some(old) = self.viewer.title_overlay_texture.take() {
+                self.defer_drop_texture(old);
+            }
         }
         let clip_id = match self.state.pending_title_preview_clip.take() {
             Some(id) => id,
@@ -2615,7 +2661,14 @@ impl KlippApp {
                 pixels,
             };
 
-            self.viewer.title_overlay_texture = Some(ctx.load_texture(
+            // Title overlay can change size when title content or the
+            // clip's output res changes — route through the deferred
+            // drop so the old handle survives the current submit.
+            if let Some(old) = self.viewer.title_overlay_texture.take() {
+                self.defer_drop_texture(old);
+            }
+            self.viewer.title_overlay_texture = Some(alloc_texture_logged(
+                ctx,
                 "klipp-title-overlay",
                 image,
                 egui::TextureOptions::LINEAR,
@@ -3901,7 +3954,9 @@ impl KlippApp {
                     // viewer doesn't flash a stale image while the new
                     // first-frame decode is in flight.
                     if !matches!(&self.state.source_video_texture, Some((mid, _)) if mid == media_id) {
-                        self.state.source_video_texture = None;
+                        if let Some((_, old)) = self.state.source_video_texture.take() {
+                            self.defer_drop_texture(old);
+                        }
                     }
                     self.start_source_frame_decode_at(*media_id, 0.0);
                     return true;
@@ -5190,7 +5245,9 @@ impl KlippApp {
                     } else {
                         // Deselecting — clear title overlay if not in edit mode
                         if !self.state.viewer_text_edit {
-                            self.viewer.title_overlay_texture = None;
+                            if let Some(old) = self.viewer.title_overlay_texture.take() {
+                                self.defer_drop_texture(old);
+                            }
                         }
                     }
                     return true;
@@ -10078,7 +10135,9 @@ impl KlippApp {
                 true
             }
             AppCommand::ClearTitleOverlay => {
-                self.viewer.title_overlay_texture = None;
+                if let Some(old) = self.viewer.title_overlay_texture.take() {
+                    self.defer_drop_texture(old);
+                }
                 true
             }
             _ => false,
@@ -17005,6 +17064,70 @@ fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPrese
     }
 }
 
+impl KlippApp {
+    /// Stash a `TextureHandle` so its underlying wgpu::Texture is held
+    /// across the current frame's submit+present cycle. Actual drop
+    /// happens two `update()`s later, at which point the GPU has
+    /// finished every command buffer that could have referenced it.
+    /// Call whenever a churn-site replaces an existing handle with a
+    /// freshly-allocated one; dropping the old handle inline on
+    /// eframe-wgpu trips `Texture has been destroyed` validation.
+    fn defer_drop_texture(&mut self, h: egui::TextureHandle) {
+        let slot = self.state.deferred_texture_drops_slot;
+        self.state.deferred_texture_drops[slot].push(h);
+    }
+
+}
+
+/// Upload `image` into `slot`, reusing the existing handle only when
+/// dimensions match exactly. On a size change, allocate a fresh
+/// handle and push the old one into `deferred_drops`. Mandatory on
+/// eframe-wgpu: `TextureHandle::set` with a different-sized image
+/// causes egui to replace (and destroy) the underlying wgpu::Texture
+/// internally, which races the current frame's submit.
+fn upload_texture_deferred(
+    ctx: &egui::Context,
+    slot: &mut Option<egui::TextureHandle>,
+    deferred_drops: &mut Vec<egui::TextureHandle>,
+    name: &str,
+    image: egui::ColorImage,
+    options: egui::TextureOptions,
+) {
+    let new_size = egui::vec2(image.size[0] as f32, image.size[1] as f32);
+    match slot {
+        Some(tex) if tex.size_vec2() == new_size => {
+            tex.set(image, options);
+        }
+        _ => {
+            if let Some(old) = slot.take() {
+                tracing::debug!(
+                    "TEX_DEFER_DROP id={:?} name={} reason=size_mismatch",
+                    old.id(), name,
+                );
+                deferred_drops.push(old);
+            }
+            let h = alloc_texture_logged(ctx, name, image, options);
+            *slot = Some(h);
+        }
+    }
+}
+
+/// Wrapper around `ctx.load_texture` that emits a `TEX_ALLOC` trace.
+/// Used to correlate `egui_texid_Managed(N)` panic IDs with the call
+/// site that allocated them — the panic only gives the numeric ID, no
+/// context. When a crash names ID=N, grep `TEX_ALLOC id=...(N)` in the
+/// log to find which name/site was responsible.
+pub(crate) fn alloc_texture_logged(
+    ctx: &egui::Context,
+    name: &str,
+    image: egui::ColorImage,
+    options: egui::TextureOptions,
+) -> egui::TextureHandle {
+    let h = ctx.load_texture(name, image, options);
+    tracing::debug!("TEX_ALLOC id={:?} name={}", h.id(), name);
+    h
+}
+
 impl eframe::App for KlippApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // End-to-end UI tick timing. A single update() that exceeds the
@@ -17014,6 +17137,15 @@ impl eframe::App for KlippApp {
         // the per-stage breakdowns (scope preview refresh, viewer paint)
         // are logged from their own sites and correlated by timestamp.
         let t_update_start = std::time::Instant::now();
+
+        // Rotate the deferred-drop texture ring. Advance the slot and
+        // clear the one we've just moved into — it holds handles
+        // stashed ~2 frames ago. Two full frames of deferral covers
+        // every submit + present cycle a texture could still be
+        // referenced by. See the field's docs in state.rs.
+        let next_slot = (self.state.deferred_texture_drops_slot + 1) % 3;
+        self.state.deferred_texture_drops[next_slot].clear();
+        self.state.deferred_texture_drops_slot = next_slot;
         // Bump the foreground-activity signal whenever the user
         // *interacts* — clicks, keys, scrolls, drags. Plain pointer
         // motion intentionally does NOT count: a user reading the UI
@@ -17550,8 +17682,24 @@ impl eframe::App for KlippApp {
                         [width as usize, height as usize],
                         &rgba,
                     );
-                    let tex = ctx.load_texture("browser_skim", image, egui::TextureOptions::LINEAR);
-                    self.state.browser_skim_texture = Some(tex);
+                    let new_size = egui::vec2(width as f32, height as f32);
+                    // Reuse the existing handle when dimensions match —
+                    // avoids an allocation + lifetime crossing on every
+                    // skim tick. Different dimensions (media changed)
+                    // still need a fresh handle; defer the old drop.
+                    match self.state.browser_skim_texture {
+                        Some(ref mut tex) if tex.size_vec2() == new_size => {
+                            tex.set(image, egui::TextureOptions::LINEAR);
+                        }
+                        _ => {
+                            if let Some(old) = self.state.browser_skim_texture.take() {
+                                self.defer_drop_texture(old);
+                            }
+                            self.state.browser_skim_texture = Some(
+                                alloc_texture_logged(ctx, "browser_skim", image, egui::TextureOptions::LINEAR),
+                            );
+                        }
+                    }
                     self.state.browser_skim_media_id = Some(media_id);
                 }
             }
@@ -18067,7 +18215,9 @@ impl eframe::App for KlippApp {
 
         // Clear title overlay during playback (engine handles compositing then)
         if self.state.playback == PlaybackState::Playing {
-            self.viewer.title_overlay_texture = None;
+            if let Some(old) = self.viewer.title_overlay_texture.take() {
+                self.defer_drop_texture(old);
+            }
         }
 
         // Watchdog: reset stuck skim_decode_in_flight after 2s with no completion.
@@ -18094,7 +18244,13 @@ impl eframe::App for KlippApp {
             || self.state.skim_audio_session.is_some();
         if (!self.state.browser_skim_active_this_frame && any_skim_state_alive) || lost_focus {
             if self.state.browser_skim_media_id.is_some() {
-                self.state.browser_skim_texture = None;
+                // Route the cleared handle through the deferred-drop ring —
+                // the current frame's submit may still reference its ID,
+                // and dropping inline here trips egui-wgpu's
+                // "Texture has been destroyed" validation.
+                if let Some(old) = self.state.browser_skim_texture.take() {
+                    self.defer_drop_texture(old);
+                }
                 self.state.browser_skim_media_id = None;
                 // `viewer_mode` is no longer reset here. It's now the
                 // user-controlled focus indicator (set by clicking a
@@ -20073,12 +20229,11 @@ impl KlippApp {
                             size: [w, h],
                             pixels,
                         };
-                        let tex = ctx.load_texture(
-                            format!("thumb-{}", media_id),
-                            image,
-                            egui::TextureOptions::LINEAR,
-                        );
-                        self.state.thumbnail_textures.insert(media_id, tex);
+                        let tex_name = format!("thumb-{}", media_id);
+                        let tex = alloc_texture_logged(ctx, &tex_name, image, egui::TextureOptions::LINEAR);
+                        if let Some(old) = self.state.thumbnail_textures.insert(media_id, tex) {
+                            self.defer_drop_texture(old);
+                        }
                     }
                 }
             }
@@ -20109,15 +20264,15 @@ impl KlippApp {
                                     size: [w, h],
                                     pixels,
                                 };
-                                let tex = ctx.load_texture(
-                                    format!("filmstrip-{}-{}", media_id, i),
-                                    image,
-                                    egui::TextureOptions::LINEAR,
-                                );
+                                let tex_name = format!("filmstrip-{}-{}", media_id, i);
+                                let tex = alloc_texture_logged(ctx, &tex_name, image, egui::TextureOptions::LINEAR);
                                 Some((frame.time_secs, tex))
                             })
                             .collect();
-                        self.state.filmstrip_textures.insert(media_id, textures);
+                        if let Some(old_vec) = self.state.filmstrip_textures.insert(media_id, textures) {
+                            let slot = self.state.deferred_texture_drops_slot;
+                            self.state.deferred_texture_drops[slot].extend(old_vec.into_iter().map(|(_, h)| h));
+                        }
                     }
                 }
             }
@@ -20739,7 +20894,11 @@ impl KlippApp {
                             size: [w as usize, h as usize],
                             pixels,
                         };
-                        let tex = ctx.load_texture(
+                        if let Some(old) = self.state.file_info_thumb.take() {
+                            self.defer_drop_texture(old);
+                        }
+                        let tex = alloc_texture_logged(
+                            ctx,
                             "file_info_thumb",
                             image,
                             egui::TextureOptions::LINEAR,
@@ -21355,8 +21514,10 @@ impl KlippApp {
                                         .map(|px| egui::Color32::from_rgba_premultiplied(px[0], px[1], px[2], px[3]))
                                         .collect();
                                     let image = egui::ColorImage { size: [sw, sh], pixels };
-                                    still.texture = Some(ui.ctx().load_texture(
-                                        format!("grade_still_thumb_{}", i),
+                                    let name = format!("grade_still_thumb_{}", i);
+                                    still.texture = Some(alloc_texture_logged(
+                                        ui.ctx(),
+                                        &name,
                                         image,
                                         egui::TextureOptions::LINEAR,
                                     ));
@@ -21599,7 +21760,11 @@ impl KlippApp {
                         size: [w as usize, h as usize],
                         pixels,
                     };
-                    let tex = ctx.load_texture(
+                    if let Some(old) = self.state.quick_look_texture.take() {
+                        self.defer_drop_texture(old);
+                    }
+                    let tex = alloc_texture_logged(
+                        ctx,
                         "quick_look_preview",
                         image,
                         egui::TextureOptions::LINEAR,
@@ -21730,7 +21895,9 @@ impl KlippApp {
                     klipp_engine::audio_output::flush_skim_consumer(&self.skim_consumer);
                     klipp_engine::audio_output::set_skim_consumer(&self.skim_consumer, None);
                     self.state.quick_look_path = None;
-                    self.state.quick_look_texture = None;
+                    if let Some(old) = self.state.quick_look_texture.take() {
+                        self.defer_drop_texture(old);
+                    }
                     self.state.quick_look_info = None;
                     self.state.quick_look_audio = None;
                 }
@@ -21768,7 +21935,9 @@ impl KlippApp {
                             self.browser.files_selection_anchor = Some(next_path.clone());
                             // Switch to the new file — lazy load on next frame.
                             self.state.quick_look_path = Some(next_path);
-                            self.state.quick_look_texture = None;
+                            if let Some(old) = self.state.quick_look_texture.take() {
+                                self.defer_drop_texture(old);
+                            }
                             self.state.quick_look_info = None;
                             self.state.quick_look_audio = None;
                         }

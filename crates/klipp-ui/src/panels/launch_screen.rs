@@ -54,7 +54,7 @@ impl LaunchScreen {
         self.logo_texture.get_or_insert_with(|| {
             let png_bytes = include_bytes!("../../../../assets/icons/klipp_app_icons/png/dark/klipp-dark-128.png");
             let image = crate::ui_util::decode_png_or_fallback(png_bytes);
-            ctx.load_texture("klipp_launch_logo", image, egui::TextureOptions::LINEAR)
+            crate::app::alloc_texture_logged(ctx, "klipp_launch_logo", image, egui::TextureOptions::LINEAR)
         })
     }
 
@@ -1038,8 +1038,10 @@ impl LaunchScreen {
             } else if thumb_path.exists() {
                 if let Ok(data) = std::fs::read(thumb_path) {
                     if let Ok(img) = image_from_png(&data) {
-                        let tex = ctx.load_texture(
-                            thumb_path.to_string_lossy(),
+                        let name = thumb_path.to_string_lossy();
+                        let tex = crate::app::alloc_texture_logged(
+                            ctx,
+                            &name,
                             img,
                             egui::TextureOptions::LINEAR,
                         );

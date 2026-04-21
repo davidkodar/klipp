@@ -84,7 +84,7 @@ pub fn color_wheel_sized(
         let pixels = klipp_color::generate_wheel_texture(tex_radius);
         let size = (tex_radius * 2) as usize;
         let image = egui::ColorImage::from_rgba_unmultiplied([size, size], &pixels);
-        state.texture = Some(ui.ctx().load_texture("color_wheel", image, egui::TextureOptions::LINEAR));
+        state.texture = Some(crate::app::alloc_texture_logged(ui.ctx(), "color_wheel", image, egui::TextureOptions::LINEAR));
     }
 
     if let Some(tex) = &state.texture {

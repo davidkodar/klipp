@@ -389,12 +389,20 @@ pub fn show_scopes(
             apply_low_pass_filter(&mut image);
         }
 
-        if let Some(ref mut tex) = state.textures[mi] {
-            tex.set(image, egui::TextureOptions::LINEAR);
-        } else {
-            state.textures[mi] = Some(ui.ctx().load_texture(
-                format!("scope_{mi}"), image, egui::TextureOptions::LINEAR,
-            ));
+        let new_size = egui::vec2(image.size[0] as f32, image.size[1] as f32);
+        match state.textures[mi] {
+            Some(ref mut tex) if tex.size_vec2() == new_size => {
+                tex.set(image, egui::TextureOptions::LINEAR);
+            }
+            _ => {
+                // Size change forces a fresh allocation; the old handle
+                // is dropped inline (no access to AppState's deferred
+                // ring from here). If this site starts producing
+                // texture-destroyed panics, plumb the ring through.
+                let name = format!("scope_{mi}");
+                let h = crate::app::alloc_texture_logged(ui.ctx(), &name, image, egui::TextureOptions::LINEAR);
+                state.textures[mi] = Some(h);
+            }
         }
     }
 

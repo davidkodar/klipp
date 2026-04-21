@@ -1426,7 +1426,7 @@ impl BrowserPanel {
                 pixels,
             };
             let name = format!("file_thumb_{}", result.path.display());
-            let tex = ctx.load_texture(name, image, egui::TextureOptions::LINEAR);
+            let tex = crate::app::alloc_texture_logged(ctx, &name, image, egui::TextureOptions::LINEAR);
             self.file_thumb_textures.insert(result.path, tex);
         }
     }
@@ -1495,7 +1495,8 @@ impl BrowserPanel {
                     size: [result.width as usize, result.height as usize],
                     pixels,
                 };
-                let tex = ctx.load_texture(
+                let tex = crate::app::alloc_texture_logged(
+                    ctx,
                     "file_skim_frame",
                     image,
                     egui::TextureOptions::LINEAR,
@@ -1570,11 +1571,10 @@ impl BrowserPanel {
                             size: [w as usize, h as usize],
                             pixels,
                         };
-                        ctx.load_texture(
-                            format!("filmstrip_{}_{}", result.path.display(), i),
-                            image,
-                            egui::TextureOptions::LINEAR,
-                        )
+                        {
+                            let name = format!("filmstrip_{}_{}", result.path.display(), i);
+                            crate::app::alloc_texture_logged(ctx, &name, image, egui::TextureOptions::LINEAR)
+                        }
                     })
                     .collect();
                 self.file_filmstrip_textures

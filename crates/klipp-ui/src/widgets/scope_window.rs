@@ -561,12 +561,16 @@ fn render_pane_scope(
         runtime.frame_gens[pane_idx] = gen;
         runtime.last_render[pane_idx] = Some(Instant::now());
 
-        if let Some(ref mut tex) = runtime.textures[pane_idx] {
-            tex.set(image, egui::TextureOptions::LINEAR);
-        } else {
-            runtime.textures[pane_idx] = Some(ui.ctx().load_texture(
-                format!("scope_win_{pane_idx}"), image, egui::TextureOptions::LINEAR,
-            ));
+        let new_size = egui::vec2(image.size[0] as f32, image.size[1] as f32);
+        match runtime.textures[pane_idx] {
+            Some(ref mut tex) if tex.size_vec2() == new_size => {
+                tex.set(image, egui::TextureOptions::LINEAR);
+            }
+            _ => {
+                let name = format!("scope_win_{pane_idx}");
+                let h = crate::app::alloc_texture_logged(ui.ctx(), &name, image, egui::TextureOptions::LINEAR);
+                runtime.textures[pane_idx] = Some(h);
+            }
         }
     }
 

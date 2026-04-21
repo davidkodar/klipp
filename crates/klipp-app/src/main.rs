@@ -230,7 +230,12 @@ fn main() -> Result<()> {
             .with_icon(std::sync::Arc::new(icon_data))
             .with_app_id("klipp")
             .with_drag_and_drop(true),
-        renderer: eframe::Renderer::Glow,
+        // Phase 1 of the GPU-residency plan: move the UI off the GL
+        // backend onto wgpu so the engine's wgpu device (klipp-effects)
+        // and the UI's renderer live on the same API. Later phases will
+        // share a single device between them — for now they stay
+        // independent, but the backend is unified.
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
 
