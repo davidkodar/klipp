@@ -21039,6 +21039,20 @@ impl KlippApp {
         // Must match the transport-chrome heights inside `draw_transport_chrome`.
         const BOTTOM_H: f32 = 16.0 + 40.0;
 
+        // Click-to-focus. Allocated FIRST so its z-order sits below
+        // every interactive widget rendered later in this function
+        // (the (i) icon, edit buttons, scrub bar, transport buttons).
+        // Those widgets win clicks on their specific rects; clicks on
+        // empty viewer area fall through and focus the source viewer.
+        let focus_resp = ui.interact(
+            source_viewer_rect,
+            ui.id().with("source_viewer_focus"),
+            egui::Sense::click(),
+        );
+        if focus_resp.clicked() && self.state.viewer_mode != klipp_core::ViewerMode::Source {
+            all_cmds.push(AppCommand::SetViewerMode(klipp_core::ViewerMode::Source));
+        }
+
         let video_rect = egui::Rect::from_min_max(
             source_viewer_rect.min,
             egui::pos2(source_viewer_rect.max.x, source_viewer_rect.max.y - BOTTOM_H),
@@ -21076,6 +21090,21 @@ impl KlippApp {
         viewer_rect: egui::Rect,
         all_cmds: &mut Vec<AppCommand>,
     ) {
+        // Click-to-focus. Allocated BEFORE the viewer's child UI so its
+        // z-order sits below every interactive widget rendered later
+        // (transform handles, scrub bar, transport buttons, etc.).
+        // Those widgets win clicks on their specific rects; clicks on
+        // empty viewer image area fall through and focus the program
+        // viewer.
+        let focus_resp = ui.interact(
+            viewer_rect,
+            ui.id().with("program_viewer_focus"),
+            egui::Sense::click(),
+        );
+        if focus_resp.clicked() && self.state.viewer_mode != klipp_core::ViewerMode::Program {
+            all_cmds.push(AppCommand::SetViewerMode(klipp_core::ViewerMode::Program));
+        }
+
         // DaVinci/FCP-style: the viewer fills its panel rect flush — no
         // rounded corners, no stroke, no drop shadow, no inner margin. The
         // only divider between this panel and its neighbours is the panel

@@ -1243,6 +1243,19 @@ impl ViewerPanel {
             );
         }
 
+        // Focus indicator: thin frame around the progress-bar track when
+        // this viewer matches the current viewer_mode. Subtle, lives in
+        // chrome that's already there, and doesn't intrude on the viewer
+        // image itself.
+        let is_focused = state.viewer_mode == viewer_kind;
+        if is_focused {
+            ui.painter().rect_stroke(
+                track_rect.expand(2.0),
+                1.0,
+                egui::Stroke::new(1.0_f32, theme.text_secondary),
+            );
+        }
+
         // Playhead head (11x11 circle) — drawn at the centre of the wider
         // lane so its full diameter has clear vertical room above and below
         // the visible track strip.
@@ -1251,19 +1264,26 @@ impl ViewerPanel {
         ui.painter().circle_filled(head_center, 7.0, theme.accent_glow);
         ui.painter().circle_filled(head_center, 5.5, theme.accent);
 
-        // Scrub interaction — emit a per-viewer seek so each scrub bar
-        // moves only its own playhead.
-        if (resp.dragged() || resp.clicked()) && dur_secs > 0.0 {
-            if let Some(pos) = resp.interact_pointer_pos() {
-                let t = ((pos.x - track_rect.min.x) / track_rect.width().max(1.0))
-                    .clamp(0.0, 1.0) as f64;
-                let target_secs = t * dur_secs;
-                let target_tc = klipp_core::Timecode::from_secs_f64(target_secs, rate);
-                let cmd = match viewer_kind {
-                    ViewerMode::Program => AppCommand::SeekTo(target_tc),
-                    ViewerMode::Source => AppCommand::SeekSource(target_tc),
-                };
-                cmds.push(cmd);
+        // Scrub interaction — clicks/drags both focus the viewer and
+        // (if there's a clip to seek in) emit a per-viewer seek. The
+        // focus emit runs unconditionally so an empty source scrub bar
+        // still accepts focus on click.
+        if resp.dragged() || resp.clicked() {
+            if !is_focused {
+                cmds.push(AppCommand::SetViewerMode(viewer_kind));
+            }
+            if dur_secs > 0.0 {
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    let t = ((pos.x - track_rect.min.x) / track_rect.width().max(1.0))
+                        .clamp(0.0, 1.0) as f64;
+                    let target_secs = t * dur_secs;
+                    let target_tc = klipp_core::Timecode::from_secs_f64(target_secs, rate);
+                    let cmd = match viewer_kind {
+                        ViewerMode::Program => AppCommand::SeekTo(target_tc),
+                        ViewerMode::Source => AppCommand::SeekSource(target_tc),
+                    };
+                    cmds.push(cmd);
+                }
             }
         }
     }
@@ -1465,65 +1485,88 @@ impl ViewerPanel {
             cmds.push(AppCommand::SetMasterMute(!old));
         }
 
-        // Transform controls toggle button
-        let xform_x = mute_x - 26.0;
-        let xform_rect = egui::Rect::from_center_size(
-            egui::pos2(xform_x, cy),
-            egui::vec2(20.0, 20.0),
-        );
-        let xform_resp = ui.allocate_rect(xform_rect, egui::Sense::click());
-        let xform_color = if state.show_transform_controls {
-            theme.accent
-        } else {
-            egui::Color32::from_rgb(100, 100, 110)
-        };
-        // Draw a small bounding-box icon (square with corner handles)
-        let ir = xform_rect.shrink(4.0);
-        ui.painter().rect_stroke(ir, 0.0, egui::Stroke::new(1.2_f32, xform_color));
-        let cs = 2.0; // corner square half-size
-        for corner in [ir.left_top(), ir.right_top(), ir.left_bottom(), ir.right_bottom()] {
-            ui.painter().rect_filled(
-                egui::Rect::from_center_size(corner, egui::vec2(cs * 2.0, cs * 2.0)),
-                0.0,
-                xform_color,
+        // Transform-controls toggle and camera/extract-frame button are
+        // Program-only — they operate on the timeline output (transform
+        // handles + frame capture). On the Source side they'd both be
+        // misleading: clicking the xform toggle would highlight on
+        // both viewers since it writes shared state, and the camera
+        // would always grab the program frame anyway.
+        if viewer_kind == ViewerMode::Program {
+            // Transform handles only make sense for an actual selected,
+            // non-Gap clip on the timeline — `draw_transform_controls`
+            // early-returns otherwise. Reflect that in the toggle so the
+            // button is visibly disabled when there's nothing to act on
+            // and a click surfaces a toast instead of silently doing
+            // nothing.
+            let xform_enabled = state
+                .selected_clip
+                .and_then(|cid| {
+                    state.sequence().tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == cid)
+                })
+                .is_some_and(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap));
+            let xform_x = mute_x - 26.0;
+            let xform_rect = egui::Rect::from_center_size(
+                egui::pos2(xform_x, cy),
+                egui::vec2(20.0, 20.0),
             );
-        }
-        if xform_resp.clicked() {
-            state.show_transform_controls = !state.show_transform_controls;
-        }
-        xform_resp.on_hover_text("Toggle transform controls");
+            let xform_resp = ui.allocate_rect(xform_rect, egui::Sense::click());
+            let xform_color = if !xform_enabled {
+                egui::Color32::from_rgb(60, 60, 70)
+            } else if state.show_transform_controls {
+                theme.accent
+            } else {
+                egui::Color32::from_rgb(160, 160, 170)
+            };
+            let stroke_w = if xform_enabled { 1.5 } else { 1.2 };
+            let ir = xform_rect.shrink(4.0);
+            ui.painter().rect_stroke(ir, 0.0, egui::Stroke::new(stroke_w, xform_color));
+            let cs = 2.0;
+            for corner in [ir.left_top(), ir.right_top(), ir.left_bottom(), ir.right_bottom()] {
+                ui.painter().rect_filled(
+                    egui::Rect::from_center_size(corner, egui::vec2(cs * 2.0, cs * 2.0)),
+                    0.0,
+                    xform_color,
+                );
+            }
+            if xform_resp.clicked() {
+                if xform_enabled {
+                    state.show_transform_controls = !state.show_transform_controls;
+                } else {
+                    state.toast.show("Select a video clip to use transform controls");
+                }
+            }
+            xform_resp.on_hover_text(if xform_enabled {
+                "Toggle transform controls"
+            } else {
+                "Select a clip to enable transform"
+            });
 
-        // Camera / extract-frame button — sits left of the transform toggle.
-        // Click: extract the current viewer frame into the media bin as a
-        // still (dispatches AppCommand::ExtractFrameToBin). Custom painted
-        // to match the transform toggle's style since the Phosphor set in
-        // use does not include a camera glyph.
-        let cam_x = xform_x - 26.0;
-        let cam_rect = egui::Rect::from_center_size(
-            egui::pos2(cam_x, cy),
-            egui::vec2(20.0, 20.0),
-        );
-        let cam_resp = ui.allocate_rect(cam_rect, egui::Sense::click());
-        let cam_color = if cam_resp.hovered() {
-            theme.accent
-        } else {
-            egui::Color32::from_rgb(160, 160, 170)
-        };
-        // Camera body: rounded rectangle.
-        let body = cam_rect.shrink2(egui::vec2(3.0, 5.0));
-        ui.painter().rect_stroke(body, 2.0, egui::Stroke::new(1.2_f32, cam_color));
-        // Small viewfinder bump on top.
-        let bump = egui::Rect::from_center_size(
-            egui::pos2(cam_rect.center().x - 3.0, body.min.y - 1.5),
-            egui::vec2(5.0, 3.0),
-        );
-        ui.painter().rect_stroke(bump, 1.0, egui::Stroke::new(1.2_f32, cam_color));
-        // Lens.
-        ui.painter().circle_stroke(body.center(), 3.2, egui::Stroke::new(1.2_f32, cam_color));
-        if cam_resp.clicked() {
-            cmds.push(AppCommand::ExtractFrameToBin);
+            let cam_x = xform_x - 26.0;
+            let cam_rect = egui::Rect::from_center_size(
+                egui::pos2(cam_x, cy),
+                egui::vec2(20.0, 20.0),
+            );
+            let cam_resp = ui.allocate_rect(cam_rect, egui::Sense::click());
+            let cam_color = if cam_resp.hovered() {
+                theme.accent
+            } else {
+                egui::Color32::from_rgb(160, 160, 170)
+            };
+            let body = cam_rect.shrink2(egui::vec2(3.0, 5.0));
+            ui.painter().rect_stroke(body, 2.0, egui::Stroke::new(1.2_f32, cam_color));
+            let bump = egui::Rect::from_center_size(
+                egui::pos2(cam_rect.center().x - 3.0, body.min.y - 1.5),
+                egui::vec2(5.0, 3.0),
+            );
+            ui.painter().rect_stroke(bump, 1.0, egui::Stroke::new(1.2_f32, cam_color));
+            ui.painter().circle_stroke(body.center(), 3.2, egui::Stroke::new(1.2_f32, cam_color));
+            if cam_resp.clicked() {
+                cmds.push(AppCommand::ExtractFrameToBin);
+            }
+            cam_resp.on_hover_text("Extract frame to bin (Ctrl+Alt+B)");
         }
-        cam_resp.on_hover_text("Extract frame to bin (Ctrl+Alt+B)");
     }
 
     /// Helper for playbar navigation buttons. Returns advance width (btn_size + spacing).
