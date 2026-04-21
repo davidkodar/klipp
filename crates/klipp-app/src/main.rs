@@ -24,7 +24,7 @@ use klipp_engine::{FrameBuffer, PlaybackEngine};
 use klipp_media::MediaPool;
 use klipp_timeline::Sequence;
 use std::sync::{Arc, Mutex, RwLock};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 fn main() -> Result<()> {
@@ -253,6 +253,36 @@ fn main() -> Result<()> {
         Box::new(move |cc| {
             mark("eframe creator callback entered");
             let _t = LogTimer::new("KlippApp::new (TOTAL)");
+
+            // Install eframe-wgpu's device as the process-wide shared
+            // GpuContext. Runs before any engine-thread GPU call
+            // (the engine initialises GPU effects lazily, on the first
+            // rendered frame — which can't happen until the UI has
+            // drawn at least once). After this, the decoder, grade
+            // chain, and the viewer all live on one wgpu::Device,
+            // enabling GPU-resident handoff of the final graded
+            // texture to egui without a CPU round-trip.
+            //
+            // Failure here means eframe-wgpu didn't set up a wgpu
+            // backend (e.g. running with --renderer glow) — engine
+            // falls back to creating its own private device, same as
+            // before.
+            if let Some(rs) = cc.wgpu_render_state.as_ref() {
+                let ctx = klipp_effects::gpu_context::GpuContext::from_existing(
+                    std::sync::Arc::clone(&rs.device),
+                    std::sync::Arc::clone(&rs.queue),
+                );
+                match klipp_effects::gpu_context::GpuContext::install_shared(ctx) {
+                    Ok(()) => info!("GpuContext: installed eframe-wgpu device as shared"),
+                    Err(_) => warn!(
+                        "GpuContext: shared slot was already populated — \
+                         engine will use its own device, viewer will use eframe's"
+                    ),
+                }
+            } else {
+                warn!("CreationContext has no wgpu_render_state — running without device unification");
+            }
+
             Ok(Box::new(klipp_ui::KlippApp::new(
                 cc,
                 cmd_tx_clone,

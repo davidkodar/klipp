@@ -2161,6 +2161,7 @@ dependencies = [
  "egui",
  "ffmpeg-next",
  "klipp-core",
+ "klipp-effects",
  "klipp-engine",
  "klipp-jobs",
  "klipp-media",

@@ -18,13 +18,16 @@
 
 use tracing::info;
 
-/// Bundled wgpu device + queue + instance. All three are held behind
-/// `Arc` so handles can be shared across the decoder thread, the
-/// engine thread, and any phase-4+ consumers without cloning the
-/// underlying handles.
+/// Bundled wgpu device + queue. Held behind `Arc` so handles can be
+/// shared across the decoder thread, the engine thread, and the UI
+/// thread without cloning the underlying wgpu resources.
+///
+/// The `wgpu::Instance` is deliberately not retained — device /
+/// queue carry their own refcount to the underlying driver-level
+/// resources, and eframe-wgpu (when injecting its device via
+/// `from_existing`) doesn't expose its instance publicly.
 #[derive(Clone)]
 pub struct GpuContext {
-    pub instance: std::sync::Arc<wgpu::Instance>,
     pub device: std::sync::Arc<wgpu::Device>,
     pub queue: std::sync::Arc<wgpu::Queue>,
 }
@@ -73,11 +76,25 @@ impl GpuContext {
         ))
         .ok()?;
 
+        // `instance` is dropped at scope exit — wgpu's device /
+        // queue keep the underlying driver resources alive via their
+        // own refcounts.
+        drop(instance);
         Some(Self {
-            instance: std::sync::Arc::new(instance),
             device: std::sync::Arc::new(device),
             queue: std::sync::Arc::new(queue),
         })
+    }
+
+    /// Wrap existing `Arc<wgpu::Device>` / `Arc<wgpu::Queue>`
+    /// handles — typically from eframe-wgpu's `RenderState` so the
+    /// engine and the UI run on the same device. Pair with
+    /// `install_shared` before any consumer calls `shared()`.
+    pub fn from_existing(
+        device: std::sync::Arc<wgpu::Device>,
+        queue: std::sync::Arc<wgpu::Queue>,
+    ) -> Self {
+        Self { device, queue }
     }
 
     /// Cheap clone of the Arc-wrapped device.
@@ -94,7 +111,9 @@ impl GpuContext {
     /// first call. Once the context exists, every subsequent
     /// `GpuNv12Converter::new`, `GpuP010Converter::new`, and
     /// `GpuEffectsPipeline::new` re-uses the same `wgpu::Device` —
-    /// the prerequisite for GPU-resident decode → grade hand-off.
+    /// the prerequisite for GPU-resident decode → grade hand-off,
+    /// and for viewer-side GPU handoff when the UI shares this same
+    /// device.
     ///
     /// Returns `None` if the first initialisation fails (no adapter,
     /// etc.) and caches that failure for the process lifetime so we
@@ -102,9 +121,31 @@ impl GpuContext {
     /// systems the `*::new()` paths fall back to creating private
     /// devices (the pre-phase-4a behaviour).
     pub fn shared() -> Option<&'static GpuContext> {
-        use std::sync::OnceLock;
-        // Outer option caches init failure; inner is the actual context.
-        static SHARED: OnceLock<Option<GpuContext>> = OnceLock::new();
         SHARED.get_or_init(GpuContext::new).as_ref()
     }
+
+    /// Install a pre-built `GpuContext` as the process-wide shared
+    /// one. Must be called before any `shared()` caller or it's a
+    /// no-op — the first `get_or_init` wins. Used by the UI host
+    /// (eframe-wgpu) to inject its own device so the engine, the
+    /// converters, and the viewer all render on a single device.
+    ///
+    /// Returns `Ok(())` when installation succeeded. Returns
+    /// `Err(ctx)` if the shared slot was already populated (either
+    /// by an earlier `install_shared` or by `shared()` triggering
+    /// its lazy init); the caller can decide whether to log and
+    /// proceed with two devices or abort.
+    pub fn install_shared(ctx: GpuContext) -> Result<(), GpuContext> {
+        SHARED.set(Some(ctx)).map_err(|opt| {
+            // OnceLock::set returns the value back on Err; unwrap
+            // the Option layer. The slot is only ever stored as
+            // Some here, so opt is always Some.
+            opt.expect("install_shared always stores Some")
+        })
+    }
 }
+
+// File-level so `shared()` and `install_shared()` cooperate on one
+// slot. `None` in the `Some(...)` position means init was attempted
+// and failed — `shared()` returns None until end of process.
+static SHARED: std::sync::OnceLock<Option<GpuContext>> = std::sync::OnceLock::new();
