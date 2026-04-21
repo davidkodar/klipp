@@ -3860,62 +3860,108 @@ impl BrowserPanel {
                     }
                 });
 
-            // ── Colour-label dot toggles ──
+            // ── Colour-label filter pill ──
+            // A single button that displays "Label" (or "Label · N" when
+            // filters are active) and opens a popover with the colour dots.
+            // Replaces the previous always-visible 7-dot row, which ate
+            // horizontal space in the browser toolbar even for projects
+            // that don't use colour labels.
             ui.add_space(8.0);
             ui.separator();
-            ui.label(egui::RichText::new("Label:").size(10.0).color(theme.text_dim));
-            for (i, label) in klipp_media::ColorLabel::ALL.iter().enumerate() {
-                let bit = 1u8 << i;
-                let is_active = (self.color_label_filter & bit) != 0;
-                let (r, g, b) = label.rgb().unwrap_or((120, 120, 130));
-                let dot_color = egui::Color32::from_rgb(r, g, b);
 
-                // 16×16 hit target; a smaller filled circle inside, with a
-                // white ring when the filter is active.
-                let (dot_rect, dot_resp) = ui.allocate_exact_size(
-                    egui::vec2(16.0, 16.0),
-                    egui::Sense::click(),
-                );
-                let radius = if is_active { 6.0 } else { 5.0 };
-                ui.painter().circle_filled(dot_rect.center(), radius, dot_color);
-                if is_active {
-                    ui.painter().circle_stroke(
-                        dot_rect.center(),
-                        7.0,
-                        egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
-                    );
-                } else if dot_resp.hovered() {
-                    ui.painter().circle_stroke(
-                        dot_rect.center(),
-                        6.5,
-                        egui::Stroke::new(1.0_f32, egui::Color32::from_gray(180)),
-                    );
-                }
-                let tooltip = match label {
-                    klipp_media::ColorLabel::None => "No label",
-                    klipp_media::ColorLabel::Red => "Red",
-                    klipp_media::ColorLabel::Orange => "Orange",
-                    klipp_media::ColorLabel::Yellow => "Yellow",
-                    klipp_media::ColorLabel::Green => "Green",
-                    klipp_media::ColorLabel::Blue => "Blue",
-                    klipp_media::ColorLabel::Purple => "Purple",
-                };
-                let dot_resp = dot_resp.on_hover_text(tooltip);
-                if dot_resp.clicked() {
-                    self.color_label_filter ^= bit;
-                }
+            let active_count = self.color_label_filter.count_ones();
+            let pill_text = if active_count == 0 {
+                "Label".to_string()
+            } else {
+                format!("Label \u{00B7} {active_count}")
+            };
+            let pill_resp = ui.add(
+                egui::Button::new(
+                    egui::RichText::new(pill_text)
+                        .size(11.0)
+                        .color(if active_count > 0 { theme.text_accent } else { theme.text_secondary }),
+                )
+                .stroke(if active_count > 0 {
+                    egui::Stroke::new(1.0_f32, theme.accent)
+                } else {
+                    egui::Stroke::NONE
+                }),
+            );
+
+            let popup_id = ui.make_persistent_id("color_label_filter_popup");
+            if pill_resp.clicked() {
+                ui.memory_mut(|m| m.toggle_popup(popup_id));
             }
 
-            if self.color_label_filter != 0 {
-                ui.add_space(4.0);
-                if ui
-                    .small_button("\u{2715}")
-                    .on_hover_text("Clear colour filter")
-                    .clicked()
-                {
-                    self.color_label_filter = 0;
-                }
-            }
+            egui::popup::popup_below_widget(
+                ui,
+                popup_id,
+                &pill_resp,
+                egui::PopupCloseBehavior::CloseOnClickOutside,
+                |ui| {
+                    ui.set_min_width(200.0);
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    ui.label(
+                        egui::RichText::new("Filter by label")
+                            .size(10.0)
+                            .color(theme.text_dim),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        for (i, label) in klipp_media::ColorLabel::ALL.iter().enumerate() {
+                            let bit = 1u8 << i;
+                            let is_active = (self.color_label_filter & bit) != 0;
+                            let (r, g, b) = label.rgb().unwrap_or((120, 120, 130));
+                            let dot_color = egui::Color32::from_rgb(r, g, b);
+                            let (dot_rect, dot_resp) = ui.allocate_exact_size(
+                                egui::vec2(22.0, 22.0),
+                                egui::Sense::click(),
+                            );
+                            let radius = if is_active { 8.0 } else { 7.0 };
+                            ui.painter().circle_filled(dot_rect.center(), radius, dot_color);
+                            if is_active {
+                                ui.painter().circle_stroke(
+                                    dot_rect.center(),
+                                    9.5,
+                                    egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
+                                );
+                            } else if dot_resp.hovered() {
+                                ui.painter().circle_stroke(
+                                    dot_rect.center(),
+                                    8.5,
+                                    egui::Stroke::new(1.0_f32, egui::Color32::from_gray(180)),
+                                );
+                            }
+                            let tooltip = match label {
+                                klipp_media::ColorLabel::None => "No label",
+                                klipp_media::ColorLabel::Red => "Red",
+                                klipp_media::ColorLabel::Orange => "Orange",
+                                klipp_media::ColorLabel::Yellow => "Yellow",
+                                klipp_media::ColorLabel::Green => "Green",
+                                klipp_media::ColorLabel::Blue => "Blue",
+                                klipp_media::ColorLabel::Purple => "Purple",
+                            };
+                            let dot_resp = dot_resp.on_hover_text(tooltip);
+                            if dot_resp.clicked() {
+                                self.color_label_filter ^= bit;
+                            }
+                        }
+                    });
+                    if self.color_label_filter != 0 {
+                        ui.separator();
+                        if ui
+                            .add(egui::Button::new(
+                                egui::RichText::new("Clear filter")
+                                    .size(10.0)
+                                    .color(theme.text_secondary),
+                            ))
+                            .clicked()
+                        {
+                            self.color_label_filter = 0;
+                        }
+                    }
+                },
+            );
         });
     }
 

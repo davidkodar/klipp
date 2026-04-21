@@ -371,6 +371,181 @@ fn paint_usage_badges(
     }
 }
 
+/// Paint a small "(i)" info icon in the bottom-right of a media tile and
+/// attach a rich hover tooltip with the full metadata: full filename,
+/// resolution × fps, duration, codecs, channel layout, sample rate, file
+/// size, and subclip parent reference. The icon sits above the red
+/// "in use on timeline" bar so they don't visually fight. Mirrors the
+/// Resolve convention of "card shows minimum, hover (i) for details."
+fn draw_info_icon_with_tooltip(
+    ui: &mut egui::Ui,
+    item: &klipp_media::MediaItem,
+    thumb_rect: egui::Rect,
+    theme: &KlippTheme,
+) {
+    let icon_size = 14.0_f32;
+    let pad = 4.0_f32;
+    // Placed above any "in use" red bar (3 px tall) and the source-loaded
+    // border (2 px). 8 px from the bottom edge keeps it readable.
+    let icon_center = egui::pos2(
+        thumb_rect.max.x - icon_size * 0.5 - pad,
+        thumb_rect.max.y - icon_size * 0.5 - pad - 4.0,
+    );
+    let icon_rect = egui::Rect::from_center_size(icon_center, egui::vec2(icon_size, icon_size));
+    let hit_rect = icon_rect.expand(4.0);
+    // `ui.interact(...)` registers a deterministic hit area on top of the
+    // card's existing `click_and_drag` response without re-allocating
+    // layout space. Using `Sense::click()` (rather than `hover()`) makes
+    // the hover detection reliable when overlapping a parent click sense.
+    let id = ui.id().with("info_icon").with(item.id);
+    let resp = ui.interact(hit_rect, id, egui::Sense::click());
+
+    // Translucent dark backing so the glyph stays readable on bright
+    // thumbnails. Opaque on hover for a clearer affordance.
+    let backing_alpha: u8 = if resp.hovered() { 200 } else { 140 };
+    ui.painter().circle_filled(
+        icon_center,
+        icon_size * 0.6,
+        egui::Color32::from_rgba_premultiplied(0, 0, 0, backing_alpha),
+    );
+    let tint = if resp.hovered() {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::from_rgba_premultiplied(255, 255, 255, 220)
+    };
+    Icon::Info.image(icon_size).tint(tint).paint_at(ui, icon_rect);
+
+    // Pre-render every line to a `(label, value)` pair OUTSIDE the
+    // closure so the closure body itself is tiny — purely a layout walk
+    // over a small Vec. This dramatically reduces the LLVM IR that LTO
+    // has to digest at release link time.
+    let rows = build_info_tooltip_rows(item);
+    let path_string = item.path.display().to_string();
+    let title = item.filename.clone();
+    let is_subclip = item.parent_media_id.is_some();
+    let border_light = theme.border_light;
+    let text_primary = theme.text_primary;
+    let text_secondary = theme.text_secondary;
+    let text_dim = theme.text_dim;
+    let text_accent = theme.text_accent;
+
+    resp.on_hover_ui_at_pointer(move |ui| {
+        egui::Frame::none()
+            .fill(egui::Color32::from_rgb(0x1e, 0x1e, 0x26))
+            .stroke(egui::Stroke::new(1.0_f32, border_light))
+            .rounding(5.0)
+            .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+            .show(ui, |ui| {
+                ui.set_max_width(420.0);
+                ui.spacing_mut().item_spacing.y = 3.0;
+                ui.label(
+                    egui::RichText::new(&title)
+                        .size(12.0)
+                        .color(text_primary)
+                        .strong(),
+                );
+                if is_subclip {
+                    ui.label(
+                        egui::RichText::new("Subclip")
+                            .size(10.0)
+                            .color(text_accent),
+                    );
+                }
+                ui.label(
+                    egui::RichText::new(&path_string)
+                        .size(10.0)
+                        .color(text_dim)
+                        .monospace(),
+                );
+                ui.add_space(2.0);
+                for (k, v) in &rows {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        ui.label(egui::RichText::new(*k).size(10.0).color(text_dim));
+                        ui.label(
+                            egui::RichText::new(v)
+                                .size(10.0)
+                                .color(text_secondary)
+                                .monospace(),
+                        );
+                    });
+                }
+            });
+    });
+}
+
+/// Pre-computed `(label, value)` rows for the info tooltip. Lives outside
+/// `draw_info_icon_with_tooltip` so the closure passed to
+/// `on_hover_ui_at_pointer` stays small and LLVM doesn't have to inline
+/// a giant body across every grid card during release LTO.
+fn build_info_tooltip_rows(item: &klipp_media::MediaItem) -> Vec<(&'static str, String)> {
+    let mut rows: Vec<(&'static str, String)> = Vec::with_capacity(8);
+    if item.is_still {
+        rows.push(("Type", "Still image".to_string()));
+    } else {
+        let dur_secs = if item.duration.rate > 0 {
+            item.duration.value as f64 / item.duration.rate as f64
+        } else {
+            0.0
+        };
+        let h = (dur_secs / 3600.0) as u32;
+        let m = ((dur_secs % 3600.0) / 60.0) as u32;
+        let s = dur_secs % 60.0;
+        rows.push(("Duration", format!("{h:02}:{m:02}:{s:06.3}")));
+    }
+    if item.resolution.width > 0 && item.resolution.height > 0 {
+        rows.push((
+            "Resolution",
+            format!("{} \u{00D7} {}", item.resolution.width, item.resolution.height),
+        ));
+    }
+    if !item.is_still {
+        rows.push(("Frame rate", format_fps(&item.fps)));
+    }
+    if !item.video_codec.is_empty() {
+        rows.push(("Video", item.video_codec.to_lowercase()));
+    }
+    if item.has_audio {
+        let chan = match item.audio_channels.unwrap_or(0) {
+            0 => "\u{2014}".to_string(),
+            1 => "Mono".to_string(),
+            2 => "Stereo".to_string(),
+            n => format!("{n} ch"),
+        };
+        let audio_str = if item.audio_codec.is_empty() {
+            chan
+        } else {
+            format!("{} \u{00B7} {}", item.audio_codec.to_lowercase(), chan)
+        };
+        rows.push(("Audio", audio_str));
+        if let Some(sr) = item.sample_rate {
+            rows.push(("Sample rate", format!("{} kHz", sr / 1000)));
+        }
+    }
+    let size_mb = item.file_size_bytes as f64 / (1024.0 * 1024.0);
+    let size_str = if item.file_size_bytes == 0 {
+        "\u{2014}".to_string()
+    } else if size_mb >= 1024.0 {
+        format!("{:.2} GB", size_mb / 1024.0)
+    } else {
+        format!("{:.1} MB", size_mb)
+    };
+    rows.push(("File size", size_str));
+
+    if item.default_source_in.is_some() || item.default_source_out.is_some() {
+        let in_str = item
+            .default_source_in
+            .map(|t| t.to_timecode_string())
+            .unwrap_or_else(|| "\u{2014}".to_string());
+        let out_str = item
+            .default_source_out
+            .map(|t| t.to_timecode_string())
+            .unwrap_or_else(|| "\u{2014}".to_string());
+        rows.push(("In \u{00B7} Out", format!("{in_str}  \u{00B7}  {out_str}")));
+    }
+    rows
+}
+
 /// Dim a thumbnail and overlay an OFFLINE pill in the top-left corner.
 /// Used by both list and grid views to flag media whose source file is
 /// no longer present at the stored path.
@@ -698,14 +873,8 @@ fn render_list_view(
                 theme.text_dim,
             );
 
-            // Used indicator (right side)
-            if is_media_used(state, item.id) {
-                ui.painter().circle_filled(
-                    egui::pos2(row_rect.max.x - 14.0, row_rect.center().y),
-                    3.0,
-                    egui::Color32::from_rgb(232, 160, 32),
-                );
-            }
+            // (Used indicator removed: the red "in use on timeline" bar on
+            // the thumbnail conveys this state already.)
 
             // Tooltip with extended metadata on hover
             resp.clone().on_hover_ui(|ui| {
@@ -937,7 +1106,7 @@ fn render_grid_view(
                 paint_offline_badge(ui.painter(), thumb_rect);
             }
 
-            // Usage indicators: source-loaded border + on-timeline dot.
+            // Usage indicators: source-loaded border + on-timeline red bar.
             paint_usage_badges(
                 ui.painter(),
                 thumb_rect,
@@ -945,6 +1114,14 @@ fn render_grid_view(
                 state.source_media_id == Some(item.id),
                 is_media_used(state, item.id),
             );
+
+            // (i) info icon with rich hover tooltip — full filename, path,
+            // codecs, channels, sample rate, file size, in/out marks.
+            // Pulls from the canonical MediaItem in the pool because the
+            // grid's `item` is a denormalised `MediaRow` snapshot.
+            if let Some(media_item) = state.media_pool.get(&item.id) {
+                draw_info_icon_with_tooltip(ui, media_item, thumb_rect, theme);
+            }
 
             // Hover skim (grid view: white scrubber line over thumbnail)
             handle_hover_skim(ui, state, &thumb_rect, item, cmds, true);
@@ -979,14 +1156,9 @@ fn render_grid_view(
                 egui::Color32::from_rgb(tr, tg, tb),
             );
 
-            // Used indicator — dot at the right edge of the label strip.
-            if is_media_used(state, item.id) {
-                ui.painter().circle_filled(
-                    egui::pos2(card_rect.max.x - 10.0, label_strip.center().y),
-                    3.0,
-                    egui::Color32::from_rgb(232, 160, 32),
-                );
-            }
+            // (Used indicator removed: the red "in use on timeline" bar
+            // painted on the thumbnail by `paint_usage_badges` already
+            // conveys this state without competing for label-strip space.)
 
             // Metadata line — stars first (amber) when rated, then dim grey
             // duration · fps.

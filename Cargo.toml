@@ -134,7 +134,8 @@ opt-level = 3          # Per-pixel math must be fast even in debug builds
 [profile.release]
 opt-level = 3
 lto = "thin"           # Link-time optimization for smaller/faster binary
-codegen-units = 4      # Reduced from 1 to avoid LLVM SIGSEGV during LTO
+codegen-units = 8      # Smaller LLVM units to keep LTO from blowing its stack
+                       # (was 1, then 4; klipp-ui growth pushed us to 8).
 strip = true           # Strip debug symbols from release binary
 panic = "abort"        # Smaller binary, no unwinding overhead
 

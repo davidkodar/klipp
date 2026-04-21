@@ -11,7 +11,11 @@ rustflags = [
 ]
 
 [env]
-RUST_MIN_STACK = "134217728"
+# 512 MB. The release-profile LTO pass on klipp-app blows past
+# 128 MB and 256 MB after recent klipp-ui growth; rustc's diagnostic
+# kept suggesting larger values until 512 MB, which holds. The
+# stack is per-rustc-thread so the wall-clock cost is minimal.
+RUST_MIN_STACK = "536870912"
 
 [alias]
 r = "run -p klipp-app"
