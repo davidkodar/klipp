@@ -7,9 +7,14 @@
 use tracing::{info, warn};
 
 /// NV12 → RGBA GPU converter. Owns its own wgpu device + queue.
+///
+/// Device and queue are `Arc`-wrapped so consumers that want to hold a
+/// conversion's output buffer on-GPU (`convert_nv12_to_rgba_on_gpu`)
+/// can extend the lifetime across threads without cloning the
+/// underlying wgpu handles.
 pub struct GpuNv12Converter {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    device: std::sync::Arc<wgpu::Device>,
+    queue: std::sync::Arc<wgpu::Queue>,
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     // Reusable buffers — recreated when dimensions change
@@ -266,8 +271,8 @@ impl GpuNv12Converter {
         info!("NV12 GPU converter initialized");
 
         Some(Self {
-            device,
-            queue,
+            device: std::sync::Arc::new(device),
+            queue: std::sync::Arc::new(queue),
             pipeline,
             bind_group_layout,
             y_buf: None,
@@ -279,6 +284,18 @@ impl GpuNv12Converter {
             cached_uv_size: 0,
             cached_output_size: 0,
         })
+    }
+
+    /// Clone the Arc-wrapped wgpu device. Callers constructing a
+    /// `GpuFrame` from `convert_nv12_to_rgba_on_gpu` output pair this
+    /// with `queue()`.
+    pub fn device(&self) -> std::sync::Arc<wgpu::Device> {
+        std::sync::Arc::clone(&self.device)
+    }
+
+    /// Clone the Arc-wrapped wgpu queue. See [`Self::device`].
+    pub fn queue(&self) -> std::sync::Arc<wgpu::Queue> {
+        std::sync::Arc::clone(&self.queue)
     }
 
     /// Ensure Y plane buffer is large enough.
@@ -452,5 +469,110 @@ impl GpuNv12Converter {
                 vec![0u8; output_size as usize]
             }
         }
+    }
+
+    /// GPU-resident variant of [`Self::convert_nv12_to_rgba`]: runs
+    /// the NV12→RGBA compute shader and returns the output
+    /// `wgpu::Buffer` directly, without downloading to CPU. The
+    /// returned buffer is freshly allocated per call (so holding it
+    /// across subsequent calls is safe — no internal aliasing) and
+    /// flagged `STORAGE | COPY_SRC` so it can both feed another
+    /// compute shader (phase 4's grade chain) and be copied into a
+    /// staging buffer for readback via `Frame::into_cpu()`.
+    ///
+    /// Pair with [`Self::device`] / [`Self::queue`] to assemble a
+    /// `klipp_engine::GpuFrame` — that's the canonical way to hand a
+    /// GPU-resident frame across the engine boundary.
+    #[allow(clippy::too_many_arguments)]
+    pub fn convert_nv12_to_rgba_on_gpu(
+        &mut self,
+        y_data: &[u8],
+        uv_data: &[u8],
+        src_width: u32,
+        src_height: u32,
+        y_stride: u32,
+        uv_stride: u32,
+        dst_width: u32,
+        dst_height: u32,
+        rotation: u32,
+    ) -> std::sync::Arc<wgpu::Buffer> {
+        let y_size = y_data.len() as u64;
+        let uv_size = uv_data.len() as u64;
+        let output_size = (dst_width * dst_height * 4) as u64;
+
+        self.ensure_y_buf(y_size);
+        self.ensure_uv_buf(uv_size);
+
+        // Fresh output buffer per call — we're handing ownership to
+        // the caller, so we can't reuse the internal cache.
+        let output_buf = std::sync::Arc::new(self.device.create_buffer(
+            &wgpu::BufferDescriptor {
+                label: Some("nv12_out_gpu_resident"),
+                size: output_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            },
+        ));
+
+        let y_buf = self.y_buf.as_ref().unwrap();
+        let uv_buf = self.uv_buf.as_ref().unwrap();
+
+        self.queue.write_buffer(y_buf, 0, y_data);
+        self.queue.write_buffer(uv_buf, 0, uv_data);
+
+        let params = Nv12Params {
+            src_width,
+            src_height,
+            dst_width,
+            dst_height,
+            y_stride,
+            uv_stride,
+            rotation,
+            _pad1: 0,
+        };
+        self.queue
+            .write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: y_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: uv_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: output_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.params_buf.as_entire_binding(),
+                },
+            ],
+        });
+
+        let workgroups_x = dst_width.div_ceil(16);
+        let workgroups_y = dst_height.div_ceil(16);
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        output_buf
     }
 }
