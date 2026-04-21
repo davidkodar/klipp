@@ -43,6 +43,30 @@ pub struct FrameBuffer {
     pub pending_height: u32,
     pub pending_generation: u64,
     pub pending_ready: bool,
+
+    // ── GPU-resident viewer path ──
+    // When the engine and UI share one `wgpu::Device` (installed via
+    // `GpuContext::install_shared`), the grade chain can encode its
+    // final sRGB-u8 output directly into this texture via
+    // `GpuEffectsPipeline::encode_grade_to_texture`. The UI then
+    // samples it through an egui `TextureId` registered on
+    // `egui_wgpu::Renderer::register_native_texture` — zero PCIe
+    // download on the present path.
+    //
+    // `None` means either the shared device wasn't installed or the
+    // engine is in a state where the GPU path isn't active; the UI
+    // falls back to the existing `data: Vec<u8>` upload.
+    //
+    // Format is always `Rgba8Unorm` (not sRGB — the shader output
+    // bytes are already sRGB-encoded, so the texture stores them
+    // byte-for-byte). `gpu_output_generation` bumps whenever the
+    // texture's backing `wgpu::Texture` is recreated (first use or
+    // size change); the UI uses that to decide whether to
+    // re-register with egui.
+    pub gpu_output: Option<std::sync::Arc<wgpu::Texture>>,
+    pub gpu_output_width: u32,
+    pub gpu_output_height: u32,
+    pub gpu_output_generation: u64,
 }
 
 impl FrameBuffer {
@@ -71,7 +95,63 @@ impl FrameBuffer {
             pending_height: 0,
             pending_generation: 0,
             pending_ready: false,
+            gpu_output: None,
+            gpu_output_width: 0,
+            gpu_output_height: 0,
+            gpu_output_generation: 0,
         }
+    }
+
+    /// Ensure `gpu_output` is a `wgpu::Texture` of at least
+    /// `(width, height)` bytes on the supplied device. Creates the
+    /// texture on first call or when dimensions change; the existing
+    /// handle is reused otherwise.
+    ///
+    /// Returns a cheap `Arc` clone of the current texture handle so
+    /// the caller (engine post_process) can hand it to
+    /// `GpuEffectsPipeline::encode_grade_to_texture` without holding
+    /// the FrameBuffer lock across the submit.
+    ///
+    /// Width must satisfy
+    /// `width * 4 % COPY_BYTES_PER_ROW_ALIGNMENT == 0` (256) —
+    /// same constraint `encode_grade_to_texture` enforces. Real
+    /// viewer frames are ≥ 1920 px wide so this holds by
+    /// construction.
+    pub fn ensure_gpu_output(
+        &mut self,
+        device: &std::sync::Arc<wgpu::Device>,
+        width: u32,
+        height: u32,
+    ) -> Option<std::sync::Arc<wgpu::Texture>> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let reuse = matches!(
+            &self.gpu_output,
+            Some(_) if self.gpu_output_width == width && self.gpu_output_height == height
+        );
+        if !reuse {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("klipp_gpu_viewer_output"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            self.gpu_output = Some(std::sync::Arc::new(tex));
+            self.gpu_output_width = width;
+            self.gpu_output_height = height;
+            self.gpu_output_generation = self.gpu_output_generation.wrapping_add(1);
+        }
+        self.gpu_output.as_ref().map(std::sync::Arc::clone)
     }
 
     /// Engine writes to pending buffer — fast, minimal lock time.
