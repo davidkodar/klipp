@@ -137,6 +137,12 @@ impl ViewerPanel {
         let resp = ui.allocate_rect(panel_rect, egui::Sense::hover());
         ui.painter().rect_filled(panel_rect, 0.0, egui::Color32::BLACK);
 
+        // Prefer the GPU-resident output when live; fall back to the
+        // CPU-uploaded `video_texture`. The video_texture is used for
+        // aspect-ratio detection either way — it's populated in
+        // parallel by `upload_frame_to_egui`, so `size_vec2()` is
+        // still the correct dimensions even when we paint via
+        // `gpu_texture_id`.
         if let Some(tex) = &self.video_texture {
             let tex_size = tex.size_vec2();
             if tex_size.x > 0.0 && tex_size.y > 0.0 {
@@ -151,8 +157,9 @@ impl ViewerPanel {
                     panel_rect.center(),
                     egui::vec2(dw, dh),
                 );
+                let image_id = self.gpu_texture_id.unwrap_or_else(|| tex.id());
                 ui.painter().image(
-                    tex.id(),
+                    image_id,
                     image_rect,
                     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                     egui::Color32::WHITE,

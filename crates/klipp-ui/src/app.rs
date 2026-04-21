@@ -18316,12 +18316,36 @@ impl eframe::App for KlippApp {
             }
         }
 
-        // 11b. Handle fullscreen viewport transition (send only once)
+        // 11b. Handle fullscreen viewport transition (send only once).
+        // The OS-level fullscreen toggle reconfigures eframe-wgpu's
+        // swap chain, and on Wayland+NVIDIA that leaves the
+        // registered native TextureView pointing at a stale render
+        // state — the viewer stops updating even though the engine
+        // keeps writing new frames (classic "frozen frame, audio
+        // continues" symptom). Reset our egui texture registration
+        // so `refresh_gpu_viewer_texture` re-registers on the next
+        // update, and request several repaints across the transition
+        // window so the post-toggle swap-chain recovery can't starve
+        // the viewer.
         if self.state.fullscreen_changed {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(
                 self.state.fullscreen_viewer,
             ));
             self.state.fullscreen_changed = false;
+            // Force re-register of the GPU viewer texture: the swap-
+            // chain reconfigure can invalidate the native binding
+            // even though `gpu_output_generation` on our side didn't
+            // change. Clearing the tracked gen forces a fresh
+            // `register_native_texture` call next frame.
+            self.viewer.gpu_texture_id = None;
+            self.viewer.gpu_texture_gen = 0;
+            // Kick enough repaints to cover the platform's resize
+            // pipeline. egui's default after-resize policy gives one
+            // immediate repaint; one extra over ~50 ms gets us
+            // through the compositor's "suboptimal present" window.
+            ctx.request_repaint();
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
         // 11c. Toast notifications + drag-drop cleanup

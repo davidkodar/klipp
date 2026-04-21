@@ -452,12 +452,14 @@ impl GpuP010Converter {
             pass.dispatch_workgroups(workgroups_x, workgroups_y, 1);
         }
         encoder.copy_buffer_to_buffer(output_buf, 0, staging, 0, output_size);
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let submit_idx = self.queue.submit(std::iter::once(encoder.finish()));
 
+        // WaitForSubmissionIndex instead of Wait: shared-device-with-UI
+        // would deadlock on whole-queue Wait.
         let buffer_slice = staging.slice(..output_size);
         let (tx, rx) = std::sync::mpsc::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| { let _ = tx.send(result); });
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
 
         match rx.recv() {
             Ok(Ok(())) => {

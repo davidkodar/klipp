@@ -281,6 +281,73 @@ use tracing::{debug, error, info, warn};
 /// diagnostics; nothing load-bearing reads it.
 pub static ENGINE_TICK: AtomicU64 = AtomicU64::new(0);
 
+/// Fine-grained "last waypoint reached" marker for the watchdog. The
+/// engine thread updates this at each major stage of a tick; when the
+/// watchdog detects a stall, it reads this value and logs WHICH
+/// stage was the last one entered. The `ENGINE_WATCHDOG STALLED` log
+/// now names the operation that's hanging instead of just "somewhere
+/// on the engine thread".
+///
+/// Encoding is a simple u32 ordinal indexed by `EngineStage`. Atomic
+/// so the watchdog can read it without racing the engine's update.
+pub static ENGINE_STAGE: AtomicU64 = AtomicU64::new(0);
+
+/// Engine-thread waypoints. Each value is written to `ENGINE_STAGE`
+/// at the start of the corresponding operation. The watchdog prints
+/// the name of the stage in effect when it trips, which narrows a
+/// hang from "entire run loop" to a specific ~10-line region.
+#[repr(u64)]
+#[allow(dead_code)]
+pub enum EngineStage {
+    Idle = 0,
+    LoopTop = 1,
+    CommandDrain = 2,
+    ParamDrain = 3,
+    UpdatePlayback = 4,
+    PostProcessEntry = 5,
+    PostProcessEnsureGpu = 6,
+    PostProcessPregradeEncode = 7,
+    PostProcessFbLockA = 8,
+    PostProcessCacheLookup = 9,
+    PostProcessInner = 10,
+    PostProcessInnerGradeExecute = 11,
+    PostProcessReencode = 12,
+    PostProcessScopeRender = 13,
+    GpuEncodeToTexture = 14,
+    BlendComposite = 15,
+    FbWrite = 16,
+    LoopBottom = 17,
+}
+
+pub fn engine_stage_name(v: u64) -> &'static str {
+    match v {
+        0 => "Idle",
+        1 => "LoopTop",
+        2 => "CommandDrain",
+        3 => "ParamDrain",
+        4 => "UpdatePlayback",
+        5 => "PostProcessEntry",
+        6 => "PostProcessEnsureGpu",
+        7 => "PostProcessPregradeEncode",
+        8 => "PostProcessFbLockA",
+        9 => "PostProcessCacheLookup",
+        10 => "PostProcessInner",
+        11 => "PostProcessInnerGradeExecute",
+        12 => "PostProcessReencode",
+        13 => "PostProcessScopeRender",
+        14 => "GpuEncodeToTexture",
+        15 => "BlendComposite",
+        16 => "FbWrite",
+        17 => "LoopBottom",
+        _ => "Unknown",
+    }
+}
+
+/// Convenience helper so each waypoint is a one-liner.
+fn mark_stage(s: EngineStage) {
+    ENGINE_STAGE.store(s as u64, Ordering::Relaxed);
+}
+
 /// Gate for the GPU-resident viewer output path. When on, the engine
 /// mirrors the graded frame into `FrameBuffer.gpu_output` on the
 /// shared wgpu device so the UI can sample it directly without a
@@ -935,6 +1002,7 @@ impl PlaybackEngine {
             // the very top of every iteration so a stall anywhere below (GPU
             // sync, mutex wait, decode) freezes the counter.
             ENGINE_TICK.fetch_add(1, Ordering::Relaxed);
+            mark_stage(EngineStage::LoopTop);
 
             let tick_start = std::time::Instant::now();
 
@@ -975,6 +1043,7 @@ impl PlaybackEngine {
             let commands = coalesce_commands(commands);
             let had_commands = !commands.is_empty();
 
+            mark_stage(EngineStage::CommandDrain);
             for cmd in commands {
                 self.dbg_commands_handled += 1;
                 if self.handle_command(cmd) {
@@ -987,10 +1056,12 @@ impl PlaybackEngine {
             // Pause this is the ONLY site that drains the queue (update_playback
             // doesn't run). Cheap no-op when the queue is empty, so it's safe to
             // call every tick.
+            mark_stage(EngineStage::ParamDrain);
             let applied = self.drain_param_changes();
 
             if self.state == PlaybackState::Playing {
                 self.dbg_update_playback_count += 1;
+                mark_stage(EngineStage::UpdatePlayback);
                 self.update_playback();
                 // Sync clip audio params periodically during playback (for keyframe animation)
                 self.sync_clip_volumes();
@@ -5473,7 +5544,9 @@ impl PlaybackEngine {
     }
 
     fn post_process_rgba(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
+        mark_stage(EngineStage::PostProcessEntry);
         let t_wrap_start = std::time::Instant::now();
+        mark_stage(EngineStage::PostProcessEnsureGpu);
         self.ensure_gpu_effects();
         let t_ensure_gpu = t_wrap_start.elapsed();
 
@@ -5495,6 +5568,7 @@ impl PlaybackEngine {
             || self.compare_effect_active
             || self.in_node_param_edit;
         let t_bridge = std::time::Instant::now();
+        mark_stage(EngineStage::PostProcessPregradeEncode);
         let rgba_u8 = if pregrade_needed {
             // Routes large frames (≥ 1080p) through the GPU compute
             // shader; HD-and-smaller stay on CPU LUT. At 4K this is
@@ -5512,6 +5586,7 @@ impl PlaybackEngine {
             self.cached_pregrade_frame = Some((Arc::clone(&rgba_arc), width, height));
             self.frame_cache.insert(self.playhead.value, Arc::clone(&rgba_arc), width, height);
             {
+                mark_stage(EngineStage::PostProcessFbLockA);
                 let t_lock = std::time::Instant::now();
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 pregrade_fb_lock_us = t_lock.elapsed().as_micros() as u64;
@@ -5531,6 +5606,7 @@ impl PlaybackEngine {
         // in a 60 s scrub session). Nulling `cache_key` makes both the read
         // block and the write block skip naturally. Playback without an
         // active gesture still gets the full cache benefit.
+        mark_stage(EngineStage::PostProcessCacheLookup);
         let t_key_lookup = std::time::Instant::now();
         let has_overlays = !self.overlay_frames.is_empty();
         let cache_key = if has_overlays || self.in_node_param_edit {
@@ -5631,6 +5707,7 @@ impl PlaybackEngine {
         // cache-check and potential cache-hit early return. If we reach
         // here it was a miss and we're running the real grade pipeline.
         let t_key_lookup_ms = t_key_lookup.elapsed();
+        mark_stage(EngineStage::PostProcessInner);
         let t_inner = std::time::Instant::now();
         let result_linear = self.post_process_rgba_inner(linear_rgba, width, height);
         let t_inner_ms = t_inner.elapsed();
@@ -5651,6 +5728,7 @@ impl PlaybackEngine {
             && gpu_scope_kind_for_mode(self.scope_render_mode).is_some();
         let need_result_u8 = cache_put_active || scope_active;
 
+        mark_stage(EngineStage::PostProcessReencode);
         let t_reencode = std::time::Instant::now();
         let result_u8 = if need_result_u8 {
             // Same GPU/CPU split as the bridge_u8 path above —
@@ -5675,6 +5753,7 @@ impl PlaybackEngine {
         // no GPU kernel (vectorscope, unknown codes) clear the
         // texture so the UI falls back to the CPU renderer in
         // `klipp-ui/widgets/scopes.rs`.
+        mark_stage(EngineStage::PostProcessScopeRender);
         let t_scope = std::time::Instant::now();
         let mut scope_gpu_ms: f64 = 0.0;
         let mut scope_fb_lock_us: u64 = 0;
@@ -5774,6 +5853,7 @@ impl PlaybackEngine {
         // preview or odd downscales might not — skip silently in
         // that case.
         if should_publish_gpu_viewer() && (width * 4) % 256 == 0 {
+            mark_stage(EngineStage::GpuEncodeToTexture);
             if let Some(gpu) = self.graph_executor.gpu_pipeline_mut() {
                 let device = gpu.device();
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
@@ -6296,6 +6376,7 @@ impl PlaybackEngine {
                 // executor operates in linear natively; the old
                 // `execute` wrapper would decode u8→linear then re-
                 // encode on the way back.
+                mark_stage(EngineStage::PostProcessInnerGradeExecute);
                 match self.graph_executor.execute_linear(
                     &rgba,
                     graph,

@@ -1297,11 +1297,11 @@ impl GpuEffectsPipeline {
         let staging = self.scope_staging_buf.as_ref().unwrap();
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_buffer_to_buffer(img_buf, 0, staging, 0, byte_size);
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let submit_idx = self.queue.submit(std::iter::once(encoder.finish()));
         let slice = staging.slice(..byte_size);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
         match rx.recv() {
             Ok(Ok(())) => {
                 let data = slice.get_mapped_range();
@@ -1522,11 +1522,11 @@ impl GpuEffectsPipeline {
             let staging = self.scope_staging_buf.as_ref().unwrap();
             let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
             enc.copy_buffer_to_buffer(bins_buf, 0, staging, 0, bins_bytes);
-            self.queue.submit(std::iter::once(enc.finish()));
+            let submit_idx = self.queue.submit(std::iter::once(enc.finish()));
             let slice = staging.slice(..bins_bytes);
             let (tx, rx) = std::sync::mpsc::channel();
             slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-            self.device.poll(wgpu::Maintain::Wait);
+            self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
             rx.recv().ok().and_then(|r| r.ok());
             let data = slice.get_mapped_range();
             let bins: &[u32] = bytemuck::cast_slice(&data);
@@ -1645,11 +1645,11 @@ impl GpuEffectsPipeline {
             let staging = self.scope_staging_buf.as_ref().unwrap();
             let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
             enc.copy_buffer_to_buffer(bins_buf, 0, staging, 0, bins_bytes);
-            self.queue.submit(std::iter::once(enc.finish()));
+            let submit_idx = self.queue.submit(std::iter::once(enc.finish()));
             let slice = staging.slice(..bins_bytes);
             let (tx, rx) = std::sync::mpsc::channel();
             slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-            self.device.poll(wgpu::Maintain::Wait);
+            self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
             rx.recv().ok().and_then(|r| r.ok());
             let data = slice.get_mapped_range();
             let bins: &[u32] = bytemuck::cast_slice(&data);
@@ -1749,11 +1749,11 @@ impl GpuEffectsPipeline {
             let staging = self.scope_staging_buf.as_ref().unwrap();
             let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
             enc.copy_buffer_to_buffer(bins_buf, 0, staging, 0, bins_bytes);
-            self.queue.submit(std::iter::once(enc.finish()));
+            let submit_idx = self.queue.submit(std::iter::once(enc.finish()));
             let slice = staging.slice(..bins_bytes);
             let (tx, rx) = std::sync::mpsc::channel();
             slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-            self.device.poll(wgpu::Maintain::Wait);
+            self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
             rx.recv().ok().and_then(|r| r.ok());
             let data = slice.get_mapped_range();
             let bins: &[u32] = bytemuck::cast_slice(&data);
@@ -1877,14 +1877,23 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
         encoder.copy_buffer_to_buffer(out_buf, 0, staging, 0, out_bytes);
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let submit_idx = self.queue.submit(std::iter::once(encoder.finish()));
         self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         // Map + wait + read.
+        //
+        // `Maintain::Wait` waits for the WHOLE queue to drain — on a
+        // device shared with the UI thread (phase 5a), the UI's
+        // continuous egui submits make that never happen and the
+        // engine thread hangs forever (ENGINE_WATCHDOG STALLED at
+        // stage=PostProcessReencode). `WaitForSubmissionIndex` waits
+        // only for our specific submission to finish, so it returns
+        // as soon as our compute + copy is done regardless of what
+        // UI has queued behind it.
         let slice = staging.slice(..out_bytes);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
         match rx.recv() {
             Ok(Ok(())) => {
                 let data = slice.get_mapped_range();
@@ -3209,13 +3218,17 @@ impl GpuEffectsPipeline {
             self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("flush_chain_dl") })
         });
         encoder.copy_buffer_to_buffer(source_buf, 0, staging, 0, byte_size);
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let submit_idx = self.queue.submit(std::iter::once(encoder.finish()));
         self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let slice = staging.slice(..byte_size);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        self.device.poll(wgpu::Maintain::Wait);
+        // WaitForSubmissionIndex, not Wait: under a device shared with
+        // the UI thread, a naive `Wait` never returns because UI keeps
+        // queuing egui work indefinitely. See `linear_rgba_to_u8_gpu`
+        // for the full rationale.
+        self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
 
         match rx.recv() {
             Ok(Ok(())) => {
@@ -4199,7 +4212,7 @@ impl GpuEffectsPipeline {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_buffer_to_buffer(source, 0, staging, 0, byte_size);
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let submit_idx = self.queue.submit(std::iter::once(encoder.finish()));
         self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let buffer_slice = staging.slice(..byte_size);
@@ -4207,7 +4220,10 @@ impl GpuEffectsPipeline {
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        // WaitForSubmissionIndex instead of Wait: with a UI-shared
+        // device the whole-queue Wait never returns because UI keeps
+        // submitting. See `linear_rgba_to_u8_gpu` for the writeup.
+        self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
 
         match rx.recv() {
             Ok(Ok(())) => {

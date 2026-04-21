@@ -189,9 +189,16 @@ fn main() -> Result<()> {
                 } else {
                     let stalled = last_change.elapsed();
                     if stalled >= std::time::Duration::from_millis(2000) {
+                        // Read the engine's last-entered waypoint so
+                        // the log names the operation that's hanging
+                        // (GradeExecute, GpuEncodeToTexture, etc.),
+                        // not just "engine thread is stuck".
+                        let stage_id = klipp_engine::ENGINE_STAGE.load(Ordering::Relaxed);
                         tracing::error!(
-                            "ENGINE_WATCHDOG STALLED {}ms at tick={} — engine thread is not iterating (likely GPU fence or mutex wait)",
-                            stalled.as_millis(), last_seen,
+                            "ENGINE_WATCHDOG STALLED {}ms at tick={} stage={} — engine thread is not iterating",
+                            stalled.as_millis(),
+                            last_seen,
+                            klipp_engine::engine_stage_name(stage_id),
                         );
                         alerted = true;
                     }

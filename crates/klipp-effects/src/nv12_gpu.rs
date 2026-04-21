@@ -431,15 +431,17 @@ impl GpuNv12Converter {
         // Copy output to staging buffer for readback
         let staging = self.staging_buf.as_ref().unwrap();
         encoder.copy_buffer_to_buffer(output_buf, 0, staging, 0, output_size);
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let submit_idx = self.queue.submit(std::iter::once(encoder.finish()));
 
-        // Map and read back
+        // Map and read back. WaitForSubmissionIndex, not Wait: under a
+        // device shared with the UI thread, whole-queue Wait never
+        // returns because UI keeps submitting.
         let buffer_slice = staging.slice(..output_size);
         let (tx, rx) = std::sync::mpsc::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device.poll(wgpu::Maintain::WaitForSubmissionIndex(submit_idx));
 
         match rx.recv() {
             Ok(Ok(())) => {
