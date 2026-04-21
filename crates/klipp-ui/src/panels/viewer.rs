@@ -26,6 +26,17 @@ pub struct ViewerPanel {
     pub title_overlay_texture: Option<egui::TextureHandle>,
     pub title_overlay_size: (u32, u32),
     pub logo_texture: Option<egui::TextureHandle>,
+
+    // ── GPU-resident viewer path ──
+    // Registered egui `TextureId` for `FrameBuffer.gpu_output`. The
+    // engine encodes the graded frame directly into that texture on
+    // the shared wgpu device; registering a native texture here gives
+    // us an id the viewer can sample without ever touching
+    // `fb.data`. `gpu_texture_gen` tracks the generation we last
+    // registered so we re-register only on actual texture swap
+    // (first use, resolution change).
+    pub gpu_texture_id: Option<egui::TextureId>,
+    pub gpu_texture_gen: u64,
 }
 
 impl ViewerPanel {

@@ -17077,6 +17077,50 @@ impl KlippApp {
         self.state.deferred_texture_drops[slot].push(h);
     }
 
+    /// Register (or re-register) `FrameBuffer.gpu_output` with
+    /// eframe-wgpu's renderer and update `viewer.gpu_texture_id`.
+    /// Called at the top of every `update()`; the `gpu_output_generation`
+    /// check means we only actually touch the renderer when the
+    /// engine produced a newly-sized texture.
+    ///
+    /// No-op when the engine hasn't published a gpu_output yet, or
+    /// when eframe is running without a wgpu render state (glow
+    /// fallback). Legacy CPU viewer path is untouched.
+    fn refresh_gpu_viewer_texture(&mut self, frame: &mut eframe::Frame) {
+        // Snapshot the current gpu_output handle + generation.
+        let snapshot = {
+            let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            fb.gpu_output.as_ref().map(|t| (
+                std::sync::Arc::clone(t),
+                fb.gpu_output_generation,
+            ))
+        };
+        let Some((texture, gen)) = snapshot else { return; };
+        if gen == self.viewer.gpu_texture_gen && self.viewer.gpu_texture_id.is_some() {
+            return; // already registered this exact texture
+        }
+        let Some(render_state) = frame.wgpu_render_state() else { return; };
+
+        // Build a view from the Arc'd texture. wgpu::Texture::create_view
+        // takes &self, so the Arc holder keeps the underlying texture
+        // alive as long as the view is used.
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut renderer = render_state.renderer.write();
+        // Free the previously-registered id, if any — egui-wgpu
+        // otherwise accumulates bindings for every resized frame.
+        if let Some(old_id) = self.viewer.gpu_texture_id.take() {
+            renderer.free_texture(&old_id);
+        }
+        let new_id = renderer.register_native_texture(
+            &render_state.device,
+            &view,
+            wgpu::FilterMode::Linear,
+        );
+        self.viewer.gpu_texture_id = Some(new_id);
+        self.viewer.gpu_texture_gen = gen;
+        tracing::debug!("GPU_VIEWER registered id={:?} gen={}", new_id, gen);
+    }
 }
 
 /// Upload `image` into `slot`, reusing the existing handle only when
@@ -17129,7 +17173,7 @@ pub(crate) fn alloc_texture_logged(
 }
 
 impl eframe::App for KlippApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // End-to-end UI tick timing. A single update() that exceeds the
         // 16.6 ms frame budget starves the window of paint events —
         // that's the "app feels frozen" symptom the user sees during
@@ -17146,6 +17190,14 @@ impl eframe::App for KlippApp {
         let next_slot = (self.state.deferred_texture_drops_slot + 1) % 3;
         self.state.deferred_texture_drops[next_slot].clear();
         self.state.deferred_texture_drops_slot = next_slot;
+
+        // Register the engine's `FrameBuffer.gpu_output` texture
+        // with eframe-wgpu's renderer when it changes. No-op when
+        // the engine hasn't produced a GPU output (env gate off, no
+        // shared device, glow fallback) — the legacy CPU path keeps
+        // working. The viewer render code picks up the new
+        // `viewer.gpu_texture_id` when present.
+        self.refresh_gpu_viewer_texture(frame);
         // Bump the foreground-activity signal whenever the user
         // *interacts* — clicks, keys, scrolls, drags. Plain pointer
         // motion intentionally does NOT count: a user reading the UI
