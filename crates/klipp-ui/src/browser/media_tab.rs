@@ -936,7 +936,14 @@ fn render_list_view(
 
 // ── Grid View ──
 
-const GRID_CARD_MIN_W: f32 = 140.0;
+/// Default column count for the grid view. DaVinci-style: column count
+/// is a user-chosen constant (with a [-]/[+] picker in a future
+/// commit), and cards scale SMOOTHLY with panel width inside that
+/// count — drag wider, cards grow; drag narrower, cards shrink, all
+/// the way down to the panel's own minimum. Auto-deciding columns
+/// from drag width creates transition jumps where widening the panel
+/// can shrink cards, which we don't want.
+const GRID_DEFAULT_COLS: usize = 2;
 const GRID_GAP: f32 = 8.0;
 const GRID_PADDING: f32 = 8.0;
 const GRID_THUMB_ASPECT: f32 = 16.0 / 9.0; // 16:9 thumbnail area
@@ -955,9 +962,22 @@ fn render_grid_view(
     creating_bin: &mut Option<String>,
     scroll_to_media_id: &mut Option<MediaId>,
 ) {
-    let avail_w = ui.available_width() - GRID_PADDING * 2.0;
-    let cols = ((avail_w + GRID_GAP) / (GRID_CARD_MIN_W + GRID_GAP)).floor().max(1.0) as usize;
-    let card_w = (avail_w - (cols as f32 - 1.0) * GRID_GAP) / cols as f32;
+    // Use the clip rect (the actually-visible width) rather than
+    // `ui.available_width()`. Inside a vertical `ScrollArea` egui can
+    // report a layout width derived from content rather than from the
+    // panel — when the panel narrows, content from the previous frame
+    // can keep `available_width` artificially wide, leaving cards
+    // sized for a panel that no longer exists and hidden behind the
+    // splitter. `clip_rect().width()` is the panel's true visible
+    // width and shrinks immediately when the user drags the divider.
+    let avail_w = (ui.clip_rect().width() - GRID_PADDING * 2.0).max(1.0);
+    // Fixed column count — cards just scale linearly with panel width.
+    // No fallback to fewer columns, no minimum card size: dragging the
+    // panel narrower keeps shrinking the cards proportionally and
+    // dragging it wider keeps growing them. The layout never "flips"
+    // unexpectedly under the user's hand.
+    let cols = GRID_DEFAULT_COLS.max(1);
+    let card_w = ((avail_w - (cols as f32 - 1.0) * GRID_GAP) / cols as f32).max(1.0);
     let thumb_h = (card_w / GRID_THUMB_ASPECT).round();
     let card_h = thumb_h + GRID_INFO_H;
 

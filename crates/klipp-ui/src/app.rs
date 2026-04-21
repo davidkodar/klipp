@@ -18031,7 +18031,11 @@ impl eframe::App for KlippApp {
             if self.state.browser_skim_media_id.is_some() {
                 self.state.browser_skim_texture = None;
                 self.state.browser_skim_media_id = None;
-                self.state.viewer_mode = ViewerMode::Program;
+                // `viewer_mode` is no longer reset here. It's now the
+                // user-controlled focus indicator (set by clicking a
+                // viewer or by LoadSourceMedia); resetting it on skim
+                // end would silently steal focus back to Program every
+                // time a hover finished.
             }
             // End audio skim session when mouse leaves or app loses focus
             if self.state.skim_audio_session.is_some() {
