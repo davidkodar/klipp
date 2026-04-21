@@ -729,7 +729,12 @@ fn render_pane_scope(
             }
         }
 
-        ui.ctx().request_repaint();
+        // Continuous repaint only while playback is producing new
+        // frames. Paused/idle scopes update on grade/param changes via
+        // SequenceUpdated — no need for a 60 fps idle loop burning CPU.
+        if is_playing {
+            ui.ctx().request_repaint();
+        }
     }
 }
 

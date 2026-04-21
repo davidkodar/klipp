@@ -2297,6 +2297,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "klipp-perf"
+version = "0.1.0"
+dependencies = [
+ "klipp-core",
+ "klipp-nodes",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "klipp-plugin"
 version = "0.1.0"
 dependencies = [

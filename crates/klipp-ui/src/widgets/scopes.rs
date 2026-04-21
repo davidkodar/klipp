@@ -401,7 +401,13 @@ pub fn show_scopes(
     // Display the cached texture with scale overlay
     let available = ui.available_size();
     if let Some(tex) = &state.textures[mi] {
-        ui.ctx().request_repaint();
+        // Only drive a continuous repaint while playback is producing
+        // new frames. When paused/idle, scope data only changes on
+        // grade/param updates — those emit their own repaint via
+        // SequenceUpdated, so we don't need a 60 fps idle loop.
+        if is_playing {
+            ui.ctx().request_repaint();
+        }
 
         let is_vector = mode == ScopeMode::Vectorscope;
         let (full_rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());

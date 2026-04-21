@@ -19,6 +19,7 @@ members = [
     "crates/klipp-app",
     "crates/klipp-jobs",
     "crates/klipp-testing",
+    "crates/klipp-perf",
 ]
 resolver = "2"
 

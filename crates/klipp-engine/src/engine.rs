@@ -268,10 +268,18 @@ use klipp_media::MediaPool;
 use klipp_timeline::Sequence;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
+
+/// Engine-loop heartbeat. Bumped once per iteration of `PlaybackEngine::run`.
+/// A watchdog in `klipp-app::main` polls it every 500 ms and screams to the
+/// log if it hasn't advanced in ~2 s — that's the signal the engine thread
+/// is stuck (e.g. a GPU `device.poll(Wait)` fence behind a saturated queue,
+/// a mutex deadlock, or a runaway inner loop). Used strictly for
+/// diagnostics; nothing load-bearing reads it.
+pub static ENGINE_TICK: AtomicU64 = AtomicU64::new(0);
 
 /// Maximum number of live overlay decoders during playback.
 /// Prevents runaway decoder spawning on projects with many video tracks.
@@ -484,6 +492,13 @@ pub struct PlaybackEngine {
     // Performance
     use_hw_decode: bool,
     last_stats_time: std::time::Instant,
+    /// Per-stats-interval counters (2-second window). Let us see at a
+    /// glance how much work the engine is doing without grep-summing
+    /// the 60 fps-worth of PERF lines by hand.
+    dbg_update_playback_count: u64,
+    dbg_regrade_count: u64,
+    dbg_param_changes_drained: u64,
+    dbg_commands_handled: u64,
     frames_consumed: u64,
     last_playback_log: std::time::Instant,
     // Color pipeline — post-processing on RGBA frames before display
@@ -657,7 +672,9 @@ impl PlaybackEngine {
     /// Safe to call when the queue is empty — returns immediately without
     /// taking any locks.
     pub fn drain_param_changes(&mut self) -> usize {
-        apply_param_changes(&self.sequence, &self.param_change_queue, &mut self.current_grade_hash, &mut self.current_graph_arc)
+        let n = apply_param_changes(&self.sequence, &self.param_change_queue, &mut self.current_grade_hash, &mut self.current_graph_arc);
+        self.dbg_param_changes_drained += n as u64;
+        n
     }
 
     pub fn new(
@@ -797,6 +814,10 @@ impl PlaybackEngine {
             expected_audio_generation: 0,
             use_hw_decode: false,
             last_stats_time: std::time::Instant::now(),
+            dbg_update_playback_count: 0,
+            dbg_regrade_count: 0,
+            dbg_param_changes_drained: 0,
+            dbg_commands_handled: 0,
             frames_consumed: 0,
             last_playback_log: std::time::Instant::now(),
             color_pipeline: klipp_color::ColorPipeline::new(),
@@ -897,10 +918,24 @@ impl PlaybackEngine {
         info!("Engine thread starting");
 
         loop {
+            // Heartbeat for the watchdog thread in klipp-app::main. Bumped at
+            // the very top of every iteration so a stall anywhere below (GPU
+            // sync, mutex wait, decode) freezes the counter.
+            ENGINE_TICK.fetch_add(1, Ordering::Relaxed);
+
+            let tick_start = std::time::Instant::now();
+
+            // Loop timeout paces the engine thread's spin rate.
+            // Playing: 8 ms = up to 125 Hz loop rate (plenty for 60 fps
+            // video — update_playback pacing is internal). Was 1 ms which
+            // made the loop spin at ~1000 Hz, hammering CPU with no
+            // benefit.
+            // Paused: 16 ms = 60 Hz loop rate, cheap enough to still
+            // respond to user commands within one frame.
             let timeout = if self.state == PlaybackState::Playing {
-                Duration::from_millis(1)
-            } else {
                 Duration::from_millis(8)
+            } else {
+                Duration::from_millis(16)
             };
 
             // Mirror current state to the foreground-activity signal
@@ -928,6 +963,7 @@ impl PlaybackEngine {
             let had_commands = !commands.is_empty();
 
             for cmd in commands {
+                self.dbg_commands_handled += 1;
                 if self.handle_command(cmd) {
                     info!("Engine thread shutting down");
                     return;
@@ -941,6 +977,7 @@ impl PlaybackEngine {
             let applied = self.drain_param_changes();
 
             if self.state == PlaybackState::Playing {
+                self.dbg_update_playback_count += 1;
                 self.update_playback();
                 // Sync clip audio params periodically during playback (for keyframe animation)
                 self.sync_clip_volumes();
@@ -953,6 +990,7 @@ impl PlaybackEngine {
                     // reflects the new values immediately. Previously this
                     // call was missing and the pref drag produced no visible
                     // change until the user pressed play.
+                    self.dbg_regrade_count += 1;
                     self.regrade_cached_frame();
                 } else if !had_commands {
                     // Engine is genuinely idle — pre-render nearby frames
@@ -964,8 +1002,8 @@ impl PlaybackEngine {
             }
 
             // Emit perf stats periodically
-            if self.last_stats_time.elapsed() >= Duration::from_millis(500) {
-                self.last_stats_time = std::time::Instant::now();
+            if self.last_stats_time.elapsed() >= Duration::from_millis(2000) {
+                let elapsed = self.last_stats_time.elapsed().as_secs_f64().max(0.001);
                 // Check actual HW decode status from decoder
                 let hw = self.v1_decoder.as_ref()
                     .map(|d| d.hw_active.load(Ordering::Relaxed))
@@ -974,6 +1012,25 @@ impl PlaybackEngine {
                     dropped_frames: self.dropped_frames,
                     hw_decode: hw,
                 });
+                tracing::info!(
+                    "ENGINE_HEARTBEAT state={:?} updates={} regrades={} param_changes={} cmds={} elapsed={:.2}s rate={:.1}/s drops_total={} hw_decode={} has_v1={} overlays={}",
+                    self.state,
+                    self.dbg_update_playback_count,
+                    self.dbg_regrade_count,
+                    self.dbg_param_changes_drained,
+                    self.dbg_commands_handled,
+                    elapsed,
+                    (self.dbg_update_playback_count + self.dbg_regrade_count) as f64 / elapsed,
+                    self.dropped_frames,
+                    hw,
+                    self.v1_decoder.is_some(),
+                    self.overlay_decoders.len(),
+                );
+                self.last_stats_time = std::time::Instant::now();
+                self.dbg_update_playback_count = 0;
+                self.dbg_regrade_count = 0;
+                self.dbg_param_changes_drained = 0;
+                self.dbg_commands_handled = 0;
             }
 
             // Emit VU peak levels at ~30Hz
@@ -1010,6 +1067,23 @@ impl PlaybackEngine {
                         });
                     }
                 }
+            }
+
+            // Per-tick timing. Only log when a single tick exceeded the frame
+            // budget (16.6 ms at 60 fps) — this is the signal that the engine
+            // thread was blocked in a long op (GPU fence, decode stall,
+            // mutex wait). Noisy ticks are fine; persistent >30 ms ticks
+            // during a slider drag point directly at the regression.
+            let tick_ms = tick_start.elapsed().as_secs_f64() * 1000.0;
+            if tick_ms > 16.0 {
+                debug!(
+                    "ENGINE_TICK_SLOW {:.1}ms state={:?} in_edit={} had_cmds={} drained={}",
+                    tick_ms,
+                    self.state,
+                    self.in_node_param_edit,
+                    had_commands,
+                    applied,
+                );
             }
         }
 
@@ -5375,12 +5449,15 @@ impl PlaybackEngine {
         let t_bridge_u8 = t_bridge.elapsed();
 
         let t_pregrade = std::time::Instant::now();
+        let mut pregrade_fb_lock_us: u64 = 0;
         if pregrade_needed {
             let rgba_arc = Arc::new(rgba_u8);
             self.cached_pregrade_frame = Some((Arc::clone(&rgba_arc), width, height));
             self.frame_cache.insert(self.playhead.value, Arc::clone(&rgba_arc), width, height);
             {
+                let t_lock = std::time::Instant::now();
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                pregrade_fb_lock_us = t_lock.elapsed().as_micros() as u64;
                 fb.pregrade_data = rgba_arc;
             }
         }
@@ -5542,18 +5619,24 @@ impl PlaybackEngine {
         // texture so the UI falls back to the CPU renderer in
         // `klipp-ui/widgets/scopes.rs`.
         let t_scope = std::time::Instant::now();
+        let mut scope_gpu_ms: f64 = 0.0;
+        let mut scope_fb_lock_us: u64 = 0;
         if self.should_render_scope() {
           if let Some(gpu) = &mut self.gpu_effects {
             let scope_w = 720u32;
             let scope_h = 256u32;
             let mode = self.scope_render_mode;
+            let t_gpu = std::time::Instant::now();
             let tex = gpu_scope_kind_for_mode(mode).map(|kind| match kind {
                 GpuScopeKind::Waveform => gpu.render_scope_waveform(&result_u8, width, height, scope_w, scope_h),
                 GpuScopeKind::Parade => gpu.render_scope_parade(&result_u8, width, height, scope_w, scope_h),
                 GpuScopeKind::Histogram => gpu.render_scope_histogram(&result_u8, width, height, scope_w, scope_h),
             });
+            scope_gpu_ms = t_gpu.elapsed().as_secs_f64() * 1000.0;
             self.last_scope_render = std::time::Instant::now();
+            let t_lock = std::time::Instant::now();
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            scope_fb_lock_us = t_lock.elapsed().as_micros() as u64;
             match tex {
                 Some(t) => {
                     fb.scope_texture = t;
@@ -5573,14 +5656,23 @@ impl PlaybackEngine {
         let t_scope_ms = t_scope.elapsed();
 
         let wrap_total_ms = t_wrap_start.elapsed().as_secs_f64() * 1000.0;
-        if wrap_total_ms > 5.0 {
-            // Breakdown of the OUTER post_process_rgba wrapper. The `inner`
-            // number matches the existing `PERF post_process` line (the
-            // grade/ofx/builtin/lut pipeline). The rest is pure overhead
-            // of the wrapper: sRGB bridge, pregrade bookkeeping, render
-            // cache key/get/put, GPU scope shader.
+        // Always emit the breakdown while the user is dragging a grade
+        // param — that's the window we're trying to diagnose. Otherwise
+        // keep the old > 5 ms threshold so steady-state playback stays
+        // quiet in the log.
+        let force_log = self.in_node_param_edit;
+        if wrap_total_ms > 5.0 || force_log {
+            // Breakdown of the OUTER post_process_rgba wrapper. `inner`
+            // is the grade/ofx/builtin/lut pipeline (matches PERF
+            // post_process). `scope_gpu_ms` is the wgpu submit +
+            // device.poll(Wait) + map_async readback fence only — the
+            // hard sync that stalls this thread until the GPU has
+            // drained the whole queue. `fb_lock_us` fields capture
+            // mutex contention with the UI thread. During a slider
+            // drag (force_log=true) this fires every frame, so the
+            // timeline is fully reconstructable from the log.
             debug!(
-                "PERF post_process_wrap: {:.1}ms total | ensure_gpu={:.1} bridge_u8={:.1} pregrade={:.1} key_lookup={:.1} inner={:.1} reencode={:.1} cache_put={:.1} scope={:.1}",
+                "PERF post_process_wrap: {:.1}ms total | ensure_gpu={:.1} bridge_u8={:.1} pregrade={:.1} key_lookup={:.1} inner={:.1} reencode={:.1} cache_put={:.1} scope={:.1} | scope_gpu={:.1} pregrade_fb_lock_us={} scope_fb_lock_us={} in_edit={} wxh={}x{}",
                 wrap_total_ms,
                 t_ensure_gpu.as_secs_f64() * 1000.0,
                 t_bridge_u8.as_secs_f64() * 1000.0,
@@ -5590,6 +5682,11 @@ impl PlaybackEngine {
                 t_reencode_ms.as_secs_f64() * 1000.0,
                 t_cache_put_ms.as_secs_f64() * 1000.0,
                 t_scope_ms.as_secs_f64() * 1000.0,
+                scope_gpu_ms,
+                pregrade_fb_lock_us,
+                scope_fb_lock_us,
+                self.in_node_param_edit,
+                width, height,
             );
         }
 

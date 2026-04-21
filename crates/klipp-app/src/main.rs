@@ -56,8 +56,20 @@ fn main() -> Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("klipp=debug,wgpu=warn,naga=warn")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                // Crate names (underscore, not colon) so EnvFilter matches
+                // `klipp_engine::...`, `klipp_ui::...`, etc. The bare
+                // `klipp=debug` directive only matched `klipp::*`, which
+                // silently dropped every PERF / ENGINE_TICK_SLOW /
+                // UI_TICK_SLOW diagnostic in release builds. Explicitly
+                // whitelist each crate we care about.
+                EnvFilter::new(
+                    "klipp_engine=debug,klipp_ui=debug,klipp_app=debug,\
+                     klipp_core=debug,klipp_effects=debug,klipp_media=debug,\
+                     klipp_timeline=debug,klipp_jobs=debug,klipp_title=debug,\
+                     wgpu=warn,naga=warn",
+                )
+            }),
         )
         .with_writer(log_file)
         .with_ansi(false)
@@ -145,6 +157,47 @@ fn main() -> Result<()> {
 
     mark("engine thread spawned");
     info!("Engine thread spawned");
+
+    // Hang watchdog. Reads `ENGINE_TICK` every 500 ms. If the counter
+    // hasn't advanced in 2 s the engine thread is stuck — most likely
+    // blocked inside a GPU `device.poll(Wait)` fence or a mutex. Log
+    // loudly (ERROR) with the last-seen tick so we can correlate with
+    // the most recent PERF post_process_wrap line in the same log. No
+    // recovery action — this is strictly a diagnostic signal for the
+    // "app won't close during slider drag" class of bug.
+    std::thread::Builder::new()
+        .name("klipp-watchdog".into())
+        .spawn(|| {
+            use std::sync::atomic::Ordering;
+            let mut last_seen = 0u64;
+            let mut last_change = std::time::Instant::now();
+            let mut alerted = false;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let current = klipp_engine::ENGINE_TICK.load(Ordering::Relaxed);
+                if current != last_seen {
+                    if alerted {
+                        let stalled_ms = last_change.elapsed().as_millis();
+                        tracing::error!(
+                            "ENGINE_WATCHDOG RECOVERED after {}ms — tick advanced {} -> {}",
+                            stalled_ms, last_seen, current,
+                        );
+                        alerted = false;
+                    }
+                    last_seen = current;
+                    last_change = std::time::Instant::now();
+                } else {
+                    let stalled = last_change.elapsed();
+                    if stalled >= std::time::Duration::from_millis(2000) {
+                        tracing::error!(
+                            "ENGINE_WATCHDOG STALLED {}ms at tick={} — engine thread is not iterating (likely GPU fence or mutex wait)",
+                            stalled.as_millis(), last_seen,
+                        );
+                        alerted = true;
+                    }
+                }
+            }
+        })?;
 
     // Load window icon from embedded PNG
     let icon_data = {

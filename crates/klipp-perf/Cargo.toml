@@ -1,0 +1,16 @@
+[package]
+name = "klipp-perf"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "klipp-perf"
+path = "src/main.rs"
+
+[dependencies]
+klipp-core = { workspace = true }
+klipp-nodes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

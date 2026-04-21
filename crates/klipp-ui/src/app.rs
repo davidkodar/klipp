@@ -197,6 +197,18 @@ pub struct KlippApp {
     // a trace.
     last_heartbeat: std::time::Instant,
     frame_count: u64,
+    last_heartbeat_frame: u64,
+    /// Throttle for `refresh_scope_preview_fast`. The UI-thread scope
+    /// preview re-grade is ~10 ms at 1080p/4 on a simple grade, which
+    /// saturates the UI thread when a slider emits 60–120 SetNodeParam
+    /// per second. Capping at ~33 Hz keeps scopes feeling live while
+    /// leaving 2/3 of the UI-thread budget for everything else.
+    last_scope_preview_refresh: std::time::Instant,
+    /// Remember the last scope mode we synced to the engine so we don't
+    /// re-send `SetScopeRenderMode` every frame (which was flooding the
+    /// engine command channel at UI fps rate — ~120 commands/sec of
+    /// no-op work).
+    last_sent_scope_mode: Option<u8>,
     // GUI redesign
     theme: KlippTheme,
     layout: LayoutState,
@@ -388,6 +400,10 @@ impl KlippApp {
             last_autosave: std::time::Instant::now(),
             last_heartbeat: std::time::Instant::now(),
             frame_count: 0,
+            last_heartbeat_frame: 0,
+            last_scope_preview_refresh: std::time::Instant::now()
+                - std::time::Duration::from_secs(1),
+            last_sent_scope_mode: None,
             theme,
             layout,
             layout_dirty: false,
@@ -2672,7 +2688,30 @@ impl KlippApp {
     /// need is to refresh the scope preview buffer + bump the frame-buffer
     /// generation.
     fn refresh_scope_preview_fast(&mut self) {
+        // Throttle: the UI-thread re-grade is ~10 ms on 1080p/4 for a
+        // typical colour-balance graph. At slider-drag rate (60–120
+        // SetNodeParam per second) this would saturate the UI thread.
+        // 33 Hz is plenty for scope preview — the user can't
+        // distinguish 30 fps from 120 fps on a scope trace anyway.
+        if self.last_scope_preview_refresh.elapsed()
+            < std::time::Duration::from_millis(30)
+        {
+            return;
+        }
+        self.last_scope_preview_refresh = std::time::Instant::now();
+        let t_start = std::time::Instant::now();
         self.refresh_scope_preview_inner();
+        let total_ms = t_start.elapsed().as_secs_f64() * 1000.0;
+        // Correlate with ENGINE_TICK_SLOW / UI_TICK_SLOW by timestamp.
+        // Threshold at 5 ms so normal HD-sized runs stay quiet; 4K
+        // downscale + grade will always fire.
+        if total_ms > 5.0 {
+            tracing::debug!(
+                "SCOPE_PREVIEW_FAST {:.1}ms queue_depth={}",
+                total_ms,
+                self.param_change_queue.len(),
+            );
+        }
         // Don't send SequenceUpdated — would trigger the engine's audio
         // restart + grade-cache invalidation path, which is already handled
         // by drain_param_changes() on the engine side.
@@ -16968,6 +17007,13 @@ fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPrese
 
 impl eframe::App for KlippApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // End-to-end UI tick timing. A single update() that exceeds the
+        // 16.6 ms frame budget starves the window of paint events —
+        // that's the "app feels frozen" symptom the user sees during
+        // slider drags. The total is logged at the end when > 25 ms;
+        // the per-stage breakdowns (scope preview refresh, viewer paint)
+        // are logged from their own sites and correlated by timestamp.
+        let t_update_start = std::time::Instant::now();
         // Bump the foreground-activity signal whenever the user
         // *interacts* — clicks, keys, scrolls, drags. Plain pointer
         // motion intentionally does NOT count: a user reading the UI
@@ -16995,18 +17041,27 @@ impl eframe::App for KlippApp {
             self.foreground_activity.touch_input();
         }
 
-        // Main-thread heartbeat. Logs once every 30 s with the running
-        // frame count. During normal use the log is full of PERF lines so
-        // this is noise; when the UI freezes, the gap after the last
-        // heartbeat pinpoints when the main loop stopped running.
+        // Main-thread heartbeat. Logs every 2 s with UI fps + state so we
+        // can see the UI thread redraw rate in real time (separate from
+        // the engine tick rate). An idle paused UI should be near 0 fps.
         self.frame_count = self.frame_count.wrapping_add(1);
-        if self.last_heartbeat.elapsed() >= std::time::Duration::from_secs(30) {
-            tracing::debug!(
-                frame = self.frame_count,
-                state = ?self.state.playback,
-                "main-thread heartbeat"
+        if self.last_heartbeat.elapsed() >= std::time::Duration::from_secs(2) {
+            let elapsed = self.last_heartbeat.elapsed().as_secs_f64();
+            let frames_in_interval =
+                self.frame_count.saturating_sub(self.last_heartbeat_frame);
+            let ui_fps = frames_in_interval as f64 / elapsed.max(0.001);
+            tracing::info!(
+                "UI_HEARTBEAT fps={:.1} frames={} state={:?} viewer_mode={:?} elapsed={:.2}s show_scopes={} show_color={}",
+                ui_fps,
+                frames_in_interval,
+                self.state.playback,
+                self.state.viewer_mode,
+                elapsed,
+                self.state.show_scopes,
+                self.state.show_color_panel,
             );
             self.last_heartbeat = std::time::Instant::now();
+            self.last_heartbeat_frame = self.frame_count;
         }
 
         // Consume any menu / toolbar request to toggle the perf
@@ -17148,7 +17203,10 @@ impl eframe::App for KlippApp {
         // 1. Drain events from engine
         self.drain_events(ctx);
 
-        // Sync scope mode to engine (cheap — just a u8 over channel)
+        // Sync scope mode to engine — only when it actually changed.
+        // Previously this sent unconditionally every UI frame (~120
+        // commands/sec), contributing to engine command-channel load
+        // for no benefit.
         {
             let mode_byte = match self.state.scope_mode {
                 crate::state::ScopeMode::Waveform => 0u8,
@@ -17156,7 +17214,10 @@ impl eframe::App for KlippApp {
                 crate::state::ScopeMode::Vectorscope => 2,
                 crate::state::ScopeMode::Histogram => 3,
             };
-            let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: mode_byte });
+            if self.last_sent_scope_mode != Some(mode_byte) {
+                let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: mode_byte });
+                self.last_sent_scope_mode = Some(mode_byte);
+            }
         }
 
         // If a skim decode just finished and there's a queued request, dispatch it immediately
@@ -17397,10 +17458,13 @@ impl eframe::App for KlippApp {
             self.last_autosave = std::time::Instant::now();
         }
 
-        // Frame-rate-aware repaint during playback (must be AFTER drain_events so Playing state is set)
+        // Frame-rate-aware repaint during playback (must be AFTER drain_events so Playing state is set).
+        // 16 ms = 60 Hz cap. Engine grade time at 1080p typically exceeds
+        // 8 ms budget under load, so asking the UI for 125 Hz just burns
+        // CPU waiting for frames that aren't ready. 60 Hz matches the
+        // engine's target and halves UI thread work under grade load.
         if self.state.playback == PlaybackState::Playing {
-            ctx.request_repaint_after(std::time::Duration::from_millis(8));
-
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
 
         // Peak meter ballistics: exponential release (~1.7s to decay from 0dB to -60dB).
@@ -17933,10 +17997,11 @@ impl eframe::App for KlippApp {
             }
         }
 
-        // Ensure continuous repaint during playback (especially in fullscreen)
-        if self.state.playback == PlaybackState::Playing {
-            ctx.request_repaint();
-        }
+        // (Removed: unconditional request_repaint during playback. That
+        // call meant "next tick ASAP" — combined with the 16 ms
+        // request_repaint_after above it forced UI redraws to run as
+        // fast as the event loop can go, burning CPU. 60 Hz via the
+        // request_repaint_after is sufficient and matches the engine.)
 
         // 9b. Floating scope window — runs AFTER CentralPanel so viewer_image_rect is current-frame
         if !self.state.fullscreen_viewer {
@@ -18236,6 +18301,22 @@ impl eframe::App for KlippApp {
 
         if self.state.playback == PlaybackState::Playing || self.state.render_queue.has_active_job() {
             ctx.request_repaint();
+        }
+
+        // Log slow UI ticks. 25 ms is a conservative threshold — at 60 fps
+        // we have 16.6 ms, so anything > 25 ms dropped at least one frame.
+        // Correlate the timestamp with ENGINE_TICK_SLOW / PERF post_process_wrap /
+        // SCOPE_PREVIEW_FAST lines to see which subsystem owned the time.
+        let ui_tick_ms = t_update_start.elapsed().as_secs_f64() * 1000.0;
+        if ui_tick_ms > 25.0 {
+            tracing::debug!(
+                "UI_TICK_SLOW {:.1}ms state={:?} show_scopes={} show_color={} viewer_mode={:?}",
+                ui_tick_ms,
+                self.state.playback,
+                self.state.show_scopes,
+                self.state.show_color_panel,
+                self.state.viewer_mode,
+            );
         }
     }
 }
