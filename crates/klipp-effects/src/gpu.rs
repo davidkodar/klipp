@@ -203,6 +203,13 @@ pub struct GpuEffectsPipeline {
     bridge_u8_out_size: u64,
     bridge_u8_staging_buf: Option<wgpu::Buffer>,
     bridge_u8_staging_size: u64,
+    // ── sRGB-u8 → linear-f32 pixel decode pipeline ─────────────────
+    // The opposite of `bridge_u8_pipeline`: takes packed u8 RGBA
+    // (from a decoder's NV12/P010 output buffer for example) and
+    // writes linear-light vec4<f32> RGBA into the grade chain's input
+    // slot. Enables phase 4d's GPU-resident decode → grade path —
+    // without this bridge the grade chain can only consume CPU data.
+    bridge_u8_to_linear_pipeline: wgpu::ComputePipeline,
     // ── Scope rendering (GPU-accelerated visualization) ──
     scope_histogram_pipeline: wgpu::ComputePipeline,
     scope_waveform_pipeline: wgpu::ComputePipeline,
@@ -634,6 +641,11 @@ impl GpuEffectsPipeline {
         // Output buffer is 4× smaller than input; readback dominates
         // wall time on this op so the smaller output is the win.
         let bridge_u8_pipeline = create_pipeline(&device, &pipeline_layout, "bridge_u8", SHADER_LINEAR_TO_U8);
+        // Same bind-group layout (3-binding: input, output, params),
+        // shader flipped to read u8 and write linear.
+        let bridge_u8_to_linear_pipeline = create_pipeline(
+            &device, &pipeline_layout, "bridge_u8_to_linear", SHADER_U8_TO_LINEAR,
+        );
 
         // ── Scope rendering pipelines ──
         // Scope accumulation: input(read), bins(read_write atomic), params(uniform)
@@ -775,6 +787,7 @@ impl GpuEffectsPipeline {
             alpha_dilate_pipeline,
             transition_pipeline,
             bridge_u8_pipeline,
+            bridge_u8_to_linear_pipeline,
             bridge_u8_out_buf: None,
             bridge_u8_out_size: 0,
             bridge_u8_staging_buf: None,
@@ -1885,6 +1898,71 @@ impl GpuEffectsPipeline {
                 None
             }
         }
+    }
+
+    /// GPU bridge: packed sRGB-u8 RGBA (`array<u32>`) → linear-f32
+    /// RGBA (`array<vec4<f32>>`). Reads an *external* input buffer
+    /// (typically the output of `convert_*_to_rgba_on_gpu`) and writes
+    /// the decoded linear pixels into the pipeline's chain slot
+    /// `buf_a`, leaving the chain primed so downstream grade-node
+    /// dispatches can consume it.
+    ///
+    /// Fully GPU-resident — no CPU bytes touched, no
+    /// `queue.write_buffer` round-trip. This is the operation that
+    /// eliminates the ~5 ms PCIe upload the CPU path paid on every
+    /// frame.
+    ///
+    /// Returns `false` if the GPU device is lost or pre-conditions
+    /// aren't met (chain buffers not allocated, input buffer undersized
+    /// for the declared dimensions). Callers should fall back to the
+    /// CPU `u8_rgba_to_linear_f32` → `upload_chain_input_linear`
+    /// path in that case.
+    pub fn bridge_u8_to_linear_into_chain(
+        &mut self,
+        input_u8: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        if self.is_device_lost() { return false; }
+        let pixel_count = (width as u64) * (height as u64);
+        if pixel_count == 0 { return true; }
+        let linear_byte_size = pixel_count * 16;
+        self.ensure_buffers(linear_byte_size);
+
+        // Input must have at least 4 bytes per pixel.
+        if input_u8.size() < pixel_count * 4 { return false; }
+
+        let buf_a = self.buf_a.as_ref().expect("ensure_buffers established buf_a");
+        self.write_params(&BridgeU8Params { width, height, _pad0: 0, _pad1: 0 });
+
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bridge_u8_to_linear_bg"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                // binding 0: input u8 buffer (external, read-only)
+                wgpu::BindGroupEntry { binding: 0, resource: input_u8.as_entire_binding() },
+                // binding 1: output linear buffer (chain's buf_a, read-write)
+                wgpu::BindGroupEntry { binding: 1, resource: buf_a.as_entire_binding() },
+                // binding 2: params uniform
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+
+        let workgroups = (pixel_count as u32).div_ceil(WORKGROUP_SIZE);
+        let mut encoder = self.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: Some("bridge_u8_to_linear") },
+        );
+        {
+            let mut pass = encoder.begin_compute_pass(
+                &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
+            );
+            pass.set_pipeline(&self.bridge_u8_to_linear_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.submit_count.fetch_add(1, Ordering::Relaxed);
+        true
     }
 
     pub fn apply_vibrance_gpu(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32, amount: f32) -> Vec<f32> {
@@ -5285,6 +5363,42 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let a = u32(clamp(pixel.w * 255.0 + 0.5, 0.0, 255.0));
     // Pack RGBA into a single u32, little-endian (R in byte 0).
     output[idx] = r | (g << 8u) | (b << 16u) | (a << 24u);
+}
+";
+
+// Opposite direction: packed sRGB-u8 RGBA (4 bytes per pixel, one u32)
+// → linear-f32 vec4 RGBA. Reads from `input: array<u32>`, writes to
+// `output: array<vec4<f32>>`. Same binding layout as SHADER_LINEAR_TO_U8
+// so it reuses the pipeline's 3-binding bind_group_layout. Powers the
+// phase-4d GPU-resident decode → grade path: the decoder's output
+// buffer is plugged in as `input`, the grade chain's `buf_a` is the
+// `output`.
+const SHADER_U8_TO_LINEAR: &str = "
+struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn srgb_to_linear_c(c: f32) -> f32 {
+    if (c <= 0.04045) { return c / 12.92; }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let packed = input[idx];
+    let r_u = (packed >> 0u) & 0xFFu;
+    let g_u = (packed >> 8u) & 0xFFu;
+    let b_u = (packed >> 16u) & 0xFFu;
+    let a_u = (packed >> 24u) & 0xFFu;
+    let r = f32(r_u) / 255.0;
+    let g = f32(g_u) / 255.0;
+    let b = f32(b_u) / 255.0;
+    let a = f32(a_u) / 255.0;
+    // sRGB transfer on RGB; alpha stays linear per sRGB spec.
+    output[idx] = vec4<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b), a);
 }
 ";
 
