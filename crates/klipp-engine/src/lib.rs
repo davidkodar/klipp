@@ -55,6 +55,7 @@ pub mod composite;
 pub mod engine;
 pub mod frame;
 pub mod ffmpeg_caps;
+pub mod grade_resample;
 pub mod mix_thread;
 pub mod perf;
 pub mod render_cache;

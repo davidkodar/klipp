@@ -9440,7 +9440,14 @@ impl KlippApp {
                         tracing::info!("Auto-captured 'Before' grade still for first edit");
                     }
                 }
-                true
+                // Return false so the dispatcher forwards the command to the
+                // engine as well — the engine needs this signal to toggle
+                // `in_node_param_edit`, which gates render-cache skip,
+                // drag-downsample, and per-frame perf logging. Previously
+                // returning true swallowed the command and left every
+                // `in_node_param_edit` code path on the engine side as dead
+                // code.
+                false
             }
             AppCommand::EndNodeParamEdit { clip_id } => {
                 if let Some((snap_clip_id, old_graph)) = self.node_param_edit_snapshot.take() {
@@ -9465,7 +9472,10 @@ impl KlippApp {
                         }
                     }
                 }
-                true
+                // Forward to engine so it clears `in_node_param_edit` and
+                // triggers the one-shot full-res recovery regrade. See the
+                // matching comment on BeginNodeParamEdit.
+                false
             }
             AppCommand::SetNodeCurves { clip_id, node_id, curves } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {

@@ -387,6 +387,23 @@ fn read_rss_mb() -> f64 {
 /// shared wgpu device so the UI can sample it directly without a
 /// CPU upload. Off by default while the UI-side wiring matures. Read
 /// once per process via `OnceLock`.
+/// Gate for the drag-time grade downsampling optimisation. When on,
+/// `post_process_rgba_inner` runs at half resolution while the user
+/// is actively dragging a colour-grade slider, then upsamples the
+/// result so the rest of the pipeline keeps its dimension contract.
+/// 4× compute reduction in the grade chain — fixes the "drops to 10
+/// the moment I touch hue" symptom on a 1080p sequence.
+///
+/// Off by default while the optimisation matures. `KLIPP_DRAG_DOWNSAMPLE=1`
+/// turns it on. Read once via `OnceLock`.
+fn drag_downsample_enabled() -> bool {
+    use std::sync::OnceLock;
+    static GATE: OnceLock<bool> = OnceLock::new();
+    *GATE.get_or_init(|| {
+        std::env::var("KLIPP_DRAG_DOWNSAMPLE").ok().as_deref() == Some("1")
+    })
+}
+
 fn should_publish_gpu_viewer() -> bool {
     use std::sync::OnceLock;
     static GATE: OnceLock<bool> = OnceLock::new();
@@ -743,6 +760,19 @@ pub struct PlaybackEngine {
     /// changes every tick, so the cache misses every read and pays
     /// for a write it won't reuse.
     in_node_param_edit: bool,
+    /// One-shot signal: after `EndNodeParamEdit` clears
+    /// `in_node_param_edit`, the next tick must run a full-resolution
+    /// regrade so the viewer recovers from any drag-time downsampled
+    /// frame. Cleared after the recovery tick consumes it.
+    force_full_res_regrade: bool,
+    /// Drag-window telemetry. Set on `BeginNodeParamEdit`, summarised
+    /// + cleared on `EndNodeParamEdit`. Counts the grade frames run
+    /// during the gesture and how many of them were downsampled, so
+    /// the closing log line tells us at a glance whether the
+    /// optimisation engaged.
+    drag_started_at: Option<std::time::Instant>,
+    drag_grade_count: u64,
+    drag_downsampled_count: u64,
     /// Shared signal that background jobs read to decide whether to
     /// yield. Engine writes `is_playing` on play/pause transitions.
     /// Optional so legacy constructors / tests still work; when
@@ -1033,6 +1063,10 @@ impl PlaybackEngine {
             current_grade_clip_id: None,
             current_graph_arc: None,
             in_node_param_edit: false,
+            force_full_res_regrade: false,
+            drag_started_at: None,
+            drag_grade_count: 0,
+            drag_downsampled_count: 0,
             foreground_activity: None,
             ofx_host,
             gpu_effects: None, // lazily initialized on first use
@@ -1230,6 +1264,9 @@ impl PlaybackEngine {
             let applied = self.drain_param_changes();
 
             if self.state == PlaybackState::Playing {
+                // Playback already produces fresh frames at full res
+                // every tick; the drag-recovery flag isn't needed here.
+                self.force_full_res_regrade = false;
                 self.dbg_update_playback_count += 1;
                 mark_stage(EngineStage::UpdatePlayback);
                 self.update_playback();
@@ -1244,6 +1281,15 @@ impl PlaybackEngine {
                     // reflects the new values immediately. Previously this
                     // call was missing and the pref drag produced no visible
                     // change until the user pressed play.
+                    self.dbg_regrade_count += 1;
+                    self.regrade_cached_frame();
+                } else if self.force_full_res_regrade {
+                    // EndNodeParamEdit just cleared the drag flag. The last
+                    // displayed frame is at half res from the drag-time
+                    // downsample path; run one more grade at full res so
+                    // the viewer recovers cleanly. Clear the flag so we
+                    // don't loop here forever.
+                    self.force_full_res_regrade = false;
                     self.dbg_regrade_count += 1;
                     self.regrade_cached_frame();
                 } else if !had_commands {
@@ -1866,9 +1912,27 @@ impl PlaybackEngine {
             // pays for a 6 MB compressed write that will never be reused.
             AppCommand::BeginNodeParamEdit { .. } => {
                 self.in_node_param_edit = true;
+                self.drag_started_at = Some(std::time::Instant::now());
+                self.drag_grade_count = 0;
+                self.drag_downsampled_count = 0;
+                tracing::debug!("DRAG_BEGIN downsample_enabled={}", drag_downsample_enabled());
             }
             AppCommand::EndNodeParamEdit { .. } => {
                 self.in_node_param_edit = false;
+                // Trigger one full-resolution regrade so the viewer
+                // recovers cleanly from the last downsampled frame
+                // — see `post_process_rgba_inner_with_optional_downsample`.
+                self.force_full_res_regrade = true;
+                if let Some(started) = self.drag_started_at.take() {
+                    let dur_ms = started.elapsed().as_secs_f64() * 1000.0;
+                    tracing::info!(
+                        "DRAG_END duration={:.1}ms grade_frames={} downsampled={} downsample_enabled={}",
+                        dur_ms,
+                        self.drag_grade_count,
+                        self.drag_downsampled_count,
+                        drag_downsample_enabled(),
+                    );
+                }
             }
 
             // UI-side commands — engine ignores them
@@ -5752,11 +5816,25 @@ impl PlaybackEngine {
         //     AND
         //   * the user isn't actively node-param-editing (UI scope
         //     preview reads pregrade_data on every slider tick).
-        // Pause / scrub / compare / grade-edit still pay the encode.
-        let pregrade_needed = self.state != PlaybackState::Playing
+        // Pause / scrub / compare / grade-edit still pay the encode —
+        // EXCEPT during a Playing+drag with no compare modes active.
+        // In that combination the encode runs at full res ~30 times
+        // per second purely to keep the UI scope-preview fresh. The
+        // user is staring at the main image while gesturing, not the
+        // scope, so we accept a slightly stale scope preview to
+        // recover the ~5 ms / frame and stay under the per-frame
+        // budget. Compare-mode + paused-scrub still get fresh data.
+        let drag_skip_pregrade = drag_downsample_enabled()
+            && self.in_node_param_edit
+            && self.state == PlaybackState::Playing
+            && !self.compare_stabilization
+            && !self.compare_effect_active
+            && !self.bypass_color_grade;
+        let pregrade_needed = (self.state != PlaybackState::Playing
             || self.compare_stabilization
             || self.compare_effect_active
-            || self.in_node_param_edit;
+            || self.in_node_param_edit)
+            && !drag_skip_pregrade;
         let t_bridge = std::time::Instant::now();
         mark_stage(EngineStage::PostProcessPregradeEncode);
         let rgba_u8 = if pregrade_needed {
@@ -5899,7 +5977,7 @@ impl PlaybackEngine {
         let t_key_lookup_ms = t_key_lookup.elapsed();
         mark_stage(EngineStage::PostProcessInner);
         let t_inner = std::time::Instant::now();
-        let result_linear = self.post_process_rgba_inner(linear_rgba, width, height);
+        let result_linear = self.post_process_rgba_inner_drag_aware(linear_rgba, width, height);
         let t_inner_ms = t_inner.elapsed();
 
         // The reencode (`result_u8`) feeds two consumers — the render
@@ -6068,7 +6146,7 @@ impl PlaybackEngine {
             // cached_pregrade_frame stores sRGB u8 — decode once here
             // so the grade + composite run in linear.
             let linear_in = u8_rgba_to_linear(rgba_arc.as_ref());
-            let graded_linear = self.post_process_rgba_inner(linear_in, w, h);
+            let graded_linear = self.post_process_rgba_inner_drag_aware(linear_in, w, h);
 
             // Composite overlay frames (titles etc.) over V1, in track order.
             // Effective opacity = track.opacity * clip-level opacity (with keyframes/modifiers).
@@ -6201,6 +6279,72 @@ impl PlaybackEngine {
             drop(fb);
             let _ = self.event_tx.send(AppEvent::FrameReady);
         }
+    }
+
+    /// Drag-time downsample wrapper around `post_process_rgba_inner`.
+    ///
+    /// During an active colour-grade gesture (`in_node_param_edit`), the
+    /// grade chain is the dominant per-frame cost — running it at half
+    /// resolution removes ~75 % of that cost while the user is dragging.
+    /// The result is upsampled back so the wrapper's caller never has
+    /// to know which pass it got.
+    ///
+    /// Bypassed when:
+    /// - the env gate (`KLIPP_DRAG_DOWNSAMPLE=1`) is off,
+    /// - any compare mode is active (those paths read full-res snapshots),
+    /// - the engine is recovering from drag end (`force_full_res_regrade`),
+    /// - the source is too small for the optimisation to be worth the
+    ///   resample overhead (< 480p in either axis).
+    fn post_process_rgba_inner_drag_aware(
+        &mut self,
+        linear_rgba: Vec<f32>,
+        width: u32,
+        height: u32,
+    ) -> Vec<f32> {
+        let downsample = self.in_node_param_edit
+            && drag_downsample_enabled()
+            && !self.force_full_res_regrade
+            && !self.bypass_color_grade
+            && !self.compare_stabilization
+            && !self.compare_effect_active
+            && width >= 480
+            && height >= 480;
+
+        if self.in_node_param_edit {
+            self.drag_grade_count = self.drag_grade_count.saturating_add(1);
+        }
+
+        if !downsample {
+            return self.post_process_rgba_inner(linear_rgba, width, height);
+        }
+
+        let half_w = (width / 2).max(1);
+        let half_h = (height / 2).max(1);
+
+        let t_down = std::time::Instant::now();
+        let small_in = crate::grade_resample::downsample_linear_2x(
+            &linear_rgba, width, height,
+        );
+        let down_ms = t_down.elapsed().as_secs_f64() * 1000.0;
+
+        let t_grade = std::time::Instant::now();
+        let small_out = self.post_process_rgba_inner(small_in, half_w, half_h);
+        let grade_ms = t_grade.elapsed().as_secs_f64() * 1000.0;
+
+        let t_up = std::time::Instant::now();
+        let full_out = crate::grade_resample::upsample_linear_2x(
+            &small_out, half_w, half_h,
+        );
+        let up_ms = t_up.elapsed().as_secs_f64() * 1000.0;
+
+        self.drag_downsampled_count = self.drag_downsampled_count.saturating_add(1);
+
+        tracing::debug!(
+            "DRAG_DOWNSAMPLE src={}x{} grade={}x{} down={:.1}ms grade={:.1}ms up={:.1}ms",
+            width, height, half_w, half_h, down_ms, grade_ms, up_ms,
+        );
+
+        full_out
     }
 
     fn post_process_rgba_inner(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
