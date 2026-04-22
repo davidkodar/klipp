@@ -5998,10 +5998,19 @@ impl PlaybackEngine {
 
         mark_stage(EngineStage::PostProcessReencode);
         let t_reencode = std::time::Instant::now();
+        // CPU LUT, not the smart-GPU split. `result_linear` is already
+        // a CPU `Vec<f32>` returned from `post_process_rgba_inner`, so
+        // taking the GPU path here pays a 33 MB upload + shader + 8 MB
+        // readback (~13 ms at 1080p, dominated by `device.poll(Wait)`
+        // draining the whole queue) purely to convert data the CPU
+        // already has. The CPU LUT path is a single LUT lookup per
+        // channel and lands at ~3-5 ms on a modern CPU at 1080p.
+        // The GPU path is only the right answer when the source data
+        // is *already* on the GPU — that's the future GPU-resident
+        // grade output (option B), which would let the scope shader
+        // bind the chain buffer directly and skip the encode entirely.
         let result_u8 = if need_result_u8 {
-            // Same GPU/CPU split as the bridge_u8 path above —
-            // ≥ 1080p hits the compute shader, smaller stays CPU.
-            self.linear_rgba_to_u8_smart(&result_linear, width, height)
+            linear_rgba_to_u8(&result_linear)
         } else {
             Vec::new()
         };

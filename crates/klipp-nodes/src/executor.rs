@@ -680,7 +680,22 @@ impl GraphExecutor {
                 // Log-mode wheels have no GPU shader — keep them on CPU.
                 !params.wheels_log_mode.unwrap_or(false)
             }
-            NodeKind::WheelSatBri => true,
+            NodeKind::WheelSatBri => {
+                // All eight sat/bri offsets default to 0; at default
+                // every output pixel = input pixel, so the shader is
+                // a pure pass-through. Skipping the dispatch entirely
+                // saves a per-frame cost on every clip with the
+                // default node graph (the common case — most users
+                // never touch these knobs).
+                params.lift_sat.unwrap_or(0.0) != 0.0
+                    || params.lift_bri.unwrap_or(0.0) != 0.0
+                    || params.gamma_sat.unwrap_or(0.0) != 0.0
+                    || params.gamma_bri.unwrap_or(0.0) != 0.0
+                    || params.gain_sat.unwrap_or(0.0) != 0.0
+                    || params.gain_bri.unwrap_or(0.0) != 0.0
+                    || params.offset_sat.unwrap_or(0.0) != 0.0
+                    || params.offset_bri.unwrap_or(0.0) != 0.0
+            }
             NodeKind::RGBCurves => params
                 .curves
                 .as_ref()
@@ -689,7 +704,19 @@ impl GraphExecutor {
                 .huesat
                 .as_ref()
                 .map_or(false, |h| !h.is_all_identity()),
-            NodeKind::ColorBalance => true,
+            NodeKind::ColorBalance => {
+                // Same story as WheelSatBri — all four params default
+                // to identity (temp/tint/hue = 0, global_mix = 1).
+                // At those values the shader passes pixels through
+                // unchanged but still pays the dispatch + bind-group
+                // cost every frame, on every clip with the default
+                // graph. Real activeness check eliminates the
+                // baseline cost.
+                params.temperature.unwrap_or(0.0) != 0.0
+                    || params.tint.unwrap_or(0.0) != 0.0
+                    || params.hue.unwrap_or(0.0) != 0.0
+                    || (params.global_mix.unwrap_or(1.0) - 1.0).abs() > f32::EPSILON
+            }
             NodeKind::Lut3D => params.lut_path.is_some(),
             NodeKind::FilmGrain => params
                 .grain
