@@ -2203,22 +2203,6 @@ impl KlippApp {
             fb.swap_pending();
             self.state.render_cache_ranges = fb.render_cache_ranges.clone();
             if !fb.dirty {
-                // Debug for the fullscreen "frozen frame" hunt: if
-                // upload_frame_to_egui skips every tick during
-                // fullscreen, the engine isn't producing new frames
-                // or pending isn't propagating. Log at 1 Hz so the
-                // stream is readable.
-                if self.state.fullscreen_viewer {
-                    use std::sync::atomic::{AtomicU64, Ordering};
-                    static SKIP: AtomicU64 = AtomicU64::new(0);
-                    let n = SKIP.fetch_add(1, Ordering::Relaxed);
-                    if n % 60 == 0 {
-                        tracing::debug!(
-                            "UPLOAD_FRAME_SKIP n={} fullscreen=true dirty=false gen={} pending_ready={} playback={:?}",
-                            n, fb.generation, fb.pending_ready, self.state.playback,
-                        );
-                    }
-                }
                 return;
             }
             let w = fb.width as usize;
@@ -18332,36 +18316,18 @@ impl eframe::App for KlippApp {
             }
         }
 
-        // 11b. Handle fullscreen viewport transition (send only once).
-        // The OS-level fullscreen toggle reconfigures eframe-wgpu's
-        // swap chain, and on Wayland+NVIDIA that leaves the
-        // registered native TextureView pointing at a stale render
-        // state — the viewer stops updating even though the engine
-        // keeps writing new frames (classic "frozen frame, audio
-        // continues" symptom). Reset our egui texture registration
-        // so `refresh_gpu_viewer_texture` re-registers on the next
-        // update, and request several repaints across the transition
-        // window so the post-toggle swap-chain recovery can't starve
-        // the viewer.
+        // Fullscreen viewer is an in-window "cinema mode": the main
+        // layout is replaced with a viewer-only panel filling
+        // `ctx.screen_rect()`. We deliberately do NOT send
+        // `ViewportCommand::Fullscreen` — on Wayland+NVIDIA the
+        // resulting swap-chain reconfigure leaves the surface in a
+        // `VK_SUBOPTIMAL_KHR` state that presents a stale frame
+        // forever. Users who want OS-level fullscreen can use their
+        // window manager's own fullscreen hotkey (Super+F on most
+        // compositors) on the Klipp window instead.
         if self.state.fullscreen_changed {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(
-                self.state.fullscreen_viewer,
-            ));
             self.state.fullscreen_changed = false;
-            // Force re-register of the GPU viewer texture: the swap-
-            // chain reconfigure can invalidate the native binding
-            // even though `gpu_output_generation` on our side didn't
-            // change. Clearing the tracked gen forces a fresh
-            // `register_native_texture` call next frame.
-            self.viewer.gpu_texture_id = None;
-            self.viewer.gpu_texture_gen = 0;
-            // Kick enough repaints to cover the platform's resize
-            // pipeline. egui's default after-resize policy gives one
-            // immediate repaint; one extra over ~50 ms gets us
-            // through the compositor's "suboptimal present" window.
             ctx.request_repaint();
-            ctx.request_repaint_after(std::time::Duration::from_millis(50));
-            ctx.request_repaint_after(std::time::Duration::from_millis(150));
         }
 
         // 11c. Toast notifications + drag-drop cleanup

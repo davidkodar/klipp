@@ -1953,24 +1953,15 @@ impl GpuEffectsPipeline {
         self.queue.submit(std::iter::once(encoder.finish()));
         self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        // Map + poll-loop + read.
-        //
-        // On a device shared with the UI thread (phase 5a), neither
-        // `Maintain::Wait` nor `Maintain::WaitForSubmissionIndex`
-        // reliably unblocks here — the first waits for the whole
-        // queue which UI never stops filling, and the second doesn't
-        // guarantee the `map_async` callback has actually been
-        // invoked even after the submission itself is done.
-        //
-        // Instead we poll repeatedly with `Maintain::Poll` (non-
-        // blocking — returns after processing ready callbacks) and
-        // try-recv the channel, yielding the thread between ticks.
-        // A 2-second safety timeout surfaces genuinely lost submits
-        // instead of hanging the engine thread forever.
+        // Map + wait + read. `Maintain::Wait` works reliably when the
+        // device is not shared with a busy UI thread (the default —
+        // see `KLIPP_SHARED_GPU_DEVICE` for the shared path). Without
+        // contention the whole-queue Wait returns promptly.
         let slice = staging.slice(..out_bytes);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        match poll_until_mapped(&self.device, &rx) {
+        self.device.poll(wgpu::Maintain::Wait);
+        match rx.recv() {
             Ok(Ok(())) => {
                 let data = slice.get_mapped_range();
                 let result = data.to_vec();

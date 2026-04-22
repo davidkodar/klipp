@@ -133,25 +133,6 @@ impl ViewerPanel {
         let mut cmds = Vec::new();
         let available = ui.available_size();
 
-        // Debug for the fullscreen frozen-frame hunt. Log every 60
-        // calls (~1 Hz at 60 fps) so the stream is readable, and
-        // always on the very first call so "did it enter fullscreen
-        // at all" is obvious.
-        {
-            use std::sync::atomic::{AtomicU64, Ordering};
-            static CALL: AtomicU64 = AtomicU64::new(0);
-            let n = CALL.fetch_add(1, Ordering::Relaxed);
-            if n % 60 == 0 {
-                tracing::debug!(
-                    "FULLSCREEN_RENDER n={} playback={:?} has_video_tex={} has_gpu_tex={} available={:?}",
-                    n, state.playback,
-                    self.video_texture.is_some(),
-                    self.gpu_texture_id.is_some(),
-                    available,
-                );
-            }
-        }
-
         let panel_rect = egui::Rect::from_min_size(ui.cursor().min, available);
         let resp = ui.allocate_rect(panel_rect, egui::Sense::hover());
         ui.painter().rect_filled(panel_rect, 0.0, egui::Color32::BLACK);
