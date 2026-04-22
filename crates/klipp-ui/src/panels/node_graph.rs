@@ -186,7 +186,35 @@ impl NodeGraphPanel {
                     }
                 }
 
-                // Right-click on empty area → add node
+                // Visible "+" button at the right edge of the strip.
+                // Same size / vertical alignment as the node rectangles
+                // so it reads as part of the row. Right-click on any
+                // empty area also opens the menu.
+                let plus_size = STRIP_NODE_H * 0.7;
+                let plus_rect = egui::Rect::from_min_size(
+                    egui::pos2(x + STRIP_PAD, base_y + (STRIP_NODE_H - plus_size) * 0.5),
+                    egui::vec2(plus_size, plus_size),
+                );
+                let plus_resp = ui.allocate_rect(plus_rect, egui::Sense::click())
+                    .on_hover_text("Add a node to the chain");
+                let plus_color = if plus_resp.hovered() { theme.accent } else { theme.text_dim };
+                painter.rect_stroke(
+                    plus_rect, 3.0,
+                    egui::Stroke::new(1.0_f32, plus_color),
+                );
+                painter.text(
+                    plus_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "+",
+                    egui::FontId::proportional(plus_size * 0.7),
+                    plus_color,
+                );
+                if plus_resp.clicked() {
+                    self.add_menu_open = true;
+                }
+
+                // Right-click on empty area also opens the menu (kept
+                // for power users who already learned the shortcut).
                 if content_rect.contains(ui.input(|i| i.pointer.hover_pos().unwrap_or_default()))
                     && ui.input(|i| i.pointer.secondary_clicked()) {
                         self.add_menu_open = true;
