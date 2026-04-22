@@ -1959,6 +1959,9 @@ impl KlippApp {
                     image,
                     egui::TextureOptions::LINEAR,
                 );
+                if let Some((_, old)) = self.state.source_video_texture.take() {
+                    self.defer_drop_texture(old);
+                }
                 self.state.source_video_texture = Some((result.media_id, handle));
             }
         }
@@ -2068,7 +2071,9 @@ impl KlippApp {
                 Ok(FilmstripResult::Frame { media_id, frame }) => {
                     self.state.thumbnail_cache.push_filmstrip_frame(media_id, frame);
                     // Clear cached textures so they get rebuilt with the new frame
-                    self.state.filmstrip_textures.remove(&media_id);
+                    if let Some(old) = self.state.filmstrip_textures.remove(&media_id) {
+                        self.defer_drop_textures(old.into_iter().map(|(_, t)| t));
+                    }
                     // Bump per-job progress (frames_done, frames_expected).
                     // The expected count was set at spawn time from the
                     // duration / interval calculation; here we just
@@ -10906,8 +10911,11 @@ impl KlippApp {
                 let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
                 self.state.playhead = klipp_core::RationalTime::from_frames(0, seq_rate);
                 self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
-                self.state.thumbnail_textures.clear();
-                self.state.filmstrip_textures.clear();
+                let thumb_drain: Vec<_> = self.state.thumbnail_textures.drain().map(|(_, t)| t).collect();
+                self.defer_drop_textures(thumb_drain);
+                let strip_drain: Vec<_> = self.state.filmstrip_textures.drain()
+                    .flat_map(|(_, v)| v.into_iter().map(|(_, t)| t)).collect();
+                self.defer_drop_textures(strip_drain);
                 self.state.filmstrip_in_progress.clear();
                 self.state.filmstrip_queue.clear();
                 self.state.filmstrip_total_queued = 0;
@@ -11088,11 +11096,15 @@ impl KlippApp {
                     .filter(|m| !m.is_still)
                     .map(|m| (m.id, m.path.clone(), m.duration))
                     .collect();
+                let mut dropped_textures: Vec<egui::TextureHandle> = Vec::new();
                 for id in to_regen.iter().map(|(id, _, _)| *id) {
-                    self.state.filmstrip_textures.remove(&id);
+                    if let Some(strip) = self.state.filmstrip_textures.remove(&id) {
+                        dropped_textures.extend(strip.into_iter().map(|(_, t)| t));
+                    }
                     self.state.filmstrip_in_progress.remove(&id);
                     self.state.thumbnail_cache.set_filmstrip(id, Vec::new());
                 }
+                self.defer_drop_textures(dropped_textures);
                 let count = to_regen.len();
                 if count > 0 {
                     self.state.filmstrip_generating = true;
@@ -12154,7 +12166,9 @@ impl KlippApp {
                 }
                 // Clear in-memory filmstrip
                 self.state.thumbnail_cache.set_filmstrip(mid, Vec::new());
-                self.state.filmstrip_textures.remove(&mid);
+                if let Some(strip) = self.state.filmstrip_textures.remove(&mid) {
+                    self.defer_drop_textures(strip.into_iter().map(|(_, t)| t));
+                }
                 self.state.filmstrip_in_progress.remove(&mid);
                 // Re-queue
                 if let Some(item) = self.state.media_pool.get(&mid) {
@@ -13799,8 +13813,11 @@ impl KlippApp {
 
         // 6. Clear thumbnail and filmstrip caches (textures reference dropped media)
         self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
-        self.state.thumbnail_textures.clear();
-        self.state.filmstrip_textures.clear();
+        let thumb_drain: Vec<_> = self.state.thumbnail_textures.drain().map(|(_, t)| t).collect();
+        self.defer_drop_textures(thumb_drain);
+        let strip_drain: Vec<_> = self.state.filmstrip_textures.drain()
+            .flat_map(|(_, v)| v.into_iter().map(|(_, t)| t)).collect();
+        self.defer_drop_textures(strip_drain);
         self.state.filmstrip_in_progress.clear();
         self.state.filmstrip_queue.clear();
 
@@ -15379,8 +15396,11 @@ impl KlippApp {
                 let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
                 self.state.playhead = klipp_core::RationalTime::from_frames(0, seq_rate);
                 self.state.thumbnail_cache = klipp_media::ThumbnailCache::new();
-                self.state.thumbnail_textures.clear();
-                self.state.filmstrip_textures.clear();
+                let thumb_drain: Vec<_> = self.state.thumbnail_textures.drain().map(|(_, t)| t).collect();
+                self.defer_drop_textures(thumb_drain);
+                let strip_drain: Vec<_> = self.state.filmstrip_textures.drain()
+                    .flat_map(|(_, v)| v.into_iter().map(|(_, t)| t)).collect();
+                self.defer_drop_textures(strip_drain);
                 self.state.filmstrip_in_progress.clear();
                 self.state.filmstrip_queue.clear();
                 // Stop the engine so decoders are released and frame buffer is stale-free
@@ -17092,6 +17112,15 @@ impl KlippApp {
     fn defer_drop_texture(&mut self, h: egui::TextureHandle) {
         let slot = self.state.deferred_texture_drops_slot;
         self.state.deferred_texture_drops[slot].push(h);
+    }
+
+    /// Extend the current deferred-drop bucket from an iterator of
+    /// handles. Use for `HashMap::drain` / `Vec::drain` sites where
+    /// many textures retire at once (clip switch, thumbnail cache
+    /// invalidation, etc.).
+    fn defer_drop_textures(&mut self, it: impl IntoIterator<Item = egui::TextureHandle>) {
+        let slot = self.state.deferred_texture_drops_slot;
+        self.state.deferred_texture_drops[slot].extend(it);
     }
 
     /// Register (or re-register) `FrameBuffer.gpu_output` with
@@ -21012,7 +21041,9 @@ impl KlippApp {
             );
             if !still_open {
                 self.state.file_info = None;
-                self.state.file_info_thumb = None;
+                if let Some(tex) = self.state.file_info_thumb.take() {
+                    self.defer_drop_texture(tex);
+                }
             }
         }
 

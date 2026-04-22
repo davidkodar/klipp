@@ -2283,6 +2283,10 @@ impl BrowserPanel {
         // select the new folder, and show a toast.
         let mut pending_commit_folder: Option<String> = None;
         // Right-click → "Rename" or F2 → (path_to_rename).
+        // Buffer handles that need deferred-drop on the immutable-self
+        // paths (e.g. keyboard shortcut handling while `filtered` is borrowed).
+        // Flushed through `defer_drop_textures` after the immutable borrow ends.
+        let mut pending_defer_drops: Vec<egui::TextureHandle> = Vec::new();
         let mut pending_start_rename: Option<std::path::PathBuf> = None;
         // Inline rename committed → (old_path, new_name).
         let mut pending_commit_rename: Option<(std::path::PathBuf, String)> = None;
@@ -2472,7 +2476,9 @@ impl BrowserPanel {
                         session.stop();
                     }
                     state.quick_look_path = None;
-                    state.quick_look_texture = None;
+                    if let Some(tex) = state.quick_look_texture.take() {
+                        pending_defer_drops.push(tex);
+                    }
                     state.quick_look_info = None;
                     state.quick_look_audio = None;
                 } else if let Some(ref anchor) = self.files_selection_anchor {
@@ -2484,7 +2490,9 @@ impl BrowserPanel {
                         state.quick_look_path = Some(anchor.clone());
                         // Texture + info are loaded lazily in the
                         // Quick Look render pass in app.rs.
-                        state.quick_look_texture = None;
+                        if let Some(tex) = state.quick_look_texture.take() {
+                            pending_defer_drops.push(tex);
+                        }
                         state.quick_look_info = None;
                         state.quick_look_audio = None;
                     }
@@ -3702,6 +3710,13 @@ impl BrowserPanel {
                     }
                 }
             }
+        }
+
+        // ── Flush any textures queued for deferred drop during the
+        // keyboard-handler section (where `filtered` held an immutable
+        // borrow of `self`).
+        if !pending_defer_drops.is_empty() {
+            self.defer_drop_textures(pending_defer_drops);
         }
 
         // ── Set rating ──
