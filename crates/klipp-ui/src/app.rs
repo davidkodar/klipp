@@ -9837,6 +9837,19 @@ impl KlippApp {
             AppCommand::DeleteGradeStill { index } => {
                 if *index < self.state.grade_stills.len() {
                     let removed_filename = self.state.grade_stills[*index].filename.clone();
+                    // Defer the texture drop for two frames — the
+                    // compare thumbnail may still be bound in the
+                    // paint command set that's being submitted this
+                    // tick, and dropping the `TextureHandle` now
+                    // would destroy the underlying wgpu texture
+                    // before the submit lands, triggering:
+                    //   Texture with 'egui_texid_Managed(N)' has
+                    //   been destroyed
+                    // The same pattern is used everywhere else a
+                    // managed texture gets replaced mid-frame.
+                    if let Some(tex) = self.state.grade_stills[*index].texture.take() {
+                        self.defer_drop_texture(tex);
+                    }
                     self.state.grade_stills.remove(*index);
                     if self.state.active_grade_still == Some(*index) {
                         self.state.active_grade_still = None;
