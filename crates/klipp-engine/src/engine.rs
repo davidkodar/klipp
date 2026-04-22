@@ -5013,6 +5013,22 @@ impl PlaybackEngine {
     /// Runs ONE frame per call to stay responsive to new commands.
     fn prerender_cache_frames(&mut self) {
         mark_stage(EngineStage::Prerender);
+        // Disabled. The GPU grade path called from here sometimes
+        // hangs forever on Wayland+NVIDIA — engine thread stuck for
+        // 70+ seconds at stage=Prerender, watchdog fires, UI follows
+        // it down, app becomes unresponsive. Until we have proper
+        // fencing/timeouts on the readback path inside
+        // `post_process_rgba_inner`, leave prerender off. Cost is
+        // small: paused → play from a non-playhead position
+        // re-renders the first frame on-demand (tens of ms) instead
+        // of hitting a warm cache.
+        //
+        // Re-enable once (1) the GPU deadlock is understood and (2)
+        // we have a way to bound the grade chain runtime per call.
+        // The `mark_stage` above stays so any accidental re-enable
+        // shows up in watchdog logs immediately.
+        return;
+        #[allow(unreachable_code)]
         // Skip if render cache is disabled
         if !self.render_cache_disk.is_enabled() { return; }
         // Only pre-render if we have a clip with a non-identity grade
