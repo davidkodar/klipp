@@ -22269,6 +22269,19 @@ impl KlippApp {
                     ui.ctx().request_repaint();
                 }
                 ui.separator();
+                let nodes_label = if self.state.show_node_strip {
+                    egui::RichText::new("Nodes").size(10.0).color(theme.text_accent)
+                } else {
+                    egui::RichText::new("Nodes").size(10.0).color(theme.text_dim)
+                };
+                if ui.selectable_label(self.state.show_node_strip, nodes_label)
+                    .on_hover_text("Show / hide the node-graph strip below the timeline")
+                    .clicked()
+                {
+                    self.state.show_node_strip = !self.state.show_node_strip;
+                    ui.ctx().request_repaint();
+                }
+                ui.separator();
                 {
                     use crate::state::ColorToolsPosition;
                     let is_bottom = self.state.color_tools_position == ColorToolsPosition::Bottom;
