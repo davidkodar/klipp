@@ -1408,29 +1408,45 @@ impl GpuEffectsPipeline {
         Self::try_consume_slot(&mut self.scope_img_slots[other_idx], &mut self.scope_last_img);
 
         // Edge case: the slot we're about to resubmit on may still be
-        // mapped from an even older frame (skipped consume). Drain it
-        // synchronously — rare, only on pathological frame stalls.
+        // mapped from an older frame (skipped consume). Drain it,
+        // polling the device so the callback can fire and
+        // `try_consume_slot` can pick it up. Bounded spin — this is
+        // the hot frame path, not a one-off cleanup.
         if self.scope_img_slots[slot_idx].pending_rx.is_some() {
-            // Poll-loop instead of blocking Wait for shared-device safety.
-            // See `poll_until_mapped`. A brief spin is fine here —
-            // this is a rare drain path, not a hot-frame path.
             let start = std::time::Instant::now();
-            let timeout = std::time::Duration::from_millis(500);
-            loop {
+            let timeout = std::time::Duration::from_millis(50);
+            while self.scope_img_slots[slot_idx].pending_rx.is_some() {
                 self.device.poll(wgpu::Maintain::Poll);
+                Self::try_consume_slot(
+                    &mut self.scope_img_slots[slot_idx],
+                    &mut self.scope_last_img,
+                );
                 if start.elapsed() >= timeout { break; }
-                // Can't easily try_recv an Option<Receiver> without taking
-                // ownership; 2 ms backoff is fine for a slot drain.
-                std::thread::sleep(std::time::Duration::from_millis(2));
-                // Caller's `try_consume_slot` will pick the result up.
-                break;
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            Self::try_consume_slot(&mut self.scope_img_slots[slot_idx], &mut self.scope_last_img);
         }
 
-        // Ensure staging buffer in current slot is sized for this frame.
+        // Ensure staging buffer in current slot is sized for this
+        // frame. Realloc also when `pending_rx` is still Some after
+        // the drain — that means a prior readback's callback fired
+        // (buffer is in mapped state on wgpu's side) but we never
+        // got to consume it, and submitting work to a still-mapped
+        // buffer is a wgpu validation panic. Dropping the Option
+        // releases the old buffer (wgpu unmaps on drop), and we
+        // allocate a fresh one so the submit can't collide.
         {
             let slot = &mut self.scope_img_slots[slot_idx];
+            let stuck = slot.pending_rx.is_some();
+            if stuck {
+                tracing::warn!(
+                    "SCOPE_STAGING_STUCK slot={} pending readback did not drain in 50ms — \
+                     reallocating staging to avoid still-mapped submit",
+                    slot_idx,
+                );
+                slot.pending_rx = None;
+                slot.staging = None;
+                slot.size = 0;
+            }
             if slot.size < byte_size || slot.staging.is_none() {
                 slot.staging = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("scope_img_staging_slot"),
@@ -1472,22 +1488,29 @@ impl GpuEffectsPipeline {
     /// mapped buffer.
     fn flush_scope_slots(&mut self) {
         for i in 0..2 {
-            if self.scope_img_slots[i].pending_rx.is_some() {
-                // Poll-loop instead of blocking Wait for shared-device safety.
-            // See `poll_until_mapped`. A brief spin is fine here —
-            // this is a rare drain path, not a hot-frame path.
+            if self.scope_img_slots[i].pending_rx.is_none() { continue; }
             let start = std::time::Instant::now();
             let timeout = std::time::Duration::from_millis(500);
-            loop {
+            while self.scope_img_slots[i].pending_rx.is_some() {
                 self.device.poll(wgpu::Maintain::Poll);
+                Self::try_consume_slot(
+                    &mut self.scope_img_slots[i],
+                    &mut self.scope_last_img,
+                );
                 if start.elapsed() >= timeout { break; }
-                // Can't easily try_recv an Option<Receiver> without taking
-                // ownership; 2 ms backoff is fine for a slot drain.
-                std::thread::sleep(std::time::Duration::from_millis(2));
-                // Caller's `try_consume_slot` will pick the result up.
-                break;
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
-                Self::try_consume_slot(&mut self.scope_img_slots[i], &mut self.scope_last_img);
+            // If the callback still hasn't delivered after 500ms,
+            // drop the pending rx + buffer so the next render can't
+            // trip the still-mapped-buffer validation panic.
+            if self.scope_img_slots[i].pending_rx.is_some() {
+                tracing::warn!(
+                    "SCOPE_FLUSH_TIMEOUT slot={} pending readback gave up after 500ms — dropping staging",
+                    i,
+                );
+                self.scope_img_slots[i].pending_rx = None;
+                self.scope_img_slots[i].staging = None;
+                self.scope_img_slots[i].size = 0;
             }
         }
     }
