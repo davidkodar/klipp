@@ -348,6 +348,22 @@ fn mark_stage(s: EngineStage) {
     ENGINE_STAGE.store(s as u64, Ordering::Relaxed);
 }
 
+/// Read process RSS in MB from `/proc/self/statm` (Linux). Returns 0
+/// on non-Linux or if the proc file can't be read. Cheap enough
+/// (single file read, tens of microseconds) to call every 10 s.
+fn read_rss_mb() -> f64 {
+    let Ok(statm) = std::fs::read_to_string("/proc/self/statm") else {
+        return 0.0;
+    };
+    let Some(rss_pages_str) = statm.split_whitespace().nth(1) else {
+        return 0.0;
+    };
+    let Ok(pages) = rss_pages_str.parse::<u64>() else {
+        return 0.0;
+    };
+    (pages * 4096) as f64 / (1024.0 * 1024.0)
+}
+
 /// Gate for the GPU-resident viewer output path. When on, the engine
 /// mirrors the graded frame into `FrameBuffer.gpu_output` on the
 /// shared wgpu device so the UI can sample it directly without a
@@ -581,6 +597,12 @@ pub struct PlaybackEngine {
     dbg_commands_handled: u64,
     frames_consumed: u64,
     last_playback_log: std::time::Instant,
+    /// Reliability telemetry — emitted every 10s so a long-playback
+    /// log shows memory/queue trends at a glance. `last_rss_mb` is
+    /// kept so each line can print the delta since the previous one
+    /// (monotonic growth over a 2-hour soak is the leak signature).
+    last_reliability_time: std::time::Instant,
+    last_rss_mb: f64,
     // Color pipeline — post-processing on RGBA frames before display
     color_pipeline: klipp_color::ColorPipeline,
     // Node graph executor — processes per-clip color grading
@@ -900,6 +922,8 @@ impl PlaybackEngine {
             dbg_commands_handled: 0,
             frames_consumed: 0,
             last_playback_log: std::time::Instant::now(),
+            last_reliability_time: std::time::Instant::now(),
+            last_rss_mb: 0.0,
             color_pipeline: klipp_color::ColorPipeline::new(),
             // GraphExecutor MUST have its own GPU pipeline — `new_cpu_only`
             // forces every node onto the CPU and turns the entire grade
@@ -974,6 +998,69 @@ impl PlaybackEngine {
         fg.set_playing(self.state == PlaybackState::Playing);
         fg.set_scrubbing(self.is_scrubbing);
         self.foreground_activity = Some(fg);
+    }
+
+    /// Periodic reliability telemetry, emitted from the engine
+    /// run-loop every 10 s.
+    ///
+    /// Grep `RELIABILITY` in `klipp-debug.log` over a long soak run
+    /// to see monotonic trends. Monotonic RSS growth = leak. Decoder
+    /// queue saturating = decode is falling behind (or the consumer
+    /// isn't draining). Frame-buffer capacities climbing above the
+    /// single-frame working set = somewhere a buffer is being kept
+    /// larger than needed (reallocs without shrinks, or swap-race).
+    fn emit_reliability_telemetry(&mut self) {
+        let rss_mb = read_rss_mb();
+        let rss_delta = if self.last_rss_mb > 0.0 {
+            rss_mb - self.last_rss_mb
+        } else {
+            0.0
+        };
+        self.last_rss_mb = rss_mb;
+
+        let (v1_q_len, v1_q_cap) = self
+            .v1_decoder
+            .as_ref()
+            .map(|d| {
+                let q = d.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+                (q.len(), q.capacity())
+            })
+            .unwrap_or((0, 0));
+
+        let overlay_qs: Vec<String> = self
+            .overlay_decoders
+            .iter()
+            .map(|(idx, d)| {
+                let q = d.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+                format!("{}:{}/{}", idx, q.len(), q.capacity())
+            })
+            .collect();
+
+        let (fb_data_mb, fb_pending_mb, fb_has_gpu, fb_generation) = {
+            let fb = self
+                .frame_buffer
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            (
+                fb.data.capacity() as f64 / (1024.0 * 1024.0),
+                fb.pending_data.capacity() as f64 / (1024.0 * 1024.0),
+                fb.gpu_output.is_some(),
+                fb.generation,
+            )
+        };
+
+        tracing::info!(
+            "RELIABILITY rss={:.1}MB rss_delta={:+.1}MB state={:?} v1_q={}/{} overlays=[{}] \
+             fb_data_cap={:.2}MB fb_pending_cap={:.2}MB fb_has_gpu={} fb_gen={} \
+             drops={} frames_consumed={}",
+            rss_mb,
+            rss_delta,
+            self.state,
+            v1_q_len, v1_q_cap,
+            overlay_qs.join(","),
+            fb_data_mb, fb_pending_mb, fb_has_gpu, fb_generation,
+            self.dropped_frames, self.frames_consumed,
+        );
     }
 
     /// Helper: mirror the current `state == Playing` to the
@@ -1083,6 +1170,17 @@ impl PlaybackEngine {
                     // graph instead of caching stale output.
                     self.prerender_cache_frames();
                 }
+            }
+
+            // Reliability telemetry — once every 10s. Tracks the
+            // signals that diverge during a freeze: RSS (leak
+            // pressure), decoder queue fullness (decode stalled),
+            // frame-buffer capacities (pending-buffer growth), so a
+            // soak-test log lets us spot where things went wrong
+            // before the watchdog fired.
+            if self.last_reliability_time.elapsed() >= Duration::from_millis(10_000) {
+                self.emit_reliability_telemetry();
+                self.last_reliability_time = std::time::Instant::now();
             }
 
             // Emit perf stats periodically

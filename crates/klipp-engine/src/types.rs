@@ -357,6 +357,10 @@ impl FrameQueue {
         self.frames.len()
     }
 
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     pub fn clear(&mut self) {
         self.frames.clear();
     }
