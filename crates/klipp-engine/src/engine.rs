@@ -281,6 +281,13 @@ use tracing::{debug, error, info, warn};
 /// diagnostics; nothing load-bearing reads it.
 pub static ENGINE_TICK: AtomicU64 = AtomicU64::new(0);
 
+/// Monotonic heartbeat for the UI `update()` loop. Bumped at the top
+/// of every `App::update` call. Same shape as `ENGINE_TICK` — the
+/// watchdog in klipp-app reads it and logs when it stops advancing.
+/// Lets us tell "engine is stuck" from "UI is stuck from "both are
+/// stuck" when a hard freeze hits.
+pub static UI_TICK: AtomicU64 = AtomicU64::new(0);
+
 /// Fine-grained "last waypoint reached" marker for the watchdog. The
 /// engine thread updates this at each major stage of a tick; when the
 /// watchdog detects a stall, it reads this value and logs WHICH
@@ -317,6 +324,15 @@ pub enum EngineStage {
     BlendComposite = 15,
     FbWrite = 16,
     LoopBottom = 17,
+    /// `regrade_cached_frame` — runs when paused and a slider-scrub
+    /// param change just landed. Calls `post_process_rgba_inner`
+    /// directly (bypasses the wrapper's own stage marks) plus
+    /// overlay compositing and scope texture render.
+    PausedRegrade = 18,
+    /// `prerender_cache_frames` — paused-only background work that
+    /// pre-grades one nearby frame per tick. One `post_process_rgba_inner`
+    /// invocation plus two cache writes (hot + disk).
+    Prerender = 19,
 }
 
 pub fn engine_stage_name(v: u64) -> &'static str {
@@ -339,6 +355,8 @@ pub fn engine_stage_name(v: u64) -> &'static str {
         15 => "BlendComposite",
         16 => "FbWrite",
         17 => "LoopBottom",
+        18 => "PausedRegrade",
+        19 => "Prerender",
         _ => "Unknown",
     }
 }
@@ -485,8 +503,35 @@ pub fn apply_param_changes(
     if queue.is_empty() {
         return 0;
     }
+    // Try-write with logging: a plain `sequence.write()` silently
+    // blocks the engine thread forever if another holder never
+    // releases (we hit this during color-grade slider drags — 20 s+
+    // stalls at stage=ParamDrain in the watchdog log). Retry every
+    // 50 ms, log every 1 s so the freeze leaves a trail identifying
+    // the owning thread via the `current_holder` telemetry below.
+    let try_start = std::time::Instant::now();
+    let mut last_log = try_start;
+    let mut seq = loop {
+        match sequence.try_write() {
+            Ok(w) => break w,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if last_log.elapsed() >= std::time::Duration::from_secs(1) {
+                    let held = SEQ_WRITE_HOLDER.load(std::sync::atomic::Ordering::Acquire);
+                    tracing::error!(
+                        "PARAM_DRAIN_BLOCKED {}ms waiting for sequence.write — current holder={} queue_len={}",
+                        try_start.elapsed().as_millis(),
+                        seq_write_holder_name(held),
+                        queue.len(),
+                    );
+                    last_log = std::time::Instant::now();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(std::sync::TryLockError::Poisoned(e)) => break e.into_inner(),
+        }
+    };
+    seq_write_holder_set(SeqWriteHolder::EngineParamDrain);
     let mut applied = 0usize;
-    let mut seq = sequence.write().unwrap_or_else(|e| e.into_inner());
     while let Some(change) = queue.pop() {
         if let Some(clip) = seq.all_clips_mut().find(|c| c.id == change.clip_id) {
             if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == change.node_id) {
@@ -495,11 +540,49 @@ pub fn apply_param_changes(
             }
         }
     }
+    seq_write_holder_set(SeqWriteHolder::None);
+    drop(seq);
     if applied > 0 {
         *grade_hash = 0;
         *graph_arc = None;
     }
     applied
+}
+
+/// Ownership-tag for the shared `Arc<RwLock<Sequence>>`. Every
+/// `sequence.write()` call that holds the guard for more than a
+/// few microseconds sets this to its site name on acquire and
+/// clears it on release. The engine's `apply_param_changes`
+/// try-write loop reads this atomic when it's been blocked for >1s
+/// so the diagnostic log names the blocker instead of saying
+/// "something".
+///
+/// Stored as a `u64` encoding the `SeqWriteHolder` discriminant —
+/// read cost is a single atomic load.
+pub static SEQ_WRITE_HOLDER: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[repr(u64)]
+#[derive(Copy, Clone, Debug)]
+pub enum SeqWriteHolder {
+    None = 0,
+    EngineParamDrain = 1,
+    UiSyncToEngine = 2,
+    UiStabilizationComplete = 3,
+}
+
+pub fn seq_write_holder_set(h: SeqWriteHolder) {
+    SEQ_WRITE_HOLDER.store(h as u64, std::sync::atomic::Ordering::Release);
+}
+
+pub fn seq_write_holder_name(v: u64) -> &'static str {
+    match v {
+        0 => "None",
+        1 => "EngineParamDrain",
+        2 => "UiSyncToEngine",
+        3 => "UiStabilizationComplete",
+        _ => "Unknown",
+    }
 }
 
 pub struct PlaybackEngine {
@@ -4929,6 +5012,7 @@ impl PlaybackEngine {
     /// Priority: ±2 seconds from playhead first, then rest of clip.
     /// Runs ONE frame per call to stay responsive to new commands.
     fn prerender_cache_frames(&mut self) {
+        mark_stage(EngineStage::Prerender);
         // Skip if render cache is disabled
         if !self.render_cache_disk.is_enabled() { return; }
         // Only pre-render if we have a clip with a non-identity grade
@@ -5969,6 +6053,7 @@ impl PlaybackEngine {
     /// Re-grade the cached pre-grade frame without re-decoding.
     /// Called when color parameters change while paused.
     fn regrade_cached_frame(&mut self) {
+        mark_stage(EngineStage::PausedRegrade);
         self.ensure_gpu_effects();
         // Case 1: V1 video exists — regrade and composite with overlay(s)
         if let Some((ref rgba_arc, w, h)) = self.cached_pregrade_frame.clone() {

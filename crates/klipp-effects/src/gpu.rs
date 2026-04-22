@@ -433,6 +433,15 @@ impl GpuEffectsPipeline {
         {
             let flag = device_lost.clone();
             device.set_device_lost_callback(Box::new(move |reason, msg| {
+                // `ReplacedCallback` fires when a newer
+                // `set_device_lost_callback` takes over this slot —
+                // the device itself is fine. Treating it as a real
+                // loss triggered spurious pipeline rebuilds (see
+                // `compiled 61 pipelines` bursts after normal use).
+                // Only flag on genuine loss reasons.
+                if matches!(reason, wgpu::DeviceLostReason::ReplacedCallback) {
+                    return;
+                }
                 error!("GPU effects: device lost ({reason:?}): {msg} — disabling GPU effects");
                 flag.store(true, Ordering::SeqCst);
             }));

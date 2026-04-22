@@ -158,50 +158,74 @@ fn main() -> Result<()> {
     mark("engine thread spawned");
     info!("Engine thread spawned");
 
-    // Hang watchdog. Reads `ENGINE_TICK` every 500 ms. If the counter
-    // hasn't advanced in 2 s the engine thread is stuck — most likely
-    // blocked inside a GPU `device.poll(Wait)` fence or a mutex. Log
-    // loudly (ERROR) with the last-seen tick so we can correlate with
-    // the most recent PERF post_process_wrap line in the same log. No
-    // recovery action — this is strictly a diagnostic signal for the
-    // "app won't close during slider drag" class of bug.
+    // Hang watchdog. Reads `ENGINE_TICK` and `UI_TICK` every 500 ms.
+    // If either counter hasn't advanced in 2 s the owning thread is
+    // stuck. Logs ERROR lines with the last-seen tick and (for the
+    // engine) the last-entered `EngineStage` so we can correlate with
+    // nearby PERF lines. No recovery action — this is strictly a
+    // diagnostic signal for the "app froze, had to force-quit" class
+    // of bug.
+    //
+    // The two counters are independent: a hard freeze can hit the
+    // engine thread, the UI thread, or both. A soak log where only
+    // `UI_WATCHDOG` fires tells a very different story than one where
+    // only `ENGINE_WATCHDOG` fires, and both firing together points
+    // at a shared-resource deadlock.
     std::thread::Builder::new()
         .name("klipp-watchdog".into())
         .spawn(|| {
             use std::sync::atomic::Ordering;
-            let mut last_seen = 0u64;
-            let mut last_change = std::time::Instant::now();
-            let mut alerted = false;
+            let mut last_engine = 0u64;
+            let mut last_engine_change = std::time::Instant::now();
+            let mut engine_alerted = false;
+            let mut last_ui = 0u64;
+            let mut last_ui_change = std::time::Instant::now();
+            let mut ui_alerted = false;
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(500));
-                let current = klipp_engine::ENGINE_TICK.load(Ordering::Relaxed);
-                if current != last_seen {
-                    if alerted {
-                        let stalled_ms = last_change.elapsed().as_millis();
+
+                let current_engine = klipp_engine::ENGINE_TICK.load(Ordering::Relaxed);
+                if current_engine != last_engine {
+                    if engine_alerted {
                         tracing::error!(
                             "ENGINE_WATCHDOG RECOVERED after {}ms — tick advanced {} -> {}",
-                            stalled_ms, last_seen, current,
+                            last_engine_change.elapsed().as_millis(),
+                            last_engine, current_engine,
                         );
-                        alerted = false;
+                        engine_alerted = false;
                     }
-                    last_seen = current;
-                    last_change = std::time::Instant::now();
-                } else {
-                    let stalled = last_change.elapsed();
-                    if stalled >= std::time::Duration::from_millis(2000) {
-                        // Read the engine's last-entered waypoint so
-                        // the log names the operation that's hanging
-                        // (GradeExecute, GpuEncodeToTexture, etc.),
-                        // not just "engine thread is stuck".
-                        let stage_id = klipp_engine::ENGINE_STAGE.load(Ordering::Relaxed);
+                    last_engine = current_engine;
+                    last_engine_change = std::time::Instant::now();
+                } else if last_engine_change.elapsed() >= std::time::Duration::from_millis(2000) {
+                    let stage_id = klipp_engine::ENGINE_STAGE.load(Ordering::Relaxed);
+                    tracing::error!(
+                        "ENGINE_WATCHDOG STALLED {}ms at tick={} stage={} — engine thread is not iterating",
+                        last_engine_change.elapsed().as_millis(),
+                        last_engine,
+                        klipp_engine::engine_stage_name(stage_id),
+                    );
+                    engine_alerted = true;
+                }
+
+                let current_ui = klipp_engine::UI_TICK.load(Ordering::Relaxed);
+                if current_ui != last_ui {
+                    if ui_alerted {
                         tracing::error!(
-                            "ENGINE_WATCHDOG STALLED {}ms at tick={} stage={} — engine thread is not iterating",
-                            stalled.as_millis(),
-                            last_seen,
-                            klipp_engine::engine_stage_name(stage_id),
+                            "UI_WATCHDOG RECOVERED after {}ms — tick advanced {} -> {}",
+                            last_ui_change.elapsed().as_millis(),
+                            last_ui, current_ui,
                         );
-                        alerted = true;
+                        ui_alerted = false;
                     }
+                    last_ui = current_ui;
+                    last_ui_change = std::time::Instant::now();
+                } else if last_ui_change.elapsed() >= std::time::Duration::from_millis(2000) {
+                    tracing::error!(
+                        "UI_WATCHDOG STALLED {}ms at tick={} — UI thread (update) is not running",
+                        last_ui_change.elapsed().as_millis(),
+                        last_ui,
+                    );
+                    ui_alerted = true;
                 }
             }
         })?;

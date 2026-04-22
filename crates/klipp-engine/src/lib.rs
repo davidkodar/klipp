@@ -68,7 +68,7 @@ pub mod types;
 pub mod video_decoder;
 
 pub use composite::{composite_layers, CompositeLayer};
-pub use engine::{detect_rotation_from_path, engine_stage_name, generate_filmstrip_incremental, generate_thumbnail, generate_thumbnail_at_size, generate_thumbnail_non_black, generate_thumbnail_at_size_non_black, is_frame_black, EngineStage, PlaybackEngine, PlaybackState, SequentialFrameDecoder, ENGINE_STAGE, ENGINE_TICK};
+pub use engine::{detect_rotation_from_path, engine_stage_name, generate_filmstrip_incremental, generate_thumbnail, generate_thumbnail_at_size, generate_thumbnail_non_black, generate_thumbnail_at_size_non_black, is_frame_black, seq_write_holder_set, EngineStage, PlaybackEngine, PlaybackState, SeqWriteHolder, SequentialFrameDecoder, ENGINE_STAGE, ENGINE_TICK, UI_TICK};
 pub use frame::{CpuFrame, CpuFrameRef, Frame, FrameRef, GpuFrame, GpuFrameRef};
 pub use texture::{FrameBuffer, SharedFrameBuffer};
 pub use types::{AudioRingBuf, DecodedFrame, FrameQueue, SharedFrameQueue};

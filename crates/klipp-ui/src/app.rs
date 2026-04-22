@@ -2725,12 +2725,14 @@ impl KlippApp {
 
     fn sync_sequence_to_engine(&self) {
         let mut seq = self.sequence.write().unwrap_or_else(|e| e.into_inner());
+        klipp_engine::seq_write_holder_set(klipp_engine::SeqWriteHolder::UiSyncToEngine);
         let active = &self.state.sequences[self.state.active_sequence_idx];
         // Flatten compound clips so the engine receives a plain sequence
         // with no ClipKind::Sequence clips — the engine has no compound-clip
         // awareness. This mirrors the export path exactly: viewer and export
         // are consistent by construction.
         *seq = klipp_timeline::flatten::flatten_sequence(active, &self.state.sequences);
+        klipp_engine::seq_write_holder_set(klipp_engine::SeqWriteHolder::None);
     }
 
     /// Fast UI-thread re-grade at reduced resolution for instant scope
@@ -11527,6 +11529,7 @@ impl KlippApp {
                                 let window_secs = (smoothing.clamp(0.0, 1.0) * duration_secs).max(0.05);
                                 let smoothed = klipp_effects::stabilization::smooth_trajectory(&data, window_secs);
                                 if let Ok(mut seq) = sequence.write() {
+                                    klipp_engine::seq_write_holder_set(klipp_engine::SeqWriteHolder::UiStabilizationComplete);
                                     for track in &mut seq.tracks {
                                         if let Some(clip) = track.find_clip_mut(clip_id) {
                                             clip.stabilization_data = Some(data);
@@ -11534,6 +11537,7 @@ impl KlippApp {
                                             break;
                                         }
                                     }
+                                    klipp_engine::seq_write_holder_set(klipp_engine::SeqWriteHolder::None);
                                 }
                                 let _ = event_tx.send(AppEvent::StabilizationComplete { clip_id });
                             }
@@ -17174,6 +17178,11 @@ pub(crate) fn alloc_texture_logged(
 
 impl eframe::App for KlippApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Heartbeat for the freeze watchdog in klipp-app::main. Bumped
+        // at the very top so any stall below (layout, viewer paint,
+        // node graph layout, mutex wait) freezes the counter.
+        klipp_engine::UI_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         // End-to-end UI tick timing. A single update() that exceeds the
         // 16.6 ms frame budget starves the window of paint events —
         // that's the "app feels frozen" symptom the user sees during
@@ -18521,8 +18530,22 @@ impl eframe::App for KlippApp {
         // we have 16.6 ms, so anything > 25 ms dropped at least one frame.
         // Correlate the timestamp with ENGINE_TICK_SLOW / PERF post_process_wrap /
         // SCOPE_PREVIEW_FAST lines to see which subsystem owned the time.
+        //
+        // Also logs a separate UI_TICK_FROZEN line at ERROR level when the
+        // tick runs longer than 2 s — that's the threshold where the user
+        // starts reaching for Ctrl-C. Having a distinct log name makes the
+        // "what actually froze the app" grep trivial on a soak run.
         let ui_tick_ms = t_update_start.elapsed().as_secs_f64() * 1000.0;
-        if ui_tick_ms > 25.0 {
+        if ui_tick_ms > 2000.0 {
+            tracing::error!(
+                "UI_TICK_FROZEN {:.0}ms state={:?} show_scopes={} show_color={} viewer_mode={:?}",
+                ui_tick_ms,
+                self.state.playback,
+                self.state.show_scopes,
+                self.state.show_color_panel,
+                self.state.viewer_mode,
+            );
+        } else if ui_tick_ms > 25.0 {
             tracing::debug!(
                 "UI_TICK_SLOW {:.1}ms state={:?} show_scopes={} show_color={} viewer_mode={:?}",
                 ui_tick_ms,
