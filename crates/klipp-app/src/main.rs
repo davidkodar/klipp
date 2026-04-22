@@ -198,11 +198,13 @@ fn main() -> Result<()> {
                     last_engine_change = std::time::Instant::now();
                 } else if last_engine_change.elapsed() >= std::time::Duration::from_millis(2000) {
                     let stage_id = klipp_engine::ENGINE_STAGE.load(Ordering::Relaxed);
+                    let gpu_stage_id = klipp_effects::gpu::GPU_STAGE.load(Ordering::Acquire);
                     tracing::error!(
-                        "ENGINE_WATCHDOG STALLED {}ms at tick={} stage={} — engine thread is not iterating",
+                        "ENGINE_WATCHDOG STALLED {}ms at tick={} stage={} gpu_stage={} — engine thread is not iterating",
                         last_engine_change.elapsed().as_millis(),
                         last_engine,
                         klipp_engine::engine_stage_name(stage_id),
+                        klipp_effects::gpu::gpu_stage_name(gpu_stage_id),
                     );
                     engine_alerted = true;
                 }

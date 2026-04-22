@@ -393,7 +393,9 @@ impl GpuScopesPipeline {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
+        crate::gpu::mark_gpu_stage(crate::gpu::GpuStage::ScopeHistogram);
         let bins = self.download_bins(num_bins as usize);
+        crate::gpu::mark_gpu_stage(crate::gpu::GpuStage::Idle);
         let mut data = GpuHistogramData {
             r: [0u32; 256], g: [0u32; 256], b: [0u32; 256], luma: [0u32; 256],
         };
@@ -447,7 +449,9 @@ impl GpuScopesPipeline {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
+        crate::gpu::mark_gpu_stage(crate::gpu::GpuStage::ScopeWaveform);
         let flat_bins = self.download_bins(num_bins as usize);
+        crate::gpu::mark_gpu_stage(crate::gpu::GpuStage::Idle);
         let mut bins = vec![[0u32; 256]; display_columns as usize];
         for col in 0..display_columns as usize {
             let start = col * 256;
@@ -499,7 +503,9 @@ impl GpuScopesPipeline {
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
+        crate::gpu::mark_gpu_stage(crate::gpu::GpuStage::ScopeParade);
         let flat_bins = self.download_bins(num_bins as usize);
+        crate::gpu::mark_gpu_stage(crate::gpu::GpuStage::Idle);
         let dc = display_columns as usize;
         let mut red = vec![[0u32; 256]; dc];
         let mut green = vec![[0u32; 256]; dc];

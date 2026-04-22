@@ -443,6 +443,7 @@ impl GpuNv12Converter {
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
+        crate::gpu::mark_gpu_stage(crate::gpu::GpuStage::Nv12Convert);
         let map_result = {
             let start = std::time::Instant::now();
             let timeout = std::time::Duration::from_secs(2);
@@ -458,6 +459,7 @@ impl GpuNv12Converter {
                 }
             }
         };
+        crate::gpu::mark_gpu_stage(crate::gpu::GpuStage::Idle);
 
         match map_result {
             Some(Ok(())) => {

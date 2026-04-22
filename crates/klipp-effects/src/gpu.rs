@@ -346,6 +346,83 @@ const WORKGROUP_SIZE: u32 = 256;
 /// engine watchdog notices.
 const MAP_POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Fine-grained "inside which GPU call" marker, parallel to the
+/// engine's `ENGINE_STAGE` waypoint. The grade-path stall we chase
+/// always shows up as `ENGINE_STAGE=Prerender` (or PausedRegrade,
+/// PostProcessInner), which tells us which engine *phase* is stuck
+/// but not which underlying GPU operation inside that phase. This
+/// atomic narrows it to the specific blocking call — map_async
+/// wait, buffer drain, etc.
+///
+/// Written with `Release`, read by the watchdog with `Acquire`.
+pub static GPU_STAGE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[repr(u64)]
+#[derive(Copy, Clone, Debug)]
+pub enum GpuStage {
+    Idle = 0,
+    /// `bridge_u8_to_linear_into_chain` — u8 sRGB → linear f32
+    /// compute shader + GPU→CPU readback of the linear buffer.
+    /// The readback is the usual hang site.
+    BridgeU8 = 1,
+    /// `flush_chain_to_cpu` — drains the current grade-chain ping-
+    /// pong buffer back to CPU linear RGBA. Blocking readback.
+    FlushChain = 2,
+    /// `linear_rgba_to_u8_gpu` — linear f32 → sRGB u8 compute +
+    /// blocking readback. Called at the end of post_process_rgba
+    /// for cache writes and scope input.
+    LinearRgbaToU8 = 3,
+    /// Scope waveform's max-count refresh: runs ~once every 30
+    /// scope frames, does a synchronous readback of the waveform
+    /// bins histogram. Single staging buffer, no ring — a hang
+    /// here means the next max refresh cycle can't proceed.
+    ScopeWfMaxRefresh = 4,
+    /// Scope image ring-buffered readback drain — the hot-frame
+    /// path for waveform/parade image output. Blocking drain when
+    /// the slot we want to reuse still has a pending map_async.
+    ScopeImgDrain = 5,
+    /// `compute_histogram` in gpu_scopes.rs — blocking readback
+    /// of histogram bins for the color panel.
+    ScopeHistogram = 6,
+    /// `compute_waveform` in gpu_scopes.rs.
+    ScopeWaveform = 7,
+    /// `compute_parade` in gpu_scopes.rs.
+    ScopeParade = 8,
+    /// `Frame::into_cpu` in klipp-engine — reads back a
+    /// decode-thread-produced GpuFrame to CPU.
+    FrameIntoCpu = 9,
+    /// `P010Converter::convert_to_rgba` — HDR YUV decode path
+    /// readback.
+    P010Convert = 10,
+    /// `Nv12Converter::convert_to_rgba` — SDR YUV decode path
+    /// readback.
+    Nv12Convert = 11,
+}
+
+pub fn gpu_stage_name(v: u64) -> &'static str {
+    match v {
+        0 => "Idle",
+        1 => "BridgeU8",
+        2 => "FlushChain",
+        3 => "LinearRgbaToU8",
+        4 => "ScopeWfMaxRefresh",
+        5 => "ScopeImgDrain",
+        6 => "ScopeHistogram",
+        7 => "ScopeWaveform",
+        8 => "ScopeParade",
+        9 => "FrameIntoCpu",
+        10 => "P010Convert",
+        11 => "Nv12Convert",
+        _ => "Unknown",
+    }
+}
+
+#[inline]
+pub fn mark_gpu_stage(s: GpuStage) {
+    GPU_STAGE.store(s as u64, std::sync::atomic::Ordering::Release);
+}
+
 /// Poll the device until a `map_async` callback has delivered a
 /// result on the provided channel, or the 2-second timeout expires.
 ///
@@ -1361,7 +1438,8 @@ impl GpuEffectsPipeline {
         let slice = staging.slice(..byte_size);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        match poll_until_mapped(&self.device, &rx) {
+        mark_gpu_stage(GpuStage::ScopeImgDrain);
+        let result = match poll_until_mapped(&self.device, &rx) {
             Ok(Ok(())) => {
                 let data = slice.get_mapped_range();
                 let result = data.to_vec();
@@ -1373,7 +1451,9 @@ impl GpuEffectsPipeline {
                 self.mark_device_lost(&format!("scope_download map_async failed: {other:?}"));
                 vec![0u8; byte_size as usize]
             }
-        }
+        };
+        mark_gpu_stage(GpuStage::Idle);
+        result
     }
 
     /// Deferred image readback: submits this frame's copy async and
@@ -1634,12 +1714,14 @@ impl GpuEffectsPipeline {
             let slice = staging.slice(..bins_bytes);
             let (tx, rx) = std::sync::mpsc::channel();
             slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+            mark_gpu_stage(GpuStage::ScopeWfMaxRefresh);
             let _ = poll_until_mapped(&self.device, &rx);
             let data = slice.get_mapped_range();
             let bins: &[u32] = bytemuck::cast_slice(&data);
             let mx = bins.iter().copied().max().unwrap_or(1).max(1);
             drop(data);
             staging.unmap();
+            mark_gpu_stage(GpuStage::Idle);
             self.scope_wf_max_count = Some(mx);
             self.scope_wf_refresh = Self::SCOPE_MAX_REFRESH_INTERVAL;
             mx
@@ -1756,12 +1838,14 @@ impl GpuEffectsPipeline {
             let slice = staging.slice(..bins_bytes);
             let (tx, rx) = std::sync::mpsc::channel();
             slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+            mark_gpu_stage(GpuStage::ScopeWfMaxRefresh);
             let _ = poll_until_mapped(&self.device, &rx);
             let data = slice.get_mapped_range();
             let bins: &[u32] = bytemuck::cast_slice(&data);
             let mx = bins.iter().copied().max().unwrap_or(1).max(1);
             drop(data);
             staging.unmap();
+            mark_gpu_stage(GpuStage::Idle);
             self.scope_pd_max_count = Some(mx);
             self.scope_pd_refresh = Self::SCOPE_MAX_REFRESH_INTERVAL;
             mx
@@ -1859,12 +1943,14 @@ impl GpuEffectsPipeline {
             let slice = staging.slice(..bins_bytes);
             let (tx, rx) = std::sync::mpsc::channel();
             slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+            mark_gpu_stage(GpuStage::ScopeWfMaxRefresh);
             let _ = poll_until_mapped(&self.device, &rx);
             let data = slice.get_mapped_range();
             let bins: &[u32] = bytemuck::cast_slice(&data);
             let mx = bins.iter().copied().max().unwrap_or(1).max(1);
             drop(data);
             staging.unmap();
+            mark_gpu_stage(GpuStage::Idle);
             self.scope_hi_max_count = Some(mx);
             self.scope_hi_refresh = Self::SCOPE_MAX_REFRESH_INTERVAL;
             mx
@@ -1985,15 +2071,12 @@ impl GpuEffectsPipeline {
         self.queue.submit(std::iter::once(encoder.finish()));
         self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        // Map + wait + read. `Maintain::Wait` works reliably when the
-        // device is not shared with a busy UI thread (the default —
-        // see `KLIPP_SHARED_GPU_DEVICE` for the shared path). Without
-        // contention the whole-queue Wait returns promptly.
+        mark_gpu_stage(GpuStage::LinearRgbaToU8);
         let slice = staging.slice(..out_bytes);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
         self.device.poll(wgpu::Maintain::Wait);
-        match rx.recv() {
+        let result = match rx.recv() {
             Ok(Ok(())) => {
                 let data = slice.get_mapped_range();
                 let result = data.to_vec();
@@ -2005,7 +2088,9 @@ impl GpuEffectsPipeline {
                 self.mark_device_lost(&format!("bridge_u8 map_async failed: {other:?}"));
                 None
             }
-        }
+        };
+        mark_gpu_stage(GpuStage::Idle);
+        result
     }
 
     /// Clone the Arc-wrapped wgpu device. Pair with
@@ -3324,7 +3409,8 @@ impl GpuEffectsPipeline {
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
 
-        match poll_until_mapped(&self.device, &rx) {
+        mark_gpu_stage(GpuStage::FlushChain);
+        let result = match poll_until_mapped(&self.device, &rx) {
             Ok(Ok(())) => {
                 let data = slice.get_mapped_range();
                 let linear: &[f32] = bytemuck::cast_slice(&data);
@@ -3337,7 +3423,9 @@ impl GpuEffectsPipeline {
                 self.mark_device_lost(&format!("flush_chain map_async failed: {other:?}"));
                 vec![0.0f32; pixel_count * 4]
             }
-        }
+        };
+        mark_gpu_stage(GpuStage::Idle);
+        result
     }
 
     /// Borrow the chain buffers by their ping-pong slot. `slot_a` true
@@ -4315,7 +4403,8 @@ impl GpuEffectsPipeline {
             let _ = tx.send(result);
         });
 
-        match poll_until_mapped(&self.device, &rx) {
+        mark_gpu_stage(GpuStage::FlushChain);
+        let result = match poll_until_mapped(&self.device, &rx) {
             Ok(Ok(())) => {
                 let data = buffer_slice.get_mapped_range();
                 let result = data.to_vec();
@@ -4332,7 +4421,9 @@ impl GpuEffectsPipeline {
                 self.mark_device_lost(&format!("buffer map_async failed: {other:?}"));
                 vec![0u8; byte_size as usize]
             }
-        }
+        };
+        mark_gpu_stage(GpuStage::Idle);
+        result
     }
 
     /// Upload an sRGB u8 RGBA frame to a pixel storage buffer as

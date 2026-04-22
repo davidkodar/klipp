@@ -147,6 +147,7 @@ fn gpu_frame_into_cpu(f: GpuFrame) -> CpuFrame {
     slice.map_async(wgpu::MapMode::Read, move |res| {
         let _ = tx.send(res);
     });
+    klipp_effects::gpu::mark_gpu_stage(klipp_effects::gpu::GpuStage::FrameIntoCpu);
     f.device.poll(wgpu::Maintain::Wait);
 
     let data = match rx.recv() {
@@ -164,6 +165,7 @@ fn gpu_frame_into_cpu(f: GpuFrame) -> CpuFrame {
             vec![0u8; byte_size as usize]
         }
     };
+    klipp_effects::gpu::mark_gpu_stage(klipp_effects::gpu::GpuStage::Idle);
 
     CpuFrame { data, width: f.width, height: f.height }
 }
