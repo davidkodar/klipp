@@ -156,6 +156,12 @@ pub struct NodeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warper_params: Option<ColorWarperParams>,
 
+    // ColorMatch — pre-computed adjustments derived from running
+    // klipp_color::match_colors against a user-picked reference frame.
+    // None or default = pass-through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_match: Option<klipp_core::ColorMatchSettings>,
+
     // Denoise
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub denoise_luma: Option<f32>,

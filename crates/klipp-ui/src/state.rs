@@ -816,6 +816,15 @@ pub struct AppState {
     /// Whether split-view comparison with a grade still is active.
     pub grade_still_compare: bool,
 
+    /// Reference frame captured for the next ColorMatch run. Stored as
+    /// raw RGBA bytes + dimensions; not persisted with the project,
+    /// purely a working buffer between "Capture reference" and
+    /// "Apply match" clicks in the inspector. The match algorithm
+    /// produces a small `ColorMatchSettings` that IS persisted on
+    /// the node, so the reference frame's bytes don't need to live
+    /// past the compute step.
+    pub color_match_reference: Option<(Vec<u8>, u32, u32)>,
+
     // Viewer overlay (zebra / false color)
     pub viewer_overlays: ViewerOverlays,
     pub frame_count: u64, // for zebra animation
@@ -2078,6 +2087,7 @@ impl Default for AppState {
             grade_stills: Vec::new(),
             active_grade_still: None,
             grade_still_compare: false,
+            color_match_reference: None,
             viewer_overlays: ViewerOverlays::default(),
             frame_count: 0,
             false_color_lut: crate::prefs::FalseColorPalette::broadcast().build_lut(),

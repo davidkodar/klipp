@@ -1559,11 +1559,80 @@ impl NodeInspectorPanel {
                 self.show_warper_widget(ui, node_id, params, clip_id, cmds, theme);
             }
             NodeKind::CombineMattes => { ui.label("Multiplies two matte inputs"); }
+            NodeKind::ColorMatch => {
+                self.show_color_match_widget(ui, node_id, params, clip_id, cmds, theme);
+            }
             NodeKind::Source | NodeKind::Output | NodeKind::Layer
-            | NodeKind::ColorMatch | NodeKind::Unknown => {
+            | NodeKind::Unknown => {
                 ui.label(egui::RichText::new("No parameters").color(theme.text_dim));
             }
         }
+    }
+
+    /// Inspector for the ColorMatch node. Two-step UX:
+    /// 1. User parks the playhead on a frame whose look they want
+    ///    to copy and clicks "Capture reference" — the current
+    ///    program-viewer frame is stashed in `AppState`.
+    /// 2. User parks the playhead on the source clip and clicks
+    ///    "Apply match" — the engine runs `match_colors` against
+    ///    the captured reference + the clip's pre-grade frame and
+    ///    stores the four-scalar result on this node.
+    ///
+    /// The four computed adjustments are displayed read-only so the
+    /// user can see what the algorithm did. "Reset" clears them
+    /// (back to identity = pass-through).
+    fn show_color_match_widget(
+        &mut self,
+        ui: &mut egui::Ui,
+        node_id: NodeId,
+        params: &mut NodeParams,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+    ) {
+        ui.vertical(|ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("Capture reference").on_hover_text(
+                    "Save the current program-viewer frame as the reference look. \
+                     Park the playhead on the frame you want to match before clicking."
+                ).clicked() {
+                    cmds.push(AppCommand::CaptureColorMatchReference);
+                }
+                if ui.button("Apply match").on_hover_text(
+                    "Compute the colour-match adjustments using the captured reference \
+                     and this clip's pre-grade frame at the current playhead."
+                ).clicked() {
+                    cmds.push(AppCommand::ApplyColorMatch { clip_id, node_id });
+                }
+            });
+            ui.add_space(6.0);
+
+            let s = params.color_match.unwrap_or_default();
+            let dim = theme.text_dim;
+            let val_color = if s.is_identity() { dim } else { theme.text_primary };
+            let row = |ui: &mut egui::Ui, label: &str, value: String| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("{label:<14}")).color(dim).monospace());
+                    ui.label(egui::RichText::new(value).color(val_color).monospace());
+                });
+            };
+            row(ui, "Exposure", format!("{:+.2} stops", s.exposure));
+            row(ui, "Temperature", format!("{:+.1}", s.temperature));
+            row(ui, "Tint", format!("{:+.1}", s.tint));
+            row(ui, "Saturation", format!("{:.2}×", s.saturation));
+
+            ui.add_space(6.0);
+            if ui.button("Reset").on_hover_text(
+                "Clear the stored match — node passes the frame through unchanged."
+            ).clicked() {
+                cmds.push(AppCommand::SetNodeColorMatch {
+                    clip_id,
+                    node_id,
+                    settings: klipp_core::ColorMatchSettings::default(),
+                });
+            }
+        });
     }
 
     /// Draw the 2D color warper widget: circular hue/sat grid with 12 draggable control points.

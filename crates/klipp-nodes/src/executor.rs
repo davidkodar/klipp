@@ -722,7 +722,10 @@ impl GraphExecutor {
                 .grain
                 .as_ref()
                 .map_or(false, |g| g.enabled && g.amount > 0.001),
-            NodeKind::ColorMatch => false, // current impl is pass-through
+            NodeKind::ColorMatch => params
+                .color_match
+                .as_ref()
+                .map_or(false, |s| !s.is_identity()),
             NodeKind::ColorWarper => params
                 .warper_params
                 .as_ref()
@@ -1108,6 +1111,23 @@ impl GraphExecutor {
                 self.gpu.as_mut().unwrap().apply_color_warper_chain(
                     in_is_a, width, height,
                     &warper.hue_shifts, &warper.sat_shifts,
+                );
+                Some(1)
+            }
+            NodeKind::ColorMatch => {
+                // Pre-computed match adjustments — exposure, temperature,
+                // tint, saturation — slot directly into the unified
+                // grade shader. No per-frame analysis at render time.
+                let s = match params.color_match.as_ref() {
+                    Some(s) if !s.is_identity() => *s,
+                    _ => return None,
+                };
+                self.gpu.as_mut().unwrap().apply_color_grade_chain(
+                    in_is_a, width, height,
+                    s.exposure, 0.0, s.saturation, s.temperature, s.tint,
+                    0.0, 0.0, 0.0, 0.0,
+                    (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                    0.0, 1.0,
                 );
                 Some(1)
             }
@@ -1726,8 +1746,33 @@ impl GraphExecutor {
             }
 
             NodeKind::ColorMatch => {
-                // Future: histogram matching. For now, pass-through.
-                primary_input.to_vec()
+                // Per-node (non-chain) path. Same algorithm as the
+                // chain arm — applies pre-computed match adjustments
+                // via the unified grade shader, or short-circuits
+                // when the user hasn't run a match yet.
+                let s = match params.color_match.as_ref() {
+                    Some(s) if !s.is_identity() => *s,
+                    _ => return primary_input.to_vec(),
+                };
+                if let Some(gpu) = &mut self.gpu {
+                    gpu.apply_color_grade(
+                        primary_input.to_vec(), width, height,
+                        s.exposure, 0.0, s.saturation, s.temperature, s.tint,
+                        0.0, 0.0, 0.0, 0.0,
+                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                        0.0, 1.0,
+                    )
+                } else {
+                    // CPU fallback — no equivalent of the unified
+                    // shader on CPU yet, so fall through to the
+                    // closest analogue (linear ops applied in the
+                    // same order the GPU shader uses).
+                    let mut frame = primary_input.to_vec();
+                    klipp_color::linear::apply_exposure(&mut frame, s.exposure);
+                    klipp_color::linear::apply_temperature_tint(&mut frame, s.temperature, s.tint);
+                    klipp_color::linear::apply_saturation(&mut frame, s.saturation);
+                    frame
+                }
             }
 
             NodeKind::ColorWarper => {

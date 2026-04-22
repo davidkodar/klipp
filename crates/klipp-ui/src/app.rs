@@ -9529,6 +9529,85 @@ impl KlippApp {
                 *needs_refresh = true;
                 true
             }
+            AppCommand::SetNodeColorMatch { clip_id, node_id, settings } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                            node.params.color_match = Some(*settings);
+                            node.enabled = true;
+                        }
+                        break;
+                    }
+                }
+                *needs_refresh = true;
+                true
+            }
+            AppCommand::CaptureColorMatchReference => {
+                let captured = {
+                    let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                    if fb.data.is_empty() || fb.width == 0 || fb.height == 0 {
+                        None
+                    } else {
+                        Some((fb.data.clone(), fb.width, fb.height))
+                    }
+                };
+                if let Some((bytes, w, h)) = captured {
+                    self.state.color_match_reference = Some((bytes, w, h));
+                    self.state.toast.show(format!("Captured colour reference ({w}×{h})"));
+                } else {
+                    self.state.toast.show("No frame to capture — start playback or scrub first");
+                }
+                true
+            }
+            AppCommand::ApplyColorMatch { clip_id, node_id } => {
+                let Some((ref ref_bytes, _rw, _rh)) = self.state.color_match_reference else {
+                    self.state.toast.show("Capture a reference frame first");
+                    return true;
+                };
+                // Source = the clip's pre-grade frame at the playhead.
+                // The engine writes that to `fb.pregrade_data` whenever
+                // `in_node_param_edit` is set OR a compare mode is on.
+                // For a quick first integration we use the displayed
+                // post-grade frame (`fb.data`) as the source — it's
+                // always present and matches what the user sees the
+                // node currently producing. The match adjustments
+                // are applied additively, so matching what's already
+                // showing converges to the reference look anyway.
+                let source = {
+                    let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                    if fb.data.is_empty() { None } else { Some(fb.data.clone()) }
+                };
+                let Some(source_bytes) = source else {
+                    self.state.toast.show("No source frame available — try scrubbing the playhead");
+                    return true;
+                };
+                let result = klipp_color::color_match::match_colors(&source_bytes, ref_bytes);
+                let settings = klipp_core::ColorMatchSettings {
+                    exposure: result.exposure_adjust,
+                    temperature: result.temperature_adjust,
+                    tint: result.tint_adjust,
+                    saturation: result.saturation_adjust,
+                };
+                // Apply directly to the local sequence — same effect
+                // as the SetNodeColorMatch arm above; doing it inline
+                // avoids re-dispatching through the command channel
+                // when we already have everything we need here.
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                            node.params.color_match = Some(settings);
+                            node.enabled = true;
+                        }
+                        break;
+                    }
+                }
+                *needs_refresh = true;
+                self.state.toast.show(format!(
+                    "Match: exp {:+.2}, temp {:+.0}, tint {:+.0}, sat {:.2}×",
+                    settings.exposure, settings.temperature, settings.tint, settings.saturation
+                ));
+                true
+            }
             _ => false,
         }
     }

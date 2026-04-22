@@ -456,3 +456,40 @@ impl HueSatCurves {
             && self.orange_vs_sat.is_empty()
     }
 }
+
+
+/// Stored result of a colour-match analysis between a source frame
+/// (the input to the ColorMatch node) and a user-picked reference
+/// frame. The four scalar adjustments map directly to slots on the
+/// unified grade shader (`apply_color_grade_chain`), so the executor
+/// dispatches the match as a single GPU pass with these values.
+///
+/// Default = identity (no change). The struct is serialisable so a
+/// project file can carry the computed match without holding the
+/// reference frame bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ColorMatchSettings {
+    /// Exposure adjustment in stops (-3..+3).
+    pub exposure: f32,
+    /// Temperature adjustment (-100..+100, +ve = warmer).
+    pub temperature: f32,
+    /// Tint adjustment (-100..+100, +ve = magenta).
+    pub tint: f32,
+    /// Saturation multiplier (0.1..3.0, 1.0 = identity).
+    pub saturation: f32,
+}
+
+impl Default for ColorMatchSettings {
+    fn default() -> Self {
+        Self { exposure: 0.0, temperature: 0.0, tint: 0.0, saturation: 1.0 }
+    }
+}
+
+impl ColorMatchSettings {
+    pub fn is_identity(&self) -> bool {
+        self.exposure.abs() < f32::EPSILON
+            && self.temperature.abs() < f32::EPSILON
+            && self.tint.abs() < f32::EPSILON
+            && (self.saturation - 1.0).abs() < f32::EPSILON
+    }
+}

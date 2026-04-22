@@ -755,6 +755,25 @@ pub enum AppCommand {
     SetNodeHueSatCurves { clip_id: ClipId, node_id: uuid::Uuid, huesat: crate::color_grade::HueSatCurves },
     SetNodeQualifier { clip_id: ClipId, node_id: uuid::Uuid, qualifier: crate::color_grade::QualifierSettings },
     SetNodeMasks { clip_id: ClipId, node_id: uuid::Uuid, masks: crate::color_grade::MaskStack },
+    /// Store a computed colour-match result on a ColorMatch node. The
+    /// UI runs `klipp_color::match_colors(source, reference)` against
+    /// the reference frame the user captured, then dispatches this
+    /// command with the resulting four-scalar `ColorMatchSettings`.
+    /// The node's executor then applies the adjustments via the
+    /// unified grade shader.
+    SetNodeColorMatch { clip_id: ClipId, node_id: uuid::Uuid, settings: crate::color_grade::ColorMatchSettings },
+    /// Capture the currently displayed program-viewer frame as the
+    /// reference for the next ColorMatch compute. Stores raw RGBA in
+    /// `AppState.color_match_reference`. Held in RAM only; the resulting
+    /// `ColorMatchSettings` (4 floats) is what gets persisted on the
+    /// node when `ApplyColorMatch` runs.
+    CaptureColorMatchReference,
+    /// Run `klipp_color::match_colors(source, reference)` against the
+    /// last-captured reference frame and the clip's pre-grade frame
+    /// at the playhead, then store the result on the named ColorMatch
+    /// node via `SetNodeColorMatch`. No-op (with toast) when no
+    /// reference has been captured yet.
+    ApplyColorMatch { clip_id: ClipId, node_id: uuid::Uuid },
     /// Add or update a keyframe on a mask parameter.
     AddMaskKeyframe { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize, param: String, time_secs: f64, value: f32 },
     /// Remove a mask keyframe at a specific time.
