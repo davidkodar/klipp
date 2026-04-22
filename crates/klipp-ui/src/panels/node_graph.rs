@@ -209,6 +209,7 @@ impl NodeGraphPanel {
                             ("Curves", "RGBCurves"),
                             ("Hue/Sat", "HueSatCurves"),
                             ("Color Balance", "ColorBalance"),
+                            ("Color Match", "ColorMatch"),
                             ("Qualifier", "Qualifier"),
                             ("Film Grain", "FilmGrain"),
                             ("Color Warper", "ColorWarper"),
