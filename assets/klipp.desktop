@@ -1,9 +1,13 @@
 [Desktop Entry]
+Type=Application
 Name=Klipp
-Comment=Video Editor
-Exec=klipp
+GenericName=Video Editor
+Comment=Professional non-linear video editor for Linux
+Exec=klipp %F
 Icon=klipp
 Terminal=false
-Type=Application
-Categories=AudioVideo;Video;
+Categories=AudioVideo;Video;AudioVideoEditing;
+MimeType=video/mp4;video/x-matroska;video/quicktime;video/webm;video/x-msvideo;video/mpeg;application/vnd.klipp-project;
+Keywords=video;editor;nle;editing;timeline;color;
+StartupNotify=true
 StartupWMClass=klipp

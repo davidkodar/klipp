@@ -52,7 +52,7 @@ impl LaunchScreen {
 
     fn ensure_logo_texture(&mut self, ctx: &egui::Context) -> &egui::TextureHandle {
         self.logo_texture.get_or_insert_with(|| {
-            let png_bytes = include_bytes!("../../../../assets/icons/klipp_app_icons/png/dark/klipp-dark-128.png");
+            let png_bytes = include_bytes!("../../../../assets/icons/klipp_app_icons/hicolor/128x128/apps/klipp.png");
             let image = crate::ui_util::decode_png_or_fallback(png_bytes);
             crate::app::alloc_texture_logged(ctx, "klipp_launch_logo", image, egui::TextureOptions::LINEAR)
         })

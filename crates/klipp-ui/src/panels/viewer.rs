@@ -276,7 +276,7 @@ impl ViewerPanel {
         // Empty state: Klipp logo at 40% opacity
         let center = viewer_rect.center();
         let logo_tex = self.logo_texture.get_or_insert_with(|| {
-            let png_bytes = include_bytes!("../../../../assets/icons/klipp_app_icons/png/dark/klipp-dark-128.png");
+            let png_bytes = include_bytes!("../../../../assets/icons/klipp_app_icons/hicolor/128x128/apps/klipp.png");
             let image = crate::ui_util::decode_png_or_fallback(png_bytes);
             crate::app::alloc_texture_logged(ui.ctx(), "klipp_viewer_logo", image, egui::TextureOptions::LINEAR)
         });
