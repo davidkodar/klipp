@@ -239,6 +239,7 @@ pub struct KlippApp {
     suppress_fps_prompt: bool,
     // Node graph and inspector panels (Color workspace)
     node_graph_panel: crate::panels::node_graph::NodeGraphPanel,
+    node_graph_v2_panel: crate::panels::node_graph_v2::NodeGraphV2Panel,
     node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel,
     /// Pre-edit snapshot for the current color-grading parameter gesture.
     /// Set by `BeginNodeParamEdit`, consumed by `EndNodeParamEdit`. `None`
@@ -419,6 +420,7 @@ impl KlippApp {
             framerate_mismatch_dialog: None,
             suppress_fps_prompt: false,
             node_graph_panel: crate::panels::node_graph::NodeGraphPanel::default(),
+            node_graph_v2_panel: crate::panels::node_graph_v2::NodeGraphV2Panel::default(),
             node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel::default(),
             node_param_edit_snapshot: None,
             scope_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
@@ -22595,10 +22597,17 @@ impl KlippApp {
                 if let Some(clip) = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(cid))
                 {
-                    let panel_cmds = self.node_graph_panel.show(
-                        ui, &mut self.state.selected_node_id,
-                        &mut clip.node_graph, cid, &self.theme,
-                    );
+                    let panel_cmds = if self.state.use_node_graph_v2 {
+                        self.node_graph_v2_panel.show(
+                            ui, &mut self.state.selected_node_id,
+                            &mut clip.node_graph, cid, &self.theme,
+                        )
+                    } else {
+                        self.node_graph_panel.show(
+                            ui, &mut self.state.selected_node_id,
+                            &mut clip.node_graph, cid, &self.theme,
+                        )
+                    };
                     all_cmds.extend(panel_cmds);
                 } else {
                     ui.painter().text(

@@ -53,7 +53,7 @@ pub struct Edge {
 }
 
 /// Screen position for the node editor UI.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct NodePos {
     pub x: f32,
     pub y: f32,

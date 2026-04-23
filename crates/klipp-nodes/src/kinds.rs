@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Every type of node in the color grading graph.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodeKind {
     // ── Infrastructure ──────────────────────────────────────────
     /// The source frame — always the root. One per graph.

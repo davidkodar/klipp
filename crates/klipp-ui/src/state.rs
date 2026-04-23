@@ -729,6 +729,12 @@ pub struct AppState {
     pub selected_node_id: Option<klipp_nodes::NodeId>,
     /// Whether the compact node strip is visible in Color workspace.
     pub show_node_strip: bool,
+    /// Render the V2 2D node-graph editor instead of the legacy
+    /// horizontal strip. True by default — the strip is kept as a
+    /// fallback in case the V2 editor reveals a workflow regression
+    /// during rollout. Toggle via the Color workspace's "Editor"
+    /// label next to the Nodes toggle.
+    pub use_node_graph_v2: bool,
     /// Active tab in the simple (non-node) color inspector.
     pub color_tab: ColorTab,        // right inspector panel
     pub color_tab_bottom: ColorTab, // bottom panel
@@ -2043,6 +2049,7 @@ impl Default for AppState {
             color_tools_position: ColorToolsPosition::Right,
             selected_node_id: None,
             show_node_strip: false,
+            use_node_graph_v2: true,
             color_tab: ColorTab::default(),
             color_tab_bottom: ColorTab::default(),
             color_grade_drag_start: None,

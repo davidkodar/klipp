@@ -1,0 +1,584 @@
+//! V2 node-graph editor — 2D canvas with drag-to-move nodes,
+//! drag-to-connect wires, multi-port visualisation, pan + zoom.
+//!
+//! Replaces (or augments — see toggle) the legacy horizontal strip
+//! in `panels/node_graph.rs`. Same data model (`klipp_nodes::NodeGraph`),
+//! same `AppCommand` mutation surface (AddNode / RemoveNode /
+//! ConnectNodes / DisconnectEdge / MoveNode / ToggleNodeEnabled),
+//! so the existing engine + executor + persistence paths are
+//! untouched. This file is purely a renderer + interaction layer.
+//!
+//! Phase 1 of the node-graph V2 project (CG-NGV2-PHASE-1):
+//! - Pan via middle-mouse drag (or space + drag); zoom via wheel.
+//! - Render every node at its stored `NodePos`, with input ports on
+//!   the left edge and output ports on the right edge.
+//! - Drag a node body to reposition (`MoveNode` on release).
+//! - Drag from an output port to an input port to create an edge
+//!   (`ConnectNodes` if compatible — currently any-to-any, future
+//!   work will validate type/role).
+//! - Right-click on empty canvas → add-node menu at cursor; right-
+//!   click on a node → per-node menu (Bypass, Delete, Disconnect).
+
+use crate::theme::KlippTheme;
+use klipp_core::{AppCommand, ClipId};
+use klipp_nodes::{NodeGraph, NodeId, NodeKind, NodePos};
+
+const NODE_W: f32 = 120.0;
+const NODE_H: f32 = 60.0;
+const NODE_HEADER_H: f32 = 16.0;
+const PORT_RADIUS: f32 = 5.0;
+const PORT_HIT_RADIUS: f32 = 9.0;
+const GRID_SPACING: f32 = 32.0;
+
+fn node_color(kind: &NodeKind, theme: &KlippTheme) -> egui::Color32 {
+    match kind {
+        NodeKind::Source | NodeKind::Output => theme.bg_raised,
+        NodeKind::Qualifier | NodeKind::Mask | NodeKind::CombineMattes => {
+            egui::Color32::from_rgb(0x5c, 0x3a, 0x6e)
+        }
+        NodeKind::Layer | NodeKind::Blend | NodeKind::ApplyMatte => {
+            egui::Color32::from_rgb(0x3a, 0x5c, 0x6e)
+        }
+        NodeKind::Lut3D | NodeKind::FilmGrain | NodeKind::ColorMatch => {
+            egui::Color32::from_rgb(0x5c, 0x5a, 0x3a)
+        }
+        _ => egui::Color32::from_rgb(0x3a, 0x4a, 0x5c),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct DragNode {
+    node_id: NodeId,
+    /// Cumulative delta we've already emitted to the engine since
+    /// the drag started, in graph coordinates. Used to compute the
+    /// next per-frame delta without rounding drift.
+    emitted_dx: f32,
+    emitted_dy: f32,
+    /// Cursor position in graph coordinates at the start of the
+    /// drag — combined with `emitted_dx/dy` lets us derive the
+    /// new delta to emit each frame from the current cursor.
+    start_cursor_x: f32,
+    start_cursor_y: f32,
+}
+
+#[derive(Clone, Copy)]
+struct DragWire {
+    from_node: NodeId,
+    from_port: u8,
+}
+
+pub struct NodeGraphV2Panel {
+    pan: egui::Vec2,
+    zoom: f32,
+    drag_node: Option<DragNode>,
+    drag_wire: Option<DragWire>,
+    add_menu_open: bool,
+    add_menu_screen_pos: egui::Pos2,
+    add_menu_graph_pos: egui::Pos2,
+    /// Per-node context menu — opened on right-click on a node.
+    /// `(node_id, screen_pos)`; cleared on close.
+    node_menu: Option<(NodeId, egui::Pos2)>,
+}
+
+impl Default for NodeGraphV2Panel {
+    fn default() -> Self {
+        Self {
+            pan: egui::Vec2::ZERO,
+            zoom: 1.0,
+            drag_node: None,
+            drag_wire: None,
+            add_menu_open: false,
+            add_menu_screen_pos: egui::Pos2::ZERO,
+            add_menu_graph_pos: egui::Pos2::ZERO,
+            node_menu: None,
+        }
+    }
+}
+
+impl NodeGraphV2Panel {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        selected_node: &mut Option<NodeId>,
+        graph: &mut NodeGraph,
+        clip_id: ClipId,
+        theme: &KlippTheme,
+    ) -> Vec<AppCommand> {
+        let mut cmds = Vec::new();
+
+        let avail = ui.available_size();
+        let (canvas_rect, canvas_resp) = ui.allocate_exact_size(
+            avail,
+            egui::Sense::click_and_drag(),
+        );
+        let painter = ui.painter_at(canvas_rect);
+
+        // Background + subtle grid (so pan is visually obvious).
+        painter.rect_filled(canvas_rect, 0.0, theme.bg_deep);
+        self.draw_grid(&painter, canvas_rect, theme);
+
+        // Pan / zoom interactions.
+        self.handle_pan_zoom(ui, &canvas_rect, &canvas_resp);
+
+        // Coordinate-transform helpers — closures capture the current
+        // pan + zoom + canvas origin so positions update mid-frame
+        // when the user pans.
+        let origin = canvas_rect.center();
+        let zoom = self.zoom;
+        let pan = self.pan;
+        let to_screen = |g: egui::Pos2| -> egui::Pos2 {
+            origin + (g.to_vec2() + pan) * zoom
+        };
+        let to_graph = |s: egui::Pos2| -> egui::Pos2 {
+            ((s - origin) / zoom).to_pos2() - pan
+        };
+
+        // Snapshot node screen rects (for hit-testing + wire endpoints).
+        let mut node_rects: Vec<(NodeId, egui::Rect, egui::Color32, NodeKind)> =
+            Vec::with_capacity(graph.nodes.len());
+        for node in &graph.nodes {
+            let pos = graph
+                .node_positions
+                .get(&node.id)
+                .copied()
+                .unwrap_or(NodePos { x: 0.0, y: 0.0 });
+            let center = to_screen(egui::pos2(pos.x, pos.y));
+            let size = egui::vec2(NODE_W * zoom, NODE_H * zoom);
+            let rect = egui::Rect::from_center_size(center, size);
+            node_rects.push((node.id, rect, node_color(&node.kind, theme), node.kind));
+        }
+
+        // ── Wires ─────────────────────────────────────────────────
+        // Existing edges first, then the in-flight wire on top.
+        for edge in &graph.edges {
+            let Some((_, from_rect, _, from_kind)) =
+                node_rects.iter().find(|(id, _, _, _)| *id == edge.from_node).copied()
+            else { continue; };
+            let Some((_, to_rect, _, _)) =
+                node_rects.iter().find(|(id, _, _, _)| *id == edge.to_node).copied()
+            else { continue; };
+            let from = output_port_pos(&from_rect, edge.from_port, &from_kind);
+            let to = input_port_pos(
+                &to_rect,
+                edge.to_port,
+                &node_rects.iter().find(|(id, _, _, _)| *id == edge.to_node).map(|(_, _, _, k)| *k).unwrap_or(NodeKind::Unknown),
+            );
+            draw_wire(&painter, from, to, theme.accent_dim, 1.5 * zoom);
+        }
+
+        if let Some(dw) = self.drag_wire {
+            if let Some((_, from_rect, _, from_kind)) =
+                node_rects.iter().find(|(id, _, _, _)| *id == dw.from_node).copied()
+            {
+                let from = output_port_pos(&from_rect, dw.from_port, &from_kind);
+                let to = ui.input(|i| i.pointer.hover_pos().unwrap_or(from));
+                draw_wire(&painter, from, to, theme.accent, 2.0 * zoom);
+            }
+        }
+
+        // ── Nodes ─────────────────────────────────────────────────
+        for (idx, (node_id, rect, fill, kind)) in node_rects.iter().copied().enumerate() {
+            let node = &graph.nodes[idx];
+            let is_selected = *selected_node == Some(node_id);
+
+            // Body
+            let header_h = NODE_HEADER_H * zoom;
+            let body_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.min.x, rect.min.y + header_h),
+                rect.max,
+            );
+            painter.rect_filled(rect, 4.0, theme.bg_panel);
+            painter.rect_filled(body_rect, 4.0, if node.enabled { fill } else { theme.bg_panel_alt });
+
+            // Selection / border
+            let border = if is_selected { theme.accent } else { theme.border };
+            let border_w = if is_selected { 2.0_f32 } else { 0.5_f32 };
+            painter.rect_stroke(rect, 4.0, egui::Stroke::new(border_w, border));
+
+            // Label (header)
+            let label_color = if node.enabled { theme.text_primary } else { theme.text_dim };
+            painter.text(
+                egui::pos2(rect.center().x, rect.min.y + header_h * 0.5),
+                egui::Align2::CENTER_CENTER,
+                &node.label,
+                egui::FontId::proportional(10.0 * zoom),
+                label_color,
+            );
+
+            if !node.enabled {
+                painter.text(
+                    body_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "OFF",
+                    egui::FontId::proportional(9.0 * zoom),
+                    theme.text_dim,
+                );
+            }
+
+            // Input ports (left edge)
+            for p in 0..kind.input_port_count() {
+                let pos = input_port_pos(&rect, p, &kind);
+                painter.circle_filled(pos, PORT_RADIUS * zoom, theme.bg_deep);
+                painter.circle_stroke(
+                    pos, PORT_RADIUS * zoom,
+                    egui::Stroke::new(1.0_f32, theme.accent_dim),
+                );
+            }
+            // Output ports (right edge)
+            for p in 0..kind.output_port_count() {
+                let pos = output_port_pos(&rect, p, &kind);
+                painter.circle_filled(pos, PORT_RADIUS * zoom, theme.bg_deep);
+                painter.circle_stroke(
+                    pos, PORT_RADIUS * zoom,
+                    egui::Stroke::new(1.0_f32, theme.accent),
+                );
+            }
+        }
+
+        // ── Interactions ─────────────────────────────────────────
+        let pointer_pos = ui.input(|i| i.pointer.hover_pos());
+        let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+        let primary_released = ui.input(|i| i.pointer.primary_released());
+        let secondary_clicked = ui.input(|i| i.pointer.secondary_clicked());
+
+        // Node-body click + drag → start move; click on output port → start wire.
+        if primary_pressed {
+            if let Some(p) = pointer_pos {
+                if canvas_rect.contains(p) {
+                    // Output port hit?
+                    let mut wire_started = false;
+                    for (node_id, rect, _, kind) in &node_rects {
+                        for port in 0..kind.output_port_count() {
+                            let port_pos = output_port_pos(rect, port, kind);
+                            if (p - port_pos).length() <= PORT_HIT_RADIUS * zoom.max(0.5) {
+                                self.drag_wire = Some(DragWire { from_node: *node_id, from_port: port });
+                                wire_started = true;
+                                break;
+                            }
+                        }
+                        if wire_started { break; }
+                    }
+                    if !wire_started {
+                        // Node body hit?
+                        for (node_id, rect, _, _) in &node_rects {
+                            if rect.contains(p) {
+                                *selected_node = Some(*node_id);
+                                let g = to_graph(p);
+                                self.drag_node = Some(DragNode {
+                                    node_id: *node_id,
+                                    emitted_dx: 0.0,
+                                    emitted_dy: 0.0,
+                                    start_cursor_x: g.x,
+                                    start_cursor_y: g.y,
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Live drag — emit MoveNode delta as the cursor moves.
+        if let Some(ref mut dn) = self.drag_node {
+            if let Some(p) = pointer_pos {
+                let g = to_graph(p);
+                let total_dx = g.x - dn.start_cursor_x;
+                let total_dy = g.y - dn.start_cursor_y;
+                let delta_x = total_dx - dn.emitted_dx;
+                let delta_y = total_dy - dn.emitted_dy;
+                if delta_x.abs() > 0.01 || delta_y.abs() > 0.01 {
+                    cmds.push(AppCommand::MoveNode {
+                        clip_id,
+                        node_id: dn.node_id,
+                        delta_x,
+                        delta_y,
+                    });
+                    dn.emitted_dx = total_dx;
+                    dn.emitted_dy = total_dy;
+                }
+            }
+        }
+
+        // Drop — finalise drags.
+        if primary_released {
+            // Wire drop: did we land on an input port?
+            if let Some(dw) = self.drag_wire.take() {
+                if let Some(p) = pointer_pos {
+                    for (node_id, rect, _, kind) in &node_rects {
+                        if *node_id == dw.from_node { continue; }
+                        for port in 0..kind.input_port_count() {
+                            let port_pos = input_port_pos(rect, port, kind);
+                            if (p - port_pos).length() <= PORT_HIT_RADIUS * zoom.max(0.5) {
+                                cmds.push(AppCommand::ConnectNodes {
+                                    clip_id,
+                                    from: dw.from_node,
+                                    from_port: dw.from_port,
+                                    to: *node_id,
+                                    to_port: port,
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            // Node drop: nothing to commit; deltas were streamed live.
+            self.drag_node = None;
+        }
+
+        // Right-click handling.
+        if secondary_clicked {
+            if let Some(p) = pointer_pos {
+                if canvas_rect.contains(p) {
+                    // Node hit?
+                    let mut on_node = None;
+                    for (node_id, rect, _, _) in &node_rects {
+                        if rect.contains(p) { on_node = Some(*node_id); break; }
+                    }
+                    if let Some(nid) = on_node {
+                        self.node_menu = Some((nid, p));
+                        self.add_menu_open = false;
+                    } else {
+                        self.add_menu_open = true;
+                        self.add_menu_screen_pos = p;
+                        self.add_menu_graph_pos = to_graph(p);
+                        self.node_menu = None;
+                    }
+                }
+            }
+        }
+
+        // ── Floating menus (egui::Area) ──────────────────────────
+        if self.add_menu_open {
+            self.draw_add_menu(ui, clip_id, &mut cmds);
+        }
+        if let Some((nid, _pos)) = self.node_menu {
+            // Snapshot kind+enabled so we can borrow out of `graph` cleanly
+            let info = graph.nodes.iter().find(|n| n.id == nid).map(|n| (n.kind, n.enabled));
+            if let Some((kind, enabled)) = info {
+                self.draw_node_menu(ui, clip_id, nid, kind, enabled, &mut cmds, selected_node);
+            } else {
+                self.node_menu = None;
+            }
+        }
+
+        cmds
+    }
+
+    fn draw_grid(&self, painter: &egui::Painter, rect: egui::Rect, theme: &KlippTheme) {
+        let zoom = self.zoom;
+        // Skip the grid when fully zoomed out — lines fuse into a wash.
+        if zoom < 0.4 { return; }
+        let spacing = GRID_SPACING * zoom;
+        let origin = rect.center() + self.pan * zoom;
+        let stroke = egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_unmultiplied(
+            theme.accent_dim.r(), theme.accent_dim.g(), theme.accent_dim.b(), 30,
+        ));
+        // Vertical
+        let mut x = origin.x;
+        while x > rect.min.x { x -= spacing; }
+        while x < rect.max.x {
+            painter.line_segment([egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)], stroke);
+            x += spacing;
+        }
+        // Horizontal
+        let mut y = origin.y;
+        while y > rect.min.y { y -= spacing; }
+        while y < rect.max.y {
+            painter.line_segment([egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)], stroke);
+            y += spacing;
+        }
+    }
+
+    fn handle_pan_zoom(
+        &mut self,
+        ui: &mut egui::Ui,
+        canvas_rect: &egui::Rect,
+        canvas_resp: &egui::Response,
+    ) {
+        // Pan: middle-mouse drag, OR primary drag while holding space.
+        let space_held = ui.input(|i| i.modifiers.shift && i.pointer.primary_down())
+            || ui.input(|i| i.key_down(egui::Key::Space));
+        let middle_dragging = ui.input(|i| i.pointer.middle_down());
+        let panning = middle_dragging || (space_held && canvas_resp.dragged());
+
+        if panning {
+            let delta = ui.input(|i| i.pointer.delta());
+            if delta.length_sq() > 0.0 {
+                self.pan += delta / self.zoom;
+            }
+        }
+
+        // Zoom: mouse wheel, anchored on the cursor (so the point under
+        // the cursor stays put through the zoom).
+        let scroll = ui.input(|i| i.raw_scroll_delta.y);
+        if scroll.abs() > 0.0 {
+            if let Some(cursor) = ui.input(|i| i.pointer.hover_pos()) {
+                if canvas_rect.contains(cursor) {
+                    let factor = (1.0 + scroll * 0.0015).clamp(0.5, 1.5);
+                    let new_zoom = (self.zoom * factor).clamp(0.25, 3.0);
+                    if (new_zoom - self.zoom).abs() > 1e-4 {
+                        // Keep cursor's graph point fixed during zoom.
+                        let origin = canvas_rect.center();
+                        let graph_pt = ((cursor - origin) / self.zoom).to_pos2() - self.pan;
+                        self.zoom = new_zoom;
+                        let new_screen = origin + (graph_pt.to_vec2() + self.pan) * self.zoom;
+                        self.pan += (cursor - new_screen) / self.zoom;
+                    }
+                }
+            }
+        }
+    }
+
+    fn draw_add_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let menu_id = ui.id().with("ngv2_add_menu");
+        let mut close = false;
+        egui::Area::new(menu_id)
+            .fixed_pos(self.add_menu_screen_pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    for (label, kind_str) in [
+                        ("Exposure", "Exposure"),
+                        ("Contrast", "Contrast"),
+                        ("Saturation", "Saturation"),
+                        ("Tone Controls", "ToneControls"),
+                        ("Color Wheels", "ColorWheels"),
+                        ("Wheel Sat/Bri", "WheelSatBri"),
+                        ("Curves", "RGBCurves"),
+                        ("Hue/Sat", "HueSatCurves"),
+                        ("Color Balance", "ColorBalance"),
+                        ("Color Match", "ColorMatch"),
+                        ("Qualifier", "Qualifier"),
+                        ("Mask", "Mask"),
+                        ("Combine Mattes", "CombineMattes"),
+                        ("Layer", "Layer"),
+                        ("Blend", "Blend"),
+                        ("Apply Matte", "ApplyMatte"),
+                        ("Film Grain", "FilmGrain"),
+                        ("Color Warper", "ColorWarper"),
+                        ("Noise Reduction", "Denoise"),
+                        ("3D LUT", "Lut3D"),
+                    ] {
+                        if ui.button(label).clicked() {
+                            cmds.push(AppCommand::AddNode {
+                                clip_id,
+                                kind: kind_str.to_string(),
+                                position: (self.add_menu_graph_pos.x, self.add_menu_graph_pos.y),
+                            });
+                            close = true;
+                        }
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
+                });
+            });
+        // Close on outside-click. Detect by a click outside the menu's
+        // bounding area or on canvas next frame — simplest signal here
+        // is: if the user clicked anything else and the menu didn't
+        // consume it, the next frame's primary_pressed check will close.
+        if ui.input(|i| i.pointer.primary_clicked() || i.pointer.secondary_clicked()) {
+            // The button-click path sets `close = true`; outside clicks
+            // we detect by no menu button being clicked.
+            // (Egui's popup wouldn't have absorbed the click here.)
+            close = true;
+        }
+        if close { self.add_menu_open = false; }
+    }
+
+    fn draw_node_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        clip_id: ClipId,
+        node_id: NodeId,
+        kind: NodeKind,
+        enabled: bool,
+        cmds: &mut Vec<AppCommand>,
+        selected_node: &mut Option<NodeId>,
+    ) {
+        let pos = self.node_menu.map(|(_, p)| p).unwrap_or_default();
+        let menu_id = ui.id().with(("ngv2_node_menu", node_id));
+        let mut close = false;
+        egui::Area::new(menu_id)
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    if matches!(kind, NodeKind::Source | NodeKind::Output) {
+                        ui.label("(no actions)");
+                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
+                        return;
+                    }
+                    let toggle = if enabled { "Bypass" } else { "Enable" };
+                    if ui.button(toggle).clicked() {
+                        cmds.push(AppCommand::ToggleNodeEnabled { clip_id, node_id });
+                        close = true;
+                    }
+                    if ui.button("Delete").clicked() {
+                        cmds.push(AppCommand::RemoveNode { clip_id, node_id });
+                        if *selected_node == Some(node_id) { *selected_node = None; }
+                        close = true;
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
+                });
+            });
+        if ui.input(|i| i.pointer.primary_clicked() || i.pointer.secondary_clicked()) {
+            close = true;
+        }
+        if close { self.node_menu = None; }
+    }
+}
+
+// ── Port position helpers ─────────────────────────────────────────
+// Ports are evenly distributed along the left (input) / right
+// (output) edge of the node body rectangle.
+
+fn input_port_pos(rect: &egui::Rect, port: u8, kind: &NodeKind) -> egui::Pos2 {
+    let count = kind.input_port_count().max(1);
+    port_pos_on_edge(rect, port, count, false)
+}
+
+fn output_port_pos(rect: &egui::Rect, port: u8, kind: &NodeKind) -> egui::Pos2 {
+    let count = kind.output_port_count().max(1);
+    port_pos_on_edge(rect, port, count, true)
+}
+
+fn port_pos_on_edge(rect: &egui::Rect, port: u8, count: u8, output: bool) -> egui::Pos2 {
+    let body_top = rect.min.y + NODE_HEADER_H * (rect.height() / NODE_H);
+    let body_h = rect.max.y - body_top;
+    let frac = (port as f32 + 0.5) / count as f32;
+    let y = body_top + body_h * frac;
+    let x = if output { rect.max.x } else { rect.min.x };
+    egui::pos2(x, y)
+}
+
+fn draw_wire(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, color: egui::Color32, width: f32) {
+    // Cubic bezier with horizontal handles whose length scales with
+    // the X distance — gives the classic "S" curve when nodes are
+    // side-by-side and a clean "U" when wired backwards.
+    let dx = (to.x - from.x).abs().max(40.0);
+    let h = dx * 0.5;
+    let c1 = egui::pos2(from.x + h, from.y);
+    let c2 = egui::pos2(to.x - h, to.y);
+    let stroke = egui::Stroke::new(width.max(1.0), color);
+
+    // Approximate cubic with a polyline (egui has no native bezier
+    // primitive at this stroke level).
+    const STEPS: usize = 24;
+    let mut prev = from;
+    for i in 1..=STEPS {
+        let t = i as f32 / STEPS as f32;
+        let mt = 1.0 - t;
+        let p = egui::pos2(
+            mt * mt * mt * from.x + 3.0 * mt * mt * t * c1.x + 3.0 * mt * t * t * c2.x + t * t * t * to.x,
+            mt * mt * mt * from.y + 3.0 * mt * mt * t * c1.y + 3.0 * mt * t * t * c2.y + t * t * t * to.y,
+        );
+        painter.line_segment([prev, p], stroke);
+        prev = p;
+    }
+}
