@@ -313,6 +313,7 @@ impl KlippApp {
             crate::icons::install(&cc.egui_ctx);
         }
 
+
         // Apply UI scale — Auto (0) detects system DPI via native pixels_per_point
         let scale_pct = prefs.appearance.ui_scale_percent;
         if scale_pct == 0 {
@@ -9174,6 +9175,7 @@ impl KlippApp {
 
     fn add_color_node(&mut self, clip_id: klipp_core::ClipId, kind: &str, position: (f32, f32), needs_refresh: &mut bool) {
         let node_kind = match kind {
+            "Corrector" => klipp_nodes::NodeKind::Corrector,
             "Exposure" => klipp_nodes::NodeKind::Exposure,
             "Contrast" => klipp_nodes::NodeKind::Contrast,
             "Saturation" => klipp_nodes::NodeKind::Saturation,
@@ -9190,6 +9192,7 @@ impl KlippApp {
             "ApplyMatte" => klipp_nodes::NodeKind::ApplyMatte,
             "Blend" => klipp_nodes::NodeKind::Blend,
             "Layer" => klipp_nodes::NodeKind::Layer,
+            "LayerMixer" => klipp_nodes::NodeKind::LayerMixer,
             "Lut3D" => klipp_nodes::NodeKind::Lut3D,
             "FilmGrain" => klipp_nodes::NodeKind::FilmGrain,
             "ColorMatch" => klipp_nodes::NodeKind::ColorMatch,
@@ -9280,6 +9283,19 @@ impl KlippApp {
                             to_node: *to,
                             to_port: *to_port,
                         });
+                        // LayerMixer auto-grow — if the editor dropped
+                        // a wire on a port past the current count, the
+                        // params Vec needs to grow in lockstep so the
+                        // executor can find a setting at that index.
+                        if let Some(target) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *to) {
+                            if target.kind == klipp_nodes::NodeKind::LayerMixer {
+                                let needed = (*to_port as usize) + 1;
+                                let mixer = target.params.layer_mixer.get_or_insert_with(Default::default);
+                                if mixer.inputs.len() < needed {
+                                    mixer.inputs.resize_with(needed, klipp_nodes::LayerMixerInput::default);
+                                }
+                            }
+                        }
                         // Validate no cycle
                         if clip.node_graph.topo_sort().is_err() {
                             clip.node_graph = old_graph;
@@ -9544,6 +9560,23 @@ impl KlippApp {
                 *needs_refresh = true;
                 true
             }
+            AppCommand::SetNodeLayerMixerInput { clip_id, node_id, port, input } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                            let mixer = node.params.layer_mixer.get_or_insert_with(Default::default);
+                            let needed = (*port as usize) + 1;
+                            if mixer.inputs.len() < needed {
+                                mixer.inputs.resize_with(needed, klipp_nodes::LayerMixerInput::default);
+                            }
+                            mixer.inputs[*port as usize] = *input;
+                        }
+                        break;
+                    }
+                }
+                *needs_refresh = true;
+                true
+            }
             AppCommand::CaptureColorMatchReference => {
                 let captured = {
                     let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
@@ -9778,16 +9811,20 @@ impl KlippApp {
                 true
             }
             AppCommand::SetClipLogFormat { clip_id, log_format } => {
+                let mut found = false;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        // Find the InputTransform node specifically
                         if let Some(node) = clip.node_graph.nodes.iter_mut()
                             .find(|n| n.kind == klipp_nodes::NodeKind::InputTransform)
                         {
                             node.params.log_format = Some(*log_format);
+                            found = true;
                         }
                         break;
                     }
+                }
+                if !found {
+                    self.state.toast.show("Add an Input Transform node to apply log decoding");
                 }
                 *needs_refresh = true;
                 true
@@ -9806,29 +9843,44 @@ impl KlippApp {
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                     let mut snapshot: Option<klipp_nodes::NodeGraph> = None;
                     let mut committed: Option<klipp_nodes::NodeGraph> = None;
+                    let mut applied = false;
                     for track in &mut seq.tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             snapshot = Some(clip.node_graph.clone());
-                            if let Some(node) = clip.node_graph.nodes.iter_mut()
-                                .find(|n| n.kind == klipp_nodes::NodeKind::ColorBalance)
-                            {
+                            // Prefer the Corrector node for the WB
+                            // write-back — its temperature/tint feed the
+                            // unified colour-grade shader. Fall back to
+                            // the legacy ColorBalance node for graphs
+                            // that don't have a Corrector.
+                            let target_idx = clip.node_graph.nodes.iter().position(|n|
+                                n.kind == klipp_nodes::NodeKind::Corrector
+                            ).or_else(|| clip.node_graph.nodes.iter().position(|n|
+                                n.kind == klipp_nodes::NodeKind::ColorBalance
+                            ));
+                            if let Some(idx) = target_idx {
+                                let node = &mut clip.node_graph.nodes[idx];
                                 node.params.temperature = Some(temp_adj);
                                 node.params.tint = Some(tint_adj);
+                                applied = true;
                             }
                             committed = Some(clip.node_graph.clone());
                             break;
                         }
                     }
-                    if let (Some(old_graph), Some(new_graph)) = (snapshot, committed) {
-                        self.state.history.push(crate::history::HistoryEntry {
-                            sequence_idx: self.state.active_sequence_idx,
-                            command: crate::history::EditCommand::SetNodeGraph {
-                                clip_id: *clip_id,
-                                old_graph,
-                                new_graph,
-                            },
-                        });
-                        self.state.dirty = true;
+                    if applied {
+                        if let (Some(old_graph), Some(new_graph)) = (snapshot, committed) {
+                            self.state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: crate::history::EditCommand::SetNodeGraph {
+                                    clip_id: *clip_id,
+                                    old_graph,
+                                    new_graph,
+                                },
+                            });
+                            self.state.dirty = true;
+                        }
+                    } else {
+                        self.state.toast.show("Add a Color Balance node to use Auto White Balance");
                     }
                     *needs_refresh = true;
                 }
@@ -15687,24 +15739,6 @@ impl KlippApp {
         cmds
     }
 
-    fn update_window_title(&self, ctx: &egui::Context) {
-        let title = match &self.state.project_path {
-            None => "Klipp".to_string(),
-            Some(p) => {
-                let name = p
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("Untitled");
-                if self.state.dirty {
-                    format!("Klipp \u{2014} {} *", name)
-                } else {
-                    format!("Klipp \u{2014} {}", name)
-                }
-            }
-        };
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
-    }
-
     fn handle_global_shortcuts(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         // Skip single-key shortcuts when ANY text edit widget has focus (search bars,
@@ -18618,9 +18652,6 @@ impl eframe::App for KlippApp {
             }
         }
 
-        // 13. Update window title
-        self.update_window_title(ctx);
-
         // Intercept window X button close — treat same as File → Quit
         let window_close_requested = ctx.input(|i| i.viewport().close_requested());
         if window_close_requested {
@@ -18688,6 +18719,7 @@ impl eframe::App for KlippApp {
                 self.state.viewer_mode,
             );
         }
+
     }
 }
 
@@ -21794,23 +21826,23 @@ impl KlippApp {
                         ui.painter().rect_filled(sep_rect2, 0.0, self.theme.border);
                     }
 
-                    if self.state.show_node_strip && self.state.selected_node_id.is_some() {
-                        let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
-                        let panel_cmds = self.node_inspector_panel.show(
-                            ui, &self.state.selected_node_id, &mut clip.node_graph, clip_id, &self.theme, clip_time_secs,
-                        );
-                        all_cmds.extend(panel_cmds);
-                    } else {
-                        let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
-                        let panel_cmds = self.node_inspector_panel.show_simple(
-                            ui, &mut clip.node_graph, clip_id,
-                            &mut self.state.selected_node_id,
-                            &mut self.state.color_tab,
-                            &self.theme,
-                            clip_time_secs,
-                        );
-                        all_cmds.extend(panel_cmds);
-                    }
+                    // Always show the tabbed colour-grade inspector in
+                    // the Color workspace — selecting a node in the V2
+                    // canvas used to swap to a per-node view, which
+                    // hid the Wheels/Curves/Hue-Sat/Warper tabs and
+                    // left the user with no way to grade. Tabs target
+                    // the Corrector regardless of selection; per-node
+                    // editing for Mask/Qualifier/etc. happens via the
+                    // V2 canvas right-click for now.
+                    let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+                    let panel_cmds = self.node_inspector_panel.show_simple(
+                        ui, &mut clip.node_graph, clip_id,
+                        &mut self.state.selected_node_id,
+                        &mut self.state.color_tab,
+                        &self.theme,
+                        clip_time_secs,
+                    );
+                    all_cmds.extend(panel_cmds);
                 }
             } else {
                 let panel_cmds = self.new_inspector.show(

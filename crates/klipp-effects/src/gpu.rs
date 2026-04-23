@@ -2864,7 +2864,7 @@ impl GpuEffectsPipeline {
 
     /// Claim the next ring slot for a chain dispatch. Panics if the
     /// ring is exhausted — a 32-slot ring covers every realistic grade
-    /// (the default graph has 13 nodes; multi-pass nodes claim 1 slot
+    /// (full legacy chain is 13 nodes; multi-pass nodes claim 1 slot
     /// per pass). If this ever fires in the wild, bump
     /// `CHAIN_PARAMS_RING_SIZE` rather than masking with wraparound.
     fn next_params_slot(&mut self) -> usize {

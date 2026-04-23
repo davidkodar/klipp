@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use klipp_core::{
-    ColorWarperParams, CurveSet, FilmGrainSettings, HueSatCurves, LogFormat, MaskStack,
-    QualifierSettings,
+    BlendMode, ColorWarperParams, CurveSet, FilmGrainSettings, HueSatCurves, LayerMixerInput,
+    LogFormat, MaskStack, QualifierSettings,
 };
 
 /// All possible parameter values a node can have.
@@ -173,6 +173,36 @@ pub struct NodeParams {
     // Blend / Layer / ApplyMatte
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mix: Option<f32>,
+
+    // LayerMixer — per-port settings (None = default 2-input config,
+    // composited Normal at full opacity). When the editor grows the
+    // port count this Vec is grown in lockstep so `inputs[port]` is
+    // always defined for any port the executor sees on an edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_mixer: Option<LayerMixerParams>,
+}
+
+// ── LayerMixer ────────────────────────────────────────────────────
+
+/// Per-input compositing settings for `NodeKind::LayerMixer`.
+/// `LayerMixerInput` + `BlendMode` themselves live in `klipp_core` so
+/// that `AppCommand` (also in klipp-core) can reference them without
+/// inverting the crate dependency.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LayerMixerParams {
+    /// One entry per input port. `inputs[0]` is port 0 (top of stack).
+    pub inputs: Vec<LayerMixerInput>,
+}
+
+impl LayerMixerParams {
+    /// True when every input is at default (Normal blend, opacity 1).
+    /// Used by `NodeParams::is_default` so an unmodified mixer doesn't
+    /// keep the clip out of identity-graph fast-paths.
+    pub fn is_identity(&self) -> bool {
+        self.inputs.iter().all(|i|
+            i.blend_mode == BlendMode::Normal && (i.opacity - 1.0).abs() < 1e-4
+        )
+    }
 }
 
 impl NodeParams {
@@ -239,6 +269,7 @@ impl NodeParams {
             && z(&self.denoise_chroma)
             && self.denoise_radius.is_none()
             && z(&self.mix)
+            && self.layer_mixer.as_ref().map_or(true, |m| m.is_identity())
     }
 
     /// Apply a keyframe override by param name.

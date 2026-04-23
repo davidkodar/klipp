@@ -46,7 +46,7 @@ pub mod time;
 pub mod transition_registry;
 pub mod types;
 
-pub use color_grade::{ColorMatchSettings, ColorWarperParams, CurveSet, FilmGrainSettings, HueSatCurves, Mask, MaskKeyframes, MaskShape, MaskStack, QualifierSettings};
+pub use color_grade::{ColorMatchSettings, ColorWarperParams, CurveSet, FilmGrainSettings, HueSatCurves, LayerMixerInput, Mask, MaskKeyframes, MaskShape, MaskStack, QualifierSettings};
 pub use keyframe::{Interpolation, Keyframe};
 pub use events::{AppCommand, AppEvent, AudioParam, ChapterSnapshot, EncoderPreset, ExportAudioCodec, ExportFormat, ExportSettings, ExportVideoCodec, HdrMode, MarkerColor, MediaLoadedPayload, ParamChange, RateControl, ToneMapOp, Tool, TrackTarget, VideoParam, ViewerMode};
 pub use export_preset::{ExportPreset, ExportPresetSettings, PresetId, ProxyResolution, builtin_presets};

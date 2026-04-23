@@ -762,6 +762,16 @@ pub enum AppCommand {
     /// The node's executor then applies the adjustments via the
     /// unified grade shader.
     SetNodeColorMatch { clip_id: ClipId, node_id: uuid::Uuid, settings: crate::color_grade::ColorMatchSettings },
+    /// Update one input slot on a `LayerMixer` node (port = index into
+    /// `LayerMixerParams.inputs`). The handler grows the params Vec as
+    /// needed so a fresh slot can be set without an explicit AddPort
+    /// command.
+    SetNodeLayerMixerInput {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        port: u8,
+        input: crate::color_grade::LayerMixerInput,
+    },
     /// Capture the currently displayed program-viewer frame as the
     /// reference for the next ColorMatch compute. Stores raw RGBA in
     /// `AppState.color_match_reference`. Held in RAM only; the resulting

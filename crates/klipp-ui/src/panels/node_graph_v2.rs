@@ -36,7 +36,7 @@ fn node_color(kind: &NodeKind, theme: &KlippTheme) -> egui::Color32 {
         NodeKind::Qualifier | NodeKind::Mask | NodeKind::CombineMattes => {
             egui::Color32::from_rgb(0x5c, 0x3a, 0x6e)
         }
-        NodeKind::Layer | NodeKind::Blend | NodeKind::ApplyMatte => {
+        NodeKind::Layer | NodeKind::Blend | NodeKind::ApplyMatte | NodeKind::LayerMixer => {
             egui::Color32::from_rgb(0x3a, 0x5c, 0x6e)
         }
         NodeKind::Lut3D | NodeKind::FilmGrain | NodeKind::ColorMatch => {
@@ -204,7 +204,10 @@ impl NodeGraphV2Panel {
         };
 
         // Snapshot node screen rects (for hit-testing + wire endpoints).
-        let mut node_rects: Vec<(NodeId, egui::Rect, egui::Color32, NodeKind)> =
+        // The trailing u8 is the *dynamic* input-port count — needed
+        // because LayerMixer grows past its kind's static count and
+        // the editor must render every wired port + accept new ones.
+        let mut node_rects: Vec<(NodeId, egui::Rect, egui::Color32, NodeKind, u8)> =
             Vec::with_capacity(graph.nodes.len());
         for node in &graph.nodes {
             let pos = graph
@@ -215,7 +218,8 @@ impl NodeGraphV2Panel {
             let center = to_screen(egui::pos2(pos.x, pos.y));
             let size = egui::vec2(NODE_W * zoom, NODE_H * zoom);
             let rect = egui::Rect::from_center_size(center, size);
-            node_rects.push((node.id, rect, node_color(&node.kind, theme), node.kind));
+            let in_count = node.dynamic_input_port_count();
+            node_rects.push((node.id, rect, node_color(&node.kind, theme), node.kind, in_count));
         }
 
         // ── Wires ─────────────────────────────────────────────────
@@ -225,14 +229,14 @@ impl NodeGraphV2Panel {
         // user can see at a glance "that's a matte feeding here"
         // without having to chase the source node.
         for edge in &graph.edges {
-            let Some((_, from_rect, _, from_kind)) =
-                node_rects.iter().find(|(id, _, _, _)| *id == edge.from_node).copied()
+            let Some((_, from_rect, _, from_kind, _)) =
+                node_rects.iter().find(|(id, _, _, _, _)| *id == edge.from_node).copied()
             else { continue; };
-            let Some((_, to_rect, _, to_kind)) =
-                node_rects.iter().find(|(id, _, _, _)| *id == edge.to_node).copied()
+            let Some((_, to_rect, _, to_kind, to_in_count)) =
+                node_rects.iter().find(|(id, _, _, _, _)| *id == edge.to_node).copied()
             else { continue; };
             let from = output_port_pos(&from_rect, edge.from_port, &from_kind);
-            let to = input_port_pos(&to_rect, edge.to_port, &to_kind);
+            let to = input_port_pos(&to_rect, edge.to_port, to_in_count);
             let role = to_kind.input_port_role(edge.to_port);
             let (r, g, b) = role.editor_color();
             // Idle existing edges get a translucent stroke so they
@@ -243,8 +247,8 @@ impl NodeGraphV2Panel {
         }
 
         if let Some(dw) = self.drag_wire {
-            if let Some((_, from_rect, _, from_kind)) =
-                node_rects.iter().find(|(id, _, _, _)| *id == dw.from_node).copied()
+            if let Some((_, from_rect, _, from_kind, _)) =
+                node_rects.iter().find(|(id, _, _, _, _)| *id == dw.from_node).copied()
             {
                 let from = output_port_pos(&from_rect, dw.from_port, &from_kind);
                 let to = ui.input(|i| i.pointer.hover_pos().unwrap_or(from));
@@ -259,7 +263,16 @@ impl NodeGraphV2Panel {
         }
 
         // ── Nodes ─────────────────────────────────────────────────
-        for (idx, (node_id, rect, fill, kind)) in node_rects.iter().copied().enumerate() {
+        // Hoist the pointer position so we can gate per-port tooltip
+        // registration on "cursor is actually near this node". Without
+        // the gate, allocating a hover Sense rect + on_hover_text on
+        // every port every frame keeps egui's tooltip-fade animation
+        // ticking, which calls request_repaint() until the fade
+        // settles — and with N ports per node the cursor parked
+        // anywhere on the canvas almost always sits inside one. Net
+        // effect: 100 % CPU just by having the editor open.
+        let hover_pointer = ui.input(|i| i.pointer.hover_pos());
+        for (idx, (node_id, rect, fill, kind, in_count)) in node_rects.iter().copied().enumerate() {
             let node = &graph.nodes[idx];
             let is_selected = *selected_node == Some(node_id);
 
@@ -297,10 +310,20 @@ impl NodeGraphV2Panel {
                 );
             }
 
+            // Pointer-proximity gate — only register port tooltips for
+            // nodes the cursor is actually near. Saves egui from
+            // animating tooltip fades on every port of every node and
+            // burning the CPU at idle.
+            let node_hover_band = rect.expand(PORT_HIT_RADIUS * 2.0);
+            let cursor_near_node = hover_pointer
+                .map(|p| node_hover_band.contains(p))
+                .unwrap_or(false);
+
             // Input ports (left edge) — role-coloured stroke +
-            // hover tooltip naming the port.
-            for p in 0..kind.input_port_count() {
-                let pos = input_port_pos(&rect, p, &kind);
+            // hover tooltip naming the port. Use the dynamic count so
+            // a LayerMixer with 5 wires shows 5 ports.
+            for p in 0..in_count {
+                let pos = input_port_pos(&rect, p, in_count);
                 let role = kind.input_port_role(p);
                 let (rr, gg, bb) = role.editor_color();
                 painter.circle_filled(pos, PORT_RADIUS * zoom, theme.bg_deep);
@@ -308,13 +331,50 @@ impl NodeGraphV2Panel {
                     pos, PORT_RADIUS * zoom,
                     egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(rr, gg, bb)),
                 );
-                let port_rect = egui::Rect::from_center_size(
-                    pos, egui::vec2(PORT_HIT_RADIUS * 2.0, PORT_HIT_RADIUS * 2.0),
-                );
-                ui.allocate_rect(port_rect, egui::Sense::hover())
-                    .on_hover_text(format!("{} (in)", kind.input_port_label(p)));
+                if cursor_near_node {
+                    let port_rect = egui::Rect::from_center_size(
+                        pos, egui::vec2(PORT_HIT_RADIUS * 2.0, PORT_HIT_RADIUS * 2.0),
+                    );
+                    ui.allocate_rect(port_rect, egui::Sense::hover())
+                        .on_hover_text(format!("{} (in)", kind.input_port_label(p)));
+                }
             }
-            // Output ports (right edge)
+            // LayerMixer "+" affordance — a small ghost port just
+            // below the last input port hinting that you can drop a
+            // wire on the empty stretch of the left edge to add a new
+            // port. Pure visual; the actual port allocation happens
+            // on wire drop in the input-port hit-test fall-through.
+            if kind == NodeKind::LayerMixer {
+                let last = input_port_pos(&rect, in_count.saturating_sub(1), in_count);
+                let next = input_port_pos(
+                    &rect,
+                    in_count,
+                    in_count.saturating_add(1),
+                );
+                // Halfway between last existing port and where the
+                // next would land, clamped so it doesn't escape the
+                // node body when the count is high.
+                let hint_y = ((last.y + next.y) * 0.5).clamp(rect.min.y + 12.0, rect.max.y - 4.0);
+                let hint_pos = egui::pos2(rect.min.x, hint_y);
+                let role = NodeKind::LayerMixer.input_port_role(0);
+                let (rr, gg, bb) = role.editor_color();
+                painter.circle_stroke(
+                    hint_pos, PORT_RADIUS * zoom * 0.7,
+                    egui::Stroke::new(
+                        1.0_f32,
+                        egui::Color32::from_rgba_unmultiplied(rr, gg, bb, 90),
+                    ),
+                );
+                painter.text(
+                    hint_pos,
+                    egui::Align2::CENTER_CENTER,
+                    "+",
+                    egui::FontId::proportional(8.0 * zoom),
+                    egui::Color32::from_rgba_unmultiplied(rr, gg, bb, 140),
+                );
+            }
+
+            // Output ports (right edge) — same proximity gate as inputs.
             for p in 0..kind.output_port_count() {
                 let pos = output_port_pos(&rect, p, &kind);
                 let role = kind.output_port_role(p);
@@ -324,11 +384,13 @@ impl NodeGraphV2Panel {
                     pos, PORT_RADIUS * zoom,
                     egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(rr, gg, bb)),
                 );
-                let port_rect = egui::Rect::from_center_size(
-                    pos, egui::vec2(PORT_HIT_RADIUS * 2.0, PORT_HIT_RADIUS * 2.0),
-                );
-                ui.allocate_rect(port_rect, egui::Sense::hover())
-                    .on_hover_text(format!("{} (out)", kind.output_port_label(p)));
+                if cursor_near_node {
+                    let port_rect = egui::Rect::from_center_size(
+                        pos, egui::vec2(PORT_HIT_RADIUS * 2.0, PORT_HIT_RADIUS * 2.0),
+                    );
+                    ui.allocate_rect(port_rect, egui::Sense::hover())
+                        .on_hover_text(format!("{} (out)", kind.output_port_label(p)));
+                }
             }
         }
 
@@ -344,7 +406,7 @@ impl NodeGraphV2Panel {
                 if canvas_rect.contains(p) {
                     // Output port hit?
                     let mut wire_started = false;
-                    for (node_id, rect, _, kind) in &node_rects {
+                    for (node_id, rect, _, kind, _) in &node_rects {
                         for port in 0..kind.output_port_count() {
                             let port_pos = output_port_pos(rect, port, kind);
                             if (p - port_pos).length() <= PORT_HIT_RADIUS * zoom.max(0.5) {
@@ -357,7 +419,7 @@ impl NodeGraphV2Panel {
                     }
                     if !wire_started {
                         // Node body hit?
-                        for (node_id, rect, _, _) in &node_rects {
+                        for (node_id, rect, _, _, _) in &node_rects {
                             if rect.contains(p) {
                                 *selected_node = Some(*node_id);
                                 let g = to_graph(p);
@@ -399,13 +461,18 @@ impl NodeGraphV2Panel {
 
         // Drop — finalise drags.
         if primary_released {
-            // Wire drop: did we land on an input port?
+            // Wire drop: did we land on an input port? For LayerMixer
+            // we additionally allow dropping anywhere on the node's
+            // left edge — that allocates a new port at index `in_count`
+            // and the engine grows the params Vec to match.
             if let Some(dw) = self.drag_wire.take() {
                 if let Some(p) = pointer_pos {
-                    for (node_id, rect, _, kind) in &node_rects {
+                    'drop: for (node_id, rect, _, kind, in_count) in &node_rects {
                         if *node_id == dw.from_node { continue; }
-                        for port in 0..kind.input_port_count() {
-                            let port_pos = input_port_pos(rect, port, kind);
+                        let in_count = *in_count;
+                        let mut hit_existing = false;
+                        for port in 0..in_count {
+                            let port_pos = input_port_pos(rect, port, in_count);
                             if (p - port_pos).length() <= PORT_HIT_RADIUS * zoom.max(0.5) {
                                 cmds.push(AppCommand::ConnectNodes {
                                     clip_id,
@@ -414,7 +481,30 @@ impl NodeGraphV2Panel {
                                     to: *node_id,
                                     to_port: port,
                                 });
+                                hit_existing = true;
                                 break;
+                            }
+                        }
+                        if hit_existing { break 'drop; }
+                        // LayerMixer fall-through: drop on left edge
+                        // band → grow port count by 1 and connect to
+                        // the new port. The band is the full left edge
+                        // of the node body (not just the header strip)
+                        // so users have a generous target.
+                        if *kind == NodeKind::LayerMixer {
+                            let edge_band = egui::Rect::from_min_max(
+                                egui::pos2(rect.min.x - PORT_HIT_RADIUS, rect.min.y),
+                                egui::pos2(rect.min.x + PORT_HIT_RADIUS, rect.max.y),
+                            );
+                            if edge_band.contains(p) {
+                                cmds.push(AppCommand::ConnectNodes {
+                                    clip_id,
+                                    from: dw.from_node,
+                                    from_port: dw.from_port,
+                                    to: *node_id,
+                                    to_port: in_count,
+                                });
+                                break 'drop;
                             }
                         }
                     }
@@ -430,7 +520,7 @@ impl NodeGraphV2Panel {
                 if canvas_rect.contains(p) {
                     // Node hit?
                     let mut on_node = None;
-                    for (node_id, rect, _, _) in &node_rects {
+                    for (node_id, rect, _, _, _) in &node_rects {
                         if rect.contains(p) { on_node = Some(*node_id); break; }
                     }
                     let frame_nr = ui.ctx().cumulative_pass_nr();
@@ -591,6 +681,7 @@ impl NodeGraphV2Panel {
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     for (label, kind_str) in [
+                        ("Corrector (all-in-one)", "Corrector"),
                         ("Exposure", "Exposure"),
                         ("Contrast", "Contrast"),
                         ("Saturation", "Saturation"),
@@ -605,6 +696,7 @@ impl NodeGraphV2Panel {
                         ("Mask", "Mask"),
                         ("Combine Mattes", "CombineMattes"),
                         ("Layer", "Layer"),
+                        ("Layer Mixer", "LayerMixer"),
                         ("Blend", "Blend"),
                         ("Apply Matte", "ApplyMatte"),
                         ("Film Grain", "FilmGrain"),
@@ -690,9 +782,8 @@ impl NodeGraphV2Panel {
 // Ports are evenly distributed along the left (input) / right
 // (output) edge of the node body rectangle.
 
-fn input_port_pos(rect: &egui::Rect, port: u8, kind: &NodeKind) -> egui::Pos2 {
-    let count = kind.input_port_count().max(1);
-    port_pos_on_edge(rect, port, count, false)
+fn input_port_pos(rect: &egui::Rect, port: u8, count: u8) -> egui::Pos2 {
+    port_pos_on_edge(rect, port, count.max(1), false)
 }
 
 fn output_port_pos(rect: &egui::Rect, port: u8, kind: &NodeKind) -> egui::Pos2 {

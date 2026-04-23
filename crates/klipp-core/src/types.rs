@@ -107,6 +107,33 @@ pub enum BlendMode {
     Lighten,
 }
 
+impl BlendMode {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            BlendMode::Normal => "Normal",
+            BlendMode::Add => "Add",
+            BlendMode::Multiply => "Multiply",
+            BlendMode::Screen => "Screen",
+            BlendMode::Overlay => "Overlay",
+            BlendMode::SoftLight => "Soft Light",
+            BlendMode::HardLight => "Hard Light",
+            BlendMode::Difference => "Difference",
+            BlendMode::Exclusion => "Exclusion",
+            BlendMode::ColorDodge => "Color Dodge",
+            BlendMode::ColorBurn => "Color Burn",
+            BlendMode::Darken => "Darken",
+            BlendMode::Lighten => "Lighten",
+        }
+    }
+
+    pub const ALL: [BlendMode; 13] = [
+        BlendMode::Normal, BlendMode::Add, BlendMode::Multiply, BlendMode::Screen,
+        BlendMode::Overlay, BlendMode::SoftLight, BlendMode::HardLight,
+        BlendMode::Difference, BlendMode::Exclusion, BlendMode::ColorDodge,
+        BlendMode::ColorBurn, BlendMode::Darken, BlendMode::Lighten,
+    ];
+}
+
 /// Per-clip audio channel routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ChannelConfig {

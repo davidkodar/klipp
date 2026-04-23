@@ -14,6 +14,20 @@ use uuid::Uuid;
 
 /// Migrate old project graphs forward — insert nodes that were added in later versions.
 fn migrate_graph(graph: &mut NodeGraph) {
+    // Skip the ColorWarper auto-insert when the graph already uses the
+    // new Corrector default (or when the user has explicitly removed
+    // the legacy primary chain). The ColorWarper migration was added
+    // back when every clip carried a 12-node legacy chain — applying
+    // it to a Corrector graph would dump a stray Warper node before
+    // the Output and pollute every newly-loaded project.
+    let has_corrector = graph.nodes.iter().any(|n| n.kind == NodeKind::Corrector);
+    let has_legacy_chain = graph.nodes.iter().any(|n|
+        matches!(n.kind, NodeKind::Exposure | NodeKind::Contrast | NodeKind::ColorWheels | NodeKind::HueSatCurves)
+    );
+    if has_corrector || !has_legacy_chain {
+        return;
+    }
+
     // ColorWarper: added between HueSatCurves and ColorBalance
     let has_warper = graph.nodes.iter().any(|n| n.kind == NodeKind::ColorWarper);
     if !has_warper {

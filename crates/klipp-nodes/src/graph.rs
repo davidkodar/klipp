@@ -52,6 +52,28 @@ pub struct Edge {
     pub to_port: u8,
 }
 
+impl Node {
+    /// Effective input-port count, accounting for nodes (currently just
+    /// `LayerMixer`) whose port count is data-driven by their params
+    /// rather than fixed by the kind alone.
+    ///
+    /// Always at least `kind.input_port_count()` — i.e. a freshly added
+    /// LayerMixer with no params still shows its 2 starter ports.
+    pub fn dynamic_input_port_count(&self) -> u8 {
+        let static_count = self.kind.input_port_count();
+        match self.kind {
+            NodeKind::LayerMixer => self
+                .params
+                .layer_mixer
+                .as_ref()
+                .map(|m| m.inputs.len() as u8)
+                .unwrap_or(0)
+                .max(static_count),
+            _ => static_count,
+        }
+    }
+}
+
 /// Screen position for the node editor UI.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct NodePos {

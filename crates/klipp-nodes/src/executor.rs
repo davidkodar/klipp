@@ -10,6 +10,7 @@ use klipp_effects::gpu::GpuEffectsPipeline;
 use crate::graph::{Node, NodeGraph, NodeId};
 use crate::kinds::NodeKind;
 use crate::params::NodeParams;
+use klipp_core::{BlendMode, LayerMixerInput};
 
 /// Return the effective params for `node` at `clip_time_secs`. When the node has
 /// no keyframes we borrow `node.params` directly, skipping the per-frame clone
@@ -530,6 +531,42 @@ impl GraphExecutor {
                 }
             }
 
+            // ── LayerMixer (N-input compositor) ────────────────────────
+            // Sits outside the standard 3-port `execute_node` dispatch
+            // because the input count is data-driven. Walk every wired
+            // port in stack order (port 0 = top), composite bottom-up
+            // with per-port opacity + blend mode. Unwired ports are
+            // skipped — a 4-port mixer with only ports 0 and 2 wired
+            // composites those two as a 2-layer stack.
+            if node.kind == NodeKind::LayerMixer {
+                let port_count = node.dynamic_input_port_count();
+                let mut wired: Vec<(u8, &[f32])> = Vec::with_capacity(port_count as usize);
+                for port in 0..port_count {
+                    if let Some(src_id) = graph.input_of(node_id, port) {
+                        if let Some(arc) = node_outputs.get(&src_id) {
+                            if !arc.is_empty() {
+                                wired.push((port, arc.as_slice()));
+                            }
+                        }
+                    }
+                }
+                let pixel_count = (width as usize) * (height as usize);
+                let output = if wired.is_empty() {
+                    source_frame.to_vec()
+                } else {
+                    let inputs_params = params
+                        .layer_mixer
+                        .as_ref()
+                        .map(|m| m.inputs.as_slice())
+                        .unwrap_or(&[]);
+                    layer_mixer_compose(&wired, inputs_params, pixel_count)
+                };
+                node_outputs.insert(node_id, Arc::new(output));
+                cpu_fallback_count += 1;
+                per_node_ms.push((format!("{node_kind_name}#mixer"), t_node.elapsed().as_secs_f64() * 1000.0));
+                continue;
+            }
+
             // ── CPU / unchained path ────────────────────────────────────
             // Resolve inputs — borrow as slices from Arc-held buffers.
             // (The chain path above guarantees no sentinel-empty Arcs are
@@ -733,6 +770,15 @@ impl GraphExecutor {
             NodeKind::Denoise => {
                 params.denoise_luma.unwrap_or(0.0) > 0.0
                     || params.denoise_chroma.unwrap_or(0.0) > 0.0
+            }
+            NodeKind::Corrector => {
+                // The Corrector chains 1–7 sub-dispatches inline (see
+                // `dispatch_corrector_chain`). It supports the GPU chain
+                // whenever at least one sub-stage would actually fire —
+                // identical activeness logic to each individual kind,
+                // OR'd together. At full default values the bypass
+                // tunnel handles it before this is consulted.
+                corrector_has_active_stage(params)
             }
             _ => false,
         }
@@ -1144,8 +1190,205 @@ impl GraphExecutor {
                 );
                 Some(1)
             }
+            NodeKind::Corrector => {
+                self.dispatch_corrector_chain(node_id, params, width, height, in_is_a)
+            }
             _ => None,
         }
+    }
+
+    /// Dispatch the Corrector node's stages onto the GPU chain in
+    /// canonical order. Each enabled stage issues one ping-pong-flipping
+    /// dispatch; the running `cur_in_is_a` tracks which slot the next
+    /// stage reads from. Returns the total flip count so the caller can
+    /// mirror it into `chain_slot_a`. Returns `None` when nothing is
+    /// active (caller bypass-tunnels through this node).
+    ///
+    /// Stage order matches the legacy 12-step pipeline so visual
+    /// results are byte-identical to a clip with the same params spread
+    /// across the dedicated single-purpose nodes.
+    ///
+    /// Wheels in log mode are intentionally skipped here — the log
+    /// shader is CPU-only, mixing it in would force a chain flush
+    /// mid-Corrector. Users who need log-mode wheels should add a
+    /// dedicated `ColorWheels` node alongside the Corrector.
+    fn dispatch_corrector_chain(
+        &mut self,
+        node_id: NodeId,
+        params: &NodeParams,
+        width: u32,
+        height: u32,
+        in_is_a: bool,
+    ) -> Option<u32> {
+        if self.gpu.is_none() { return None; }
+
+        let mut cur = in_is_a;
+        let mut flips: u32 = 0;
+
+        // Stage 1 — unified color_grade dispatch (folds exposure +
+        // contrast + saturation + temperature/tint + tone + linear
+        // wheels + hue + global_mix into a single shader call).
+        let exp = params.exposure.unwrap_or(0.0);
+        let con = params.contrast.unwrap_or(0.0);
+        let sat = params.saturation.unwrap_or(1.0);
+        let temp = params.temperature.unwrap_or(0.0);
+        let tint = params.tint.unwrap_or(0.0);
+        let hi = params.highlights.unwrap_or(0.0);
+        let sh = params.shadows.unwrap_or(0.0);
+        let wh = params.whites.unwrap_or(0.0);
+        let bl = params.blacks.unwrap_or(0.0);
+        let hue = params.hue.unwrap_or(0.0);
+        let global_mix = params.global_mix.unwrap_or(1.0);
+        let log_mode = params.wheels_log_mode.unwrap_or(false);
+        let (lift, gamma, gain, offset) = if log_mode {
+            ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        } else {
+            (
+                klipp_color::wheel_offset_to_rgb(
+                    params.lift_x.unwrap_or(0.0),
+                    params.lift_y.unwrap_or(0.0),
+                    params.lift_master.unwrap_or(0.0),
+                ),
+                klipp_color::wheel_offset_to_rgb(
+                    params.gamma_x.unwrap_or(0.0),
+                    params.gamma_y.unwrap_or(0.0),
+                    params.gamma_master.unwrap_or(0.0),
+                ),
+                klipp_color::wheel_offset_to_rgb(
+                    params.gain_x.unwrap_or(0.0),
+                    params.gain_y.unwrap_or(0.0),
+                    params.gain_master.unwrap_or(0.0),
+                ),
+                klipp_color::wheel_offset_to_rgb(
+                    params.offset_x.unwrap_or(0.0),
+                    params.offset_y.unwrap_or(0.0),
+                    params.offset_master.unwrap_or(0.0),
+                ),
+            )
+        };
+        let unified_active = exp != 0.0
+            || con != 0.0
+            || (sat - 1.0).abs() > f32::EPSILON
+            || temp != 0.0
+            || tint != 0.0
+            || hi != 0.0 || sh != 0.0 || wh != 0.0 || bl != 0.0
+            || lift != (0.0, 0.0, 0.0)
+            || gamma != (0.0, 0.0, 0.0)
+            || gain != (0.0, 0.0, 0.0)
+            || offset != (0.0, 0.0, 0.0)
+            || hue != 0.0
+            || (global_mix - 1.0).abs() > f32::EPSILON;
+        if unified_active {
+            self.gpu.as_mut().unwrap().apply_color_grade_chain(
+                cur, width, height,
+                exp, con, sat, temp, tint,
+                hi, sh, wh, bl,
+                lift, gamma, gain, offset,
+                hue, global_mix,
+            );
+            cur = !cur;
+            flips += 1;
+        }
+
+        // Stage 2 — Clarity. Net 1 flip (uses internal scratch buffer).
+        let clarity = params.clarity.unwrap_or(0.0);
+        if clarity != 0.0 {
+            self.gpu.as_mut().unwrap()
+                .apply_clarity_chain(cur, width, height, clarity);
+            cur = !cur;
+            flips += 1;
+        }
+
+        // Stage 3 — Vibrance.
+        let vib = params.vibrance.unwrap_or(0.0);
+        if vib != 0.0 {
+            self.gpu.as_mut().unwrap()
+                .apply_vibrance_chain(cur, width, height, vib);
+            cur = !cur;
+            flips += 1;
+        }
+
+        // Stage 4 — Wheel sat/bri.
+        let lift_sat = params.lift_sat.unwrap_or(0.0);
+        let lift_bri = params.lift_bri.unwrap_or(0.0);
+        let gamma_sat = params.gamma_sat.unwrap_or(0.0);
+        let gamma_bri = params.gamma_bri.unwrap_or(0.0);
+        let gain_sat = params.gain_sat.unwrap_or(0.0);
+        let gain_bri = params.gain_bri.unwrap_or(0.0);
+        let offset_sat = params.offset_sat.unwrap_or(0.0);
+        let offset_bri = params.offset_bri.unwrap_or(0.0);
+        let satbri_active = lift_sat != 0.0 || lift_bri != 0.0
+            || gamma_sat != 0.0 || gamma_bri != 0.0
+            || gain_sat != 0.0 || gain_bri != 0.0
+            || offset_sat != 0.0 || offset_bri != 0.0;
+        if satbri_active {
+            self.gpu.as_mut().unwrap().apply_wheel_sat_bri_chain(
+                cur, width, height,
+                lift_sat, lift_bri, gamma_sat, gamma_bri,
+                gain_sat, gain_bri, offset_sat, offset_bri,
+            );
+            cur = !cur;
+            flips += 1;
+        }
+
+        // Stage 5 — RGB curves.
+        if let Some(curves) = params.curves.as_ref() {
+            if !is_curves_identity(curves) {
+                let luts = self
+                    .curve_lut_cache
+                    .get(&node_id)
+                    .cloned()
+                    .unwrap_or_else(|| Arc::new(build_curve_luts(curves)));
+                let mut lut_data = [0.0f32; 1024];
+                for (i, &v) in luts.master.iter().enumerate().take(256) {
+                    lut_data[i] = v as f32 / 255.0;
+                }
+                for (i, &v) in luts.red.iter().enumerate().take(256) {
+                    lut_data[256 + i] = v as f32 / 255.0;
+                }
+                for (i, &v) in luts.green.iter().enumerate().take(256) {
+                    lut_data[512 + i] = v as f32 / 255.0;
+                }
+                for (i, &v) in luts.blue.iter().enumerate().take(256) {
+                    lut_data[768 + i] = v as f32 / 255.0;
+                }
+                let preserve_luma = params.curves_preserve_luma.unwrap_or(false);
+                let mix = params.curves_mix.unwrap_or(1.0);
+                self.gpu.as_mut().unwrap().apply_rgb_curves_chain(
+                    cur, width, height,
+                    &lut_data, preserve_luma, mix,
+                );
+                cur = !cur;
+                flips += 1;
+            }
+        }
+
+        // Stage 6 — Hue/Sat curves.
+        if let Some(huesat) = params.huesat.as_ref() {
+            if !huesat.is_all_identity() {
+                let lut_data = build_huesat_lut_data(huesat);
+                let mix = params.huesat_mix.unwrap_or(1.0);
+                self.gpu.as_mut().unwrap()
+                    .apply_huesat_chain(cur, width, height, mix, &lut_data);
+                cur = !cur;
+                flips += 1;
+            }
+        }
+
+        // Stage 7 — Color warper.
+        if let Some(warper) = params.warper_params.as_ref() {
+            if !warper.is_identity() {
+                self.gpu.as_mut().unwrap().apply_color_warper_chain(
+                    cur, width, height,
+                    &warper.hue_shifts, &warper.sat_shifts,
+                );
+                cur = !cur;
+                flips += 1;
+            }
+        }
+
+        let _ = cur;  // last-cur not used; only flip count matters
+        if flips == 0 { None } else { Some(flips) }
     }
 
     /// Flush the GPU chain: download the buffer identified by `slot_a` and
@@ -1819,7 +2062,170 @@ impl GraphExecutor {
                 }
             }
 
-            NodeKind::Output | NodeKind::Unknown => primary_input.to_vec(),
+            NodeKind::Corrector => {
+                // CPU fallback for the Corrector. The GPU chain path
+                // covers the common case; this arm runs only when the
+                // GPU pipeline is unavailable OR the chain bailed
+                // mid-grade. Same canonical stage order as the GPU
+                // path so visual results stay equivalent.
+                if !corrector_has_active_stage(params) {
+                    return primary_input.to_vec();
+                }
+                let mut frame = primary_input.to_vec();
+                let exp = params.exposure.unwrap_or(0.0);
+                if exp != 0.0 {
+                    klipp_color::linear::apply_exposure(&mut frame, exp);
+                }
+                let con = params.contrast.unwrap_or(0.0);
+                if con != 0.0 {
+                    klipp_color::linear::apply_contrast(&mut frame, con);
+                }
+                let clarity = params.clarity.unwrap_or(0.0);
+                if clarity != 0.0 {
+                    klipp_color::linear::apply_clarity(&mut frame, width, height, clarity);
+                }
+                let sat = params.saturation.unwrap_or(1.0);
+                if (sat - 1.0).abs() > f32::EPSILON {
+                    klipp_color::linear::apply_saturation(&mut frame, sat);
+                }
+                let vib = params.vibrance.unwrap_or(0.0);
+                if vib != 0.0 {
+                    klipp_color::linear::apply_vibrance(&mut frame, vib);
+                }
+                let hi = params.highlights.unwrap_or(0.0);
+                let sh = params.shadows.unwrap_or(0.0);
+                let wh = params.whites.unwrap_or(0.0);
+                let bl = params.blacks.unwrap_or(0.0);
+                if hi != 0.0 || sh != 0.0 || wh != 0.0 || bl != 0.0 {
+                    klipp_color::linear::apply_tone_controls(&mut frame, hi, sh, wh, bl);
+                }
+                let log_mode = params.wheels_log_mode.unwrap_or(false);
+                if log_mode {
+                    let low = klipp_color::wheel_offset_to_rgb(
+                        params.log_low_x.unwrap_or(0.0),
+                        params.log_low_y.unwrap_or(0.0),
+                        params.log_low_master.unwrap_or(0.0),
+                    );
+                    let mid = klipp_color::wheel_offset_to_rgb(
+                        params.log_mid_x.unwrap_or(0.0),
+                        params.log_mid_y.unwrap_or(0.0),
+                        params.log_mid_master.unwrap_or(0.0),
+                    );
+                    let high = klipp_color::wheel_offset_to_rgb(
+                        params.log_high_x.unwrap_or(0.0),
+                        params.log_high_y.unwrap_or(0.0),
+                        params.log_high_master.unwrap_or(0.0),
+                    );
+                    klipp_color::linear::apply_log_wheels(&mut frame, low, mid, high);
+                } else {
+                    let lift = klipp_color::wheel_offset_to_rgb(
+                        params.lift_x.unwrap_or(0.0),
+                        params.lift_y.unwrap_or(0.0),
+                        params.lift_master.unwrap_or(0.0),
+                    );
+                    let gamma = klipp_color::wheel_offset_to_rgb(
+                        params.gamma_x.unwrap_or(0.0),
+                        params.gamma_y.unwrap_or(0.0),
+                        params.gamma_master.unwrap_or(0.0),
+                    );
+                    let gain = klipp_color::wheel_offset_to_rgb(
+                        params.gain_x.unwrap_or(0.0),
+                        params.gain_y.unwrap_or(0.0),
+                        params.gain_master.unwrap_or(0.0),
+                    );
+                    let offset = klipp_color::wheel_offset_to_rgb(
+                        params.offset_x.unwrap_or(0.0),
+                        params.offset_y.unwrap_or(0.0),
+                        params.offset_master.unwrap_or(0.0),
+                    );
+                    if lift != (0.0, 0.0, 0.0) || gamma != (0.0, 0.0, 0.0)
+                        || gain != (0.0, 0.0, 0.0) || offset != (0.0, 0.0, 0.0)
+                    {
+                        klipp_color::linear::apply_lift_gamma_gain_offset(
+                            &mut frame, lift, gamma, gain, offset,
+                        );
+                    }
+                }
+                let lift_sat = params.lift_sat.unwrap_or(0.0);
+                let lift_bri = params.lift_bri.unwrap_or(0.0);
+                let gamma_sat = params.gamma_sat.unwrap_or(0.0);
+                let gamma_bri = params.gamma_bri.unwrap_or(0.0);
+                let gain_sat = params.gain_sat.unwrap_or(0.0);
+                let gain_bri = params.gain_bri.unwrap_or(0.0);
+                let offset_sat = params.offset_sat.unwrap_or(0.0);
+                let offset_bri = params.offset_bri.unwrap_or(0.0);
+                if lift_sat != 0.0 || lift_bri != 0.0
+                    || gamma_sat != 0.0 || gamma_bri != 0.0
+                    || gain_sat != 0.0 || gain_bri != 0.0
+                    || offset_sat != 0.0 || offset_bri != 0.0
+                {
+                    klipp_color::linear::apply_wheel_sat_bri(
+                        &mut frame,
+                        lift_sat, lift_bri, gamma_sat, gamma_bri,
+                        gain_sat, gain_bri, offset_sat, offset_bri,
+                    );
+                }
+                let temp = params.temperature.unwrap_or(0.0);
+                let tint = params.tint.unwrap_or(0.0);
+                if temp != 0.0 || tint != 0.0 {
+                    klipp_color::linear::apply_temperature_tint(&mut frame, temp, tint);
+                }
+                let hue = params.hue.unwrap_or(0.0);
+                if hue != 0.0 {
+                    klipp_color::linear::apply_hue_rotation(&mut frame, hue);
+                }
+                // Curves + hue/sat curves + warper still bracket through
+                // u8 — the linear-light variants don't exist yet. Same
+                // bracket the standalone nodes use.
+                if let Some(curves) = params.curves.as_ref() {
+                    if !is_curves_identity(curves) {
+                        let preserve_luma = params.curves_preserve_luma.unwrap_or(false);
+                        let mix = params.curves_mix.unwrap_or(1.0);
+                        let primary_u8 = linear_rgba_to_u8(&frame);
+                        let mut frame_u8 = primary_u8.clone();
+                        let luts = build_curve_luts(curves);
+                        klipp_color::curves::apply_curves(
+                            &mut frame_u8,
+                            &luts.master, &luts.red, &luts.green, &luts.blue,
+                        );
+                        if preserve_luma {
+                            apply_preserve_luma(&mut frame_u8, &primary_u8);
+                        }
+                        if mix < 0.999 {
+                            klipp_color::apply_global_mix(&mut frame_u8, &primary_u8, mix);
+                        }
+                        frame = u8_rgba_to_linear(&frame_u8);
+                    }
+                }
+                if let Some(huesat) = params.huesat.as_ref() {
+                    if !huesat.is_all_identity() {
+                        let mix = params.huesat_mix.unwrap_or(1.0);
+                        let mut frame_u8 = linear_rgba_to_u8(&frame);
+                        klipp_color::huesat::apply_huesat_curves(&mut frame_u8, huesat, mix);
+                        frame = u8_rgba_to_linear(&frame_u8);
+                    }
+                }
+                if let Some(warper) = params.warper_params.as_ref() {
+                    if !warper.is_identity() {
+                        let mut frame_u8 = linear_rgba_to_u8(&frame);
+                        klipp_color::apply_color_warper(&mut frame_u8, width, height, warper);
+                        frame = u8_rgba_to_linear(&frame_u8);
+                    }
+                }
+                let global_mix = params.global_mix.unwrap_or(1.0);
+                if (global_mix - 1.0).abs() > f32::EPSILON {
+                    klipp_color::linear::apply_global_mix(&mut frame, primary_input, global_mix);
+                }
+                frame
+            }
+
+            // LayerMixer is handled in the dispatch loop before
+            // execute_node is called (it needs N inputs, not 3) — if
+            // we ever reach this arm via a non-standard call path the
+            // safest thing is a passthrough.
+            NodeKind::LayerMixer
+            | NodeKind::Output
+            | NodeKind::Unknown => primary_input.to_vec(),
         }
     }
 }
@@ -1857,6 +2263,51 @@ fn is_curves_identity(curves: &klipp_core::CurveSet) -> bool {
         && klipp_color::curves::is_identity(&curves.red)
         && klipp_color::curves::is_identity(&curves.green)
         && klipp_color::curves::is_identity(&curves.blue)
+}
+
+/// Returns true when at least one of the Corrector's grade stages
+/// would actually produce a non-identity output. Mirrors the per-kind
+/// activeness checks in `node_supports_gpu_chain`. Used to gate the
+/// chain start — at full default values the chain bypass-tunnels
+/// through the Corrector, so its presence in the default graph costs
+/// nothing.
+fn corrector_has_active_stage(p: &NodeParams) -> bool {
+    p.exposure.unwrap_or(0.0) != 0.0
+        || p.contrast.unwrap_or(0.0) != 0.0
+        || p.clarity.unwrap_or(0.0) != 0.0
+        || (p.saturation.unwrap_or(1.0) - 1.0).abs() > f32::EPSILON
+        || p.vibrance.unwrap_or(0.0) != 0.0
+        || p.highlights.unwrap_or(0.0) != 0.0
+        || p.shadows.unwrap_or(0.0) != 0.0
+        || p.whites.unwrap_or(0.0) != 0.0
+        || p.blacks.unwrap_or(0.0) != 0.0
+        || p.lift_x.unwrap_or(0.0) != 0.0
+        || p.lift_y.unwrap_or(0.0) != 0.0
+        || p.lift_master.unwrap_or(0.0) != 0.0
+        || p.gamma_x.unwrap_or(0.0) != 0.0
+        || p.gamma_y.unwrap_or(0.0) != 0.0
+        || p.gamma_master.unwrap_or(0.0) != 0.0
+        || p.gain_x.unwrap_or(0.0) != 0.0
+        || p.gain_y.unwrap_or(0.0) != 0.0
+        || p.gain_master.unwrap_or(0.0) != 0.0
+        || p.offset_x.unwrap_or(0.0) != 0.0
+        || p.offset_y.unwrap_or(0.0) != 0.0
+        || p.offset_master.unwrap_or(0.0) != 0.0
+        || p.lift_sat.unwrap_or(0.0) != 0.0
+        || p.lift_bri.unwrap_or(0.0) != 0.0
+        || p.gamma_sat.unwrap_or(0.0) != 0.0
+        || p.gamma_bri.unwrap_or(0.0) != 0.0
+        || p.gain_sat.unwrap_or(0.0) != 0.0
+        || p.gain_bri.unwrap_or(0.0) != 0.0
+        || p.offset_sat.unwrap_or(0.0) != 0.0
+        || p.offset_bri.unwrap_or(0.0) != 0.0
+        || p.temperature.unwrap_or(0.0) != 0.0
+        || p.tint.unwrap_or(0.0) != 0.0
+        || p.hue.unwrap_or(0.0) != 0.0
+        || (p.global_mix.unwrap_or(1.0) - 1.0).abs() > f32::EPSILON
+        || p.curves.as_ref().map_or(false, |c| !is_curves_identity(c))
+        || p.huesat.as_ref().map_or(false, |h| !h.is_all_identity())
+        || p.warper_params.as_ref().map_or(false, |w| !w.is_identity())
 }
 
 /// Convert a klipp_core::Mask to a GpuMaskDef. Returns None for Bezier shapes.
@@ -1976,10 +2427,149 @@ pub fn bake_graph_to_lut(
     lut
 }
 
+/// Composite N pre-rendered linear-RGBA inputs for `NodeKind::LayerMixer`.
+///
+/// `wired` is `(port_index, pixels)` for every wired port in stack order
+/// (port 0 on top). `inputs` is the per-port settings vector from
+/// `LayerMixerParams`; missing entries fall back to default (Normal,
+/// opacity 1). Returns a fresh linear-RGBA buffer of `pixel_count * 4`
+/// floats.
+///
+/// Composition runs bottom-up: start with the deepest wired layer,
+/// then blend each shallower layer on top using its blend_mode and
+/// opacity. Output alpha is preserved from the running base — mixers
+/// that feed the final Output don't need a meaningful alpha channel,
+/// but downstream nodes that DO read alpha get something coherent.
+fn layer_mixer_compose(
+    wired: &[(u8, &[f32])],
+    inputs: &[LayerMixerInput],
+    pixel_count: usize,
+) -> Vec<f32> {
+    let default_input = LayerMixerInput::default();
+    let setting = |port: u8| -> &LayerMixerInput {
+        inputs.get(port as usize).unwrap_or(&default_input)
+    };
+
+    // wired is in port order (0 = top). To composite bottom-up start
+    // from the back of the list.
+    let mut iter = wired.iter().rev();
+    let (base_port, base_pixels) = match iter.next() {
+        Some(&(p, px)) => (p, px),
+        None => return vec![0.0; pixel_count * 4],
+    };
+
+    // Bottom layer: apply its own opacity (against transparent black)
+    // so a dim base reads as dim, not full-strength.
+    let s = setting(base_port);
+    let mut out: Vec<f32> = base_pixels.iter().enumerate().map(|(i, v)| {
+        if i % 4 == 3 { *v }       // alpha untouched on the base
+        else { v * s.opacity }
+    }).collect();
+
+    for &(port, top) in iter {
+        let s = setting(port);
+        let op = s.opacity.clamp(0.0, 1.0);
+        let mode = s.blend_mode;
+        for i in 0..pixel_count {
+            let o = i * 4;
+            let (tr, tg, tb) = (top[o], top[o + 1], top[o + 2]);
+            let (br, bg, bb) = (out[o], out[o + 1], out[o + 2]);
+            // Per-channel blended colour (before opacity mix).
+            // Formulas mirror `klipp_engine::composite::blend_chunk_linear`
+            // — same linear-light semantics so a clip-level blend in the
+            // timeline reads identical to a node-level blend in the mixer.
+            let (mr, mg, mb) = match mode {
+                BlendMode::Normal     => (tr, tg, tb),
+                BlendMode::Add        => (br + tr, bg + tg, bb + tb),
+                BlendMode::Multiply   => (tr * br, tg * bg, tb * bb),
+                BlendMode::Screen     => (
+                    1.0 - (1.0 - tr) * (1.0 - br),
+                    1.0 - (1.0 - tg) * (1.0 - bg),
+                    1.0 - (1.0 - tb) * (1.0 - bb),
+                ),
+                BlendMode::Overlay    => (
+                    overlay_channel(br, tr),
+                    overlay_channel(bg, tg),
+                    overlay_channel(bb, tb),
+                ),
+                BlendMode::SoftLight  => (
+                    soft_light_channel(br, tr),
+                    soft_light_channel(bg, tg),
+                    soft_light_channel(bb, tb),
+                ),
+                BlendMode::HardLight  => (
+                    overlay_channel(tr, br),
+                    overlay_channel(tg, bg),
+                    overlay_channel(tb, bb),
+                ),
+                BlendMode::Difference => (
+                    (br - tr).abs(), (bg - tg).abs(), (bb - tb).abs(),
+                ),
+                BlendMode::Exclusion  => (
+                    br + tr - 2.0 * br * tr,
+                    bg + tg - 2.0 * bg * tg,
+                    bb + tb - 2.0 * bb * tb,
+                ),
+                BlendMode::ColorDodge => (
+                    dodge_channel(br, tr),
+                    dodge_channel(bg, tg),
+                    dodge_channel(bb, tb),
+                ),
+                BlendMode::ColorBurn  => (
+                    burn_channel(br, tr),
+                    burn_channel(bg, tg),
+                    burn_channel(bb, tb),
+                ),
+                BlendMode::Darken     => (br.min(tr), bg.min(tg), bb.min(tb)),
+                BlendMode::Lighten    => (br.max(tr), bg.max(tg), bb.max(tb)),
+            };
+            // Mix blended colour over the current base by opacity.
+            out[o]     = br + (mr - br) * op;
+            out[o + 1] = bg + (mg - bg) * op;
+            out[o + 2] = bb + (mb - bb) * op;
+            // Alpha: keep the base's; mixers aren't an alpha-over op.
+        }
+    }
+    out
+}
+
+/// Overlay blend per the Photoshop / W3C spec, in linear light.
+/// Below 0.5 of the base it's a 2× multiply; above, a 2× screen.
+fn overlay_channel(base: f32, top: f32) -> f32 {
+    if base < 0.5 { 2.0 * base * top }
+    else { 1.0 - 2.0 * (1.0 - base) * (1.0 - top) }
+}
+
+/// Soft-light per W3C — gentle dodge/burn governed by the top layer.
+fn soft_light_channel(base: f32, top: f32) -> f32 {
+    let d = if base <= 0.25 {
+        ((16.0 * base - 12.0) * base + 4.0) * base
+    } else {
+        base.sqrt()
+    };
+    if top <= 0.5 { base - (1.0 - 2.0 * top) * base * (1.0 - base) }
+    else { base + (2.0 * top - 1.0) * (d - base) }
+}
+
+fn dodge_channel(base: f32, top: f32) -> f32 {
+    if base <= 0.0 { 0.0 }
+    else if top >= 1.0 { 1.0 }
+    else { (base / (1.0 - top)).min(1.0) }
+}
+
+fn burn_channel(base: f32, top: f32) -> f32 {
+    if base >= 1.0 { 1.0 }
+    else if top <= 0.0 { 0.0 }
+    else { 1.0 - ((1.0 - base) / top).min(1.0) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::defaults::default_graph;
+    // Tests use the legacy full chain so existing assertions that
+    // poke specific grade nodes by kind keep working. The production
+    // default is now bare Source → Output (see `default_graph`).
+    use crate::defaults::default_full_chain_graph as default_graph;
 
     #[test]
     fn identity_graph_is_passthrough() {
@@ -2064,6 +2654,49 @@ mod tests {
             "exposure +1 should brighten: got {}",
             result[0]
         );
+    }
+
+    /// Smoke test: a Source → Corrector → Output graph with exposure
+    /// + saturation set on the Corrector applies both stages on the
+    /// CPU fallback path. Verifies the bundled-node executor wiring
+    /// matches the per-kind nodes (same `apply_*` functions, same
+    /// canonical order).
+    #[test]
+    fn corrector_node_applies_bundled_grade() {
+        let mut graph = crate::defaults::default_graph();
+        let corrector = graph
+            .nodes
+            .iter_mut()
+            .find(|n| n.kind == NodeKind::Corrector)
+            .expect("default graph has a Corrector node");
+        corrector.params.exposure = Some(1.0); // +1 stop
+        corrector.params.saturation = Some(0.0); // fully desaturate
+
+        let mut executor = GraphExecutor::new_cpu_only();
+        let frame = vec![200, 50, 50, 255]; // reddish
+        let (result, _) = executor
+            .execute(&frame, &graph, 1, 1, 0.0, 0, None, None)
+            .unwrap();
+        // Saturation 0 → greyscale (R/G/B equal within rounding)
+        let diff = (result[0] as i32 - result[1] as i32).unsigned_abs()
+            + (result[1] as i32 - result[2] as i32).unsigned_abs();
+        assert!(diff <= 4, "Corrector sat=0 should produce greyscale: got {:?}", &result[..3]);
+        // Exposure +1 → brighter than the input luma
+        assert!(
+            result[0] > 100,
+            "Corrector exposure +1 should brighten: got {}",
+            result[0]
+        );
+    }
+
+    /// The Corrector at default values is identity — `is_identity()`
+    /// returns true for the new default graph (Source → Corrector →
+    /// Output) so the engine's identity-graph fast paths still kick in
+    /// for fresh clips.
+    #[test]
+    fn corrector_default_graph_is_identity() {
+        let graph = crate::defaults::default_graph();
+        assert!(graph.is_identity(), "fresh Corrector graph must be identity");
     }
 
     #[test]

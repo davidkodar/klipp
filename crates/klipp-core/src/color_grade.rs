@@ -493,3 +493,27 @@ impl ColorMatchSettings {
             && (self.saturation - 1.0).abs() < f32::EPSILON
     }
 }
+
+// ── LayerMixer compositing ─────────────────────────────────────────
+
+/// Per-input compositing settings for `NodeKind::LayerMixer`.
+/// Lives here (not in klipp-nodes) so AppCommand can reference it
+/// without inverting the crate dependency. Blend mode reuses the
+/// existing `crate::types::BlendMode` (13 modes) used by the timeline
+/// compositor, so adding a mode in one place lights it up in both.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct LayerMixerInput {
+    /// 0.0..=1.0 — how strongly this layer contributes when mixed
+    /// over the layer beneath it.
+    pub opacity: f32,
+    pub blend_mode: crate::types::BlendMode,
+}
+
+impl Default for LayerMixerInput {
+    fn default() -> Self {
+        Self {
+            opacity: 1.0,
+            blend_mode: crate::types::BlendMode::Normal,
+        }
+    }
+}

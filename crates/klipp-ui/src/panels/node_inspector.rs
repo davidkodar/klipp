@@ -7,6 +7,57 @@ use crate::widgets::curves_editor::{self, CurveChannel};
 use klipp_core::{AppCommand, ClipId};
 use klipp_nodes::{NodeGraph, NodeId, NodeKind, NodeParams};
 
+/// Returns the id of the graph's Corrector node, creating + wiring one
+/// in before Output if it's missing. Lets the colour-grade tabs always
+/// have a write target — a clip loaded from a pre-Corrector project
+/// gets a Corrector spliced in the first time the user opens any tab.
+///
+/// The new Corrector inherits the edge that previously fed the Output
+/// node so the existing chain (if any) keeps producing pixels through
+/// the Corrector instead of bypassing it. Corrector → Output is added
+/// fresh.
+fn ensure_corrector_node(graph: &mut NodeGraph) -> NodeId {
+    if let Some(idx) = graph.nodes.iter().position(|n| n.kind == NodeKind::Corrector) {
+        return graph.nodes[idx].id;
+    }
+    let new_id = NodeId::new_v4();
+    let output_id = graph.output_node_id;
+    let insert_at = graph.nodes.iter().position(|n| n.id == output_id)
+        .unwrap_or(graph.nodes.len());
+    graph.nodes.insert(insert_at, klipp_nodes::Node {
+        id: new_id,
+        kind: NodeKind::Corrector,
+        label: "Corrector".to_string(),
+        enabled: true,
+        params: NodeParams::default(),
+        keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+    });
+    // Re-route any edge pointing into Output's port 0 to the Corrector
+    // first, then wire Corrector → Output.
+    for edge in &mut graph.edges {
+        if edge.to_node == output_id && edge.to_port == 0 {
+            edge.to_node = new_id;
+            edge.to_port = 0;
+        }
+    }
+    graph.edges.push(klipp_nodes::Edge {
+        from_node: new_id,
+        from_port: 0,
+        to_node: output_id,
+        to_port: 0,
+    });
+    // Position halfway between Output and where the Corrector logically
+    // sits — keeps the V2 canvas readable.
+    if let Some(out_pos) = graph.node_positions.get(&output_id).copied() {
+        graph.node_positions.insert(new_id,
+            klipp_nodes::NodePos { x: out_pos.x - 220.0, y: out_pos.y });
+    } else {
+        graph.node_positions.insert(new_id,
+            klipp_nodes::NodePos { x: 220.0, y: 0.0 });
+    }
+    new_id
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // NodeInspectorPanel — per-node parameter editor
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -257,10 +308,31 @@ impl NodeInspectorPanel {
                     _ => vec![],
                 };
                 for target_kind in &target_kinds {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.kind == *target_kind && n.enabled) {
-                        let node_id = node.id;
-                        let node_kind = node.kind.clone();
+                    // Prefer the Corrector (new default graph) so the
+                    // tab UIs always have somewhere to write. Fall back
+                    // to a dedicated single-purpose node for legacy
+                    // graphs. If neither exists (older clips with bare
+                    // Source → Output), create the Corrector on the
+                    // fly so the tab is never empty.
+                    let target_idx = graph.nodes.iter().position(|n|
+                        n.kind == NodeKind::Corrector && n.enabled
+                    ).or_else(||
+                        graph.nodes.iter().position(|n| n.kind == *target_kind && n.enabled)
+                    );
+                    let idx = target_idx.unwrap_or_else(|| {
+                        let new_id = ensure_corrector_node(graph);
+                        graph.nodes.iter().position(|n| n.id == new_id).unwrap()
+                    });
+                    {
+                        let node_id = graph.nodes[idx].id;
+                        // The widget code below dispatches on this kind
+                        // — pass the user's TAB choice, not the actual
+                        // node's kind, so a Corrector-backed Wheels tab
+                        // still renders the wheels widgets (which read
+                        // the same fields off the Corrector's params).
+                        let node_kind = target_kind.clone();
                         *selected_node = Some(node_id);
+                        let node = &mut graph.nodes[idx];
                         let node_enabled = &mut node.enabled;
                         let params = &mut node.params;
                         let keyframes = &mut node.keyframes;
@@ -281,9 +353,26 @@ impl NodeInspectorPanel {
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
     ) {
-        // Find both nodes
-        let wheels_idx = graph.nodes.iter().position(|n| n.kind == NodeKind::ColorWheels && n.enabled);
-        let satbri_idx = graph.nodes.iter().position(|n| n.kind == NodeKind::WheelSatBri && n.enabled);
+        // Make sure there's somewhere to write — auto-create a
+        // Corrector if neither it nor the legacy split-node pair is
+        // present. Then prefer the Corrector (it carries both wheel
+        // and sat/bri fields) over the legacy nodes.
+        let corrector_present = graph.nodes.iter().any(|n| n.kind == NodeKind::Corrector);
+        let legacy_present = graph.nodes.iter().any(|n|
+            matches!(n.kind, NodeKind::ColorWheels | NodeKind::WheelSatBri)
+        );
+        if !corrector_present && !legacy_present {
+            let _ = ensure_corrector_node(graph);
+        }
+        let corrector_idx = graph.nodes.iter().position(|n|
+            n.kind == NodeKind::Corrector && n.enabled
+        );
+        let wheels_idx = corrector_idx.or_else(||
+            graph.nodes.iter().position(|n| n.kind == NodeKind::ColorWheels && n.enabled)
+        );
+        let satbri_idx = corrector_idx.or_else(||
+            graph.nodes.iter().position(|n| n.kind == NodeKind::WheelSatBri && n.enabled)
+        );
 
         let avail_w = ui.available_width();
         // 4 columns with 2px gaps between them: 3 gaps = 6px
@@ -506,9 +595,24 @@ impl NodeInspectorPanel {
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
     ) {
-        // Helper: find a node by kind
+        // Ensure there's a Corrector to write into — without one, an
+        // older clip (loaded from disk before the Corrector default)
+        // would render this tab as a wall of "no params" since none
+        // of the legacy single-purpose nodes exist either.
+        let _ = ensure_corrector_node(graph);
+        // Helper: prefer the Corrector (every section-relevant param
+        // lives on it) so each section points at one canonical node.
+        // Falls back to a dedicated single-purpose node by `kind` for
+        // graphs that have one but not a Corrector — works
+        // section-by-section because every grade param is a flat
+        // field on `NodeParams`.
         let find_node = |graph: &mut NodeGraph, kind: NodeKind| -> Option<(NodeId, bool)> {
-            graph.nodes.iter().find(|n| n.kind == kind).map(|n| (n.id, n.enabled))
+            graph.nodes.iter()
+                .find(|n| n.kind == NodeKind::Corrector)
+                .map(|n| (n.id, n.enabled))
+                .or_else(||
+                    graph.nodes.iter().find(|n| n.kind == kind).map(|n| (n.id, n.enabled))
+                )
         };
 
         // ── Exposure section ──
@@ -1562,10 +1666,86 @@ impl NodeInspectorPanel {
             NodeKind::ColorMatch => {
                 self.show_color_match_widget(ui, node_id, params, clip_id, cmds, theme);
             }
+            NodeKind::LayerMixer => {
+                self.show_layer_mixer_widget(ui, node_id, params, clip_id, cmds, theme);
+            }
+            NodeKind::Corrector => {
+                // Corrector params are surfaced through the colour-grade
+                // tabs (Adjustments / Wheels / Curves / Hue-Sat / Warper)
+                // — those tabs already prefer the Corrector when present.
+                // Selecting the Corrector node directly in the V2 editor
+                // points the user at the right place rather than
+                // duplicating the widgets here.
+                ui.label(
+                    egui::RichText::new(
+                        "Edit this node via the Adjustments / Wheels / Curves / Hue-Sat / Warper tabs."
+                    ).color(theme.text_dim).small()
+                );
+            }
             NodeKind::Source | NodeKind::Output | NodeKind::Layer
             | NodeKind::Unknown => {
                 ui.label(egui::RichText::new("No parameters").color(theme.text_dim));
             }
+        }
+    }
+
+    /// Inspector for `LayerMixer`: one row per input port, with an
+    /// opacity slider and a blend-mode dropdown. Port 0 is shown at
+    /// the top to match the editor's stack-order ("port 0 sits on top
+    /// of the composite"). Empty state hint when no ports have been
+    /// wired yet — the user has to drop a wire on the node first.
+    fn show_layer_mixer_widget(
+        &mut self,
+        ui: &mut egui::Ui,
+        node_id: klipp_nodes::NodeId,
+        params: &mut klipp_nodes::NodeParams,
+        clip_id: klipp_core::ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &crate::theme::KlippTheme,
+    ) {
+        let mixer = params.layer_mixer.get_or_insert_with(Default::default);
+        if mixer.inputs.is_empty() {
+            ui.label(
+                egui::RichText::new(
+                    "Wire inputs into this node — drop a wire on the left edge to add a port."
+                ).color(theme.text_dim).small()
+            );
+            return;
+        }
+        let count = mixer.inputs.len();
+        for port in 0..count {
+            let input_settings = mixer.inputs[port];
+            let label = if port == 0 { "Input 1 (top)".to_string() }
+                else { format!("Input {}", port + 1) };
+            ui.label(egui::RichText::new(label).strong().small());
+            let mut opacity = input_settings.opacity;
+            let resp = ui.add(
+                egui::Slider::new(&mut opacity, 0.0..=1.0)
+                    .text("Opacity")
+                    .fixed_decimals(2),
+            );
+            let mut blend = input_settings.blend_mode;
+            let mut blend_changed = false;
+            egui::ComboBox::from_id_salt(("layer_mixer_blend", node_id, port))
+                .selected_text(blend.display_name())
+                .show_ui(ui, |ui| {
+                    for &candidate in &klipp_core::BlendMode::ALL {
+                        if ui.selectable_label(blend == candidate, candidate.display_name()).clicked() {
+                            blend = candidate;
+                            blend_changed = true;
+                        }
+                    }
+                });
+            if resp.changed() || blend_changed {
+                mixer.inputs[port] = klipp_core::LayerMixerInput { opacity, blend_mode: blend };
+                cmds.push(AppCommand::SetNodeLayerMixerInput {
+                    clip_id,
+                    node_id,
+                    port: port as u8,
+                    input: mixer.inputs[port],
+                });
+            }
+            ui.add_space(6.0);
         }
     }
 

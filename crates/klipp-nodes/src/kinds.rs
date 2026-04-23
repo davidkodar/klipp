@@ -12,6 +12,17 @@ pub enum NodeKind {
     // ── Primary Grade (each maps to one step of the old 12-step pipeline) ──
     /// Camera log → Rec.709 input transform.
     InputTransform,
+    /// Bundled "do everything" corrector — exposes the full set of
+    /// primary-grade params (exposure, contrast, saturation, vibrance,
+    /// tone, wheels, wheel sat/bri, color balance, RGB curves, hue/sat
+    /// curves, color warper) on a single node. Default for new clips so
+    /// the inspector's tab-based grading UI always has somewhere to
+    /// write. Power users can still add the dedicated single-purpose
+    /// nodes alongside it for granular pipelines or parallel mixers.
+    /// Note: log-mode wheels are NOT supported here — they break the
+    /// GPU chain and force a CPU detour. Use a dedicated `ColorWheels`
+    /// node when log mode is needed.
+    Corrector,
     /// Exposure in stops — single parameter.
     Exposure,
     /// Contrast — single parameter.
@@ -47,6 +58,11 @@ pub enum NodeKind {
     /// Apply a grade only where a matte selects.
     /// Ports: 0=graded frame, 1=matte, 2=ungraded frame (pre-grade signal).
     ApplyMatte,
+    /// N-input compositor — port 0 sits on top, the highest wired port
+    /// is the base layer. Each input has its own opacity + blend mode
+    /// (see `LayerMixerParams`). Port count grows as wires are dropped
+    /// onto the node in the editor; minimum static count is 2.
+    LayerMixer,
 
     // ── Utilities ───────────────────────────────────────────────
     /// 3D LUT (Adobe .cube / .3dl / .csp).
@@ -70,12 +86,20 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
-    /// How many input ports this node has.
+    /// How many input ports this node has — STATIC minimum count.
+    /// `LayerMixer` actually grows past this in practice; UI + executor
+    /// must read the dynamic count off the node's params (see
+    /// `Node::dynamic_input_port_count`). 2 is the floor so a freshly
+    /// added LayerMixer renders with two empty ports ready to wire.
     pub fn input_port_count(&self) -> u8 {
         match self {
             NodeKind::Source => 0,
             NodeKind::ApplyMatte => 3,
-            NodeKind::Blend | NodeKind::Layer | NodeKind::CombineMattes | NodeKind::ColorMatch => 2,
+            NodeKind::Blend
+            | NodeKind::Layer
+            | NodeKind::CombineMattes
+            | NodeKind::ColorMatch
+            | NodeKind::LayerMixer => 2,
             _ => 1,
         }
     }
@@ -110,6 +134,10 @@ impl NodeKind {
             // ColorMatch: source + reference frame.
             (NodeKind::ColorMatch, 0) => PortRole::Primary,
             (NodeKind::ColorMatch, 1) => PortRole::Reference,
+            // LayerMixer: every input is a colour signal of equal standing
+            // (no foreground/background asymmetry — order alone carries
+            // depth, with port 0 on top).
+            (NodeKind::LayerMixer, _) => PortRole::Primary,
             // Default — every other (kind, port) is the colour signal.
             _ => PortRole::Primary,
         }
@@ -143,6 +171,10 @@ impl NodeKind {
             (NodeKind::CombineMattes, 1) => "Matte B",
             (NodeKind::ColorMatch, 0) => "Source",
             (NodeKind::ColorMatch, 1) => "Reference",
+            // LayerMixer ports are 1-indexed for users — port 0 reads
+            // as "Input 1 (top)" so the stack ordering is unambiguous.
+            (NodeKind::LayerMixer, 0) => "Input 1 (top)",
+            (NodeKind::LayerMixer, _) => "Input N",
             _ => "Input",
         }
     }
@@ -160,6 +192,7 @@ impl NodeKind {
             NodeKind::Source => "Source",
             NodeKind::Output => "Output",
             NodeKind::InputTransform => "Input Transform",
+            NodeKind::Corrector => "Corrector",
             NodeKind::Exposure => "Exposure",
             NodeKind::Contrast => "Contrast",
             NodeKind::Saturation => "Saturation",
@@ -173,6 +206,7 @@ impl NodeKind {
             NodeKind::Mask => "Mask",
             NodeKind::CombineMattes => "Combine Mattes",
             NodeKind::Layer => "Layer",
+            NodeKind::LayerMixer => "Layer Mixer",
             NodeKind::Blend => "Blend",
             NodeKind::ApplyMatte => "Apply Matte",
             NodeKind::Lut3D => "3D LUT",

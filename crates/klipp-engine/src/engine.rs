@@ -8945,8 +8945,10 @@ mod param_change_queue_tests {
     use klipp_timeline::Sequence;
     use std::sync::{Arc, RwLock};
 
-    /// Build a Sequence with a single clip that owns the default colour-grade
-    /// node graph. Returns (shared sequence, clip id, exposure node id).
+    /// Build a Sequence with a single clip and an Exposure node added
+    /// to its graph. Returns (shared sequence, clip id, exposure node id).
+    /// The default clip graph is bare Source → Output, so the test
+    /// pushes the Exposure node it needs explicitly.
     fn make_fixture() -> (Arc<RwLock<Sequence>>, klipp_core::ClipId, klipp_nodes::NodeId) {
         let mut seq = Sequence::new_default();
         let media_id = MediaId::new();
@@ -8954,15 +8956,21 @@ mod param_change_queue_tests {
         let track = seq.tracks.iter_mut().find(|t| matches!(t.kind, klipp_timeline::TrackKind::Video))
             .expect("default sequence has a video track");
         let clip_id = track.append_clip(media_id, duration);
-        // Pick the Exposure node (first non-Source, non-IDT node) — it has an
-        // `exposure` param that apply_override understands.
-        let node_id = seq.all_clips()
-            .find(|c| c.id == clip_id)
-            .and_then(|c| c.node_graph.nodes.iter()
-                .find(|n| matches!(n.kind, klipp_nodes::NodeKind::Exposure))
-                .map(|n| n.id))
-            .expect("default graph has an Exposure node");
-        (Arc::new(RwLock::new(seq)), clip_id, node_id)
+        let exposure_id = klipp_nodes::NodeId::new_v4();
+        for t in &mut seq.tracks {
+            if let Some(c) = t.find_clip_mut(clip_id) {
+                c.node_graph.nodes.push(klipp_nodes::Node {
+                    id: exposure_id,
+                    kind: klipp_nodes::NodeKind::Exposure,
+                    label: "Exposure".into(),
+                    enabled: true,
+                    params: klipp_nodes::NodeParams::default(),
+                    keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+                });
+                break;
+            }
+        }
+        (Arc::new(RwLock::new(seq)), clip_id, exposure_id)
     }
 
     #[test]
