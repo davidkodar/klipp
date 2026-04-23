@@ -210,20 +210,26 @@ impl NodeGraphV2Panel {
 
         // ── Wires ─────────────────────────────────────────────────
         // Existing edges first, then the in-flight wire on top.
+        // Colour follows the destination input port's role — matte
+        // wires read magenta, references read orange, etc. — so the
+        // user can see at a glance "that's a matte feeding here"
+        // without having to chase the source node.
         for edge in &graph.edges {
             let Some((_, from_rect, _, from_kind)) =
                 node_rects.iter().find(|(id, _, _, _)| *id == edge.from_node).copied()
             else { continue; };
-            let Some((_, to_rect, _, _)) =
+            let Some((_, to_rect, _, to_kind)) =
                 node_rects.iter().find(|(id, _, _, _)| *id == edge.to_node).copied()
             else { continue; };
             let from = output_port_pos(&from_rect, edge.from_port, &from_kind);
-            let to = input_port_pos(
-                &to_rect,
-                edge.to_port,
-                &node_rects.iter().find(|(id, _, _, _)| *id == edge.to_node).map(|(_, _, _, k)| *k).unwrap_or(NodeKind::Unknown),
-            );
-            draw_wire(&painter, from, to, theme.accent_dim, 1.5 * zoom);
+            let to = input_port_pos(&to_rect, edge.to_port, &to_kind);
+            let role = to_kind.input_port_role(edge.to_port);
+            let (r, g, b) = role.editor_color();
+            // Idle existing edges get a translucent stroke so they
+            // don't shout over the foreground; the role colour is
+            // still visible.
+            let color = egui::Color32::from_rgba_unmultiplied(r, g, b, 180);
+            draw_wire(&painter, from, to, color, 1.5 * zoom);
         }
 
         if let Some(dw) = self.drag_wire {
@@ -232,7 +238,13 @@ impl NodeGraphV2Panel {
             {
                 let from = output_port_pos(&from_rect, dw.from_port, &from_kind);
                 let to = ui.input(|i| i.pointer.hover_pos().unwrap_or(from));
-                draw_wire(&painter, from, to, theme.accent, 2.0 * zoom);
+                // Drag wire takes its colour from the SOURCE output
+                // port's role (we don't know the destination yet) —
+                // gives early visual feedback about what kind of
+                // signal is being routed.
+                let (r, g, b) = from_kind.output_port_role(dw.from_port).editor_color();
+                let color = egui::Color32::from_rgb(r, g, b);
+                draw_wire(&painter, from, to, color, 2.0 * zoom);
             }
         }
 
@@ -275,23 +287,38 @@ impl NodeGraphV2Panel {
                 );
             }
 
-            // Input ports (left edge)
+            // Input ports (left edge) — role-coloured stroke +
+            // hover tooltip naming the port.
             for p in 0..kind.input_port_count() {
                 let pos = input_port_pos(&rect, p, &kind);
+                let role = kind.input_port_role(p);
+                let (rr, gg, bb) = role.editor_color();
                 painter.circle_filled(pos, PORT_RADIUS * zoom, theme.bg_deep);
                 painter.circle_stroke(
                     pos, PORT_RADIUS * zoom,
-                    egui::Stroke::new(1.0_f32, theme.accent_dim),
+                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(rr, gg, bb)),
                 );
+                let port_rect = egui::Rect::from_center_size(
+                    pos, egui::vec2(PORT_HIT_RADIUS * 2.0, PORT_HIT_RADIUS * 2.0),
+                );
+                ui.allocate_rect(port_rect, egui::Sense::hover())
+                    .on_hover_text(format!("{} (in)", kind.input_port_label(p)));
             }
             // Output ports (right edge)
             for p in 0..kind.output_port_count() {
                 let pos = output_port_pos(&rect, p, &kind);
+                let role = kind.output_port_role(p);
+                let (rr, gg, bb) = role.editor_color();
                 painter.circle_filled(pos, PORT_RADIUS * zoom, theme.bg_deep);
                 painter.circle_stroke(
                     pos, PORT_RADIUS * zoom,
-                    egui::Stroke::new(1.0_f32, theme.accent),
+                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(rr, gg, bb)),
                 );
+                let port_rect = egui::Rect::from_center_size(
+                    pos, egui::vec2(PORT_HIT_RADIUS * 2.0, PORT_HIT_RADIUS * 2.0),
+                );
+                ui.allocate_rect(port_rect, egui::Sense::hover())
+                    .on_hover_text(format!("{} (out)", kind.output_port_label(p)));
             }
         }
 

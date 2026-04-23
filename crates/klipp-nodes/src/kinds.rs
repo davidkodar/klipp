@@ -88,6 +88,72 @@ impl NodeKind {
         }
     }
 
+    /// Semantic role of an input port — what kind of signal the
+    /// node expects on that port. Drives wire colour-coding and
+    /// tooltips in the node-graph editor; the executor doesn't read
+    /// this (it routes by port index alone). `port` index out of
+    /// range returns `PortRole::Primary`.
+    pub fn input_port_role(&self, port: u8) -> PortRole {
+        match (self, port) {
+            // ApplyMatte: graded frame, matte, ungraded frame.
+            (NodeKind::ApplyMatte, 0) => PortRole::Primary,   // graded
+            (NodeKind::ApplyMatte, 1) => PortRole::Matte,
+            (NodeKind::ApplyMatte, 2) => PortRole::PreGrade,
+            // Layer: foreground (over) + background (under).
+            (NodeKind::Layer, 0) => PortRole::Primary,        // foreground
+            (NodeKind::Layer, 1) => PortRole::Background,
+            // Blend: two equal-weight inputs.
+            (NodeKind::Blend, 0) => PortRole::Primary,
+            (NodeKind::Blend, 1) => PortRole::Secondary,
+            // CombineMattes: two mattes intersected.
+            (NodeKind::CombineMattes, _) => PortRole::Matte,
+            // ColorMatch: source + reference frame.
+            (NodeKind::ColorMatch, 0) => PortRole::Primary,
+            (NodeKind::ColorMatch, 1) => PortRole::Reference,
+            // Default — every other (kind, port) is the colour signal.
+            _ => PortRole::Primary,
+        }
+    }
+
+    /// Semantic role of an output port. Today everything outputs a
+    /// primary colour signal except for matte producers (Qualifier,
+    /// Mask) whose output is itself a matte — useful when wire
+    /// colour-coding follows the producer's role rather than the
+    /// consumer's.
+    pub fn output_port_role(&self, _port: u8) -> PortRole {
+        match self {
+            NodeKind::Qualifier | NodeKind::Mask | NodeKind::CombineMattes => PortRole::Matte,
+            _ => PortRole::Primary,
+        }
+    }
+
+    /// Short user-facing label for a port — shown as a tooltip in
+    /// the editor and (eventually) on the port row in the
+    /// inspector.
+    pub fn input_port_label(&self, port: u8) -> &'static str {
+        match (self, port) {
+            (NodeKind::ApplyMatte, 0) => "Graded",
+            (NodeKind::ApplyMatte, 1) => "Matte",
+            (NodeKind::ApplyMatte, 2) => "Pre-grade",
+            (NodeKind::Layer, 0) => "Foreground",
+            (NodeKind::Layer, 1) => "Background",
+            (NodeKind::Blend, 0) => "Input A",
+            (NodeKind::Blend, 1) => "Input B",
+            (NodeKind::CombineMattes, 0) => "Matte A",
+            (NodeKind::CombineMattes, 1) => "Matte B",
+            (NodeKind::ColorMatch, 0) => "Source",
+            (NodeKind::ColorMatch, 1) => "Reference",
+            _ => "Input",
+        }
+    }
+
+    pub fn output_port_label(&self, _port: u8) -> &'static str {
+        match self {
+            NodeKind::Qualifier | NodeKind::Mask | NodeKind::CombineMattes => "Matte",
+            _ => "Output",
+        }
+    }
+
     /// User-facing display name for the add-node menu.
     pub fn display_name(&self) -> &'static str {
         match self {
@@ -115,6 +181,42 @@ impl NodeKind {
             NodeKind::ColorWarper => "Color Warper",
             NodeKind::Denoise => "Noise Reduction",
             NodeKind::Unknown => "Unknown",
+        }
+    }
+}
+
+/// Semantic role of a node port — drives editor wire colour-coding,
+/// tooltip text, and (eventually) connection compatibility checks.
+/// Pure UX; the executor doesn't inspect this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortRole {
+    /// The colour signal — the default flow through a grade chain.
+    Primary,
+    /// A second colour input weighted equally (Blend's input B).
+    Secondary,
+    /// A backing layer composited under a primary (Layer's bg).
+    Background,
+    /// A matte / mask signal — single-channel selection used to
+    /// gate where a grade applies.
+    Matte,
+    /// A reference image used for analysis (ColorMatch).
+    Reference,
+    /// The pre-grade (un-graded) version of the primary, used by
+    /// ApplyMatte's compare-pass slot.
+    PreGrade,
+}
+
+impl PortRole {
+    /// Editor-side colour for the port outline + outgoing wire.
+    /// Only used by the V2 node-graph editor; semantic.
+    pub fn editor_color(&self) -> (u8, u8, u8) {
+        match self {
+            PortRole::Primary    => (0xc8, 0xa8, 0x4a),  // amber-gold (matches accent)
+            PortRole::Secondary  => (0x8a, 0xa8, 0xc8),  // muted blue
+            PortRole::Background => (0x6a, 0x7a, 0x8a),  // slate
+            PortRole::Matte      => (0xc8, 0x4a, 0xa8),  // magenta
+            PortRole::Reference  => (0xe8, 0x88, 0x3a),  // bright orange
+            PortRole::PreGrade   => (0x90, 0x90, 0x90),  // grey
         }
     }
 }

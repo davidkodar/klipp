@@ -38,6 +38,6 @@ pub mod defaults;
 pub mod executor;
 
 pub use graph::{Edge, Node, NodeGraph, NodeId, NodePos};
-pub use kinds::NodeKind;
+pub use kinds::{NodeKind, PortRole};
 pub use params::{NodeKeyframeTrack, NodeKeyframeTracks, NodeParams};
 pub use executor::{ExecutorError, GraphExecutor, bake_graph_to_lut};
