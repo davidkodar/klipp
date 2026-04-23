@@ -194,6 +194,18 @@ pub struct NodeParams {
     /// downstream. Mirrors the Qualifier node's Invert toggle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matte_invert: Option<bool>,
+
+    // Compound
+    /// Sub-graph executed by a `NodeKind::Compound` node. The
+    /// compound's input feeds the sub-graph's Source, the sub-
+    /// graph's Output feeds the compound's output. `None` = the
+    /// compound acts as a passthrough (executor copies primary
+    /// input to output). The recursive nesting is safe: NodeGraph
+    /// derives Serialize/Deserialize and contains no cycles by
+    /// construction. Old projects don't gain a noisy null field
+    /// thanks to `skip_serializing_if`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compound_subgraph: Option<crate::graph::NodeGraph>,
 }
 
 /// Which source channel of an ExternalMatte image becomes the matte.
@@ -320,6 +332,7 @@ impl NodeParams {
             && z(&self.mix)
             && self.layer_mixer.as_ref().map_or(true, |m| m.is_identity())
             && self.matte_image_path.is_none()
+            && self.compound_subgraph.is_none()
     }
 
     /// Apply a keyframe override by param name.

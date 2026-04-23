@@ -728,6 +728,20 @@ pub enum AppCommand {
     // Node graph (color grading)
     AddNode { clip_id: ClipId, kind: String, position: (f32, f32) },
     RemoveNode { clip_id: ClipId, node_id: uuid::Uuid },
+    /// Collapse a multi-node selection into a single Compound node.
+    /// The Compound's `params.compound_subgraph` captures the selected
+    /// nodes + their internal edges (wrapped with synthetic Source +
+    /// Output so the executor recognises it as a runnable graph). The
+    /// parent graph rewires its inbound external edge to the Compound's
+    /// input and its outbound external edge to whatever consumed the
+    /// old subgraph's output. Single-input / single-output topology
+    /// only for v1; the handler refuses (toast + no-op) when the
+    /// selection has more than one external in-edge target or more
+    /// than one external out-edge source.
+    GroupIntoCompound {
+        clip_id: ClipId,
+        node_ids: Vec<uuid::Uuid>,
+    },
     ConnectNodes { clip_id: ClipId, from: uuid::Uuid, from_port: u8, to: uuid::Uuid, to_port: u8 },
     DisconnectEdge { clip_id: ClipId, to: uuid::Uuid, to_port: u8 },
     MoveNode { clip_id: ClipId, node_id: uuid::Uuid, delta_x: f32, delta_y: f32 },

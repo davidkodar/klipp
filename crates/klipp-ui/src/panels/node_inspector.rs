@@ -1708,6 +1708,30 @@ impl NodeInspectorPanel {
             | NodeKind::Unknown => {
                 ui.label(egui::RichText::new("No parameters").color(theme.text_dim));
             }
+            NodeKind::Compound => {
+                // Compound nodes hold a sub-graph; the parameters
+                // panel is intentionally minimal — editing the sub-
+                // graph happens via descend (stage 4 will wire the
+                // double-click + breadcrumb). For now we just tell
+                // the user how many nodes are nested so the inspector
+                // isn't a blank panel.
+                let count = params.compound_subgraph
+                    .as_ref()
+                    .map(|g| g.nodes.len())
+                    .unwrap_or(0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Compound subgraph — {count} node{}",
+                        if count == 1 { "" } else { "s" },
+                    ))
+                    .color(theme.text_dim),
+                );
+                ui.label(
+                    egui::RichText::new("Double-click to descend (coming soon)")
+                        .small()
+                        .color(theme.text_dim),
+                );
+            }
         }
     }
 

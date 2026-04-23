@@ -742,7 +742,20 @@ pub struct AppState {
     /// Where color tools are docked: Right (inspector) or Bottom (below viewer).
     pub color_tools_position: ColorToolsPosition,
     /// Selected node in the node graph (shared between canvas and inspector).
+    /// This is the **primary** of a possibly-larger selection set —
+    /// the inspector reads it to decide which node's params to show.
+    /// On a single click it equals the only entry in `selected_node_ids`;
+    /// on a multi-select gesture (shift-click / box-select) it tracks
+    /// the most recent addition so the inspector follows the user's
+    /// hand. Cleared together with the set on clip switch.
     pub selected_node_id: Option<klipp_nodes::NodeId>,
+    /// All currently-selected nodes on the V2 canvas. The canvas
+    /// renders an amber border on every entry; multi-node operations
+    /// (Delete, Group-into-Compound, future Bypass-all) iterate this
+    /// set. Single-node operations (param edit, inspector display)
+    /// use `selected_node_id` instead. Always either empty or
+    /// containing `selected_node_id` as one of its members.
+    pub selected_node_ids: std::collections::HashSet<klipp_nodes::NodeId>,
     /// Whether the compact node strip is visible in Color workspace.
     pub show_node_strip: bool,
     /// Render the V2 2D node-graph editor instead of the legacy
@@ -2088,6 +2101,7 @@ impl Default for AppState {
             show_color_panel: false,
             color_tools_position: ColorToolsPosition::Right,
             selected_node_id: None,
+            selected_node_ids: std::collections::HashSet::new(),
             show_node_strip: false,
             use_node_graph_v2: true,
             color_tab: ColorTab::default(),

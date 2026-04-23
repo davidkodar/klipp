@@ -2383,6 +2383,14 @@ impl GraphExecutor {
             NodeKind::LayerMixer
             | NodeKind::Output
             | NodeKind::Unknown => primary_input.to_vec(),
+
+            // Compound holds a nested NodeGraph in
+            // `params.compound_subgraph`. Recursive sub-graph
+            // execution lands in stage 5 of the rollout — until
+            // then a Compound acts as a transparent passthrough so
+            // the user can already create / group / ungroup
+            // compounds in the editor without breaking playback.
+            NodeKind::Compound => primary_input.to_vec(),
         }
     }
 }

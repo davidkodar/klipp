@@ -85,6 +85,13 @@ pub enum NodeKind {
     /// Spatial noise reduction (bilateral filter).
     Denoise,
 
+    /// Holds a nested `NodeGraph` in `params.compound_subgraph`.
+    /// Acts as a passthrough until stage 5 wires the executor to
+    /// recursively render the sub-graph; before that the user can
+    /// already create + group + ungroup compounds, which is the
+    /// editing affordance the V2 canvas needs first.
+    Compound,
+
     // ── Future ──────────────────────────────────────────────────
     #[serde(other)]
     Unknown,
@@ -222,6 +229,7 @@ impl NodeKind {
             NodeKind::ColorMatch => "Color Match",
             NodeKind::ColorWarper => "Color Warper",
             NodeKind::Denoise => "Noise Reduction",
+            NodeKind::Compound => "Compound",
             NodeKind::Unknown => "Unknown",
         }
     }

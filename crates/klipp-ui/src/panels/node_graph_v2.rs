@@ -114,6 +114,15 @@ pub struct NodeGraphV2Panel {
     /// frame. Snapshotted at end of each render; compared against the
     /// current frame's visible set on the next render.
     last_visible_thumb_nodes: Vec<NodeId>,
+    /// Box-select / marquee state. Set when the user presses the
+    /// primary mouse button on empty canvas (no node, no port hit);
+    /// the live `current` is updated on every drag frame so the
+    /// rectangle paints as it grows. Cleared on release: any node
+    /// whose body rectangle intersects the marquee gets added to
+    /// `selected_set`. Shift-drag adds to the existing selection;
+    /// plain drag replaces it (the press-time clear already wiped
+    /// the previous set in that case).
+    box_select: Option<(egui::Pos2, egui::Pos2)>,
 }
 
 impl Default for NodeGraphV2Panel {
@@ -123,6 +132,7 @@ impl Default for NodeGraphV2Panel {
             zoom: 1.0,
             drag_node: None,
             drag_wire: None,
+            box_select: None,
             add_menu_open: false,
             add_menu_screen_pos: egui::Pos2::ZERO,
             add_menu_graph_pos: egui::Pos2::ZERO,
@@ -143,6 +153,7 @@ impl NodeGraphV2Panel {
         &mut self,
         ui: &mut egui::Ui,
         selected_node: &mut Option<NodeId>,
+        selected_set: &mut std::collections::HashSet<NodeId>,
         graph: &mut NodeGraph,
         clip_id: ClipId,
         theme: &KlippTheme,
@@ -151,6 +162,21 @@ impl NodeGraphV2Panel {
         deferred_drops: &mut Vec<egui::TextureHandle>,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
+
+        // Self-heal: drop any stale ids from the selection set that
+        // no longer exist in the current clip's graph (clip-switch,
+        // upstream RemoveNode the engine has already applied, etc.).
+        // Keeps the set bounded + makes downstream `set.contains(id)`
+        // checks trustworthy without forcing every caller to clear it
+        // on every transition.
+        if !selected_set.is_empty() {
+            selected_set.retain(|id| graph.nodes.iter().any(|n| n.id == *id));
+            if let Some(p) = *selected_node {
+                if !graph.nodes.iter().any(|n| n.id == p) {
+                    *selected_node = selected_set.iter().next().copied();
+                }
+            }
+        }
 
         // Toolbar — small strip at the top with view controls.
         // Kept tight so the canvas keeps almost all the available
@@ -285,6 +311,23 @@ impl NodeGraphV2Panel {
             }
         }
 
+        // Box-select marquee — translucent amber fill + 1 px outline
+        // so it's visible against any canvas background but never
+        // hides what it overlaps. Painted before the nodes so node
+        // bodies render on top (the marquee is a UI hint, not a
+        // foreground element).
+        if let Some((start, current)) = self.box_select {
+            let rect = egui::Rect::from_two_pos(start, current);
+            let fill = egui::Color32::from_rgba_unmultiplied(
+                theme.accent.r(), theme.accent.g(), theme.accent.b(), 36,
+            );
+            painter.rect_filled(rect, 0.0, fill);
+            painter.rect_stroke(
+                rect, 0.0,
+                egui::Stroke::new(1.0, theme.accent),
+            );
+        }
+
         // ── Nodes ─────────────────────────────────────────────────
         // Hoist the pointer position so we can gate per-port tooltip
         // registration on "cursor is actually near this node". Without
@@ -297,7 +340,13 @@ impl NodeGraphV2Panel {
         let hover_pointer = ui.input(|i| i.pointer.hover_pos());
         for (idx, (node_id, rect, fill, kind, in_count)) in node_rects.iter().copied().enumerate() {
             let node = &graph.nodes[idx];
-            let is_selected = *selected_node == Some(node_id);
+            // Selection paints amber whether the node is the
+            // inspector-primary OR part of a multi-selection set.
+            // Both paths must paint the same so the user can't tell
+            // the primary apart from "also-selected" — that would be
+            // confusing during a Group / Delete-all gesture.
+            let is_selected =
+                *selected_node == Some(node_id) || selected_set.contains(&node_id);
 
             // Body
             let header_h = NODE_HEADER_H * zoom;
@@ -569,9 +618,34 @@ impl NodeGraphV2Panel {
                     }
                     if !wire_started {
                         // Node body hit?
+                        let shift = ui.input(|i| i.modifiers.shift);
+                        let mut node_hit = false;
                         for (node_id, rect, _, _, _) in &node_rects {
                             if rect.contains(p) {
-                                *selected_node = Some(*node_id);
+                                if shift {
+                                    // Shift-click toggles set membership.
+                                    // Adding a node also makes it the
+                                    // primary so the inspector follows
+                                    // the user's hand. Removing a node
+                                    // promotes any remaining set member
+                                    // to primary, or clears primary if
+                                    // the set just emptied.
+                                    if selected_set.contains(node_id) {
+                                        selected_set.remove(node_id);
+                                        if *selected_node == Some(*node_id) {
+                                            *selected_node = selected_set.iter().next().copied();
+                                        }
+                                    } else {
+                                        selected_set.insert(*node_id);
+                                        *selected_node = Some(*node_id);
+                                    }
+                                } else {
+                                    // Plain click replaces the
+                                    // selection with this single node.
+                                    selected_set.clear();
+                                    selected_set.insert(*node_id);
+                                    *selected_node = Some(*node_id);
+                                }
                                 let g = to_graph(p);
                                 self.drag_node = Some(DragNode {
                                     node_id: *node_id,
@@ -580,8 +654,26 @@ impl NodeGraphV2Panel {
                                     start_cursor_x: g.x,
                                     start_cursor_y: g.y,
                                 });
+                                node_hit = true;
                                 break;
                             }
+                        }
+                        // Click on empty canvas (not on a node body)
+                        // clears the selection — matches every
+                        // canvas-style editor (Photoshop, Figma, etc.).
+                        // Excludes shift-click so the user can build
+                        // up a selection without losing it on a near-
+                        // miss between nodes. The press also seeds a
+                        // box-select marquee; if the user releases
+                        // without moving it stays a click, otherwise
+                        // the released-frame branch adds intersected
+                        // nodes to the set.
+                        if !node_hit {
+                            if !shift {
+                                selected_set.clear();
+                                *selected_node = None;
+                            }
+                            self.box_select = Some((p, p));
                         }
                     }
                 }
@@ -662,6 +754,75 @@ impl NodeGraphV2Panel {
             }
             // Node drop: nothing to commit; deltas were streamed live.
             self.drag_node = None;
+
+            // Box-select drop: any node whose body intersects the
+            // marquee rect joins the selection set. The press-time
+            // branch already cleared the previous set (unless
+            // shift-drag), so this is a pure additive pass — works
+            // for both "replace via marquee" and "shift-marquee to
+            // extend". Tiny marquees (< 4 px on either axis) are
+            // treated as a click and dropped silently — that's the
+            // user clicking on empty canvas, which the press-time
+            // branch already handled.
+            if let Some((start, _)) = self.box_select.take() {
+                let end = pointer_pos.unwrap_or(start);
+                let marquee = egui::Rect::from_two_pos(start, end);
+                if marquee.width() >= 4.0 || marquee.height() >= 4.0 {
+                    let mut last_added: Option<NodeId> = None;
+                    for (node_id, rect, _, _, _) in &node_rects {
+                        if marquee.intersects(*rect) {
+                            selected_set.insert(*node_id);
+                            last_added = Some(*node_id);
+                        }
+                    }
+                    // Promote the last intersected node to primary so
+                    // the inspector lands on something concrete.
+                    if let Some(id) = last_added {
+                        *selected_node = Some(id);
+                    }
+                }
+            }
+        }
+
+        // Live box-select: keep `current` in sync with the cursor so
+        // the rendered marquee tracks the drag. No-op when not in a
+        // marquee gesture.
+        if let Some((_, ref mut current)) = self.box_select {
+            if let Some(p) = pointer_pos {
+                *current = p;
+            }
+        }
+
+        // Delete key — bulk-remove every node in the selection set.
+        // Source / Output are skipped (they're structural; the per-
+        // node menu hides actions on them too). The set is cleared
+        // for the survivors so the next render isn't holding stale
+        // ids that the engine just removed. Gated on `wants_keyboard_
+        // input` so the user typing into a slider doesn't accidentally
+        // wipe nodes.
+        if !ui.ctx().wants_keyboard_input()
+            && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
+            && !selected_set.is_empty()
+        {
+            let to_delete: Vec<NodeId> = selected_set
+                .iter()
+                .copied()
+                .filter(|id| {
+                    graph
+                        .nodes
+                        .iter()
+                        .find(|n| n.id == *id)
+                        .map(|n| !matches!(n.kind, NodeKind::Source | NodeKind::Output))
+                        .unwrap_or(false)
+                })
+                .collect();
+            for id in &to_delete {
+                cmds.push(AppCommand::RemoveNode { clip_id, node_id: *id });
+                selected_set.remove(id);
+                if *selected_node == Some(*id) {
+                    *selected_node = None;
+                }
+            }
         }
 
         // Right-click handling. Three cases, in priority order:
@@ -732,7 +893,7 @@ impl NodeGraphV2Panel {
             // Snapshot kind+enabled so we can borrow out of `graph` cleanly
             let info = graph.nodes.iter().find(|n| n.id == nid).map(|n| (n.kind, n.enabled));
             if let Some((kind, enabled)) = info {
-                self.draw_node_menu(ui, clip_id, nid, kind, enabled, &mut cmds, selected_node);
+                self.draw_node_menu(ui, clip_id, nid, kind, enabled, &mut cmds, selected_node, selected_set, graph);
             } else {
                 self.node_menu = None;
             }
@@ -908,6 +1069,7 @@ impl NodeGraphV2Panel {
                         ("Color Warper", "ColorWarper"),
                         ("Noise Reduction", "Denoise"),
                         ("3D LUT", "Lut3D"),
+                        ("Compound", "Compound"),
                     ] {
                         if ui.button(label).clicked() {
                             cmds.push(AppCommand::AddNode {
@@ -942,6 +1104,8 @@ impl NodeGraphV2Panel {
         enabled: bool,
         cmds: &mut Vec<AppCommand>,
         selected_node: &mut Option<NodeId>,
+        selected_set: &mut std::collections::HashSet<NodeId>,
+        graph: &NodeGraph,
     ) {
         let pos = self.node_menu.map(|(_, p)| p).unwrap_or_default();
         let menu_id = ui.id().with(("ngv2_node_menu", node_id));
@@ -961,9 +1125,60 @@ impl NodeGraphV2Panel {
                         cmds.push(AppCommand::ToggleNodeEnabled { clip_id, node_id });
                         close = true;
                     }
-                    if ui.button("Delete").clicked() {
-                        cmds.push(AppCommand::RemoveNode { clip_id, node_id });
-                        if *selected_node == Some(node_id) { *selected_node = None; }
+                    let in_set = selected_set.contains(&node_id);
+                    // Group-into-Compound: only offered when the
+                    // right-clicked node is part of a multi-selection
+                    // of 2+ nodes. Engine-side handler validates the
+                    // selection's external-edge shape and rejects
+                    // gracefully (toast) if the v1 single-port
+                    // restriction would be violated.
+                    if in_set && selected_set.len() >= 2 {
+                        let label = format!(
+                            "Group {} into Compound",
+                            selected_set.len(),
+                        );
+                        if ui.button(label).clicked() {
+                            cmds.push(AppCommand::GroupIntoCompound {
+                                clip_id,
+                                node_ids: selected_set.iter().copied().collect(),
+                            });
+                            close = true;
+                        }
+                    }
+                    let multi_label = if in_set && selected_set.len() > 1 {
+                        format!("Delete {} selected", selected_set.len())
+                    } else {
+                        "Delete".to_string()
+                    };
+                    if ui.button(multi_label).clicked() {
+                        if in_set {
+                            // Right-click landed on one of the
+                            // multi-selected nodes — delete the whole
+                            // set in one gesture (DaVinci-equivalent).
+                            // Source / Output are skipped same as the
+                            // Delete-key path.
+                            let to_delete: Vec<NodeId> = selected_set
+                                .iter()
+                                .copied()
+                                .filter(|id| {
+                                    graph.nodes.iter()
+                                        .find(|n| n.id == *id)
+                                        .map(|n| !matches!(n.kind, NodeKind::Source | NodeKind::Output))
+                                        .unwrap_or(false)
+                                })
+                                .collect();
+                            for id in &to_delete {
+                                cmds.push(AppCommand::RemoveNode { clip_id, node_id: *id });
+                                selected_set.remove(id);
+                                if *selected_node == Some(*id) { *selected_node = None; }
+                            }
+                        } else {
+                            // Right-clicked a node that's not in the
+                            // current set — delete just that one and
+                            // leave the (unrelated) selection alone.
+                            cmds.push(AppCommand::RemoveNode { clip_id, node_id });
+                            if *selected_node == Some(node_id) { *selected_node = None; }
+                        }
                         close = true;
                     }
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
