@@ -78,6 +78,17 @@ pub struct NodeGraphV2Panel {
     /// Per-node context menu — opened on right-click on a node.
     /// `(node_id, screen_pos)`; cleared on close.
     node_menu: Option<(NodeId, egui::Pos2)>,
+    /// Cleared on first paint of a new clip (or when `view_dirty`
+    /// is set explicitly). Triggers a one-shot fit-to-view so the
+    /// graph appears framed on first open instead of off-screen.
+    /// Without this the user has to pan around hunting for nodes
+    /// because the default `NodePos { x: i*200, y: 0 }` layout
+    /// extends to graph x=2400+ for the default 13-node graph,
+    /// far beyond the canvas's visible window at zoom=1.
+    last_fit_clip: Option<ClipId>,
+    /// Set by the toolbar's "Fit" button or programmatically
+    /// (clip switch). Consumed at the top of the next `show()`.
+    fit_pending: bool,
 }
 
 impl Default for NodeGraphV2Panel {
@@ -91,6 +102,8 @@ impl Default for NodeGraphV2Panel {
             add_menu_screen_pos: egui::Pos2::ZERO,
             add_menu_graph_pos: egui::Pos2::ZERO,
             node_menu: None,
+            last_fit_clip: None,
+            fit_pending: false,
         }
     }
 }
@@ -106,12 +119,59 @@ impl NodeGraphV2Panel {
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
+        // Toolbar — small strip at the top with view controls.
+        // Kept tight so the canvas keeps almost all the available
+        // height. ~22 px including padding.
         let avail = ui.available_size();
+        let toolbar_h = 22.0;
+        let (toolbar_rect, _) = ui.allocate_exact_size(
+            egui::vec2(avail.x, toolbar_h), egui::Sense::hover(),
+        );
+        let mut toolbar_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(toolbar_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        toolbar_ui.add_space(6.0);
+        let fit_clicked = toolbar_ui.button("Fit").on_hover_text(
+            "Frame all nodes in the canvas (shortcut: F)"
+        ).clicked();
+        let reset_clicked = toolbar_ui.button("1:1").on_hover_text(
+            "Reset zoom to 100 % and centre on the graph origin"
+        ).clicked();
+        toolbar_ui.add_space(8.0);
+        toolbar_ui.label(
+            egui::RichText::new(format!("zoom {:.0} %", self.zoom * 100.0))
+                .small().color(theme.text_dim)
+        );
+        if reset_clicked {
+            self.zoom = 1.0;
+            self.pan = egui::Vec2::ZERO;
+        }
+
         let (canvas_rect, canvas_resp) = ui.allocate_exact_size(
-            avail,
+            egui::vec2(avail.x, (avail.y - toolbar_h).max(80.0)),
             egui::Sense::click_and_drag(),
         );
         let painter = ui.painter_at(canvas_rect);
+
+        // First-paint auto-fit per clip + on-demand fit via toolbar
+        // or `F` shortcut. Done before any rendering so the first
+        // frame is already framed instead of needing a second pass.
+        let f_pressed = ui.input(|i| {
+            i.key_pressed(egui::Key::F)
+                && !i.modifiers.ctrl
+                && !i.modifiers.command
+        });
+        let need_fit = fit_clicked
+            || f_pressed
+            || self.fit_pending
+            || self.last_fit_clip != Some(clip_id);
+        if need_fit && !graph.nodes.is_empty() {
+            self.fit_to_nodes(graph, canvas_rect);
+            self.fit_pending = false;
+            self.last_fit_clip = Some(clip_id);
+        }
 
         // Background + subtle grid (so pan is visually obvious).
         painter.rect_filled(canvas_rect, 0.0, theme.bg_deep);
@@ -364,6 +424,47 @@ impl NodeGraphV2Panel {
         }
 
         cmds
+    }
+
+    /// Compute zoom + pan that frames every node in the graph
+    /// inside the canvas with a comfortable margin. Called on first
+    /// open of a clip, on Fit toolbar click, and on `F` press.
+    fn fit_to_nodes(&mut self, graph: &NodeGraph, canvas_rect: egui::Rect) {
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for node in &graph.nodes {
+            let pos = graph.node_positions.get(&node.id).copied()
+                .unwrap_or(NodePos { x: 0.0, y: 0.0 });
+            // Node bounds in graph coords = (pos ± NODE_W/2, pos ± NODE_H/2)
+            let half_w = NODE_W * 0.5;
+            let half_h = NODE_H * 0.5;
+            min_x = min_x.min(pos.x - half_w);
+            min_y = min_y.min(pos.y - half_h);
+            max_x = max_x.max(pos.x + half_w);
+            max_y = max_y.max(pos.y + half_h);
+        }
+        if !min_x.is_finite() || !max_x.is_finite() { return; }
+
+        let graph_w = (max_x - min_x).max(1.0);
+        let graph_h = (max_y - min_y).max(1.0);
+        // 12 % padding on each side so framed nodes don't touch the edge.
+        let target_w = canvas_rect.width() * 0.76;
+        let target_h = canvas_rect.height() * 0.76;
+        let zoom_x = target_w / graph_w;
+        let zoom_y = target_h / graph_h;
+        let new_zoom = zoom_x.min(zoom_y).clamp(0.25, 3.0);
+
+        // Pan so the graph centre lands on the canvas centre.
+        let graph_cx = (min_x + max_x) * 0.5;
+        let graph_cy = (min_y + max_y) * 0.5;
+        // Inverse of `to_screen`: screen = origin + (graph + pan) * zoom
+        // We want graph_centre to map to canvas_centre, so:
+        //   canvas_centre = canvas_centre + (graph_centre + pan) * zoom
+        //   pan = -graph_centre
+        self.zoom = new_zoom;
+        self.pan = egui::vec2(-graph_cx, -graph_cy);
     }
 
     fn draw_grid(&self, painter: &egui::Painter, rect: egui::Rect, theme: &KlippTheme) {
