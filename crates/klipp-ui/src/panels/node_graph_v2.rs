@@ -75,9 +75,17 @@ pub struct NodeGraphV2Panel {
     add_menu_open: bool,
     add_menu_screen_pos: egui::Pos2,
     add_menu_graph_pos: egui::Pos2,
+    /// Frame on which `add_menu_open` was set. The close-detection
+    /// (`clicked_elsewhere`) fires true on the SAME frame for the
+    /// secondary click that opened the menu (the click point is at
+    /// the menu's top-left corner, which egui sometimes counts as
+    /// outside the interact_rect). Skipping the close check on the
+    /// open frame is the simplest fix.
+    add_menu_opened_frame: u64,
     /// Per-node context menu — opened on right-click on a node.
     /// `(node_id, screen_pos)`; cleared on close.
     node_menu: Option<(NodeId, egui::Pos2)>,
+    node_menu_opened_frame: u64,
     /// Cleared on first paint of a new clip (or when `view_dirty`
     /// is set explicitly). Triggers a one-shot fit-to-view so the
     /// graph appears framed on first open instead of off-screen.
@@ -101,7 +109,9 @@ impl Default for NodeGraphV2Panel {
             add_menu_open: false,
             add_menu_screen_pos: egui::Pos2::ZERO,
             add_menu_graph_pos: egui::Pos2::ZERO,
+            add_menu_opened_frame: 0,
             node_menu: None,
+            node_menu_opened_frame: 0,
             last_fit_clip: None,
             fit_pending: false,
         }
@@ -423,13 +433,16 @@ impl NodeGraphV2Panel {
                     for (node_id, rect, _, _) in &node_rects {
                         if rect.contains(p) { on_node = Some(*node_id); break; }
                     }
+                    let frame_nr = ui.ctx().cumulative_pass_nr();
                     if let Some(nid) = on_node {
                         self.node_menu = Some((nid, p));
+                        self.node_menu_opened_frame = frame_nr;
                         self.add_menu_open = false;
                     } else {
                         self.add_menu_open = true;
                         self.add_menu_screen_pos = p;
                         self.add_menu_graph_pos = to_graph(p);
+                        self.add_menu_opened_frame = frame_nr;
                         self.node_menu = None;
                     }
                 }
@@ -611,7 +624,15 @@ impl NodeGraphV2Panel {
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
                 });
             });
-        if area_resp.response.clicked_elsewhere() { close = true; }
+        // Skip outside-click detection on the same frame the menu
+        // was opened — the secondary click that opened it can
+        // register as `clicked_elsewhere` if its landing point is
+        // a pixel off the area's interact_rect.
+        if ui.ctx().cumulative_pass_nr() != self.add_menu_opened_frame
+            && area_resp.response.clicked_elsewhere()
+        {
+            close = true;
+        }
         if close { self.add_menu_open = false; }
     }
 
@@ -651,7 +672,16 @@ impl NodeGraphV2Panel {
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
                 });
             });
-        if area_resp.response.clicked_elsewhere() { close = true; }
+        // Same open-frame guard as the add menu — see the long
+        // comment in `draw_add_menu`. Without this the secondary
+        // click that opened the menu also fires `clicked_elsewhere`
+        // on the same frame and the menu vanishes before the user
+        // sees it (~9/10 of the time).
+        if ui.ctx().cumulative_pass_nr() != self.node_menu_opened_frame
+            && area_resp.response.clicked_elsewhere()
+        {
+            close = true;
+        }
         if close { self.node_menu = None; }
     }
 }
