@@ -322,10 +322,23 @@ impl NewTimelinePanel {
             state.ruler_press_origin = None;
         }
 
-        // Click (no drag): seek playhead
+        // Click (no drag): seek playhead.
+        // Optimistic UI update — move the playhead display instantly
+        // so the user sees the ruler react at click-time, not after
+        // the engine's decoder has finished seeking (which can take
+        // 500 ms – 2 s on a 4K H.264 clip while it forward-decodes
+        // from the nearest keyframe). The engine will confirm the
+        // same position via `PlayheadMoved` when the seek completes;
+        // that arrives at the same value we just set, so no visible
+        // jump. Playback is already stopped at click-time because a
+        // clicked ruler implies a paused seek, not live playback.
         if ruler_resp.clicked() && state.range_drag.is_none() {
             if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
                 let tc = mouse_to_time(pos.x);
+                state.playhead = tc;
+                state.playhead_smooth_secs = tc.to_secs_f64();
+                state.playhead_anchor = tc;
+                state.playhead_anchor_wall = std::time::Instant::now();
                 cmds.push(AppCommand::SeekTo(tc));
             }
         }

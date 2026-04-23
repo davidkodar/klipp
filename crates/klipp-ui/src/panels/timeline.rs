@@ -5283,7 +5283,16 @@ impl TimelinePanel {
                         state.selected_media_ids.clear();
                     }
                 } else {
-                    // Clicked empty area — move playhead and deselect
+                    // Clicked empty area — move playhead and deselect.
+                    // Optimistic UI update (see ruler click in
+                    // timeline/mod.rs for rationale): move the playhead
+                    // display at click-time so the user doesn't wait
+                    // for the decoder's seek-and-forward-decode cycle
+                    // before the ruler reacts.
+                    state.playhead = click_tc;
+                    state.playhead_smooth_secs = click_tc.to_secs_f64();
+                    state.playhead_anchor = click_tc;
+                    state.playhead_anchor_wall = std::time::Instant::now();
                     cmds.push(AppCommand::SeekTo(click_tc));
                     if self.dragging_clip.is_none() && self.trimming_clip.is_none() {
                         state.selected_clips.clear();
