@@ -104,6 +104,16 @@ pub struct NodeGraphV2Panel {
     /// `ctx.load_texture` and dropped from egui's pool on panel
     /// destruction (or when the entry is overwritten on path change).
     matte_thumbs: std::collections::HashMap<NodeId, (std::path::PathBuf, egui::TextureHandle)>,
+    /// Per-node output-thumbnail textures. Keyed by node id; value is
+    /// `(node_thumbs_gen at upload time, texture handle)`. Re-uploads
+    /// when the engine bumps `FrameBuffer::node_thumbs_gen`; otherwise
+    /// reuses the cached texture.
+    output_thumbs: std::collections::HashMap<NodeId, (u64, egui::TextureHandle)>,
+    /// The set of node-ids we last told the engine to capture thumbs
+    /// for, so we can avoid re-sending `SetVisibleNodeThumbs` every
+    /// frame. Snapshotted at end of each render; compared against the
+    /// current frame's visible set on the next render.
+    last_visible_thumb_nodes: Vec<NodeId>,
 }
 
 impl Default for NodeGraphV2Panel {
@@ -122,6 +132,8 @@ impl Default for NodeGraphV2Panel {
             last_fit_clip: None,
             fit_pending: false,
             matte_thumbs: std::collections::HashMap::new(),
+            output_thumbs: std::collections::HashMap::new(),
+            last_visible_thumb_nodes: Vec::new(),
         }
     }
 }
@@ -134,6 +146,9 @@ impl NodeGraphV2Panel {
         graph: &mut NodeGraph,
         clip_id: ClipId,
         theme: &KlippTheme,
+        engine_node_thumbs: &std::collections::HashMap<NodeId, Vec<u8>>,
+        engine_node_thumbs_gen: u64,
+        deferred_drops: &mut Vec<egui::TextureHandle>,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
@@ -342,6 +357,13 @@ impl NodeGraphV2Panel {
                             let tex = ui.ctx().load_texture(
                                 name, color_image, egui::TextureOptions::LINEAR,
                             );
+                            // Defer-drop the previous handle; see the
+                            // comment on output_thumbs for the wgpu
+                            // "Texture has been destroyed" panic this
+                            // avoids.
+                            if let Some((_, old)) = self.matte_thumbs.remove(&node_id) {
+                                deferred_drops.push(old);
+                            }
                             self.matte_thumbs.insert(node_id, (path.clone(), tex));
                         }
                     }
@@ -359,9 +381,82 @@ impl NodeGraphV2Panel {
                         );
                     }
                 } else {
-                    // No image set — drop any stale texture so a fresh
-                    // pick starts clean.
-                    self.matte_thumbs.remove(&node_id);
+                    // No image set — defer-drop any stale texture so a
+                    // fresh pick starts clean. See output_thumbs for
+                    // why this is a defer rather than a direct drop.
+                    if let Some((_, old)) = self.matte_thumbs.remove(&node_id) {
+                        deferred_drops.push(old);
+                    }
+                }
+            }
+
+            // Output thumbnail — per-node small preview of the node's
+            // output on the last paused / post-seek re-grade. Empty
+            // during playback (engine skips capture) and for mid-GPU-
+            // chain nodes (output buffer is a sentinel). ExternalMatte
+            // nodes already painted their own source-image thumb
+            // above; let that one win.
+            if kind != NodeKind::ExternalMatte {
+                if let Some(thumb_bytes) = engine_node_thumbs.get(&node_id) {
+                    if !thumb_bytes.is_empty() {
+                        let needs_upload = match self.output_thumbs.get(&node_id) {
+                            Some((gen, _)) => *gen != engine_node_thumbs_gen,
+                            None => true,
+                        };
+                        if needs_upload {
+                            // Thumb is 192×108 sRGB u8 RGBA per the
+                            // executor's THUMB_W/THUMB_H. Fixed so we
+                            // don't need to pass dimensions — both
+                            // sides agree. Bump both constants in
+                            // lockstep if you change the size.
+                            const TW: usize = 192;
+                            const TH: usize = 108;
+                            if thumb_bytes.len() == TW * TH * 4 {
+                                let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                                    [TW, TH], thumb_bytes,
+                                );
+                                let name = format!("node_out_thumb_{}", node_id.as_simple());
+                                let tex = ui.ctx().load_texture(
+                                    name, color_image, egui::TextureOptions::LINEAR,
+                                );
+                                // Replacing the map entry would drop
+                                // the old handle synchronously while
+                                // egui-wgpu still has a submit in
+                                // flight that references it — the
+                                // "Texture with 'egui_texid_Managed(N)'
+                                // label has been destroyed" panic.
+                                // Defer the drop to a later frame (see
+                                // `AppState::deferred_texture_drops`).
+                                if let Some((_, old)) = self.output_thumbs.remove(&node_id) {
+                                    deferred_drops.push(old);
+                                }
+                                self.output_thumbs.insert(
+                                    node_id, (engine_node_thumbs_gen, tex),
+                                );
+                            }
+                        }
+                        if let Some((_, tex)) = self.output_thumbs.get(&node_id) {
+                            let inset = 4.0 * zoom;
+                            let thumb_rect = body_rect.shrink(inset);
+                            painter.image(
+                                tex.id(),
+                                thumb_rect,
+                                egui::Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(1.0, 1.0),
+                                ),
+                                egui::Color32::WHITE,
+                            );
+                        }
+                    }
+                } else {
+                    // Engine didn't capture for this node (playback, or
+                    // node not in visible set) — defer-drop any stale
+                    // thumb so wgpu's in-flight submit completes before
+                    // the TextureHandle's destructor runs.
+                    if let Some((_, old)) = self.output_thumbs.remove(&node_id) {
+                        deferred_drops.push(old);
+                    }
                 }
             }
 
@@ -641,6 +736,25 @@ impl NodeGraphV2Panel {
             } else {
                 self.node_menu = None;
             }
+        }
+
+        // Tell the engine which nodes want thumbnails. Diff against
+        // the previous set so we don't resend the same list every
+        // frame — the engine only needs to know when the visible set
+        // changes. We ask for thumbs of every grade-pipeline node on
+        // screen (Source/Output are structural — no value showing
+        // their source pixels; skip).
+        let mut current_visible: Vec<NodeId> = node_rects.iter()
+            .filter(|(_, _, _, kind, _)| !matches!(kind, NodeKind::Source | NodeKind::Output))
+            .map(|(id, _, _, _, _)| *id)
+            .collect();
+        current_visible.sort();
+        if current_visible != self.last_visible_thumb_nodes {
+            cmds.push(AppCommand::SetVisibleNodeThumbs {
+                clip_id,
+                node_ids: current_visible.clone(),
+            });
+            self.last_visible_thumb_nodes = current_visible;
         }
 
         cmds

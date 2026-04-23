@@ -22837,6 +22837,19 @@ impl KlippApp {
         nodes_rect: egui::Rect,
         theme: &KlippTheme,
     ) {
+        // Sync per-node thumbs from the engine's FrameBuffer into
+        // AppState at the start of the panel render. Engine bumps
+        // `node_thumbs_gen` whenever it refreshes the map on a paused
+        // / post-seek re-grade; we only clone the HashMap when it
+        // actually advanced, so steady-state costs one lock + one
+        // generation compare per frame.
+        {
+            let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            if fb.node_thumbs_gen != self.state.node_thumbs_gen {
+                self.state.node_thumbs = fb.node_thumbs.clone();
+                self.state.node_thumbs_gen = fb.node_thumbs_gen;
+            }
+        }
         crate::ui_util::allocate_clipped_ui(ui, nodes_rect, |ui| {
             ui.set_min_size(nodes_rect.size());
             ui.painter().rect_filled(nodes_rect, 0.0, theme.bg_deep);
@@ -22847,9 +22860,13 @@ impl KlippApp {
                     .find_map(|t| t.find_clip_mut(cid))
                 {
                     let panel_cmds = if self.state.use_node_graph_v2 {
+                        let slot = self.state.deferred_texture_drops_slot;
                         self.node_graph_v2_panel.show(
                             ui, &mut self.state.selected_node_id,
                             &mut clip.node_graph, cid, &self.theme,
+                            &self.state.node_thumbs,
+                            self.state.node_thumbs_gen,
+                            &mut self.state.deferred_texture_drops[slot],
                         )
                     } else {
                         self.node_graph_panel.show(
@@ -22877,6 +22894,79 @@ impl KlippApp {
                 );
             }
         });
+
+        // Filmstrip-sourced per-node thumbnails (DaVinci-style node
+        // preview). Decouples node-panel thumbs from the 4K decoder
+        // pipeline: we feed the executor a pre-grade filmstrip tile at
+        // ~228×128 instead of the main viewer's full-res frame. That
+        // pass runs in well under a millisecond regardless of source
+        // resolution, and filmstrip tiles are already in memory so
+        // there's zero decode latency. Grade params are still
+        // evaluated at the exact playhead so keyframed values stay
+        // frame-accurate. Deduped via `last_filmstrip_thumb_send` so
+        // the command only fires when something the thumbs depend on
+        // (clip / tile / playhead / grade) actually changed. Pushed
+        // after `panel_cmds` so any `SetVisibleNodeThumbs` from the V2
+        // canvas processes first — the engine needs the visible-set
+        // populated before our `RenderNodeThumbsFromSource` arrives.
+        if self.state.use_node_graph_v2 {
+            if let Some(cid) = self.state.selected_clip {
+                let seq_idx = self.state.active_sequence_idx;
+                let clip_info = self.state.sequences[seq_idx].tracks.iter()
+                    .find_map(|t| t.clips.iter().find(|c| c.id == cid).map(|c| (
+                        c.media_id(),
+                        c.source_in.to_secs_f64(),
+                        c.timeline_in,
+                        c.speed,
+                        klipp_engine::render_cache::compute_grade_hash(
+                            &c.node_graph,
+                            &c.builtin_effects,
+                            &c.builtin_effects_enabled,
+                        ),
+                    )));
+                if let Some((Some(media_id), src_in_secs, tl_in, speed, grade_hash)) = clip_info {
+                    let playhead = self.state.playhead;
+                    let src_time = src_in_secs
+                        + (playhead - tl_in).to_secs_f64() * speed.max(0.001);
+                    let tile_idx = self.state.thumbnail_cache.filmstrip(&media_id)
+                        .and_then(|frames| {
+                            if frames.is_empty() { return None; }
+                            let i = match frames.binary_search_by(|f| {
+                                f.time_secs.partial_cmp(&src_time)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            }) {
+                                Ok(i) => i,
+                                Err(i) if i == 0 => 0,
+                                Err(i) if i >= frames.len() => frames.len() - 1,
+                                Err(i) => {
+                                    let before = (src_time - frames[i - 1].time_secs).abs();
+                                    let after = (frames[i].time_secs - src_time).abs();
+                                    if before <= after { i - 1 } else { i }
+                                }
+                            };
+                            Some(i)
+                        });
+                    if let Some(idx) = tile_idx {
+                        let key = (cid, idx, playhead.value, grade_hash);
+                        if self.state.last_filmstrip_thumb_send != Some(key) {
+                            let tile = self.state.thumbnail_cache.filmstrip(&media_id)
+                                .and_then(|frames| frames.get(idx))
+                                .map(|f| (f.rgba.clone(), f.width, f.height));
+                            if let Some((rgba, w, h)) = tile {
+                                all_cmds.push(AppCommand::RenderNodeThumbsFromSource {
+                                    clip_id: cid,
+                                    playhead,
+                                    src_rgba: rgba,
+                                    src_w: w,
+                                    src_h: h,
+                                });
+                                self.state.last_filmstrip_thumb_send = Some(key);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

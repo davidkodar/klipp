@@ -764,6 +764,29 @@ pub enum AppCommand {
     SetNodeColorMatch { clip_id: ClipId, node_id: uuid::Uuid, settings: crate::color_grade::ColorMatchSettings },
     /// Point an ExternalMatte node at a new image file.
     SetExternalMattePath { clip_id: ClipId, node_id: uuid::Uuid, path: Option<std::path::PathBuf> },
+    /// Tell the engine which nodes the V2 canvas currently has
+    /// visible — the executor captures a downsampled thumbnail of
+    /// each of them on the paused / post-seek re-grade so the canvas
+    /// can paint per-node previews. Empty list disables thumb capture.
+    /// Sent when the viewport's node set changes (pan / zoom / add /
+    /// remove). Playback path skips capture entirely to avoid the N
+    /// extra GPU readbacks per frame.
+    SetVisibleNodeThumbs { clip_id: ClipId, node_ids: Vec<uuid::Uuid> },
+    /// Render per-node thumbnails by running the clip's node graph on a
+    /// caller-supplied pre-grade source bitmap (typically the filmstrip
+    /// tile nearest the playhead). Used by the V2 canvas to populate
+    /// node previews without waiting on a full-res decoder seek. Source
+    /// is sRGB u8 RGBA at the given width × height; engine evaluates
+    /// time-keyed grade params at `playhead` so keyframes remain
+    /// frame-accurate even though the source bitmap came from a
+    /// slightly different timestamp.
+    RenderNodeThumbsFromSource {
+        clip_id: ClipId,
+        playhead: crate::RationalTime,
+        src_rgba: Vec<u8>,
+        src_w: u32,
+        src_h: u32,
+    },
     /// Change which channel of the ExternalMatte image becomes the
     /// matte signal (Alpha / Luminance / Red / Green / Blue) and
     /// whether the output is inverted.

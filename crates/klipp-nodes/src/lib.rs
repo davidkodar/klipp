@@ -45,4 +45,4 @@ pub use params::{
 // Re-exported from klipp_core; surfaced here so callers writing to
 // node params don't need to reach across crates.
 pub use klipp_core::{BlendMode, LayerMixerInput};
-pub use executor::{ExecutorError, GraphExecutor, bake_graph_to_lut};
+pub use executor::{ExecutorError, GraphExecutor, bake_graph_to_lut, THUMB_W, THUMB_H};

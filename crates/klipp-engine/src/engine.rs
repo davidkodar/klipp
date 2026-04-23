@@ -116,6 +116,30 @@ fn alpha_u8_to_f32_lut() -> &'static [f32; 256] {
 }
 
 #[inline]
+/// Nearest-neighbour downsample of an sRGB u8 RGBA buffer to a smaller
+/// sRGB u8 RGBA buffer. Stays in sRGB space — the filmstrip tile is
+/// already sRGB-encoded and the V2 canvas expects sRGB-encoded thumbs,
+/// so a linear round-trip would only add quantisation for no gain. Used
+/// for the identity-graph path of `render_node_thumbs_from_source`.
+fn downsample_srgb_u8_to_thumb(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+    if src.len() < (src_w * src_h * 4) as usize || src_w == 0 || src_h == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity((dst_w * dst_h * 4) as usize);
+    for y in 0..dst_h {
+        let sy = ((y as u64 * src_h as u64) / dst_h as u64).min(src_h as u64 - 1) as u32;
+        for x in 0..dst_w {
+            let sx = ((x as u64 * src_w as u64) / dst_w as u64).min(src_w as u64 - 1) as u32;
+            let i = ((sy * src_w + sx) as usize) * 4;
+            out.push(src[i]);
+            out.push(src[i + 1]);
+            out.push(src[i + 2]);
+            out.push(src[i + 3]);
+        }
+    }
+    out
+}
+
 fn u8_rgba_to_linear(rgba: &[u8]) -> Vec<f32> {
     let srgb_lut = srgb_u8_to_linear_lut();
     let alpha_lut = alpha_u8_to_f32_lut();
@@ -726,6 +750,30 @@ pub struct PlaybackEngine {
     matte_preview: bool,
     // Scope tap — which node's output to capture for scope display
     scope_tap_node: Option<klipp_nodes::NodeId>,
+    /// V2 canvas "nodes visible right now" set — the executor
+    /// captures downsampled thumbnails for each of these on the
+    /// paused / post-seek re-grade so the canvas can paint per-node
+    /// previews. Empty during playback (capturing N readbacks per
+    /// frame would cost more than the grade itself).
+    visible_node_thumbs: std::collections::HashSet<klipp_nodes::NodeId>,
+    /// Set to `true` while `prerender_cache_frames` is running a
+    /// background re-grade at some near-playhead frame. Those
+    /// speculative grades must NOT overwrite the per-node thumbnails
+    /// — the thumbs in the V2 canvas should reflect the user's
+    /// actual playhead, not whichever frame the pre-cache happened
+    /// to be chewing on at the time.
+    thumb_capture_suspended: bool,
+    /// After a paused seek (Pause / SetPlayhead / SeekTo while paused) the
+    /// decoder is resumed and we wait briefly for a frame so per-node
+    /// thumbnails can capture against the new position. At 4K the cold
+    /// seek + keyframe rewind often outruns that budget. When it does we
+    /// leave the decoder running and set this flag; the per-tick paused
+    /// branch drains the queue when the frame finally arrives, runs the
+    /// post-process pipeline (which captures thumbs), then pauses the
+    /// decoder. Without this, the V2 canvas thumbs were stuck on the
+    /// pre-seek frame until the user pressed an arrow key — that path
+    /// pops from the now-filled queue immediately.
+    pending_paused_refresh: bool,
     /// Which scope mode to render on GPU (0=waveform, 1=parade, 2=vectorscope, 3=histogram).
     scope_render_mode: u8,
     /// Wall-clock timestamp of the last GPU scope render. Used to
@@ -1052,6 +1100,9 @@ impl PlaybackEngine {
             compare_effect_is_ofx: false,
             matte_preview: false,
             scope_tap_node: None,
+            visible_node_thumbs: std::collections::HashSet::new(),
+            thumb_capture_suspended: false,
+            pending_paused_refresh: false,
             scope_render_mode: 0,
             last_scope_render: std::time::Instant::now() - std::time::Duration::from_secs(1),
             matte_preview_node: None,
@@ -1273,6 +1324,18 @@ impl PlaybackEngine {
                 // Sync clip audio params periodically during playback (for keyframe animation)
                 self.sync_clip_volumes();
             } else if self.state == PlaybackState::Paused {
+                if self.pending_paused_refresh {
+                    // A previous seek (Pause / SetPlayhead / SeekTo
+                    // while paused) left the decoder running because
+                    // its 50–200 ms grab window wasn't enough for a
+                    // cold 4K seek. Pop any frame the decoder has
+                    // produced since, run the full post_process
+                    // pipeline (captures per-node thumbs), then pause
+                    // the decoder. Silent no-op until the frame lands.
+                    if self.try_drain_paused_refresh_frame() {
+                        self.pending_paused_refresh = false;
+                    }
+                }
                 if applied > 0 {
                     // Colour-grade param drag while paused — the drain updated
                     // the graph but the viewer is still displaying the cached
@@ -1516,6 +1579,22 @@ impl PlaybackEngine {
                     }
                     self.state = PlaybackState::Paused;
                     let _ = self.event_tx.send(AppEvent::PlaybackPaused);
+                    // During playback the pregrade encode is skipped
+                    // (see `pregrade_needed` in `post_process_rgba`) so
+                    // `cached_pregrade_frame` still holds whatever
+                    // frame was paused on last. A plain
+                    // `regrade_cached_frame` on pause would re-grade
+                    // that stale frame — the V2 thumbs would show an
+                    // old position regardless of where playback
+                    // stopped. Force a real seek to the current
+                    // playhead so the decoder produces a fresh frame,
+                    // `post_process_rgba` refreshes the pregrade
+                    // snapshot, and the executor captures thumbs
+                    // against the actual paused frame.
+                    if !self.visible_node_thumbs.is_empty() {
+                        let playhead = self.playhead;
+                        self.seek_in_sequence(playhead);
+                    }
                     (self.repaint_cb)();
                 }
             }
@@ -1721,6 +1800,17 @@ impl PlaybackEngine {
                         active.source.muted().store(false, Ordering::Release);
                     }
                 }
+                // Thumb refresh is handled by the `SetPlayhead` that
+                // `scrub_end` pushes right after `EndScrub` — that path
+                // runs a real seek (`seek_in_sequence` →
+                // `grab_single_frame_timeout` → `post_process_rgba`)
+                // which produces a fresh frame and captures per-node
+                // thumbs against the final scrub position. The old
+                // `regrade_cached_frame` call here re-graded whatever
+                // stale `cached_pregrade_frame` was lying around (no
+                // longer matches the playhead after a scrub), so the
+                // thumbs would land on the pre-scrub frame instead of
+                // the drop position.
             }
 
             AppCommand::SetLoopPlayback(enabled) => {
@@ -1828,6 +1918,37 @@ impl PlaybackEngine {
             AppCommand::SetScopeTapNode { node_id, .. } => {
                 self.scope_tap_node = node_id.clone();
                 debug!("Scope tap node: {:?}", self.scope_tap_node);
+            }
+            AppCommand::SetVisibleNodeThumbs { node_ids, .. } => {
+                self.visible_node_thumbs = node_ids.iter().copied().collect();
+                // Clear the old thumb cache so the next re-grade is
+                // what the UI sees (stale thumbs from a different node
+                // set would confuse the user mid-transition).
+                {
+                    let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                    fb.node_thumbs.clear();
+                    fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
+                }
+                // Force a re-grade of the current frame so the thumbs
+                // populate immediately — otherwise the user opens the
+                // V2 canvas and sees empty nodes until they happen to
+                // move a slider or scrub the playhead.
+                if self.state != PlaybackState::Playing
+                    && !self.visible_node_thumbs.is_empty()
+                {
+                    self.regrade_cached_frame();
+                }
+            }
+            AppCommand::RenderNodeThumbsFromSource {
+                clip_id,
+                playhead,
+                src_rgba,
+                src_w,
+                src_h,
+            } => {
+                self.render_node_thumbs_from_source(
+                    clip_id, playhead, src_rgba, src_w, src_h,
+                );
             }
 
             AppCommand::SequenceUpdated => {
@@ -4760,7 +4881,16 @@ impl PlaybackEngine {
             self.update_overlay_decoders(tc);
 
             if !was_playing {
-                self.grab_single_frame_timeout(grab_timeout);
+                let got_frame = self.grab_single_frame_timeout(grab_timeout);
+                if !got_frame {
+                    // 4K / slow codec cold seeks routinely outrun the
+                    // 50–200 ms grab budget. Instead of giving up and
+                    // freezing V2 thumbs on the pre-seek frame until
+                    // the user pokes an arrow key, keep the decoder
+                    // running and let the per-tick paused branch
+                    // post-process the frame the moment it lands.
+                    self.pending_paused_refresh = true;
+                }
                 // Play scrub chirp (~40ms snippet at the seek position) unless
                 // the user has disabled audio during a scrub.
                 if !self.is_scrubbing || self.scrub_audio_enabled {
@@ -5163,7 +5293,14 @@ impl PlaybackEngine {
                 self.playhead = klipp_core::RationalTime { value: frame_num, rate: self.playhead.rate };
 
                 let linear = u8_rgba_to_linear(&rgba);
+                // Suspend per-node thumbnail capture: this speculative
+                // grade is for a NEAR-playhead frame (prerender cache
+                // warm-up), not the user's actual playhead. Capturing
+                // thumbs here would overwrite the canvas previews with
+                // frames the user didn't ask for.
+                self.thumb_capture_suspended = true;
                 let graded_linear = self.post_process_rgba_inner(linear, w, h);
+                self.thumb_capture_suspended = false;
                 let graded = linear_rgba_to_u8(&graded_linear);
 
                 self.render_cache_hot.insert(key.clone(), graded.clone(), w, h);
@@ -5304,7 +5441,7 @@ impl PlaybackEngine {
         }
     }
 
-    fn grab_single_frame_timeout(&mut self, timeout: Duration) {
+    fn grab_single_frame_timeout(&mut self, timeout: Duration) -> bool {
         let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
             // Pop best frame in limited scope to avoid borrow across post_process
@@ -5337,12 +5474,137 @@ impl PlaybackEngine {
                     dec.pause();
                 }
                 (self.repaint_cb)();
-                return;
+                return true;
             }
             std::thread::sleep(Duration::from_millis(2));
         }
+        // Timed out without a frame. DO NOT pause the decoder here — the
+        // caller may set `pending_paused_refresh` so the per-tick paused
+        // branch picks up the frame when it finally arrives. If the caller
+        // doesn't care (e.g. initial load), it will get paused elsewhere.
+        false
+    }
+
+    /// Per-tick handler for `pending_paused_refresh`. Pops one frame the
+    /// decoder has produced since the timed-out seek, runs the full
+    /// post_process pipeline on it (which captures per-node thumbs when
+    /// V2 canvas is open), and pauses the decoder. Returns true on
+    /// success so the caller can clear the flag. Returns false and leaves
+    /// the decoder running when the queue is still empty.
+    fn try_drain_paused_refresh_frame(&mut self) -> bool {
+        let frame = self.v1_decoder.as_ref().and_then(|dec| {
+            let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+            let mut best = None;
+            while let Some(f) = queue.pop() {
+                if f.is_eof { break; }
+                best = Some(f);
+            }
+            best
+        });
+        let Some(frame) = frame else { return false; };
+        let (w, h) = (frame.width, frame.height);
+        let gpu_source = frame.gpu_source.clone();
+        let final_linear = self.post_process_rgba_with_gpu_source(
+            frame.data, w, h, gpu_source.as_ref(),
+        );
+        let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+        {
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            fb.write_frame(final_rgba, w, h);
+        }
+        let _ = self.event_tx.send(AppEvent::FrameReady);
         if let Some(dec) = &self.v1_decoder {
             dec.pause();
+        }
+        (self.repaint_cb)();
+        true
+    }
+
+    /// Run the clip's node graph on a caller-supplied pre-grade source
+    /// (e.g. a filmstrip tile at ~228×128) to produce per-node
+    /// thumbnails for the V2 canvas — without waiting on a full-res
+    /// decoder seek. Grade params are still evaluated at `playhead` so
+    /// keyframed values match exactly; only the source pixels come
+    /// from a nearby timestamp (visually indistinguishable at 192×108
+    /// and way more reliable than the decode-then-capture path).
+    ///
+    /// Source is sRGB u8 RGBA at `src_w × src_h`. Executor runs at the
+    /// same resolution and its thumb-capture stage downsamples each
+    /// visible node's output to 192×108 (`THUMB_W/THUMB_H` in
+    /// klipp-nodes). Silently no-ops when the visible-set is empty,
+    /// the clip / graph is missing, or the source payload has the
+    /// wrong length — nothing to do, no harm done.
+    fn render_node_thumbs_from_source(
+        &mut self,
+        clip_id: klipp_core::ClipId,
+        playhead: klipp_core::RationalTime,
+        src_rgba: Vec<u8>,
+        src_w: u32,
+        src_h: u32,
+    ) {
+        if self.visible_node_thumbs.is_empty() {
+            return;
+        }
+        if src_rgba.len() != (src_w as usize) * (src_h as usize) * 4 {
+            return;
+        }
+        // Clone the graph under a short read lock so the executor call
+        // below doesn't hold the sequence lock.
+        let (graph, clip_time_secs) = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let found = seq.tracks.iter().find_map(|track| {
+                track.clips.iter().find(|c| c.id == clip_id).map(|c| {
+                    let speed = c.speed.max(0.001);
+                    let clip_t = c.source_in.to_secs_f64()
+                        + (playhead - c.timeline_in).to_secs_f64() * speed;
+                    (c.node_graph.clone(), clip_t.max(0.0))
+                })
+            });
+            match found {
+                Some(v) => v,
+                None => return,
+            }
+        };
+        if graph.is_identity() {
+            // Empty graph: the thumb is just the source (pre-grade)
+            // for every visible node. Cheap one-off downsample + fan-out
+            // so Source / Output nodes still get a preview.
+            use klipp_nodes::{THUMB_W, THUMB_H};
+            let thumb = downsample_srgb_u8_to_thumb(&src_rgba, src_w, src_h, THUMB_W, THUMB_H);
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            fb.node_thumbs.clear();
+            for &node_id in &self.visible_node_thumbs {
+                fb.node_thumbs.insert(node_id, thumb.clone());
+            }
+            fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
+            return;
+        }
+        let linear_in = u8_rgba_to_linear(&src_rgba);
+        let frame_number = (clip_time_secs * self.playhead.rate as f64).max(0.0) as u64;
+        let thumb_set = self.visible_node_thumbs.clone();
+        self.ensure_gpu_effects();
+        match self.graph_executor.execute_linear_with_thumbs(
+            &linear_in,
+            &graph,
+            src_w,
+            src_h,
+            clip_time_secs,
+            frame_number,
+            None, // no scope tap on this pass
+            None, // no matte preview on this pass
+            Some(&thumb_set),
+        ) {
+            Ok((_result, _tapped, thumbs)) => {
+                if thumbs.is_empty() {
+                    return;
+                }
+                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                fb.node_thumbs = thumbs;
+                fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
+            }
+            Err(e) => {
+                tracing::debug!("render_node_thumbs_from_source: executor failed: {e:?}");
+            }
         }
     }
 
@@ -6746,7 +7008,21 @@ impl PlaybackEngine {
                 // `execute` wrapper would decode u8→linear then re-
                 // encode on the way back.
                 mark_stage(EngineStage::PostProcessInnerGradeExecute);
-                match self.graph_executor.execute_linear(
+                // Per-node thumbnail capture — only while NOT actively
+                // playing. During playback the N extra readbacks (one
+                // per visible node) would cost more than the grade
+                // itself; when paused we can afford them. `None` =
+                // zero-overhead capture skip; `Some(&set)` enables it.
+                let thumb_set: Option<&std::collections::HashSet<klipp_nodes::NodeId>> =
+                    if self.state != PlaybackState::Playing
+                        && !self.visible_node_thumbs.is_empty()
+                        && !self.thumb_capture_suspended
+                    {
+                        Some(&self.visible_node_thumbs)
+                    } else {
+                        None
+                    };
+                match self.graph_executor.execute_linear_with_thumbs(
                     &rgba,
                     graph,
                     width,
@@ -6755,15 +7031,24 @@ impl PlaybackEngine {
                     frame_number,
                     self.scope_tap_node,
                     matte_pv_node,
+                    thumb_set,
                 ) {
-                    Ok((result, tapped)) => {
+                    Ok((result, tapped, thumbs)) => {
                         // Store tapped output for scope display — scope
                         // consumers still speak u8, so encode at this
                         // one seam only.
-                        if let Some(tap_linear) = tapped {
-                            let tap_u8 = klipp_effects::linear_f32_rgba_to_srgb_u8(&tap_linear);
+                        let has_tap = tapped.is_some();
+                        let has_thumbs = !thumbs.is_empty();
+                        if has_tap || has_thumbs {
                             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                            fb.scope_data = tap_u8;
+                            if let Some(tap_linear) = tapped {
+                                let tap_u8 = klipp_effects::linear_f32_rgba_to_srgb_u8(&tap_linear);
+                                fb.scope_data = tap_u8;
+                            }
+                            if has_thumbs {
+                                fb.node_thumbs = thumbs;
+                                fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
+                            }
                         }
                         result
                     }
@@ -7582,7 +7867,11 @@ impl PlaybackEngine {
                     dec.resume();
                     self.v1_decoder = Some(dec);
                     // Longer timeout: VAAPI init can take ~150ms alone
-                    self.grab_single_frame_timeout(Duration::from_millis(500));
+                    if !self.grab_single_frame_timeout(Duration::from_millis(500)) {
+                        if let Some(dec) = &self.v1_decoder {
+                            dec.pause();
+                        }
+                    }
                 }
                 Err(e) => {
                     warn!("Could not open decoder for first frame: {e}");

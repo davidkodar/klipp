@@ -2001,6 +2001,17 @@ impl TimelinePanel {
                     let x_in_content = pos.x - content_rect.left() + state.timeline_scroll_x;
                     let target_secs = (x_in_content / state.timeline_zoom) as f64;
                     self.scrub_to(state, cmds, target_secs);
+                    // A plain tap on the ruler never goes through
+                    // `drag_started`/`drag_stopped`, so `scrub_end`
+                    // (which commits the final `SetPlayhead`) never
+                    // fires. Without that commit the engine keeps its
+                    // old playhead, no fresh frame is decoded, and the
+                    // V2 canvas per-node thumbs stay on the previous
+                    // position. Push an explicit `SetPlayhead` on the
+                    // click frame so the engine actually seeks.
+                    if ruler_response.clicked() && !state.is_scrubbing {
+                        cmds.push(AppCommand::SetPlayhead(state.playhead));
+                    }
                 }
             }
         }

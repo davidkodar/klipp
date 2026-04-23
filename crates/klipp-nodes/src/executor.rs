@@ -290,6 +290,36 @@ impl GraphExecutor {
         matte_tap: Option<NodeId>,
         matte_preview_node: Option<NodeId>,
     ) -> Result<(Vec<f32>, Option<Vec<f32>>), ExecutorError> {
+        // Convenience wrapper used by callers that don't want per-node
+        // thumbnails. The richer entry point is `execute_linear_with_thumbs`.
+        self.execute_linear_with_thumbs(
+            source_frame, graph, width, height, clip_time_secs, frame_number,
+            matte_tap, matte_preview_node, None,
+        ).map(|(out, tap, _thumbs)| (out, tap))
+    }
+
+    /// Same as `execute_linear` but also captures downsampled output
+    /// thumbnails for any node whose id appears in `visible_nodes`.
+    /// Pass `None` to skip capture entirely (zero overhead).
+    ///
+    /// Caveat: nodes whose outputs live exclusively on the GPU (mid-
+    /// chain extend) end up with empty sentinel buffers in
+    /// `node_outputs` — those nodes get no thumbnail. Only nodes
+    /// whose output landed CPU-side (chain endpoints, matte
+    /// producers, composite nodes) yield a thumb. Acceptable for v1.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_linear_with_thumbs(
+        &mut self,
+        source_frame: &[f32],
+        graph: &NodeGraph,
+        width: u32,
+        height: u32,
+        clip_time_secs: f64,
+        frame_number: u64,
+        matte_tap: Option<NodeId>,
+        matte_preview_node: Option<NodeId>,
+        visible_nodes: Option<&std::collections::HashSet<NodeId>>,
+    ) -> Result<(Vec<f32>, Option<Vec<f32>>, std::collections::HashMap<NodeId, Vec<u8>>), ExecutorError> {
         self.ensure_gpu();
         let t_total = std::time::Instant::now();
         let mut per_node_ms: Vec<(String, f64)> = Vec::new();
@@ -379,12 +409,25 @@ impl GraphExecutor {
             let chain_tail_fan_out_one = chain_tail
                 .map(|id| fan_out.get(&id).copied().unwrap_or(0) <= 1)
                 .unwrap_or(true);
+            // Visible nodes (those the V2 canvas wants thumbnails
+            // for) must NOT extend or start a GPU chain — otherwise
+            // their output lives as a sentinel Vec on `node_outputs`
+            // and the thumb pass has nothing to downsample. Forcing
+            // them onto the CPU path (or breaking the chain here) is
+            // what lets `execute_linear_with_thumbs` actually capture
+            // grade-chain nodes like the Corrector. Only active when
+            // `visible_nodes` is `Some` — playback callers pass None
+            // so chain fusion remains intact.
+            let node_is_visible_for_thumbs = visible_nodes
+                .map(|v| v.contains(&node_id))
+                .unwrap_or(false);
             let can_extend_chain = !bypass
                 && primary_is_chain_tail
                 && chain_tail_fan_out_one
                 && self.node_supports_gpu_chain(&node.kind, &node.params)
                 && Some(node_id) != matte_preview_node
-                && Some(node_id) != matte_tap;
+                && Some(node_id) != matte_tap
+                && !node_is_visible_for_thumbs;
 
             // Bypass tunnel: a bypass node whose primary input IS the
             // current chain tail doesn't touch pixels, so we can rename
@@ -515,7 +558,11 @@ impl GraphExecutor {
                 && !bypass
                 && self.node_supports_gpu_chain(&node.kind, params)
                 && Some(node_id) != matte_preview_node
-                && Some(node_id) != matte_tap;
+                && Some(node_id) != matte_tap
+                // Same visible-thumb gate as can_extend_chain: if the
+                // node needs a CPU-side output for thumb capture, it
+                // must go through the per-node CPU dispatch path.
+                && !node_is_visible_for_thumbs;
             if can_start_chain {
                 let primary_cpu: &[f32] = primary_input_id
                     .and_then(|id| node_outputs.get(&id))
@@ -624,7 +671,9 @@ impl GraphExecutor {
                     .collect();
                 let tapped_vec =
                     tapped_output.map(|a| Arc::try_unwrap(a).unwrap_or_else(|a| (*a).clone()));
-                return Ok((matte, tapped_vec));
+                // Matte preview short-circuits before the thumb-capture
+                // pass — return empty thumb map.
+                return Ok((matte, tapped_vec, HashMap::new()));
             }
 
             let output_arc = Arc::new(output);
@@ -673,7 +722,23 @@ impl GraphExecutor {
             );
         }
 
-        // 4. Return the output node's input. Unwrap the Arc when we hold the
+        // 4. Capture node thumbnails for any visible nodes whose
+        //    output landed CPU-side. Mid-chain GPU-resident nodes
+        //    have empty sentinel buffers in `node_outputs` and are
+        //    silently skipped — no thumb available without forcing
+        //    extra GPU readbacks (deferred to a future iteration).
+        let mut node_thumbs: HashMap<NodeId, Vec<u8>> = HashMap::new();
+        if let Some(visible) = visible_nodes {
+            for &node_id in visible {
+                let Some(arc) = node_outputs.get(&node_id) else { continue };
+                if arc.is_empty() { continue; }
+                let thumb = downsample_to_thumb_u8(arc.as_slice(), width, height,
+                    THUMB_W, THUMB_H);
+                node_thumbs.insert(node_id, thumb);
+            }
+        }
+
+        // 5. Return the output node's input. Unwrap the Arc when we hold the
         //    sole reference to avoid a clone — falls back to clone only if
         //    another holder (e.g. a downstream passthrough) still has it.
         let output_input_id = graph
@@ -687,7 +752,7 @@ impl GraphExecutor {
         let tapped_vec =
             tapped_output.map(|a| Arc::try_unwrap(a).unwrap_or_else(|a| (*a).clone()));
 
-        Ok((result, tapped_vec))
+        Ok((result, tapped_vec, node_thumbs))
     }
 
     /// Returns true if this (kind, params) pair has a GPU-resident chain
@@ -2627,6 +2692,42 @@ fn layer_mixer_compose(
 
 /// Overlay blend per the Photoshop / W3C spec, in linear light.
 /// Below 0.5 of the base it's a 2× multiply; above, a 2× screen.
+/// Per-node thumbnail dimensions — picked to fit comfortably inside
+/// the V2 canvas's node body (NODE_W=120, NODE_H=60 → body ~52 px
+/// tall) at 1× zoom while staying small enough that capturing many
+/// per frame stays cheap. Aspect ratio is 16:9 to match typical
+/// video; non-16:9 sources letterbox naturally inside.
+pub const THUMB_W: u32 = 192;
+pub const THUMB_H: u32 = 108;
+
+/// Convert a linear-RGBA f32 buffer to a small sRGB u8 thumbnail via
+/// nearest-neighbour downsample. Cheap (one read + one srgb encode
+/// per output pixel) and keeps the thumbnail honest about colour —
+/// no resampling artefacts that would mislead the user about what
+/// the node actually produced.
+fn downsample_to_thumb_u8(src: &[f32], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+    if src.len() < (src_w * src_h * 4) as usize || src_w == 0 || src_h == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity((dst_w * dst_h * 4) as usize);
+    for y in 0..dst_h {
+        let sy = ((y as u64 * src_h as u64) / dst_h as u64).min(src_h as u64 - 1) as u32;
+        for x in 0..dst_w {
+            let sx = ((x as u64 * src_w as u64) / dst_w as u64).min(src_w as u64 - 1) as u32;
+            let i = ((sy * src_w + sx) as usize) * 4;
+            let r = klipp_color::transfer::linear_to_srgb(src[i].clamp(0.0, 1.0));
+            let g = klipp_color::transfer::linear_to_srgb(src[i + 1].clamp(0.0, 1.0));
+            let b = klipp_color::transfer::linear_to_srgb(src[i + 2].clamp(0.0, 1.0));
+            let a = src[i + 3].clamp(0.0, 1.0);
+            out.push((r * 255.0) as u8);
+            out.push((g * 255.0) as u8);
+            out.push((b * 255.0) as u8);
+            out.push((a * 255.0) as u8);
+        }
+    }
+    out
+}
+
 fn overlay_channel(base: f32, top: f32) -> f32 {
     if base < 0.5 { 2.0 * base * top }
     else { 1.0 - 2.0 * (1.0 - base) * (1.0 - top) }

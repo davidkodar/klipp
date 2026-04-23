@@ -831,6 +831,22 @@ pub struct AppState {
     /// past the compute step.
     pub color_match_reference: Option<(Vec<u8>, u32, u32)>,
 
+    /// Per-node output thumbnails for the V2 canvas, snapshotted
+    /// from `FrameBuffer::node_thumbs` on each tick. Sourced by the
+    /// engine on paused/post-seek re-grades when a non-empty
+    /// `SetVisibleNodeThumbs` list is active. Rebuilt lazily in
+    /// `update()` only when the engine's `node_thumbs_gen` advances.
+    pub node_thumbs: std::collections::HashMap<klipp_nodes::NodeId, Vec<u8>>,
+    pub node_thumbs_gen: u64,
+    /// Dedupe key for the last `RenderNodeThumbsFromSource` dispatch —
+    /// `(clip_id, filmstrip_tile_index, playhead_value, grade_hash)`.
+    /// Resending on every repaint would slam the command queue with
+    /// ~60 identical thumbnail re-renders per second. Comparing this
+    /// tuple before sending keeps the engine idle while nothing has
+    /// changed but guarantees a re-render on any meaningful change
+    /// (scroll a frame, grade edit, pick a different clip).
+    pub last_filmstrip_thumb_send: Option<(klipp_core::ClipId, usize, i64, u64)>,
+
     /// Project-level reusable colour grades. Persisted to
     /// `.klipp/looks/{id}.json` on save, loaded back into this Vec
     /// on project open.
@@ -2100,6 +2116,9 @@ impl Default for AppState {
             active_grade_still: None,
             grade_still_compare: false,
             color_match_reference: None,
+            node_thumbs: std::collections::HashMap::new(),
+            node_thumbs_gen: 0,
+            last_filmstrip_thumb_send: None,
             looks: Vec::new(),
             viewer_overlays: ViewerOverlays::default(),
             frame_count: 0,
