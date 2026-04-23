@@ -107,6 +107,10 @@ fn main() -> Result<()> {
     let (event_tx, event_rx) = crossbeam_channel::unbounded();
 
     let frame_buffer = Arc::new(Mutex::new(FrameBuffer::new(1920, 1080)));
+    // Source viewer gets its own frame buffer so its decoded frames
+    // never collide with the program viewer's. Same struct, second
+    // instance — UI's existing texture-upload code handles both.
+    let source_frame_buffer = Arc::new(Mutex::new(FrameBuffer::new(1920, 1080)));
     let sequence = Arc::new(RwLock::new(Sequence::new_default()));
     let media_pool = Arc::new(RwLock::new(MediaPool::new()));
 
@@ -132,6 +136,7 @@ fn main() -> Result<()> {
             cmd_rx,
             event_tx,
             frame_buffer.clone(),
+            source_frame_buffer.clone(),
             sequence.clone(),
             media_pool.clone(),
             Box::new(|| {}),
@@ -274,6 +279,7 @@ fn main() -> Result<()> {
 
     let cmd_tx_clone = cmd_tx.clone();
     let fb_clone = frame_buffer.clone();
+    let source_fb_clone = source_frame_buffer.clone();
     let seq_clone = sequence.clone();
     let pool_clone = media_pool.clone();
     let skim_clone = skim_consumer;
@@ -326,6 +332,7 @@ fn main() -> Result<()> {
                 cmd_tx_clone,
                 event_rx,
                 fb_clone,
+                source_fb_clone,
                 seq_clone,
                 pool_clone,
                 skim_clone,

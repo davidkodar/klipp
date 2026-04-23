@@ -1411,12 +1411,20 @@ impl ViewerPanel {
         let nav_hover = egui::Color32::from_rgb(55, 55, 65);
         let disabled_fg = egui::Color32::from_rgb(80, 80, 90);
 
+        // Helper closure: every push from this playbar goes through
+        // viewer-routing so the source-side playbar drives the source
+        // engine instead of the timeline. Without this, clicking Play
+        // in the source viewer's chrome would emit `AppCommand::Play`
+        // and start timeline playback — exactly the bug we hit.
+        use crate::panels::transport::route_command_for_viewer;
+        let route = |c: AppCommand| route_command_for_viewer(c, viewer_kind);
+
         // Skip back
-        x += self.playbar_nav_btn(ui, Icon::SkipBack, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Go to start (Home)", cmds, Some(AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate()))));
+        x += self.playbar_nav_btn(ui, Icon::SkipBack, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Go to start (Home)", cmds, Some(route(AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate())))));
         // Rewind
-        x += self.playbar_nav_btn(ui, Icon::Rewind, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Rewind (J)", cmds, Some(AppCommand::SeekRelative(-(fps_val * 10.0) as i64)));
+        x += self.playbar_nav_btn(ui, Icon::Rewind, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Rewind (J)", cmds, Some(route(AppCommand::SeekRelative(-(fps_val * 10.0) as i64))));
         // Step back
-        x += self.playbar_nav_btn(ui, Icon::CaretLeft, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Step back 1 frame", cmds, Some(AppCommand::SeekRelative(-1)));
+        x += self.playbar_nav_btn(ui, Icon::CaretLeft, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Step back 1 frame", cmds, Some(route(AppCommand::SeekRelative(-1))));
 
         // Play / Pause (larger, amber)
         {
@@ -1425,7 +1433,14 @@ impl ViewerPanel {
                 egui::vec2(play_size, play_size),
             );
             let resp = ui.allocate_rect(play_rect, if enabled { egui::Sense::click() } else { egui::Sense::hover() });
-            let is_playing = state.playback == PlaybackState::Playing;
+            // Read the playing state of *this viewer* so the icon
+            // accurately reflects what clicking will do. Without this
+            // the source playbar would always show the timeline's
+            // play state.
+            let is_playing = match viewer_kind {
+                ViewerMode::Source => state.source_playback == PlaybackState::Playing,
+                ViewerMode::Program => state.playback == PlaybackState::Playing,
+            };
             let bg = if enabled { theme.accent } else { egui::Color32::from_rgb(80, 60, 20) };
             ui.painter().rect_filled(play_rect, play_size / 2.0, bg);
             let play_icon = if is_playing { Icon::Pause } else { Icon::Play };
@@ -1434,19 +1449,19 @@ impl ViewerPanel {
             let clicked = resp.clicked();
             resp.on_hover_text("Play / Pause (Space)");
             if clicked && enabled {
-                if is_playing { cmds.push(AppCommand::Pause); } else { cmds.push(AppCommand::Play); }
+                if is_playing { cmds.push(route(AppCommand::Pause)); } else { cmds.push(route(AppCommand::Play)); }
             }
         }
         x += play_size + btn_spacing;
 
         // Step forward
-        x += self.playbar_nav_btn(ui, Icon::CaretRight, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Step forward 1 frame", cmds, Some(AppCommand::SeekRelative(1)));
+        x += self.playbar_nav_btn(ui, Icon::CaretRight, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Step forward 1 frame", cmds, Some(route(AppCommand::SeekRelative(1))));
         // Fast forward
-        x += self.playbar_nav_btn(ui, Icon::FastForward, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Fast forward (L)", cmds, Some(AppCommand::SeekRelative((fps_val * 10.0) as i64)));
+        x += self.playbar_nav_btn(ui, Icon::FastForward, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Fast forward (L)", cmds, Some(route(AppCommand::SeekRelative((fps_val * 10.0) as i64))));
         // Skip forward
         {
             let dur = state.sequence_duration();
-            self.playbar_nav_btn(ui, Icon::SkipForward, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Go to end (End)", cmds, Some(AppCommand::SeekTo(dur)));
+            self.playbar_nav_btn(ui, Icon::SkipForward, x, cy, btn_size, enabled, nav_fg, nav_bg, nav_hover, disabled_fg, "Go to end (End)", cmds, Some(route(AppCommand::SeekTo(dur))));
         }
 
         // ── Right side controls ──
@@ -2713,7 +2728,24 @@ impl ViewerPanel {
             .source_video_texture
             .as_ref()
             .and_then(|(mid, tex)| (Some(*mid) == state.source_media_id).then_some(tex));
-        let active_tex = state.browser_skim_texture.as_ref().or(committed_tex);
+        let live_tex = state.source_live_texture.as_ref();
+        // Priority depends on whether the source viewer is playing:
+        //   - Playing  → engine-decoded live frame wins (smooth video).
+        //   - Paused   → legacy thumbnail decoder wins (fast scrubs).
+        //                The engine's 500ms-per-seek decode would
+        //                bottleneck a drag-scrub against a 4K source;
+        //                the legacy `generate_thumbnail_at_size` path
+        //                returns small frames in tens of ms, which is
+        //                what makes scrubbing feel instant. Engine
+        //                seeks still run in the background and update
+        //                `source_live_texture` for the eventual Play.
+        // Browser skim hover overlay always wins on top.
+        let playback_tex = if state.source_playback == klipp_engine::PlaybackState::Playing {
+            live_tex.or(committed_tex)
+        } else {
+            committed_tex.or(live_tex)
+        };
+        let active_tex = state.browser_skim_texture.as_ref().or(playback_tex);
         if let Some(tex) = active_tex {
             let tex_size = tex.size_vec2();
             if tex_size.x > 0.0 && tex_size.y > 0.0 {

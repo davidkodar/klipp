@@ -1,7 +1,40 @@
 use crate::icons::Icon;
 use crate::state::AppState;
-use klipp_core::{AppCommand, Fps, RationalTime};
+use klipp_core::{AppCommand, Fps, RationalTime, ViewerMode};
 use klipp_engine::PlaybackState;
+
+/// Re-route a timeline-targeted transport command to the source
+/// viewer when `mode == Source`. Lets transport callers stay source-
+/// agnostic: push the timeline command, wrap through this function,
+/// and the right variant lands in the command queue. Commands with
+/// no source equivalent (multi-clip edits, timeline-specific ops)
+/// pass through unchanged — the source viewer just ignores them.
+pub fn route_command_for_viewer(cmd: AppCommand, mode: ViewerMode) -> AppCommand {
+    if mode == ViewerMode::Program {
+        return cmd;
+    }
+    match cmd {
+        AppCommand::Play => AppCommand::PlaySource,
+        AppCommand::Pause => AppCommand::PauseSource,
+        AppCommand::SeekRelative(frames) => AppCommand::StepSource(frames),
+        AppCommand::SeekTo(tc) => AppCommand::SeekSource(tc),
+        // SetSpeed has no source equivalent (source plays at 1× only).
+        // Drop it by returning a no-op — we use PauseSource as the
+        // harmless noop since the engine ignores it when already
+        // paused. Cleaner than adding a NoOp variant.
+        AppCommand::SetSpeed(_) => AppCommand::PauseSource,
+        other => other,
+    }
+}
+
+/// Convenience wrapper: route based on the user's currently-focused
+/// viewer (`state.viewer_mode`). Used by the global transport bar
+/// and keyboard handlers that don't already know which viewer they
+/// belong to. Per-viewer playbars should use `route_command_for_viewer`
+/// directly with their own `viewer_kind`.
+fn route_for_viewer(cmd: AppCommand, state: &AppState) -> AppCommand {
+    route_command_for_viewer(cmd, state.viewer_mode)
+}
 
 pub struct TransportBar;
 
@@ -35,7 +68,10 @@ impl TransportBar {
                 .on_hover_text("Go to start")
                 .clicked()
             {
-                cmds.push(AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate())));
+                cmds.push(route_for_viewer(
+                    AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate())),
+                    state,
+                ));
             }
 
             // -10s
@@ -44,7 +80,7 @@ impl TransportBar {
                 .on_hover_text("-10s")
                 .clicked()
             {
-                cmds.push(AppCommand::SeekRelative(-(fps_val * 10.0) as i64));
+                cmds.push(route_for_viewer(AppCommand::SeekRelative(-(fps_val * 10.0) as i64), state));
             }
 
             // Step back (one frame)
@@ -53,11 +89,18 @@ impl TransportBar {
                 .on_hover_text("Step back 1 frame")
                 .clicked()
             {
-                cmds.push(AppCommand::SeekRelative(-1));
+                cmds.push(route_for_viewer(AppCommand::SeekRelative(-1), state));
             }
 
-            // Play / Pause
-            let play_icon = if state.playback == PlaybackState::Playing {
+            // Play / Pause — icon reflects whichever viewer currently
+            // has focus so the button accurately advertises what
+            // clicking it will do.
+            let focus_playback_for_icon = if state.viewer_mode == ViewerMode::Source {
+                state.source_playback
+            } else {
+                state.playback
+            };
+            let play_icon = if focus_playback_for_icon == PlaybackState::Playing {
                 Icon::Pause
             } else {
                 Icon::Play
@@ -70,10 +113,15 @@ impl TransportBar {
                 .on_hover_text("Play/Pause")
                 .clicked()
             {
-                if state.playback == PlaybackState::Playing {
-                    cmds.push(AppCommand::Pause);
+                let focus_playback = if state.viewer_mode == ViewerMode::Source {
+                    state.source_playback
                 } else {
-                    cmds.push(AppCommand::Play);
+                    state.playback
+                };
+                if focus_playback == PlaybackState::Playing {
+                    cmds.push(route_for_viewer(AppCommand::Pause, state));
+                } else {
+                    cmds.push(route_for_viewer(AppCommand::Play, state));
                 }
             }
 
@@ -83,7 +131,7 @@ impl TransportBar {
                 .on_hover_text("Step forward 1 frame")
                 .clicked()
             {
-                cmds.push(AppCommand::SeekRelative(1));
+                cmds.push(route_for_viewer(AppCommand::SeekRelative(1), state));
             }
 
             // Record button (#60).
@@ -145,7 +193,7 @@ impl TransportBar {
                 .on_hover_text("+10s")
                 .clicked()
             {
-                cmds.push(AppCommand::SeekRelative((fps_val * 10.0) as i64));
+                cmds.push(route_for_viewer(AppCommand::SeekRelative((fps_val * 10.0) as i64), state));
             }
 
             // Go to end
@@ -155,7 +203,7 @@ impl TransportBar {
                 .clicked()
             {
                 let dur = state.sequence_duration();
-                cmds.push(AppCommand::SeekTo(dur));
+                cmds.push(route_for_viewer(AppCommand::SeekTo(dur), state));
             }
 
             // Loop button
@@ -431,35 +479,45 @@ impl TransportBar {
             // Spacebar is gated on this flag; J/K/L, arrows, and other
             // transport keys work regardless of browser focus so the user
             // doesn't lose audio during file browsing.
+            // Which transport state the user's eyes are on — the
+            // focused viewer. Space / JKL decisions (toggle play, set
+            // speed) read from here so the source viewer doesn't
+            // react to the timeline's state and vice versa.
+            let focus_playback = if state.viewer_mode == ViewerMode::Source {
+                state.source_playback
+            } else {
+                state.playback
+            };
             if !text_editing && !state.files_panel_focused && i.key_pressed(egui::Key::Space) {
-                if state.playback == PlaybackState::Playing {
-                    cmds.push(AppCommand::Pause);
+                if focus_playback == PlaybackState::Playing {
+                    cmds.push(route_for_viewer(AppCommand::Pause, state));
                 } else {
-                    cmds.push(AppCommand::Play);
+                    cmds.push(route_for_viewer(AppCommand::Play, state));
                 }
             }
             if !text_editing && i.key_pressed(egui::Key::ArrowLeft) && !i.modifiers.alt {
                 if i.modifiers.shift {
-                    // Shift+Left = 1 second back
-                    cmds.push(AppCommand::SeekRelative(-fps_rate));
+                    cmds.push(route_for_viewer(AppCommand::SeekRelative(-fps_rate), state));
                 } else {
-                    cmds.push(AppCommand::SeekRelative(-1));
+                    cmds.push(route_for_viewer(AppCommand::SeekRelative(-1), state));
                 }
             }
             if !text_editing && i.key_pressed(egui::Key::ArrowRight) && !i.modifiers.alt {
                 if i.modifiers.shift {
-                    // Shift+Right = 1 second forward
-                    cmds.push(AppCommand::SeekRelative(fps_rate));
+                    cmds.push(route_for_viewer(AppCommand::SeekRelative(fps_rate), state));
                 } else {
-                    cmds.push(AppCommand::SeekRelative(1));
+                    cmds.push(route_for_viewer(AppCommand::SeekRelative(1), state));
                 }
             }
             if !text_editing && i.key_pressed(egui::Key::Home) {
-                cmds.push(AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate())));
+                cmds.push(route_for_viewer(
+                    AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate())),
+                    state,
+                ));
             }
             if !text_editing && i.key_pressed(egui::Key::End) {
                 let dur = state.sequence_duration();
-                cmds.push(AppCommand::SeekTo(dur));
+                cmds.push(route_for_viewer(AppCommand::SeekTo(dur), state));
             }
             // J — reverse/faster reverse
             if !text_editing && i.key_pressed(egui::Key::J) {
@@ -468,15 +526,15 @@ impl TransportBar {
                     else if s == -2.0 { -4.0 }
                     else if s == -4.0 { -8.0 }
                     else { -2.0 };
-                cmds.push(AppCommand::SetSpeed(new_speed));
-                if state.playback != PlaybackState::Playing {
-                    cmds.push(AppCommand::Play);
+                cmds.push(route_for_viewer(AppCommand::SetSpeed(new_speed), state));
+                if focus_playback != PlaybackState::Playing {
+                    cmds.push(route_for_viewer(AppCommand::Play, state));
                 }
             }
             // K — pause, reset speed
             if !text_editing && i.key_pressed(egui::Key::K) {
-                cmds.push(AppCommand::SetSpeed(1.0));
-                cmds.push(AppCommand::Pause);
+                cmds.push(route_for_viewer(AppCommand::SetSpeed(1.0), state));
+                cmds.push(route_for_viewer(AppCommand::Pause, state));
             }
             // L — forward/faster forward
             if !text_editing && i.key_pressed(egui::Key::L) {
@@ -485,9 +543,9 @@ impl TransportBar {
                     else if s == 2.0 { 4.0 }
                     else if s == 4.0 { 8.0 }
                     else { 2.0 };
-                cmds.push(AppCommand::SetSpeed(new_speed));
-                if state.playback != PlaybackState::Playing {
-                    cmds.push(AppCommand::Play);
+                cmds.push(route_for_viewer(AppCommand::SetSpeed(new_speed), state));
+                if focus_playback != PlaybackState::Playing {
+                    cmds.push(route_for_viewer(AppCommand::Play, state));
                 }
             }
         });

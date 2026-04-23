@@ -1348,6 +1348,35 @@ pub enum AppCommand {
     SetActiveGradeStill { index: Option<usize> },
     /// Toggle split-view comparison with the active grade still.
     ToggleGradeStillCompare,
+
+    // ── Source Viewer playback ─────────────────────────────────────
+    /// Bind a media file to the source viewer. Opens a persistent
+    /// `VideoDecoder` (and audio source if the file has audio) so the
+    /// transport can drive real playback without re-decoding per seek.
+    /// `path` is the raw media file; `media_id` is the MediaPool id —
+    /// engine uses the path directly to avoid a MediaPool lookup on
+    /// the engine thread. `source_rotation` is media-metadata rotation
+    /// (0 / 90 / 180 / 270) so portrait sources display upright.
+    SetSourceMedia {
+        media_id: MediaId,
+        path: std::path::PathBuf,
+        source_rotation: i32,
+    },
+    /// Begin source-viewer playback. Auto-pauses the timeline so the
+    /// audio mixer doesn't fight: at most one viewer is the active
+    /// audio owner at any moment.
+    PlaySource,
+    /// Pause source-viewer playback. Decoder stays open; Play resumes
+    /// from the current source playhead.
+    PauseSource,
+    /// Step the source viewer forward (positive) or backward (negative)
+    /// by `frames` source frames. Mirrors timeline `SeekRelative` for
+    /// J/K/L → arrow-key parity in the source viewer.
+    StepSource(i64),
+    /// Tear down the source viewer's decoder and audio. Frees the
+    /// NVDEC slot and releases the audio source from the mixer. Used
+    /// when the user closes the source viewer or loads a new clip.
+    StopSource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1452,6 +1481,13 @@ pub enum AppEvent {
     PlaybackStopped,
     PlayheadMoved(Timecode),
     LoopedBack,
+
+    // Source viewer playback state — separate so the UI can keep its
+    // `state.source_playback` field in sync without conflating with
+    // the timeline transport.
+    SourcePlaybackStarted,
+    SourcePlaybackPaused,
+    SourcePlayheadMoved(f64),
 
     // Media. T-4: the payload is carried by a separate struct behind
     // a Box so the AppEvent enum stays small — 25 fields (8× Option<String>)

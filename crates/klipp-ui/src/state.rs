@@ -461,6 +461,22 @@ pub struct AppState {
     /// previous load is dropped the moment the user switches clips,
     /// rather than briefly flashing the old image.
     pub source_video_texture: Option<(MediaId, egui::TextureHandle)>,
+    /// Source viewer's transport state — kept in sync with the
+    /// engine's `source_state` via `SourcePlaybackStarted/Paused`
+    /// events. Read by transport key handlers + on-screen play
+    /// button to decide whether Space should toggle to Play or Pause.
+    pub source_playback: PlaybackState,
+    /// Live source-viewer texture sourced from `source_frame_buffer`.
+    /// Engine writes decoded source frames there during playback /
+    /// seek; the source viewer panel uploads from it via the same
+    /// defer-drop pattern as the program viewer. Replaces / wins over
+    /// `source_video_texture` (the cold-start thumbnail) once the
+    /// engine produces its first frame.
+    pub source_live_texture: Option<egui::TextureHandle>,
+    /// Generation last uploaded into `source_live_texture`. Compared
+    /// against `source_frame_buffer.generation` to decide when to re-
+    /// upload (cheap one-int compare per render frame).
+    pub source_live_texture_gen: u64,
 
     // Media browser multi-select
     pub selected_media_ids: std::collections::HashSet<MediaId>,
@@ -1974,6 +1990,9 @@ impl Default for AppState {
             source_media_id: None,
             source_playhead: Timecode::zero(),
             source_video_texture: None,
+            source_playback: PlaybackState::Idle,
+            source_live_texture: None,
+            source_live_texture_gen: 0,
             selected_media_ids: std::collections::HashSet::new(),
             last_clicked_media_id: None,
             use_proxies: true,

@@ -774,6 +774,53 @@ pub struct PlaybackEngine {
     /// pre-seek frame until the user pressed an arrow key — that path
     /// pops from the now-filled queue immediately.
     pending_paused_refresh: bool,
+
+    // ── Source Viewer playback (separate from timeline) ───────────
+    /// Persistent decoder for whatever media the user has loaded into
+    /// the source viewer. Lives independently of `v1_decoder` (which
+    /// belongs to the timeline) so source playback doesn't disturb the
+    /// program viewer's state. `None` until `SetSourceMedia` arrives.
+    source_decoder: Option<VideoDecoder>,
+    /// Path of the file currently bound to the source viewer. Compared
+    /// on incoming `SetSourceMedia` so re-binding the same file is a
+    /// cheap no-op (instead of re-spawning the decoder thread).
+    source_path: Option<PathBuf>,
+    /// Source-viewer playback state — matches the timeline's
+    /// `PlaybackState` semantics but is independent of it. The
+    /// mutual-exclusion rule (one viewer at a time owns audio) is
+    /// enforced in the Play / PlaySource handlers, not here.
+    source_state: PlaybackState,
+    /// Current source-viewer playhead in source-time seconds (the
+    /// file's own timeline, not the project sequence). Advanced by
+    /// wall-clock during playback; jumped on `SeekSource` / `StepSource`.
+    source_playhead_secs: f64,
+    /// Native frame rate of the bound source media — used to convert
+    /// `StepSource` frame counts to seconds and to pace the playhead
+    /// advance during playback.
+    source_fps: f64,
+    /// Wall-clock + source-time anchor for the lightweight clock that
+    /// drives the source playhead during playback. On Play we capture
+    /// `(now, source_playhead_secs)`; per-tick we recompute the
+    /// playhead as `anchor_secs + (now - anchor_wall) * 1.0`. Cleaner
+    /// than dragging the timeline `MasterClock` into source territory.
+    source_clock_anchor_wall: std::time::Instant,
+    source_clock_anchor_secs: f64,
+    /// Audio source for the bound media — mixed via the existing
+    /// `mixer` on a dedicated source-viewer track. Muted whenever
+    /// `source_state != Playing` (and the timeline pre-mutes its own
+    /// tracks while source plays). `None` for files without audio.
+    source_audio_source: Option<AudioSource>,
+    /// Source-viewer frame buffer — the source viewer panel paints
+    /// from this (separate from the program viewer's
+    /// `frame_buffer`). Same `FrameBuffer` struct, just a second
+    /// instance with its own pending/data buffers and generation
+    /// counter so the two viewers' upload paths never collide.
+    source_frame_buffer: SharedFrameBuffer,
+    /// Mixer track-index reserved for source-viewer audio. Allocated
+    /// at engine init (one slot past whatever the timeline mixer
+    /// reserves) so SetTrackVolume / mute toggles don't accidentally
+    /// touch a real timeline track.
+    source_mixer_track_index: usize,
     /// Which scope mode to render on GPU (0=waveform, 1=parade, 2=vectorscope, 3=histogram).
     scope_render_mode: u8,
     /// Wall-clock timestamp of the last GPU scope render. Used to
@@ -944,6 +991,7 @@ impl PlaybackEngine {
         cmd_rx: Receiver<AppCommand>,
         event_tx: Sender<AppEvent>,
         frame_buffer: SharedFrameBuffer,
+        source_frame_buffer: SharedFrameBuffer,
         sequence: Arc<RwLock<Sequence>>,
         media_pool: Arc<RwLock<MediaPool>>,
         repaint_cb: Box<dyn Fn() + Send>,
@@ -1103,6 +1151,22 @@ impl PlaybackEngine {
             visible_node_thumbs: std::collections::HashSet::new(),
             thumb_capture_suspended: false,
             pending_paused_refresh: false,
+            source_decoder: None,
+            source_path: None,
+            source_state: PlaybackState::Idle,
+            source_playhead_secs: 0.0,
+            source_fps: 24.0,
+            source_clock_anchor_wall: std::time::Instant::now(),
+            source_clock_anchor_secs: 0.0,
+            source_audio_source: None,
+            source_frame_buffer,
+            // Reserve a track index past anything the timeline mixer
+            // is likely to use. Picked high enough that the user
+            // adding ~ all the audio tracks they reasonably will
+            // (Klipp's UI tops out around 16) won't collide. The
+            // mixer grows on demand via `ensure_tracks` so this slot
+            // gets allocated lazily on first source-audio attach.
+            source_mixer_track_index: 64,
             scope_render_mode: 0,
             last_scope_render: std::time::Instant::now() - std::time::Duration::from_secs(1),
             matte_preview_node: None,
@@ -1268,7 +1332,9 @@ impl PlaybackEngine {
             // benefit.
             // Paused: 16 ms = 60 Hz loop rate, cheap enough to still
             // respond to user commands within one frame.
-            let timeout = if self.state == PlaybackState::Playing {
+            let timeout = if self.state == PlaybackState::Playing
+                || self.source_state == PlaybackState::Playing
+            {
                 Duration::from_millis(8)
             } else {
                 Duration::from_millis(16)
@@ -1313,6 +1379,17 @@ impl PlaybackEngine {
             // call every tick.
             mark_stage(EngineStage::ParamDrain);
             let applied = self.drain_param_changes();
+
+            // Source-viewer playback runs in parallel with the
+            // timeline state machine — this is the only site that
+            // pops frames off the source decoder during playback. The
+            // mutual-exclusion rule in `play_source` / `Play`
+            // guarantees only one viewer is in the Playing state at
+            // any moment, so this is at most one of the two paths
+            // doing real per-tick work.
+            if self.source_state == PlaybackState::Playing {
+                self.update_source_playback();
+            }
 
             if self.state == PlaybackState::Playing {
                 // Playback already produces fresh frames at full res
@@ -1474,6 +1551,15 @@ impl PlaybackEngine {
 
             AppCommand::Play => {
                 debug!("Play command received, state={:?}", self.state);
+                // Mutual-exclusion: stop the source viewer if it owns
+                // audio right now, then hand audio back to the
+                // timeline tracks. Without this both viewers would
+                // try to feed the cpal stream and the source's mute
+                // toggle would stay active.
+                if self.source_state == PlaybackState::Playing {
+                    self.pause_source();
+                }
+                self.set_source_audio_owner(false);
                 if self.state == PlaybackState::Paused
                     && (self.v1_decoder.is_some() || !self.audio_sources.is_empty())
                 {
@@ -1949,6 +2035,25 @@ impl PlaybackEngine {
                 self.render_node_thumbs_from_source(
                     clip_id, playhead, src_rgba, src_w, src_h,
                 );
+            }
+
+            AppCommand::SetSourceMedia { path, source_rotation, .. } => {
+                self.set_source_media(path, source_rotation);
+            }
+            AppCommand::PlaySource => {
+                self.play_source();
+            }
+            AppCommand::PauseSource => {
+                self.pause_source();
+            }
+            AppCommand::SeekSource(tc) => {
+                self.seek_source(tc.to_secs_f64());
+            }
+            AppCommand::StepSource(frames) => {
+                self.step_source(frames);
+            }
+            AppCommand::StopSource => {
+                self.stop_source();
             }
 
             AppCommand::SequenceUpdated => {
@@ -7879,6 +7984,349 @@ impl PlaybackEngine {
             }
         }
     }
+
+    // ── Source Viewer playback ─────────────────────────────────────
+    //
+    // The source viewer is the second viewer of an NLE — a colourist
+    // / editor previews unedited media here, marks IN/OUT, then edits
+    // it into the timeline. It's intentionally separate from the
+    // program viewer's state machine: a different decoder, a
+    // different frame buffer, an independent playhead. Audio shares
+    // the existing cpal stream + mixer, on a dedicated mixer track,
+    // and the mutual-exclusion rule below means at most one viewer
+    // owns audio at any moment so the two never fight over the
+    // device.
+
+    /// Bind a media file to the source viewer. Spawns a persistent
+    /// `VideoDecoder` against the file (keeping the decoder open
+    /// across seeks is what makes scrub + playback responsive vs the
+    /// previous one-shot thumbnail decode), opens an audio source if
+    /// the file has audio, and decodes the first frame into the
+    /// source frame buffer so the panel has something to show
+    /// immediately. No-op when the same path is already bound.
+    fn set_source_media(&mut self, path: PathBuf, source_rotation: i32) {
+        if self.source_path.as_ref() == Some(&path) {
+            return;
+        }
+        // Tear down anything currently bound — clean slate.
+        self.stop_source();
+
+        match VideoDecoder::open(&path, source_rotation) {
+            Ok(dec) => {
+                dec.resume();
+                self.source_decoder = Some(dec);
+                self.source_path = Some(path.clone());
+                self.source_state = PlaybackState::Paused;
+                self.source_playhead_secs = 0.0;
+                // Detect FPS from the file via a tiny ffmpeg probe — needed
+                // for `StepSource` and to pace the playback advance. Falls
+                // back to 24 fps on probe failure so a step still moves.
+                self.source_fps = probe_source_fps(&path).unwrap_or(24.0);
+                // Drain one frame to seed the source frame buffer. Same
+                // wait-for-decoder pattern as the timeline's first-frame
+                // grab — gives VAAPI/NVDEC time to warm up.
+                self.grab_one_source_frame_timeout(Duration::from_millis(500));
+                // Open audio (silent attach — `play_source` is what
+                // actually unmutes / resumes).
+                self.open_source_audio(&path, 0.0);
+            }
+            Err(e) => {
+                warn!("Source viewer: failed to open decoder for {path:?}: {e}");
+            }
+        }
+    }
+
+    /// Begin source-viewer playback. Auto-pauses the timeline so the
+    /// audio mixer doesn't have two viewers feeding it simultaneously.
+    /// Resumes the source decoder, anchors the wall-clock to the
+    /// current source playhead, mutes timeline audio, unmutes the
+    /// source audio source.
+    fn play_source(&mut self) {
+        if self.source_decoder.is_none() {
+            return;
+        }
+        // Mutual exclusion: stop the timeline before the source takes
+        // over. `Pause` is a no-op when the timeline isn't playing.
+        if self.state == PlaybackState::Playing {
+            self.handle_command(AppCommand::Pause);
+        }
+        // Mute timeline tracks (don't tear them down — the user might
+        // switch back) and unmute the source track on the mixer.
+        self.set_source_audio_owner(true);
+        // Resume the audio source (it starts paused after open).
+        if let Some(ref src) = self.source_audio_source {
+            src.resume();
+        }
+        // Resume the decoder thread + audio output.
+        if let Some(ref dec) = self.source_decoder {
+            dec.resume();
+        }
+        if let Some(ref aout) = self.audio_output {
+            aout.0.resume();
+        }
+        // Pre-warm: wait briefly for the decoder to queue at least
+        // one frame before returning. After Set/SeekSource the queue
+        // is drained to seed the viewer; without this wait the user
+        // sees a ~100 ms stutter at the start of every Play while
+        // the decoder catches up. 60 ms covers a 4K NVDEC seek+
+        // decode comfortably; we exit early as soon as the first
+        // frame lands so faster sources don't pay the full budget.
+        if let Some(ref dec) = self.source_decoder {
+            let deadline = std::time::Instant::now() + Duration::from_millis(60);
+            while std::time::Instant::now() < deadline {
+                let n = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).len();
+                if n >= 1 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+        // Anchor the wall-clock AFTER the pre-warm so the first frame
+        // pops at t=0 of playback instead of "100 ms behind".
+        self.source_clock_anchor_wall = std::time::Instant::now();
+        self.source_clock_anchor_secs = self.source_playhead_secs;
+        self.source_state = PlaybackState::Playing;
+        let _ = self.event_tx.send(AppEvent::SourcePlaybackStarted);
+        (self.repaint_cb)();
+    }
+
+    /// Pause source-viewer playback. Decoder and audio source stay
+    /// open so resuming is instant — only state + clock anchor flip.
+    fn pause_source(&mut self) {
+        if self.source_state != PlaybackState::Playing {
+            return;
+        }
+        if let Some(ref dec) = self.source_decoder {
+            dec.pause();
+        }
+        if let Some(ref src) = self.source_audio_source {
+            src.pause();
+        }
+        // Don't touch cpal `audio_output` — it might still be feeding
+        // a chirp or a future timeline play. Just mute the source
+        // track so its (now stale) consumer doesn't bleed silence.
+        self.source_state = PlaybackState::Paused;
+        let _ = self.event_tx.send(AppEvent::SourcePlaybackPaused);
+        (self.repaint_cb)();
+    }
+
+    /// Seek the source viewer to `secs` (source-time, not timeline).
+    /// Pauses the decoder briefly, flushes the queue, seeks the audio
+    /// source if present, and decodes one frame so the viewer paints
+    /// the new position immediately.
+    fn seek_source(&mut self, secs: f64) {
+        if self.source_decoder.is_none() {
+            return;
+        }
+        let secs = secs.max(0.0);
+        let was_playing = self.source_state == PlaybackState::Playing;
+        if let Some(ref dec) = self.source_decoder {
+            dec.seek(secs);
+            dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
+            dec.resume();
+        }
+        if let Some(ref src) = self.source_audio_source {
+            src.seek(secs);
+        }
+        self.source_playhead_secs = secs;
+        // Decode one frame so the viewer doesn't show the pre-seek
+        // image while waiting for the next playback tick.
+        self.grab_one_source_frame_timeout(Duration::from_millis(500));
+        if was_playing {
+            // Re-anchor the clock at the new playhead so playback
+            // continues from here.
+            self.source_clock_anchor_wall = std::time::Instant::now();
+            self.source_clock_anchor_secs = self.source_playhead_secs;
+            if let Some(ref dec) = self.source_decoder {
+                dec.resume();
+            }
+        } else if let Some(ref dec) = self.source_decoder {
+            dec.pause();
+        }
+        let _ = self.event_tx.send(AppEvent::SourcePlayheadMoved(
+            self.source_playhead_secs,
+        ));
+        (self.repaint_cb)();
+    }
+
+    /// Step the source playhead by `frames` source frames (negative
+    /// for backward). Maps to a `seek_source` at the new time — the
+    /// existing seek-then-grab path already produces the right frame.
+    fn step_source(&mut self, frames: i64) {
+        if self.source_fps <= 0.0 {
+            return;
+        }
+        let dt = frames as f64 / self.source_fps;
+        let target = (self.source_playhead_secs + dt).max(0.0);
+        self.seek_source(target);
+    }
+
+    /// Tear down the source viewer: stop decoder thread, drop audio
+    /// source, mute the source mixer track, blank the source frame
+    /// buffer. Safe to call on an already-stopped viewer.
+    fn stop_source(&mut self) {
+        if let Some(mut dec) = self.source_decoder.take() {
+            dec.stop_detached();
+        }
+        if let Some(mut src) = self.source_audio_source.take() {
+            src.stop_detached();
+        }
+        // Make sure the mixer's source track is silent regardless of
+        // who owned audio last.
+        if let Ok(mut m) = self.mixer.lock() {
+            m.ensure_tracks(self.source_mixer_track_index + 1);
+            m.tracks[self.source_mixer_track_index].muted = true;
+        }
+        self.source_path = None;
+        self.source_state = PlaybackState::Idle;
+        self.source_playhead_secs = 0.0;
+    }
+
+    /// Per-tick source-viewer playback loop. Mirrors the program
+    /// viewer's `update_playback` but lives outside the timeline
+    /// state machine — runs whenever `source_state == Playing`,
+    /// independent of `self.state`. Pops any frame the decoder has
+    /// produced, advances the playhead off the wall-clock anchor,
+    /// writes the new frame to `source_frame_buffer`. EOF stops
+    /// playback (caller can press Play to restart from 0).
+    fn update_source_playback(&mut self) {
+        if self.source_state != PlaybackState::Playing {
+            return;
+        }
+        let Some(dec) = self.source_decoder.as_ref() else { return };
+        // Pop one frame at a time so the playhead moves at video rate
+        // — popping all queued frames per tick would burn through the
+        // buffer in a few ms and stall on EOF.
+        let frame = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop();
+        let Some(frame) = frame else { return };
+        if frame.is_eof {
+            // End of file — pause cleanly so the next Play restarts
+            // playback from the beginning (handled in play_source by
+            // resetting the clock anchor; for now we just pause).
+            self.pause_source();
+            return;
+        }
+        let frame_pts = frame.pts_secs();
+        let (w, h) = (frame.width, frame.height);
+        // Linear f32 → sRGB u8 for the frame buffer (no grading on
+        // the source viewer — this is the raw media).
+        let rgba_u8 = linear_rgba_to_u8(&frame.data);
+        {
+            let mut fb = self.source_frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            fb.write_frame(rgba_u8, w, h);
+        }
+        // Advance the source playhead. The wall-clock anchor is the
+        // ground truth — frame PTS is only used to detect drift
+        // (logged for debugging in update_playback's equivalent; here
+        // we keep it minimal). Letting wall-time drive avoids the
+        // playhead lurching when the decoder produces a burst of
+        // frames after a seek.
+        let elapsed = self.source_clock_anchor_wall.elapsed().as_secs_f64();
+        self.source_playhead_secs = self.source_clock_anchor_secs + elapsed;
+        // Sanity clamp to actual frame PTS if we're more than half a
+        // frame ahead — keeps display + clock from desyncing on
+        // long-running playback.
+        let half_frame = if self.source_fps > 0.0 { 0.5 / self.source_fps } else { 0.02 };
+        if (self.source_playhead_secs - frame_pts).abs() > 1.0 {
+            self.source_clock_anchor_wall = std::time::Instant::now();
+            self.source_clock_anchor_secs = frame_pts;
+            self.source_playhead_secs = frame_pts;
+        } else if self.source_playhead_secs > frame_pts + half_frame {
+            self.source_playhead_secs = frame_pts;
+        }
+        let _ = self.event_tx.send(AppEvent::FrameReady);
+        let _ = self.event_tx.send(AppEvent::SourcePlayheadMoved(
+            self.source_playhead_secs,
+        ));
+        (self.repaint_cb)();
+    }
+
+    /// Wait up to `timeout` for the source decoder to produce a
+    /// frame, then post-process it into the source frame buffer.
+    /// Used by `set_source_media` and `seek_source` to seed the
+    /// viewer with a real frame instead of waiting for the next
+    /// playback tick.
+    fn grab_one_source_frame_timeout(&mut self, timeout: Duration) {
+        let Some(dec) = self.source_decoder.as_ref() else { return };
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            let frame = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop();
+            if let Some(frame) = frame {
+                if frame.is_eof { return; }
+                let (w, h) = (frame.width, frame.height);
+                let rgba_u8 = linear_rgba_to_u8(&frame.data);
+                {
+                    let mut fb = self.source_frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                    fb.write_frame(rgba_u8, w, h);
+                }
+                self.source_playhead_secs = frame.pts_secs();
+                let _ = self.event_tx.send(AppEvent::FrameReady);
+                (self.repaint_cb)();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Open an `AudioSource` for the source viewer's bound media and
+    /// register it on the dedicated mixer track. Reuses
+    /// `ensure_mix_pipeline` so the cpal stream stays shared with the
+    /// timeline. The new source starts paused — `play_source` resumes
+    /// it after flipping the mute state.
+    fn open_source_audio(&mut self, path: &std::path::Path, source_secs: f64) {
+        let track = self.source_mixer_track_index;
+        // Default: PCM cache fast path (only available for media that's been
+        // through audio-conform), then ffmpeg-decoder fallback.
+        match AudioDecoder::open(path, self.cpal_sample_rate, Vec::new()) {
+            Ok((adec, consumer)) => {
+                if source_secs > 0.01 {
+                    adec.seek(source_secs);
+                }
+                self.ensure_mix_pipeline(consumer, track);
+                // Mark the new track muted by default — Play takes care
+                // of unmuting on the actual handoff.
+                if let Ok(mut m) = self.mixer.lock() {
+                    m.ensure_tracks(track + 1);
+                    m.tracks[track].muted = true;
+                }
+                self.source_audio_source = Some(AudioSource::Decoder(adec));
+            }
+            Err(e) => {
+                debug!("Source viewer: no audio for {path:?}: {e}");
+            }
+        }
+    }
+
+    /// Toggle which viewer owns the audio mixer.
+    /// `source_owns = true`: mute every timeline track, unmute the
+    /// source viewer track. `source_owns = false`: inverse.
+    /// The mute is on the mixer (cpal-callback-safe atomics), so the
+    /// switch is instant and glitch-free.
+    fn set_source_audio_owner(&mut self, source_owns: bool) {
+        let Ok(mut m) = self.mixer.lock() else { return };
+        let n = m.tracks.len();
+        for (i, t) in m.tracks.iter_mut().enumerate() {
+            if i == self.source_mixer_track_index {
+                t.muted = !source_owns;
+            } else if i < n {
+                t.muted = source_owns;
+            }
+        }
+    }
+}
+
+/// One-shot ffmpeg probe to read a media file's frame rate. Returns
+/// `None` on any failure (file unreadable, no video stream, zero
+/// denominator) — callers fall back to 24 fps so step / playback keeps
+/// working.
+fn probe_source_fps(path: &std::path::Path) -> Option<f64> {
+    let ictx = ffmpeg_next::format::input(path).ok()?;
+    let stream = ictx.streams().best(ffmpeg_next::media::Type::Video)?;
+    let rate = stream.rate();
+    if rate.denominator() == 0 {
+        return None;
+    }
+    Some(rate.numerator() as f64 / rate.denominator() as f64)
 }
 
 /// Coalesce a batch of commands: collapse consecutive seeks into just the last one.

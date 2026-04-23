@@ -155,6 +155,11 @@ pub struct KlippApp {
     cmd_tx: Sender<AppCommand>,
     event_rx: Receiver<AppEvent>,
     frame_buffer: SharedFrameBuffer,
+    /// Source-viewer frame buffer — engine writes decoded source
+    /// media frames here during source playback / seek; the source
+    /// viewer panel uploads from it via the same defer-drop pattern
+    /// the program viewer uses.
+    pub(crate) source_frame_buffer: SharedFrameBuffer,
     sequence: Arc<RwLock<Sequence>>,
     media_pool_shared: Arc<RwLock<klipp_media::MediaPool>>,
     state: AppState,
@@ -285,6 +290,7 @@ impl KlippApp {
         cmd_tx: Sender<AppCommand>,
         event_rx: Receiver<AppEvent>,
         frame_buffer: SharedFrameBuffer,
+        source_frame_buffer: SharedFrameBuffer,
         sequence: Arc<RwLock<Sequence>>,
         media_pool_shared: Arc<RwLock<klipp_media::MediaPool>>,
         skim_consumer: klipp_engine::audio_output::SkimConsumer,
@@ -361,6 +367,7 @@ impl KlippApp {
             cmd_tx,
             event_rx,
             frame_buffer,
+            source_frame_buffer,
             sequence,
             media_pool_shared,
             state: {
@@ -818,6 +825,16 @@ impl KlippApp {
                 }
                 AppEvent::PlaybackStopped => {
                     self.state.playback = PlaybackState::Stopped;
+                }
+                AppEvent::SourcePlaybackStarted => {
+                    self.state.source_playback = PlaybackState::Playing;
+                }
+                AppEvent::SourcePlaybackPaused => {
+                    self.state.source_playback = PlaybackState::Paused;
+                }
+                AppEvent::SourcePlayheadMoved(secs) => {
+                    let rate = self.state.fps.rate();
+                    self.state.source_playhead = Timecode::from_secs_f64(secs, rate);
                 }
                 AppEvent::LoopedBack => {
                     // Engine looped back — the following PlayheadMoved carries the new position.
@@ -2639,6 +2656,62 @@ impl KlippApp {
         self.state.pending_title_preview_clip = Some(clip_id);
     }
 
+    /// Lift any newly-decoded source frame from `source_frame_buffer`
+    /// into an egui texture for the source viewer panel. Mirrors the
+    /// Program viewer's `upload_frame_to_egui` but stripped to the
+    /// essentials: no scopes, no compare buffers, no defer-drop ring
+    /// (we re-use existing handles via `set` on size match, defer-
+    /// drop only on size change). Steady-state cost: one mutex check
+    /// + one generation compare per frame.
+    fn upload_source_frame_to_egui(&mut self, ctx: &egui::Context) {
+        let (rgba, w, h, gen) = {
+            let mut fb = self.source_frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            // Promote any pending engine write into `data`. `dirty`
+            // gates whether this method actually does work below.
+            fb.swap_pending();
+            if !fb.dirty {
+                return;
+            }
+            let w = fb.width as usize;
+            let h = fb.height as usize;
+            if fb.data.len() != w * h * 4 {
+                fb.dirty = false;
+                return;
+            }
+            fb.dirty = false;
+            (std::mem::take(&mut fb.data), w, h, fb.generation)
+        };
+        // Skip uploads when this generation already landed — guards
+        // against double-pumping when both source and program viewers
+        // dirty in the same frame.
+        if gen == self.state.source_live_texture_gen
+            && self.state.source_live_texture.is_some()
+        {
+            return;
+        }
+        let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
+        let new_size = egui::vec2(w as f32, h as f32);
+        let needs_alloc = match &self.state.source_live_texture {
+            Some(tex) => tex.size_vec2() != new_size,
+            None => true,
+        };
+        if needs_alloc {
+            // Different dimensions: defer-drop the old handle (egui-wgpu
+            // may still have a submit in flight), then allocate fresh.
+            if let Some(old) = self.state.source_live_texture.take() {
+                self.defer_drop_texture(old);
+            }
+            let tex = ctx.load_texture(
+                "source_live", color_image, egui::TextureOptions::LINEAR,
+            );
+            self.state.source_live_texture = Some(tex);
+        } else if let Some(tex) = self.state.source_live_texture.as_mut() {
+            // Same dimensions: in-place data update reuses the GPU texture.
+            tex.set(color_image, egui::TextureOptions::LINEAR);
+        }
+        self.state.source_live_texture_gen = gen;
+    }
+
     /// Upload title overlay texture if pending. Called from update() where ctx is available.
     fn upload_title_overlay(&mut self, ctx: &egui::Context) {
         // Explicit clear request (e.g. scrub passed beyond a title clip).
@@ -3970,6 +4043,27 @@ impl KlippApp {
                             self.defer_drop_texture(old);
                         }
                     }
+                    // Bind the engine's source decoder to this media so the
+                    // transport (Play / J / K / L / Space / arrows) drives
+                    // real playback. The legacy `start_source_frame_decode_at`
+                    // call below stays as the cold-start fallback — it
+                    // produces a thumbnail-style first frame in
+                    // `source_video_texture` immediately while the engine
+                    // decoder warms up. Once the engine starts pushing into
+                    // `source_frame_buffer`, the source viewer paints from
+                    // that and the cached `source_video_texture` falls back
+                    // to a placeholder role.
+                    if let Some(item) = self.state.media_pool.get(media_id) {
+                        if !item.offline && item.path.exists()
+                            && !item.video_codec.is_empty()
+                        {
+                            let _ = self.cmd_tx.send(AppCommand::SetSourceMedia {
+                                media_id: *media_id,
+                                path: item.path.clone(),
+                                source_rotation: item.source_rotation,
+                            });
+                        }
+                    }
                     self.start_source_frame_decode_at(*media_id, 0.0);
                     return true;
                 }
@@ -3987,7 +4081,16 @@ impl KlippApp {
                         secs.max(0.0)
                     };
                     self.state.source_playhead = Timecode::from_secs_f64(clamped_secs, tc.rate);
+                    // Two-track refresh: the legacy thumbnail decoder
+                    // produces a small first-frame texture immediately,
+                    // and we forward the seek to the engine so its
+                    // persistent decoder updates `source_frame_buffer`
+                    // (the path the viewer actually paints from once the
+                    // engine has produced a frame).
                     self.start_source_frame_decode_at(mid, clamped_secs);
+                    let _ = self.cmd_tx.send(AppCommand::SeekSource(
+                        Timecode::from_secs_f64(clamped_secs, tc.rate),
+                    ));
                     return true;
                 }
                 AppCommand::SetSourceInPoint(tc) => {
@@ -17796,6 +17899,7 @@ impl eframe::App for KlippApp {
             }
         }
         self.upload_frame_to_egui(ctx);
+        self.upload_source_frame_to_egui(ctx);
         self.upload_title_overlay(ctx);
         self.recompute_char_positions_if_needed();
         self.poll_effect_thumbnails(ctx);
@@ -17978,7 +18082,9 @@ impl eframe::App for KlippApp {
         // 8 ms budget under load, so asking the UI for 125 Hz just burns
         // CPU waiting for frames that aren't ready. 60 Hz matches the
         // engine's target and halves UI thread work under grade load.
-        if self.state.playback == PlaybackState::Playing {
+        if self.state.playback == PlaybackState::Playing
+            || self.state.source_playback == PlaybackState::Playing
+        {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
 
