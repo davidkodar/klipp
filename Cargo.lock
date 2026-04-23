@@ -2289,6 +2289,7 @@ dependencies = [
 name = "klipp-nodes"
 version = "0.1.0"
 dependencies = [
+ "image",
  "klipp-color",
  "klipp-core",
  "klipp-effects",
@@ -2422,6 +2423,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_extras",
+ "image",
  "klipp-audio",
  "klipp-color",
  "klipp-core",

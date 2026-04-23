@@ -9191,6 +9191,7 @@ impl KlippApp {
             "Qualifier" => klipp_nodes::NodeKind::Qualifier,
             "Mask" => klipp_nodes::NodeKind::Mask,
             "CombineMattes" => klipp_nodes::NodeKind::CombineMattes,
+            "ExternalMatte" => klipp_nodes::NodeKind::ExternalMatte,
             "ApplyMatte" => klipp_nodes::NodeKind::ApplyMatte,
             "Blend" => klipp_nodes::NodeKind::Blend,
             "Layer" => klipp_nodes::NodeKind::Layer,
@@ -9374,6 +9375,26 @@ impl KlippApp {
         }
     }
 
+    /// Translate the inspector's `PHANTOM_CORRECTOR_ID` to a real
+    /// Corrector node id on the target clip, materialising the node
+    /// in the graph if it doesn't exist yet. Used at the top of every
+    /// `SetNode*` handler so widgets that rendered against a scratch
+    /// NodeParams (clip has no grade node) can land their first write
+    /// without the inspector having to know whether a real node
+    /// exists. Returns the original id unchanged when it's not the
+    /// phantom sentinel.
+    fn resolve_phantom_node_id(&mut self, clip_id: klipp_core::ClipId, node_id: klipp_nodes::NodeId) -> klipp_nodes::NodeId {
+        if node_id != klipp_nodes::PHANTOM_CORRECTOR_ID {
+            return node_id;
+        }
+        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+            if let Some(clip) = track.find_clip_mut(clip_id) {
+                return clip.node_graph.ensure_corrector();
+            }
+        }
+        node_id
+    }
+
     fn handle_color_node_config(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
             AppCommand::RenameNode { clip_id, node_id, ref label } => {
@@ -9389,6 +9410,12 @@ impl KlippApp {
                 true
             }
             AppCommand::SetNodeParam { clip_id, node_id, param, value } => {
+                // Lazy-create: if the inspector dispatched with the
+                // phantom Corrector id (no grade node existed on this
+                // clip when the widget rendered), materialise a real
+                // Corrector now and route the write to it.
+                let resolved = self.resolve_phantom_node_id(*clip_id, *node_id);
+                let node_id = &resolved;
                 // Update the UI-local sequence mirror — required so the UI's
                 // own scope-preview re-grade (runs on this thread) sees the
                 // new value. This mutates `self.state.sequences[...]` only,
@@ -9498,6 +9525,8 @@ impl KlippApp {
                 false
             }
             AppCommand::SetNodeCurves { clip_id, node_id, curves } => {
+                let resolved = self.resolve_phantom_node_id(*clip_id, *node_id);
+                let node_id = &resolved;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
@@ -9511,6 +9540,8 @@ impl KlippApp {
                 true
             }
             AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat } => {
+                let resolved = self.resolve_phantom_node_id(*clip_id, *node_id);
+                let node_id = &resolved;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
@@ -9559,6 +9590,41 @@ impl KlippApp {
                         break;
                     }
                 }
+                *needs_refresh = true;
+                true
+            }
+            AppCommand::SetExternalMattePath { clip_id, node_id, path } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                            node.params.matte_image_path = path.clone();
+                        }
+                        break;
+                    }
+                }
+                self.state.dirty = true;
+                *needs_refresh = true;
+                true
+            }
+            AppCommand::SetExternalMatteChannel { clip_id, node_id, channel, invert } => {
+                let ch = match *channel {
+                    0 => klipp_nodes::MatteChannel::Alpha,
+                    1 => klipp_nodes::MatteChannel::Luminance,
+                    2 => klipp_nodes::MatteChannel::Red,
+                    3 => klipp_nodes::MatteChannel::Green,
+                    4 => klipp_nodes::MatteChannel::Blue,
+                    _ => klipp_nodes::MatteChannel::Luminance,
+                };
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                            node.params.matte_channel = Some(ch);
+                            node.params.matte_invert = Some(*invert);
+                        }
+                        break;
+                    }
+                }
+                self.state.dirty = true;
                 *needs_refresh = true;
                 true
             }
@@ -9889,7 +9955,13 @@ impl KlippApp {
                 true
             }
             AppCommand::ToggleColorPanel => {
-                // Toggle between Edit and Color workspace
+                // Toggle between Edit and Color workspace.
+                // Entering the Color workspace no longer force-shows
+                // the Scopes panel — the user can toggle Scopes from
+                // the color-workspace toggle bar when they want it.
+                // Force-showing it meant hitting `C` always popped the
+                // full scope UI, even when the user just wanted to see
+                // the grade tabs / node canvas.
                 use crate::state::Workspace;
                 if self.state.active_workspace == Workspace::Color {
                     self.state.active_workspace = Workspace::Edit;
@@ -9897,7 +9969,6 @@ impl KlippApp {
                 } else {
                     self.state.active_workspace = Workspace::Color;
                     self.state.show_color_panel = true;
-                    self.state.show_scopes = true;
                 }
                 true
             }
@@ -21935,22 +22006,59 @@ impl KlippApp {
                         ui.painter().rect_filled(sep_rect3, 0.0, self.theme.border);
                     }
 
-                    // Always show the tabbed colour-grade inspector in
-                    // the Color workspace — selecting a node in the V2
-                    // canvas used to swap to a per-node view, which
-                    // hid the Wheels/Curves/Hue-Sat/Warper tabs and
-                    // left the user with no way to grade. Tabs target
-                    // the Corrector regardless of selection; per-node
-                    // editing for Mask/Qualifier/etc. happens via the
-                    // V2 canvas right-click for now.
+                    // Swap between tabbed grade inspector and per-node
+                    // inspector based on what the user selected in the
+                    // V2 canvas. The tabs cover the primary grade path
+                    // (Corrector + legacy single-purpose grade nodes);
+                    // nodes that have their own dedicated widget
+                    // (Mask, Qualifier, FilmGrain, Lut3D, ColorMatch,
+                    // LayerMixer, ExternalMatte, Denoise, ColorWarper)
+                    // need the per-node inspector when the user clicks
+                    // them — otherwise clicking e.g. an ExternalMatte
+                    // in the canvas would hide its file picker behind
+                    // the grade tabs.
                     let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
-                    let panel_cmds = self.node_inspector_panel.show_simple(
-                        ui, &mut clip.node_graph, clip_id,
-                        &mut self.state.selected_node_id,
-                        &mut self.state.color_tab,
-                        &self.theme,
-                        clip_time_secs,
-                    );
+                    let use_per_node_inspector = self.state.selected_node_id
+                        .and_then(|nid| clip.node_graph.nodes.iter().find(|n| n.id == nid))
+                        .map(|n| matches!(n.kind,
+                            klipp_nodes::NodeKind::Mask
+                            | klipp_nodes::NodeKind::Qualifier
+                            | klipp_nodes::NodeKind::FilmGrain
+                            | klipp_nodes::NodeKind::Lut3D
+                            | klipp_nodes::NodeKind::ColorMatch
+                            | klipp_nodes::NodeKind::LayerMixer
+                            | klipp_nodes::NodeKind::ExternalMatte
+                            | klipp_nodes::NodeKind::Denoise
+                            | klipp_nodes::NodeKind::ColorWarper
+                            // Source / Output / composite-only nodes:
+                            // no params, but showing the grade tabs
+                            // for them misleads users into thinking
+                            // clicking one does something. Route to
+                            // the per-node inspector which falls
+                            // through to a plain "No parameters" /
+                            // node-specific placeholder label.
+                            | klipp_nodes::NodeKind::Source
+                            | klipp_nodes::NodeKind::Output
+                            | klipp_nodes::NodeKind::Layer
+                            | klipp_nodes::NodeKind::Blend
+                            | klipp_nodes::NodeKind::CombineMattes
+                            | klipp_nodes::NodeKind::ApplyMatte
+                        ))
+                        .unwrap_or(false);
+                    let panel_cmds = if use_per_node_inspector {
+                        self.node_inspector_panel.show(
+                            ui, &self.state.selected_node_id,
+                            &mut clip.node_graph, clip_id, &self.theme, clip_time_secs,
+                        )
+                    } else {
+                        self.node_inspector_panel.show_simple(
+                            ui, &mut clip.node_graph, clip_id,
+                            &mut self.state.selected_node_id,
+                            &mut self.state.color_tab,
+                            &self.theme,
+                            clip_time_secs,
+                        )
+                    };
                     all_cmds.extend(panel_cmds);
                 }
             } else {

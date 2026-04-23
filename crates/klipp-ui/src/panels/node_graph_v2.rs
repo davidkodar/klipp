@@ -33,7 +33,7 @@ const GRID_SPACING: f32 = 32.0;
 fn node_color(kind: &NodeKind, theme: &KlippTheme) -> egui::Color32 {
     match kind {
         NodeKind::Source | NodeKind::Output => theme.bg_raised,
-        NodeKind::Qualifier | NodeKind::Mask | NodeKind::CombineMattes => {
+        NodeKind::Qualifier | NodeKind::Mask | NodeKind::CombineMattes | NodeKind::ExternalMatte => {
             egui::Color32::from_rgb(0x5c, 0x3a, 0x6e)
         }
         NodeKind::Layer | NodeKind::Blend | NodeKind::ApplyMatte | NodeKind::LayerMixer => {
@@ -97,6 +97,13 @@ pub struct NodeGraphV2Panel {
     /// Set by the toolbar's "Fit" button or programmatically
     /// (clip switch). Consumed at the top of the next `show()`.
     fit_pending: bool,
+    /// Per-ExternalMatte-node thumbnail cache. Keyed by node id so
+    /// two ExternalMatte nodes with different images don't collide;
+    /// the stored `PathBuf` lets us invalidate when the user picks a
+    /// new image. The `TextureHandle` is uploaded via
+    /// `ctx.load_texture` and dropped from egui's pool on panel
+    /// destruction (or when the entry is overwritten on path change).
+    matte_thumbs: std::collections::HashMap<NodeId, (std::path::PathBuf, egui::TextureHandle)>,
 }
 
 impl Default for NodeGraphV2Panel {
@@ -114,6 +121,7 @@ impl Default for NodeGraphV2Panel {
             node_menu_opened_frame: 0,
             last_fit_clip: None,
             fit_pending: false,
+            matte_thumbs: std::collections::HashMap::new(),
         }
     }
 }
@@ -285,7 +293,9 @@ impl NodeGraphV2Panel {
             painter.rect_filled(rect, 4.0, theme.bg_panel);
             painter.rect_filled(body_rect, 4.0, if node.enabled { fill } else { theme.bg_panel_alt });
 
-            // Selection / border
+            // Selection / border — amber-coloured ~2 px border when
+            // selected, thin neutral border otherwise. Simple and
+            // visible at a glance; no glow halos.
             let border = if is_selected { theme.accent } else { theme.border };
             let border_w = if is_selected { 2.0_f32 } else { 0.5_f32 };
             painter.rect_stroke(rect, 4.0, egui::Stroke::new(border_w, border));
@@ -308,6 +318,51 @@ impl NodeGraphV2Panel {
                     egui::FontId::proportional(9.0 * zoom),
                     theme.text_dim,
                 );
+            }
+
+            // ExternalMatte: paint the loaded image as a thumbnail
+            // inside the node body so the user sees which mask is
+            // attached without having to click through the inspector.
+            if kind == NodeKind::ExternalMatte {
+                if let Some(path) = node.params.matte_image_path.as_ref() {
+                    let cached = self.matte_thumbs.get(&node_id);
+                    let needs_load = match cached {
+                        Some((p, _)) => p != path,
+                        None => true,
+                    };
+                    if needs_load {
+                        if let Ok(img) = image::open(path) {
+                            let rgba = img.to_rgba8();
+                            let size = [rgba.width() as usize, rgba.height() as usize];
+                            let pixels = rgba.as_flat_samples();
+                            let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                                size, pixels.as_slice(),
+                            );
+                            let name = format!("matte_thumb_{}", node_id.as_simple());
+                            let tex = ui.ctx().load_texture(
+                                name, color_image, egui::TextureOptions::LINEAR,
+                            );
+                            self.matte_thumbs.insert(node_id, (path.clone(), tex));
+                        }
+                    }
+                    if let Some((_, tex)) = self.matte_thumbs.get(&node_id) {
+                        // Inset the thumb inside the node body with a
+                        // small margin so the magenta body rim still
+                        // reads as "this is a matte node".
+                        let inset = 4.0 * zoom;
+                        let thumb_rect = body_rect.shrink(inset);
+                        painter.image(
+                            tex.id(),
+                            thumb_rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    }
+                } else {
+                    // No image set — drop any stale texture so a fresh
+                    // pick starts clean.
+                    self.matte_thumbs.remove(&node_id);
+                }
             }
 
             // Pointer-proximity gate — only register port tooltips for
@@ -514,26 +569,61 @@ impl NodeGraphV2Panel {
             self.drag_node = None;
         }
 
-        // Right-click handling.
+        // Right-click handling. Three cases, in priority order:
+        //   1. Near an input port that has an edge → disconnect it.
+        //      Fastest way to clear a wire without going through a menu.
+        //   2. On a node → per-node context menu (Bypass / Delete / …).
+        //   3. Empty canvas → add-node menu.
         if secondary_clicked {
             if let Some(p) = pointer_pos {
                 if canvas_rect.contains(p) {
-                    // Node hit?
-                    let mut on_node = None;
-                    for (node_id, rect, _, _, _) in &node_rects {
-                        if rect.contains(p) { on_node = Some(*node_id); break; }
+                    // 1) Input-port disconnect. Only fires when the
+                    // cursor is LEFT of the node body — otherwise a
+                    // right-click anywhere near the node's left edge
+                    // would eat the event before the node context
+                    // menu could open (the port hit radius overlaps
+                    // the node body by design).
+                    let mut disconnected = false;
+                    for (node_id, rect, _, _, in_count) in &node_rects {
+                        if p.x > rect.min.x { continue; }
+                        for port in 0..*in_count {
+                            let port_pos = input_port_pos(rect, port, *in_count);
+                            if (p - port_pos).length() <= PORT_HIT_RADIUS * zoom.max(0.5) {
+                                let has_edge = graph.edges.iter().any(|e|
+                                    e.to_node == *node_id && e.to_port == port
+                                );
+                                if has_edge {
+                                    cmds.push(AppCommand::DisconnectEdge {
+                                        clip_id, to: *node_id, to_port: port,
+                                    });
+                                    disconnected = true;
+                                }
+                                break;
+                            }
+                        }
+                        if disconnected { break; }
                     }
-                    let frame_nr = ui.ctx().cumulative_pass_nr();
-                    if let Some(nid) = on_node {
-                        self.node_menu = Some((nid, p));
-                        self.node_menu_opened_frame = frame_nr;
-                        self.add_menu_open = false;
+                    if disconnected {
+                        // Suppress the node/add menu on this click —
+                        // we consumed the right-click for the disconnect.
                     } else {
-                        self.add_menu_open = true;
-                        self.add_menu_screen_pos = p;
-                        self.add_menu_graph_pos = to_graph(p);
-                        self.add_menu_opened_frame = frame_nr;
-                        self.node_menu = None;
+                        // 2/3) Fall through to the node or add menu.
+                        let mut on_node = None;
+                        for (node_id, rect, _, _, _) in &node_rects {
+                            if rect.contains(p) { on_node = Some(*node_id); break; }
+                        }
+                        let frame_nr = ui.ctx().cumulative_pass_nr();
+                        if let Some(nid) = on_node {
+                            self.node_menu = Some((nid, p));
+                            self.node_menu_opened_frame = frame_nr;
+                            self.add_menu_open = false;
+                        } else {
+                            self.add_menu_open = true;
+                            self.add_menu_screen_pos = p;
+                            self.add_menu_graph_pos = to_graph(p);
+                            self.add_menu_opened_frame = frame_nr;
+                            self.node_menu = None;
+                        }
                     }
                 }
             }
@@ -694,6 +784,7 @@ impl NodeGraphV2Panel {
                         ("Color Match", "ColorMatch"),
                         ("Qualifier", "Qualifier"),
                         ("Mask", "Mask"),
+                        ("External Matte", "ExternalMatte"),
                         ("Combine Mattes", "CombineMattes"),
                         ("Layer", "Layer"),
                         ("Layer Mixer", "LayerMixer"),

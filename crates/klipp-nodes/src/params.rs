@@ -180,6 +180,55 @@ pub struct NodeParams {
     // always defined for any port the executor sees on an edge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer_mixer: Option<LayerMixerParams>,
+
+    // ExternalMatte
+    /// Absolute path to the image file read as a matte source.
+    /// `None` = identity / disabled (executor emits a transparent-
+    /// black matte so ApplyMatte treats the node as a no-op).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte_image_path: Option<PathBuf>,
+    /// Which channel of the image becomes the matte signal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte_channel: Option<MatteChannel>,
+    /// Output is inverted (matte = 1 - source) before feeding
+    /// downstream. Mirrors the Qualifier node's Invert toggle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte_invert: Option<bool>,
+}
+
+/// Which source channel of an ExternalMatte image becomes the matte.
+/// Alpha is the natural choice for images painted with transparency;
+/// Luminance is the practical fallback for opaque grayscale masks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MatteChannel {
+    Alpha,
+    Luminance,
+    Red,
+    Green,
+    Blue,
+}
+
+impl Default for MatteChannel {
+    fn default() -> Self {
+        MatteChannel::Luminance
+    }
+}
+
+impl MatteChannel {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            MatteChannel::Alpha => "Alpha",
+            MatteChannel::Luminance => "Luminance",
+            MatteChannel::Red => "Red",
+            MatteChannel::Green => "Green",
+            MatteChannel::Blue => "Blue",
+        }
+    }
+
+    pub const ALL: [MatteChannel; 5] = [
+        MatteChannel::Alpha, MatteChannel::Luminance,
+        MatteChannel::Red, MatteChannel::Green, MatteChannel::Blue,
+    ];
 }
 
 // ── LayerMixer ────────────────────────────────────────────────────
@@ -270,6 +319,7 @@ impl NodeParams {
             && self.denoise_radius.is_none()
             && z(&self.mix)
             && self.layer_mixer.as_ref().map_or(true, |m| m.is_identity())
+            && self.matte_image_path.is_none()
     }
 
     /// Apply a keyframe override by param name.

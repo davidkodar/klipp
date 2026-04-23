@@ -9,7 +9,7 @@ use klipp_effects::gpu::GpuEffectsPipeline;
 
 use crate::graph::{Node, NodeGraph, NodeId};
 use crate::kinds::NodeKind;
-use crate::params::NodeParams;
+use crate::params::{MatteChannel, NodeParams};
 use klipp_core::{BlendMode, LayerMixerInput};
 
 /// Return the effective params for `node` at `clip_time_secs`. When the node has
@@ -64,6 +64,13 @@ pub struct GraphExecutor {
     lut_cache: HashMap<PathBuf, Arc<LutData>>,
     /// Cache of pre-built curve LUTs keyed by node ID.
     curve_lut_cache: HashMap<NodeId, Arc<CurveLuts>>,
+    /// Cache of decoded external-matte images, keyed by source path.
+    /// Stores the raw linear-RGBA buffer + native dimensions so the
+    /// per-frame resize to the timeline resolution can run without
+    /// hitting the disk every frame. Invalidated by the executor only
+    /// when the path changes; editing the image on disk is an
+    /// acknowledged rough edge.
+    matte_image_cache: HashMap<PathBuf, Arc<(Vec<f32>, u32, u32)>>,
     /// Phase 4d: when true, `start_chain` skips the
     /// `upload_chain_input_linear` call because `buf_a` was already
     /// seeded with linear RGBA — typically by
@@ -119,6 +126,7 @@ impl GraphExecutor {
             gpu_init_attempted: false,
             lut_cache: HashMap::new(),
             curve_lut_cache: HashMap::new(),
+            matte_image_cache: HashMap::new(),
             gpu_chain_preseeded: false,
         }
     }
@@ -149,6 +157,7 @@ impl GraphExecutor {
             gpu_init_attempted: true,
             lut_cache: HashMap::new(),
             curve_lut_cache: HashMap::new(),
+            matte_image_cache: HashMap::new(),
             gpu_chain_preseeded: false,
         }
     }
@@ -1833,6 +1842,89 @@ impl GraphExecutor {
                 } else {
                     vec![1.0f32; (width * height * 4) as usize]
                 }
+            }
+
+            NodeKind::ExternalMatte => {
+                // Produce a matte (R=G=B=matte, A=1) from an image
+                // loaded off disk. No `primary_input` — ExternalMatte
+                // has no input ports. Decoded image is cached by path;
+                // the per-frame cost is just a resize + channel pick.
+                let pixel_count = (width as usize) * (height as usize);
+                let Some(path) = params.matte_image_path.as_ref() else {
+                    // No image chosen — emit zero matte so a downstream
+                    // ApplyMatte reads this as "select nothing" (pass-through
+                    // of the ungraded path). Matches the mental model of
+                    // "I added the node but haven't pointed it at a file".
+                    let mut out = vec![0.0f32; pixel_count * 4];
+                    for i in 0..pixel_count { out[i * 4 + 3] = 1.0; }
+                    return out;
+                };
+                let channel = params.matte_channel.unwrap_or_default();
+                let invert = params.matte_invert.unwrap_or(false);
+
+                // Decode + cache. An image that fails to load becomes a
+                // transparent-black matte (same as "no path") so a
+                // broken link doesn't crash the render.
+                let cached = match self.matte_image_cache.get(path).cloned() {
+                    Some(c) => c,
+                    None => match image::open(path) {
+                        Ok(img) => {
+                            let rgba = img.to_rgba8();
+                            let (iw, ih) = (rgba.width(), rgba.height());
+                            let mut linear = vec![0.0f32; (iw * ih * 4) as usize];
+                            for (i, px) in rgba.pixels().enumerate() {
+                                let o = i * 4;
+                                linear[o]     = klipp_color::transfer::srgb_to_linear(px[0] as f32 / 255.0);
+                                linear[o + 1] = klipp_color::transfer::srgb_to_linear(px[1] as f32 / 255.0);
+                                linear[o + 2] = klipp_color::transfer::srgb_to_linear(px[2] as f32 / 255.0);
+                                linear[o + 3] = px[3] as f32 / 255.0;
+                            }
+                            let arc = Arc::new((linear, iw, ih));
+                            self.matte_image_cache.insert(path.clone(), Arc::clone(&arc));
+                            arc
+                        }
+                        Err(e) => {
+                            tracing::warn!("ExternalMatte: failed to load {:?}: {e}", path);
+                            let mut out = vec![0.0f32; pixel_count * 4];
+                            for i in 0..pixel_count { out[i * 4 + 3] = 1.0; }
+                            return out;
+                        }
+                    },
+                };
+                let (src, sw, sh) = (&cached.0, cached.1, cached.2);
+
+                // Nearest-neighbour resize into the timeline resolution.
+                // Bilinear would be prettier but mattes read better as
+                // hard-edged. The image's already loaded once; this is
+                // the only per-frame cost.
+                let mut out = vec![0.0f32; pixel_count * 4];
+                for y in 0..height {
+                    let sy = ((y as u64 * sh as u64) / height as u64).min(sh as u64 - 1) as u32;
+                    for x in 0..width {
+                        let sx = ((x as u64 * sw as u64) / width as u64).min(sw as u64 - 1) as u32;
+                        let si = ((sy * sw + sx) as usize) * 4;
+                        let r = src[si];
+                        let g = src[si + 1];
+                        let b = src[si + 2];
+                        let a = src[si + 3];
+                        // Rec.709 luminance in linear light.
+                        let m = match channel {
+                            MatteChannel::Alpha => a,
+                            MatteChannel::Luminance => 0.2126 * r + 0.7152 * g + 0.0722 * b,
+                            MatteChannel::Red => r,
+                            MatteChannel::Green => g,
+                            MatteChannel::Blue => b,
+                        };
+                        let m = if invert { 1.0 - m } else { m };
+                        let m = m.clamp(0.0, 1.0);
+                        let oi = ((y * width + x) as usize) * 4;
+                        out[oi]     = m;
+                        out[oi + 1] = m;
+                        out[oi + 2] = m;
+                        out[oi + 3] = 1.0;
+                    }
+                }
+                out
             }
 
             NodeKind::CombineMattes => {

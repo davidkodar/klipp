@@ -49,6 +49,11 @@ pub enum NodeKind {
     Mask,
     /// Multiply two matte inputs (port 0 × port 1) for matte intersection.
     CombineMattes,
+    /// External image loaded from disk as a matte source (alpha or
+    /// luminance / per-channel). No inputs; its only output is a matte
+    /// signal that feeds ApplyMatte / CombineMattes. Useful for
+    /// scene-specific masks painted in an external tool.
+    ExternalMatte,
 
     // ── Compositing ─────────────────────────────────────────────
     /// Alpha composite two inputs (A over B). Ports: 0=foreground, 1=background.
@@ -94,6 +99,8 @@ impl NodeKind {
     pub fn input_port_count(&self) -> u8 {
         match self {
             NodeKind::Source => 0,
+            // ExternalMatte reads from disk — no inputs, only a matte output.
+            NodeKind::ExternalMatte => 0,
             NodeKind::ApplyMatte => 3,
             NodeKind::Blend
             | NodeKind::Layer
@@ -150,7 +157,7 @@ impl NodeKind {
     /// consumer's.
     pub fn output_port_role(&self, _port: u8) -> PortRole {
         match self {
-            NodeKind::Qualifier | NodeKind::Mask | NodeKind::CombineMattes => PortRole::Matte,
+            NodeKind::Qualifier | NodeKind::Mask | NodeKind::CombineMattes | NodeKind::ExternalMatte => PortRole::Matte,
             _ => PortRole::Primary,
         }
     }
@@ -181,7 +188,7 @@ impl NodeKind {
 
     pub fn output_port_label(&self, _port: u8) -> &'static str {
         match self {
-            NodeKind::Qualifier | NodeKind::Mask | NodeKind::CombineMattes => "Matte",
+            NodeKind::Qualifier | NodeKind::Mask | NodeKind::CombineMattes | NodeKind::ExternalMatte => "Matte",
             _ => "Output",
         }
     }
@@ -205,6 +212,7 @@ impl NodeKind {
             NodeKind::Qualifier => "Qualifier",
             NodeKind::Mask => "Mask",
             NodeKind::CombineMattes => "Combine Mattes",
+            NodeKind::ExternalMatte => "External Matte",
             NodeKind::Layer => "Layer",
             NodeKind::LayerMixer => "Layer Mixer",
             NodeKind::Blend => "Blend",

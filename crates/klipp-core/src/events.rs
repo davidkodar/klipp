@@ -762,6 +762,12 @@ pub enum AppCommand {
     /// The node's executor then applies the adjustments via the
     /// unified grade shader.
     SetNodeColorMatch { clip_id: ClipId, node_id: uuid::Uuid, settings: crate::color_grade::ColorMatchSettings },
+    /// Point an ExternalMatte node at a new image file.
+    SetExternalMattePath { clip_id: ClipId, node_id: uuid::Uuid, path: Option<std::path::PathBuf> },
+    /// Change which channel of the ExternalMatte image becomes the
+    /// matte signal (Alpha / Luminance / Red / Green / Blue) and
+    /// whether the output is inverted.
+    SetExternalMatteChannel { clip_id: ClipId, node_id: uuid::Uuid, channel: u8, invert: bool },
     /// Update one input slot on a `LayerMixer` node (port = index into
     /// `LayerMixerParams.inputs`). The handler grows the params Vec as
     /// needed so a fresh slot can be set without an explicit AddPort

@@ -7,56 +7,10 @@ use crate::widgets::curves_editor::{self, CurveChannel};
 use klipp_core::{AppCommand, ClipId};
 use klipp_nodes::{NodeGraph, NodeId, NodeKind, NodeParams};
 
-/// Returns the id of the graph's Corrector node, creating + wiring one
-/// in before Output if it's missing. Lets the colour-grade tabs always
-/// have a write target — a clip loaded from a pre-Corrector project
-/// gets a Corrector spliced in the first time the user opens any tab.
-///
-/// The new Corrector inherits the edge that previously fed the Output
-/// node so the existing chain (if any) keeps producing pixels through
-/// the Corrector instead of bypassing it. Corrector → Output is added
-/// fresh.
-fn ensure_corrector_node(graph: &mut NodeGraph) -> NodeId {
-    if let Some(idx) = graph.nodes.iter().position(|n| n.kind == NodeKind::Corrector) {
-        return graph.nodes[idx].id;
-    }
-    let new_id = NodeId::new_v4();
-    let output_id = graph.output_node_id;
-    let insert_at = graph.nodes.iter().position(|n| n.id == output_id)
-        .unwrap_or(graph.nodes.len());
-    graph.nodes.insert(insert_at, klipp_nodes::Node {
-        id: new_id,
-        kind: NodeKind::Corrector,
-        label: "Corrector".to_string(),
-        enabled: true,
-        params: NodeParams::default(),
-        keyframes: klipp_nodes::NodeKeyframeTracks::default(),
-    });
-    // Re-route any edge pointing into Output's port 0 to the Corrector
-    // first, then wire Corrector → Output.
-    for edge in &mut graph.edges {
-        if edge.to_node == output_id && edge.to_port == 0 {
-            edge.to_node = new_id;
-            edge.to_port = 0;
-        }
-    }
-    graph.edges.push(klipp_nodes::Edge {
-        from_node: new_id,
-        from_port: 0,
-        to_node: output_id,
-        to_port: 0,
-    });
-    // Position halfway between Output and where the Corrector logically
-    // sits — keeps the V2 canvas readable.
-    if let Some(out_pos) = graph.node_positions.get(&output_id).copied() {
-        graph.node_positions.insert(new_id,
-            klipp_nodes::NodePos { x: out_pos.x - 220.0, y: out_pos.y });
-    } else {
-        graph.node_positions.insert(new_id,
-            klipp_nodes::NodePos { x: 220.0, y: 0.0 });
-    }
-    new_id
-}
+// `ensure_corrector_node` now lives on `klipp_nodes::NodeGraph` as
+// `ensure_corrector` — called from both this module and the SetNode*
+// handlers in `app.rs` when a phantom-id dispatch materialises a real
+// Corrector.
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // NodeInspectorPanel — per-node parameter editor
@@ -307,22 +261,47 @@ impl NodeInspectorPanel {
                     ColorTab::Warper => vec![NodeKind::ColorWarper],
                     _ => vec![],
                 };
+                // Lazy-create flow: if no grade node exists yet, render
+                // the widgets against a scratch NodeParams::default()
+                // using a fixed phantom NodeId. The first widget to
+                // emit a change dispatches its SetNode* command tagged
+                // with that phantom id; the handler in app.rs detects
+                // the id, materialises a real Corrector on the clip,
+                // and reroutes the write. User never sees an empty
+                // state or an "Add" button — they just grade.
+                let any_target_exists = graph.nodes.iter().any(|n|
+                    n.kind == NodeKind::Corrector && n.enabled
+                ) || target_kinds.iter().any(|k|
+                    graph.nodes.iter().any(|n| n.kind == *k && n.enabled)
+                );
+                if !any_target_exists {
+                    let mut scratch_params = klipp_nodes::NodeParams::default();
+                    let mut scratch_enabled = true;
+                    let mut scratch_keyframes = klipp_nodes::NodeKeyframeTracks::default();
+                    for target_kind in &target_kinds {
+                        let node_kind = target_kind.clone();
+                        self.show_inspector_layout(
+                            ui,
+                            klipp_nodes::PHANTOM_CORRECTOR_ID,
+                            &node_kind,
+                            &mut scratch_enabled,
+                            &mut scratch_params,
+                            &mut scratch_keyframes,
+                            clip_id, cmds, theme, clip_time_secs, wide_layout,
+                        );
+                    }
+                    return;
+                }
                 for target_kind in &target_kinds {
-                    // Prefer the Corrector (new default graph) so the
-                    // tab UIs always have somewhere to write. Fall back
-                    // to a dedicated single-purpose node for legacy
-                    // graphs. If neither exists (older clips with bare
-                    // Source → Output), create the Corrector on the
-                    // fly so the tab is never empty.
+                    // Prefer the Corrector (new default graph). Fall
+                    // back to the dedicated single-purpose node when
+                    // the graph is legacy-shaped.
                     let target_idx = graph.nodes.iter().position(|n|
                         n.kind == NodeKind::Corrector && n.enabled
                     ).or_else(||
                         graph.nodes.iter().position(|n| n.kind == *target_kind && n.enabled)
                     );
-                    let idx = target_idx.unwrap_or_else(|| {
-                        let new_id = ensure_corrector_node(graph);
-                        graph.nodes.iter().position(|n| n.id == new_id).unwrap()
-                    });
+                    let Some(idx) = target_idx else { continue; };
                     {
                         let node_id = graph.nodes[idx].id;
                         // The widget code below dispatches on this kind
@@ -331,7 +310,15 @@ impl NodeInspectorPanel {
                         // still renders the wheels widgets (which read
                         // the same fields off the Corrector's params).
                         let node_kind = target_kind.clone();
-                        *selected_node = Some(node_id);
+                        // Don't overwrite the user's canvas selection.
+                        // The tabs always write to the Corrector
+                        // regardless of which node is highlighted in
+                        // the V2 canvas; previously we clobbered the
+                        // selection to the Corrector every render,
+                        // which meant clicking Source / Output / Apply
+                        // Matte never looked selected because the
+                        // inspector bumped the highlight back to the
+                        // Corrector immediately.
                         let node = &mut graph.nodes[idx];
                         let node_enabled = &mut node.enabled;
                         let params = &mut node.params;
@@ -353,16 +340,27 @@ impl NodeInspectorPanel {
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
     ) {
-        // Make sure there's somewhere to write — auto-create a
-        // Corrector if neither it nor the legacy split-node pair is
-        // present. Then prefer the Corrector (it carries both wheel
-        // and sat/bri fields) over the legacy nodes.
+        // Prefer the Corrector (it carries both wheel + sat/bri
+        // fields) over the legacy split-node pair. Auto-creating here
+        // would revive a just-deleted Corrector, so when neither is
+        // present just show a hint that a slider touch in a narrow
+        // tab will conjure one. Users drop out of wide layout for
+        // that interaction, which is natural on first use.
         let corrector_present = graph.nodes.iter().any(|n| n.kind == NodeKind::Corrector);
         let legacy_present = graph.nodes.iter().any(|n|
             matches!(n.kind, NodeKind::ColorWheels | NodeKind::WheelSatBri)
         );
         if !corrector_present && !legacy_present {
-            let _ = ensure_corrector_node(graph);
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Touch any slider to start grading this clip."
+                    ).small().color(theme.text_dim)
+                );
+            });
+            return;
         }
         let corrector_idx = graph.nodes.iter().position(|n|
             n.kind == NodeKind::Corrector && n.enabled
@@ -591,15 +589,31 @@ impl NodeInspectorPanel {
         ui: &mut egui::Ui,
         graph: &mut NodeGraph,
         clip_id: ClipId,
-        selected_node: &mut Option<NodeId>,
+        _selected_node: &mut Option<NodeId>,
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
     ) {
-        // Ensure there's a Corrector to write into — without one, an
-        // older clip (loaded from disk before the Corrector default)
-        // would render this tab as a wall of "no params" since none
-        // of the legacy single-purpose nodes exist either.
-        let _ = ensure_corrector_node(graph);
+        // When no grade node exists on the clip, the sections below
+        // naturally skip (find_node returns None for every kind).
+        // Show a one-line hint pointing at the tabs that DO support
+        // lazy-create so the user isn't staring at a blank panel.
+        let has_grade_target = graph.nodes.iter().any(|n| matches!(n.kind,
+            NodeKind::Corrector | NodeKind::Exposure | NodeKind::Contrast
+            | NodeKind::Saturation | NodeKind::ToneControls | NodeKind::ColorBalance
+        ));
+        if !has_grade_target {
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Touch any slider in Wheels, Curves, Hue-Sat or Warper to start grading."
+                    ).small().color(theme.text_dim)
+                );
+            });
+            return;
+        }
+
         // Helper: prefer the Corrector (every section-relevant param
         // lives on it) so each section points at one canonical node.
         // Falls back to a dedicated single-purpose node by `kind` for
@@ -617,7 +631,12 @@ impl NodeInspectorPanel {
 
         // ── Exposure section ──
         if let Some((nid, enabled)) = find_node(graph, NodeKind::Exposure) {
-            *selected_node = Some(nid);
+            // Intentionally NOT clobbering `*selected_node` here — see
+            // the matching comment in `show_simple_layout`. Clobbering
+            // it made clicking Source/Output/Apply-Matte in the V2
+            // canvas look like selection never happened because the
+            // inspector bumped the highlight back to the grade node
+            // every frame.
             let (reset, is_open) = section_header(ui, "EXPOSURE", enabled, theme);
             if is_open {
                 if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
@@ -1663,6 +1682,9 @@ impl NodeInspectorPanel {
                 self.show_warper_widget(ui, node_id, params, clip_id, cmds, theme);
             }
             NodeKind::CombineMattes => { ui.label("Multiplies two matte inputs"); }
+            NodeKind::ExternalMatte => {
+                self.show_external_matte_widget(ui, node_id, params, clip_id, cmds, theme);
+            }
             NodeKind::ColorMatch => {
                 self.show_color_match_widget(ui, node_id, params, clip_id, cmds, theme);
             }
@@ -1687,6 +1709,94 @@ impl NodeInspectorPanel {
                 ui.label(egui::RichText::new("No parameters").color(theme.text_dim));
             }
         }
+    }
+
+    /// Inspector for `ExternalMatte`: file picker, channel selector,
+    /// invert toggle. The path + channel are stored in NodeParams;
+    /// the executor decodes + caches per node edit.
+    fn show_external_matte_widget(
+        &mut self,
+        ui: &mut egui::Ui,
+        node_id: klipp_nodes::NodeId,
+        params: &mut klipp_nodes::NodeParams,
+        clip_id: klipp_core::ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &crate::theme::KlippTheme,
+    ) {
+        // File picker.
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            let label = match &params.matte_image_path {
+                Some(p) => p.file_name().map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| p.to_string_lossy().to_string()),
+                None => "(none selected)".to_string(),
+            };
+            ui.label(
+                egui::RichText::new(label).small().color(theme.text_dim)
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            if ui.button("Choose image…").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Image", &["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"])
+                    .pick_file()
+                {
+                    params.matte_image_path = Some(path.clone());
+                    cmds.push(AppCommand::SetExternalMattePath {
+                        clip_id, node_id, path: Some(path),
+                    });
+                }
+            }
+            if params.matte_image_path.is_some()
+                && ui.button("Clear").clicked()
+            {
+                params.matte_image_path = None;
+                cmds.push(AppCommand::SetExternalMattePath {
+                    clip_id, node_id, path: None,
+                });
+            }
+        });
+
+        ui.add_space(4.0);
+
+        // Channel selector.
+        let current_channel = params.matte_channel.unwrap_or_default();
+        let invert = params.matte_invert.unwrap_or(false);
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Source").small().color(theme.text_dim));
+            let mut new_channel = current_channel;
+            egui::ComboBox::from_id_salt(("ext_matte_channel", node_id))
+                .selected_text(new_channel.display_name())
+                .show_ui(ui, |ui| {
+                    for &candidate in &klipp_nodes::MatteChannel::ALL {
+                        if ui.selectable_label(new_channel == candidate, candidate.display_name()).clicked() {
+                            new_channel = candidate;
+                        }
+                    }
+                });
+            if new_channel != current_channel {
+                params.matte_channel = Some(new_channel);
+                cmds.push(AppCommand::SetExternalMatteChannel {
+                    clip_id, node_id,
+                    channel: new_channel as u8,
+                    invert,
+                });
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            let mut inv = invert;
+            if ui.checkbox(&mut inv, "Invert").changed() {
+                params.matte_invert = Some(inv);
+                cmds.push(AppCommand::SetExternalMatteChannel {
+                    clip_id, node_id,
+                    channel: current_channel as u8,
+                    invert: inv,
+                });
+            }
+        });
     }
 
     /// Inspector for `LayerMixer`: one row per input port, with an

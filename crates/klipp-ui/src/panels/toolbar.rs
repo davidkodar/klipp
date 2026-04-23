@@ -96,7 +96,6 @@ impl ToolbarPanel {
             } else {
                 state.active_workspace = Workspace::Color;
                 state.show_color_panel = true;
-                state.show_scopes = true;
             }
         }
 

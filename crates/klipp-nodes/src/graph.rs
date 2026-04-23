@@ -52,6 +52,60 @@ pub struct Edge {
     pub to_port: u8,
 }
 
+/// Stable phantom NodeId used by the inspector when a tab is rendered
+/// against a clip that has no grade node yet. The real Corrector is
+/// materialised lazily on first slider touch (see app.rs handler for
+/// SetNodeParam et al.); until then, widgets read/write a scratch
+/// `NodeParams::default()` and dispatch their commands tagged with
+/// this id. Kept stable so re-dispatches inside one frame land on the
+/// same eventually-real node.
+pub const PHANTOM_CORRECTOR_ID: NodeId = Uuid::from_u128(0xC0DE_C0DE_C0DE_C0DE_C0DE_C0DE_C0DE_C0DE);
+
+impl NodeGraph {
+    /// Find an existing Corrector, or splice a new one in before
+    /// Output. Returns the Corrector's id either way. Used both by the
+    /// inspector's first-touch lazy-create flow and by load.rs project
+    /// migrations.
+    pub fn ensure_corrector(&mut self) -> NodeId {
+        if let Some(idx) = self.nodes.iter().position(|n| n.kind == NodeKind::Corrector) {
+            return self.nodes[idx].id;
+        }
+        let new_id = NodeId::new_v4();
+        let output_id = self.output_node_id;
+        let insert_at = self.nodes.iter().position(|n| n.id == output_id)
+            .unwrap_or(self.nodes.len());
+        self.nodes.insert(insert_at, Node {
+            id: new_id,
+            kind: NodeKind::Corrector,
+            label: "Corrector".to_string(),
+            enabled: true,
+            params: NodeParams::default(),
+            keyframes: NodeKeyframeTracks::default(),
+        });
+        // Re-route any edge ending at Output's port 0 to the Corrector
+        // first, then wire Corrector → Output.
+        for edge in &mut self.edges {
+            if edge.to_node == output_id && edge.to_port == 0 {
+                edge.to_node = new_id;
+                edge.to_port = 0;
+            }
+        }
+        self.edges.push(Edge {
+            from_node: new_id,
+            from_port: 0,
+            to_node: output_id,
+            to_port: 0,
+        });
+        // Place it just before Output in the canvas layout.
+        if let Some(out_pos) = self.node_positions.get(&output_id).copied() {
+            self.node_positions.insert(new_id, NodePos { x: out_pos.x - 220.0, y: out_pos.y });
+        } else {
+            self.node_positions.insert(new_id, NodePos { x: 220.0, y: 0.0 });
+        }
+        new_id
+    }
+}
+
 impl Node {
     /// Effective input-port count, accounting for nodes (currently just
     /// `LayerMixer`) whose port count is data-driven by their params
