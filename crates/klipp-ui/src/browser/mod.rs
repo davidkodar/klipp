@@ -3205,15 +3205,23 @@ impl BrowserPanel {
                 // avoid borrowing `self` while `filtered` still aliases
                 // `self.files_entries`.
 
-                // Double-click: navigate (dir) or import (media file).
+                // Double-click: navigate (dir) or import (media file)
+                // AND open the newly-imported file in the Source
+                // viewer. Previously fired LoadMediaFile only, which
+                // leaked the new file's first frame into the Program
+                // viewer via the engine's shared frame buffer. Using
+                // the same `pending_open_in_source` flow the right-
+                // click "Open in Source Viewer" action uses:
+                //   - LoadMediaFile creates the MediaItem in the pool
+                //   - source_media_id is pre-set to the new id so the
+                //     Source viewer flips to it as soon as the
+                //     MediaItem lands
+                //   - viewer_mode snaps to Source
                 if resp.double_clicked() {
                     if entry.is_dir {
                         pending_navigate = Some(entry.path.clone());
                     } else if entry.is_media {
-                        cmds.push(AppCommand::LoadMediaFile {
-                            path: entry.path.clone(),
-                            media_id: klipp_core::MediaId::new(),
-                        });
+                        pending_open_in_source = Some(vec![entry.path.clone()]);
                     }
                 }
 

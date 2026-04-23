@@ -7543,7 +7543,18 @@ impl PlaybackEngine {
                     },
                 )));
 
-                self.grab_first_frame();
+                // NOTE: Do NOT grab the first frame here. `load_file`
+                // runs on every media import, and writing the first
+                // frame into the shared Program-viewer frame buffer
+                // made every newly imported file auto-appear in the
+                // Program viewer — even when the user was just adding
+                // a clip to the bin. Source-viewer previews use the
+                // dedicated source decode path (`source_video_texture`
+                // via `LoadSourceMedia` / `start_source_frame_decode_at`),
+                // not this entry point. Timeline playback triggers its
+                // own decode when a clip at the playhead is activated,
+                // so losing the side-effect first-frame here doesn't
+                // regress the Program viewer's grade / scrub paths.
                 (self.repaint_cb)();
             }
             Err(e) => {
@@ -7557,6 +7568,13 @@ impl PlaybackEngine {
         }
     }
 
+    /// Kept for targeted callers that want to explicitly seed the
+    /// Program viewer's frame buffer with a clip's first frame. Used
+    /// to run automatically from `load_file` for every import — that
+    /// made every media import auto-appear in the Program viewer, so
+    /// the call site was removed. Left in-place so a future "preview
+    /// this timeline clip" gesture can call it explicitly.
+    #[allow(dead_code)]
     fn grab_first_frame(&mut self) {
         if let Some(path) = &self.current_file {
             match VideoDecoder::open(path, self.current_source_rotation) {
