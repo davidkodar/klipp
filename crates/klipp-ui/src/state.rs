@@ -831,6 +831,11 @@ pub struct AppState {
     /// past the compute step.
     pub color_match_reference: Option<(Vec<u8>, u32, u32)>,
 
+    /// Project-level reusable colour grades. Persisted to
+    /// `.klipp/looks/{id}.json` on save, loaded back into this Vec
+    /// on project open.
+    pub looks: Vec<klipp_timeline::Look>,
+
     // Viewer overlay (zebra / false color)
     pub viewer_overlays: ViewerOverlays,
     pub frame_count: u64, // for zebra animation
@@ -2095,6 +2100,7 @@ impl Default for AppState {
             active_grade_still: None,
             grade_still_compare: false,
             color_match_reference: None,
+            looks: Vec::new(),
             viewer_overlays: ViewerOverlays::default(),
             frame_count: 0,
             false_color_lut: crate::prefs::FalseColorPalette::broadcast().build_lut(),

@@ -5891,6 +5891,14 @@ impl PlaybackEngine {
                         &clip.node_graph, &clip.builtin_effects, &clip.builtin_effects_enabled,
                     );
                     self.current_grade_clip_id = Some(clip.id);
+                    // CRITICAL: `current_grade_clip_id` is shared with
+                    // the graph-Arc cache in `post_process_rgba_inner`
+                    // (the `cache_hit` check compares that same id).
+                    // Bumping the id without invalidating the Arc would
+                    // leave the previous clip's graph in the cache and
+                    // `_inner` would happily reuse it — exactly the
+                    // "grade applied to every clip" bug we chased here.
+                    self.current_graph_arc = None;
                 }
                 if !clip.node_graph.is_identity() || !clip.builtin_effects.is_empty() {
                     Some(crate::render_cache::RenderCacheKey {
@@ -6366,8 +6374,25 @@ impl PlaybackEngine {
         let rgba = linear_rgba;
         let t0 = std::time::Instant::now();
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-        let clip = seq.tracks.get(self.current_track_index)
-            .and_then(|t| t.clips.get(self.current_clip_index));
+        // Pick the clip by playhead position, NOT by the engine's
+        // current_track_index/current_clip_index decoder bookkeeping.
+        // The two can disagree for a window during clip transitions
+        // (decoder switches files before advance_to_next_clip bumps
+        // the indices, or vice versa), and any disagreement here means
+        // the wrong clip's grade gets applied to the new clip's
+        // pixels. The cache key path above (`clip_at_timecode`) uses
+        // playhead lookup; matching it makes the grade follow the
+        // playhead 1:1.
+        //
+        // Falls back to the index-based lookup when no playable clip
+        // sits under the playhead — preserves the synthetic / no-clip
+        // paths that the original lookup served.
+        let clip = seq.tracks.iter()
+            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .find_map(|t| t.clip_at_timecode(self.playhead))
+            .map(|(_, c)| c)
+            .or_else(|| seq.tracks.get(self.current_track_index)
+                .and_then(|t| t.clips.get(self.current_clip_index)));
         // Capture the current clip's id for per-effect compare gating after
         // the seq lock drops. Some() only when we actually have a clip.
         let current_clip_id: Option<klipp_core::ClipId> = clip.map(|c| c.id);

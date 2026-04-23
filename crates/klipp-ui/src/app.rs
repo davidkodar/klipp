@@ -241,6 +241,7 @@ pub struct KlippApp {
     node_graph_panel: crate::panels::node_graph::NodeGraphPanel,
     node_graph_v2_panel: crate::panels::node_graph_v2::NodeGraphV2Panel,
     node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel,
+    looks_panel_state: crate::panels::looks::LooksPanelState,
     /// Pre-edit snapshot for the current color-grading parameter gesture.
     /// Set by `BeginNodeParamEdit`, consumed by `EndNodeParamEdit`. `None`
     /// when no gesture is in progress.
@@ -423,6 +424,7 @@ impl KlippApp {
             node_graph_panel: crate::panels::node_graph::NodeGraphPanel::default(),
             node_graph_v2_panel: crate::panels::node_graph_v2::NodeGraphV2Panel::default(),
             node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel::default(),
+            looks_panel_state: crate::panels::looks::LooksPanelState::default(),
             node_param_edit_snapshot: None,
             scope_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
             media_watcher: None,
@@ -10187,6 +10189,81 @@ impl KlippApp {
                 true
             }
 
+            AppCommand::SaveLook { name } => {
+                let Some(clip_id) = self.state.selected_clip else {
+                    self.state.toast.show("Select a clip first to save a Look");
+                    return true;
+                };
+                let snapshot = {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    seq.all_clips().find(|c| c.id == clip_id).map(|c| c.node_graph.clone())
+                };
+                let Some(node_graph) = snapshot else {
+                    self.state.toast.show("Selected clip not found");
+                    return true;
+                };
+                let look = klipp_timeline::Look {
+                    id: uuid::Uuid::new_v4(),
+                    name: name.trim().to_string(),
+                    node_graph,
+                };
+                let label = look.name.clone();
+                self.state.looks.push(look);
+                self.state.dirty = true;
+                self.state.toast.show(format!("Saved Look \"{label}\""));
+                true
+            }
+            AppCommand::ApplyLook { look_id, clip_ids } => {
+                let Some(look) = self.state.looks.iter().find(|l| l.id == *look_id).cloned() else {
+                    self.state.toast.show("Look not found");
+                    return true;
+                };
+                let mut applied = 0_usize;
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                for clip_id in clip_ids {
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
+                        let old_graph = clip.node_graph.clone();
+                        // remap_ids gives the target a fresh set of NodeIds
+                        // so two clips applying the same Look don't collide.
+                        clip.node_graph = look.node_graph.remap_ids();
+                        applied += 1;
+                        self.state.history.push(crate::history::HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: crate::history::EditCommand::SetNodeGraph {
+                                clip_id: *clip_id,
+                                old_graph,
+                                new_graph: clip.node_graph.clone(),
+                            },
+                        });
+                    }
+                }
+                if applied > 0 {
+                    self.state.dirty = true;
+                    self.state.toast.show(format!(
+                        "Applied \"{}\" to {applied} clip{}", look.name, if applied == 1 { "" } else { "s" }
+                    ));
+                    *needs_refresh = true;
+                } else {
+                    self.state.toast.show("No matching clips selected");
+                }
+                true
+            }
+            AppCommand::DeleteLook { look_id } => {
+                let before = self.state.looks.len();
+                self.state.looks.retain(|l| l.id != *look_id);
+                if self.state.looks.len() != before {
+                    self.state.dirty = true;
+                }
+                true
+            }
+            AppCommand::RenameLook { look_id, new_name } => {
+                if let Some(look) = self.state.looks.iter_mut().find(|l| l.id == *look_id) {
+                    look.name = new_name.trim().to_string();
+                    self.state.dirty = true;
+                }
+                true
+            }
+
             _ => false,
         }
     }
@@ -15366,6 +15443,9 @@ impl KlippApp {
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
         match klipp_project::save_project_with_color_and_backups(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x)) {
             Ok(()) => {
+                if let Err(e) = klipp_project::save_looks(path, &self.state.looks) {
+                    tracing::warn!("Failed to persist Looks library: {e}");
+                }
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
                 self.state.history.reset_ops_since_save();
@@ -15441,6 +15521,7 @@ impl KlippApp {
                 self.state.created_at = created_at;
                 self.state.project_notes = notes;
                 self.state.media_pool = media_pool;
+                self.state.looks = klipp_project::load_looks(path);
                 // Restore saved timeline view-state (zoom + scroll). Legacy
                 // project files don't carry these — leave the in-memory
                 // defaults alone in that case.
@@ -17808,6 +17889,9 @@ impl eframe::App for KlippApp {
                 let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
                 match klipp_project::save_project_with_color_and_backups(&autosave_path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x)) {
                     Ok(()) => {
+                        if let Err(e) = klipp_project::save_looks(&autosave_path, &self.state.looks) {
+                            tracing::warn!("Auto-save: failed to persist Looks: {e}");
+                        }
                         tracing::info!("Auto-saved to {:?}", autosave_path);
                         self.state.toast.show("Auto-saved");
                         self.state.history.reset_ops_since_save();
@@ -21824,6 +21908,31 @@ impl KlippApp {
                             sep_rect2.max,
                         );
                         ui.painter().rect_filled(sep_rect2, 0.0, self.theme.border);
+                    }
+
+                    // Looks strip — project-level reusable grades.
+                    // Sits above the tabs; saves the selected clip's
+                    // graph, applies to the timeline selection (or the
+                    // single selected clip when no rubber-band is
+                    // active). Same disjoint-field borrow trick as the
+                    // grade-stills section above.
+                    {
+                        let looks_cmds = crate::panels::looks::show(
+                            ui,
+                            &mut self.looks_panel_state,
+                            &self.state.looks,
+                            self.state.selected_clip,
+                            &self.state.selected_clips,
+                            &self.theme,
+                        );
+                        all_cmds.extend(looks_cmds);
+                        ui.add_space(2.0);
+                        let sep_rect3 = ui.allocate_space(egui::vec2(avail_w, 1.0)).1;
+                        let sep_rect3 = egui::Rect::from_min_max(
+                            egui::pos2(sep_rect3.min.x + 8.0, sep_rect3.min.y),
+                            sep_rect3.max,
+                        );
+                        ui.painter().rect_filled(sep_rect3, 0.0, self.theme.border);
                     }
 
                     // Always show the tabbed colour-grade inspector in

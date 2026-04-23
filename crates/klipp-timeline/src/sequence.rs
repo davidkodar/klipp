@@ -764,6 +764,17 @@ pub struct GradeVersion {
     pub node_graph: klipp_nodes::NodeGraph,
 }
 
+/// A project-level reusable colour grade. The user saves the current
+/// clip's node graph as a named "Look" and applies it to other clips
+/// later. Persisted under `.klipp/looks/{id}.json`. Distinct from
+/// `GradeVersion`, which is per-clip undo-style versioning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Look {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub node_graph: klipp_nodes::NodeGraph,
+}
+
 /// A marker placed at a specific time within a clip (relative to source_in).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipMarker {

@@ -5,6 +5,7 @@ pub mod clip_properties;
 pub mod curve_editor;
 pub mod preset_manager;
 pub mod inspector;
+pub mod looks;
 pub mod node_graph;
 pub mod node_graph_v2;
 pub mod node_inspector;

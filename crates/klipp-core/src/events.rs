@@ -1298,6 +1298,18 @@ pub enum AppCommand {
     /// Rename a grade version.
     RenameGradeVersion { clip_id: ClipId, version_index: usize, name: String },
 
+    // Looks (project-wide reusable colour grades)
+    /// Snapshot the selected clip's node graph as a new project-level
+    /// Look. The handler reads the clip's current graph; this command
+    /// just supplies the user-facing name.
+    SaveLook { name: String },
+    /// Apply a saved Look to one or more target clips. The Look's
+    /// node graph replaces each target's `node_graph` (with fresh
+    /// node IDs via `remap_ids`).
+    ApplyLook { look_id: uuid::Uuid, clip_ids: Vec<ClipId> },
+    DeleteLook { look_id: uuid::Uuid },
+    RenameLook { look_id: uuid::Uuid, new_name: String },
+
     // Grade stills (reference frame comparison)
     /// Capture the current viewer frame as a grade reference still.
     CaptureGradeStill { name: String },

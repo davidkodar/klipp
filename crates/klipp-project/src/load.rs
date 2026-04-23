@@ -3,7 +3,7 @@ use crate::path_util::{resolve_media_path, read_to_string_capped, MAX_INPUT_FILE
 use klipp_core::*;
 use klipp_media::{MediaItem, MediaPool};
 use klipp_timeline::{
-    Clip, ClipKind, FontStyle, Sequence, TextAlignment, TitleBackground, TitleData,
+    Clip, ClipKind, FontStyle, Look, Sequence, TextAlignment, TitleBackground, TitleData,
     TitlePosition, TitleShadow, Track, TrackKind,
 };
 use klipp_nodes::{NodeGraph, NodeKind, NodeId};
@@ -564,4 +564,37 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
 
 fn parse_uuid(s: &str) -> Result<Uuid, String> {
     Uuid::parse_str(s).map_err(|e| format!("Invalid UUID '{s}': {e}"))
+}
+
+/// Read every `<dir>/looks/*.json` and deserialize as a Look. Files
+/// that fail to parse are logged and skipped — a single corrupt Look
+/// shouldn't block the rest of the project from loading.
+pub fn load_looks(dir: &Path) -> Vec<Look> {
+    let looks_dir = dir.join("looks");
+    if !looks_dir.exists() {
+        return Vec::new();
+    }
+    let entries = match std::fs::read_dir(&looks_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!("Failed to read looks dir {:?}: {e}", looks_dir);
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().map_or(true, |e| e != "json") { continue; }
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str::<Look>(&text) {
+                Ok(look) => out.push(look),
+                Err(e) => warn!("Skipping corrupt Look {:?}: {e}", path),
+            },
+            Err(e) => warn!("Failed to read Look {:?}: {e}", path),
+        }
+    }
+    // Stable order — UUIDs sort lexicographically. Avoids the UI list
+    // jumping around between loads on the same project.
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
 }
