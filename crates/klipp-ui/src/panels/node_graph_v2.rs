@@ -567,7 +567,12 @@ impl NodeGraphV2Panel {
     ) {
         let menu_id = ui.id().with("ngv2_add_menu");
         let mut close = false;
-        egui::Area::new(menu_id)
+        // egui::Area returns a response we can use to detect
+        // outside-clicks via `clicked_elsewhere`. Doing the close
+        // logic THIS way instead of a global `primary_clicked()`
+        // check avoids the bug where the same right-click that just
+        // opened the menu (this frame) also tripped the close.
+        let area_resp = egui::Area::new(menu_id)
             .fixed_pos(self.add_menu_screen_pos)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
@@ -606,16 +611,7 @@ impl NodeGraphV2Panel {
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
                 });
             });
-        // Close on outside-click. Detect by a click outside the menu's
-        // bounding area or on canvas next frame — simplest signal here
-        // is: if the user clicked anything else and the menu didn't
-        // consume it, the next frame's primary_pressed check will close.
-        if ui.input(|i| i.pointer.primary_clicked() || i.pointer.secondary_clicked()) {
-            // The button-click path sets `close = true`; outside clicks
-            // we detect by no menu button being clicked.
-            // (Egui's popup wouldn't have absorbed the click here.)
-            close = true;
-        }
+        if area_resp.response.clicked_elsewhere() { close = true; }
         if close { self.add_menu_open = false; }
     }
 
@@ -632,7 +628,7 @@ impl NodeGraphV2Panel {
         let pos = self.node_menu.map(|(_, p)| p).unwrap_or_default();
         let menu_id = ui.id().with(("ngv2_node_menu", node_id));
         let mut close = false;
-        egui::Area::new(menu_id)
+        let area_resp = egui::Area::new(menu_id)
             .fixed_pos(pos)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
@@ -655,9 +651,7 @@ impl NodeGraphV2Panel {
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
                 });
             });
-        if ui.input(|i| i.pointer.primary_clicked() || i.pointer.secondary_clicked()) {
-            close = true;
-        }
+        if area_resp.response.clicked_elsewhere() { close = true; }
         if close { self.node_menu = None; }
     }
 }
