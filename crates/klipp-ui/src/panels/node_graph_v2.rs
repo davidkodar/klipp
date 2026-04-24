@@ -174,6 +174,8 @@ impl NodeGraphV2Panel {
         deferred_drops: &mut Vec<egui::TextureHandle>,
         descent_path: &mut Vec<NodeId>,
         breadcrumb_labels: &[String],
+        grade_version_names: &[String],
+        active_grade_version: Option<usize>,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
@@ -258,6 +260,55 @@ impl NodeGraphV2Panel {
         let reset_clicked = toolbar_ui.button("1:1").on_hover_text(
             "Reset zoom to 100 % and centre on the graph origin"
         ).clicked();
+        toolbar_ui.add_space(8.0);
+        // Grade-version picker. Shows "V: none" when no versions
+        // exist, "V: V1 ▾" when one is active, with a menu listing
+        // every saved version plus save / update / rename / delete
+        // actions. Clicking a version triggers SwitchGradeVersion;
+        // "Save as new version" picks the next auto-name (V1 / V2 /
+        // ...). Rename / delete act on the currently-active version.
+        let active_name = active_grade_version
+            .and_then(|i| grade_version_names.get(i).map(|s| s.as_str()));
+        let menu_label = match active_name {
+            Some(n) => format!("V: {n}"),
+            None if grade_version_names.is_empty() => "V: +".to_string(),
+            None => "V: —".to_string(),
+        };
+        toolbar_ui.menu_button(menu_label, |mb_ui| {
+            // Existing versions — click to switch.
+            for (i, name) in grade_version_names.iter().enumerate() {
+                let marker = if Some(i) == active_grade_version { "●" } else { "○" };
+                if mb_ui.button(format!("{marker}  {name}")).clicked() {
+                    cmds.push(AppCommand::SwitchGradeVersion {
+                        clip_id,
+                        version_index: i,
+                    });
+                    mb_ui.close_menu();
+                }
+            }
+            if !grade_version_names.is_empty() {
+                mb_ui.separator();
+            }
+            if mb_ui.button("Save as new version").clicked() {
+                // Auto-numbered "V1", "V2", … based on current count.
+                let name = format!("V{}", grade_version_names.len() + 1);
+                cmds.push(AppCommand::SaveGradeVersion { clip_id, name });
+                mb_ui.close_menu();
+            }
+            if let Some(idx) = active_grade_version {
+                if mb_ui.button("Update active version with current").clicked() {
+                    cmds.push(AppCommand::UpdateActiveGradeVersion { clip_id });
+                    mb_ui.close_menu();
+                }
+                if mb_ui.button("Delete active version").clicked() {
+                    cmds.push(AppCommand::DeleteGradeVersion {
+                        clip_id,
+                        version_index: idx,
+                    });
+                    mb_ui.close_menu();
+                }
+            }
+        });
         toolbar_ui.add_space(8.0);
         toolbar_ui.label(
             egui::RichText::new(format!("zoom {:.0} %", self.zoom * 100.0))

@@ -765,6 +765,11 @@ pub enum AppCommand {
         clip_id: ClipId,
         node_id: uuid::Uuid,
     },
+
+    /// Overwrite the currently-active grade version with the
+    /// clip's live `node_graph`. For "I tweaked V1, save my
+    /// changes into V1" workflows. No-op when no version is active.
+    UpdateActiveGradeVersion { clip_id: ClipId },
     ConnectNodes { clip_id: ClipId, from: uuid::Uuid, from_port: u8, to: uuid::Uuid, to_port: u8 },
     DisconnectEdge { clip_id: ClipId, to: uuid::Uuid, to_port: u8 },
     MoveNode { clip_id: ClipId, node_id: uuid::Uuid, delta_x: f32, delta_y: f32 },

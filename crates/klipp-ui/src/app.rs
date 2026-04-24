@@ -9935,6 +9935,21 @@ impl KlippApp {
                 self.ungroup_compound(*clip_id, *node_id, needs_refresh);
                 true
             }
+            AppCommand::UpdateActiveGradeVersion { clip_id } => {
+                let clip_id = *clip_id;
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(clip_id) {
+                        if let Some(idx) = clip.active_grade_version {
+                            if let Some(v) = clip.grade_versions.get_mut(idx) {
+                                v.node_graph = clip.node_graph.clone();
+                                self.state.dirty = true;
+                            }
+                        }
+                        break;
+                    }
+                }
+                true
+            }
             AppCommand::DescendIntoCompound { clip_id, node_id } => {
                 // Resolve the CURRENT graph at the existing descent
                 // path, check that `node_id` is a Compound with a
@@ -23587,6 +23602,18 @@ impl KlippApp {
                     };
                     let panel_cmds = if self.state.use_node_graph_v2 {
                         let slot = self.state.deferred_texture_drops_slot;
+                        // Snapshot grade version names + active
+                        // index BEFORE grabbing the mutable graph
+                        // borrow — the panel only needs the labels
+                        // for the dropdown, not the full snapshots
+                        // (which would be expensive to clone per
+                        // render).
+                        let grade_version_names: Vec<String> = clip
+                            .grade_versions
+                            .iter()
+                            .map(|v| v.name.clone())
+                            .collect();
+                        let active_grade_version = clip.active_grade_version;
                         // Resolve the graph at the current descent
                         // path. If the path went stale (shouldn't
                         // happen in normal use — we self-heal), the
@@ -23607,6 +23634,8 @@ impl KlippApp {
                             &mut self.state.deferred_texture_drops[slot],
                             &mut self.state.graph_descent_path,
                             &breadcrumb_labels,
+                            &grade_version_names,
+                            active_grade_version,
                         )
                     } else {
                         self.node_graph_panel.show(
