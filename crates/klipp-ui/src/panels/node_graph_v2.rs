@@ -1231,6 +1231,8 @@ impl NodeGraphV2Panel {
                         ("Noise Reduction", "Denoise"),
                         ("3D LUT", "Lut3D"),
                         ("Compound", "Compound"),
+                        ("RGB Splitter", "RGBSplitter"),
+                        ("RGB Combiner", "RGBCombiner"),
                     ] {
                         if ui.button(label).clicked() {
                             cmds.push(AppCommand::AddNode {

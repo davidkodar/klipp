@@ -2413,6 +2413,41 @@ impl GraphExecutor {
             // Output edge / cycle — shouldn't happen on Group-
             // created compounds but we fall through safely rather
             // than propagate the error up to the engine).
+            // RGB Splitter — labelled fan-out. All three output
+            // ports carry the same full-RGBA frame; the grade chain
+            // wired to a given branch is the one that grades that
+            // channel. Channel extraction happens at the matching
+            // RGBCombiner. DaVinci convention; avoids a multi-output
+            // refactor of the executor.
+            NodeKind::RGBSplitter => primary_input.to_vec(),
+
+            // RGB Combiner — port 0 (R) takes the red-graded signal,
+            // port 1 (G) the green-graded, port 2 (B) the blue-
+            // graded. Output assembles R from in0's R channel,
+            // G from in1's G, B from in2's B, alpha from in0. Falls
+            // back to primary_input for any missing / wrong-size
+            // input so a half-wired combiner still produces a sane
+            // image instead of a crash or black frame.
+            NodeKind::RGBCombiner => {
+                let n = primary_input.len();
+                let g_src = secondary_input
+                    .filter(|s| s.len() == n)
+                    .unwrap_or(primary_input);
+                let b_src = tertiary_input
+                    .filter(|s| s.len() == n)
+                    .unwrap_or(primary_input);
+                let mut out = Vec::with_capacity(n);
+                let mut i = 0;
+                while i + 3 < n {
+                    out.push(primary_input[i]);      // R ← in0.R
+                    out.push(g_src[i + 1]);          // G ← in1.G
+                    out.push(b_src[i + 2]);          // B ← in2.B
+                    out.push(primary_input[i + 3]);  // A ← in0.A
+                    i += 4;
+                }
+                out
+            }
+
             NodeKind::Compound => {
                 let Some(subgraph) = params.compound_subgraph.as_ref() else {
                     return primary_input.to_vec();

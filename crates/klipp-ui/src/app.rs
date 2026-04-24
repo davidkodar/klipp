@@ -9305,6 +9305,8 @@ impl KlippApp {
             "ColorWarper" => klipp_nodes::NodeKind::ColorWarper,
             "Denoise" => klipp_nodes::NodeKind::Denoise,
             "Compound" => klipp_nodes::NodeKind::Compound,
+            "RGBSplitter" => klipp_nodes::NodeKind::RGBSplitter,
+            "RGBCombiner" => klipp_nodes::NodeKind::RGBCombiner,
             _ => { return; }
         };
         self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
@@ -22710,6 +22712,8 @@ impl KlippApp {
                             | klipp_nodes::NodeKind::CombineMattes
                             | klipp_nodes::NodeKind::ApplyMatte
                             | klipp_nodes::NodeKind::Compound
+                            | klipp_nodes::NodeKind::RGBSplitter
+                            | klipp_nodes::NodeKind::RGBCombiner
                         ))
                         .unwrap_or(false);
                     let panel_cmds = if use_per_node_inspector {

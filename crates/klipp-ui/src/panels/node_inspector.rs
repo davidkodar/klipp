@@ -589,7 +589,7 @@ impl NodeInspectorPanel {
         ui: &mut egui::Ui,
         graph: &mut NodeGraph,
         clip_id: ClipId,
-        _selected_node: &mut Option<NodeId>,
+        selected_node: &mut Option<NodeId>,
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
     ) {
@@ -614,13 +614,27 @@ impl NodeInspectorPanel {
             return;
         }
 
-        // Helper: prefer the Corrector (every section-relevant param
-        // lives on it) so each section points at one canonical node.
-        // Falls back to a dedicated single-purpose node by `kind` for
-        // graphs that have one but not a Corrector — works
-        // section-by-section because every grade param is a flat
-        // field on `NodeParams`.
+        // Helper: pick the node each section's sliders should write
+        // to. Priority:
+        //   1. The user-selected node if it matches `kind` — when the
+        //      user explicitly selected a standalone Contrast /
+        //      Exposure / Saturation / etc. node in the canvas, the
+        //      tabs must target THAT node so the selected-node
+        //      feedback loop works (this matters for RGB-split
+        //      chains where a grade node lives on one channel and
+        //      must grade only that channel, not the upstream
+        //      Corrector).
+        //   2. Otherwise, the Corrector — every section-relevant
+        //      param lives on it, so the legacy "all tabs on one
+        //      canonical node" workflow keeps working.
+        //   3. Otherwise, the first node of the requested `kind`.
+        let selected_id = *selected_node;
         let find_node = |graph: &mut NodeGraph, kind: NodeKind| -> Option<(NodeId, bool)> {
+            if let Some(sid) = selected_id {
+                if let Some(n) = graph.nodes.iter().find(|n| n.id == sid && n.kind == kind) {
+                    return Some((n.id, n.enabled));
+                }
+            }
             graph.nodes.iter()
                 .find(|n| n.kind == NodeKind::Corrector)
                 .map(|n| (n.id, n.enabled))
@@ -1705,6 +1719,7 @@ impl NodeInspectorPanel {
                 );
             }
             NodeKind::Source | NodeKind::Output | NodeKind::Layer
+            | NodeKind::RGBSplitter | NodeKind::RGBCombiner
             | NodeKind::Unknown => {
                 ui.label(egui::RichText::new("No parameters").color(theme.text_dim));
             }

@@ -92,6 +92,21 @@ pub enum NodeKind {
     /// editing affordance the V2 canvas needs first.
     Compound,
 
+    /// RGB Splitter — 1 input, 3 outputs (R / G / B). Each output
+    /// port emits the same full-RGBA frame (labelled fan-out); the
+    /// grade chain wired to the R branch is the one that grades the
+    /// red channel. Channel extraction happens at the matching
+    /// `RGBCombiner` on the other side. Matches the DaVinci
+    /// convention and avoids a multi-output refactor of the
+    /// executor.
+    RGBSplitter,
+
+    /// RGB Combiner — 3 inputs (R / G / B), 1 output. Output R comes
+    /// from input 0's R channel, G from input 1's G, B from input
+    /// 2's B; alpha from input 0. Paired with `RGBSplitter` to
+    /// enable per-channel grading.
+    RGBCombiner,
+
     // ── Future ──────────────────────────────────────────────────
     #[serde(other)]
     Unknown,
@@ -114,6 +129,7 @@ impl NodeKind {
             | NodeKind::CombineMattes
             | NodeKind::ColorMatch
             | NodeKind::LayerMixer => 2,
+            NodeKind::RGBCombiner => 3,
             _ => 1,
         }
     }
@@ -122,6 +138,7 @@ impl NodeKind {
     pub fn output_port_count(&self) -> u8 {
         match self {
             NodeKind::Output => 0,
+            NodeKind::RGBSplitter => 3,
             _ => 1,
         }
     }
@@ -152,6 +169,12 @@ impl NodeKind {
             // (no foreground/background asymmetry — order alone carries
             // depth, with port 0 on top).
             (NodeKind::LayerMixer, _) => PortRole::Primary,
+            // RGB Combiner: port 0 takes the red-channel-graded signal,
+            // 1 green, 2 blue. Colour-coded wires make the channel flow
+            // legible at a glance.
+            (NodeKind::RGBCombiner, 0) => PortRole::ChannelRed,
+            (NodeKind::RGBCombiner, 1) => PortRole::ChannelGreen,
+            (NodeKind::RGBCombiner, 2) => PortRole::ChannelBlue,
             // Default — every other (kind, port) is the colour signal.
             _ => PortRole::Primary,
         }
@@ -162,9 +185,15 @@ impl NodeKind {
     /// Mask) whose output is itself a matte — useful when wire
     /// colour-coding follows the producer's role rather than the
     /// consumer's.
-    pub fn output_port_role(&self, _port: u8) -> PortRole {
-        match self {
-            NodeKind::Qualifier | NodeKind::Mask | NodeKind::CombineMattes | NodeKind::ExternalMatte => PortRole::Matte,
+    pub fn output_port_role(&self, port: u8) -> PortRole {
+        match (self, port) {
+            (NodeKind::Qualifier, _)
+            | (NodeKind::Mask, _)
+            | (NodeKind::CombineMattes, _)
+            | (NodeKind::ExternalMatte, _) => PortRole::Matte,
+            (NodeKind::RGBSplitter, 0) => PortRole::ChannelRed,
+            (NodeKind::RGBSplitter, 1) => PortRole::ChannelGreen,
+            (NodeKind::RGBSplitter, 2) => PortRole::ChannelBlue,
             _ => PortRole::Primary,
         }
     }
@@ -189,13 +218,22 @@ impl NodeKind {
             // as "Input 1 (top)" so the stack ordering is unambiguous.
             (NodeKind::LayerMixer, 0) => "Input 1 (top)",
             (NodeKind::LayerMixer, _) => "Input N",
+            (NodeKind::RGBCombiner, 0) => "R",
+            (NodeKind::RGBCombiner, 1) => "G",
+            (NodeKind::RGBCombiner, 2) => "B",
             _ => "Input",
         }
     }
 
-    pub fn output_port_label(&self, _port: u8) -> &'static str {
-        match self {
-            NodeKind::Qualifier | NodeKind::Mask | NodeKind::CombineMattes | NodeKind::ExternalMatte => "Matte",
+    pub fn output_port_label(&self, port: u8) -> &'static str {
+        match (self, port) {
+            (NodeKind::Qualifier, _)
+            | (NodeKind::Mask, _)
+            | (NodeKind::CombineMattes, _)
+            | (NodeKind::ExternalMatte, _) => "Matte",
+            (NodeKind::RGBSplitter, 0) => "R",
+            (NodeKind::RGBSplitter, 1) => "G",
+            (NodeKind::RGBSplitter, 2) => "B",
             _ => "Output",
         }
     }
@@ -230,6 +268,8 @@ impl NodeKind {
             NodeKind::ColorWarper => "Color Warper",
             NodeKind::Denoise => "Noise Reduction",
             NodeKind::Compound => "Compound",
+            NodeKind::RGBSplitter => "RGB Splitter",
+            NodeKind::RGBCombiner => "RGB Combiner",
             NodeKind::Unknown => "Unknown",
         }
     }
@@ -254,6 +294,12 @@ pub enum PortRole {
     /// The pre-grade (un-graded) version of the primary, used by
     /// ApplyMatte's compare-pass slot.
     PreGrade,
+    /// Red channel signal in an RGB Splitter / Combiner branch.
+    ChannelRed,
+    /// Green channel signal.
+    ChannelGreen,
+    /// Blue channel signal.
+    ChannelBlue,
 }
 
 impl PortRole {
@@ -267,6 +313,9 @@ impl PortRole {
             PortRole::Matte      => (0xc8, 0x4a, 0xa8),  // magenta
             PortRole::Reference  => (0xe8, 0x88, 0x3a),  // bright orange
             PortRole::PreGrade   => (0x90, 0x90, 0x90),  // grey
+            PortRole::ChannelRed   => (0xe8, 0x5a, 0x5a),  // bright red
+            PortRole::ChannelGreen => (0x5a, 0xd0, 0x6a),  // bright green
+            PortRole::ChannelBlue  => (0x5a, 0x8a, 0xe8),  // bright blue
         }
     }
 }
