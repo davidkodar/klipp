@@ -600,7 +600,19 @@ impl NodeGraphV2Panel {
         let secondary_clicked = ui.input(|i| i.pointer.secondary_clicked());
 
         // Node-body click + drag → start move; click on output port → start wire.
-        if primary_pressed {
+        //
+        // Suppress the canvas handler when a floating menu (node
+        // context menu or add-node menu) is already open — the press
+        // belongs to the menu's button, not to the canvas. Without
+        // this guard every menu-button click ALSO ran through the
+        // canvas selection logic: cursor wasn't over a node body so
+        // `node_hit=false` → `selected_set.clear()`. By the time the
+        // button's `.clicked()` fired on release the selection had
+        // already been wiped, Group-into-Compound saw `inside.len() <
+        // 2` and silently returned. Gating here lets the menu's own
+        // `clicked_elsewhere` close-detection handle outside-clicks.
+        let menu_open = self.node_menu.is_some() || self.add_menu_open;
+        if primary_pressed && !menu_open {
             if let Some(p) = pointer_pos {
                 if canvas_rect.contains(p) {
                     // Output port hit?
