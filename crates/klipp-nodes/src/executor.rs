@@ -12,6 +12,24 @@ use crate::kinds::NodeKind;
 use crate::params::{MatteChannel, NodeParams};
 use klipp_core::{BlendMode, LayerMixerInput};
 
+/// Reserved keyframe track name that animates a node's enabled / bypass state.
+/// Values >= 0.5 mean enabled, < 0.5 mean bypassed. Falls back to the static
+/// `node.enabled` bool when the track has no keyframes.
+pub const ENABLED_TRACK: &str = "__enabled";
+
+/// Effective enabled state for `node` at `clip_time_secs`. Consults the
+/// `__enabled` keyframe track if present, otherwise falls back to the static
+/// bool.
+pub fn effective_enabled(node: &Node, clip_time_secs: f64) -> bool {
+    node.keyframes
+        .tracks
+        .iter()
+        .find(|t| t.param_name == ENABLED_TRACK)
+        .and_then(|t| t.evaluate(clip_time_secs))
+        .map(|v| v >= 0.5)
+        .unwrap_or(node.enabled)
+}
+
 /// Return the effective params for `node` at `clip_time_secs`. When the node has
 /// no keyframes we borrow `node.params` directly, skipping the per-frame clone
 /// that would otherwise happen on every node in the graph.
@@ -21,6 +39,9 @@ fn params_for_frame(node: &Node, clip_time_secs: f64) -> Cow<'_, NodeParams> {
     } else {
         let mut params = node.params.clone();
         for (param_name, value) in node.keyframes.evaluate_all(clip_time_secs) {
+            if param_name == ENABLED_TRACK {
+                continue;
+            }
             params.apply_override(&param_name, value);
         }
         Cow::Owned(params)
@@ -413,7 +434,7 @@ impl GraphExecutor {
                     | NodeKind::ColorWarper
                     | NodeKind::Denoise
             );
-            let bypass = !node.enabled
+            let bypass = !effective_enabled(node, clip_time_secs)
                 || (is_param_driven_filter && node.params.is_default());
 
             // If a chain is live, see whether this node can extend it or
@@ -2933,6 +2954,97 @@ mod tests {
                 "bypassed exposure node should not change frame: orig {a}, got {b}",
             );
         }
+    }
+
+    #[test]
+    fn effective_enabled_falls_back_to_static_bool() {
+        let mut graph = default_graph();
+        let exp = graph.nodes.iter_mut().find(|n| n.kind == NodeKind::Exposure).unwrap();
+        exp.enabled = true;
+        assert!(effective_enabled(exp, 0.0));
+        exp.enabled = false;
+        assert!(!effective_enabled(exp, 5.0));
+    }
+
+    #[test]
+    fn effective_enabled_respects_keyframe_track() {
+        let mut graph = default_graph();
+        let exp = graph.nodes.iter_mut().find(|n| n.kind == NodeKind::Exposure).unwrap();
+        exp.enabled = false; // static bool must be overridden by the track
+        let track = exp.keyframes.track_mut(ENABLED_TRACK);
+        track.set_keyframe(0.0, 1.0);
+        track.set_keyframe(2.0, 0.0);
+        for kf in track.keyframes.iter_mut() {
+            kf.interpolation = klipp_core::keyframe::Interpolation::Step;
+        }
+
+        assert!(effective_enabled(exp, 0.0), "kf at t=0 value=1.0 should enable");
+        assert!(effective_enabled(exp, 1.5), "step-hold up to next kf should still be enabled");
+        assert!(!effective_enabled(exp, 2.0), "kf at t=2 value=0.0 should bypass");
+        assert!(!effective_enabled(exp, 5.0), "post-last-kf should hold bypass");
+    }
+
+    #[test]
+    fn keyframed_bypass_applies_grade_at_t0_and_skips_at_t3() {
+        // Build a graph with a strong exposure node that is statically
+        // enabled=false (so without the __enabled track it'd always
+        // pass through). Add a track that flips it on at t=0 and off
+        // at t=3. Verify execution at t=0 brightens the frame and at
+        // t=3 leaves it alone.
+        let mut graph = default_graph();
+        let exp = graph.nodes.iter_mut().find(|n| n.kind == NodeKind::Exposure).unwrap();
+        exp.params.exposure = Some(2.0);
+        exp.enabled = false;
+        let track = exp.keyframes.track_mut(ENABLED_TRACK);
+        track.set_keyframe(0.0, 1.0);
+        track.set_keyframe(3.0, 0.0);
+        for kf in track.keyframes.iter_mut() {
+            kf.interpolation = klipp_core::keyframe::Interpolation::Step;
+        }
+
+        let mut executor = GraphExecutor::new_cpu_only();
+        let frame = vec![100, 100, 100, 255];
+        let (r_on, _) = executor.execute(&frame, &graph, 1, 1, 0.0, 0, None, None).unwrap();
+        let (r_off, _) = executor.execute(&frame, &graph, 1, 1, 3.5, 0, None, None).unwrap();
+
+        assert!(r_on[0] > 120, "at t=0 exposure should be live (got {})", r_on[0]);
+        for (a, b) in frame.iter().zip(r_off.iter()) {
+            assert!(
+                (*a as i32 - *b as i32).abs() <= 1,
+                "at t=3.5s exposure should be bypassed: orig {a}, got {b}",
+            );
+        }
+    }
+
+    #[test]
+    fn effective_enabled_threshold_at_half() {
+        // Linear interpolation between 1.0 at t=0 and 0.0 at t=2
+        // crosses 0.5 at t=1; threshold semantics: >=0.5 is enabled.
+        let mut graph = default_graph();
+        let exp = graph.nodes.iter_mut().find(|n| n.kind == NodeKind::Exposure).unwrap();
+        let track = exp.keyframes.track_mut(ENABLED_TRACK);
+        track.set_keyframe(0.0, 1.0);
+        track.set_keyframe(2.0, 0.0);
+        // Default interpolation is Linear; NOT forcing Step here.
+
+        assert!(effective_enabled(exp, 0.0));
+        assert!(effective_enabled(exp, 1.0), "value=0.5 at midpoint should still be on");
+        assert!(!effective_enabled(exp, 1.1), "value below 0.5 should be bypassed");
+        assert!(!effective_enabled(exp, 2.0));
+    }
+
+    #[test]
+    fn params_for_frame_skips_enabled_track() {
+        // The reserved __enabled track must not be dispatched as a
+        // regular param override — that would trigger a warn and
+        // silently try to write a float to a non-existent field.
+        let mut graph = default_graph();
+        let exp = graph.nodes.iter_mut().find(|n| n.kind == NodeKind::Exposure).unwrap();
+        exp.params.exposure = Some(1.5);
+        exp.keyframes.track_mut(ENABLED_TRACK).set_keyframe(0.0, 1.0);
+
+        let params = params_for_frame(exp, 0.0);
+        assert_eq!(params.exposure, Some(1.5), "__enabled track must not overwrite params");
     }
 
     #[test]

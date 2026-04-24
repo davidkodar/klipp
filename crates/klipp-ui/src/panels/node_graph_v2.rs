@@ -176,6 +176,7 @@ impl NodeGraphV2Panel {
         breadcrumb_labels: &[String],
         grade_version_names: &[String],
         active_grade_version: Option<usize>,
+        clip_time_secs: f64,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
@@ -451,6 +452,7 @@ impl NodeGraphV2Panel {
         let hover_pointer = ui.input(|i| i.pointer.hover_pos());
         for (idx, (node_id, rect, fill, kind, in_count)) in node_rects.iter().copied().enumerate() {
             let node = &graph.nodes[idx];
+            let node_on = klipp_nodes::effective_enabled(node, clip_time_secs);
             // Selection paints amber whether the node is the
             // inspector-primary OR part of a multi-selection set.
             // Both paths must paint the same so the user can't tell
@@ -489,7 +491,7 @@ impl NodeGraphV2Panel {
                 painter.rect_stroke(ghost1, 4.0, egui::Stroke::new(0.5, theme.border));
             }
             painter.rect_filled(rect, 4.0, theme.bg_panel);
-            painter.rect_filled(body_rect, 4.0, if node.enabled { fill } else { theme.bg_panel_alt });
+            painter.rect_filled(body_rect, 4.0, if node_on { fill } else { theme.bg_panel_alt });
 
             // Selection / border — amber-coloured ~2 px border when
             // selected, thin neutral border otherwise. Simple and
@@ -499,7 +501,7 @@ impl NodeGraphV2Panel {
             painter.rect_stroke(rect, 4.0, egui::Stroke::new(border_w, border));
 
             // Label (header)
-            let label_color = if node.enabled { theme.text_primary } else { theme.text_dim };
+            let label_color = if node_on { theme.text_primary } else { theme.text_dim };
             painter.text(
                 egui::pos2(rect.center().x, rect.min.y + header_h * 0.5),
                 egui::Align2::CENTER_CENTER,
@@ -513,7 +515,7 @@ impl NodeGraphV2Panel {
             // executor doesn't recurse into sub-graphs — that lands
             // with stage 5); for now the count is the best visual
             // cue that the node "contains something".
-            if kind == NodeKind::Compound && node.enabled {
+            if kind == NodeKind::Compound && node_on {
                 let n = node.params.compound_subgraph
                     .as_ref()
                     .map(|g| {
@@ -544,7 +546,7 @@ impl NodeGraphV2Panel {
                 );
             }
 
-            if !node.enabled {
+            if !node_on {
                 painter.text(
                     body_rect.center(),
                     egui::Align2::CENTER_CENTER,

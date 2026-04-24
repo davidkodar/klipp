@@ -10451,7 +10451,14 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.keyframes.track_mut(param).set_keyframe(*time_secs, *value);
+                            let track = node.keyframes.track_mut(param);
+                            track.set_keyframe(*time_secs, *value);
+                            if param == klipp_nodes::ENABLED_TRACK {
+                                let epsilon = 0.01;
+                                if let Some(kf) = track.keyframes.iter_mut().find(|kf| (kf.time_secs - *time_secs).abs() < epsilon) {
+                                    kf.interpolation = klipp_core::keyframe::Interpolation::Step;
+                                }
+                            }
                         }
                         break;
                     }
@@ -23614,6 +23621,9 @@ impl KlippApp {
                             .map(|v| v.name.clone())
                             .collect();
                         let active_grade_version = clip.active_grade_version;
+                        let clip_time_secs = (self.state.playhead.to_secs_f64()
+                            - clip.timeline_in.to_secs_f64())
+                        .max(0.0);
                         // Resolve the graph at the current descent
                         // path. If the path went stale (shouldn't
                         // happen in normal use — we self-heal), the
@@ -23636,6 +23646,7 @@ impl KlippApp {
                             &breadcrumb_labels,
                             &grade_version_names,
                             active_grade_version,
+                            clip_time_secs,
                         )
                     } else {
                         self.node_graph_panel.show(
