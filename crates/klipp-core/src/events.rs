@@ -742,6 +742,16 @@ pub enum AppCommand {
         clip_id: ClipId,
         node_ids: Vec<uuid::Uuid>,
     },
+    /// Navigate the V2 canvas into a Compound node's sub-graph.
+    /// Appends `node_id` to `AppState::graph_descent_path`; the
+    /// canvas then renders `compound.params.compound_subgraph`
+    /// instead of the parent. Selection is cleared on descent so the
+    /// inspector doesn't show a stale node from the outer level.
+    /// No-op when `node_id` isn't a Compound with a sub-graph.
+    DescendIntoCompound {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+    },
     ConnectNodes { clip_id: ClipId, from: uuid::Uuid, from_port: u8, to: uuid::Uuid, to_port: u8 },
     DisconnectEdge { clip_id: ClipId, to: uuid::Uuid, to_port: u8 },
     MoveNode { clip_id: ClipId, node_id: uuid::Uuid, delta_x: f32, delta_y: f32 },

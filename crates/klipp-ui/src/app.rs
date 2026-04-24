@@ -9307,34 +9307,21 @@ impl KlippApp {
             "Compound" => klipp_nodes::NodeKind::Compound,
             _ => { return; }
         };
-        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-            if let Some(clip) = track.find_clip_mut(clip_id) {
-                let old_graph = clip.node_graph.clone();
-                let new_id = klipp_nodes::NodeId::new_v4();
-                clip.node_graph.nodes.push(klipp_nodes::Node {
-                    id: new_id,
-                    kind: node_kind.clone(),
-                    label: node_kind.display_name().to_string(),
-                    enabled: true,
-                    params: klipp_nodes::NodeParams::default(),
-                    keyframes: klipp_nodes::NodeKeyframeTracks::default(),
-                });
-                clip.node_graph.node_positions.insert(
-                    new_id,
-                    klipp_nodes::NodePos { x: position.0, y: position.1 },
-                );
-                self.state.history.push(crate::history::HistoryEntry {
-                    sequence_idx: self.state.active_sequence_idx,
-                    command: crate::history::EditCommand::SetNodeGraph {
-                        clip_id,
-                        old_graph,
-                        new_graph: clip.node_graph.clone(),
-                    },
-                });
-                break;
-            }
-        }
-        *needs_refresh = true;
+        self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
+            let new_id = klipp_nodes::NodeId::new_v4();
+            graph.nodes.push(klipp_nodes::Node {
+                id: new_id,
+                kind: node_kind,
+                label: node_kind.display_name().to_string(),
+                enabled: true,
+                params: klipp_nodes::NodeParams::default(),
+                keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+            });
+            graph.node_positions.insert(
+                new_id,
+                klipp_nodes::NodePos { x: position.0, y: position.1 },
+            );
+        });
     }
 
     /// Collapse a multi-node selection into a single Compound node.
@@ -9343,6 +9330,109 @@ impl KlippApp {
     /// the selected nodes + their internal edges into a sub-graph,
     /// drops them from the parent graph, and inserts a fresh Compound
     /// with the sub-graph stashed in `params.compound_subgraph`.
+    /// Walk a descent path from a clip's root `NodeGraph` down into
+    /// nested compounds' `compound_subgraph` fields and return a
+    /// mutable reference to the graph at the leaf. Empty path
+    /// returns the clip's root graph. Errors (missing node, wrong
+    /// kind, empty sub-graph) bubble up so the caller can toast +
+    /// reset the descent path instead of silently editing the wrong
+    /// graph. This is a free function (vs `&mut self` method) so
+    /// callers can hold the returned borrow without locking self.
+    fn resolve_graph_at_path_mut<'a>(
+        clip: &'a mut klipp_timeline::Clip,
+        path: &[klipp_nodes::NodeId],
+    ) -> Result<&'a mut klipp_nodes::NodeGraph, String> {
+        let mut current = &mut clip.node_graph;
+        for &node_id in path {
+            let node = current
+                .nodes
+                .iter_mut()
+                .find(|n| n.id == node_id)
+                .ok_or_else(|| format!("node {node_id} not on descent path"))?;
+            if node.kind != klipp_nodes::NodeKind::Compound {
+                return Err(format!(
+                    "node {node_id} is {:?}, not Compound", node.kind
+                ));
+            }
+            current = node
+                .params
+                .compound_subgraph
+                .as_mut()
+                .ok_or_else(|| format!(
+                    "compound {node_id} has no subgraph"
+                ))?;
+        }
+        Ok(current)
+    }
+
+    /// Run `mutate` against the currently-edited `NodeGraph` — root
+    /// or some descent depth, whichever `state.graph_descent_path`
+    /// points at. Snapshots the TOP-LEVEL clip graph before + after
+    /// so the history entry captures the whole clip state (same
+    /// shape undo has used since day one; no path-aware variant
+    /// needed). Refuses gracefully with a toast if the stored
+    /// descent path is invalid — the caller's refresh still runs so
+    /// the UI self-heals on the next render.
+    fn with_current_clip_graph_mut<F>(
+        &mut self,
+        clip_id: klipp_core::ClipId,
+        needs_refresh: &mut bool,
+        mutate: F,
+    ) where
+        F: FnOnce(&mut klipp_nodes::NodeGraph),
+    {
+        let path = self.state.graph_descent_path.clone();
+        let seq_idx = self.state.active_sequence_idx;
+        let mut applied = false;
+        let mut old_top_graph: Option<klipp_nodes::NodeGraph> = None;
+        let mut new_top_graph: Option<klipp_nodes::NodeGraph> = None;
+        let mut path_went_stale = false;
+        for track in &mut self.state.sequences[seq_idx].tracks {
+            if let Some(clip) = track.find_clip_mut(clip_id) {
+                let old = clip.node_graph.clone();
+                let resolve = Self::resolve_graph_at_path_mut(clip, &path);
+                match resolve {
+                    Ok(graph) => {
+                        mutate(graph);
+                    }
+                    Err(_e) => {
+                        path_went_stale = true;
+                        break;
+                    }
+                }
+                new_top_graph = Some(clip.node_graph.clone());
+                old_top_graph = Some(old);
+                applied = true;
+                break;
+            }
+        }
+        if path_went_stale {
+            // Descent path went stale (upstream remove, clip switch
+            // we missed). Reset to root so future commands hit the
+            // normal path; the user loses nothing except their
+            // current descent position.
+            self.state.graph_descent_path.clear();
+            self.state.selected_node_ids.clear();
+            self.state.selected_node_id = None;
+            return;
+        }
+        if applied {
+            if let (Some(old_graph), Some(new_graph)) =
+                (old_top_graph, new_top_graph)
+            {
+                self.state.history.push(crate::history::HistoryEntry {
+                    sequence_idx: seq_idx,
+                    command: crate::history::EditCommand::SetNodeGraph {
+                        clip_id,
+                        old_graph,
+                        new_graph,
+                    },
+                });
+            }
+            *needs_refresh = true;
+        }
+    }
+
     /// Single-input / single-output topology only for v1; refuses
     /// gracefully (toast + no-op) on multi-port selections.
     fn group_into_compound(
@@ -9359,9 +9449,19 @@ impl KlippApp {
             return;
         }
 
+        let path = self.state.graph_descent_path.clone();
+        // Compute the edit against the currently-visible graph (root
+        // or a descended sub-graph). `target_old_graph` is a snapshot
+        // of that graph for validation + sub-graph construction;
+        // `old_root_graph` is the whole clip graph for undo.
         for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
             let Some(clip) = track.find_clip_mut(clip_id) else { continue };
-            let old_graph = clip.node_graph.clone();
+            let old_root_graph = clip.node_graph.clone();
+            let Ok(target_graph) = Self::resolve_graph_at_path_mut(clip, &path) else {
+                self.state.toast.show("Group: invalid descent path");
+                return;
+            };
+            let old_graph = target_graph.clone();
 
             // Source / Output are structural for the parent graph —
             // moving them into a sub-graph would orphan the parent.
@@ -9564,7 +9664,13 @@ impl KlippApp {
                 return;
             }
 
-            clip.node_graph = new_graph.clone();
+            // Write the new graph back into whichever level we came
+            // from (root or a nested sub-graph). `target_graph` is
+            // still the resolved `&mut NodeGraph` borrow from up top.
+            *target_graph = new_graph;
+            // Take a fresh root snapshot now that the mutation is
+            // applied so undo has the whole-clip before/after.
+            let new_root_graph = clip.node_graph.clone();
 
             // Replace the multi-selection with the new Compound so the
             // user's next gesture (drag, delete, descend) targets the
@@ -9577,8 +9683,8 @@ impl KlippApp {
                 sequence_idx: self.state.active_sequence_idx,
                 command: crate::history::EditCommand::SetNodeGraph {
                     clip_id,
-                    old_graph,
-                    new_graph,
+                    old_graph: old_root_graph,
+                    new_graph: new_root_graph,
                 },
             });
             *needs_refresh = true;
@@ -9607,99 +9713,101 @@ impl KlippApp {
                 true
             }
             AppCommand::RemoveNode { clip_id, node_id } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        let old_graph = clip.node_graph.clone();
-                        clip.node_graph.nodes.retain(|n| n.id != *node_id);
-                        clip.node_graph.edges.retain(|e| e.from_node != *node_id && e.to_node != *node_id);
-                        clip.node_graph.node_positions.remove(node_id);
-                        self.state.history.push(crate::history::HistoryEntry {
-                            sequence_idx: self.state.active_sequence_idx,
-                            command: crate::history::EditCommand::SetNodeGraph {
-                                clip_id: *clip_id,
-                                old_graph,
-                                new_graph: clip.node_graph.clone(),
-                            },
-                        });
-                        break;
-                    }
-                }
-                *needs_refresh = true;
+                let node_id = *node_id;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    graph.nodes.retain(|n| n.id != node_id);
+                    graph.edges.retain(|e| e.from_node != node_id && e.to_node != node_id);
+                    graph.node_positions.remove(&node_id);
+                });
                 true
             }
             AppCommand::GroupIntoCompound { clip_id, node_ids } => {
                 self.group_into_compound(*clip_id, node_ids, needs_refresh);
                 true
             }
-            AppCommand::ConnectNodes { clip_id, from, from_port, to, to_port } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+            AppCommand::DescendIntoCompound { clip_id, node_id } => {
+                // Resolve the CURRENT graph at the existing descent
+                // path, check that `node_id` is a Compound with a
+                // sub-graph, then append to the path. Clears
+                // selection so the inspector doesn't linger on an
+                // outer-level node the user can no longer see.
+                let path = self.state.graph_descent_path.clone();
+                let seq_idx = self.state.active_sequence_idx;
+                let mut ok = false;
+                for track in &mut self.state.sequences[seq_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        let old_graph = clip.node_graph.clone();
-                        // Remove existing edge to this input port
-                        clip.node_graph.edges.retain(|e| !(e.to_node == *to && e.to_port == *to_port));
-                        clip.node_graph.edges.push(klipp_nodes::Edge {
-                            from_node: *from,
-                            from_port: *from_port,
-                            to_node: *to,
-                            to_port: *to_port,
-                        });
-                        // LayerMixer auto-grow — if the editor dropped
-                        // a wire on a port past the current count, the
-                        // params Vec needs to grow in lockstep so the
-                        // executor can find a setting at that index.
-                        if let Some(target) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *to) {
-                            if target.kind == klipp_nodes::NodeKind::LayerMixer {
-                                let needed = (*to_port as usize) + 1;
-                                let mixer = target.params.layer_mixer.get_or_insert_with(Default::default);
-                                if mixer.inputs.len() < needed {
-                                    mixer.inputs.resize_with(needed, klipp_nodes::LayerMixerInput::default);
-                                }
-                            }
-                        }
-                        // Validate no cycle
-                        if clip.node_graph.topo_sort().is_err() {
-                            clip.node_graph = old_graph;
-                        } else {
-                            self.state.history.push(crate::history::HistoryEntry {
-                                sequence_idx: self.state.active_sequence_idx,
-                                command: crate::history::EditCommand::SetNodeGraph {
-                                    clip_id: *clip_id,
-                                    old_graph,
-                                    new_graph: clip.node_graph.clone(),
-                                },
+                        if let Ok(graph) = Self::resolve_graph_at_path_mut(clip, &path) {
+                            let is_compound = graph.nodes.iter().any(|n| {
+                                n.id == *node_id
+                                    && n.kind == klipp_nodes::NodeKind::Compound
+                                    && n.params.compound_subgraph.is_some()
                             });
+                            if is_compound { ok = true; }
                         }
                         break;
                     }
                 }
+                if ok {
+                    self.state.graph_descent_path.push(*node_id);
+                    self.state.selected_node_ids.clear();
+                    self.state.selected_node_id = None;
+                }
                 *needs_refresh = true;
+                true
+            }
+            AppCommand::ConnectNodes { clip_id, from, from_port, to, to_port } => {
+                let (from_node, from_port, to_node, to_port) = (*from, *from_port, *to, *to_port);
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    let pre_connect = graph.clone();
+                    // Remove existing edge to this input port — one
+                    // edge per (node, port) pair.
+                    graph.edges.retain(|e| !(e.to_node == to_node && e.to_port == to_port));
+                    graph.edges.push(klipp_nodes::Edge {
+                        from_node, from_port, to_node, to_port,
+                    });
+                    // LayerMixer auto-grow — if the editor dropped a
+                    // wire on a port past the current count, grow the
+                    // params Vec in lockstep so the executor finds a
+                    // setting at that index.
+                    if let Some(target) = graph.nodes.iter_mut().find(|n| n.id == to_node) {
+                        if target.kind == klipp_nodes::NodeKind::LayerMixer {
+                            let needed = (to_port as usize) + 1;
+                            let mixer = target.params.layer_mixer.get_or_insert_with(Default::default);
+                            if mixer.inputs.len() < needed {
+                                mixer.inputs.resize_with(needed, klipp_nodes::LayerMixerInput::default);
+                            }
+                        }
+                    }
+                    // Roll back inside the closure if the new edge
+                    // would introduce a cycle. The outer helper then
+                    // records a no-op history entry (old == new) —
+                    // undo stays consistent.
+                    if graph.topo_sort().is_err() {
+                        *graph = pre_connect;
+                    }
+                });
                 true
             }
             AppCommand::DisconnectEdge { clip_id, to, to_port } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        let old_graph = clip.node_graph.clone();
-                        clip.node_graph.edges.retain(|e| !(e.to_node == *to && e.to_port == *to_port));
-                        self.state.history.push(crate::history::HistoryEntry {
-                            sequence_idx: self.state.active_sequence_idx,
-                            command: crate::history::EditCommand::SetNodeGraph {
-                                clip_id: *clip_id,
-                                old_graph,
-                                new_graph: clip.node_graph.clone(),
-                            },
-                        });
-                        break;
-                    }
-                }
-                *needs_refresh = true;
+                let (to_node, to_port) = (*to, *to_port);
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    graph.edges.retain(|e| !(e.to_node == to_node && e.to_port == to_port));
+                });
                 true
             }
             AppCommand::MoveNode { clip_id, node_id, delta_x, delta_y } => {
+                // Position-only changes don't go through history —
+                // they fire every drag-frame and would blow out the
+                // undo stack. Still need path-aware resolution so
+                // moves inside a compound stick.
+                let path = self.state.graph_descent_path.clone();
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        let pos = clip.node_graph.node_positions.entry(*node_id).or_default();
-                        pos.x += delta_x;
-                        pos.y += delta_y;
+                        if let Ok(graph) = Self::resolve_graph_at_path_mut(clip, &path) {
+                            let pos = graph.node_positions.entry(*node_id).or_default();
+                            pos.x += delta_x;
+                            pos.y += delta_y;
+                        }
                         break;
                     }
                 }
@@ -9708,24 +9816,12 @@ impl KlippApp {
                 true
             }
             AppCommand::ToggleNodeEnabled { clip_id, node_id } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        let old_graph = clip.node_graph.clone();
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.enabled = !node.enabled;
-                        }
-                        self.state.history.push(crate::history::HistoryEntry {
-                            sequence_idx: self.state.active_sequence_idx,
-                            command: crate::history::EditCommand::SetNodeGraph {
-                                clip_id: *clip_id,
-                                old_graph,
-                                new_graph: clip.node_graph.clone(),
-                            },
-                        });
-                        break;
+                let node_id = *node_id;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.enabled = !node.enabled;
                     }
-                }
-                *needs_refresh = true;
+                });
                 true
             }
             _ => false,
@@ -9755,15 +9851,13 @@ impl KlippApp {
     fn handle_color_node_config(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
             AppCommand::RenameNode { clip_id, node_id, ref label } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.label = label.clone();
-                        }
-                        break;
+                let node_id = *node_id;
+                let label = label.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.label = label;
                     }
-                }
-                *needs_refresh = true;
+                });
                 true
             }
             AppCommand::SetNodeParam { clip_id, node_id, param, value } => {
@@ -9777,10 +9871,13 @@ impl KlippApp {
                 // own scope-preview re-grade (runs on this thread) sees the
                 // new value. This mutates `self.state.sequences[...]` only,
                 // not the shared `Arc<RwLock<Sequence>>` the engine reads.
+                let path = self.state.graph_descent_path.clone();
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.params.apply_override(param, *value);
+                        if let Ok(graph) = Self::resolve_graph_at_path_mut(clip, &path) {
+                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                node.params.apply_override(param, *value);
+                            }
                         }
                         break;
                     }
@@ -9883,84 +9980,70 @@ impl KlippApp {
             }
             AppCommand::SetNodeCurves { clip_id, node_id, curves } => {
                 let resolved = self.resolve_phantom_node_id(*clip_id, *node_id);
-                let node_id = &resolved;
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.params.curves = Some(curves.clone());
-                            node.enabled = true;
-                        }
-                        break;
+                let node_id = resolved;
+                let curves = curves.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.curves = Some(curves);
+                        node.enabled = true;
                     }
-                }
-                *needs_refresh = true;
+                });
                 true
             }
             AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat } => {
                 let resolved = self.resolve_phantom_node_id(*clip_id, *node_id);
-                let node_id = &resolved;
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.params.huesat = Some(huesat.clone());
-                            node.enabled = true;
-                        }
-                        break;
+                let node_id = resolved;
+                let huesat = huesat.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.huesat = Some(huesat);
+                        node.enabled = true;
                     }
-                }
-                *needs_refresh = true;
+                });
                 true
             }
             AppCommand::SetNodeQualifier { clip_id, node_id, qualifier } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.params.qualifier = Some(qualifier.clone());
-                            node.enabled = true;
-                        }
-                        break;
+                let node_id = *node_id;
+                let qualifier = qualifier.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.qualifier = Some(qualifier);
+                        node.enabled = true;
                     }
-                }
-                *needs_refresh = true;
+                });
                 true
             }
             AppCommand::SetNodeMasks { clip_id, node_id, masks } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.params.masks = Some(masks.clone());
-                            node.enabled = true;
-                        }
-                        break;
+                let node_id = *node_id;
+                let masks = masks.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.masks = Some(masks);
+                        node.enabled = true;
                     }
-                }
-                *needs_refresh = true;
+                });
                 true
             }
             AppCommand::SetNodeColorMatch { clip_id, node_id, settings } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.params.color_match = Some(*settings);
-                            node.enabled = true;
-                        }
-                        break;
+                let node_id = *node_id;
+                let settings = *settings;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.color_match = Some(settings);
+                        node.enabled = true;
                     }
-                }
-                *needs_refresh = true;
+                });
                 true
             }
             AppCommand::SetExternalMattePath { clip_id, node_id, path } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.params.matte_image_path = path.clone();
-                        }
-                        break;
+                let node_id = *node_id;
+                let matte_path = path.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.matte_image_path = matte_path;
                     }
-                }
+                });
                 self.state.dirty = true;
-                *needs_refresh = true;
                 true
             }
             AppCommand::SetExternalMatteChannel { clip_id, node_id, channel, invert } => {
@@ -9972,34 +10055,31 @@ impl KlippApp {
                     4 => klipp_nodes::MatteChannel::Blue,
                     _ => klipp_nodes::MatteChannel::Luminance,
                 };
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.params.matte_channel = Some(ch);
-                            node.params.matte_invert = Some(*invert);
-                        }
-                        break;
+                let node_id = *node_id;
+                let invert = *invert;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.matte_channel = Some(ch);
+                        node.params.matte_invert = Some(invert);
                     }
-                }
+                });
                 self.state.dirty = true;
-                *needs_refresh = true;
                 true
             }
             AppCommand::SetNodeLayerMixerInput { clip_id, node_id, port, input } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            let mixer = node.params.layer_mixer.get_or_insert_with(Default::default);
-                            let needed = (*port as usize) + 1;
-                            if mixer.inputs.len() < needed {
-                                mixer.inputs.resize_with(needed, klipp_nodes::LayerMixerInput::default);
-                            }
-                            mixer.inputs[*port as usize] = *input;
+                let node_id = *node_id;
+                let port = *port;
+                let input = *input;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        let mixer = node.params.layer_mixer.get_or_insert_with(Default::default);
+                        let needed = (port as usize) + 1;
+                        if mixer.inputs.len() < needed {
+                            mixer.inputs.resize_with(needed, klipp_nodes::LayerMixerInput::default);
                         }
-                        break;
+                        mixer.inputs[port as usize] = input;
                     }
-                }
-                *needs_refresh = true;
+                });
                 true
             }
             AppCommand::CaptureColorMatchReference => {
@@ -22385,8 +22465,19 @@ impl KlippApp {
                     // in the canvas would hide its file picker behind
                     // the grade tabs.
                     let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+                    // Descent-aware graph: when the user is inside a
+                    // compound, the inspector should read/write the
+                    // sub-graph's nodes. Fall back to the root graph
+                    // if the descent path has gone stale (self-heal
+                    // on the next frame).
+                    let path = self.state.graph_descent_path.clone();
+                    let graph: &mut klipp_nodes::NodeGraph =
+                        match Self::resolve_graph_at_path_mut(clip, &path) {
+                            Ok(g) => g,
+                            Err(_) => &mut clip.node_graph,
+                        };
                     let use_per_node_inspector = self.state.selected_node_id
-                        .and_then(|nid| clip.node_graph.nodes.iter().find(|n| n.id == nid))
+                        .and_then(|nid| graph.nodes.iter().find(|n| n.id == nid))
                         .map(|n| matches!(n.kind,
                             klipp_nodes::NodeKind::Mask
                             | klipp_nodes::NodeKind::Qualifier
@@ -22410,16 +22501,17 @@ impl KlippApp {
                             | klipp_nodes::NodeKind::Blend
                             | klipp_nodes::NodeKind::CombineMattes
                             | klipp_nodes::NodeKind::ApplyMatte
+                            | klipp_nodes::NodeKind::Compound
                         ))
                         .unwrap_or(false);
                     let panel_cmds = if use_per_node_inspector {
                         self.node_inspector_panel.show(
                             ui, &self.state.selected_node_id,
-                            &mut clip.node_graph, clip_id, &self.theme, clip_time_secs,
+                            graph, clip_id, &self.theme, clip_time_secs,
                         )
                     } else {
                         self.node_inspector_panel.show_simple(
-                            ui, &mut clip.node_graph, clip_id,
+                            ui, graph, clip_id,
                             &mut self.state.selected_node_id,
                             &mut self.state.color_tab,
                             &self.theme,
@@ -23056,8 +23148,14 @@ impl KlippApp {
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
                     let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+                    let path = self.state.graph_descent_path.clone();
+                    let graph: &mut klipp_nodes::NodeGraph =
+                        match Self::resolve_graph_at_path_mut(clip, &path) {
+                            Ok(g) => g,
+                            Err(_) => &mut clip.node_graph,
+                        };
                     let panel_cmds = self.node_inspector_panel.show_simple_horizontal(
-                        ui, &mut clip.node_graph, clip_id,
+                        ui, graph, clip_id,
                         &mut self.state.selected_node_id,
                         &mut self.state.color_tab_bottom,
                         &self.theme,
@@ -23226,15 +23324,77 @@ impl KlippApp {
                 if let Some(clip) = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(cid))
                 {
+                    // Self-heal: if any id in the descent path doesn't
+                    // resolve against the current clip's graph (clip
+                    // switch, upstream RemoveNode, etc.) clear the
+                    // path so the V2 panel renders the root graph on
+                    // this frame. Selection clears alongside so the
+                    // inspector doesn't linger on a ghost.
+                    let path_valid = {
+                        let mut cursor = &clip.node_graph;
+                        self.state.graph_descent_path.iter().all(|id| {
+                            match cursor.nodes.iter().find(|n| n.id == *id) {
+                                Some(n) if n.kind == klipp_nodes::NodeKind::Compound => {
+                                    match n.params.compound_subgraph.as_ref() {
+                                        Some(sub) => { cursor = sub; true }
+                                        None => false,
+                                    }
+                                }
+                                _ => false,
+                            }
+                        })
+                    };
+                    if !path_valid {
+                        self.state.graph_descent_path.clear();
+                        self.state.selected_node_ids.clear();
+                        self.state.selected_node_id = None;
+                    }
+                    // Build breadcrumb labels by walking the descent
+                    // path through each compound's subgraph. Done
+                    // BEFORE the mutable resolve so `clip.node_graph`
+                    // can be read cleanly; the vec then survives the
+                    // `Self::resolve_graph_at_path_mut` call.
+                    let breadcrumb_labels: Vec<String> = {
+                        let mut labels = Vec::with_capacity(
+                            self.state.graph_descent_path.len()
+                        );
+                        let mut cursor = &clip.node_graph;
+                        for id in &self.state.graph_descent_path {
+                            if let Some(n) = cursor.nodes.iter().find(|n| n.id == *id) {
+                                labels.push(n.label.clone());
+                                if let Some(sub) = n.params.compound_subgraph.as_ref() {
+                                    cursor = sub;
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        labels
+                    };
                     let panel_cmds = if self.state.use_node_graph_v2 {
                         let slot = self.state.deferred_texture_drops_slot;
+                        // Resolve the graph at the current descent
+                        // path. If the path went stale (shouldn't
+                        // happen in normal use — we self-heal), the
+                        // call falls back to the root graph so the
+                        // user isn't stuck on a blank canvas.
+                        let path = self.state.graph_descent_path.clone();
+                        let resolved = Self::resolve_graph_at_path_mut(clip, &path);
+                        let graph = match resolved {
+                            Ok(g) => g,
+                            Err(_) => &mut clip.node_graph,
+                        };
                         self.node_graph_v2_panel.show(
                             ui, &mut self.state.selected_node_id,
                             &mut self.state.selected_node_ids,
-                            &mut clip.node_graph, cid, &self.theme,
+                            graph, cid, &self.theme,
                             &self.state.node_thumbs,
                             self.state.node_thumbs_gen,
                             &mut self.state.deferred_texture_drops[slot],
+                            &mut self.state.graph_descent_path,
+                            &breadcrumb_labels,
                         )
                     } else {
                         self.node_graph_panel.show(
@@ -23277,7 +23437,15 @@ impl KlippApp {
         // after `panel_cmds` so any `SetVisibleNodeThumbs` from the V2
         // canvas processes first — the engine needs the visible-set
         // populated before our `RenderNodeThumbsFromSource` arrives.
-        if self.state.use_node_graph_v2 {
+        // While descended into a compound the filmstrip thumb
+        // pipeline would render top-level clip graph outputs for
+        // every node — misleading while the user is editing inside a
+        // sub-graph the executor doesn't recurse into yet (stage 5).
+        // Skip the dispatch for now; the V2 canvas falls back to
+        // whatever thumb bytes are still in state.node_thumbs from
+        // the last root-level capture, which is fine (stale but
+        // consistent with the outer frame).
+        if self.state.use_node_graph_v2 && self.state.graph_descent_path.is_empty() {
             if let Some(cid) = self.state.selected_clip {
                 let seq_idx = self.state.active_sequence_idx;
                 let clip_info = self.state.sequences[seq_idx].tracks.iter()

@@ -756,6 +756,15 @@ pub struct AppState {
     /// use `selected_node_id` instead. Always either empty or
     /// containing `selected_node_id` as one of its members.
     pub selected_node_ids: std::collections::HashSet<klipp_nodes::NodeId>,
+    /// Stack of NodeIds representing the V2 canvas's descent path into
+    /// nested compound subgraphs. Empty = editing the clip's root
+    /// graph (the common case). Each entry is the id of a
+    /// `NodeKind::Compound` node in its parent graph; the canvas
+    /// renders `compound.params.compound_subgraph` instead of the
+    /// parent. Descending appends an id; ascending (breadcrumb click
+    /// or Escape) truncates. Cleared alongside `selected_node_id`s
+    /// on clip switch so stale ids don't accumulate.
+    pub graph_descent_path: Vec<klipp_nodes::NodeId>,
     /// Whether the compact node strip is visible in Color workspace.
     pub show_node_strip: bool,
     /// Render the V2 2D node-graph editor instead of the legacy
@@ -2102,6 +2111,7 @@ impl Default for AppState {
             color_tools_position: ColorToolsPosition::Right,
             selected_node_id: None,
             selected_node_ids: std::collections::HashSet::new(),
+            graph_descent_path: Vec::new(),
             show_node_strip: false,
             use_node_graph_v2: true,
             color_tab: ColorTab::default(),

@@ -42,6 +42,11 @@ fn node_color(kind: &NodeKind, theme: &KlippTheme) -> egui::Color32 {
         NodeKind::Lut3D | NodeKind::FilmGrain | NodeKind::ColorMatch => {
             egui::Color32::from_rgb(0x5c, 0x5a, 0x3a)
         }
+        // Compound gets a distinctive teal so it reads as
+        // "structural" at a glance (different from the orange/red
+        // grade-node palette) — reinforced by the stacked-card
+        // shadow painted behind it in the render loop.
+        NodeKind::Compound => egui::Color32::from_rgb(0x2f, 0x5e, 0x60),
         _ => egui::Color32::from_rgb(0x3a, 0x4a, 0x5c),
     }
 }
@@ -123,6 +128,12 @@ pub struct NodeGraphV2Panel {
     /// plain drag replaces it (the press-time clear already wiped
     /// the previous set in that case).
     box_select: Option<(egui::Pos2, egui::Pos2)>,
+    /// Last primary-press timestamp + screen position. Used for
+    /// manual double-click detection on node bodies (egui's raw
+    /// input API doesn't expose a button_double_clicked on this
+    /// version; rolling our own keeps the behaviour under our
+    /// control — 400 ms window, 8 px tolerance).
+    last_primary_press: Option<(std::time::Instant, egui::Pos2)>,
 }
 
 impl Default for NodeGraphV2Panel {
@@ -133,6 +144,7 @@ impl Default for NodeGraphV2Panel {
             drag_node: None,
             drag_wire: None,
             box_select: None,
+            last_primary_press: None,
             add_menu_open: false,
             add_menu_screen_pos: egui::Pos2::ZERO,
             add_menu_graph_pos: egui::Pos2::ZERO,
@@ -160,6 +172,8 @@ impl NodeGraphV2Panel {
         engine_node_thumbs: &std::collections::HashMap<NodeId, Vec<u8>>,
         engine_node_thumbs_gen: u64,
         deferred_drops: &mut Vec<egui::TextureHandle>,
+        descent_path: &mut Vec<NodeId>,
+        breadcrumb_labels: &[String],
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
 
@@ -179,9 +193,55 @@ impl NodeGraphV2Panel {
         }
 
         // Toolbar — small strip at the top with view controls.
+        // Breadcrumb row — only drawn when descended into one or
+        // more compounds. "Root" always pops back to clip level;
+        // each intermediate segment truncates the descent path to
+        // that depth. Clicks mutate `descent_path` directly (no
+        // AppCommand needed — it's UI-local state) and clear
+        // selection so the inspector doesn't linger on a node that
+        // lives in a different depth than the one we're now showing.
+        let avail = ui.available_size();
+        if !descent_path.is_empty() {
+            let breadcrumb_h = 20.0;
+            let (bc_rect, _) = ui.allocate_exact_size(
+                egui::vec2(avail.x, breadcrumb_h), egui::Sense::hover(),
+            );
+            let mut bc_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(bc_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            ui.painter().rect_filled(bc_rect, 0.0, theme.bg_panel);
+            bc_ui.add_space(8.0);
+            if bc_ui.link(
+                egui::RichText::new("Root").small().color(theme.accent)
+            ).clicked() {
+                descent_path.clear();
+                selected_set.clear();
+                *selected_node = None;
+            }
+            let depth = descent_path.len();
+            for (i, label) in breadcrumb_labels.iter().enumerate() {
+                bc_ui.label(
+                    egui::RichText::new(" › ").small().color(theme.text_dim)
+                );
+                if i + 1 == depth {
+                    // Current level — plain label, not clickable.
+                    bc_ui.label(
+                        egui::RichText::new(label).small().color(theme.text_primary)
+                    );
+                } else if bc_ui.link(
+                    egui::RichText::new(label).small().color(theme.accent)
+                ).clicked() {
+                    descent_path.truncate(i + 1);
+                    selected_set.clear();
+                    *selected_node = None;
+                }
+            }
+        }
+
         // Kept tight so the canvas keeps almost all the available
         // height. ~22 px including padding.
-        let avail = ui.available_size();
         let toolbar_h = 22.0;
         let (toolbar_rect, _) = ui.allocate_exact_size(
             egui::vec2(avail.x, toolbar_h), egui::Sense::hover(),
@@ -354,6 +414,29 @@ impl NodeGraphV2Panel {
                 egui::pos2(rect.min.x, rect.min.y + header_h),
                 rect.max,
             );
+            // Compound "stacked cards" preview: paint two offset
+            // ghosts behind the real node body so the shape reads as
+            // "multiple nodes packed into one" at a glance. Only
+            // renders for Compound kind — every other node stays the
+            // same single card. Shadow colours pick up the node's
+            // fill darkened, so the stack reads even against dark
+            // canvas backgrounds.
+            if kind == NodeKind::Compound {
+                let shade = |c: egui::Color32, d: u8| {
+                    egui::Color32::from_rgb(
+                        c.r().saturating_sub(d),
+                        c.g().saturating_sub(d),
+                        c.b().saturating_sub(d),
+                    )
+                };
+                let off = 4.0 * zoom;
+                let ghost2 = rect.translate(egui::vec2(off * 2.0, off * 2.0));
+                let ghost1 = rect.translate(egui::vec2(off, off));
+                painter.rect_filled(ghost2, 4.0, shade(fill, 70));
+                painter.rect_stroke(ghost2, 4.0, egui::Stroke::new(0.5, theme.border));
+                painter.rect_filled(ghost1, 4.0, shade(fill, 35));
+                painter.rect_stroke(ghost1, 4.0, egui::Stroke::new(0.5, theme.border));
+            }
             painter.rect_filled(rect, 4.0, theme.bg_panel);
             painter.rect_filled(body_rect, 4.0, if node.enabled { fill } else { theme.bg_panel_alt });
 
@@ -373,6 +456,42 @@ impl NodeGraphV2Panel {
                 egui::FontId::proportional(10.0 * zoom),
                 label_color,
             );
+
+            // Compound body: overlay "N nodes" + a hint that double-
+            // click descends. No thumbnail for compounds yet (the
+            // executor doesn't recurse into sub-graphs — that lands
+            // with stage 5); for now the count is the best visual
+            // cue that the node "contains something".
+            if kind == NodeKind::Compound && node.enabled {
+                let n = node.params.compound_subgraph
+                    .as_ref()
+                    .map(|g| {
+                        // Don't count the synthetic Source / Output
+                        // wrappers the Group operation adds — the
+                        // user-meaningful count is the packed nodes.
+                        g.nodes.iter()
+                            .filter(|n| !matches!(n.kind,
+                                NodeKind::Source | NodeKind::Output))
+                            .count()
+                    })
+                    .unwrap_or(0);
+                let label = if n == 1 { "1 node".to_string() }
+                    else { format!("{n} nodes") };
+                painter.text(
+                    body_rect.center() - egui::vec2(0.0, 5.0 * zoom),
+                    egui::Align2::CENTER_CENTER,
+                    &label,
+                    egui::FontId::proportional(11.0 * zoom),
+                    theme.text_primary,
+                );
+                painter.text(
+                    body_rect.center() + egui::vec2(0.0, 8.0 * zoom),
+                    egui::Align2::CENTER_CENTER,
+                    "(double-click)",
+                    egui::FontId::proportional(8.0 * zoom),
+                    theme.text_dim,
+                );
+            }
 
             if !node.enabled {
                 painter.text(
@@ -631,9 +750,39 @@ impl NodeGraphV2Panel {
                     if !wire_started {
                         // Node body hit?
                         let shift = ui.input(|i| i.modifiers.shift);
+                        // Double-click on a Compound node descends
+                        // into its sub-graph. Must fire ALONGSIDE
+                        // the single-click selection (the second
+                        // press of a double-click is itself a
+                        // primary_pressed) so selection still
+                        // updates; the DescendIntoCompound handler
+                        // then clears selection anyway on success.
+                        // Manual double-click detection — press
+                        // within 400 ms and 8 px of the previous
+                        // press counts as a double-click.
+                        let now = std::time::Instant::now();
+                        let primary_double_clicked = self
+                            .last_primary_press
+                            .map(|(t, prev)| {
+                                now.duration_since(t)
+                                    < std::time::Duration::from_millis(400)
+                                    && (p - prev).length() < 8.0
+                            })
+                            .unwrap_or(false);
+                        self.last_primary_press = Some((now, p));
                         let mut node_hit = false;
-                        for (node_id, rect, _, _, _) in &node_rects {
+                        for (node_id, rect, _, kind, _) in &node_rects {
                             if rect.contains(p) {
+                                if primary_double_clicked
+                                    && *kind == NodeKind::Compound
+                                {
+                                    cmds.push(AppCommand::DescendIntoCompound {
+                                        clip_id,
+                                        node_id: *node_id,
+                                    });
+                                    node_hit = true;
+                                    break;
+                                }
                                 if shift {
                                     // Shift-click toggles set membership.
                                     // Adding a node also makes it the
