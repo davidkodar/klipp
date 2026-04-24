@@ -856,6 +856,16 @@ pub enum AppCommand {
     /// `ColorMatchSettings` (4 floats) is what gets persisted on the
     /// node when `ApplyColorMatch` runs.
     CaptureColorMatchReference,
+    /// Use a specific clip's representative frame as the colour-match
+    /// reference. Replaces any previously captured reference. The
+    /// handler decodes a mid-clip thumbnail so the user doesn't have
+    /// to scrub the playhead onto the clip first.
+    UseClipAsColorMatchReference { clip_id: ClipId },
+    /// Run `match_colors` against the clip's mid-frame and the current
+    /// colour reference, ensuring a ColorMatch node exists on the
+    /// clip's graph and writing the resulting settings to it. No-op
+    /// with a toast if no reference has been captured.
+    MatchClipToColorReference { clip_id: ClipId },
     /// Run `klipp_color::match_colors(source, reference)` against the
     /// last-captured reference frame and the clip's pre-grade frame
     /// at the playhead, then store the result on the named ColorMatch

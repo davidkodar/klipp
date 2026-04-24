@@ -78,6 +78,45 @@ impl NodeGraph {
     /// Output. Returns the Corrector's id either way. Used both by the
     /// inspector's first-touch lazy-create flow and by load.rs project
     /// migrations.
+    /// Find an existing ColorMatch node, or splice a new one in before
+    /// Output. Returns its id. Used by the clip-to-clip match workflow
+    /// so the inspector and timeline right-click both converge on one
+    /// node per clip.
+    pub fn ensure_color_match(&mut self) -> NodeId {
+        if let Some(idx) = self.nodes.iter().position(|n| n.kind == NodeKind::ColorMatch) {
+            return self.nodes[idx].id;
+        }
+        let new_id = NodeId::new_v4();
+        let output_id = self.output_node_id;
+        let insert_at = self.nodes.iter().position(|n| n.id == output_id)
+            .unwrap_or(self.nodes.len());
+        self.nodes.insert(insert_at, Node {
+            id: new_id,
+            kind: NodeKind::ColorMatch,
+            label: "Color Match".to_string(),
+            enabled: true,
+            params: NodeParams::default(),
+            keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        });
+        for edge in &mut self.edges {
+            if edge.to_node == output_id && edge.to_port == 0 {
+                edge.to_node = new_id;
+                edge.to_port = 0;
+            }
+        }
+        self.edges.push(Edge {
+            from_node: new_id, from_port: 0, to_node: output_id, to_port: 0,
+        });
+        if let Some(out_pos) = self.node_positions.get(&output_id).copied() {
+            self.node_positions.insert(new_id, NodePos { x: out_pos.x - 220.0, y: out_pos.y });
+        } else {
+            self.node_positions.insert(new_id, NodePos { x: 220.0, y: 0.0 });
+        }
+        new_id
+    }
+
     pub fn ensure_corrector(&mut self) -> NodeId {
         if let Some(idx) = self.nodes.iter().position(|n| n.kind == NodeKind::Corrector) {
             return self.nodes[idx].id;

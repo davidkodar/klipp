@@ -5484,6 +5484,46 @@ impl TimelinePanel {
                     }
                 }
                 ui.separator();
+                // Colour match (#CG-CLIP2CLIP-MATCH). Parallel to the
+                // audio-reference pattern: one clip is the reference,
+                // others can match against it. Match result lands on a
+                // ColorMatch node (created on demand via
+                // ensure_color_match) and writes four scalar grade
+                // adjustments — the reference frame itself is NOT
+                // persisted; only the distilled match lives with the
+                // project.
+                {
+                    let is_ref = state.color_match_reference_clip == Some(clip_id);
+                    let ref_label = if is_ref {
+                        "\u{25CF} Colour Reference (click to re-set)".to_string()
+                    } else {
+                        "Use as Colour Reference".to_string()
+                    };
+                    if ui.button(ref_label).clicked() {
+                        cmds.push(AppCommand::UseClipAsColorMatchReference { clip_id });
+                        ui.close_menu();
+                    }
+                    let has_ref = state.color_match_reference.is_some();
+                    let match_enabled = has_ref && !is_ref;
+                    let match_resp = ui.add_enabled(
+                        match_enabled,
+                        egui::Button::new("Match Colour to Reference"),
+                    );
+                    if !match_enabled {
+                        match_resp.clone().on_disabled_hover_text(
+                            if !has_ref {
+                                "Mark a reference clip first (right-click → Use as Colour Reference)"
+                            } else {
+                                "This clip is the reference"
+                            },
+                        );
+                    }
+                    if match_resp.clicked() {
+                        cmds.push(AppCommand::MatchClipToColorReference { clip_id });
+                        ui.close_menu();
+                    }
+                }
+                ui.separator();
                 if ui.button("Copy Attributes  Ctrl+Shift+C").clicked() {
                     cmds.push(AppCommand::CopyAttributes { clip_id });
                     ui.close_menu();

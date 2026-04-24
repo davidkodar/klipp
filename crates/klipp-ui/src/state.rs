@@ -869,6 +869,14 @@ pub struct AppState {
     /// past the compute step.
     pub color_match_reference: Option<(Vec<u8>, u32, u32)>,
 
+    /// Remembered ClipId of whichever clip provided the current
+    /// reference, so the timeline context menu can mark it with a
+    /// "●" and the "Match Colour to Reference" entry can grey out on
+    /// the clip that IS the reference. Parallel to
+    /// `audio_reference_clip_id`. Cleared when
+    /// `color_match_reference` is cleared.
+    pub color_match_reference_clip: Option<klipp_core::ClipId>,
+
     /// Per-node output thumbnails for the V2 canvas, snapshotted
     /// from `FrameBuffer::node_thumbs` on each tick. Sourced by the
     /// engine on paused/post-seek re-grades when a non-empty
@@ -2159,6 +2167,7 @@ impl Default for AppState {
             active_grade_still: None,
             grade_still_compare: false,
             color_match_reference: None,
+            color_match_reference_clip: None,
             node_thumbs: std::collections::HashMap::new(),
             node_thumbs_gen: 0,
             last_filmstrip_thumb_send: None,

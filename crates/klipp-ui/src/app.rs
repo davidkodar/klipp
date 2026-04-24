@@ -9344,6 +9344,33 @@ impl KlippApp {
     /// reset the descent path instead of silently editing the wrong
     /// graph. This is a free function (vs `&mut self` method) so
     /// callers can hold the returned borrow without locking self.
+    /// Decode a representative RGBA frame (midpoint of the clip's
+    /// source range) for colour-match workflows. Uses
+    /// `generate_thumbnail_at_size` at 480-wide so the caller can feed
+    /// it to `match_colors` without waiting for a full-resolution
+    /// decode. Returns the decoded bytes + dimensions, or a
+    /// human-readable error message.
+    fn decode_clip_representative_frame(
+        state: &AppState,
+        clip_id: klipp_core::ClipId,
+    ) -> Result<(Vec<u8>, u32, u32), String> {
+        let clip = state.sequences[state.active_sequence_idx]
+            .tracks.iter()
+            .flat_map(|t| t.clips.iter())
+            .find(|c| c.id == clip_id)
+            .ok_or_else(|| "clip not found".to_string())?;
+        let media_id = clip.media_id()
+            .ok_or_else(|| "clip has no media".to_string())?;
+        let item = state.media_pool.get(&media_id)
+            .ok_or_else(|| "media not in pool".to_string())?;
+        let path = item.path.clone();
+        let src_in = clip.source_in.to_secs_f64();
+        let src_out = clip.source_out.to_secs_f64();
+        let mid = (src_in + src_out) * 0.5;
+        klipp_engine::generate_thumbnail_at_size(&path, mid, 480)
+            .map_err(|e| format!("decode: {e}"))
+    }
+
     fn resolve_graph_at_path_mut<'a>(
         clip: &'a mut klipp_timeline::Clip,
         path: &[klipp_nodes::NodeId],
@@ -10364,6 +10391,67 @@ impl KlippApp {
                     self.state.toast.show(format!("Captured colour reference ({w}×{h})"));
                 } else {
                     self.state.toast.show("No frame to capture — start playback or scrub first");
+                }
+                true
+            }
+            AppCommand::UseClipAsColorMatchReference { clip_id } => {
+                let clip_id = *clip_id;
+                match Self::decode_clip_representative_frame(&self.state, clip_id) {
+                    Ok((bytes, w, h)) => {
+                        self.state.color_match_reference = Some((bytes, w, h));
+                        self.state.color_match_reference_clip = Some(clip_id);
+                        self.state.toast.show(format!(
+                            "Colour reference captured from clip ({w}×{h})"
+                        ));
+                    }
+                    Err(e) => {
+                        self.state.toast.show(format!("Couldn't capture reference: {e}"));
+                    }
+                }
+                true
+            }
+            AppCommand::MatchClipToColorReference { clip_id } => {
+                let clip_id = *clip_id;
+                let Some((ref_bytes, _rw, _rh)) = self.state.color_match_reference.clone() else {
+                    self.state.toast.show(
+                        "Mark a reference clip first (right-click → Use as Colour Reference)"
+                    );
+                    return true;
+                };
+                let source_bytes = match Self::decode_clip_representative_frame(&self.state, clip_id) {
+                    Ok((b, _, _)) => b,
+                    Err(e) => {
+                        self.state.toast.show(format!("Couldn't read target clip: {e}"));
+                        return true;
+                    }
+                };
+                let result = klipp_color::color_match::match_colors(&source_bytes, &ref_bytes);
+                let settings = klipp_core::ColorMatchSettings {
+                    exposure: result.exposure_adjust,
+                    temperature: result.temperature_adjust,
+                    tint: result.tint_adjust,
+                    saturation: result.saturation_adjust,
+                };
+                let mut applied = false;
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(clip_id) {
+                        let node_id = clip.node_graph.ensure_color_match();
+                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                            node.params.color_match = Some(settings);
+                            node.enabled = true;
+                            applied = true;
+                        }
+                        break;
+                    }
+                }
+                if applied {
+                    *needs_refresh = true;
+                    self.state.toast.show(format!(
+                        "Matched clip to reference: exp {:+.2}, temp {:+.0}, tint {:+.0}, sat {:.2}×",
+                        settings.exposure, settings.temperature, settings.tint, settings.saturation
+                    ));
+                } else {
+                    self.state.toast.show("Target clip not found in active sequence");
                 }
                 true
             }
