@@ -135,6 +135,8 @@ fn make_node(id: NodeId, kind: NodeKind, label: &str) -> Node {
         enabled: true,
         params: NodeParams::default(),
         keyframes: NodeKeyframeTracks::default(),
+        output_link: None,
+        input_links: Vec::new(),
     }
 }
 

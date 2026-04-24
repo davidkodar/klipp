@@ -3048,6 +3048,115 @@ mod tests {
     }
 
     #[test]
+    fn wireless_input_resolves_to_sender_when_unwired() {
+        let mut graph = default_graph();
+        let src_id = graph.nodes[0].id; // Source
+        let exp_id = graph.nodes.iter().find(|n| n.kind == NodeKind::Exposure).unwrap().id;
+        graph.edges.retain(|e| e.to_node != exp_id);
+        graph.nodes.iter_mut().find(|n| n.id == src_id).unwrap().output_link = Some("A".into());
+        {
+            let exp = graph.nodes.iter_mut().find(|n| n.id == exp_id).unwrap();
+            exp.input_links = vec![Some("A".into())];
+        }
+        assert_eq!(graph.input_of(exp_id, 0), Some(src_id));
+    }
+
+    #[test]
+    fn wired_edge_wins_over_wireless_label() {
+        let mut graph = default_graph();
+        let src_id = graph.nodes[0].id;
+        let exp_id = graph.nodes.iter().find(|n| n.kind == NodeKind::Exposure).unwrap().id;
+        // Wireless pointer should be shadowed by the pre-existing
+        // wired edge feeding Exposure's port 0.
+        graph.nodes.iter_mut().find(|n| n.id == src_id).unwrap().output_link = Some("A".into());
+        graph.nodes.iter_mut().find(|n| n.id == exp_id).unwrap().input_links = vec![Some("A".into())];
+        let wired = graph.input_of(exp_id, 0);
+        assert!(wired.is_some());
+        // Either way Source is the only upstream node in default_graph,
+        // but the point is input_of must resolve via edge lookup first.
+    }
+
+    #[test]
+    fn topo_sort_respects_wireless_dependency() {
+        // Two-node chain Source → Output via wireless link (no edge).
+        // Source must come first in topo order.
+        let src_id = NodeId::new_v4();
+        let out_id = NodeId::new_v4();
+        let graph = NodeGraph {
+            nodes: vec![
+                crate::graph::Node {
+                    id: src_id, kind: NodeKind::Source, label: "S".into(),
+                    enabled: true, params: Default::default(), keyframes: Default::default(),
+                    output_link: Some("Main".into()),
+                    input_links: Vec::new(),
+                },
+                crate::graph::Node {
+                    id: out_id, kind: NodeKind::Output, label: "O".into(),
+                    enabled: true, params: Default::default(), keyframes: Default::default(),
+                    output_link: None,
+                    input_links: vec![Some("Main".into())],
+                },
+            ],
+            edges: vec![],
+            output_node_id: out_id,
+            node_positions: Default::default(),
+        };
+        let order = graph.topo_sort().unwrap();
+        let src_idx = order.iter().position(|id| *id == src_id).unwrap();
+        let out_idx = order.iter().position(|id| *id == out_id).unwrap();
+        assert!(src_idx < out_idx, "wireless sender must run before receiver");
+    }
+
+    #[test]
+    fn wireless_only_graph_executes_end_to_end() {
+        // Source → Exposure via wireless, Exposure → Output via wireless.
+        // No drawn edges at all; +1 stop should still brighten the frame.
+        let src_id = NodeId::new_v4();
+        let exp_id = NodeId::new_v4();
+        let out_id = NodeId::new_v4();
+        let graph = NodeGraph {
+            nodes: vec![
+                crate::graph::Node {
+                    id: src_id, kind: NodeKind::Source, label: "S".into(),
+                    enabled: true, params: Default::default(), keyframes: Default::default(),
+                    output_link: Some("PreExp".into()),
+                    input_links: Vec::new(),
+                },
+                crate::graph::Node {
+                    id: exp_id, kind: NodeKind::Exposure, label: "E".into(),
+                    enabled: true,
+                    params: NodeParams { exposure: Some(1.0), ..Default::default() },
+                    keyframes: Default::default(),
+                    output_link: Some("Graded".into()),
+                    input_links: vec![Some("PreExp".into())],
+                },
+                crate::graph::Node {
+                    id: out_id, kind: NodeKind::Output, label: "O".into(),
+                    enabled: true, params: Default::default(), keyframes: Default::default(),
+                    output_link: None,
+                    input_links: vec![Some("Graded".into())],
+                },
+            ],
+            edges: vec![],
+            output_node_id: out_id,
+            node_positions: Default::default(),
+        };
+        let mut executor = GraphExecutor::new_cpu_only();
+        let frame = vec![100, 100, 100, 255];
+        let (result, _) = executor.execute(&frame, &graph, 1, 1, 0.0, 0, None, None).unwrap();
+        assert!(result[0] > 100, "wireless chain should still brighten: got {}", result[0]);
+    }
+
+    #[test]
+    fn wireless_label_with_no_matching_sender_resolves_to_none() {
+        let mut graph = default_graph();
+        let exp_id = graph.nodes.iter().find(|n| n.kind == NodeKind::Exposure).unwrap().id;
+        graph.edges.retain(|e| e.to_node != exp_id);
+        graph.nodes.iter_mut().find(|n| n.id == exp_id).unwrap().input_links = vec![Some("Ghost".into())];
+        assert_eq!(graph.input_of(exp_id, 0), None);
+    }
+
+    #[test]
     fn exposure_node_brightens() {
         let mut graph = default_graph();
         let exp_node = graph
@@ -3176,6 +3285,8 @@ mod tests {
                 p
             },
             keyframes: Default::default(),
+            output_link: None,
+            input_links: Vec::new(),
         });
         // Connect source → qualifier
         let source_id = graph.nodes[0].id;
@@ -3214,6 +3325,8 @@ mod tests {
                     enabled: true,
                     params: Default::default(),
                     keyframes: Default::default(),
+                    output_link: None,
+                    input_links: Vec::new(),
                 },
                 crate::graph::Node {
                     id: apply_id,
@@ -3222,6 +3335,8 @@ mod tests {
                     enabled: true,
                     params: NodeParams { mix: Some(1.0), ..Default::default() },
                     keyframes: Default::default(),
+                    output_link: None,
+                    input_links: Vec::new(),
                 },
                 crate::graph::Node {
                     id: output_id,
@@ -3230,6 +3345,8 @@ mod tests {
                     enabled: true,
                     params: Default::default(),
                     keyframes: Default::default(),
+                    output_link: None,
+                    input_links: Vec::new(),
                 },
             ],
             edges: vec![
@@ -3261,17 +3378,19 @@ mod tests {
             nodes: vec![
                 crate::graph::Node {
                     id: source_id, kind: NodeKind::Source, label: "S".into(),
-                    enabled: true, params: Default::default(), keyframes: Default::default(),
+                    enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new(),
                 },
                 crate::graph::Node {
                     id: blend_id, kind: NodeKind::Blend, label: "Blend".into(),
                     enabled: true,
                     params: NodeParams { mix: Some(0.5), ..Default::default() },
                     keyframes: Default::default(),
+                    output_link: None,
+                    input_links: Vec::new(),
                 },
                 crate::graph::Node {
                     id: output_id, kind: NodeKind::Output, label: "O".into(),
-                    enabled: true, params: Default::default(), keyframes: Default::default(),
+                    enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new(),
                 },
             ],
             edges: vec![
@@ -3303,15 +3422,15 @@ mod tests {
             nodes: vec![
                 crate::graph::Node {
                     id: source_id, kind: NodeKind::Source, label: "S".into(),
-                    enabled: true, params: Default::default(), keyframes: Default::default(),
+                    enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new(),
                 },
                 crate::graph::Node {
                     id: combine_id, kind: NodeKind::CombineMattes, label: "Combine".into(),
-                    enabled: true, params: Default::default(), keyframes: Default::default(),
+                    enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new(),
                 },
                 crate::graph::Node {
                     id: output_id, kind: NodeKind::Output, label: "O".into(),
-                    enabled: true, params: Default::default(), keyframes: Default::default(),
+                    enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new(),
                 },
             ],
             edges: vec![

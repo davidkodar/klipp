@@ -39,6 +39,8 @@ fn migrate_graph(graph: &mut NodeGraph) {
             enabled: true,
             params: klipp_nodes::NodeParams::default(),
             keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
         };
         // Insert after HueSatCurves in the node list
         if let Some(pos) = graph.nodes.iter().position(|n| n.kind == NodeKind::HueSatCurves) {

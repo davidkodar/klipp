@@ -123,6 +123,8 @@ fn realistic_grade_graph() -> NodeGraph {
             enabled: true,
             params,
             keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
         }
     }
     fn e(from: NodeId, to: NodeId) -> Edge {

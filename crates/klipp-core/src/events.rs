@@ -772,6 +772,13 @@ pub enum AppCommand {
     UpdateActiveGradeVersion { clip_id: ClipId },
     ConnectNodes { clip_id: ClipId, from: uuid::Uuid, from_port: u8, to: uuid::Uuid, to_port: u8 },
     DisconnectEdge { clip_id: ClipId, to: uuid::Uuid, to_port: u8 },
+    /// Wireless-link sender label on a node's primary output. `None`
+    /// clears it.
+    SetNodeOutputLink { clip_id: ClipId, node_id: uuid::Uuid, label: Option<String> },
+    /// Wireless-link receiver label on a node's input port. `None`
+    /// clears it — the port falls back to normal wired-edge
+    /// resolution.
+    SetNodeInputLink { clip_id: ClipId, node_id: uuid::Uuid, port: u8, label: Option<String> },
     MoveNode { clip_id: ClipId, node_id: uuid::Uuid, delta_x: f32, delta_y: f32 },
     ToggleNodeEnabled { clip_id: ClipId, node_id: uuid::Uuid },
     RenameNode { clip_id: ClipId, node_id: uuid::Uuid, label: String },

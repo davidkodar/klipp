@@ -41,6 +41,18 @@ pub struct Node {
     /// Per-param keyframe animation.
     #[serde(default)]
     pub keyframes: NodeKeyframeTracks,
+    /// Wireless-link output label. When `Some(name)`, any input port
+    /// whose `input_links[port]` matches `name` reads this node's
+    /// primary output (port 0) without a drawn edge. `None` disables
+    /// wireless sending from this node.
+    #[serde(default)]
+    pub output_link: Option<String>,
+    /// Per-input-port wireless receiver labels. `Some(name)` at index
+    /// `port` means that port receives from the node whose
+    /// `output_link == Some(name)`, without a drawn edge. Empty vec /
+    /// `None` entries fall back to normal wired-edge resolution.
+    #[serde(default)]
+    pub input_links: Vec<Option<String>>,
 }
 
 /// A connection from one node's output to another node's input.
@@ -81,6 +93,8 @@ impl NodeGraph {
             enabled: true,
             params: NodeParams::default(),
             keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
         });
         // Re-route any edge ending at Output's port 0 to the Corrector
         // first, then wire Corrector → Output.
@@ -151,15 +165,18 @@ impl NodeGraph {
     }
 
     /// Topologically sorted execution order using Kahn's algorithm.
-    /// Returns Err if the graph contains a cycle.
+    /// Returns Err if the graph contains a cycle. Wireless-link deps
+    /// count toward in-degree just like drawn edges, so a receiver
+    /// node never runs before its sender.
     pub fn topo_sort(&self) -> Result<Vec<NodeId>, CycleError> {
         let node_ids: Vec<NodeId> = self.nodes.iter().map(|n| n.id).collect();
+        let deps: Vec<(NodeId, NodeId)> = self.iter_dependencies().collect();
         let mut in_degree: HashMap<NodeId, usize> = HashMap::new();
         for id in &node_ids {
             in_degree.insert(*id, 0);
         }
-        for edge in &self.edges {
-            *in_degree.entry(edge.to_node).or_insert(0) += 1;
+        for (_, to) in &deps {
+            *in_degree.entry(*to).or_insert(0) += 1;
         }
 
         // Start with all nodes that have no incoming edges.
@@ -173,12 +190,12 @@ impl NodeGraph {
 
         while let Some(node_id) = queue.pop() {
             order.push(node_id);
-            for edge in &self.edges {
-                if edge.from_node == node_id {
-                    if let Some(deg) = in_degree.get_mut(&edge.to_node) {
+            for (from, to) in &deps {
+                if *from == node_id {
+                    if let Some(deg) = in_degree.get_mut(to) {
                         *deg -= 1;
                         if *deg == 0 {
-                            queue.push(edge.to_node);
+                            queue.push(*to);
                         }
                     }
                 }
@@ -192,12 +209,53 @@ impl NodeGraph {
         Ok(order)
     }
 
-    /// Find the node feeding into the given node's port.
+    /// Find the node feeding into the given node's port. Edges win; if
+    /// no edge lands on the port, the node's own wireless-receiver slot
+    /// for that port is resolved against every other node's
+    /// `output_link`. Edge-only graphs behave identically to the
+    /// pre-wireless world (the fallback is skipped when no receiver
+    /// slot is set).
     pub fn input_of(&self, node_id: NodeId, port: u8) -> Option<NodeId> {
-        self.edges
+        if let Some(edge) = self
+            .edges
             .iter()
             .find(|e| e.to_node == node_id && e.to_port == port)
-            .map(|e| e.from_node)
+        {
+            return Some(edge.from_node);
+        }
+        let recv_label = self
+            .nodes
+            .iter()
+            .find(|n| n.id == node_id)
+            .and_then(|n| n.input_links.get(port as usize).and_then(|l| l.clone()))?;
+        self.nodes
+            .iter()
+            .find(|n| n.output_link.as_ref() == Some(&recv_label) && n.id != node_id)
+            .map(|n| n.id)
+    }
+
+    /// Iterator over every (from, to) dependency pair in the graph,
+    /// including wireless-link receivers. Used by topo sort so a
+    /// wireless receiver runs after its sender even without a drawn
+    /// edge.
+    pub fn iter_dependencies(&self) -> impl Iterator<Item = (NodeId, NodeId)> + '_ {
+        let wired = self.edges.iter().map(|e| (e.from_node, e.to_node));
+        let wireless = self.nodes.iter().flat_map(move |recv| {
+            recv.input_links
+                .iter()
+                .enumerate()
+                .filter_map(move |(port, slot)| {
+                    let label = slot.as_ref()?;
+                    if self.edges.iter().any(|e| e.to_node == recv.id && e.to_port == port as u8) {
+                        return None;
+                    }
+                    self.nodes
+                        .iter()
+                        .find(|s| s.output_link.as_ref() == Some(label) && s.id != recv.id)
+                        .map(|sender| (sender.id, recv.id))
+                })
+        });
+        wired.chain(wireless)
     }
 
     /// Regenerate all NodeIds and update edge/position references.

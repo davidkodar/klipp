@@ -134,6 +134,11 @@ pub struct NodeGraphV2Panel {
     /// version; rolling our own keeps the behaviour under our
     /// control — 400 ms window, 8 px tolerance).
     last_primary_press: Option<(std::time::Instant, egui::Pos2)>,
+    /// Wireless-link label editor. `Some((node_id, screen_pos, buf))`
+    /// when the user chose "Set wireless label…" in the node menu;
+    /// rendered as a small floating popup with a text input + Save /
+    /// Clear / Cancel. None otherwise.
+    wireless_label_editor: Option<(NodeId, egui::Pos2, String)>,
 }
 
 impl Default for NodeGraphV2Panel {
@@ -156,6 +161,7 @@ impl Default for NodeGraphV2Panel {
             matte_thumbs: std::collections::HashMap::new(),
             output_thumbs: std::collections::HashMap::new(),
             last_visible_thumb_nodes: Vec::new(),
+            wireless_label_editor: None,
         }
     }
 }
@@ -554,6 +560,52 @@ impl NodeGraphV2Panel {
                     egui::FontId::proportional(9.0 * zoom),
                     theme.text_dim,
                 );
+            }
+
+            // Wireless-link chips. Painted above the node body so they
+            // read as "extra" state, not part of the header.
+            //   - Sender chip: top-right corner, showing "⚲ label".
+            //   - Receiver chips: one per input port that has a label
+            //     set, painted above the port row on the left edge.
+            // A tiny cyan dot inside the chip ties them visually to
+            // the wireless feature. Hidden at extreme zoom-out so the
+            // canvas stays readable.
+            if zoom >= 0.55 {
+                let chip_fg = egui::Color32::from_rgb(120, 200, 220);
+                let chip_bg = egui::Color32::from_rgba_unmultiplied(
+                    chip_fg.r(), chip_fg.g(), chip_fg.b(), 48);
+                let chip_font = egui::FontId::proportional(9.0 * zoom);
+                if let Some(label) = node.output_link.as_ref() {
+                    let text = format!("⚲ {label}");
+                    let galley = painter.layout_no_wrap(text, chip_font.clone(), chip_fg);
+                    let pad = egui::vec2(6.0, 3.0) * zoom;
+                    let chip_size = galley.size() + pad * 2.0;
+                    let chip_pos = egui::pos2(
+                        rect.max.x - chip_size.x - 4.0 * zoom,
+                        rect.min.y - chip_size.y - 2.0 * zoom,
+                    );
+                    let chip_rect = egui::Rect::from_min_size(chip_pos, chip_size);
+                    painter.rect_filled(chip_rect, 3.0, chip_bg);
+                    painter.rect_stroke(chip_rect, 3.0, egui::Stroke::new(0.5, chip_fg));
+                    painter.galley(chip_rect.min + pad, galley, chip_fg);
+                }
+                for (port, slot) in node.input_links.iter().enumerate() {
+                    if let Some(label) = slot {
+                        let port_pos = input_port_pos(&rect, port as u8, in_count);
+                        let text = format!("{label} ⚲");
+                        let galley = painter.layout_no_wrap(text, chip_font.clone(), chip_fg);
+                        let pad = egui::vec2(5.0, 2.0) * zoom;
+                        let chip_size = galley.size() + pad * 2.0;
+                        let chip_pos = egui::pos2(
+                            port_pos.x - chip_size.x - 6.0 * zoom,
+                            port_pos.y - chip_size.y * 0.5,
+                        );
+                        let chip_rect = egui::Rect::from_min_size(chip_pos, chip_size);
+                        painter.rect_filled(chip_rect, 3.0, chip_bg);
+                        painter.rect_stroke(chip_rect, 3.0, egui::Stroke::new(0.5, chip_fg));
+                        painter.galley(chip_rect.min + pad, galley, chip_fg);
+                    }
+                }
             }
 
             // ExternalMatte: paint the loaded image as a thumbnail
@@ -1112,6 +1164,9 @@ impl NodeGraphV2Panel {
                 self.node_menu = None;
             }
         }
+        // Wireless-label editor popup. Rendered after the node menu
+        // so opening it from the menu works in the same frame.
+        self.draw_wireless_label_editor(ui, clip_id, &mut cmds);
 
         // Tell the engine which nodes want thumbnails. Diff against
         // the previous set so we don't resend the same list every
@@ -1311,6 +1366,68 @@ impl NodeGraphV2Panel {
         if close { self.add_menu_open = false; }
     }
 
+    fn draw_wireless_label_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let Some((node_id, pos, _)) = self.wireless_label_editor.as_ref().map(
+            |(n, p, b)| (*n, *p, b.clone())
+        ) else { return; };
+        let mut close = false;
+        let mut save = false;
+        let mut clear = false;
+        let area_id = ui.id().with(("ngv2_wireless_edit", node_id));
+        let area_resp = egui::Area::new(area_id)
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.label(egui::RichText::new("Wireless send label").small().weak());
+                    if let Some((_, _, buf)) = self.wireless_label_editor.as_mut() {
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(buf)
+                                .hint_text("e.g. Matte_A")
+                                .desired_width(160.0),
+                        );
+                        if resp.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
+                            save = true;
+                        }
+                        resp.request_focus();
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() { save = true; }
+                        if ui.button("Clear").clicked() { clear = true; }
+                        if ui.button("Cancel").clicked() { close = true; }
+                    });
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
+                });
+            });
+        if save {
+            if let Some((_, _, buf)) = self.wireless_label_editor.as_ref() {
+                let label = buf.trim();
+                cmds.push(AppCommand::SetNodeOutputLink {
+                    clip_id, node_id,
+                    label: if label.is_empty() { None } else { Some(label.to_string()) },
+                });
+            }
+            close = true;
+        }
+        if clear {
+            cmds.push(AppCommand::SetNodeOutputLink {
+                clip_id, node_id, label: None,
+            });
+            close = true;
+        }
+        if area_resp.response.clicked_elsewhere() {
+            close = true;
+        }
+        if close { self.wireless_label_editor = None; }
+    }
+
     fn draw_node_menu(
         &mut self,
         ui: &mut egui::Ui,
@@ -1331,15 +1448,16 @@ impl NodeGraphV2Panel {
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    if matches!(kind, NodeKind::Source | NodeKind::Output) {
-                        ui.label("(no actions)");
-                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
-                        return;
-                    }
-                    let toggle = if enabled { "Bypass" } else { "Enable" };
-                    if ui.button(toggle).clicked() {
-                        cmds.push(AppCommand::ToggleNodeEnabled { clip_id, node_id });
-                        close = true;
+                    // Source / Output only get the wireless controls
+                    // below — bypass / delete / group don't apply to
+                    // them, so skip those entries entirely.
+                    let is_structural = matches!(kind, NodeKind::Source | NodeKind::Output);
+                    if !is_structural {
+                        let toggle = if enabled { "Bypass" } else { "Enable" };
+                        if ui.button(toggle).clicked() {
+                            cmds.push(AppCommand::ToggleNodeEnabled { clip_id, node_id });
+                            close = true;
+                        }
                     }
                     let in_set = selected_set.contains(&node_id);
                     // Group-into-Compound: only offered when the
@@ -1348,7 +1466,7 @@ impl NodeGraphV2Panel {
                     // selection's external-edge shape and rejects
                     // gracefully (toast) if the v1 single-port
                     // restriction would be violated.
-                    if in_set && selected_set.len() >= 2 {
+                    if !is_structural && in_set && selected_set.len() >= 2 {
                         let label = format!(
                             "Group {} into Compound",
                             selected_set.len(),
@@ -1376,12 +1494,88 @@ impl NodeGraphV2Panel {
                             close = true;
                         }
                     }
+
+                    // Wireless-link controls: a sender label on the
+                    // primary output (one per node) and per-input-port
+                    // receiver labels that resolve to whichever node
+                    // currently broadcasts the matching label.
+                    // Source / Output are structural, so Source gets
+                    // only the send control and Output only the receive.
+                    let node_ref = graph.nodes.iter().find(|n| n.id == node_id);
+                    let current_send = node_ref.and_then(|n| n.output_link.clone());
+                    let current_receives: Vec<Option<String>> = node_ref
+                        .map(|n| n.input_links.clone()).unwrap_or_default();
+                    let in_count = node_ref.map(|n| n.dynamic_input_port_count()).unwrap_or(0);
+                    let can_send = kind != NodeKind::Output;
+                    let can_receive = kind != NodeKind::Source && in_count > 0;
+                    let available_labels: Vec<String> = graph.nodes.iter()
+                        .filter(|n| n.id != node_id)
+                        .filter_map(|n| n.output_link.clone())
+                        .collect();
+
+                    if can_send {
+                        let send_label = match &current_send {
+                            Some(l) => format!("Wireless: sending \"{l}\"…"),
+                            None => "Wireless: set send label…".to_string(),
+                        };
+                        if ui.button(send_label).clicked() {
+                            self.wireless_label_editor = Some((
+                                node_id, pos,
+                                current_send.clone().unwrap_or_default(),
+                            ));
+                            close = true;
+                        }
+                    }
+                    if can_receive && !available_labels.is_empty() {
+                        ui.menu_button("Wireless: receive from ▸", |ui| {
+                            for port in 0..in_count {
+                                let cur = current_receives.get(port as usize)
+                                    .and_then(|s| s.clone());
+                                ui.label(egui::RichText::new(format!("Port {port}"))
+                                    .weak());
+                                for lab in &available_labels {
+                                    let active = cur.as_ref() == Some(lab);
+                                    let marker = if active { "●" } else { "○" };
+                                    if ui.button(format!("{marker}  {lab}")).clicked() {
+                                        cmds.push(AppCommand::SetNodeInputLink {
+                                            clip_id, node_id,
+                                            port,
+                                            label: if active { None } else { Some(lab.clone()) },
+                                        });
+                                        ui.close_menu();
+                                        close = true;
+                                    }
+                                }
+                                if cur.is_some() {
+                                    if ui.button("Clear").clicked() {
+                                        cmds.push(AppCommand::SetNodeInputLink {
+                                            clip_id, node_id, port, label: None,
+                                        });
+                                        ui.close_menu();
+                                        close = true;
+                                    }
+                                }
+                                ui.separator();
+                            }
+                        });
+                    } else if can_receive && current_receives.iter().any(|s| s.is_some()) {
+                        if ui.button("Wireless: clear all receives").clicked() {
+                            for (port, _) in current_receives.iter().enumerate()
+                                .filter(|(_, s)| s.is_some())
+                            {
+                                cmds.push(AppCommand::SetNodeInputLink {
+                                    clip_id, node_id, port: port as u8, label: None,
+                                });
+                            }
+                            close = true;
+                        }
+                    }
                     let multi_label = if in_set && selected_set.len() > 1 {
                         format!("Delete {} selected", selected_set.len())
                     } else {
                         "Delete".to_string()
                     };
-                    if ui.button(multi_label).clicked() {
+                    if !is_structural && ui.button(multi_label).clicked() {
                         if in_set {
                             // Right-click landed on one of the
                             // multi-selected nodes — delete the whole

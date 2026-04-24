@@ -2567,6 +2567,8 @@ impl KlippApp {
                     enabled: true,
                     params: klipp_nodes::NodeParams::default(),
                     keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+                    output_link: None,
+                    input_links: Vec::new(),
                 };
                 clip.node_graph.nodes.push(new_node);
                 // Insert the new node just before the output node:
@@ -9318,6 +9320,8 @@ impl KlippApp {
                 enabled: true,
                 params: klipp_nodes::NodeParams::default(),
                 keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+                output_link: None,
+                input_links: Vec::new(),
             });
             graph.node_positions.insert(
                 new_id,
@@ -9534,6 +9538,8 @@ impl KlippApp {
                 enabled: true,
                 params: NodeParams::default(),
                 keyframes: NodeKeyframeTracks::default(),
+                output_link: None,
+                input_links: Vec::new(),
             });
             subgraph.nodes.push(Node {
                 id: sub_output_id,
@@ -9542,6 +9548,8 @@ impl KlippApp {
                 enabled: true,
                 params: NodeParams::default(),
                 keyframes: NodeKeyframeTracks::default(),
+                output_link: None,
+                input_links: Vec::new(),
             });
             subgraph.node_positions.insert(sub_source_id, NodePos { x: -200.0, y: 0.0 });
             subgraph.node_positions.insert(sub_output_id, NodePos { x: 800.0, y: 0.0 });
@@ -9628,6 +9636,8 @@ impl KlippApp {
                     ..NodeParams::default()
                 },
                 keyframes: NodeKeyframeTracks::default(),
+                output_link: None,
+                input_links: Vec::new(),
             });
 
             let mut new_edges: Vec<Edge> = external_kept;
@@ -10017,6 +10027,39 @@ impl KlippApp {
                 let (to_node, to_port) = (*to, *to_port);
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
                     graph.edges.retain(|e| !(e.to_node == to_node && e.to_port == to_port));
+                });
+                true
+            }
+            AppCommand::SetNodeOutputLink { clip_id, node_id, label } => {
+                let node_id = *node_id;
+                let label = label.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.output_link = label.as_ref().and_then(|s| {
+                            let t = s.trim();
+                            if t.is_empty() { None } else { Some(t.to_string()) }
+                        });
+                    }
+                });
+                true
+            }
+            AppCommand::SetNodeInputLink { clip_id, node_id, port, label } => {
+                let node_id = *node_id;
+                let port = *port as usize;
+                let label = label.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        if node.input_links.len() <= port {
+                            node.input_links.resize(port + 1, None);
+                        }
+                        node.input_links[port] = label.as_ref().and_then(|s| {
+                            let t = s.trim();
+                            if t.is_empty() { None } else { Some(t.to_string()) }
+                        });
+                        while node.input_links.last().map_or(false, |l| l.is_none()) {
+                            node.input_links.pop();
+                        }
+                    }
                 });
                 true
             }
