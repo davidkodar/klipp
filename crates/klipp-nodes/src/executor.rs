@@ -79,7 +79,22 @@ pub struct GraphExecutor {
     /// `start_chain` so a second chain segment within the same
     /// `execute_linear` call falls back to the normal upload path.
     gpu_chain_preseeded: bool,
+    /// Current depth of recursive `execute_linear_with_thumbs` calls
+    /// triggered by `NodeKind::Compound` nodes. Bumped on entry to
+    /// the compound arm of `execute_node`, decremented on exit.
+    /// Capped at `COMPOUND_MAX_DEPTH` so pathological nesting
+    /// (compound-of-compound-of-…) degrades gracefully to passthrough
+    /// instead of stack-overflowing. Zero in the common case (no
+    /// compounds, or top-level call).
+    compound_depth: u32,
 }
+
+/// Maximum recursion depth for nested `Compound` nodes before the
+/// executor falls back to passthrough. 8 is deep enough for any
+/// realistic grade structure (Resolve itself stops surfacing nested
+/// compounds in the UI well before that) and shallow enough that the
+/// worst-case per-frame cost stays bounded.
+const COMPOUND_MAX_DEPTH: u32 = 8;
 
 // ── u8 ↔ linear bracket helpers ─────────────────────────────────────────────
 
@@ -128,6 +143,7 @@ impl GraphExecutor {
             curve_lut_cache: HashMap::new(),
             matte_image_cache: HashMap::new(),
             gpu_chain_preseeded: false,
+            compound_depth: 0,
         }
     }
 
@@ -159,6 +175,7 @@ impl GraphExecutor {
             curve_lut_cache: HashMap::new(),
             matte_image_cache: HashMap::new(),
             gpu_chain_preseeded: false,
+            compound_depth: 0,
         }
     }
 
@@ -2386,11 +2403,59 @@ impl GraphExecutor {
 
             // Compound holds a nested NodeGraph in
             // `params.compound_subgraph`. Recursive sub-graph
-            // execution lands in stage 5 of the rollout — until
-            // then a Compound acts as a transparent passthrough so
-            // the user can already create / group / ungroup
-            // compounds in the editor without breaking playback.
-            NodeKind::Compound => primary_input.to_vec(),
+            // execution runs the packed nodes on the incoming
+            // frame and returns the sub-graph's Output as the
+            // compound's output. Three bailouts to a plain
+            // passthrough: no sub-graph attached (migration edge
+            // case), recursion depth cap hit (pathological
+            // compound-of-compound nesting — keeps per-frame cost
+            // bounded), or the sub-graph executor errors (missing
+            // Output edge / cycle — shouldn't happen on Group-
+            // created compounds but we fall through safely rather
+            // than propagate the error up to the engine).
+            NodeKind::Compound => {
+                let Some(subgraph) = params.compound_subgraph.as_ref() else {
+                    return primary_input.to_vec();
+                };
+                if self.compound_depth >= COMPOUND_MAX_DEPTH {
+                    tracing::warn!(
+                        "Compound: depth cap {} hit — falling through",
+                        COMPOUND_MAX_DEPTH,
+                    );
+                    return primary_input.to_vec();
+                }
+                self.compound_depth += 1;
+                // Clone the sub-graph so the recursive call can
+                // borrow it immutably while we still hold the
+                // `params` reference for the outer node. In
+                // practice sub-graphs are small (a handful of
+                // nodes), so the clone is cheap relative to the
+                // actual grade work about to run on the frame.
+                let subgraph = subgraph.clone();
+                let result = self.execute_linear_with_thumbs(
+                    primary_input,
+                    &subgraph,
+                    width,
+                    height,
+                    clip_time_secs,
+                    frame_number,
+                    None, // matte_tap — outer-level concern, not ours
+                    None, // matte_preview_node — same
+                    None, // visible_nodes — per-node thumbs inside
+                          // compounds land with a follow-up pass
+                );
+                self.compound_depth -= 1;
+                match result {
+                    Ok((output, _tapped, _thumbs)) => output,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Compound: sub-graph execution failed: {:?} — falling through",
+                            e,
+                        );
+                        primary_input.to_vec()
+                    }
+                }
+            }
         }
     }
 }

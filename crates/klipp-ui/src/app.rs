@@ -9692,6 +9692,210 @@ impl KlippApp {
         }
     }
 
+    /// Explode a Compound node back into its constituent nodes —
+    /// the inverse of `group_into_compound`. Mirrors Group's edge-
+    /// partitioning logic on the sub-graph (inbound from synthetic
+    /// Source, outbound to synthetic Output, internal edges between
+    /// the kept nodes) and rewires the Compound's external edges
+    /// straight to the previously-internal endpoints. Single-port
+    /// compounds only for v1 (same shape Group accepts). Refuses
+    /// cleanly with a toast if something's off.
+    fn ungroup_compound(
+        &mut self,
+        clip_id: klipp_core::ClipId,
+        compound_id: klipp_nodes::NodeId,
+        needs_refresh: &mut bool,
+    ) {
+        use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind};
+
+        let path = self.state.graph_descent_path.clone();
+        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+            let Some(clip) = track.find_clip_mut(clip_id) else { continue };
+            let old_root_graph = clip.node_graph.clone();
+            let Ok(parent) = Self::resolve_graph_at_path_mut(clip, &path) else {
+                self.state.toast.show("Ungroup: invalid descent path");
+                return;
+            };
+
+            // Locate the target Compound + extract its sub-graph.
+            let Some(compound_idx) = parent.nodes.iter().position(|n| n.id == compound_id) else {
+                self.state.toast.show("Ungroup: compound not found");
+                return;
+            };
+            if parent.nodes[compound_idx].kind != NodeKind::Compound {
+                self.state.toast.show("Ungroup: selection is not a Compound");
+                return;
+            }
+            let Some(subgraph) = parent.nodes[compound_idx]
+                .params
+                .compound_subgraph
+                .clone()
+            else {
+                self.state.toast.show("Ungroup: compound has no sub-graph");
+                return;
+            };
+
+            // Discover which internal nodes the synthetic Source
+            // and Output touched so we know what to rewire the
+            // parent's external edges to. The sub-graph shape Group
+            // builds has exactly one Source and exactly one Output;
+            // any deviation (loaded old project, manual edit)
+            // degrades to "no reconnection" for that side, which is
+            // the least-surprising behaviour.
+            let sub_source_id = subgraph
+                .nodes
+                .iter()
+                .find(|n| n.kind == NodeKind::Source)
+                .map(|n| n.id);
+            let sub_output_id = subgraph.output_node_id;
+            let inner_entry = sub_source_id.and_then(|sid| {
+                subgraph
+                    .edges
+                    .iter()
+                    .find(|e| e.from_node == sid)
+                    .map(|e| (e.to_node, e.to_port))
+            });
+            let inner_exit = subgraph
+                .edges
+                .iter()
+                .find(|e| e.to_node == sub_output_id)
+                .map(|e| (e.from_node, e.from_port));
+
+            // Compound's external in / out (same single-port v1
+            // restriction Group enforces).
+            let compound_in = parent
+                .edges
+                .iter()
+                .find(|e| e.to_node == compound_id)
+                .cloned();
+            let compound_out = parent
+                .edges
+                .iter()
+                .find(|e| e.from_node == compound_id)
+                .cloned();
+
+            // Compute centroid placement around the compound so the
+            // unpacked nodes spread sensibly instead of piling up at
+            // (0, 0) if the sub-graph never got layout. We use the
+            // compound's own position as an anchor + a small offset
+            // per node along the x axis.
+            let anchor = parent
+                .node_positions
+                .get(&compound_id)
+                .copied()
+                .unwrap_or_default();
+
+            // Build the new parent: drop the Compound node, strip
+            // edges touching it, then splice in the sub-graph's
+            // kept nodes + internal edges.
+            let mut new_nodes: Vec<Node> = parent
+                .nodes
+                .iter()
+                .filter(|n| n.id != compound_id)
+                .cloned()
+                .collect();
+            let mut new_edges: Vec<Edge> = parent
+                .edges
+                .iter()
+                .filter(|e| e.from_node != compound_id && e.to_node != compound_id)
+                .cloned()
+                .collect();
+            let mut new_positions = parent.node_positions.clone();
+            new_positions.remove(&compound_id);
+
+            let mut placed = 0i32;
+            for node in &subgraph.nodes {
+                // Skip the synthetic Source / Output wrappers —
+                // they only existed to make the sub-graph runnable.
+                if Some(node.id) == sub_source_id || node.id == sub_output_id {
+                    continue;
+                }
+                new_nodes.push(node.clone());
+                let pos = subgraph.node_positions.get(&node.id).copied();
+                let pos = pos.unwrap_or(klipp_nodes::NodePos {
+                    x: anchor.x + 30.0 * placed as f32,
+                    y: anchor.y + 30.0 * placed as f32,
+                });
+                new_positions.insert(node.id, pos);
+                placed += 1;
+            }
+            for edge in &subgraph.edges {
+                // Skip edges that touch the synthetic Source /
+                // Output — they become external connections.
+                if Some(edge.from_node) == sub_source_id || edge.to_node == sub_output_id {
+                    continue;
+                }
+                new_edges.push(edge.clone());
+            }
+
+            // Wire the parent's external inbound to whatever the
+            // sub-graph's Source fed internally.
+            if let (Some(in_edge), Some((entry_node, entry_port))) =
+                (compound_in.as_ref(), inner_entry)
+            {
+                new_edges.push(Edge {
+                    from_node: in_edge.from_node,
+                    from_port: in_edge.from_port,
+                    to_node: entry_node,
+                    to_port: entry_port,
+                });
+            }
+            // Wire whatever fed the sub-graph's Output to the
+            // parent's external outbound.
+            if let (Some(out_edge), Some((exit_node, exit_port))) =
+                (compound_out.as_ref(), inner_exit)
+            {
+                new_edges.push(Edge {
+                    from_node: exit_node,
+                    from_port: exit_port,
+                    to_node: out_edge.to_node,
+                    to_port: out_edge.to_port,
+                });
+            }
+
+            let new_parent = NodeGraph {
+                nodes: new_nodes,
+                edges: new_edges,
+                output_node_id: parent.output_node_id,
+                node_positions: new_positions,
+            };
+            if new_parent.topo_sort().is_err() {
+                self.state.toast.show("Ungroup: parent would cycle — aborted");
+                return;
+            }
+
+            // Replace the selection with the freshly-unpacked set
+            // so the user can immediately continue editing / group-
+            // again without re-selecting.
+            let unpacked_ids: Vec<NodeId> = subgraph
+                .nodes
+                .iter()
+                .filter(|n| Some(n.id) != sub_source_id && n.id != sub_output_id)
+                .map(|n| n.id)
+                .collect();
+
+            *parent = new_parent;
+            let new_root_graph = clip.node_graph.clone();
+
+            self.state.selected_node_ids.clear();
+            for id in &unpacked_ids {
+                self.state.selected_node_ids.insert(*id);
+            }
+            self.state.selected_node_id = unpacked_ids.first().copied();
+
+            self.state.history.push(crate::history::HistoryEntry {
+                sequence_idx: self.state.active_sequence_idx,
+                command: crate::history::EditCommand::SetNodeGraph {
+                    clip_id,
+                    old_graph: old_root_graph,
+                    new_graph: new_root_graph,
+                },
+            });
+            *needs_refresh = true;
+            return;
+        }
+    }
+
     fn handle_color_sampling(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
             AppCommand::RequestWhiteBalanceSample { nx, ny } => {
@@ -9723,6 +9927,10 @@ impl KlippApp {
             }
             AppCommand::GroupIntoCompound { clip_id, node_ids } => {
                 self.group_into_compound(*clip_id, node_ids, needs_refresh);
+                true
+            }
+            AppCommand::UngroupCompound { clip_id, node_id } => {
+                self.ungroup_compound(*clip_id, *node_id, needs_refresh);
                 true
             }
             AppCommand::DescendIntoCompound { clip_id, node_id } => {

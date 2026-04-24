@@ -1306,6 +1306,21 @@ impl NodeGraphV2Panel {
                             close = true;
                         }
                     }
+                    // Ungroup — only for compound nodes. Explodes
+                    // the nested sub-graph back into the parent.
+                    // Shown in addition to Group (which only fires
+                    // on multi-selection), so right-clicking a
+                    // compound always gets Ungroup regardless of
+                    // how many other nodes happen to be selected.
+                    if kind == NodeKind::Compound {
+                        if ui.button("Ungroup Compound").clicked() {
+                            cmds.push(AppCommand::UngroupCompound {
+                                clip_id,
+                                node_id,
+                            });
+                            close = true;
+                        }
+                    }
                     let multi_label = if in_set && selected_set.len() > 1 {
                         format!("Delete {} selected", selected_set.len())
                     } else {

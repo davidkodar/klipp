@@ -752,6 +752,19 @@ pub enum AppCommand {
         clip_id: ClipId,
         node_id: uuid::Uuid,
     },
+    /// Explode a Compound node back into its constituent nodes in
+    /// the parent graph. The sub-graph's synthetic Source + Output
+    /// are discarded; everything else is cloned out and the
+    /// external edges that ran through the Compound are rewired
+    /// directly to the nodes that previously fed / received the
+    /// sub-graph's Source / Output internally. Single-port compounds
+    /// only in v1 (same shape Group accepts). Selection is replaced
+    /// with the freshly-unpacked set so the user can immediately
+    /// continue editing.
+    UngroupCompound {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+    },
     ConnectNodes { clip_id: ClipId, from: uuid::Uuid, from_port: u8, to: uuid::Uuid, to_port: u8 },
     DisconnectEdge { clip_id: ClipId, to: uuid::Uuid, to_port: u8 },
     MoveNode { clip_id: ClipId, node_id: uuid::Uuid, delta_x: f32, delta_y: f32 },

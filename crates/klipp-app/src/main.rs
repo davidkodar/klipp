@@ -130,6 +130,19 @@ fn main() -> Result<()> {
     // share the same Arc.
     let foreground_activity = klipp_jobs::ForegroundActivity::new();
 
+    // Cross-thread repaint handle. The engine calls `(repaint_cb)()`
+    // on every state transition / FrameReady / seek-complete, but
+    // there's no egui::Context at engine-creation time (eframe hasn't
+    // booted yet). Stash it in an `Arc<OnceLock<Context>>` — empty
+    // while the engine is warming up, filled by the eframe creator
+    // callback below. Once installed, every engine wake-up cross-
+    // thread calls `ctx.request_repaint()` so the UI doesn't sleep
+    // through a PlaybackStarted or FrameReady event. Without this the
+    // UI only redraws on input, so until the user moves the mouse
+    // the viewer stays blank after Play.
+    let repaint_ctx: std::sync::Arc<std::sync::OnceLock<egui::Context>> =
+        std::sync::Arc::new(std::sync::OnceLock::new());
+    let repaint_ctx_for_engine = std::sync::Arc::clone(&repaint_ctx);
     let mut engine = {
         let _t = LogTimer::new("PlaybackEngine::new (TOTAL)");
         PlaybackEngine::new(
@@ -139,7 +152,11 @@ fn main() -> Result<()> {
             source_frame_buffer.clone(),
             sequence.clone(),
             media_pool.clone(),
-            Box::new(|| {}),
+            Box::new(move || {
+                if let Some(ctx) = repaint_ctx_for_engine.get() {
+                    ctx.request_repaint();
+                }
+            }),
             skim_consumer.clone(),
             perf_ring.clone(),
         )
@@ -292,6 +309,14 @@ fn main() -> Result<()> {
         Box::new(move |cc| {
             mark("eframe creator callback entered");
             let _t = LogTimer::new("KlippApp::new (TOTAL)");
+
+            // Install the egui Context into the shared OnceLock so
+            // the engine's `repaint_cb` can wake the UI from its own
+            // thread. Without this, PlaybackStarted / FrameReady /
+            // seek-complete events from the engine land in the
+            // channel but the UI stays asleep until the user moves
+            // the mouse — classic egui-idle symptom.
+            let _ = repaint_ctx.set(cc.egui_ctx.clone());
 
             // Optionally install eframe-wgpu's device as the shared
             // `GpuContext` so the engine + decoder submit onto the

@@ -534,6 +534,58 @@ pub const PARAM_CHANGE_QUEUE_CAPACITY: usize = 256;
 /// Returns the number of changes applied. Entries whose clip or node can no
 /// longer be found are silently dropped — the UI may have deleted the clip
 /// between the push and this drain.
+/// Recursively locate a node by id across a graph and every nested
+/// compound sub-graph, applying a param override when found. Returns
+/// true on first hit so `apply_param_changes` can count successes.
+/// Depth is bounded by `COMPOUND_MAX_DEPTH_ENGINE` — the UI's
+/// `resolve_graph_at_path_mut` can only descend through `Compound`
+/// nodes whose `params.compound_subgraph` is `Some`, so runaway
+/// recursion would require maliciously-crafted project data; a small
+/// cap turns that into a safe bailout.
+fn apply_override_recursive(
+    graph: &mut klipp_nodes::NodeGraph,
+    target_id: klipp_nodes::NodeId,
+    param: &str,
+    value: f32,
+) -> bool {
+    apply_override_recursive_impl(graph, target_id, param, value, 0)
+}
+
+const COMPOUND_MAX_DEPTH_ENGINE: u32 = 8;
+
+fn apply_override_recursive_impl(
+    graph: &mut klipp_nodes::NodeGraph,
+    target_id: klipp_nodes::NodeId,
+    param: &str,
+    value: f32,
+    depth: u32,
+) -> bool {
+    if depth >= COMPOUND_MAX_DEPTH_ENGINE {
+        return false;
+    }
+    // Top-of-graph hit first (most common case — user edits a root
+    // node; single linear scan, no allocations).
+    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == target_id) {
+        node.params.apply_override(param, value);
+        return true;
+    }
+    // Miss — descend into any compound sub-graphs. The nested
+    // recursive call reborrows on each iteration so we don't hold
+    // multiple mutable views at once.
+    for node in graph.nodes.iter_mut() {
+        if node.kind == klipp_nodes::NodeKind::Compound {
+            if let Some(sub) = node.params.compound_subgraph.as_mut() {
+                if apply_override_recursive_impl(
+                    sub, target_id, param, value, depth + 1,
+                ) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 pub fn apply_param_changes(
     sequence: &Arc<RwLock<Sequence>>,
     queue: &Arc<ArrayQueue<ParamChange>>,
@@ -575,8 +627,12 @@ pub fn apply_param_changes(
     let mut applied = 0usize;
     while let Some(change) = queue.pop() {
         if let Some(clip) = seq.all_clips_mut().find(|c| c.id == change.clip_id) {
-            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == change.node_id) {
-                node.params.apply_override(&change.param, change.value);
+            if apply_override_recursive(
+                &mut clip.node_graph,
+                change.node_id,
+                &change.param,
+                change.value,
+            ) {
                 applied += 1;
             }
         }
@@ -1391,6 +1447,27 @@ impl PlaybackEngine {
                 self.update_source_playback();
             }
 
+            if applied > 0
+                && matches!(self.state, PlaybackState::Idle | PlaybackState::Stopped)
+                && self.cached_pregrade_frame.is_none()
+            {
+                // Safety net: a slider drag is landing in the
+                // engine while we're still in Idle / Stopped (user
+                // never scrubbed via a path that pushed SetPlayhead /
+                // SeekTo), and `cached_pregrade_frame` is empty so
+                // the regrade branch below would silently no-op.
+                // Auto-heal by seeking to the current playhead —
+                // opens the decoder, populates the snapshot, flips
+                // state to Paused. The next drain tick's regrade
+                // hits a real snapshot and the viewer updates live
+                // without requiring a Play round-trip first.
+                let ph = self.playhead;
+                self.seek_in_sequence(ph);
+                if self.v1_decoder.is_some() || !self.audio_sources.is_empty() {
+                    self.state = PlaybackState::Paused;
+                    let _ = self.event_tx.send(AppEvent::PlaybackPaused);
+                }
+            }
             if self.state == PlaybackState::Playing {
                 // Playback already produces fresh frames at full res
                 // every tick; the drag-recovery flag isn't needed here.
@@ -1586,14 +1663,33 @@ impl PlaybackEngine {
                         self.clip_timeline_start.to_secs_f64(), self.clip_speed, source_secs
                     );
 
-                    // Seek video decoders to current position and flush stale frames
+                    // Seek video decoders to current position and flush stale frames.
+                    // Shortcut when resuming from a pause at the same
+                    // playhead: the decoder already has a frame sitting
+                    // in the queue near `source_secs`, so re-seeking
+                    // would force a 100–500 ms keyframe-rewind + forward-
+                    // decode cycle for nothing. Check the queue head
+                    // for a frame within 100 ms of target — if present,
+                    // skip the seek + clear entirely and just resume.
+                    // This is the primary cause of the 2–3 s Play-
+                    // after-pause latency the user hit.
                     if let Some(dec) = &self.v1_decoder {
-                        dec.seek(source_secs);
-                        // Drain stale frames from queue immediately —
-                        // the decoder thread will also clear on seek, but we
-                        // clear from here to discard any frames produced between
-                        // our seek command and the decoder processing it.
-                        dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
+                        let queue_has_target = {
+                            let q = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+                            match q.front() {
+                                Some(f) if !f.is_eof
+                                    && (f.pts_secs() - source_secs).abs() < 0.1 => true,
+                                _ => false,
+                            }
+                        };
+                        if !queue_has_target {
+                            dec.seek(source_secs);
+                            // Drain stale frames from queue immediately —
+                            // the decoder thread will also clear on seek, but we
+                            // clear from here to discard any frames produced between
+                            // our seek command and the decoder processing it.
+                            dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
+                        }
                         dec.resume();
                     }
                     for dec in self.overlay_decoders.values() {
@@ -1666,21 +1762,23 @@ impl PlaybackEngine {
                     self.state = PlaybackState::Paused;
                     let _ = self.event_tx.send(AppEvent::PlaybackPaused);
                     // During playback the pregrade encode is skipped
-                    // (see `pregrade_needed` in `post_process_rgba`) so
-                    // `cached_pregrade_frame` still holds whatever
-                    // frame was paused on last. A plain
-                    // `regrade_cached_frame` on pause would re-grade
-                    // that stale frame — the V2 thumbs would show an
-                    // old position regardless of where playback
-                    // stopped. Force a real seek to the current
-                    // playhead so the decoder produces a fresh frame,
-                    // `post_process_rgba` refreshes the pregrade
-                    // snapshot, and the executor captures thumbs
-                    // against the actual paused frame.
-                    if !self.visible_node_thumbs.is_empty() {
-                        let playhead = self.playhead;
-                        self.seek_in_sequence(playhead);
-                    }
+                    // (see `pregrade_needed` in `post_process_rgba`)
+                    // so `cached_pregrade_frame` may still hold the
+                    // frame we paused ON last — but more importantly,
+                    // `regrade_cached_frame()` is a silent no-op when
+                    // that snapshot is None. Without a fresh pregrade
+                    // in place, every user edit while paused (slider
+                    // drag, AddNode, Connect, ToggleBypass …) feeds
+                    // into a `regrade_cached_frame` that does
+                    // nothing, and the viewer stays stale until the
+                    // user unpauses and re-pauses. Force one
+                    // `seek_in_sequence` on the Pause transition so
+                    // the decoder hands us a known-good frame,
+                    // `post_process_rgba` writes the pregrade
+                    // snapshot, and every subsequent paused edit has
+                    // something to re-grade.
+                    let playhead = self.playhead;
+                    self.seek_in_sequence(playhead);
                     (self.repaint_cb)();
                 }
             }
@@ -1707,8 +1805,26 @@ impl PlaybackEngine {
             }
 
             AppCommand::SeekTo(tc) => {
-                if self.state != PlaybackState::Idle {
-                    self.seek_in_sequence(tc);
+                // Lift the Idle / Stopped gates. After project load
+                // the engine sits in Idle or Stopped depending on
+                // path — but scrubbing the ruler / clicking on the
+                // timeline before the first Play should still seek
+                // the decoder and populate `cached_pregrade_frame`,
+                // otherwise slider edits silently no-op because
+                // `regrade_cached_frame` has nothing to re-grade.
+                self.seek_in_sequence(tc);
+                // Transition Idle / Stopped → Paused once we
+                // actually have a decoder or audio source to play.
+                // Puts the engine in the same "paused with a valid
+                // pregrade snapshot" mode Play-then-Pause produces,
+                // so paused slider edits start working without the
+                // round-trip through Play.
+                if matches!(self.state, PlaybackState::Idle | PlaybackState::Stopped)
+                    && (self.v1_decoder.is_some()
+                        || !self.audio_sources.is_empty())
+                {
+                    self.state = PlaybackState::Paused;
+                    let _ = self.event_tx.send(AppEvent::PlaybackPaused);
                 }
             }
 
@@ -1756,8 +1872,14 @@ impl PlaybackEngine {
 
             AppCommand::SetPlayhead(tc) => {
                 self.playhead = tc;
-                if self.state != PlaybackState::Idle {
-                    self.seek_in_sequence(tc);
+                // Same Idle / Stopped gate lift as SeekTo.
+                self.seek_in_sequence(tc);
+                if matches!(self.state, PlaybackState::Idle | PlaybackState::Stopped)
+                    && (self.v1_decoder.is_some()
+                        || !self.audio_sources.is_empty())
+                {
+                    self.state = PlaybackState::Paused;
+                    let _ = self.event_tx.send(AppEvent::PlaybackPaused);
                 }
             }
 
@@ -6627,6 +6749,13 @@ impl PlaybackEngine {
             }
             drop(fb);
             let _ = self.event_tx.send(AppEvent::FrameReady);
+            // Wake the UI. When paused, egui sleeps until an input
+            // event or a scheduled repaint — neither fires on its
+            // own for a param-change-triggered regrade. Without this,
+            // slider drags on a paused clip write a fresh frame to
+            // `frame_buffer` but the viewer stays asleep until the
+            // user moves the mouse.
+            (self.repaint_cb)();
         } else if let Some((track_idx, ov_w, ov_h)) = {
             // Pick the topmost overlay (highest track index) with a frame in deterministic order.
             let overlay_indices: Vec<usize> = {
@@ -6662,6 +6791,7 @@ impl PlaybackEngine {
             fb.write_frame(rgba, ov_w, ov_h);
             drop(fb);
             let _ = self.event_tx.send(AppEvent::FrameReady);
+            (self.repaint_cb)();
         }
     }
 
