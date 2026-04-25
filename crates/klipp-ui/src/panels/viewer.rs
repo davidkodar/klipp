@@ -1299,7 +1299,19 @@ impl ViewerPanel {
         // (if there's a clip to seek in) emit a per-viewer seek. The
         // focus emit runs unconditionally so an empty source scrub bar
         // still accepts focus on click.
-        if resp.dragged() || resp.clicked() {
+        // egui's `resp.dragged()` for a `Sense::click_and_drag`
+        // widget can fire spuriously while a drag started elsewhere
+        // (e.g. a mask handle on the image) is in progress — the
+        // scrub bar would then dispatch SeekTo on every drag tick
+        // from the cursor's position over the image, yanking the
+        // playhead wildly. The rect-contains gate makes the scrub
+        // bar respond ONLY to gestures whose cursor is actually
+        // over it.
+        let pointer_in_rect = resp
+            .interact_pointer_pos()
+            .map(|p| rect.contains(p))
+            .unwrap_or(false);
+        if (resp.dragged() || resp.clicked()) && pointer_in_rect {
             if !is_focused {
                 cmds.push(AppCommand::SetViewerMode(viewer_kind));
             }
@@ -1994,6 +2006,17 @@ impl ViewerPanel {
             }
         };
 
+        // Compute clip-time at the current playhead so we can render
+        // each mask at its evaluated (keyframe-aware) position rather
+        // than its static one. Without this the outline lies after a
+        // tracking pass writes centre keyframes — the rendered shape
+        // stays at the original drop point while the actual matte
+        // follows the tracked path.
+        let clip_time_secs: f64 = state.sequence().tracks.iter()
+            .find_map(|t| t.find_clip(clip_id))
+            .map(|c| (state.playhead_smooth_secs - c.timeline_in.to_secs_f64()).max(0.0))
+            .unwrap_or(0.0);
+
         let iw = image_rect.width();
         let ih = image_rect.height();
         let handle_radius = 5.0_f32;
@@ -2005,8 +2028,15 @@ impl ViewerPanel {
             egui::pos2(image_rect.min.x + nx * iw, image_rect.min.y + ny * ih)
         };
 
-        for (mask_idx, mask) in masks.masks.iter().enumerate() {
-            if !mask.enabled { continue; }
+        for (mask_idx, raw_mask) in masks.masks.iter().enumerate() {
+            if !raw_mask.enabled { continue; }
+            // Render + drag against the keyframe-evaluated shape so
+            // the outline matches the actual matte. The drag-start
+            // arms below capture this evaluated shape as
+            // initial_shape so drag math operates on the same
+            // coordinate frame the user is looking at.
+            let mask_owned = raw_mask.evaluated_at(clip_time_secs);
+            let mask = &mask_owned;
 
             match &mask.shape {
                 klipp_core::MaskShape::Circle { center_x, center_y, radius } => {
@@ -2044,12 +2074,27 @@ impl ViewerPanel {
                             }
                             if resp.drag_started() {
                                 if let Some(pos) = resp.interact_pointer_pos() {
-                                    // Clicking / grabbing any mask
-                                    // handle routes inspector focus to
-                                    // the Mask node so its params
-                                    // appear without a separate select.
                                     state.selected_node_id = Some(node_id);
                                     cmds.push(AppCommand::FocusMaskInspector);
+                                    cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+                                    // If this mask is keyframed (i.e. a
+                                    // tracker is driving its centre),
+                                    // dragging the outline can't have
+                                    // any visible effect — the
+                                    // keyframes win in evaluated_at.
+                                    // Treat the drag as "I want to
+                                    // start over from this position":
+                                    // tear the tracker down + clear
+                                    // the centre keyframes so the
+                                    // static drag we're about to do
+                                    // becomes the new starting point.
+                                    // User clicks 🎯 Track again
+                                    // afterwards to redo analysis.
+                                    if !raw_mask.keyframes.is_empty() {
+                                        cmds.push(AppCommand::RemoveMaskTracking {
+                                            clip_id, node_id, mask_index: mask_idx,
+                                        });
+                                    }
                                     state.viewer_mask_drag = Some(ViewerMaskDrag {
                                         clip_id,
                                         node_id,
@@ -2107,12 +2152,27 @@ impl ViewerPanel {
                             }
                             if resp.drag_started() {
                                 if let Some(pos) = resp.interact_pointer_pos() {
-                                    // Clicking / grabbing any mask
-                                    // handle routes inspector focus to
-                                    // the Mask node so its params
-                                    // appear without a separate select.
                                     state.selected_node_id = Some(node_id);
                                     cmds.push(AppCommand::FocusMaskInspector);
+                                    cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+                                    // If this mask is keyframed (i.e. a
+                                    // tracker is driving its centre),
+                                    // dragging the outline can't have
+                                    // any visible effect — the
+                                    // keyframes win in evaluated_at.
+                                    // Treat the drag as "I want to
+                                    // start over from this position":
+                                    // tear the tracker down + clear
+                                    // the centre keyframes so the
+                                    // static drag we're about to do
+                                    // becomes the new starting point.
+                                    // User clicks 🎯 Track again
+                                    // afterwards to redo analysis.
+                                    if !raw_mask.keyframes.is_empty() {
+                                        cmds.push(AppCommand::RemoveMaskTracking {
+                                            clip_id, node_id, mask_index: mask_idx,
+                                        });
+                                    }
                                     state.viewer_mask_drag = Some(ViewerMaskDrag {
                                         clip_id,
                                         node_id,
@@ -2156,12 +2216,27 @@ impl ViewerPanel {
                             }
                             if resp.drag_started() {
                                 if let Some(pos) = resp.interact_pointer_pos() {
-                                    // Clicking / grabbing any mask
-                                    // handle routes inspector focus to
-                                    // the Mask node so its params
-                                    // appear without a separate select.
                                     state.selected_node_id = Some(node_id);
                                     cmds.push(AppCommand::FocusMaskInspector);
+                                    cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+                                    // If this mask is keyframed (i.e. a
+                                    // tracker is driving its centre),
+                                    // dragging the outline can't have
+                                    // any visible effect — the
+                                    // keyframes win in evaluated_at.
+                                    // Treat the drag as "I want to
+                                    // start over from this position":
+                                    // tear the tracker down + clear
+                                    // the centre keyframes so the
+                                    // static drag we're about to do
+                                    // becomes the new starting point.
+                                    // User clicks 🎯 Track again
+                                    // afterwards to redo analysis.
+                                    if !raw_mask.keyframes.is_empty() {
+                                        cmds.push(AppCommand::RemoveMaskTracking {
+                                            clip_id, node_id, mask_index: mask_idx,
+                                        });
+                                    }
                                     state.viewer_mask_drag = Some(ViewerMaskDrag {
                                         clip_id,
                                         node_id,
@@ -2219,6 +2294,12 @@ impl ViewerPanel {
                                     if let Some(pos) = resp.interact_pointer_pos() {
                                         state.selected_node_id = Some(node_id);
                                         cmds.push(AppCommand::FocusMaskInspector);
+                                        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+                                        if !raw_mask.keyframes.is_empty() {
+                                            cmds.push(AppCommand::RemoveMaskTracking {
+                                                clip_id, node_id, mask_index: mask_idx,
+                                            });
+                                        }
                                         state.viewer_mask_drag = Some(ViewerMaskDrag {
                                             clip_id,
                                             node_id,
@@ -2382,7 +2463,7 @@ impl ViewerPanel {
                     masks: updated_masks,
                 });
             } else {
-                // Pointer released — end drag
+                cmds.push(AppCommand::EndNodeParamEdit { clip_id: drag_clip_id });
                 state.viewer_mask_drag = None;
             }
         }

@@ -1427,15 +1427,27 @@ fn handle_hover_skim(
     };
     state.browser_skim_active_this_frame = true;
 
-    // Calculate skim speed (px/sec) for audio mode selection
+    // Calculate skim speed (px/sec) for audio mode selection.
+    // Sub-pixel cursor movement counts as stationary — snap to 0 so
+    // BrowserSkimAudioUpdate's silence path fires immediately on stop
+    // (the EMA alone decays too slowly, and a truly still cursor
+    // doesn't tick at all because egui isn't re-rendering).
     let now = std::time::Instant::now();
     let dt = now.duration_since(state.skim_last_update).as_secs_f32();
     let dx = (hover_pos.x - state.skim_last_x).abs();
-    // EMA-smooth to avoid jitter (alpha=0.3)
-    let raw_speed = if dt > 0.001 { dx / dt } else { 0.0 };
-    state.skim_speed_px_per_sec = state.skim_speed_px_per_sec * 0.7 + raw_speed * 0.3;
+    if dx < 0.5 {
+        state.skim_speed_px_per_sec = 0.0;
+    } else {
+        let raw_speed = if dt > 0.001 { dx / dt } else { 0.0 };
+        state.skim_speed_px_per_sec = state.skim_speed_px_per_sec * 0.7 + raw_speed * 0.3;
+    }
     state.skim_last_x = hover_pos.x;
     state.skim_last_update = now;
+    // Force the silence check to actually run after the cursor stops
+    // moving. Without this re-paint nudge, no input → no render →
+    // BrowserSkimAudioUpdate never gets dispatched again, and audio
+    // plays through a stationary hover.
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
 
     let fraction = ((hover_pos.x - skim_rect.min.x) / skim_rect.width()).clamp(0.0, 1.0);
     let dur_secs = if item.duration.rate > 0 {

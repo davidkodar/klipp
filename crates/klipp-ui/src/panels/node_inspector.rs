@@ -603,6 +603,7 @@ impl NodeInspectorPanel {
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
         clip_time_secs: f64,
+        tracked_mask_indices: &[usize],
     ) {
         let mut masks_changed = false;
 
@@ -718,10 +719,63 @@ impl NodeInspectorPanel {
                     ui.label(egui::RichText::new(format!("Mask {} - {}", mask_idx + 1, shape_label))
                         .size(11.0).color(theme.text_accent));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(egui::Button::new(
-                            egui::RichText::new("\u{00D7}").size(12.0).color(theme.text_dim)
-                        ).frame(false)).on_hover_text("Delete mask").clicked() {
+                        // Push everything well off the right edge so
+                        // the × delete button doesn't overlap the
+                        // ScrollArea's scrollbar gutter — clicking
+                        // there scrolled the panel instead of
+                        // deleting the mask.
+                        ui.add_space(14.0);
+                        if ui.add(
+                            egui::Button::new(
+                                egui::RichText::new("\u{00D7}").size(14.0).color(theme.text_dim)
+                            )
+                            .frame(true)
+                            .min_size(egui::vec2(22.0, 22.0))
+                        ).on_hover_text("Delete mask").clicked() {
                             delete_this = true;
+                        }
+                        // One-shot mask tracking. When a tracker is
+                        // already bound to this mask, the button flips
+                        // to "Re-track" (overwrites prior keyframes) and
+                        // an Untrack button appears next to it.
+                        let is_tracked = tracked_mask_indices.contains(&mask_idx);
+                        ui.add_space(6.0);
+                        if is_tracked {
+                            if ui.add(egui::Button::new(
+                                egui::RichText::new("\u{1F6AB} Untrack").size(10.0)
+                                    .color(theme.text_dim)
+                            ).frame(true))
+                                .on_hover_text("Remove the tracker bound to this mask + clear its centre keyframes")
+                                .clicked()
+                            {
+                                cmds.push(AppCommand::RemoveMaskTracking {
+                                    clip_id, node_id, mask_index: mask_idx,
+                                });
+                            }
+                            ui.add_space(4.0);
+                        }
+                        let label = if is_tracked { "\u{1F3AF} Re-track" } else { "\u{1F3AF} Track" };
+                        let hover = if is_tracked {
+                            "Re-run tracking from the playhead — overwrites the existing centre keyframes"
+                        } else {
+                            "Track this region across the clip — auto-keyframes the mask centre"
+                        };
+                        if ui.add(egui::Button::new(
+                            egui::RichText::new(label).size(10.0)
+                        ).frame(true))
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
+                            // Re-track: drop the existing tracker first
+                            // so we don't leave duplicates piling up.
+                            if is_tracked {
+                                cmds.push(AppCommand::RemoveMaskTracking {
+                                    clip_id, node_id, mask_index: mask_idx,
+                                });
+                            }
+                            cmds.push(AppCommand::TrackMaskRegion {
+                                clip_id, node_id, mask_index: mask_idx,
+                            });
                         }
                     });
                 });
@@ -1232,7 +1286,7 @@ impl NodeInspectorPanel {
             if let Some(idx) = mask_node_idx {
                 let node_id = graph.nodes[idx].id;
                 let masks = graph.nodes[idx].params.masks.get_or_insert_with(Default::default);
-                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, clip_time_secs);
+                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, clip_time_secs, &[]);
             } else {
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
@@ -1948,7 +2002,7 @@ impl NodeInspectorPanel {
             }
             NodeKind::Mask => {
                 let masks = params.masks.get_or_insert_with(Default::default);
-                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, clip_time_secs);
+                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, clip_time_secs, &[]);
             }
             NodeKind::FilmGrain => {
                 let grain = params.grain.get_or_insert_with(Default::default);

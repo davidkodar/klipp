@@ -4051,12 +4051,22 @@ impl TimelinePanel {
 
                         // Audio skimming on timeline hover
                         if state.audio_skimming_enabled {
-                            // Speed calculation
+                            // Speed calculation. Sub-pixel cursor
+                            // movement counts as "stationary" — EMA
+                            // decay alone is too slow (and never
+                            // ticks at all when the cursor is truly
+                            // still, because egui doesn't re-render
+                            // without input). Snapping to 0 here gives
+                            // immediate silence on stop.
                             let now = std::time::Instant::now();
                             let dt = now.duration_since(state.skim_last_update).as_secs_f32();
                             let dx = (pos.x - state.skim_last_x).abs();
-                            let raw_speed = if dt > 0.001 { dx / dt } else { 0.0 };
-                            state.skim_speed_px_per_sec = state.skim_speed_px_per_sec * 0.7 + raw_speed * 0.3;
+                            if dx < 0.5 {
+                                state.skim_speed_px_per_sec = 0.0;
+                            } else {
+                                let raw_speed = if dt > 0.001 { dx / dt } else { 0.0 };
+                                state.skim_speed_px_per_sec = state.skim_speed_px_per_sec * 0.7 + raw_speed * 0.3;
+                            }
                             state.skim_last_x = pos.x;
                             state.skim_last_update = now;
 
@@ -4078,6 +4088,12 @@ impl TimelinePanel {
                                         time_secs: skim_time,
                                     });
                                 }
+                                // Wake the next frame even if the
+                                // cursor doesn't move — without this
+                                // the silence check never re-runs and
+                                // audio keeps playing through a
+                                // stationary hover.
+                                ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
                             }
                         }
                     }
@@ -8249,7 +8265,6 @@ impl TimelinePanel {
             // Cache clip rect for connection line drawing
             self.frame_cache.clip_screen_rects.insert(clip.id, clip_rect);
 
-            // Skip if not visible (horizontal or vertical)
             if clip_rect.right() < content_rect.left()
                 || clip_rect.left() > content_rect.right()
                 || clip_rect.bottom() < track_rect.top()

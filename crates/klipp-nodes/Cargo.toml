@@ -7,6 +7,7 @@ edition = "2021"
 klipp-color = { workspace = true }
 klipp-core = { workspace = true }
 klipp-effects = { workspace = true }
+rayon = "1"
 wgpu = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

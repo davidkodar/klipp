@@ -24,7 +24,7 @@ pub fn show_color_and_luts(
         // on any change so the persistent path matches every other
         // mask-edit site.
         if let Some(clip_id) = state.selected_clip {
-            let mask_entry: Option<(klipp_nodes::NodeId, klipp_core::MaskStack, f64)> = state
+            let mask_entry: Option<(klipp_nodes::NodeId, klipp_core::MaskStack, f64, Vec<usize>)> = state
                 .sequences
                 .get(state.active_sequence_idx)
                 .and_then(|seq| seq.tracks.iter()
@@ -35,14 +35,22 @@ pub fn show_color_and_luts(
                             - c.timeline_in.to_secs_f64()).max(0.0);
                         let mask_node = c.node_graph.nodes.iter()
                             .find(|n| n.kind == klipp_nodes::NodeKind::Mask);
-                        mask_node.map(|n| (
-                            n.id,
-                            n.params.masks.clone().unwrap_or_default(),
-                            clip_time,
-                        ))
+                        mask_node.map(|n| {
+                            // Build the list of mask indices that have
+                            // a tracker bound to them, so the Re-track /
+                            // Untrack UI lights up for already-tracked
+                            // masks.
+                            let nid = n.id;
+                            let tracked: Vec<usize> = c.track_points.iter()
+                                .filter_map(|tp| tp.linked_mask
+                                    .filter(|(tn, _)| *tn == nid)
+                                    .map(|(_, mi)| mi))
+                                .collect();
+                            (nid, n.params.masks.clone().unwrap_or_default(), clip_time, tracked)
+                        })
                     })
                     .flatten());
-            if let Some((node_id, mut masks, clip_time_secs)) = mask_entry {
+            if let Some((node_id, mut masks, clip_time_secs, tracked)) = mask_entry {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
@@ -51,7 +59,7 @@ pub fn show_color_and_luts(
                 });
                 ui.add_space(4.0);
                 crate::panels::node_inspector::NodeInspectorPanel::render_masks_body(
-                    ui, &mut masks, node_id, clip_id, cmds, theme, clip_time_secs,
+                    ui, &mut masks, node_id, clip_id, cmds, theme, clip_time_secs, &tracked,
                 );
                 ui.add_space(8.0);
                 ui.separator();

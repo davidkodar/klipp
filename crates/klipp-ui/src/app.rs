@@ -251,6 +251,11 @@ pub struct KlippApp {
     /// Set by `BeginNodeParamEdit`, consumed by `EndNodeParamEdit`. `None`
     /// when no gesture is in progress.
     node_param_edit_snapshot: Option<(klipp_core::ClipId, klipp_nodes::NodeGraph)>,
+    /// Last wall time `sync_and_refresh_frame` ran while a
+    /// node-param-edit gesture was in flight. Used to throttle the
+    /// heavy sequence resync to ~30 Hz during drags so the engine
+    /// command channel doesn't get flooded.
+    last_gesture_sync: std::time::Instant,
     /// CPU-only graph executor for UI-thread re-grading (instant slider feedback).
     /// CPU-only executor for fast reduced-resolution scope previews.
     scope_executor: klipp_nodes::GraphExecutor,
@@ -433,6 +438,7 @@ impl KlippApp {
             node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel::default(),
             looks_panel_state: crate::panels::looks::LooksPanelState::default(),
             node_param_edit_snapshot: None,
+            last_gesture_sync: std::time::Instant::now(),
             scope_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
             media_watcher: None,
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
@@ -813,7 +819,6 @@ impl KlippApp {
                     self.state.playback = PlaybackState::Playing;
                     self.state.playhead_anchor = self.state.playhead;
                     self.state.playhead_anchor_wall = std::time::Instant::now();
-                    // Re-engage playhead follow on play (user scroll disables it)
                     if self.prefs.editing.playhead_follows_playback
                         && self.state.playhead_follow == crate::state::PlayheadFollow::Off
                     {
@@ -3080,8 +3085,23 @@ impl KlippApp {
         // Prefer the full-sync path when ANY non-slider command needed refresh
         // (structural changes, keyframe edits, etc.). The slider fast path is
         // only taken when SetNodeParam was the sole trigger for refresh.
+        // While a node-param-edit gesture is in flight (mask drag etc.),
+        // throttle the heavy sync to ~30 Hz — without this the per-frame
+        // SetNodeMasks during a mask drag fires sync_sequence_to_engine +
+        // SequenceUpdated at 60+ Hz which floods the engine command channel
+        // and visibly drifts the playhead.
         if needs_refresh {
-            self.sync_and_refresh_frame();
+            let in_gesture = self.node_param_edit_snapshot.is_some();
+            let throttle_hit = in_gesture
+                && self.last_gesture_sync.elapsed() < std::time::Duration::from_millis(33);
+            if !throttle_hit {
+                if in_gesture {
+                    self.last_gesture_sync = std::time::Instant::now();
+                }
+                self.sync_and_refresh_frame();
+            } else {
+                self.refresh_scope_preview_fast();
+            }
         } else if node_param_scrub {
             // Slider scrub only — engine drains param_change_queue itself, so
             // we just need to refresh the scope preview on the UI thread.
@@ -3846,31 +3866,52 @@ impl KlippApp {
                         .flat_map(|t| t.clips.iter())
                         .map(|c| c.timeline_out.to_secs_f64())
                         .fold(0.0f64, f64::max);
+                    let avail_w = self.state.last_timeline_content_width;
+                    let raw_zoom = if max_secs > 0.01 { avail_w / (max_secs as f32 * 1.05) } else { 0.0 };
+                    let clamped = raw_zoom.clamp(0.1, 2000.0);
+                    tracing::info!(
+                        "TL_ZOOM FitTimelineToWindow max_secs={:.3} avail_w={:.1} raw_zoom={:.4} clamped={:.4}",
+                        max_secs, avail_w, raw_zoom, clamped
+                    );
                     if max_secs > 0.01 {
-                        // Leave 5% margin on right
-                        let avail_w = self.state.last_timeline_content_width;
-                        let zoom = avail_w / (max_secs as f32 * 1.05);
-                        self.state.timeline_zoom = zoom.clamp(0.1, 2000.0);
+                        self.state.timeline_zoom = clamped;
                         self.state.timeline_scroll_x = 0.0;
                     }
                     return true;
                 }
-                // Set timeline zoom, optionally atomically with scroll_x
-                // (for cursor-anchored Ctrl+wheel zoom).
                 AppCommand::SetTimelineZoom { zoom, scroll_x } => {
-                    self.state.timeline_zoom = zoom.clamp(0.1, 2000.0);
-                    if let Some(sx) = scroll_x {
-                        self.state.timeline_scroll_x = sx.max(0.0);
-                    }
+                    let clamped = zoom.clamp(0.1, 2000.0);
+                    tracing::info!(
+                        "TL_ZOOM SetTimelineZoom requested={:.4} clamped={:.4} scroll_x={:?} prev_zoom={:.4} prev_scroll={:.1}",
+                        zoom, clamped, scroll_x, self.state.timeline_zoom, self.state.timeline_scroll_x
+                    );
+                    self.state.timeline_zoom = clamped;
+                    let target_scroll = scroll_x
+                        .map(|sx| sx.max(0.0))
+                        .unwrap_or(self.state.timeline_scroll_x);
+                    // Clamp scroll to valid range for the NEW zoom.
+                    // Previously the plain zoom-out buttons left the
+                    // old scroll value in place — when that value
+                    // pointed past the end of all content at the new
+                    // (smaller) zoom, the viewport showed nothing and
+                    // every clip was culled HL (left of view).
+                    let total_secs = self.state.sequence_duration().to_secs_f64() as f32;
+                    let content_w = self.state.last_timeline_content_width.max(1.0);
+                    let max_scroll = (total_secs * clamped - content_w).max(0.0);
+                    self.state.timeline_scroll_x = target_scroll.clamp(0.0, max_scroll);
                     return true;
                 }
-                // Fit the timeline to the current visible content width
-                // (used by zoom-fit button and toolbar).
                 AppCommand::ZoomTimelineToFit => {
                     let dur = self.state.sequence_duration().to_secs_f64() as f32;
                     let w = self.state.last_timeline_content_width;
+                    let raw = if dur > 0.0 && w > 0.0 { w / dur } else { 0.0 };
+                    let clamped = raw.clamp(0.1, 2000.0);
+                    tracing::info!(
+                        "TL_ZOOM ZoomTimelineToFit dur={:.3} w={:.1} raw={:.4} clamped={:.4}",
+                        dur, w, raw, clamped
+                    );
                     if dur > 0.0 && w > 0.0 {
-                        self.state.timeline_zoom = (w / dur).clamp(0.1, 2000.0);
+                        self.state.timeline_zoom = clamped;
                         self.state.timeline_scroll_x = 0.0;
                     }
                     return true;
@@ -9351,6 +9392,74 @@ impl KlippApp {
     /// it to `match_colors` without waiting for a full-resolution
     /// decode. Returns the decoded bytes + dimensions, or a
     /// human-readable error message.
+    /// Spawn the forward + backward template-match worker for a
+    /// track point. Mirrors the body of `AnalyzeTrackPoint` so the
+    /// `TrackMaskRegion` one-shot workflow can reuse the launcher
+    /// without duplicating the whole handler. Posts
+    /// `TrackingProgress` / `TrackingComplete` events on completion.
+    fn start_track_analysis(&mut self, clip_id: klipp_core::ClipId, point_index: usize) {
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let clip_info = seq.tracks.iter().flat_map(|t| t.clips.iter())
+            .find(|c| c.id == clip_id)
+            .and_then(|c| {
+                let mid = c.media_id()?;
+                let item = self.state.media_pool.get(&mid)?;
+                let fps = item.fps.as_f64();
+                let dur_secs = item.duration.to_secs_f64();
+                let frame_count = (dur_secs * fps).round() as usize;
+                let tp = c.track_points.get(point_index)?;
+                let start_frame = tp.start_frame;
+                let initial_pos = tp.positions.first().copied()?;
+                let search_radius = tp.search_radius;
+                Some((item.path.clone(), fps, frame_count, start_frame, initial_pos, search_radius))
+            });
+        let Some((path, fps, frame_count, ref_frame, initial_pos_norm, search_radius)) = clip_info else { return; };
+        self.state.tracking_in_progress.insert(clip_id);
+        self.state.tracking_progress.insert(clip_id, 0.0);
+        let event_tx = self.proxy_event_tx.clone();
+        let pref_patch_size = self.prefs.editing.track_patch_size;
+        let pref_loss_threshold = self.prefs.editing.track_loss_threshold;
+        std::thread::spawn(move || {
+            let first_frame = klipp_engine::generate_thumbnail_at_size(&path, 0.0, 480);
+            let (sample_w, _sample_h) = match &first_frame {
+                Ok((_, w, h)) => (*w, *h),
+                Err(_) => (960, 540),
+            };
+            let half_w = sample_w / 2;
+            let half_h = _sample_h / 2;
+            let px = initial_pos_norm.0 * half_w as f64;
+            let py = initial_pos_norm.1 * half_h as f64;
+            let forward_result = klipp_effects::stabilization::track_point(
+                (px, py), ref_frame, fps, frame_count,
+                &mut |t| klipp_engine::generate_thumbnail_at_size(&path, t, 480).ok(),
+                search_radius / 2, pref_patch_size, pref_loss_threshold, true,
+                &|p| { let _ = event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: p * 0.5 }); true },
+            );
+            let backward_result = klipp_effects::stabilization::track_point(
+                (px, py), ref_frame, fps, frame_count,
+                &mut |t| klipp_engine::generate_thumbnail_at_size(&path, t, 480).ok(),
+                search_radius / 2, pref_patch_size, pref_loss_threshold, false,
+                &|p| { let _ = event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: 0.5 + p * 0.5 }); true },
+            );
+            let mut all_positions: Vec<(usize, f64, f64)> = Vec::new();
+            if let Ok(mut bwd) = backward_result {
+                bwd.reverse();
+                all_positions.extend(bwd);
+            }
+            if let Ok(fwd) = forward_result {
+                for entry in fwd.into_iter().skip(1) { all_positions.push(entry); }
+            }
+            all_positions.sort_by_key(|&(idx, _, _)| idx);
+            let normalized: Vec<(f64, f64)> = all_positions.iter()
+                .map(|&(_, x, y)| (x / half_w as f64, y / half_h as f64))
+                .collect();
+            let start_frame = all_positions.first().map(|&(idx, _, _)| idx).unwrap_or(ref_frame);
+            let _ = event_tx.send(klipp_core::AppEvent::TrackingComplete {
+                clip_id, point_index, positions: normalized, start_frame,
+            });
+        });
+    }
+
     fn decode_clip_representative_frame(
         state: &AppState,
         clip_id: klipp_core::ClipId,
@@ -9451,17 +9560,29 @@ impl KlippApp {
             return;
         }
         if applied {
-            if let (Some(old_graph), Some(new_graph)) =
-                (old_top_graph, new_top_graph)
-            {
-                self.state.history.push(crate::history::HistoryEntry {
-                    sequence_idx: seq_idx,
-                    command: crate::history::EditCommand::SetNodeGraph {
-                        clip_id,
-                        old_graph,
-                        new_graph,
-                    },
-                });
+            // Skip per-call history push while a node-param edit
+            // gesture is in progress (BeginNodeParamEdit took the
+            // snapshot, EndNodeParamEdit will commit the whole
+            // gesture as ONE entry). Without this guard, dragging a
+            // mask handle on the viewer pushed one full SetNodeGraph
+            // entry per frame — hundreds of clones per second of the
+            // entire graph, which floods the undo stack and triggers
+            // heavy engine resyncs that desync the master clock and
+            // cause "playback walks off on its own" symptoms.
+            let in_gesture = self.node_param_edit_snapshot.is_some();
+            if !in_gesture {
+                if let (Some(old_graph), Some(new_graph)) =
+                    (old_top_graph, new_top_graph)
+                {
+                    self.state.history.push(crate::history::HistoryEntry {
+                        sequence_idx: seq_idx,
+                        command: crate::history::EditCommand::SetNodeGraph {
+                            clip_id,
+                            old_graph,
+                            new_graph,
+                        },
+                    });
+                }
             }
             *needs_refresh = true;
         }
@@ -10429,6 +10550,20 @@ impl KlippApp {
             AppCommand::RemoveMaskShape { clip_id, mask_index } => {
                 let clip_id = *clip_id;
                 let mask_index = *mask_index;
+                // Capture the Mask node id BEFORE the graph mutation
+                // so we can clean up any TrackPoints bound to this
+                // mask after the removal lands. with_current_clip_graph_mut
+                // wraps the mutation in history, so the tracker
+                // cleanup runs as a separate (non-history) follow-up
+                // — acceptable because trackers don't go through the
+                // node-graph snapshot machinery anyway.
+                let mask_node_id: Option<uuid::Uuid> = self
+                    .state.sequences[self.state.active_sequence_idx]
+                    .tracks.iter().flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == clip_id)
+                    .and_then(|c| c.node_graph.nodes.iter()
+                        .find(|n| n.kind == klipp_nodes::NodeKind::Mask)
+                        .map(|n| n.id));
                 self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
                     if let Some(node) = graph.nodes.iter_mut().find(|n| n.kind == klipp_nodes::NodeKind::Mask) {
                         if let Some(masks) = &mut node.params.masks {
@@ -10438,6 +10573,46 @@ impl KlippApp {
                         }
                     }
                 });
+                if let Some(nid) = mask_node_id {
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+                        // Drop trackers that were bound to the removed
+                        // mask. Indices on remaining trackers can shift,
+                        // and bindings on OTHER trackers pointing to
+                        // higher mask_index need to slide down by one
+                        // so they keep matching their actual mask after
+                        // the removal.
+                        clip.track_points.retain(|tp| tp.linked_mask != Some((nid, mask_index)));
+                        for tp in &mut clip.track_points {
+                            if let Some((tn, mi)) = tp.linked_mask {
+                                if tn == nid && mi > mask_index {
+                                    tp.linked_mask = Some((tn, mi - 1));
+                                }
+                            }
+                        }
+                    }
+                }
+                true
+            }
+            AppCommand::RemoveMaskTracking { clip_id, node_id, mask_index } => {
+                let clip_id = *clip_id;
+                let node_id = *node_id;
+                let mask_index = *mask_index;
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+                    clip.track_points.retain(|tp| tp.linked_mask != Some((node_id, mask_index)));
+                    if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        if let Some(masks) = &mut node.params.masks {
+                            if let Some(mask) = masks.masks.get_mut(mask_index) {
+                                mask.keyframes.center_x.clear();
+                                mask.keyframes.center_y.clear();
+                            }
+                        }
+                    }
+                }
+                self.state.dirty = true;
+                *needs_refresh = true;
+                self.state.toast.show("Mask tracking cleared");
                 true
             }
             AppCommand::UseClipAsColorMatchReference { clip_id } => {
@@ -12962,6 +13137,73 @@ impl KlippApp {
                 self.state.tracking_mode = !self.state.tracking_mode;
                 true
             }
+            AppCommand::TrackMaskRegion { clip_id, node_id, mask_index } => {
+                // One-shot Place + Analyze + Link. Reads the mask
+                // centre at the playhead, drops a track point there,
+                // records the auto-link, and kicks off analysis.
+                // The TrackingComplete event handler later sees the
+                // pending entry and dispatches GenerateKeyframesFromTrack.
+                let clip_id = *clip_id;
+                let node_id = *node_id;
+                let mask_index = *mask_index;
+                let fps = self.state.fps.as_f64();
+                let playhead_secs = self.state.playhead_smooth_secs;
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let mut new_index: Option<usize> = None;
+                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+                    let clip_in_secs = clip.timeline_in.to_secs_f64();
+                    let source_in_secs = clip.source_in.to_secs_f64();
+                    let clip_time = (playhead_secs - clip_in_secs + source_in_secs).max(0.0);
+                    let frame_idx = (clip_time * fps).round() as usize;
+
+                    let centre = clip.node_graph.nodes.iter()
+                        .find(|n| n.id == node_id)
+                        .and_then(|n| n.params.masks.as_ref())
+                        .and_then(|ms| ms.masks.get(mask_index))
+                        .map(|m| {
+                            let evaluated = m.evaluated_at(clip_time);
+                            let (cx, cy) = match &evaluated.shape {
+                                klipp_core::MaskShape::Circle { center_x, center_y, .. } => (*center_x, *center_y),
+                                klipp_core::MaskShape::Rectangle { center_x, center_y, .. } => (*center_x, *center_y),
+                                klipp_core::MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => {
+                                    ((start_x + end_x) * 0.5, (start_y + end_y) * 0.5)
+                                }
+                                klipp_core::MaskShape::Bezier { points } if !points.is_empty() => {
+                                    let n = points.len() as f32;
+                                    let cx = points.iter().map(|p| p.0).sum::<f32>() / n;
+                                    let cy = points.iter().map(|p| p.1).sum::<f32>() / n;
+                                    (cx, cy)
+                                }
+                                _ => (0.5, 0.5),
+                            };
+                            (cx as f64, cy as f64)
+                        });
+                    let Some((cx, cy)) = centre else {
+                        self.state.toast.show("Couldn't read mask centre");
+                        return true;
+                    };
+
+                    let count = clip.track_points.len();
+                    let mut tp = klipp_core::TrackPoint::default();
+                    tp.name = format!("Mask {} tracker", mask_index + 1);
+                    tp.start_frame = frame_idx;
+                    tp.positions = vec![(cx, cy)];
+                    tp.linked_mask = Some((node_id, mask_index));
+                    clip.track_points.push(tp);
+                    new_index = Some(count);
+                }
+                if let Some(idx) = new_index {
+                    self.state.active_track_point = Some(idx);
+                    self.state.pending_mask_track_link.insert(
+                        (clip_id, idx),
+                        klipp_core::TrackTarget::MaskCenter { node_id, mask_index },
+                    );
+                    self.state.toast.show("Tracking mask region\u{2026}");
+                    self.start_track_analysis(clip_id, idx);
+                }
+                self.state.dirty = true;
+                true
+            }
             AppCommand::AddTrackPoint { clip_id, x, y } => {
                 // Create a new track point at the given normalized position
                 let fps = self.state.fps.as_f64();
@@ -13152,6 +13394,9 @@ impl KlippApp {
                                 self.state.toast.show("Generated transform keyframes from tracker");
                             }
                             klipp_core::TrackTarget::MaskCenter { node_id, mask_index } => {
+                                if let Some(tp) = clip.track_points.get_mut(point_index) {
+                                    tp.linked_mask = Some((node_id, mask_index));
+                                }
                                 if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id) {
                                     if let Some(mask_stack) = &mut node.params.masks {
                                         if let Some(mask) = mask_stack.masks.get_mut(mask_index) {
@@ -20640,7 +20885,6 @@ impl KlippApp {
                 AppEvent::TrackingComplete { clip_id, point_index, positions, start_frame } => {
                     self.state.tracking_in_progress.remove(&clip_id);
                     self.state.tracking_progress.remove(&clip_id);
-                    // Update the track point with results
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
                         if let Some(tp) = clip.track_points.get_mut(point_index) {
@@ -20648,7 +20892,21 @@ impl KlippApp {
                             tp.start_frame = start_frame;
                         }
                     }
-                    self.state.toast.show("Point tracking complete");
+                    // If TrackMaskRegion registered an auto-link for
+                    // this analysis, consume it now: dispatch
+                    // GenerateKeyframesFromTrack so the mask's centre
+                    // immediately follows the tracked feature.
+                    let pending = self.state.pending_mask_track_link.remove(&(clip_id, point_index));
+                    if let Some(target) = pending {
+                        let mut needs_refresh = false;
+                        let cmd = AppCommand::GenerateKeyframesFromTrack {
+                            clip_id, point_index, target,
+                        };
+                        let _ = self.handle_stabilization_commands(&cmd, &mut needs_refresh);
+                        self.state.toast.show("Mask tracking complete");
+                    } else {
+                        self.state.toast.show("Point tracking complete");
+                    }
                 }
                 AppEvent::TrackingFailed { clip_id, error } => {
                     self.state.tracking_in_progress.remove(&clip_id);

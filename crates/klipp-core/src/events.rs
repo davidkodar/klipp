@@ -1381,6 +1381,19 @@ pub enum AppCommand {
     // Point tracking
     /// Add a new track point to a clip at the given normalized position.
     AddTrackPoint { clip_id: ClipId, x: f64, y: f64 },
+    /// One-shot "track this mask region" workflow: takes the mask's
+    /// current centre (evaluated at the playhead), spawns a track
+    /// point there, kicks off analysis, and on completion auto-links
+    /// the resulting positions back into the mask's centre keyframes.
+    /// Closes the 3-step Place / Analyze / Link dance into a single
+    /// gesture for the common case "I want this mask to follow the
+    /// thing under it".
+    TrackMaskRegion { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize },
+    /// Remove the tracker bound to this mask plus the mask's centre
+    /// keyframes — gives the user a clean "untrack" gesture without
+    /// leaving an orphan tracker behind. No-op when no tracker is
+    /// linked to the mask.
+    RemoveMaskTracking { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize },
     /// Remove a track point by index.
     RemoveTrackPoint { clip_id: ClipId, index: usize },
     /// Analyze a track point (forward and backward from current frame).

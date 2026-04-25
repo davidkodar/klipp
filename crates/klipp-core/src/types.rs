@@ -212,6 +212,15 @@ pub struct TrackPoint {
     pub enabled: bool,
     /// Search region half-size in pixels for tracking analysis.
     pub search_radius: u32,
+    /// Optional back-reference to a mask this tracker is bound to.
+    /// Set by `TrackMaskRegion` (the one-shot Color-tab flow) and by
+    /// `GenerateKeyframesFromTrack { MaskCenter }` (the legacy Video-tab
+    /// flow). Lets `RemoveMaskShape` clean up dependent trackers, and
+    /// lets the Color-tab UI show an "Untrack" button on masks that
+    /// already have a tracker driving them. `None` for free-standing
+    /// trackers.
+    #[serde(default)]
+    pub linked_mask: Option<(uuid::Uuid, usize)>,
 }
 
 impl Default for TrackPoint {
@@ -224,6 +233,7 @@ impl Default for TrackPoint {
             start_frame: 0,
             enabled: true,
             search_radius: 32,
+            linked_mask: None,
         }
     }
 }

@@ -665,6 +665,16 @@ pub struct AppState {
     pub tracking_in_progress: std::collections::HashSet<klipp_core::ClipId>,
     /// Track analysis progress (0.0-1.0) per clip.
     pub tracking_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
+    /// Pending auto-link bindings keyed by `(clip_id, point_index)`.
+    /// When a `TrackingComplete` event arrives, the handler checks
+    /// this map; if an entry exists, it dispatches
+    /// `GenerateKeyframesFromTrack` with the recorded target and
+    /// removes the entry. Set by the `TrackMaskRegion` command so
+    /// the user gets one-gesture mask tracking.
+    pub pending_mask_track_link: std::collections::HashMap<
+        (klipp_core::ClipId, usize),
+        klipp_core::TrackTarget,
+    >,
 
     // Browser range selection (filmstrip drag-to-select in grid view)
     pub browser_range_selection: Option<BrowserClipSelection>,
@@ -2090,6 +2100,7 @@ impl Default for AppState {
             active_track_point: None,
             tracking_in_progress: std::collections::HashSet::new(),
             tracking_progress: std::collections::HashMap::new(),
+            pending_mask_track_link: std::collections::HashMap::new(),
             browser_range_selection: None,
             browser_drag_start: None,
             range_drag: None,

@@ -2293,6 +2293,7 @@ dependencies = [
  "klipp-color",
  "klipp-core",
  "klipp-effects",
+ "rayon",
  "serde",
  "thiserror 1.0.69",
  "tracing",

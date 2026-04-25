@@ -1926,34 +1926,64 @@ impl GraphExecutor {
                     return vec![1.0f32; (width as usize) * (height as usize) * 4];
                 }
                 if let Some(masks) = &params.masks {
-                    // Evaluate mask keyframes at current clip time
                     let evaluated = masks.evaluated_at(clip_time_secs);
 
-                    // GPU path: convert masks to GPU format (skip Bezier shapes)
-                    let matte_u8: Vec<u8> = if let Some(gpu) = &mut self.gpu {
+                    // Critical: matte values are LINEAR-DOMAIN
+                    // geometric weights, NOT sRGB pixel values, so
+                    // the previous u8 → sRGB → linear round-trip
+                    // was both wrong (distorted the matte by the
+                    // sRGB curve) and a massive CPU sink — ~24M
+                    // pow() calls per 1080p frame, which is the
+                    // root cause of the post-mask playback freeze.
+                    //
+                    // GPU raster path: keep it for shape primitives
+                    // because the compute shader is much faster than
+                    // the CPU rasterizer at high res, but expand its
+                    // u8 output to f32 directly with `v / 255.0` —
+                    // NO sRGB conversion.
+                    // CPU raster path: skip the u8 trip entirely and
+                    // expand the f32 matte to RGBA in one parallel
+                    // pass.
+                    use rayon::prelude::*;
+                    let pixel_count = (width as usize) * (height as usize);
+                    let mut out = vec![0.0f32; pixel_count * 4];
+                    let gpu_matte_u8 = if let Some(gpu) = &mut self.gpu {
                         let gpu_masks: Vec<klipp_effects::gpu::GpuMaskDef> = evaluated.masks.iter()
                             .filter(|m| m.enabled)
                             .filter_map(mask_to_gpu_def)
                             .collect();
                         let has_bezier = evaluated.masks.iter()
                             .any(|m| m.enabled && matches!(m.shape, klipp_core::MaskShape::Bezier { .. }));
-
                         if !gpu_masks.is_empty() && !has_bezier {
-                            gpu.generate_mask_gpu(width, height, &gpu_masks)
+                            Some(gpu.generate_mask_gpu(width, height, &gpu_masks))
                         } else {
-                            // Bezier or mixed shapes: fall back to CPU
-                            let matte = klipp_color::masks::generate_mask_matte(width, height, &evaluated);
-                            matte.iter()
-                                .flat_map(|&v| { let b = (v * 255.0) as u8; [b, b, b, 255] })
-                                .collect()
+                            None
                         }
                     } else {
-                        let matte = klipp_color::masks::generate_mask_matte(width, height, &evaluated);
-                        matte.iter()
-                            .flat_map(|&v| { let b = (v * 255.0) as u8; [b, b, b, 255] })
-                            .collect()
+                        None
                     };
-                    u8_rgba_to_linear(&matte_u8)
+                    if let Some(matte_u8) = gpu_matte_u8 {
+                        out.par_chunks_exact_mut(4)
+                            .zip(matte_u8.par_chunks_exact(4))
+                            .for_each(|(dst, src)| {
+                                let v = src[0] as f32 / 255.0;
+                                dst[0] = v;
+                                dst[1] = v;
+                                dst[2] = v;
+                                dst[3] = 1.0;
+                            });
+                    } else {
+                        let matte = klipp_color::masks::generate_mask_matte(width, height, &evaluated);
+                        out.par_chunks_exact_mut(4)
+                            .zip(matte.par_iter())
+                            .for_each(|(dst, &v)| {
+                                dst[0] = v;
+                                dst[1] = v;
+                                dst[2] = v;
+                                dst[3] = 1.0;
+                            });
+                    }
+                    out
                 } else {
                     vec![1.0f32; (width * height * 4) as usize]
                 }
@@ -2064,31 +2094,39 @@ impl GraphExecutor {
 
             NodeKind::MaskCutout => {
                 // Multiply the source RGB by the matte's red channel.
-                // Missing matte → pass through (so an unwired cutout
-                // doesn't black out the viewer while the user is still
-                // setting things up). Feathered mask edges come for
-                // free from the multiply — no special handling.
-                // Alpha is forced to 1.0 so downstream viewer code
-                // (which expects opaque RGBA) stays happy; use Layer /
-                // Blend if you need alpha-aware compositing.
+                // Missing / mismatched matte → pass through (so an
+                // unwired cutout doesn't black out the viewer while
+                // the user is still setting things up). Feathered
+                // edges come for free from the multiply.
+                // Alpha forced to 1.0 so the viewer (which expects
+                // opaque RGBA) stays happy.
+                //
+                // Hot loop: pre-sized Vec + rayon parallel 4-channel
+                // chunks. The previous push-per-channel single-thread
+                // version was the second-biggest CPU sink during
+                // playback after the Mask sRGB round-trip. Parallel
+                // chunks scale linearly with cores and avoid the
+                // grow-and-copy cost of repeated Vec::push.
+                use rayon::prelude::*;
                 let matte = match secondary_input {
                     Some(m) => m,
                     None => return primary_input.to_vec(),
                 };
                 let n = primary_input.len();
-                if matte.len() != n {
+                if matte.len() != n || n % 4 != 0 {
                     return primary_input.to_vec();
                 }
-                let mut out = Vec::with_capacity(n);
-                let mut i = 0;
-                while i + 3 < n {
-                    let k = matte[i].clamp(0.0, 1.0);
-                    out.push(primary_input[i] * k);
-                    out.push(primary_input[i + 1] * k);
-                    out.push(primary_input[i + 2] * k);
-                    out.push(1.0);
-                    i += 4;
-                }
+                let mut out = vec![0.0f32; n];
+                out.par_chunks_exact_mut(4)
+                    .zip(primary_input.par_chunks_exact(4))
+                    .zip(matte.par_chunks_exact(4))
+                    .for_each(|((dst, src), m)| {
+                        let k = m[0].clamp(0.0, 1.0);
+                        dst[0] = src[0] * k;
+                        dst[1] = src[1] * k;
+                        dst[2] = src[2] * k;
+                        dst[3] = 1.0;
+                    });
                 out
             }
 
