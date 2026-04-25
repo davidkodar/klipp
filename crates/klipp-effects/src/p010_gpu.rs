@@ -39,6 +39,15 @@ pub struct GpuP010Converter {
     cached_output_size: u64,
 }
 
+/// 12 u32s = 48 bytes, 16-byte aligned. `color_range` /
+/// `matrix_id` / `transfer_id` / `primaries_id` come from
+/// `klipp_core::color_ids::ids(SourceColorspace)`. The legacy
+/// `is_hdr` boolean is dropped — `transfer_id == TRANSFER_PQ` is
+/// the new HDR signal, and `primaries_id == PRIMARIES_BT2020`
+/// triggers the gamut conversion. The shader's HDR tone-map is
+/// folded into `display_to_linear` (PQ EOTF outputs scene-linear
+/// up to 10000 cd/m²; the existing SDR display transform handles
+/// the further roll-off).
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct P010Params {
@@ -49,10 +58,20 @@ struct P010Params {
     y_stride: u32,    // bytes per Y row
     uv_stride: u32,   // bytes per UV row
     rotation: u32,
-    is_hdr: u32,      // 1 = BT.2020 + PQ + tone-map, 0 = BT.709 + SDR
+    color_range: u32,
+    matrix_id: u32,
+    transfer_id: u32,
+    primaries_id: u32,
+    _pad1: u32,
 }
 
-const SHADER_P010_TO_RGBA: &str = r#"
+/// P010-specific WGSL — runs after the shared
+/// [`crate::color_wgsl::WGSL_PRELUDE`] + [`crate::color_wgsl::WGSL_HELPERS`].
+/// Reads 10-bit packed Y/UV from P010 (semi-planar, u16 LE), uses
+/// the shared colourspace dispatch, and adds a simple ACES filmic
+/// tone-map for HDR (PQ / HLG) sources so the SDR viewer doesn't
+/// see clipped highlights.
+const SHADER_P010_BODY: &str = r#"
 @group(0) @binding(0) var<storage, read> y_plane: array<u32>;
 @group(0) @binding(1) var<storage, read> uv_plane: array<u32>;
 @group(0) @binding(2) var<storage, read_write> output: array<u32>;
@@ -66,16 +85,14 @@ struct Params {
     y_stride: u32,
     uv_stride: u32,
     rotation: u32,
-    is_hdr: u32,
+    color_range: u32,
+    matrix_id: u32,
+    transfer_id: u32,
+    primaries_id: u32,
+    _pad1: u32,
 }
 
-// Read a u16 little-endian sample at byte offset `byte_idx` from a
-// u32-packed array. The array is little-endian so the LSB byte sits in
-// bits 0-7 of each word.
-//
-// WGSL note: pointers can't be `[]`-indexed directly — `(*p)[i]` is
-// the required form. We use it explicitly here so the function works
-// against either of our storage buffers.
+// 16-bit LE sample at byte offset `byte_idx` from u32-packed arrays.
 fn load_u16_le_y(byte_idx: u32) -> u32 {
     let word_idx = byte_idx / 4u;
     let byte_off = byte_idx % 4u;
@@ -102,31 +119,11 @@ fn load_u16_le_uv(byte_idx: u32) -> u32 {
     }
 }
 
-// PQ EOTF (SMPTE ST 2084). Input: PQ-encoded normalized signal in
-// [0, 1]. Output: linear cd/m² normalized to [0, 1] where 1.0 = 10000
-// nits (display peak in the PQ system).
-fn pq_eotf(e: f32) -> f32 {
-    let m1 = 0.1593017578125;
-    let m2 = 78.84375;
-    let c1 = 0.8359375;
-    let c2 = 18.8515625;
-    let c3 = 18.6875;
-    let p = pow(max(e, 0.0), 1.0 / m2);
-    let num = max(p - c1, 0.0);
-    let den = c2 - c3 * p;
-    return pow(num / max(den, 1e-6), 1.0 / m1);
-}
-
 // HDR → SDR tone map. Input is linear cd/m² normalised so 1.0 =
 // 10000 nits (the PQ peak). Output is linear in [0, 1] where 1.0
-// is "SDR display peak".
-//
-// Strategy: scale so 100-nit HDR diffuse white lands near 0.18
-// linear (Rec.709 mid-grey), then push through the ACES filmic
-// curve for a natural shoulder + toe. Up to ~10000 nits stays
-// resolvable on an SDR display; specular highlights compress
-// smoothly without harsh clipping.
-fn aces_filmic(x: f32) -> f32 {
+// is "SDR display peak". Scale 100-nit HDR diffuse white to 0.18
+// linear (Rec.709 mid-grey), then push through ACES filmic.
+fn aces_filmic_scalar(x: f32) -> f32 {
     let a = 2.51;
     let b = 0.03;
     let c = 2.43;
@@ -135,29 +132,13 @@ fn aces_filmic(x: f32) -> f32 {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
-fn tone_map_hdr(x: f32) -> f32 {
-    // Exposure: 0.18 / 0.01 — 100-nit HDR (linear=0.01 in 10000-nit
-    // PQ) maps to 0.18 SDR linear (Rec.709 mid-grey). After ACES
-    // this lands at ~144/255 in u8, the eye's standard mid-grey
-    // appearance for diffuse white.
-    let exposed = x * 18.0;
-    return aces_filmic(exposed);
-}
-
-// sRGB OETF — linear → display-encoded.
-fn linear_to_srgb(x: f32) -> f32 {
-    let c = clamp(x, 0.0, 1.0);
-    if (c <= 0.0031308) { return c * 12.92; }
-    return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
-}
-
-// BT.1886 EOTF approximation — for SDR 10-bit content (no HDR PQ).
-// We use the sRGB-decode shape because BT.709/BT.1886 differs from
-// sRGB only at near-black, which u8 output can't resolve anyway.
-fn srgb_eotf(x: f32) -> f32 {
-    let c = clamp(x, 0.0, 1.0);
-    if (c <= 0.04045) { return c / 12.92; }
-    return pow((c + 0.055) / 1.055, 2.4);
+fn tone_map_hdr_vec(rgb: vec3<f32>) -> vec3<f32> {
+    let exposed = rgb * 18.0;
+    return vec3<f32>(
+        aces_filmic_scalar(max(exposed.x, 0.0)),
+        aces_filmic_scalar(max(exposed.y, 0.0)),
+        aces_filmic_scalar(max(exposed.z, 0.0)),
+    );
 }
 
 @compute @workgroup_size(16, 16)
@@ -166,7 +147,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dy = gid.y;
     if (dx >= params.dst_width || dy >= params.dst_height) { return; }
 
-    // Source pixel after rotation + nearest-neighbor resize.
+    // Source coord (rotation + nearest-neighbour resize).
     var sx: u32;
     var sy: u32;
     if (params.rotation == 0u) {
@@ -185,9 +166,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     sx = min(sx, params.src_width - 1u);
     sy = min(sy, params.src_height - 1u);
 
-    // P010 layout: Y plane is u16 per pixel, UV plane is interleaved
-    // u16 pairs at half resolution. Stride is in bytes; each pixel
-    // occupies 2 bytes in Y and a 2-byte U or V in the UV plane.
+    // P010 layout: Y plane u16/pixel (10 valid bits in upper bits),
+    // UV plane interleaved u16 pairs at half resolution. Strides
+    // are in bytes.
     let y_byte_idx = sy * params.y_stride + sx * 2u;
     let y_word16 = load_u16_le_y(y_byte_idx);
     // Upper 10 bits hold the sample; lower 6 are padding zeros.
@@ -195,64 +176,48 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let uv_x = sx / 2u;
     let uv_y = sy / 2u;
-    let u_byte_idx = uv_y * params.uv_stride + uv_x * 4u;     // U/V are 4 bytes per chroma pair
+    let u_byte_idx = uv_y * params.uv_stride + uv_x * 4u;
     let v_byte_idx = u_byte_idx + 2u;
     let u_word16 = load_u16_le_uv(u_byte_idx);
     let v_word16 = load_u16_le_uv(v_byte_idx);
     let u_10 = f32(u_word16 >> 6u);
     let v_10 = f32(v_word16 >> 6u);
 
-    // Limited range 10-bit: Y in [64..940], UV in [64..960].
-    let y_n = (y_10 - 64.0) / 876.0;
-    let u_n = (u_10 - 512.0) / 896.0;
-    let v_n = (v_10 - 512.0) / 896.0;
-
-    var r_lin: f32;
-    var g_lin: f32;
-    var b_lin: f32;
-
-    if (params.is_hdr == 1u) {
-        // BT.2020 limited-range YUV → BT.2020 RGB (PQ-encoded).
-        let r_pq = y_n + 1.4746 * v_n;
-        let g_pq = y_n - 0.16455 * u_n - 0.57135 * v_n;
-        let b_pq = y_n + 1.8814 * u_n;
-
-        // PQ EOTF → linear cd/m² (normalised to [0, 1] = 10000 nits).
-        let r_nits = pq_eotf(r_pq);
-        let g_nits = pq_eotf(g_pq);
-        let b_nits = pq_eotf(b_pq);
-
-        // BT.2020 → BT.709 gamut conversion (linear).
-        // Standard 3×3 matrix (Rec.2020 to Rec.709).
-        let r_709 =  1.6605 * r_nits + -0.5876 * g_nits + -0.0728 * b_nits;
-        let g_709 = -0.1246 * r_nits +  1.1329 * g_nits + -0.0083 * b_nits;
-        let b_709 = -0.0182 * r_nits + -0.1006 * g_nits +  1.1187 * b_nits;
-
-        // Tone-map per channel to bring HDR into SDR display range.
-        r_lin = tone_map_hdr(max(r_709, 0.0));
-        g_lin = tone_map_hdr(max(g_709, 0.0));
-        b_lin = tone_map_hdr(max(b_709, 0.0));
-    } else {
-        // SDR 10-bit: BT.709 limited-range YUV → BT.709 RGB.
-        let r_disp = y_n + 1.5748 * v_n;
-        let g_disp = y_n - 0.1873 * u_n - 0.4681 * v_n;
-        let b_disp = y_n + 1.8556 * u_n;
-
-        // BT.709 transfer is approximately sRGB at the precision the
-        // u8 output supports — apply sRGB EOTF.
-        r_lin = srgb_eotf(r_disp);
-        g_lin = srgb_eotf(g_disp);
-        b_lin = srgb_eotf(b_disp);
+    // Five-stage colourspace pipeline (HDR adds the tone-map step):
+    //   1. Range-aware normalise (limited 64/940 vs full 0/1023).
+    //   2. YUV → display-encoded RGB via the source matrix.
+    //   3. Inverse EOTF → linear (in source primaries; cd/m² for PQ).
+    //   4. (HDR only) ACES filmic tone-map scene-linear → SDR linear.
+    //   5. Source primaries → BT.709 working space.
+    // Then re-encode to sRGB-u8 for the existing CPU/GPU hand-off.
+    let yuv = yuv_normalise(y_10, u_10, v_10, params.color_range, 1023.0);
+    let rgb_display = yuv_to_rgb_display(yuv, params.matrix_id);
+    var rgb_linear  = display_to_linear(rgb_display, params.transfer_id);
+    if (params.transfer_id == TRANSFER_PQ || params.transfer_id == TRANSFER_HLG) {
+        rgb_linear = tone_map_hdr_vec(rgb_linear);
     }
+    let rgb_bt709 = primaries_to_bt709(rgb_linear, params.primaries_id);
+    let rgb_srgb  = linear_to_srgb_vec(rgb_bt709);
 
-    // sRGB OETF + clamp + pack to RGBA8.
-    let r_b = u32(clamp(linear_to_srgb(r_lin) * 255.0 + 0.5, 0.0, 255.0));
-    let g_b = u32(clamp(linear_to_srgb(g_lin) * 255.0 + 0.5, 0.0, 255.0));
-    let b_b = u32(clamp(linear_to_srgb(b_lin) * 255.0 + 0.5, 0.0, 255.0));
+    let r_b = u32(clamp(rgb_srgb.x * 255.0 + 0.5, 0.0, 255.0));
+    let g_b = u32(clamp(rgb_srgb.y * 255.0 + 0.5, 0.0, 255.0));
+    let b_b = u32(clamp(rgb_srgb.z * 255.0 + 0.5, 0.0, 255.0));
     let pixel = r_b | (g_b << 8u) | (b_b << 16u) | (255u << 24u);
     output[dy * params.dst_width + dx] = pixel;
 }
 "#;
+
+fn p010_shader_source() -> String {
+    let mut s = String::with_capacity(
+        crate::color_wgsl::WGSL_PRELUDE.len()
+            + crate::color_wgsl::WGSL_HELPERS.len()
+            + SHADER_P010_BODY.len(),
+    );
+    s.push_str(crate::color_wgsl::WGSL_PRELUDE);
+    s.push_str(crate::color_wgsl::WGSL_HELPERS);
+    s.push_str(SHADER_P010_BODY);
+    s
+}
 
 impl GpuP010Converter {
     /// Create a new GPU P010 converter. Shares the process-wide
@@ -309,7 +274,7 @@ impl GpuP010Converter {
         device.push_error_scope(wgpu::ErrorFilter::Validation);
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("p010_to_rgba"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_P010_TO_RGBA.into()),
+            source: wgpu::ShaderSource::Wgsl(p010_shader_source().into()),
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("p010_to_rgba"),
@@ -371,8 +336,10 @@ impl GpuP010Converter {
     ///   Each pixel is a 16-bit LE sample with the value in upper 10 bits.
     /// - `uv_data`: interleaved UV (`src_height/2` rows × `uv_stride` bytes).
     ///   Each chroma pair is two 16-bit LE samples (U then V, upper-10).
-    /// - `is_hdr`: true when source is BT.2020 + PQ (Dolby Vision / HDR10).
-    ///   When false the shader assumes BT.709 + sRGB-curve transfer.
+    /// - `color_ids`: `[range, matrix_id, transfer_id, primaries_id]`
+    ///   from `klipp_core::color_ids::ids(SourceColorspace)`. Drives
+    ///   range normalisation, YUV→RGB matrix, EOTF, and gamut
+    ///   conversion. PQ / HLG transfers also get the HDR tone-map.
     #[allow(clippy::too_many_arguments)]
     pub fn convert_p010_to_rgba(
         &mut self,
@@ -385,7 +352,7 @@ impl GpuP010Converter {
         dst_width: u32,
         dst_height: u32,
         rotation: u32,
-        is_hdr: bool,
+        color_ids: [u32; 4],
     ) -> Vec<u8> {
         let y_size = y_data.len() as u64;
         let uv_size = uv_data.len() as u64;
@@ -426,7 +393,11 @@ impl GpuP010Converter {
         let params = P010Params {
             src_width, src_height, dst_width, dst_height,
             y_stride, uv_stride, rotation,
-            is_hdr: if is_hdr { 1 } else { 0 },
+            color_range: color_ids[0],
+            matrix_id: color_ids[1],
+            transfer_id: color_ids[2],
+            primaries_id: color_ids[3],
+            _pad1: 0,
         };
         self.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
 
@@ -515,7 +486,7 @@ impl GpuP010Converter {
         dst_width: u32,
         dst_height: u32,
         rotation: u32,
-        is_hdr: bool,
+        color_ids: [u32; 4],
     ) -> std::sync::Arc<wgpu::Buffer> {
         let y_size = y_data.len() as u64;
         let uv_size = uv_data.len() as u64;
@@ -553,7 +524,11 @@ impl GpuP010Converter {
         let params = P010Params {
             src_width, src_height, dst_width, dst_height,
             y_stride, uv_stride, rotation,
-            is_hdr: if is_hdr { 1 } else { 0 },
+            color_range: color_ids[0],
+            matrix_id: color_ids[1],
+            transfer_id: color_ids[2],
+            primaries_id: color_ids[3],
+            _pad1: 0,
         };
         self.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
 
@@ -624,8 +599,17 @@ mod tests {
         let (y, uv) = flat_p010(w, h, 940, 512, 512); // limited-range white, neutral chroma
         let y_stride = w * 2;
         let uv_stride = w * 2; // U+V interleaved at half-h, full-w pairs
+        // Limited BT.709 SDR — ID encoding from
+        // klipp_core::color_ids: [LIMITED, BT709, BT709, BT709] = all 0u.
+        let sdr_ids: [u32; 4] = [0, 0, 0, 0];
+        let hdr_ids: [u32; 4] = [
+            0, // limited range
+            2, // MATRIX_BT2020_NCL
+            3, // TRANSFER_PQ
+            1, // PRIMARIES_BT2020
+        ];
         let out = conv.convert_p010_to_rgba(
-            &y, &uv, w, h, y_stride, uv_stride, w, h, 0, false,
+            &y, &uv, w, h, y_stride, uv_stride, w, h, 0, sdr_ids,
         );
         assert_eq!(out.len(), (w * h * 4) as usize);
         // Sample one pixel — should be near (255, 255, 255, 255).
@@ -633,6 +617,7 @@ mod tests {
         assert!(r >= 245 && g >= 245 && b >= 245,
             "expected near-white RGBA, got ({r}, {g}, {b}, {a})");
         assert_eq!(a, 255);
+        let _ = hdr_ids;
     }
 
     #[test]
@@ -641,7 +626,7 @@ mod tests {
         let (w, h) = (4u32, 4u32);
         let (y, uv) = flat_p010(w, h, 64, 512, 512); // limited-range black, neutral chroma
         let out = conv.convert_p010_to_rgba(
-            &y, &uv, w, h, w * 2, w * 2, w, h, 0, false,
+            &y, &uv, w, h, w * 2, w * 2, w, h, 0, [0, 0, 0, 0],
         );
         let r = out[0]; let g = out[1]; let b = out[2];
         assert!(r <= 4 && g <= 4 && b <= 4,
@@ -657,8 +642,9 @@ mod tests {
         // that tone-mapping doesn't crush diffuse white to either
         // black or fully-saturated white.
         let (y, uv) = flat_p010(w, h, 580, 512, 512);
+        // [LIMITED, BT2020_NCL, PQ, BT2020] = [0, 2, 3, 1]
         let out = conv.convert_p010_to_rgba(
-            &y, &uv, w, h, w * 2, w * 2, w, h, 0, true, // is_hdr = true
+            &y, &uv, w, h, w * 2, w * 2, w, h, 0, [0, 2, 3, 1],
         );
         let r = out[0]; let g = out[1]; let b = out[2];
         // After Hable tone-map at exposure=4, 100 nits should land in

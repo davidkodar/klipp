@@ -2192,6 +2192,7 @@ dependencies = [
  "klipp-core",
  "klipp-testing",
  "rayon",
+ "tracing",
 ]
 
 [[package]]

@@ -698,9 +698,25 @@ impl GraphExecutor {
             // Try to START a new chain from this node. Needs: GPU
             // available, node whitelisted + effective + not matte preview,
             // primary input resolved from a CPU-resident Vec (or source).
+            // MaskCutout can't START a fresh chain on its own —
+            // apply_mask_cutout_chain reads matte_buf which is only
+            // populated when the upstream Mask short-circuit has just
+            // dispatched into it. If the chain isn't already alive
+            // (so the Mask short-circuit's `chain_tail.is_some()`
+            // gate kept Mask on CPU), starting a chain at MaskCutout
+            // would read uninitialised garbage out of matte_buf and
+            // produce the magenta-green corruption seen on clips
+            // with masks but no upstream grade.
+            let mask_cutout_can_start = if node.kind == NodeKind::MaskCutout {
+                let matte_input = graph.input_of(node_id, 1);
+                matte_input.is_some() && matte_input == matte_in_buf
+            } else {
+                true
+            };
             let can_start_chain = self.gpu.is_some()
                 && !bypass
                 && self.node_supports_gpu_chain(&node.kind, params)
+                && mask_cutout_can_start
                 && Some(node_id) != matte_preview_node
                 && Some(node_id) != matte_tap
                 // Same visible-thumb gate as can_extend_chain: if the
@@ -1462,9 +1478,6 @@ impl GraphExecutor {
                 self.dispatch_corrector_chain(node_id, params, width, height, in_is_a)
             }
             NodeKind::MaskCutout => {
-                // The matte was already dispatched into matte_buf by
-                // the upstream Mask node's matte_buf fast-path. Now
-                // multiply chain × matte and force alpha=1.
                 self.gpu.as_mut().unwrap().apply_mask_cutout_chain(in_is_a, width, height);
                 Some(1)
             }

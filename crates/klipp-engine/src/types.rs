@@ -75,6 +75,13 @@ impl DecodedFrame {
             data,
             is_eof: self.is_eof,
             gpu_source: None,
+            // `DecodedFrame` is already sRGB u8; the resulting linear
+            // frame is in linear-BT.709 working space — that's exactly
+            // what `BT709_LIMITED_SDR.transfer = Bt709` represents
+            // post-EOTF, so the matrix/primaries/transfer all sit at
+            // their working-space defaults. The range field doesn't
+            // apply post-decode; left at the safe default.
+            colorspace: klipp_core::SourceColorspace::default(),
         }
     }
 }
@@ -109,6 +116,12 @@ pub struct LinearFrame {
     /// use `data` — every current consumer already does, so `None`
     /// is the backwards-compatible default.
     pub gpu_source: Option<std::sync::Arc<crate::frame::GpuFrame>>,
+    /// Resolved source colourspace from the AVFrame's tagged range /
+    /// matrix / primaries / transfer fields, with sensible heuristic
+    /// fallbacks for "unspecified" tags. Carried through the pipeline
+    /// so the YUV→RGB shader, gamut conversion, and EOTF decode
+    /// dispatch correctly per-source.
+    pub colorspace: klipp_core::SourceColorspace,
 }
 
 impl LinearFrame {
@@ -127,6 +140,7 @@ impl LinearFrame {
             data: Vec::new(),
             is_eof: true,
             gpu_source: None,
+            colorspace: klipp_core::SourceColorspace::default(),
         }
     }
 
@@ -272,6 +286,7 @@ mod linear_frame_tests {
             data: vec![2.5, 0.5, 0.18, 1.0],
             is_eof: false,
             gpu_source: None,
+            colorspace: klipp_core::SourceColorspace::default(),
         };
         assert_eq!(frame.data[0], 2.5);
         let back = frame.to_srgb_u8();

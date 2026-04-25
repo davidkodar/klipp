@@ -34,6 +34,7 @@
 
 pub mod blur;
 mod chroma_key;
+pub mod color_wgsl;
 mod crop;
 pub mod gpu;
 pub mod gpu_context;

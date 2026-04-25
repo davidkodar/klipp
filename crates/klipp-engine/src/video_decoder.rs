@@ -123,6 +123,85 @@ fn u8_linear_div255_lut() -> &'static [f32; 256] {
     })
 }
 
+/// Per-camera-log override of the colour-tagged baseline. Read once
+/// per process from `KLIPP_FORCE_LOG_FORMAT` (case-insensitive
+/// tokens: `slog3`, `slog2`, `vlog`, `clog`, `clog3`, `logc3`,
+/// `logc4`, `redlog3g10`, `bmdfilmgen5`, `dlog`, `flog`, `applelog`,
+/// `nlog`, `goproflat`). Replaces only `transfer` + `primaries` —
+/// matrix and range still come from the file (Sony / ARRI / Canon
+/// log workflows all use BT.709 matrix on the YUV samples).
+///
+/// Stop-gap until the per-clip dropdown lands; the env var is the
+/// least-invasive way to get colour-correct decoding for the user's
+/// A6700 clip today. Tokens map to the same `(transfer, primaries)`
+/// pair that the per-clip UI will produce later.
+fn apply_env_log_override(
+    base: klipp_core::SourceColorspace,
+) -> klipp_core::SourceColorspace {
+    use klipp_core::{ColorPrimaries, ColorTransfer};
+    use std::sync::OnceLock;
+    static TOKEN: OnceLock<Option<String>> = OnceLock::new();
+    let token = TOKEN
+        .get_or_init(|| std::env::var("KLIPP_FORCE_LOG_FORMAT").ok().map(|s| s.to_ascii_lowercase()))
+        .as_deref();
+    let Some(t) = token else { return base; };
+    let (transfer, primaries) = match t {
+        "slog3" => (ColorTransfer::SLog3, ColorPrimaries::SGamut3Cine),
+        "slog3-sgamut3" => (ColorTransfer::SLog3, ColorPrimaries::SGamut3),
+        "slog2" => (ColorTransfer::SLog2, ColorPrimaries::SGamut3),
+        "vlog" => (ColorTransfer::VLog, ColorPrimaries::VGamut),
+        "clog" => (ColorTransfer::CanonLog, ColorPrimaries::CanonCinemaGamut),
+        "clog3" => (ColorTransfer::CanonLog3, ColorPrimaries::CanonCinemaGamut),
+        "logc3" => (ColorTransfer::LogC3, ColorPrimaries::AlexaWideGamut3),
+        "logc4" => (ColorTransfer::LogC4, ColorPrimaries::AlexaWideGamut4),
+        "redlog3g10" => (ColorTransfer::RedLog3G10, ColorPrimaries::RedWideGamut),
+        "bmdfilmgen5" => (ColorTransfer::BmdFilmGen5, ColorPrimaries::BmdWideGamut),
+        "dlog" => (ColorTransfer::DJIDLog, ColorPrimaries::Bt709),
+        "flog" => (ColorTransfer::FLog, ColorPrimaries::Bt2020),
+        "applelog" => (ColorTransfer::AppleLog, ColorPrimaries::Bt2020),
+        "nlog" => (ColorTransfer::NLog, ColorPrimaries::Bt2020),
+        "goproflat" => (ColorTransfer::GoProFlat, ColorPrimaries::Bt709),
+        _ => return base,
+    };
+    klipp_core::SourceColorspace { transfer, primaries, ..base }
+}
+
+/// Look up swscale's per-matrix coefficient table via
+/// `sws_getCoefficients`. The four-entry table (`[Cr, Cb, Cu, Cv]`)
+/// drives the YUV→RGB matrix swscale uses internally.
+///
+/// SAFETY: `sws_getCoefficients` returns a pointer to static data
+/// owned by libswscale — valid for the program's lifetime, no
+/// allocation, no thread-safety concerns. The returned `[i32; 4]`
+/// is a copy.
+unsafe fn sws_get_coefficients_for_matrix(matrix: klipp_core::ColorMatrix) -> [i32; 4] {
+    use ffmpeg_next::ffi::*;
+    // libswscale colorspace IDs (see swscale.h `SWS_CS_*` constants).
+    // The values map onto the corresponding AVColorSpace enum values
+    // for the matrix-defining members; FCC and SMPTE 240M have their
+    // own slots, BT.2020 has one entry, anything else falls back to
+    // ITU709 which is also the "no metadata" default.
+    const SWS_CS_ITU709: i32 = 1;
+    const SWS_CS_FCC: i32 = 4;
+    const SWS_CS_SMPTE170M: i32 = 5;   // also ITU601
+    const SWS_CS_SMPTE240M: i32 = 7;
+    const SWS_CS_BT2020: i32 = 9;
+    let cs_id = match matrix {
+        klipp_core::ColorMatrix::Bt709 => SWS_CS_ITU709,
+        klipp_core::ColorMatrix::Bt601 => SWS_CS_SMPTE170M,
+        klipp_core::ColorMatrix::Bt2020Ncl
+        | klipp_core::ColorMatrix::Bt2020Cl => SWS_CS_BT2020,
+        klipp_core::ColorMatrix::Smpte240 => SWS_CS_SMPTE240M,
+        klipp_core::ColorMatrix::Fcc => SWS_CS_FCC,
+        // Identity / YCgCo / ICtCp / chroma-derived: swscale doesn't
+        // have a dedicated table, fall back to BT.709.
+        _ => SWS_CS_ITU709,
+    };
+    let ptr = sws_getCoefficients(cs_id);
+    // libswscale returns a 4-element table — copy it out.
+    [ *ptr.add(0), *ptr.add(1), *ptr.add(2), *ptr.add(3) ]
+}
+
 /// sRGB-decode a RGBA u8 byte slice into a linear f32 RGBA buffer.
 /// Alpha stays linear (no gamma on alpha, per sRGB spec).
 fn rgba_u8_to_linear(rgba: &[u8]) -> Vec<f32> {
@@ -538,6 +617,7 @@ unsafe fn download_hw_frame(
     gpu_converter: Option<&mut klipp_effects::nv12_gpu::GpuNv12Converter>,
     gpu_p010: &mut Option<klipp_effects::p010_gpu::GpuP010Converter>,
     source_rotation: i32,
+    cs_baseline: klipp_core::SourceColorspace,
 ) -> Option<LinearFrame> {
     use ffmpeg_next::ffi::*;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -580,6 +660,34 @@ unsafe fn download_hw_frame(
     let is_hi_bit_depth = source_is_high_bit_depth(sw_fmt);
     let (out_w, out_h) = playback_dimensions(src_w, src_h, source_rotation);
 
+    // Resolve the source's colour metadata once per frame. Per-frame
+    // tags from the AVFrame override the codec-context baseline only
+    // where actually specified — NVDEC's `av_hwframe_transfer_data`
+    // strips `color_range` (and sometimes the matrix) from downloaded
+    // frames, so the AVCodecParameters values captured at decoder
+    // init are the authoritative source for those tags. Every
+    // `LinearFrame` constructed below stamps `source_cs` onto the
+    // frame so downstream shaders can dispatch the correct YUV→RGB
+    // matrix, range divisor, EOTF and gamut conversion.
+    let source_cs = klipp_core::SourceColorspace::resolve_with_baseline(
+        (*sw_frame).color_range as i32,
+        (*sw_frame).colorspace as i32,
+        (*sw_frame).color_primaries as i32,
+        (*sw_frame).color_trc as i32,
+        cs_baseline,
+    );
+    {
+        use std::sync::atomic::AtomicBool;
+        static LOGGED: AtomicBool = AtomicBool::new(false);
+        if !LOGGED.swap(true, Ordering::Relaxed) {
+            tracing::info!(
+                "decode colorspace: {} ({}x{}, sw_fmt={:?}, baseline={})",
+                source_cs.describe(), src_w, src_h, sw_fmt,
+                cs_baseline.describe(),
+            );
+        }
+    }
+
     // Try GPU NV12→RGBA path: only for NV12 format with an available converter
     // Temporary diagnostic — log first frame only
     {
@@ -605,15 +713,6 @@ unsafe fn download_hw_frame(
             }
         }
         if let Some(converter) = gpu_p010.as_mut() {
-            // Detect HDR (PQ + BT.2020) from the frame's colorspace
-            // metadata. AVCOL_TRC_SMPTE2084 (PQ) and AVCOL_PRI_BT2020
-            // both signal HDR; AVCOL_TRC_ARIB_STD_B67 is HLG, also HDR.
-            let trc = (*sw_frame).color_trc as i32;
-            let pri = (*sw_frame).color_primaries as i32;
-            let is_hdr = trc == AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084 as i32
-                || trc == AVColorTransferCharacteristic::AVCOL_TRC_ARIB_STD_B67 as i32
-                || pri == AVColorPrimaries::AVCOL_PRI_BT2020 as i32;
-
             let y_stride = (*sw_frame).linesize[0] as u32;
             let uv_stride = (*sw_frame).linesize[1] as u32;
             let y_data_len = (y_stride * src_h) as usize;
@@ -622,14 +721,14 @@ unsafe fn download_hw_frame(
             let uv_data = std::slice::from_raw_parts((*sw_frame).data[1], uv_data_len);
 
             let t_p010 = std::time::Instant::now();
-            // Same shader dispatch either way. With the gate on we
-            // also hold an `Arc<Buffer>` of the output so the frame
-            // can carry a `gpu_source` for phase 4d's grade chain;
-            // the readback cost is identical to the legacy path.
+            // The shader picks PQ/HLG vs BT.709 transfer, BT.2020 vs
+            // BT.709 matrix/primaries, and limited vs full range from
+            // these IDs — no ad-hoc HDR sniffing in the host code.
+            let color_ids = klipp_core::color_ids::ids(source_cs);
             let (rgba_data, gpu_source) = if should_attach_gpu_source() {
                 let buffer = converter.convert_p010_to_rgba_on_gpu(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32, is_hdr,
+                    out_w, out_h, source_rotation as u32, color_ids,
                 );
                 let device = converter.device();
                 let queue = converter.queue();
@@ -642,7 +741,7 @@ unsafe fn download_hw_frame(
             } else {
                 let bytes = converter.convert_p010_to_rgba(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32, is_hdr,
+                    out_w, out_h, source_rotation as u32, color_ids,
                 );
                 (bytes, None)
             };
@@ -670,6 +769,7 @@ unsafe fn download_hw_frame(
                 data: linear,
                 is_eof: false,
                 gpu_source,
+                colorspace: source_cs,
             });
         }
     }
@@ -687,10 +787,11 @@ unsafe fn download_hw_frame(
             let uv_data = std::slice::from_raw_parts((*sw_frame).data[1], uv_data_len);
 
             let t_nv12 = std::time::Instant::now();
+            let color_ids = klipp_core::color_ids::ids(source_cs);
             let (rgba_data, gpu_source) = if should_attach_gpu_source() {
                 let buffer = converter.convert_nv12_to_rgba_on_gpu(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32,
+                    out_w, out_h, source_rotation as u32, color_ids,
                 );
                 let device = converter.device();
                 let queue = converter.queue();
@@ -703,7 +804,7 @@ unsafe fn download_hw_frame(
             } else {
                 let bytes = converter.convert_nv12_to_rgba(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32,
+                    out_w, out_h, source_rotation as u32, color_ids,
                 );
                 (bytes, None)
             };
@@ -734,6 +835,7 @@ unsafe fn download_hw_frame(
                 data: linear,
                 is_eof: false,
                 gpu_source,
+                colorspace: source_cs,
             });
         }
     }
@@ -869,6 +971,7 @@ unsafe fn download_hw_frame(
         data: linear_data,
         is_eof: false,
         gpu_source: None,
+        colorspace: source_cs,
     })
 }
 
@@ -988,6 +1091,48 @@ fn decode_thread_main(
     if hw_accel != HwAccel::Software {
         hw_active_flag.store(true, std::sync::atomic::Ordering::Relaxed);
     }
+
+    // Capture the source's colourspace from the AVCodecParameters
+    // before the decoder starts producing frames. NVDEC's
+    // `av_hwframe_transfer_data` typically strips per-frame colour
+    // tags during download (we've seen `color_range=pc` files arrive
+    // here as `unspecified`), so the codec-level values are the
+    // authoritative baseline for everything downstream. Each frame
+    // overrides individual fields where its own AVFrame tags are
+    // actually specified.
+    let cs_baseline_from_codecpar: klipp_core::SourceColorspace = unsafe {
+        let par_raw: *mut ffmpeg_next::ffi::AVCodecParameters = (*video_stream.as_ptr()).codecpar;
+        let (range_r, space_r, pri_r, trc_r, w, h) = if par_raw.is_null() {
+            (0, 0, 0, 0, 1920u32, 1080u32)
+        } else {
+            (
+                (*par_raw).color_range as i32,
+                (*par_raw).color_space as i32,
+                (*par_raw).color_primaries as i32,
+                (*par_raw).color_trc as i32,
+                (*par_raw).width.max(1) as u32,
+                (*par_raw).height.max(1) as u32,
+            )
+        };
+        klipp_core::SourceColorspace::resolve(range_r, space_r, pri_r, trc_r, w, h)
+    };
+
+    // KLIPP_FORCE_LOG_FORMAT is the test/dev override before the
+    // per-clip UI exists. Setting it to one of the recognised tokens
+    // replaces the baseline's transfer + primaries with the matching
+    // camera-native pair (e.g. S-Log3 + S-Gamut3.Cine), which the
+    // shaders and the CPU swscale path then dispatch on. Container
+    // metadata never tags these — every NLE asks the user.
+    let cs_baseline = apply_env_log_override(cs_baseline_from_codecpar);
+    info!(
+        "decode_thread: source colourspace baseline: {}{}",
+        cs_baseline.describe(),
+        if cs_baseline != cs_baseline_from_codecpar {
+            format!(" (overridden from {})", cs_baseline_from_codecpar.describe())
+        } else {
+            " (from codec params)".to_string()
+        },
+    );
 
     // Software scaler — created lazily on first SW frame
     let mut sw_scaler: Option<ffmpeg_next::software::scaling::Context> = None;
@@ -1164,9 +1309,9 @@ fn decode_thread_main(
             let t_transfer = std::time::Instant::now();
             let frame_result = if is_hw_frame {
                 hw_active_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                unsafe { download_hw_frame(&received_frame, &mut hw_scaler, gpu_nv12.as_mut(), &mut gpu_p010, source_rotation) }
+                unsafe { download_hw_frame(&received_frame, &mut hw_scaler, gpu_nv12.as_mut(), &mut gpu_p010, source_rotation, cs_baseline) }
             } else {
-                convert_sw_frame(&received_frame, &mut sw_scaler, &mut perf_copy_us, source_rotation)
+                convert_sw_frame(&received_frame, &mut sw_scaler, &mut perf_copy_us, source_rotation, cs_baseline)
             };
 
             let mut linear_frame = match frame_result {
@@ -1271,7 +1416,85 @@ fn convert_sw_frame(
     sw_scaler: &mut Option<ffmpeg_next::software::scaling::Context>,
     perf_copy_us: &mut u64,
     source_rotation: i32,
+    cs_baseline: klipp_core::SourceColorspace,
 ) -> Option<LinearFrame> {
+    // One-shot per-process: log the source format and resolved
+    // colourspace baseline. Useful when triaging future colour bugs
+    // ("what was the file actually tagged as?") and cheap enough to
+    // leave on in production.
+    {
+        use std::sync::atomic::AtomicBool;
+        static LOGGED: AtomicBool = AtomicBool::new(false);
+        if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            info!(
+                "convert_sw_frame: format={:?}, {}x{}, baseline={}",
+                received_frame.format(),
+                received_frame.width(), received_frame.height(),
+                cs_baseline.describe(),
+            );
+        }
+    }
+    // YUV420P10LE direct path: skip swscale entirely. swscale's
+    // YUV420P10LE → RGBA64LE conversion was observed producing
+    // channel-clamped output (R/G hitting 0/1.0 across most pixels)
+    // for valid Sony S-Log3 source frames regardless of
+    // `sws_setColorspaceDetails` configuration. The direct
+    // converter in `klipp_color::camera_log` reads the AVFrame's
+    // raw 10-bit planes, applies the resolved colourspace's matrix
+    // + range + EOTF + primaries, and outputs linear BT.709 f32
+    // ready for the engine. Same EOTFs / primaries matrices as the
+    // GPU shaders.
+    if received_frame.format() == ffmpeg_next::format::Pixel::YUV420P10LE {
+        // The per-frame AVFrame's tags: `LinearFrame.colorspace`
+        // wants the merged value, but the conversion math itself
+        // only needs `cs_baseline` (per-frame tags are usually
+        // unspecified; baseline carries the codec / override).
+        let source_cs = unsafe {
+            let avf = received_frame.as_ptr();
+            klipp_core::SourceColorspace::resolve_with_baseline(
+                (*avf).color_range as i32,
+                (*avf).colorspace as i32,
+                (*avf).color_primaries as i32,
+                (*avf).color_trc as i32,
+                cs_baseline,
+            )
+        };
+        let src_w = received_frame.width();
+        let src_h = received_frame.height();
+        let (dst_w, dst_h) = playback_dimensions(src_w, src_h, 0);
+        let y_stride = received_frame.stride(0) as usize;
+        let u_stride = received_frame.stride(1) as usize;
+        let v_stride = received_frame.stride(2) as usize;
+        let y_data = received_frame.data(0);
+        let u_data = received_frame.data(1);
+        let v_data = received_frame.data(2);
+        let linear = klipp_color::camera_log::yuv420p10le_to_linear_bt709(
+            y_data, u_data, v_data,
+            y_stride, u_stride, v_stride,
+            src_w, src_h, dst_w, dst_h,
+            source_cs,
+        );
+        let (final_w, final_h) = if source_rotation == 90 || source_rotation == 270 {
+            (dst_h, dst_w)
+        } else {
+            (dst_w, dst_h)
+        };
+        let linear = if source_rotation != 0 {
+            rotate_linear_rgba(&linear, dst_w, dst_h, source_rotation).0
+        } else {
+            linear
+        };
+        return Some(LinearFrame {
+            pts: RationalTime::zero(),
+            width: final_w,
+            height: final_h,
+            data: linear,
+            is_eof: false,
+            gpu_source: None,
+            colorspace: source_cs,
+        });
+    }
+
     // Bit-depth-aware swscale target: 8-bit sources go through RGBA (1 byte
     // per channel); 10+-bit sources go through RGBA64LE (2 bytes per channel)
     // so the extra precision survives the YUV→RGB conversion and reaches the
@@ -1308,7 +1531,7 @@ fn convert_sw_frame(
             out_h,
             ffmpeg_next::software::scaling::Flags::FAST_BILINEAR,
         ) {
-            Ok(s) => {
+            Ok(mut s) => {
                 if received_frame.width() != out_w || received_frame.height() != out_h {
                     info!(
                         "decode_thread: SW scaler downscale {}x{} → {}x{} ({:?})",
@@ -1318,6 +1541,61 @@ fn convert_sw_frame(
                         out_h,
                         target_format,
                     );
+                }
+                // ffmpeg_next's `Context::get` doesn't pass the
+                // source's colourspace details to swscale, so swscale
+                // defaults to "BT.709 limited regardless." For full-
+                // range or BT.601/BT.2020 sources that produces a
+                // chroma cast (the A6700 magenta/green symptom).
+                // Reconfigure via sws_setColorspaceDetails so the
+                // YUV→RGB matrix and Y/UV range divisors match what
+                // the file actually is. Doesn't help with non-sRGB-
+                // family transfers (S-Log3, PQ, HLG) — those need the
+                // GPU shaders or Phase D's log-curve override — but
+                // it eliminates the dominant chroma cast every time.
+                //
+                // KLIPP_DISABLE_SWS_COLORSPACE=1 skips the call as an
+                // A/B test toggle — leaves swscale at its default
+                // (BT.709 limited) for verifying that the call itself
+                // is what's producing or fixing a given symptom.
+                let skip = std::env::var("KLIPP_DISABLE_SWS_COLORSPACE").as_deref() == Ok("1");
+                if skip {
+                    info!("decode_thread: sws colourspace SKIPPED via KLIPP_DISABLE_SWS_COLORSPACE=1");
+                } else {
+                    unsafe {
+                        let sws_ctx = s.as_mut_ptr();
+                        let inv_table = sws_get_coefficients_for_matrix(cs_baseline.matrix);
+                        let dst_table = sws_get_coefficients_for_matrix(klipp_core::ColorMatrix::Bt709);
+                        let src_range: i32 = match cs_baseline.range {
+                            klipp_core::ColorRange::Full => 1,
+                            klipp_core::ColorRange::Limited => 0,
+                        };
+                        // brightness=0, contrast=1<<16, saturation=1<<16
+                        // are the swscale "no adjustment" identity values.
+                        let rc = ffmpeg_next::ffi::sws_setColorspaceDetails(
+                            sws_ctx as *mut _,
+                            inv_table.as_ptr(),
+                            src_range,
+                            dst_table.as_ptr(),
+                            0, // dst is RGBA — range doesn't apply
+                            0,
+                            1 << 16,
+                            1 << 16,
+                        );
+                        if rc < 0 {
+                            warn!(
+                                "decode_thread: sws_setColorspaceDetails returned {rc} for {}; \
+                                 swscale will use its default (BT.709 limited)",
+                                cs_baseline.describe(),
+                            );
+                        } else {
+                            info!(
+                                "decode_thread: sws colourspace configured = {} (src_range={src_range})",
+                                cs_baseline.describe(),
+                            );
+                        }
+                        let _ = dst_table; // silence unused-binding warning
+                    }
                 }
                 *sw_scaler = Some(s);
             }
@@ -1355,12 +1633,33 @@ fn convert_sw_frame(
     };
     *perf_copy_us += t_copy.elapsed().as_micros() as u64;
 
-    // Rotation still operates on sRGB u8 via rotate_rgba. For hi-bit-depth
-    // sources we'd lose precision if we rotated the u16 buffer through the
-    // u8 helper, so: rotate *after* linearisation. For 8-bit we rotate the
-    // u8 then linearise — cheaper and bit-identical to the old output.
+    // Read source colourspace tags from the AVFrame underlying
+    // `received_frame`, with the codec-params baseline (captured
+    // once at decoder init) as the fallback for any tag the per-
+    // frame AVFrame leaves unspecified. Same merge rule as the GPU
+    // path so `LinearFrame.colorspace` stays consistent. Computed
+    // before linear-decode because the chosen EOTF + primaries
+    // matrix depend on it.
+    let source_cs = unsafe {
+        let avf = received_frame.as_ptr();
+        klipp_core::SourceColorspace::resolve_with_baseline(
+            (*avf).color_range as i32,
+            (*avf).colorspace as i32,
+            (*avf).color_primaries as i32,
+            (*avf).color_trc as i32,
+            cs_baseline,
+        )
+    };
+
+    // Rotation still operates on sRGB u8 via rotate_rgba. For hi-bit-
+    // depth sources we'd lose precision rotating the u16 buffer
+    // through the u8 helper, so: rotate *after* linearisation. For
+    // 8-bit we rotate the u8 then linearise — cheaper and bit-
+    // identical to the old output. Either way, the linear-decode
+    // step uses the colourspace-aware path so log curves and
+    // wide-gamut sources reach BT.709 working space correctly.
     let linear_data = if is_hi_bit_depth {
-        let linear = rgba64_le_to_linear(&raw_data);
+        let linear = klipp_color::camera_log::rgba64_le_to_linear_bt709(&raw_data, source_cs);
         if source_rotation != 0 {
             rotate_linear_rgba(&linear, width, height, source_rotation).0
         } else {
@@ -1368,9 +1667,9 @@ fn convert_sw_frame(
         }
     } else if source_rotation != 0 {
         let (rotated, _rw, _rh) = crate::engine::rotate_rgba(&raw_data, width, height, source_rotation);
-        rgba_u8_to_linear(&rotated)
+        klipp_color::camera_log::rgba_u8_to_linear_bt709(&rotated, source_cs)
     } else {
-        rgba_u8_to_linear(&raw_data)
+        klipp_color::camera_log::rgba_u8_to_linear_bt709(&raw_data, source_cs)
     };
 
     let (final_w, final_h) = if source_rotation == 90 || source_rotation == 270 {
@@ -1386,6 +1685,7 @@ fn convert_sw_frame(
         data: linear_data,
         is_eof: false,
         gpu_source: None,
+        colorspace: source_cs,
     })
 }
 
