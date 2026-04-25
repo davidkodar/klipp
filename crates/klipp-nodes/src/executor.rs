@@ -7,7 +7,7 @@ use klipp_color::lut::LutData;
 use klipp_color::pipeline::CurveLuts;
 use klipp_effects::gpu::GpuEffectsPipeline;
 
-use crate::graph::{Node, NodeGraph, NodeId};
+use crate::graph::{Edge, Node, NodeGraph, NodeId};
 use crate::kinds::NodeKind;
 use crate::params::{MatteChannel, NodeParams};
 use klipp_core::{BlendMode, LayerMixerInput};
@@ -478,6 +478,13 @@ impl GraphExecutor {
         // tracks which ping-pong slot holds it (true = buf_a).
         let mut chain_tail: Option<NodeId> = None;
         let mut chain_slot_a: bool = true;
+        // Mask node whose matte currently lives in `matte_buf` on the
+        // GPU. Set by the Mask executor arm when conditions are right
+        // (chain active, non-Bezier, sole consumer is a MaskCutout
+        // that'll join the chain). Consumed by MaskCutout's chain
+        // dispatch path. None = no GPU-resident matte; MaskCutout
+        // falls back to CPU multiply.
+        let mut matte_in_buf: Option<NodeId> = None;
 
         // 3. Execute nodes in topo order
         for node_id in order {
@@ -538,10 +545,22 @@ impl GraphExecutor {
             let node_is_visible_for_thumbs = visible_nodes
                 .map(|v| v.contains(&node_id))
                 .unwrap_or(false);
+            // MaskCutout has a second input (port 1 = matte). It can
+            // only extend the GPU chain when that matte was just
+            // dispatched into matte_buf by the upstream Mask node.
+            // Without this gate, MaskCutout would try to read garbage
+            // from matte_buf and produce a black frame.
+            let mask_cutout_matte_ready = if node.kind == NodeKind::MaskCutout {
+                let matte_input = graph.input_of(node_id, 1);
+                matte_input.is_some() && matte_input == matte_in_buf
+            } else {
+                true
+            };
             let can_extend_chain = !bypass
                 && primary_is_chain_tail
                 && chain_tail_fan_out_one
                 && self.node_supports_gpu_chain(&node.kind, &node.params)
+                && mask_cutout_matte_ready
                 && Some(node_id) != matte_preview_node
                 && Some(node_id) != matte_tap
                 && !node_is_visible_for_thumbs;
@@ -648,6 +667,14 @@ impl GraphExecutor {
                         }
                         chain_tail = Some(node_id);
                         node_outputs.insert(node_id, Arc::new(Vec::new()));
+                        // MaskCutout consumed the matte_buf contents;
+                        // clear the marker so a later Mask node can
+                        // reclaim the slot for its own matte. Other
+                        // chain extensions don't touch matte_buf, so
+                        // the marker only changes for MaskCutout.
+                        if node.kind == NodeKind::MaskCutout {
+                            matte_in_buf = None;
+                        }
                         chain_extend_count += 1;
                         per_node_ms.push((format!("{node_kind_name}#chain_extend"), t_node.elapsed().as_secs_f64() * 1000.0));
                         continue;
@@ -700,6 +727,50 @@ impl GraphExecutor {
                     node_outputs.insert(node_id, Arc::new(Vec::new()));
                     chain_start_count += 1;
                     per_node_ms.push((format!("{node_kind_name}#chain_start"), t_node.elapsed().as_secs_f64() * 1000.0));
+                    continue;
+                }
+            }
+
+            // ── Mask → matte_buf fast path ─────────────────────────────
+            // When the chain is currently alive AND this Mask's only
+            // consumer is a MaskCutout reading from port 1, dispatch
+            // the matte raster to `matte_buf` without breaking the
+            // chain. The downstream MaskCutout will then extend the
+            // chain via `apply_mask_cutout_chain`, keeping the entire
+            // Source → Corrector → MaskCutout → Output chain GPU-
+            // resident. Skipping any of the conditions falls through
+            // to the existing CPU/GPU+download path below, which
+            // breaks the chain (correctness > perf for the
+            // odd-graph cases).
+            if node.kind == NodeKind::Mask
+                && self.gpu.is_some()
+                && chain_tail.is_some()
+            {
+                let consumers: Vec<&Edge> = graph.edges.iter()
+                    .filter(|e| e.from_node == node_id)
+                    .collect();
+                let single_cutout_target = consumers.len() == 1
+                    && consumers[0].to_port == 1
+                    && node_by_id.get(&consumers[0].to_node)
+                        .map_or(false, |n| n.kind == NodeKind::MaskCutout);
+                let masks_opt = node.params.masks.as_ref()
+                    .map(|ms| ms.evaluated_at(clip_time_secs));
+                let gpu_ready_masks: Vec<klipp_effects::gpu::GpuMaskDef> = masks_opt.as_ref()
+                    .map(|ms| ms.masks.iter()
+                        .filter(|m| m.enabled)
+                        .filter_map(mask_to_gpu_def)
+                        .collect())
+                    .unwrap_or_default();
+                let has_bezier = masks_opt.as_ref()
+                    .map_or(false, |ms| ms.masks.iter()
+                        .any(|m| m.enabled && matches!(m.shape, klipp_core::MaskShape::Bezier { .. })));
+                if single_cutout_target && !gpu_ready_masks.is_empty() && !has_bezier {
+                    if let Some(gpu) = self.gpu.as_mut() {
+                        gpu.generate_mask_gpu_to_matte_buf(width, height, &gpu_ready_masks);
+                    }
+                    matte_in_buf = Some(node_id);
+                    node_outputs.insert(node_id, Arc::new(Vec::new()));
+                    per_node_ms.push((format!("{node_kind_name}#matte_buf"), t_node.elapsed().as_secs_f64() * 1000.0));
                     continue;
                 }
             }
@@ -962,6 +1033,12 @@ impl GraphExecutor {
                 params.denoise_luma.unwrap_or(0.0) > 0.0
                     || params.denoise_chroma.unwrap_or(0.0) > 0.0
             }
+            // MaskCutout extends the chain when its port-1 (matte) input
+            // is GPU-resident in `matte_buf`. The activeness check here
+            // doesn't have access to that state, so we say "yes if GPU
+            // is up"; the caller in `execute_linear_with_thumbs` does
+            // the real `matte_in_buf` match check before dispatching.
+            NodeKind::MaskCutout => true,
             NodeKind::Corrector => {
                 // The Corrector chains 1–7 sub-dispatches inline (see
                 // `dispatch_corrector_chain`). It supports the GPU chain
@@ -1383,6 +1460,13 @@ impl GraphExecutor {
             }
             NodeKind::Corrector => {
                 self.dispatch_corrector_chain(node_id, params, width, height, in_is_a)
+            }
+            NodeKind::MaskCutout => {
+                // The matte was already dispatched into matte_buf by
+                // the upstream Mask node's matte_buf fast-path. Now
+                // multiply chain × matte and force alpha=1.
+                self.gpu.as_mut().unwrap().apply_mask_cutout_chain(in_is_a, width, height);
+                Some(1)
             }
             _ => None,
         }

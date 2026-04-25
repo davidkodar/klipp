@@ -182,6 +182,12 @@ pub struct GpuEffectsPipeline {
     clarity_apply_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — mask matte generation (SDF power windows)
     mask_pipeline: wgpu::ComputePipeline,
+    /// Compute pipeline — mask cutout (chain frame × matte). 4-binding
+    /// layout: input chain buffer, output chain buffer, params,
+    /// matte_buf as the matte source. Lets the Source → Corrector →
+    /// MaskCutout → Output chain stay GPU-resident through the cutout
+    /// instead of bouncing to CPU for the multiply.
+    mask_cutout_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — qualifier (secondary color correction)
     qualifier_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — film grain overlay
@@ -265,6 +271,12 @@ pub struct GpuEffectsPipeline {
     buf_a: Option<wgpu::Buffer>,
     buf_b: Option<wgpu::Buffer>,
     buf_c: Option<wgpu::Buffer>,  // third buffer for transition "to" frame
+    /// Dedicated buffer for GPU-resident mask matte. Written by
+    /// `generate_mask_gpu_to_matte_buf`, read by
+    /// `apply_mask_cutout_chain`. Independent of buf_a/buf_b/buf_c so a
+    /// MaskCutout dispatch can run mid-chain without colliding with
+    /// the ping-pong slots or with clarity / transitions.
+    matte_buf: Option<wgpu::Buffer>,
     staging_read: Option<wgpu::Buffer>,
     params_buf: wgpu::Buffer,
     /// Ring of uniform buffers used by chain dispatches. Every `*_chain`
@@ -302,6 +314,10 @@ pub struct GpuEffectsPipeline {
     /// Pre-allocated bind groups for the huesat layout with `buf_c`
     /// as binding 3. Used by `apply_clarity_chain` pass 3.
     chain_bg_clarity_apply: Vec<Option<wgpu::BindGroup>>,
+    /// Pre-allocated bind groups for the huesat layout with `matte_buf`
+    /// as binding 3. Used by `apply_mask_cutout_chain` to multiply the
+    /// chain frame by a GPU-resident matte without ever leaving the GPU.
+    chain_bg_mask_cutout: Vec<Option<wgpu::BindGroup>>,
     /// Count of `create_bind_group` calls spent building the chain bind
     /// group pools. Used by `chain_reuses_bind_groups` to verify no new
     /// bind groups are created during steady-state dispatch.
@@ -738,6 +754,7 @@ impl GpuEffectsPipeline {
         let clarity_blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "clarity_blur_h", SHADER_CLARITY_BLUR_H);
         let clarity_blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "clarity_blur_v", SHADER_CLARITY_BLUR_V);
         let clarity_apply_pipeline = create_pipeline(&device, &huesat_pl, "clarity_apply", SHADER_CLARITY_APPLY);
+        let mask_cutout_pipeline = create_pipeline(&device, &huesat_pl, "mask_cutout", SHADER_MASK_CUTOUT);
         let mask_pipeline = create_pipeline(&device, &pipeline_layout, "mask", SHADER_MASK);
         let color_balance_pipeline = create_pipeline(&device, &pipeline_layout, "color_balance", SHADER_COLOR_BALANCE);
         let wheel_sat_bri_pipeline = create_pipeline(&device, &pipeline_layout, "wheel_sat_bri", SHADER_WHEEL_SAT_BRI);
@@ -912,6 +929,7 @@ impl GpuEffectsPipeline {
             clarity_blur_h_pipeline,
             clarity_blur_v_pipeline,
             clarity_apply_pipeline,
+            mask_cutout_pipeline,
             mask_pipeline,
             color_balance_pipeline,
             wheel_sat_bri_pipeline,
@@ -960,6 +978,7 @@ impl GpuEffectsPipeline {
             buf_a: None,
             buf_b: None,
             buf_c: None,
+            matte_buf: None,
             staging_read: None,
             params_buf,
             params_ring,
@@ -971,6 +990,7 @@ impl GpuEffectsPipeline {
             chain_bg_rgb_curves: (0..CHAIN_PARAMS_RING_SIZE * 2).map(|_| None).collect(),
             chain_bg_input_transform: (0..CHAIN_PARAMS_RING_SIZE * 2).map(|_| None).collect(),
             chain_bg_clarity_apply: (0..CHAIN_PARAMS_RING_SIZE * 2).map(|_| None).collect(),
+            chain_bg_mask_cutout: (0..CHAIN_PARAMS_RING_SIZE * 2).map(|_| None).collect(),
             chain_bg_build_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             chain_encoder: None,
             chain_slot_idx: 0,
@@ -1027,6 +1047,14 @@ impl GpuEffectsPipeline {
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         }));
+        self.matte_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fx_matte"),
+            size: byte_size,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        }));
         self.staging_read = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("fx_staging_read"),
             size: byte_size,
@@ -1053,12 +1081,17 @@ impl GpuEffectsPipeline {
     /// Configuration indexing (3-binding): 0=AtoB, 1=BtoA, 2=AtoC, 3=BtoC.
     /// Configuration indexing (4-binding): 0=AtoB, 1=BtoA.
     fn rebuild_chain_bind_group_pools(&mut self) {
-        let (buf_a, buf_b, buf_c) = match (self.buf_a.as_ref(), self.buf_b.as_ref(), self.buf_c.as_ref()) {
-            (Some(a), Some(b), Some(c)) => (a, b, c),
+        let (buf_a, buf_b, buf_c, matte_buf) = match (
+            self.buf_a.as_ref(),
+            self.buf_b.as_ref(),
+            self.buf_c.as_ref(),
+            self.matte_buf.as_ref(),
+        ) {
+            (Some(a), Some(b), Some(c), Some(m)) => (a, b, c, m),
             _ => {
                 // Buffers not yet allocated — pools stay empty and
                 // `ensure_buffers` will call us again after it creates
-                // buf_a/b/c.
+                // buf_a/b/c/matte_buf.
                 return;
             }
         };
@@ -1146,6 +1179,19 @@ impl GpuEffectsPipeline {
                 });
                 self.chain_bg_build_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.chain_bg_clarity_apply[idx] = Some(bg_clarity_apply);
+
+                let bg_mask_cutout = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("chain_bg_mask_cutout"),
+                    layout: &self.huesat_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: self.params_ring[slot].as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 3, resource: matte_buf.as_entire_binding() },
+                    ],
+                });
+                self.chain_bg_build_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.chain_bg_mask_cutout[idx] = Some(bg_mask_cutout);
             }
         }
     }
@@ -3209,6 +3255,81 @@ impl GpuEffectsPipeline {
         Self::record_compute_dispatch(enc, &self.clarity_apply_pipeline, bind_group, workgroups);
     }
 
+    /// Rasterize a mask matte into the dedicated `matte_buf` (instead
+    /// of buf_b → CPU download as `generate_mask_gpu` does). Used by
+    /// the GPU-resident `Source → Corrector → MaskCutout` chain so the
+    /// matte never leaves the GPU. Caller is responsible for matching
+    /// the matte_buf's lifetime to the chain's submit window — i.e.
+    /// `matte_buf` write happens BEFORE `apply_mask_cutout_chain` in
+    /// the same `begin_chain` / `submit_chain` pair.
+    ///
+    /// Bezier shapes are not supported by the underlying mask shader
+    /// (same as `generate_mask_gpu`); callers must filter them out.
+    pub fn generate_mask_gpu_to_matte_buf(
+        &mut self,
+        width: u32,
+        height: u32,
+        masks: &[GpuMaskDef],
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        let byte_size = (width * height * 16) as u64;
+        self.ensure_buffers(byte_size);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let matte_buf = self.matte_buf.as_ref().unwrap();
+        let pixel_count = width * height;
+        let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
+
+        let mut p = GpuMaskParams {
+            width, height, mask_count: masks.len().min(4) as u32, _pad: 0,
+            m0_type: 3, m0_cx: 0.0, m0_cy: 0.0, m0_p1: 0.0, m0_p2: 0.0, m0_p3: 0.0, m0_feather: 0.0, m0_flags: 0,
+            m1_type: 3, m1_cx: 0.0, m1_cy: 0.0, m1_p1: 0.0, m1_p2: 0.0, m1_p3: 0.0, m1_feather: 0.0, m1_flags: 0,
+            m2_type: 3, m2_cx: 0.0, m2_cy: 0.0, m2_p1: 0.0, m2_p2: 0.0, m2_p3: 0.0, m2_feather: 0.0, m2_flags: 0,
+            m3_type: 3, m3_cx: 0.0, m3_cy: 0.0, m3_p1: 0.0, m3_p2: 0.0, m3_p3: 0.0, m3_feather: 0.0, m3_flags: 0,
+        };
+        let set = |slot: usize, p: &mut GpuMaskParams, m: &GpuMaskDef| {
+            let (ty, cx, cy, p1, p2, p3, feather, flags) = (m.shape_type, m.cx, m.cy, m.p1, m.p2, m.p3, m.feather, m.flags);
+            match slot {
+                0 => { p.m0_type = ty; p.m0_cx = cx; p.m0_cy = cy; p.m0_p1 = p1; p.m0_p2 = p2; p.m0_p3 = p3; p.m0_feather = feather; p.m0_flags = flags; }
+                1 => { p.m1_type = ty; p.m1_cx = cx; p.m1_cy = cy; p.m1_p1 = p1; p.m1_p2 = p2; p.m1_p3 = p3; p.m1_feather = feather; p.m1_flags = flags; }
+                2 => { p.m2_type = ty; p.m2_cx = cx; p.m2_cy = cy; p.m2_p1 = p1; p.m2_p2 = p2; p.m2_p3 = p3; p.m2_feather = feather; p.m2_flags = flags; }
+                3 => { p.m3_type = ty; p.m3_cx = cx; p.m3_cy = cy; p.m3_p1 = p1; p.m3_p2 = p2; p.m3_p3 = p3; p.m3_feather = feather; p.m3_flags = flags; }
+                _ => {}
+            }
+        };
+        for (i, m) in masks.iter().enumerate().take(4) {
+            set(i, &mut p, m);
+        }
+        self.write_params(&p);
+        self.dispatch(&self.mask_pipeline, buf_a, matte_buf, workgroups);
+    }
+
+    /// Dispatch-only mask cutout — multiplies the chain frame by
+    /// `matte_buf`'s R channel and forces alpha=1.0. Caller must have
+    /// written the matte to `matte_buf` (e.g. via
+    /// `generate_mask_gpu_to_matte_buf`) before calling this. Standard
+    /// chain conventions: reads from in_is_a slot, writes to opposite.
+    pub fn apply_mask_cutout_chain(
+        &mut self,
+        in_is_a: bool,
+        width: u32,
+        height: u32,
+    ) {
+        if self.is_device_lost() {
+            return;
+        }
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuMaskCutoutParams { width, height, _pad0: 0, _pad1: 0 });
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let bind_group = self.chain_bg_mask_cutout[slot * 2 + Self::chain_cfg_4b(in_is_a)]
+            .as_ref()
+            .expect(Self::CHAIN_BG_EXPECT);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.mask_cutout_pipeline, bind_group, workgroups);
+    }
+
     /// Dispatch-only bilateral denoise pass.
     pub fn apply_denoise_chain(
         &mut self,
@@ -4916,6 +5037,12 @@ struct GpuClarityBlurParams {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuClarityApplyParams {
     width: u32, height: u32, amount: f32, _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuMaskCutoutParams {
+    width: u32, height: u32, _pad0: u32, _pad1: u32,
 }
 
 #[repr(C)]
@@ -9629,6 +9756,32 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     output[idx] = vec4<f32>(sum / f32(count), 0.0, 0.0, 0.0);
 }
 ";
+
+/// Mask cutout — multiply chain RGB by matte's R channel and force
+/// alpha=1.0 so the egui viewer (which expects opaque RGBA) stays
+/// happy. Feathered mask edges fall out of the multiply for free.
+/// 4-binding layout matches `clarity_apply` so we can reuse the same
+/// `huesat_bgl` and `huesat_pl` for the pipeline.
+const SHADER_MASK_CUTOUT: &str = concat!(
+    "
+struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32, }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> matte: array<vec4<f32>>;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let p = unpack(input[idx]);
+    let k = clamp(matte[idx].x, 0.0, 1.0);
+    output[idx] = pack(vec4<f32>(p.x * k, p.y * k, p.z * k, 1.0));
+}
+"
+);
 
 const SHADER_CLARITY_APPLY: &str = concat!(
     "
