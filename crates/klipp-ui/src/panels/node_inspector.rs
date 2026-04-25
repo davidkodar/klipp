@@ -584,6 +584,267 @@ impl NodeInspectorPanel {
     }
 
     /// Adjustments tab — matches the HTML mockup layout exactly.
+    /// Render the mask-editor body: "+ Add Mask" menu, per-mask
+    /// header + delete, animatable param sliders with keyframe
+    /// diamonds, invert checkbox. Shared between
+    /// `show_inspector_layout`'s NodeKind::Mask arm (node-canvas
+    /// users), `show_adjustments_tab`'s MASKS section (color-tab
+    /// users who never open the canvas), and the Edit-workspace
+    /// Color inspector (clone-based invocation from
+    /// `show_color_and_luts` — the mutations on the local clone are
+    /// discarded; only the `SetNodeMasks` command at the end
+    /// persists). On any change we push one `SetNodeMasks` so every
+    /// path lands in history identically.
+    pub fn render_masks_body(
+        ui: &mut egui::Ui,
+        masks: &mut klipp_core::MaskStack,
+        node_id: NodeId,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+        clip_time_secs: f64,
+    ) {
+        let mut masks_changed = false;
+
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.menu_button(egui::RichText::new("+ Add Mask").size(11.0), |ui| {
+                if ui.button("Circle").clicked() {
+                    masks.masks.push(klipp_core::Mask {
+                        shape: klipp_core::MaskShape::Circle {
+                            center_x: 0.5, center_y: 0.5, radius: 0.2,
+                        },
+                        ..Default::default()
+                    });
+                    masks_changed = true;
+                    ui.close_menu();
+                }
+                if ui.button("Rectangle").clicked() {
+                    masks.masks.push(klipp_core::Mask {
+                        shape: klipp_core::MaskShape::Rectangle {
+                            center_x: 0.5, center_y: 0.5,
+                            width: 0.4, height: 0.3, rotation: 0.0,
+                        },
+                        ..Default::default()
+                    });
+                    masks_changed = true;
+                    ui.close_menu();
+                }
+                if ui.button("Linear Gradient").clicked() {
+                    masks.masks.push(klipp_core::Mask {
+                        shape: klipp_core::MaskShape::LinearGradient {
+                            start_x: 0.2, start_y: 0.5,
+                            end_x: 0.8, end_y: 0.5,
+                        },
+                        ..Default::default()
+                    });
+                    masks_changed = true;
+                    ui.close_menu();
+                }
+                if ui.button("Bezier").clicked() {
+                    masks.masks.push(klipp_core::Mask {
+                        shape: klipp_core::MaskShape::Bezier {
+                            points: vec![
+                                (0.5, 0.35), (0.65, 0.5),
+                                (0.5, 0.65), (0.35, 0.5),
+                            ],
+                        },
+                        ..Default::default()
+                    });
+                    masks_changed = true;
+                    ui.close_menu();
+                }
+            });
+            if !masks.masks.is_empty() {
+                ui.label(egui::RichText::new(
+                    format!("({} mask{})", masks.masks.len(),
+                        if masks.masks.len() == 1 { "" } else { "s" })
+                ).size(10.0).color(theme.text_dim));
+            }
+        });
+
+        if masks.masks.is_empty() {
+            ui.label(egui::RichText::new(
+                "No masks yet. Use the + Add Mask menu above."
+            ).size(10.0).color(theme.text_dim));
+        }
+        let mask_count = masks.masks.len();
+        for mask_idx in 0..mask_count {
+            let shape_label = match &masks.masks[mask_idx].shape {
+                klipp_core::MaskShape::Circle { .. } => "Circle",
+                klipp_core::MaskShape::Rectangle { .. } => "Rectangle",
+                klipp_core::MaskShape::LinearGradient { .. } => "Linear Gradient",
+                klipp_core::MaskShape::Bezier { .. } => "Bezier",
+            };
+            let mask_enabled = masks.masks[mask_idx].enabled;
+            let animatable_params: Vec<&str> = klipp_core::MaskKeyframes::params_for_shape(&masks.masks[mask_idx].shape).to_vec();
+
+            struct ParamInfo {
+                name: &'static str,
+                display_val: f32,
+                has_keyframes: bool,
+                has_kf_at_playhead: bool,
+                range: std::ops::RangeInclusive<f32>,
+            }
+            let param_infos: Vec<ParamInfo> = animatable_params.iter().map(|&param_name| {
+                let mask = &masks.masks[mask_idx];
+                let static_val = mask.param_value(param_name).unwrap_or(0.0);
+                let track = mask.keyframes.track(param_name);
+                let has_keyframes = track.map_or(false, |t| !t.is_empty());
+                let display_val = if has_keyframes {
+                    klipp_core::keyframe::evaluate(track.unwrap(), clip_time_secs, static_val)
+                } else {
+                    static_val
+                };
+                let has_kf_at_playhead = track.map_or(false, |t| {
+                    t.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-3)
+                });
+                let range = match param_name {
+                    "center_x" | "center_y" | "start_x" | "start_y" | "end_x" | "end_y" => 0.0..=1.0,
+                    "radius" | "width" | "height" | "feather" | "opacity" => 0.0..=1.0,
+                    "rotation" => -180.0..=180.0,
+                    _ => 0.0..=1.0,
+                };
+                ParamInfo { name: param_name, display_val, has_keyframes, has_kf_at_playhead, range }
+            }).collect();
+
+            ui.add_space(4.0);
+            let mut delete_this = false;
+            {
+                let mask = &mut masks.masks[mask_idx];
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    if ui.checkbox(&mut mask.enabled, "").changed() { masks_changed = true; }
+                    ui.label(egui::RichText::new(format!("Mask {} - {}", mask_idx + 1, shape_label))
+                        .size(11.0).color(theme.text_accent));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(egui::Button::new(
+                            egui::RichText::new("\u{00D7}").size(12.0).color(theme.text_dim)
+                        ).frame(false)).on_hover_text("Delete mask").clicked() {
+                            delete_this = true;
+                        }
+                    });
+                });
+            }
+            if delete_this {
+                masks.masks.remove(mask_idx);
+                masks_changed = true;
+                break;
+            }
+            if !mask_enabled { continue; }
+
+            for info in &param_infos {
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    let diamond_color = if info.has_kf_at_playhead {
+                        theme.text_accent
+                    } else if info.has_keyframes {
+                        egui::Color32::from_rgba_premultiplied(255, 191, 0, 128)
+                    } else {
+                        theme.text_dim
+                    };
+                    let diamond_text = if info.has_kf_at_playhead { "\u{25C6}" } else { "\u{25C7}" };
+                    let diamond_resp = ui.add(
+                        egui::Button::new(egui::RichText::new(diamond_text).size(12.0).color(diamond_color))
+                            .frame(false)
+                    );
+                    if diamond_resp.clicked() {
+                        if info.has_kf_at_playhead {
+                            cmds.push(AppCommand::RemoveMaskKeyframe {
+                                clip_id, node_id, mask_index: mask_idx,
+                                param: info.name.to_string(), time_secs: clip_time_secs,
+                            });
+                        } else {
+                            cmds.push(AppCommand::AddMaskKeyframe {
+                                clip_id, node_id, mask_index: mask_idx,
+                                param: info.name.to_string(), time_secs: clip_time_secs,
+                                value: info.display_val,
+                            });
+                        }
+                    }
+                    if info.has_keyframes {
+                        diamond_resp.context_menu(|ui| {
+                            if ui.button("Clear all keyframes").clicked() {
+                                cmds.push(AppCommand::ClearMaskKeyframes {
+                                    clip_id, node_id, mask_index: mask_idx,
+                                    param: info.name.to_string(),
+                                });
+                                ui.close_menu();
+                            }
+                        });
+                    }
+                    diamond_resp.on_hover_text(if info.has_kf_at_playhead {
+                        "Remove keyframe at playhead"
+                    } else {
+                        "Add keyframe at playhead"
+                    });
+                    ui.label(egui::RichText::new(info.name.replace('_', " "))
+                        .size(10.0).color(theme.text_dim));
+                    ui.add_space(4.0);
+                    let mut val = info.display_val;
+                    let resp = ui.add(egui::Slider::new(&mut val, info.range.clone())
+                        .show_value(true)
+                        .custom_formatter(|v, _| format!("{:.3}", v))
+                        .min_decimals(3)
+                    );
+                    if resp.changed() {
+                        if info.has_keyframes {
+                            cmds.push(AppCommand::AddMaskKeyframe {
+                                clip_id, node_id, mask_index: mask_idx,
+                                param: info.name.to_string(), time_secs: clip_time_secs,
+                                value: val,
+                            });
+                        } else {
+                            let mask = &mut masks.masks[mask_idx];
+                            match info.name {
+                                "feather" => mask.feather = val,
+                                "opacity" => mask.opacity = val,
+                                _ => match &mut mask.shape {
+                                    klipp_core::MaskShape::Circle { center_x, center_y, radius } => match info.name {
+                                        "center_x" => *center_x = val,
+                                        "center_y" => *center_y = val,
+                                        "radius" => *radius = val,
+                                        _ => {}
+                                    },
+                                    klipp_core::MaskShape::Rectangle { center_x, center_y, width, height, rotation } => match info.name {
+                                        "center_x" => *center_x = val,
+                                        "center_y" => *center_y = val,
+                                        "width" => *width = val,
+                                        "height" => *height = val,
+                                        "rotation" => *rotation = val,
+                                        _ => {}
+                                    },
+                                    klipp_core::MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => match info.name {
+                                        "start_x" => *start_x = val,
+                                        "start_y" => *start_y = val,
+                                        "end_x" => *end_x = val,
+                                        "end_y" => *end_y = val,
+                                        _ => {}
+                                    },
+                                    _ => {}
+                                }
+                            }
+                            masks_changed = true;
+                        }
+                    }
+                });
+            }
+
+            {
+                let mask = &mut masks.masks[mask_idx];
+                ui.horizontal(|ui| {
+                    ui.add_space(30.0);
+                    if ui.checkbox(&mut mask.invert, egui::RichText::new("Invert").size(10.0)).changed() {
+                        masks_changed = true;
+                    }
+                });
+            }
+        }
+        if masks_changed {
+            cmds.push(AppCommand::SetNodeMasks { clip_id, node_id, masks: masks.clone() });
+        }
+    }
+
     fn show_adjustments_tab(
         &mut self,
         ui: &mut egui::Ui,
@@ -952,6 +1213,78 @@ impl NodeInspectorPanel {
                 }
                 section_divider(ui);
             }
+        }
+
+        // ── Masks section ──
+        // Exposed here so Color-workspace users can create + manage
+        // masks without opening the node canvas. Two paths:
+        //   - Mask node exists: route directly to render_masks_body
+        //     so the full editor (shape params, keyframes, feather,
+        //     opacity, invert) is available inline. Same code path
+        //     as the per-node inspector.
+        //   - No Mask node yet: bootstrap menu dispatching
+        //     AddMaskShape, which lazy-creates the Mask node AND
+        //     appends the shape in one history step.
+        let (_, is_open) = section_header(ui, "MASKS", true, theme);
+        if is_open {
+            ui.add_space(4.0);
+            let mask_node_idx = graph.nodes.iter().position(|n| n.kind == NodeKind::Mask);
+            if let Some(idx) = mask_node_idx {
+                let node_id = graph.nodes[idx].id;
+                let masks = graph.nodes[idx].params.masks.get_or_insert_with(Default::default);
+                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, clip_time_secs);
+            } else {
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    ui.menu_button(egui::RichText::new("+ Add Mask").size(11.0), |ui| {
+                        if ui.button("Circle").clicked() {
+                            cmds.push(AppCommand::AddMaskShape {
+                                clip_id,
+                                shape: klipp_core::MaskShape::Circle {
+                                    center_x: 0.5, center_y: 0.5, radius: 0.2,
+                                },
+                            });
+                            ui.close_menu();
+                        }
+                        if ui.button("Rectangle").clicked() {
+                            cmds.push(AppCommand::AddMaskShape {
+                                clip_id,
+                                shape: klipp_core::MaskShape::Rectangle {
+                                    center_x: 0.5, center_y: 0.5,
+                                    width: 0.4, height: 0.3, rotation: 0.0,
+                                },
+                            });
+                            ui.close_menu();
+                        }
+                        if ui.button("Linear Gradient").clicked() {
+                            cmds.push(AppCommand::AddMaskShape {
+                                clip_id,
+                                shape: klipp_core::MaskShape::LinearGradient {
+                                    start_x: 0.2, start_y: 0.5,
+                                    end_x: 0.8, end_y: 0.5,
+                                },
+                            });
+                            ui.close_menu();
+                        }
+                        if ui.button("Bezier").clicked() {
+                            cmds.push(AppCommand::AddMaskShape {
+                                clip_id,
+                                shape: klipp_core::MaskShape::Bezier {
+                                    points: vec![
+                                        (0.5, 0.35), (0.65, 0.5),
+                                        (0.5, 0.65), (0.35, 0.5),
+                                    ],
+                                },
+                            });
+                            ui.close_menu();
+                        }
+                    });
+                    ui.label(egui::RichText::new(
+                        "No masks yet — pick a shape to start."
+                    ).size(10.0).color(theme.text_dim));
+                });
+            }
+            section_divider(ui);
         }
     }
 
@@ -1615,186 +1948,7 @@ impl NodeInspectorPanel {
             }
             NodeKind::Mask => {
                 let masks = params.masks.get_or_insert_with(Default::default);
-                if masks.masks.is_empty() {
-                    ui.label(egui::RichText::new("No masks. Add masks in the viewer.").size(10.0).color(theme.text_dim));
-                }
-                let mut masks_changed = false;
-                let mask_count = masks.masks.len();
-                for mask_idx in 0..mask_count {
-                    // Gather read-only data from the mask before the mutable borrow phase
-                    let shape_label = match &masks.masks[mask_idx].shape {
-                        klipp_core::MaskShape::Circle { .. } => "Circle",
-                        klipp_core::MaskShape::Rectangle { .. } => "Rectangle",
-                        klipp_core::MaskShape::LinearGradient { .. } => "Linear Gradient",
-                        klipp_core::MaskShape::Bezier { .. } => "Bezier",
-                    };
-                    let mask_enabled = masks.masks[mask_idx].enabled;
-                    let animatable_params: Vec<&str> = klipp_core::MaskKeyframes::params_for_shape(&masks.masks[mask_idx].shape).to_vec();
-
-                    // Pre-compute per-param display info to avoid holding borrows across UI calls
-                    struct ParamInfo {
-                        name: &'static str,
-                        display_val: f32,
-                        has_keyframes: bool,
-                        has_kf_at_playhead: bool,
-                        range: std::ops::RangeInclusive<f32>,
-                    }
-                    let param_infos: Vec<ParamInfo> = animatable_params.iter().map(|&param_name| {
-                        let mask = &masks.masks[mask_idx];
-                        let static_val = mask.param_value(param_name).unwrap_or(0.0);
-                        let track = mask.keyframes.track(param_name);
-                        let has_keyframes = track.map_or(false, |t| !t.is_empty());
-                        let display_val = if has_keyframes {
-                            klipp_core::keyframe::evaluate(track.unwrap(), clip_time_secs, static_val)
-                        } else {
-                            static_val
-                        };
-                        let has_kf_at_playhead = track.map_or(false, |t| {
-                            t.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-3)
-                        });
-                        let range = match param_name {
-                            "center_x" | "center_y" | "start_x" | "start_y" | "end_x" | "end_y" => 0.0..=1.0,
-                            "radius" | "width" | "height" | "feather" | "opacity" => 0.0..=1.0,
-                            "rotation" => -180.0..=180.0,
-                            _ => 0.0..=1.0,
-                        };
-                        ParamInfo { name: param_name, display_val, has_keyframes, has_kf_at_playhead, range }
-                    }).collect();
-
-                    ui.add_space(4.0);
-                    // Header row with enabled checkbox
-                    {
-                        let mask = &mut masks.masks[mask_idx];
-                        ui.horizontal(|ui| {
-                            ui.add_space(8.0);
-                            if ui.checkbox(&mut mask.enabled, "").changed() { masks_changed = true; }
-                            ui.label(egui::RichText::new(format!("Mask {} - {}", mask_idx + 1, shape_label))
-                                .size(11.0).color(theme.text_accent));
-                        });
-                    }
-                    if !mask_enabled { continue; }
-
-                    // Parameter sliders with keyframe diamonds
-                    for info in &param_infos {
-                        ui.horizontal(|ui| {
-                            ui.add_space(14.0);
-
-                            // Keyframe diamond button
-                            let diamond_color = if info.has_kf_at_playhead {
-                                theme.text_accent
-                            } else if info.has_keyframes {
-                                egui::Color32::from_rgba_premultiplied(255, 191, 0, 128)
-                            } else {
-                                theme.text_dim
-                            };
-                            let diamond_text = if info.has_kf_at_playhead { "\u{25C6}" } else { "\u{25C7}" };
-                            let diamond_resp = ui.add(
-                                egui::Button::new(egui::RichText::new(diamond_text).size(12.0).color(diamond_color))
-                                    .frame(false)
-                            );
-                            if diamond_resp.clicked() {
-                                if info.has_kf_at_playhead {
-                                    cmds.push(AppCommand::RemoveMaskKeyframe {
-                                        clip_id, node_id, mask_index: mask_idx,
-                                        param: info.name.to_string(), time_secs: clip_time_secs,
-                                    });
-                                } else {
-                                    cmds.push(AppCommand::AddMaskKeyframe {
-                                        clip_id, node_id, mask_index: mask_idx,
-                                        param: info.name.to_string(), time_secs: clip_time_secs,
-                                        value: info.display_val,
-                                    });
-                                }
-                            }
-                            // Context menu for clearing keyframes
-                            if info.has_keyframes {
-                                diamond_resp.context_menu(|ui| {
-                                    if ui.button("Clear all keyframes").clicked() {
-                                        cmds.push(AppCommand::ClearMaskKeyframes {
-                                            clip_id, node_id, mask_index: mask_idx,
-                                            param: info.name.to_string(),
-                                        });
-                                        ui.close_menu();
-                                    }
-                                });
-                            }
-                            diamond_resp.on_hover_text(if info.has_kf_at_playhead {
-                                "Remove keyframe at playhead"
-                            } else {
-                                "Add keyframe at playhead"
-                            });
-
-                            // Label
-                            ui.label(egui::RichText::new(info.name.replace('_', " "))
-                                .size(10.0).color(theme.text_dim));
-                            ui.add_space(4.0);
-
-                            // Slider
-                            let mut val = info.display_val;
-                            let resp = ui.add(egui::Slider::new(&mut val, info.range.clone())
-                                .show_value(true)
-                                .custom_formatter(|v, _| format!("{:.3}", v))
-                                .min_decimals(3)
-                            );
-                            if resp.changed() {
-                                if info.has_keyframes {
-                                    // When keyframed, editing the slider adds/updates a keyframe at playhead
-                                    cmds.push(AppCommand::AddMaskKeyframe {
-                                        clip_id, node_id, mask_index: mask_idx,
-                                        param: info.name.to_string(), time_secs: clip_time_secs,
-                                        value: val,
-                                    });
-                                } else {
-                                    // Static: update the mask param directly via command
-                                    let mask = &mut masks.masks[mask_idx];
-                                    match info.name {
-                                        "feather" => mask.feather = val,
-                                        "opacity" => mask.opacity = val,
-                                        _ => match &mut mask.shape {
-                                            klipp_core::MaskShape::Circle { center_x, center_y, radius } => match info.name {
-                                                "center_x" => *center_x = val,
-                                                "center_y" => *center_y = val,
-                                                "radius" => *radius = val,
-                                                _ => {}
-                                            },
-                                            klipp_core::MaskShape::Rectangle { center_x, center_y, width, height, rotation } => match info.name {
-                                                "center_x" => *center_x = val,
-                                                "center_y" => *center_y = val,
-                                                "width" => *width = val,
-                                                "height" => *height = val,
-                                                "rotation" => *rotation = val,
-                                                _ => {}
-                                            },
-                                            klipp_core::MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => match info.name {
-                                                "start_x" => *start_x = val,
-                                                "start_y" => *start_y = val,
-                                                "end_x" => *end_x = val,
-                                                "end_y" => *end_y = val,
-                                                _ => {}
-                                            },
-                                            _ => {}
-                                        }
-                                    }
-                                    masks_changed = true;
-                                }
-                            }
-                        });
-                    }
-
-                    // Invert checkbox
-                    {
-                        let mask = &mut masks.masks[mask_idx];
-                        ui.horizontal(|ui| {
-                            ui.add_space(30.0);
-                            if ui.checkbox(&mut mask.invert, egui::RichText::new("Invert").size(10.0)).changed() {
-                                masks_changed = true;
-                            }
-                        });
-                    }
-                }
-                if masks_changed {
-                    cmds.push(AppCommand::SetNodeMasks { clip_id, node_id, masks: masks.clone() });
-                }
+                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, clip_time_secs);
             }
             NodeKind::FilmGrain => {
                 let grain = params.grain.get_or_insert_with(Default::default);
@@ -1876,6 +2030,7 @@ impl NodeInspectorPanel {
             }
             NodeKind::Source | NodeKind::Output | NodeKind::Layer
             | NodeKind::RGBSplitter | NodeKind::RGBCombiner
+            | NodeKind::MaskCutout
             | NodeKind::Unknown => {
                 ui.label(egui::RichText::new("No parameters").color(theme.text_dim));
             }

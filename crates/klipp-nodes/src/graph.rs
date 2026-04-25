@@ -117,6 +117,106 @@ impl NodeGraph {
         new_id
     }
 
+    /// Find an existing Mask node, or splice a new one in before
+    /// Output. Returns its id. Used by the colour-workspace "+ Add
+    /// Mask" control so users who don't open the node canvas can still
+    /// land a mask shape on the clip.
+    /// Ensure a `MaskCutout` sits between the current end-of-chain
+    /// node and `Output`, fed by the clip's first `Mask` node's
+    /// matte on port 1. Returns `(mask_node_id, cutout_node_id)`.
+    ///
+    /// Idempotent: if the cutout is already wired, just returns the
+    /// existing ids. The colour-workspace "+ Add Mask" flow calls
+    /// this so a first-time mask user gets a visible "clip in
+    /// shape" result instantly without having to open the node
+    /// canvas and rewire manually.
+    pub fn ensure_mask_cutout(&mut self) -> (NodeId, NodeId) {
+        let output_id = self.output_node_id;
+        // Snapshot the original chain end BEFORE ensure_mask runs —
+        // ensure_mask rewires `[end] → Output` to `[end] → Mask →
+        // Output`, so reading after that returns the Mask, not the
+        // actual colour signal we want as MaskCutout's source.
+        let original_chain_end: Option<NodeId> = self
+            .edges
+            .iter()
+            .find(|e| e.to_node == output_id && e.to_port == 0)
+            .map(|e| e.from_node);
+
+        let mask_id = self.ensure_mask();
+        if let Some(idx) = self.nodes.iter().position(|n| n.kind == NodeKind::MaskCutout) {
+            return (mask_id, self.nodes[idx].id);
+        }
+
+        let cutout_id = NodeId::new_v4();
+        let insert_at = self.nodes.iter().position(|n| n.id == output_id)
+            .unwrap_or(self.nodes.len());
+        self.nodes.insert(insert_at, Node {
+            id: cutout_id,
+            kind: NodeKind::MaskCutout,
+            label: "Mask Cutout".to_string(),
+            enabled: true,
+            params: NodeParams::default(),
+            keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        });
+
+        // Drop the Mask→Output feed ensure_mask just laid down — we
+        // route Mask through the cutout's matte port instead.
+        self.edges.retain(|e| !(e.to_node == output_id && e.to_port == 0));
+        // Wire the original chain end into the cutout's source port.
+        // If the original was the Mask itself (or Output was unwired),
+        // leave port 0 unwired — the executor falls back to passthrough
+        // so the user doesn't see a black frame.
+        if let Some(src) = original_chain_end.filter(|id| *id != mask_id && *id != cutout_id) {
+            self.edges.push(Edge { from_node: src, from_port: 0, to_node: cutout_id, to_port: 0 });
+        }
+        self.edges.push(Edge { from_node: mask_id, from_port: 0, to_node: cutout_id, to_port: 1 });
+        self.edges.push(Edge { from_node: cutout_id, from_port: 0, to_node: output_id, to_port: 0 });
+
+        if let Some(out_pos) = self.node_positions.get(&output_id).copied() {
+            self.node_positions.insert(cutout_id, NodePos { x: out_pos.x - 110.0, y: out_pos.y });
+        } else {
+            self.node_positions.insert(cutout_id, NodePos { x: 330.0, y: 0.0 });
+        }
+        (mask_id, cutout_id)
+    }
+
+    pub fn ensure_mask(&mut self) -> NodeId {
+        if let Some(idx) = self.nodes.iter().position(|n| n.kind == NodeKind::Mask) {
+            return self.nodes[idx].id;
+        }
+        let new_id = NodeId::new_v4();
+        let output_id = self.output_node_id;
+        let insert_at = self.nodes.iter().position(|n| n.id == output_id)
+            .unwrap_or(self.nodes.len());
+        self.nodes.insert(insert_at, Node {
+            id: new_id,
+            kind: NodeKind::Mask,
+            label: "Mask".to_string(),
+            enabled: true,
+            params: NodeParams::default(),
+            keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        });
+        for edge in &mut self.edges {
+            if edge.to_node == output_id && edge.to_port == 0 {
+                edge.to_node = new_id;
+                edge.to_port = 0;
+            }
+        }
+        self.edges.push(Edge {
+            from_node: new_id, from_port: 0, to_node: output_id, to_port: 0,
+        });
+        if let Some(out_pos) = self.node_positions.get(&output_id).copied() {
+            self.node_positions.insert(new_id, NodePos { x: out_pos.x - 220.0, y: out_pos.y });
+        } else {
+            self.node_positions.insert(new_id, NodePos { x: 220.0, y: 0.0 });
+        }
+        new_id
+    }
+
     pub fn ensure_corrector(&mut self) -> NodeId {
         if let Some(idx) = self.nodes.iter().position(|n| n.kind == NodeKind::Corrector) {
             return self.nodes[idx].id;

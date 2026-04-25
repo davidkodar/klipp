@@ -866,6 +866,22 @@ pub enum AppCommand {
     /// clip's graph and writing the resulting settings to it. No-op
     /// with a toast if no reference has been captured.
     MatchClipToColorReference { clip_id: ClipId },
+    /// Lazy-create a Mask node (if absent) on the clip's graph and
+    /// append a new shape to its mask stack. Used by the Color
+    /// workspace "+ Add Mask" control so users who don't open the
+    /// node canvas can still land a mask directly.
+    AddMaskShape { clip_id: ClipId, shape: crate::color_grade::MaskShape },
+    /// Remove mask at `mask_index` from the first Mask node on the
+    /// clip's graph. No-op if index out of range.
+    RemoveMaskShape { clip_id: ClipId, mask_index: usize },
+    /// Route inspector focus to the mask-editor view. Fired when the
+    /// user interacts with a mask on the Program viewer (click a
+    /// handle / grab to move) — without this the Edit-workspace user
+    /// sees the circle overlay but clicking it doesn't bring up the
+    /// mask params, because the Edit inspector defaults to Video /
+    /// Info tabs. The handler sets the active inspector tab to Color
+    /// so the Masks section is visible.
+    FocusMaskInspector,
     /// Run `klipp_color::match_colors(source, reference)` against the
     /// last-captured reference frame and the clip's pre-grade frame
     /// at the playhead, then store the result on the named ColorMatch

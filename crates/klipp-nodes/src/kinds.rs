@@ -107,6 +107,14 @@ pub enum NodeKind {
     /// enable per-channel grading.
     RGBCombiner,
 
+    /// Mask cutout — 2 inputs (source image, matte). Output is
+    /// `source.rgb * matte.r` so the image shows only where the
+    /// matte is non-zero and goes to black outside. Alpha
+    /// is kept at 255 so downstream consumers see a normal opaque
+    /// frame; use Layer / Blend if you need alpha-aware compositing.
+    /// Feathered edges just fall out of the multiply.
+    MaskCutout,
+
     // ── Future ──────────────────────────────────────────────────
     #[serde(other)]
     Unknown,
@@ -130,6 +138,7 @@ impl NodeKind {
             | NodeKind::ColorMatch
             | NodeKind::LayerMixer => 2,
             NodeKind::RGBCombiner => 3,
+            NodeKind::MaskCutout => 2,
             _ => 1,
         }
     }
@@ -175,6 +184,8 @@ impl NodeKind {
             (NodeKind::RGBCombiner, 0) => PortRole::ChannelRed,
             (NodeKind::RGBCombiner, 1) => PortRole::ChannelGreen,
             (NodeKind::RGBCombiner, 2) => PortRole::ChannelBlue,
+            (NodeKind::MaskCutout, 0) => PortRole::Primary,
+            (NodeKind::MaskCutout, 1) => PortRole::Matte,
             // Default — every other (kind, port) is the colour signal.
             _ => PortRole::Primary,
         }
@@ -221,6 +232,8 @@ impl NodeKind {
             (NodeKind::RGBCombiner, 0) => "R",
             (NodeKind::RGBCombiner, 1) => "G",
             (NodeKind::RGBCombiner, 2) => "B",
+            (NodeKind::MaskCutout, 0) => "Source",
+            (NodeKind::MaskCutout, 1) => "Matte",
             _ => "Input",
         }
     }
@@ -270,6 +283,7 @@ impl NodeKind {
             NodeKind::Compound => "Compound",
             NodeKind::RGBSplitter => "RGB Splitter",
             NodeKind::RGBCombiner => "RGB Combiner",
+            NodeKind::MaskCutout => "Mask Cutout",
             NodeKind::Unknown => "Unknown",
         }
     }

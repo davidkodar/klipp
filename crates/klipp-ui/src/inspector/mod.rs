@@ -366,7 +366,7 @@ impl NewInspectorPanel {
                     }
                 }
                 InspectorTab::Color => {
-                    crate::panels::inspector::show_color_and_luts(ui, state, &mut cmds);
+                    crate::panels::inspector::show_color_and_luts(ui, state, theme, &mut cmds);
                 }
                 InspectorTab::Title => {
                     if let Some((_, clip)) = clip_info {

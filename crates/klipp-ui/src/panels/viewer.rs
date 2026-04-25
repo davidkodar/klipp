@@ -1954,7 +1954,13 @@ impl ViewerPanel {
     ) {
         use crate::state::{MaskHandle, ViewerMaskDrag};
 
-        // Only show masks when a clip and node are selected
+        // Show masks whenever the clip has at least one Mask node
+        // with shapes — selection is not required. Prefer the
+        // user's selected Mask node if there is one (so multiple
+        // Mask nodes on the same clip can be disambiguated), else
+        // fall back to the first Mask node found. The Color-tab
+        // user flow never selects a node, so the fallback is what
+        // makes the overlay visible for them.
         let clip_id = match state.selected_clip {
             Some(id) => id,
             None => {
@@ -1962,22 +1968,26 @@ impl ViewerPanel {
                 return;
             }
         };
-        let node_id = match state.selected_node_id {
-            Some(id) => id,
-            None => {
-                state.viewer_mask_drag = None;
-                return;
-            }
-        };
-
-        // Find the selected node's masks in the clip's node graph
-        let masks_opt: Option<klipp_core::MaskStack> = state.sequence().tracks.iter()
+        let selected_id = state.selected_node_id;
+        let mask_node: Option<(klipp_nodes::NodeId, klipp_core::MaskStack)> = state
+            .sequence()
+            .tracks
+            .iter()
             .find_map(|t| t.find_clip(clip_id))
-            .and_then(|clip| clip.node_graph.nodes.iter().find(|n| n.id == node_id))
-            .and_then(|node| node.params.masks.clone());
-
-        let masks = match masks_opt {
-            Some(ms) if !ms.masks.is_empty() => ms,
+            .and_then(|clip| {
+                let selected_match = selected_id.and_then(|sid| {
+                    clip.node_graph.nodes.iter().find(|n|
+                        n.id == sid && n.kind == klipp_nodes::NodeKind::Mask)
+                });
+                let fallback = clip.node_graph.nodes.iter()
+                    .find(|n| n.kind == klipp_nodes::NodeKind::Mask);
+                selected_match.or(fallback).map(|n| (
+                    n.id,
+                    n.params.masks.clone().unwrap_or_default(),
+                ))
+            });
+        let (node_id, masks) = match mask_node {
+            Some((id, ms)) if !ms.masks.is_empty() => (id, ms),
             _ => {
                 state.viewer_mask_drag = None;
                 return;
@@ -2027,9 +2037,19 @@ impl ViewerPanel {
                             (bottom_handle, MaskHandle::EdgeBottom),
                             (center_handle, MaskHandle::Center),
                         ] {
-                            let resp = ui.allocate_rect(handle_rect.expand(4.0), egui::Sense::drag());
+                            let resp = ui.allocate_rect(handle_rect.expand(4.0), egui::Sense::click_and_drag());
+                            if resp.clicked() {
+                                state.selected_node_id = Some(node_id);
+                                cmds.push(AppCommand::FocusMaskInspector);
+                            }
                             if resp.drag_started() {
                                 if let Some(pos) = resp.interact_pointer_pos() {
+                                    // Clicking / grabbing any mask
+                                    // handle routes inspector focus to
+                                    // the Mask node so its params
+                                    // appear without a separate select.
+                                    state.selected_node_id = Some(node_id);
+                                    cmds.push(AppCommand::FocusMaskInspector);
                                     state.viewer_mask_drag = Some(ViewerMaskDrag {
                                         clip_id,
                                         node_id,
@@ -2080,9 +2100,19 @@ impl ViewerPanel {
                             (bottom_handle, MaskHandle::EdgeBottom),
                             (center_handle, MaskHandle::Center),
                         ] {
-                            let resp = ui.allocate_rect(handle_rect.expand(4.0), egui::Sense::drag());
+                            let resp = ui.allocate_rect(handle_rect.expand(4.0), egui::Sense::click_and_drag());
+                            if resp.clicked() {
+                                state.selected_node_id = Some(node_id);
+                                cmds.push(AppCommand::FocusMaskInspector);
+                            }
                             if resp.drag_started() {
                                 if let Some(pos) = resp.interact_pointer_pos() {
+                                    // Clicking / grabbing any mask
+                                    // handle routes inspector focus to
+                                    // the Mask node so its params
+                                    // appear without a separate select.
+                                    state.selected_node_id = Some(node_id);
+                                    cmds.push(AppCommand::FocusMaskInspector);
                                     state.viewer_mask_drag = Some(ViewerMaskDrag {
                                         clip_id,
                                         node_id,
@@ -2119,9 +2149,19 @@ impl ViewerPanel {
                             (end_rect, MaskHandle::EdgeRight),
                             (start_rect, MaskHandle::Center),
                         ] {
-                            let resp = ui.allocate_rect(handle_rect.expand(4.0), egui::Sense::drag());
+                            let resp = ui.allocate_rect(handle_rect.expand(4.0), egui::Sense::click_and_drag());
+                            if resp.clicked() {
+                                state.selected_node_id = Some(node_id);
+                                cmds.push(AppCommand::FocusMaskInspector);
+                            }
                             if resp.drag_started() {
                                 if let Some(pos) = resp.interact_pointer_pos() {
+                                    // Clicking / grabbing any mask
+                                    // handle routes inspector focus to
+                                    // the Mask node so its params
+                                    // appear without a separate select.
+                                    state.selected_node_id = Some(node_id);
+                                    cmds.push(AppCommand::FocusMaskInspector);
                                     state.viewer_mask_drag = Some(ViewerMaskDrag {
                                         clip_id,
                                         node_id,
@@ -2153,19 +2193,32 @@ impl ViewerPanel {
                             let b = screen_pts[(i + 1) % screen_pts.len()];
                             ui.painter().line_segment([a, b], egui::Stroke::new(1.5_f32, outline_color));
                         }
-                        // Draw control point handles
+                        // Bezier-specific edits that don't go through the
+                        // drag-handle loop: double-click an edge to insert
+                        // a vertex at the click point, shift-click a
+                        // vertex to delete it. Collected here and flushed
+                        // via SetNodeMasks on the next frame; mutating
+                        // `masks` in place would fight the borrow.
+                        let mut insert_at_edge: Option<(usize, (f32, f32))> = None;
+                        let mut delete_vertex: Option<usize> = None;
+                        // Draw control point handles + handle shift-click delete
                         if state.viewer_mask_drag.is_none() {
                             for (pi, sp) in screen_pts.iter().enumerate() {
                                 let handle_rect = egui::Rect::from_center_size(*sp, egui::vec2(12.0, 12.0));
-                                let resp = ui.allocate_rect(handle_rect, egui::Sense::drag());
+                                let resp = ui.allocate_rect(handle_rect, egui::Sense::click_and_drag());
                                 let color = if resp.hovered() || resp.dragged() {
                                     egui::Color32::WHITE
                                 } else {
                                     outline_color
                                 };
                                 ui.painter().circle_filled(*sp, 4.0, color);
-                                if resp.drag_started() {
+                                let shift = ui.input(|i| i.modifiers.shift);
+                                if resp.clicked() && shift && points.len() > 3 {
+                                    delete_vertex = Some(pi);
+                                } else if resp.drag_started() {
                                     if let Some(pos) = resp.interact_pointer_pos() {
+                                        state.selected_node_id = Some(node_id);
+                                        cmds.push(AppCommand::FocusMaskInspector);
                                         state.viewer_mask_drag = Some(ViewerMaskDrag {
                                             clip_id,
                                             node_id,
@@ -2176,10 +2229,63 @@ impl ViewerPanel {
                                         });
                                     }
                                 }
-                                if resp.hovered() || resp.dragged() {
+                                if resp.hovered() && shift && points.len() > 3 {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::NotAllowed);
+                                } else if resp.hovered() || resp.dragged() {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
                                 }
                             }
+                            // Double-click an edge to insert a vertex.
+                            // Checked against each edge's distance; the
+                            // closest within ~10 px wins.
+                            let dbl = ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary));
+                            if dbl {
+                                if let Some(click) = ui.input(|i| i.pointer.interact_pos()) {
+                                    let mut best: Option<(usize, f32, (f32, f32))> = None;
+                                    let n = screen_pts.len();
+                                    for i in 0..n {
+                                        let a = screen_pts[i];
+                                        let b = screen_pts[(i + 1) % n];
+                                        let (dist, proj) = point_segment_distance(click, a, b);
+                                        if dist < 10.0 {
+                                            let nx = ((proj.x - image_rect.min.x) / image_rect.width())
+                                                .clamp(0.0, 1.0);
+                                            let ny = ((proj.y - image_rect.min.y) / image_rect.height())
+                                                .clamp(0.0, 1.0);
+                                            match best {
+                                                Some((_, d, _)) if d <= dist => {}
+                                                _ => best = Some((i, dist, (nx, ny))),
+                                            }
+                                        }
+                                    }
+                                    if let Some((edge_idx, _, pt)) = best {
+                                        insert_at_edge = Some((edge_idx, pt));
+                                    }
+                                }
+                            }
+                        }
+                        // Flush edit (only one op per frame is possible
+                        // because the viewer routes both through the
+                        // same double-click / click inputs — but belt
+                        // and braces: handle delete first, then insert).
+                        if delete_vertex.is_some() || insert_at_edge.is_some() {
+                            let mut updated = masks.clone();
+                            if let Some(m) = updated.masks.get_mut(mask_idx) {
+                                if let klipp_core::MaskShape::Bezier { points } = &mut m.shape {
+                                    if let Some(di) = delete_vertex {
+                                        if di < points.len() && points.len() > 3 {
+                                            points.remove(di);
+                                        }
+                                    }
+                                    if let Some((edge_idx, pt)) = insert_at_edge {
+                                        let insert_at = (edge_idx + 1).min(points.len());
+                                        points.insert(insert_at, pt);
+                                    }
+                                }
+                            }
+                            cmds.push(AppCommand::SetNodeMasks {
+                                clip_id, node_id, masks: updated,
+                            });
                         }
                     }
                 }
@@ -3012,6 +3118,24 @@ impl ViewerPanel {
 }
 
 /// Rotate a point around a center by the given angle in radians.
+/// Distance from `p` to the closed segment [`a`, `b`] and the
+/// projected point on the segment (clamped to the endpoints).
+/// Used by the Bezier-mask edit flow to decide which edge a
+/// double-click should insert a new vertex into.
+fn point_segment_distance(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> (f32, egui::Pos2) {
+    let ab = b - a;
+    let len_sq = ab.x * ab.x + ab.y * ab.y;
+    let proj = if len_sq < 1e-6 {
+        a
+    } else {
+        let ap = p - a;
+        let t = ((ap.x * ab.x + ap.y * ab.y) / len_sq).clamp(0.0, 1.0);
+        egui::pos2(a.x + ab.x * t, a.y + ab.y * t)
+    };
+    let d = p - proj;
+    ((d.x * d.x + d.y * d.y).sqrt(), proj)
+}
+
 fn rotate_point(point: egui::Pos2, center: egui::Pos2, angle_rad: f32) -> egui::Pos2 {
     let dx = point.x - center.x;
     let dy = point.y - center.y;

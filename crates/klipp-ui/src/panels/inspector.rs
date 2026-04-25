@@ -1,17 +1,64 @@
 use crate::state::AppState;
+use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 
 /// Cache for LUT preview thumbnails, stored in egui context data.
 #[derive(Clone, Default)]
 struct LutPreviewCache(std::collections::HashMap<std::path::PathBuf, egui::TextureHandle>);
 
-/// Show the Color tab content: color redirect, global LUT, and LUT presets.
+/// Show the Color tab content: per-clip Masks (if any), color
+/// redirect, global LUT, and LUT presets.
 pub fn show_color_and_luts(
     ui: &mut egui::Ui,
     state: &AppState,
+    theme: &KlippTheme,
     cmds: &mut Vec<AppCommand>,
 ) {
     egui::ScrollArea::vertical().auto_shrink([false; 2]).id_salt("color_lut_scroll").show(ui, |ui| {
+        // ── Masks section ──
+        // Lets Edit-workspace users edit masks without jumping to
+        // the Color workspace. Clicking a mask on the Program
+        // viewer routes inspector focus here via
+        // FocusMaskInspector. Render the full mask editor against a
+        // local clone of the stack — the helper emits SetNodeMasks
+        // on any change so the persistent path matches every other
+        // mask-edit site.
+        if let Some(clip_id) = state.selected_clip {
+            let mask_entry: Option<(klipp_nodes::NodeId, klipp_core::MaskStack, f64)> = state
+                .sequences
+                .get(state.active_sequence_idx)
+                .and_then(|seq| seq.tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == clip_id)
+                    .map(|c| {
+                        let clip_time = (state.playhead_smooth_secs
+                            - c.timeline_in.to_secs_f64()).max(0.0);
+                        let mask_node = c.node_graph.nodes.iter()
+                            .find(|n| n.kind == klipp_nodes::NodeKind::Mask);
+                        mask_node.map(|n| (
+                            n.id,
+                            n.params.masks.clone().unwrap_or_default(),
+                            clip_time,
+                        ))
+                    })
+                    .flatten());
+            if let Some((node_id, mut masks, clip_time_secs)) = mask_entry {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    ui.label(egui::RichText::new("MASKS")
+                        .size(11.0).strong().color(theme.text_primary));
+                });
+                ui.add_space(4.0);
+                crate::panels::node_inspector::NodeInspectorPanel::render_masks_body(
+                    ui, &mut masks, node_id, clip_id, cmds, theme, clip_time_secs,
+                );
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+            }
+        }
+
         // Input Color Space selector
         if let Some(clip_id) = state.selected_clip {
             let current_log = state.sequences.get(state.active_sequence_idx)

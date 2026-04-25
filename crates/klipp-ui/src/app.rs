@@ -9309,6 +9309,7 @@ impl KlippApp {
             "Compound" => klipp_nodes::NodeKind::Compound,
             "RGBSplitter" => klipp_nodes::NodeKind::RGBSplitter,
             "RGBCombiner" => klipp_nodes::NodeKind::RGBCombiner,
+            "MaskCutout" => klipp_nodes::NodeKind::MaskCutout,
             _ => { return; }
         };
         self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
@@ -10392,6 +10393,51 @@ impl KlippApp {
                 } else {
                     self.state.toast.show("No frame to capture — start playback or scrub first");
                 }
+                true
+            }
+            AppCommand::AddMaskShape { clip_id, shape } => {
+                let clip_id = *clip_id;
+                let shape = shape.clone();
+                self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
+                    // ensure_mask_cutout lazy-creates BOTH the Mask
+                    // matte generator and the MaskCutout that
+                    // composites source × matte → Output. Users who
+                    // added a mask from the Color tab see the
+                    // clip-in-shape effect immediately; power users
+                    // can still rewire / delete the cutout in the
+                    // node canvas.
+                    let (mask_node_id, _cutout_id) = graph.ensure_mask_cutout();
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == mask_node_id) {
+                        let masks = node.params.masks.get_or_insert_with(Default::default);
+                        masks.masks.push(klipp_core::Mask {
+                            shape,
+                            ..Default::default()
+                        });
+                    }
+                });
+                true
+            }
+            AppCommand::FocusMaskInspector => {
+                // Edit-workspace user just clicked a mask on the
+                // viewer. Flip their inspector to the Color tab so
+                // the Masks section is visible; also open the color
+                // panel so Color-workspace users see the node /
+                // MASKS section inline too.
+                self.layout.active_inspector_tab = crate::layout_state::InspectorTab::Color;
+                true
+            }
+            AppCommand::RemoveMaskShape { clip_id, mask_index } => {
+                let clip_id = *clip_id;
+                let mask_index = *mask_index;
+                self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.kind == klipp_nodes::NodeKind::Mask) {
+                        if let Some(masks) = &mut node.params.masks {
+                            if mask_index < masks.masks.len() {
+                                masks.masks.remove(mask_index);
+                            }
+                        }
+                    }
+                });
                 true
             }
             AppCommand::UseClipAsColorMatchReference { clip_id } => {

@@ -1341,6 +1341,7 @@ impl NodeGraphV2Panel {
                         ("Compound", "Compound"),
                         ("RGB Splitter", "RGBSplitter"),
                         ("RGB Combiner", "RGBCombiner"),
+                        ("Mask Cutout", "MaskCutout"),
                     ] {
                         if ui.button(label).clicked() {
                             cmds.push(AppCommand::AddNode {
