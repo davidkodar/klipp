@@ -22996,6 +22996,11 @@ impl KlippApp {
     ) {
         crate::ui_util::allocate_clipped_ui(ui, timeline_rect, |ui| {
             ui.set_min_size(timeline_rect.size());
+            // Stash the active theme into the timeline's thread-local
+            // so leaf render helpers (which fan out across thousands
+            // of paint calls per frame) can pick up the right palette
+            // without a parameter cascade through every signature.
+            crate::panels::timeline::sync_theme(&self.theme);
             let panel_cmds = self.new_timeline.show(
                 ui,
                 &mut self.state,

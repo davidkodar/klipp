@@ -1,9 +1,50 @@
 use crate::icons::Icon;
 use crate::state::{AppState, PlayheadFollow};
+use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, ClipId, MediaId, RationalTime, SequenceId, Timecode, Tool};
 use klipp_engine::PlaybackState;
 use klipp_timeline::{ClipKind, TrackKind};
 use std::collections::HashMap;
+use std::sync::OnceLock;
+use std::sync::RwLock;
+
+/// Thread-local mirror of the active KlippTheme. Timeline render
+/// helpers fan out into hundreds of leaf functions; rather than
+/// cascading a `theme: &KlippTheme` parameter through every one
+/// (the existing pattern for TimelinePrefs above uses thread-locals
+/// for the same reason), we stash the active theme here on each
+/// `show()` invocation and let leaves call [`theme()`] to fetch.
+///
+/// `RwLock<KlippTheme>` rather than `Cell<KlippTheme>` because
+/// `KlippTheme` isn't `Copy`; the lock is read-only on the hot path
+/// (one writer per frame from `sync_theme`, many concurrent readers
+/// from helper functions), so reader contention is effectively
+/// zero. The clone-per-call inside `theme()` is ~30 Color32 copies
+/// = ~120 bytes — negligible compared to the per-paint work that
+/// follows it.
+static TIMELINE_THEME: OnceLock<RwLock<KlippTheme>> = OnceLock::new();
+
+/// Set the active theme for timeline render helpers. Called by
+/// `KlippApp` immediately before invoking `TimelinePanel::show()`,
+/// and again whenever the user picks a new theme in Preferences.
+pub fn sync_theme(t: &KlippTheme) {
+    let lock = TIMELINE_THEME.get_or_init(|| RwLock::new(KlippTheme::default()));
+    if let Ok(mut guard) = lock.write() {
+        *guard = t.clone();
+    }
+}
+
+/// Read-only handle to the current theme. Returns a clone so callers
+/// can use the value without holding the read lock — every leaf that
+/// reaches for a theme token also paints, and we don't want a paint
+/// op holding the lock against a concurrent `sync_theme` from the UI
+/// thread (rare but possible during prefs hot-reload).
+fn theme() -> KlippTheme {
+    TIMELINE_THEME
+        .get()
+        .map(|lock| lock.read().map(|g| g.clone()).unwrap_or_default())
+        .unwrap_or_default()
+}
 
 const TRACK_HEADER_MIN_WIDTH: f32 = 80.0;
 const TRACK_HEADER_MAX_WIDTH: f32 = 320.0;
@@ -352,7 +393,8 @@ impl TimelinePanel {
         let bg_painter = ui.painter_at(effective_clip);
 
         // Background
-        bg_painter.rect_filled(panel_rect, 0.0, egui::Color32::from_rgb(25, 25, 30));
+        let tt = theme();
+        bg_painter.rect_filled(panel_rect, 0.0, tt.bg_panel);
 
         // Track header area — skip when embedded (new track_headers.rs handles it)
         let header_rect = if self.embedded {
@@ -363,10 +405,10 @@ impl TimelinePanel {
                 panel_rect.min,
                 egui::vec2(state.track_header_width, panel_rect.height()),
             );
-            bg_painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(20, 20, 24));
+            bg_painter.rect_filled(rect, 0.0, tt.bg_deep);
             bg_painter.line_segment(
                 [egui::pos2(rect.right(), rect.top()), egui::pos2(rect.right(), rect.bottom())],
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(42, 42, 48)),
+                egui::Stroke::new(1.0_f32, tt.border),
             );
             // Track header resize handle (wider hit area for easier grabbing)
             let handle_rect = egui::Rect::from_min_size(
@@ -457,7 +499,7 @@ impl TimelinePanel {
 
         // Time ruler drawing — skip when embedded (new ruler.rs handles it)
         if !self.embedded {
-            painter.rect_filled(ruler_rect, 0.0, egui::Color32::from_rgb(30, 30, 34));
+            painter.rect_filled(ruler_rect, 0.0, tt.bg_panel_alt);
             self.draw_ruler_ticks(&painter, &ruler_rect, state);
         }
 
@@ -469,7 +511,7 @@ impl TimelinePanel {
                 egui::pos2(content_rect.left(), content_rect.top() + RULER_HEIGHT),
                 egui::vec2(content_rect.width(), MEDIA_POOL_HEIGHT),
             );
-            painter.rect_filled(pool_rect, 0.0, egui::Color32::from_rgb(20, 20, 24));
+            painter.rect_filled(pool_rect, 0.0, tt.bg_deep);
             self.draw_media_pool(ui, &painter, &pool_rect, state, &mut cmds);
             self.draw_zoom_buttons(ui, &header_rect, &ruler_rect, state, &mut cmds);
             self.draw_toggle_buttons(ui, &header_rect, content_rect.top() + RULER_HEIGHT, state, &mut cmds);
@@ -523,10 +565,13 @@ impl TimelinePanel {
                 egui::vec2(content_rect.width(), track_height),
             );
 
-            // Subtle alternating lane tint for scanability. Even rows inherit the
-            // panel-wide rgb(25,25,30) fill from line 279 — no paint needed.
+            // Subtle alternating lane tint for scanability. Even rows
+            // inherit the panel-wide bg_panel fill from the panel
+            // background paint above — no paint needed. Odd rows get
+            // a slight alt-tint via bg_panel_alt so adjacent tracks
+            // are distinguishable at a glance.
             if track_idx % 2 == 1 {
-                painter.rect_filled(track_rect, 0.0, egui::Color32::from_rgb(29, 29, 34));
+                painter.rect_filled(track_rect, 0.0, tt.bg_panel_alt);
             }
 
             // Alt+scroll over an audio track → adjust per-track waveform
