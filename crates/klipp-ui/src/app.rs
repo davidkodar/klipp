@@ -223,6 +223,10 @@ pub struct KlippApp {
     last_sent_scopes_visible: Option<bool>,
     // GUI redesign
     theme: KlippTheme,
+    /// Loaded once at startup; holds built-in (Dark, Light) themes
+    /// plus any TOML the user dropped in `~/.config/klipp/themes/`.
+    /// `theme` itself is rebuilt from this on every prefs reload.
+    theme_registry: crate::theme::ThemeRegistry,
     layout: LayoutState,
     layout_dirty: bool,
     browser: BrowserPanel,
@@ -324,7 +328,11 @@ impl KlippApp {
             let _t = LogTimer::new("ui: Preferences::load");
             crate::prefs::Preferences::load()
         };
-        let theme = KlippTheme::from_prefs(&prefs.appearance);
+        let theme_registry = {
+            let _t = LogTimer::new("ui: ThemeRegistry::load");
+            crate::theme::ThemeRegistry::load()
+        };
+        let theme = KlippTheme::from_prefs(&prefs.appearance, &theme_registry);
         {
             let _t = LogTimer::new("ui: theme + fonts apply (egui)");
             theme.apply_to_egui(&cc.egui_ctx);
@@ -428,6 +436,7 @@ impl KlippApp {
             last_sent_scope_mode: None,
             last_sent_scopes_visible: None,
             theme,
+            theme_registry,
             layout,
             layout_dirty: false,
             browser: BrowserPanel::default(),
@@ -19085,12 +19094,12 @@ impl eframe::App for KlippApp {
             if let Err(e) = self.prefs.save() {
                 tracing::warn!("Failed to save preferences: {e}");
             }
-            // Live theme reload — picks up Theme dropdown (Dark /
-            // Light), accent colour change, role colour edits without
+            // Live theme reload — picks up Theme dropdown change,
+            // accent colour change, role colour edits without
             // requiring a restart. Also re-applies egui visuals so
             // built-in widgets (popups, scrollbars, selection
             // highlights) match the new palette polarity.
-            self.theme = KlippTheme::from_prefs(&self.prefs.appearance);
+            self.theme = KlippTheme::from_prefs(&self.prefs.appearance, &self.theme_registry);
             self.theme.apply_to_egui(ctx);
             self.prefs_dirty = false;
             self.prefs_last_save = std::time::Instant::now();
@@ -22512,6 +22521,7 @@ impl KlippApp {
                 &mut self.prefs,
                 &mut self.prefs_dirty,
                 &mut self.key_bindings,
+                &self.theme_registry,
             );
             cmds.extend(pref_cmds);
             // Sync skim_audio pref → state (checkbox may have changed)

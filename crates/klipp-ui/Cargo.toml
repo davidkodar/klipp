@@ -25,6 +25,7 @@ crossbeam-channel = { workspace = true }
 crossbeam-queue = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = "0.8"
 uuid = { workspace = true }
 tracing = { workspace = true }
 rfd = "0.15"

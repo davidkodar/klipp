@@ -1,7 +1,21 @@
 use egui::Color32;
+use serde::{Deserialize, Serialize};
+
+mod color_serde;
+mod registry;
+
+pub use color_serde::HexColor;
+pub use registry::{ThemeId, ThemeRegistry, ThemeSource, BUILTIN_DARK, BUILTIN_LIGHT};
 
 /// All design tokens for the Klipp GUI. Every colour, size, and spacing
 /// constant lives here — do not hardcode `Color32` literals elsewhere.
+///
+/// `KlippTheme` is the in-memory, runtime form. Themes themselves are
+/// authored as TOML against [`ThemeColors`] (see `theme/builtin/*.toml`
+/// and `~/.config/klipp/themes/*.toml`); the registry deserialises
+/// each TOML into a `ThemeColors` and `KlippTheme::from_colors`
+/// promotes it to this runtime representation. Adding a new theme is
+/// dropping a TOML file — no code change.
 ///
 /// # Contrast Rule
 ///
@@ -10,7 +24,7 @@ use egui::Color32;
 /// The accent color (`#e8a020`) works great as TEXT on dark backgrounds, but when used
 /// as a BACKGROUND fill, all text on top must be dark (`#1a1a1e` or black).
 /// Violating this makes text nearly unreadable.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct KlippTheme {
     // Backgrounds — darkest to lightest
     pub bg_void: Color32,
@@ -58,141 +72,150 @@ pub struct KlippTheme {
     pub role_graphics: Color32,
 }
 
-impl Default for KlippTheme {
-    fn default() -> Self {
+/// Serde-friendly mirror of [`KlippTheme`]. Every field is a hex
+/// colour string (`"#rrggbb"` or `"#rrggbbaa"`) so themes round-trip
+/// through TOML without bespoke encoders. Built-in palettes ship as
+/// embedded TOML files (`theme/builtin/dark.toml`, `light.toml`); user
+/// themes drop into `~/.config/klipp/themes/*.toml`.
+///
+/// Keep this struct in sync with `KlippTheme` field-for-field — the
+/// `From<ThemeColors> for KlippTheme` conversion is a 1:1 mapping.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThemeColors {
+    pub bg_void: HexColor,
+    pub bg_deep: HexColor,
+    pub bg_panel: HexColor,
+    pub bg_panel_alt: HexColor,
+    pub bg_raised: HexColor,
+    pub bg_hover: HexColor,
+    pub bg_viewer: HexColor,
+
+    pub border: HexColor,
+    pub border_light: HexColor,
+    pub resizer_idle: HexColor,
+
+    pub accent: HexColor,
+    pub accent_dim: HexColor,
+    pub accent_glow: HexColor,
+    pub accent_subtle: HexColor,
+
+    pub text_primary: HexColor,
+    pub text_secondary: HexColor,
+    pub text_dim: HexColor,
+    pub text_accent: HexColor,
+    pub text_on_accent: HexColor,
+
+    pub role_video: HexColor,
+    pub role_dialogue: HexColor,
+    pub role_music: HexColor,
+    pub role_sfx: HexColor,
+    pub role_title: HexColor,
+    pub role_broll: HexColor,
+    pub role_ambience: HexColor,
+    pub role_foley: HexColor,
+    pub role_voiceover: HexColor,
+    pub role_graphics: HexColor,
+}
+
+impl From<ThemeColors> for KlippTheme {
+    fn from(c: ThemeColors) -> Self {
         Self {
-            bg_void: Color32::from_rgb(0x0a, 0x0a, 0x0c),
-            bg_deep: Color32::from_rgb(0x11, 0x11, 0x14),
-            bg_panel: Color32::from_rgb(0x16, 0x16, 0x1a),
-            bg_panel_alt: Color32::from_rgb(0x1c, 0x1c, 0x21),
-            bg_raised: Color32::from_rgb(0x22, 0x22, 0x28),
-            bg_hover: Color32::from_rgb(0x2a, 0x2a, 0x32),
-            bg_viewer: Color32::from_rgb(28, 28, 30),
-
-            border: Color32::from_rgb(0x2a, 0x2a, 0x32),
-            border_light: Color32::from_rgb(0x36, 0x36, 0x40),
-            resizer_idle: Color32::from_rgb(55, 55, 65),
-
-            accent: Color32::from_rgb(0xe8, 0xa0, 0x20),
-            accent_dim: Color32::from_rgb(0xa0, 0x6e, 0x14),
-            // CONTRAST RULE: These are used as BACKGROUNDS. With premultiplied alpha,
-            // RGB channels must be <= alpha. Previous values (R=232 > A=46) were invalid
-            // and rendered as near-solid amber, making light text unreadable.
-            accent_glow: Color32::from_rgba_premultiplied(33, 23, 5, 46),   // ~18% alpha amber
-            accent_subtle: Color32::from_rgba_premultiplied(21, 14, 3, 23), // ~9% alpha amber
-
-            text_primary: Color32::from_rgb(0xe8, 0xe8, 0xee),
-            text_secondary: Color32::from_rgb(0x90, 0x90, 0xa0),
-            text_dim: Color32::from_rgb(0x50, 0x50, 0x60),
-            text_accent: Color32::from_rgb(0xe8, 0xa0, 0x20),
-            text_on_accent: Color32::from_rgb(0x1a, 0x1a, 0x1e),
-
-            role_video: Color32::from_rgb(0x2d, 0x6f, 0xa8),
-            role_dialogue: Color32::from_rgb(0x3a, 0x8c, 0x6e),
-            role_music: Color32::from_rgb(0x42, 0x85, 0xf4),
-            role_sfx: Color32::from_rgb(0xa8, 0x5c, 0x2d),
-            role_title: Color32::from_rgb(0xc0, 0x39, 0x2b),
-            role_broll: Color32::from_rgb(0x4a, 0x6e, 0xa8),
-            role_ambience: Color32::from_rgb(0x9c, 0x27, 0xb0),
-            role_foley: Color32::from_rgb(0xe9, 0x1e, 0x63),
-            role_voiceover: Color32::from_rgb(0x00, 0xbc, 0xd4),
-            role_graphics: Color32::from_rgb(0xff, 0xeb, 0x3b),
+            bg_void: c.bg_void.0,
+            bg_deep: c.bg_deep.0,
+            bg_panel: c.bg_panel.0,
+            bg_panel_alt: c.bg_panel_alt.0,
+            bg_raised: c.bg_raised.0,
+            bg_hover: c.bg_hover.0,
+            bg_viewer: c.bg_viewer.0,
+            border: c.border.0,
+            border_light: c.border_light.0,
+            resizer_idle: c.resizer_idle.0,
+            accent: c.accent.0,
+            accent_dim: c.accent_dim.0,
+            accent_glow: c.accent_glow.0,
+            accent_subtle: c.accent_subtle.0,
+            text_primary: c.text_primary.0,
+            text_secondary: c.text_secondary.0,
+            text_dim: c.text_dim.0,
+            text_accent: c.text_accent.0,
+            text_on_accent: c.text_on_accent.0,
+            role_video: c.role_video.0,
+            role_dialogue: c.role_dialogue.0,
+            role_music: c.role_music.0,
+            role_sfx: c.role_sfx.0,
+            role_title: c.role_title.0,
+            role_broll: c.role_broll.0,
+            role_ambience: c.role_ambience.0,
+            role_foley: c.role_foley.0,
+            role_voiceover: c.role_voiceover.0,
+            role_graphics: c.role_graphics.0,
         }
     }
 }
 
-impl KlippTheme {
-    /// Light-mode palette. Mirrors the structure of `Default` (dark
-    /// mode) but flips backgrounds to off-whites/soft greys, text to
-    /// near-blacks, and tunes the accent glow alpha so it reads
-    /// against light backgrounds the same way the dark glow reads
-    /// against dark backgrounds.
-    ///
-    /// Light-mode contrast rule: amber/gold accent backgrounds still
-    /// require dark text (`text_on_accent`) — the same rule as dark
-    /// mode, because the rule is about contrast against the accent
-    /// itself, not against the surrounding theme.
-    pub fn light() -> Self {
-        Self {
-            // Backgrounds: lightest (void = window border / extreme bg)
-            // → darkest (raised = card surfaces). Inverted polarity from
-            // Default but with the same six-step gradient so depth cues
-            // (panel-on-panel layering) still read correctly.
-            bg_void: Color32::from_rgb(0xee, 0xee, 0xf0),
-            bg_deep: Color32::from_rgb(0xf4, 0xf4, 0xf6),
-            bg_panel: Color32::from_rgb(0xfa, 0xfa, 0xfc),
-            bg_panel_alt: Color32::from_rgb(0xf0, 0xf0, 0xf3),
-            bg_raised: Color32::from_rgb(0xff, 0xff, 0xff),
-            bg_hover: Color32::from_rgb(0xe6, 0xe6, 0xea),
-            bg_viewer: Color32::from_rgb(0xe0, 0xe0, 0xe4),
-
-            border: Color32::from_rgb(0xcc, 0xcc, 0xd2),
-            border_light: Color32::from_rgb(0xb8, 0xb8, 0xc0),
-            resizer_idle: Color32::from_rgb(0xb0, 0xb0, 0xb8),
-
-            // Same warm amber accent — works on both polarities. The
-            // glow alphas need re-tuning per polarity though: a
-            // translucent amber that looks like a soft glow on dark
-            // turns into a muddy yellow stain on white, so light-mode
-            // glow uses a slightly higher alpha + lower RGB to
-            // produce a similar perceptual "hint of accent" overlay.
-            accent: Color32::from_rgb(0xc8, 0x86, 0x10),
-            accent_dim: Color32::from_rgb(0x90, 0x60, 0x0c),
-            accent_glow: Color32::from_rgba_premultiplied(50, 35, 8, 60),
-            accent_subtle: Color32::from_rgba_premultiplied(33, 22, 5, 30),
-
-            text_primary: Color32::from_rgb(0x18, 0x18, 0x1c),
-            text_secondary: Color32::from_rgb(0x55, 0x55, 0x60),
-            text_dim: Color32::from_rgb(0x88, 0x88, 0x90),
-            text_accent: Color32::from_rgb(0xa8, 0x70, 0x10),
-            // Dark text for use ON accent backgrounds — same rule and
-            // same value as dark mode (the accent fill is the same
-            // colour on both polarities, so the contrast partner is
-            // also the same).
-            text_on_accent: Color32::from_rgb(0x1a, 0x1a, 0x1e),
-
-            // Role colors — keep the dark-mode hues; they sit OK on
-            // light backgrounds because they're saturated mid-value
-            // colours, not pastels. Per-clip override stays available
-            // via prefs.
-            role_video: Color32::from_rgb(0x2d, 0x6f, 0xa8),
-            role_dialogue: Color32::from_rgb(0x3a, 0x8c, 0x6e),
-            role_music: Color32::from_rgb(0x42, 0x85, 0xf4),
-            role_sfx: Color32::from_rgb(0xa8, 0x5c, 0x2d),
-            role_title: Color32::from_rgb(0xc0, 0x39, 0x2b),
-            role_broll: Color32::from_rgb(0x4a, 0x6e, 0xa8),
-            role_ambience: Color32::from_rgb(0x9c, 0x27, 0xb0),
-            role_foley: Color32::from_rgb(0xe9, 0x1e, 0x63),
-            role_voiceover: Color32::from_rgb(0x00, 0x96, 0xa8),
-            role_graphics: Color32::from_rgb(0xc8, 0xa0, 0x10),
-        }
+impl Default for KlippTheme {
+    /// Default theme = the built-in Dark palette, parsed from the
+    /// embedded `theme/builtin/dark.toml`. Every other theme
+    /// (built-in or user-supplied) is loaded the same way through
+    /// [`ThemeRegistry`].
+    fn default() -> Self {
+        registry::parse_builtin(BUILTIN_DARK)
+            .expect("embedded dark theme parses")
+            .into()
     }
+}
 
-    /// Build theme from appearance preferences. Picks the dark or
-    /// light base palette per `prefs.theme_mode`, then layers the
-    /// user's accent + role color overrides on top.
-    pub fn from_prefs(prefs: &crate::prefs::AppearancePrefs) -> Self {
+impl KlippTheme {
+    /// Build a theme by name from `registry`, then layer the user's
+    /// accent + role colour overrides on top. Falls back to the Dark
+    /// built-in if the named theme is missing (e.g. user deleted the
+    /// TOML file referenced in their preferences).
+    ///
+    /// The accent override scales the embedded `accent_glow` /
+    /// `accent_subtle` translucent overlays so the accent stays
+    /// visually consistent on whatever bg polarity the picked theme
+    /// uses — light themes need a slightly more opaque glow to read
+    /// against white, dark themes keep their softer glow. The
+    /// per-theme glow alpha hint comes from the deserialised
+    /// `accent_glow` itself.
+    pub fn from_prefs(
+        prefs: &crate::prefs::AppearancePrefs,
+        registry: &ThemeRegistry,
+    ) -> Self {
+        let mut t: KlippTheme = registry
+            .get(&prefs.theme_name)
+            .or_else(|| registry.get(registry::DEFAULT_NAME))
+            .cloned()
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    "ThemeRegistry has no theme '{}' AND no default '{}' — falling back to compiled Dark",
+                    prefs.theme_name, registry::DEFAULT_NAME,
+                );
+                KlippTheme::default()
+            });
+
+        // Apply user accent override.
         let [ar, ag, ab] = prefs.accent_color;
         let accent = Color32::from_rgb(ar, ag, ab);
-        let mut t = match prefs.theme_mode {
-            crate::prefs::ThemeMode::Dark => Self::default(),
-            crate::prefs::ThemeMode::Light => Self::light(),
-        };
         t.accent = accent;
-        t.accent_dim = Color32::from_rgb(ar.saturating_sub(0x48), ag.saturating_sub(0x32), ab.saturating_sub(0x0c));
-        // CONTRAST RULE: premultiplied alpha requires RGB <= alpha.
-        // Scale RGB by (alpha/255) to get correct translucent tint.
-        // Light mode wants a slightly more visible glow alpha to
-        // overcome white backgrounds; dark mode keeps its softer glow.
-        let (glow_a, sub_a) = match prefs.theme_mode {
-            crate::prefs::ThemeMode::Dark => (46u8, 23u8),
-            crate::prefs::ThemeMode::Light => (60u8, 30u8),
-        };
+        t.accent_dim = Color32::from_rgb(
+            ar.saturating_sub(0x48),
+            ag.saturating_sub(0x32),
+            ab.saturating_sub(0x0c),
+        );
+        // The theme's embedded accent_glow / accent_subtle carry the
+        // alpha that suits its polarity. Reuse those alphas, but
+        // recolour to the user's accent so the glow tint follows the
+        // accent picker.
+        let glow_a = t.accent_glow.a();
+        let sub_a = t.accent_subtle.a();
         let pm = |c: u8, a: u8| (c as u16 * a as u16 / 255) as u8;
         t.accent_glow = Color32::from_rgba_premultiplied(pm(ar, glow_a), pm(ag, glow_a), pm(ab, glow_a), glow_a);
         t.accent_subtle = Color32::from_rgba_premultiplied(pm(ar, sub_a), pm(ag, sub_a), pm(ab, sub_a), sub_a);
         t.text_accent = accent;
-        // Role colors from prefs
+
+        // Role colours — user prefs always win (themes specify role
+        // defaults but the per-clip-role picker is universal).
         let c = |rgb: [u8; 3]| Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
         t.role_video = c(prefs.role_video);
         t.role_dialogue = c(prefs.role_dialogue);

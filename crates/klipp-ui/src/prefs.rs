@@ -824,7 +824,11 @@ impl Preferences {
                         Self::migrate_filmstrip_height_default(&mut value);
                         Self::migrate_skim_quality_default(&mut value);
                         match serde_json::from_value::<Self>(value) {
-                            Ok(prefs) => {
+                            Ok(mut prefs) => {
+                                // Migrate legacy theme_mode → theme_name
+                                // (added when the registry-based theme
+                                // system landed). Idempotent.
+                                prefs.appearance.migrate_theme_mode();
                                 tracing::info!("Preferences loaded from {}", path.display());
                                 prefs
                             }
@@ -1177,12 +1181,11 @@ impl Default for AudioHardwarePrefs {
     }
 }
 
-/// Theme mode — selects between the built-in dark and light palettes
-/// in [`crate::theme::KlippTheme`]. Default is Dark to match the
-/// look-and-feel users have today; explicit Light flips every theme
-/// token to its light-mode equivalent (off-white backgrounds, dark
-/// text, contrast-tuned accent), with role colors and the user's
-/// custom accent preserved across both modes.
+/// Legacy theme-mode enum, retained for back-compat with
+/// preferences.json files written before the registry-based theme
+/// system. New code should use `AppearancePrefs.theme_name: String`.
+/// On load, a present `theme_mode` is translated to a `theme_name`
+/// via [`AppearancePrefs::migrate_theme_mode`] then dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeMode {
     Dark,
@@ -1204,10 +1207,18 @@ pub struct AppearancePrefs {
     /// UI scale percentage. 0 = Auto (match system DPI).
     #[serde(default)]
     pub ui_scale_percent: u32,
-    /// Theme mode (Dark / Light). Defaults to Dark for back-compat
-    /// with the legacy single-palette behaviour.
-    #[serde(default)]
-    pub theme_mode: ThemeMode,
+    /// Theme name as registered in [`crate::theme::ThemeRegistry`].
+    /// Defaults to "Dark" (the built-in name from `theme/builtin/dark.toml`).
+    /// User themes drop into `~/.config/klipp/themes/*.toml` and
+    /// appear here by their TOML `name` field.
+    #[serde(default = "default_theme_name")]
+    pub theme_name: String,
+    /// Legacy: pre-registry theme mode enum. If present, the
+    /// post-load migration in `Preferences::load` translates it to
+    /// `theme_name` and clears this field. Kept Serialize so existing
+    /// installs that still emit it round-trip cleanly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_mode: Option<ThemeMode>,
     /// Accent color [R, G, B].
     #[serde(default = "default_accent_color")]
     pub accent_color: [u8; 3],
@@ -1228,6 +1239,7 @@ pub struct AppearancePrefs {
 }
 fn default_ui_text_size() -> f32 { 13.0 }
 fn default_accent_color() -> [u8; 3] { [0xe8, 0xa0, 0x20] }
+fn default_theme_name() -> String { "Dark".to_string() }
 // Role colors match theme.rs Default exactly
 fn default_role_video() -> [u8; 3] { [0x2d, 0x6f, 0xa8] }
 fn default_role_dialogue() -> [u8; 3] { [0x3a, 0x8c, 0x6e] }
@@ -1244,7 +1256,8 @@ impl Default for AppearancePrefs {
         Self {
             ui_text_size: default_ui_text_size(),
             ui_scale_percent: 0, // Auto
-            theme_mode: ThemeMode::default(),
+            theme_name: default_theme_name(),
+            theme_mode: None,
             accent_color: default_accent_color(),
             playhead_color: default_accent_color(),
             role_video: default_role_video(), role_dialogue: default_role_dialogue(),
@@ -1252,6 +1265,28 @@ impl Default for AppearancePrefs {
             role_title: default_role_title(), role_broll: default_role_broll(),
             role_ambience: default_role_ambience(), role_foley: default_role_foley(),
             role_voiceover: default_role_voiceover(), role_graphics: default_role_graphics(),
+        }
+    }
+}
+
+impl AppearancePrefs {
+    /// Translate the legacy `theme_mode` enum to the registry-based
+    /// `theme_name`. Run once during `Preferences::load` so the
+    /// pre-registry preferences.json migrates forward without
+    /// dropping the user's choice.
+    ///
+    /// After translation, `theme_mode` is cleared so the next save
+    /// stops emitting it (the field is `skip_serializing_if = "Option::is_none"`).
+    pub fn migrate_theme_mode(&mut self) {
+        if let Some(mode) = self.theme_mode.take() {
+            // Only overwrite the name if it's still the default —
+            // a user who already set `theme_name` explicitly wins.
+            if self.theme_name == default_theme_name() {
+                self.theme_name = match mode {
+                    ThemeMode::Dark => "Dark".to_string(),
+                    ThemeMode::Light => "Light".to_string(),
+                };
+            }
         }
     }
 }

@@ -1,0 +1,65 @@
+# Klipp built-in Dark theme.
+#
+# This file is embedded in the binary at compile time
+# (src/theme/registry.rs include_str!). User themes drop into
+# ~/.config/klipp/themes/*.toml using the same schema.
+#
+# Format: top-level `name` (display string in the picker) + `[colors]`
+# table that fills the ThemeColors struct field-for-field. Every field
+# below is required — a missing field will reject the file at load.
+
+name = "Dark"
+
+[colors]
+# ── Backgrounds: darkest (void) → lightest (raised) ──
+bg_void       = "#0a0a0c"
+bg_deep       = "#111114"
+bg_panel      = "#16161a"
+bg_panel_alt  = "#1c1c21"
+bg_raised     = "#222228"
+bg_hover      = "#2a2a32"
+# Elevated container around the program viewer — bg_deep + ~4 % brightness.
+# The video letterbox itself stays pure black inside this frame.
+bg_viewer     = "#1c1c1e"
+
+# ── Borders / dividers ──
+border        = "#2a2a32"
+border_light  = "#363640"
+# Idle resizer strip — brighter than `border` so it reads as a divider
+# against bg_raised inspector cards.
+resizer_idle  = "#373741"
+
+# ── Accent (warm amber) ──
+# CONTRAST RULE: When `accent` is used as a BACKGROUND fill, all text
+# on top must use `text_on_accent` (dark). Light text on amber is
+# nearly unreadable.
+accent        = "#e8a020"
+accent_dim    = "#a06e14"
+# Translucent amber overlays. Premultiplied alpha — RGB channels
+# scaled to a/255 so the colour reads correctly when blended.
+# Hex format here is #rrggbbaa with already-premultiplied channels.
+accent_glow   = "#1701052e"
+accent_subtle = "#150e0317"
+
+# ── Text ──
+text_primary   = "#e8e8ee"
+text_secondary = "#9090a0"
+text_dim       = "#505060"
+text_accent    = "#e8a020"
+# Dark text for use ON accent-colored backgrounds. RULE: any
+# amber/gold background MUST use this colour, never light text.
+text_on_accent = "#1a1a1e"
+
+# ── Role colours (one per clip/track role) ──
+# User can override per-role via Preferences → Appearance; these are
+# the defaults the theme ships with.
+role_video     = "#2d6fa8"
+role_dialogue  = "#3a8c6e"
+role_music     = "#4285f4"
+role_sfx       = "#a85c2d"
+role_title     = "#c0392b"
+role_broll     = "#4a6ea8"
+role_ambience  = "#9c27b0"
+role_foley     = "#e91e63"
+role_voiceover = "#00bcd4"
+role_graphics  = "#ffeb3b"

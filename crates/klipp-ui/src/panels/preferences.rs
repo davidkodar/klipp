@@ -75,6 +75,7 @@ impl PreferencesPanel {
         prefs: &mut Preferences,
         prefs_dirty: &mut bool,
         key_bindings: &mut crate::keybindings::KeyBindings,
+        theme_registry: &crate::theme::ThemeRegistry,
     ) -> (bool, Vec<AppCommand>) {
         let mut open = true;
         let mut cmds = Vec::new();
@@ -286,7 +287,7 @@ impl PreferencesPanel {
                             PrefsTab::Proxy => self.show_proxy(ui, prefs, prefs_dirty, &mut cmds),
                             PrefsTab::ExternalTools => self.show_external_tools(ui, prefs, prefs_dirty),
                             PrefsTab::System => self.show_system(ui, prefs, prefs_dirty),
-                            PrefsTab::Appearance => self.show_appearance(ui, prefs, prefs_dirty),
+                            PrefsTab::Appearance => self.show_appearance(ui, prefs, prefs_dirty, theme_registry),
                             PrefsTab::AudioHardware => self.show_audio_hardware(ui, prefs, prefs_dirty),
                             PrefsTab::MediaCache => self.show_media_cache(ui, prefs, prefs_dirty, &mut cmds),
                             PrefsTab::Color => self.show_color(ui, prefs, prefs_dirty),
@@ -2004,7 +2005,13 @@ impl PreferencesPanel {
         });
     }
 
-    fn show_appearance(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool) {
+    fn show_appearance(
+        &mut self,
+        ui: &mut egui::Ui,
+        prefs: &mut Preferences,
+        dirty: &mut bool,
+        theme_registry: &crate::theme::ThemeRegistry,
+    ) {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
@@ -2014,26 +2021,41 @@ impl PreferencesPanel {
         // ── THEME section ──
         Self::section_header(ui, "THEME");
 
-        // Theme mode (Dark / Light)
-        Self::setting_row_with_subtitle(ui, "Theme", "Light mode swaps the palette to off-white panels with dark text", |ui| {
-            let current_label = match prefs.appearance.theme_mode {
-                crate::prefs::ThemeMode::Dark => "Dark",
-                crate::prefs::ThemeMode::Light => "Light",
-            };
-            egui::ComboBox::from_id_salt("theme_mode")
-                .selected_text(current_label)
-                .width(90.0)
-                .show_ui(ui, |ui| {
-                    for (mode, label) in [
-                        (crate::prefs::ThemeMode::Dark, "Dark"),
-                        (crate::prefs::ThemeMode::Light, "Light"),
-                    ] {
-                        if ui.selectable_value(&mut prefs.appearance.theme_mode, mode, label).changed() {
-                            *dirty = true;
+        // Theme picker — lists every entry in the theme registry
+        // (built-ins + user TOMLs from ~/.config/klipp/themes/).
+        // Drop a TOML file in that directory and restart the app to
+        // see it appear here. The selected name is stored as
+        // `prefs.appearance.theme_name`; the registry on the
+        // appended live-reload path resolves it back to a KlippTheme.
+        Self::setting_row_with_subtitle(
+            ui,
+            "Theme",
+            "Built-in + user themes from ~/.config/klipp/themes/*.toml",
+            |ui| {
+                let current = prefs.appearance.theme_name.clone();
+                let names: Vec<(String, crate::theme::ThemeSource)> = theme_registry
+                    .iter()
+                    .map(|(n, s)| (n.to_string(), s))
+                    .collect();
+                egui::ComboBox::from_id_salt("theme_picker")
+                    .selected_text(&current)
+                    .width(180.0)
+                    .show_ui(ui, |ui| {
+                        for (name, source) in names {
+                            let label = match source {
+                                crate::theme::ThemeSource::Builtin => name.clone(),
+                                crate::theme::ThemeSource::User => format!("{name}  •  user"),
+                            };
+                            if ui
+                                .selectable_value(&mut prefs.appearance.theme_name, name, label)
+                                .changed()
+                            {
+                                *dirty = true;
+                            }
                         }
-                    }
-                });
-        });
+                    });
+            },
+        );
 
         // UI scale
         Self::setting_row_with_subtitle(ui, "UI scale", "Auto matches your system DPI settings", |ui| {
