@@ -46,6 +46,22 @@ text_accent    = "#a87010"
 # colour on both polarities.
 text_on_accent = "#1a1a1e"
 
+# ── Functional marker / status colours ──
+# Slightly darker than the Dark theme equivalents so they carry
+# enough weight against white surfaces; same hue families so the
+# semantic mapping (red = error, green = success, blue = info, amber
+# = warning) reads correctly.
+marker_error   = "#b8302c"
+marker_success = "#3aa05c"
+marker_info    = "#1f5a9c"
+marker_warning = "#a87810"
+
+# ── Scope display tokens ──
+# Light scope traces; grid overlay needs higher alpha to read on
+# white. Source amber (245,180,60) at alpha 64/255 ≈ 25 %.
+scope_grid  = "#3d2d0f40"
+scope_label = "#604c14"
+
 # ── Role colours ──
 # Saturated mid-value hues that sit OK on either polarity. Per-role
 # overrides in Preferences still win.

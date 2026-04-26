@@ -59,6 +59,28 @@ pub struct KlippTheme {
     /// RULE: Any amber/gold background MUST use this color for text, never light text.
     pub text_on_accent: Color32,
 
+    // Functional marker / status colours.
+    //
+    // FUNCTIONAL naming (`marker_error`, `marker_success`, …) rather
+    // than visual (`red`, `green`, …) so future themes can map these
+    // signals onto whatever palette they want. A high-contrast theme
+    // might pick magenta for `marker_error`; a colour-blind-friendly
+    // theme might pick orange and blue instead of green and red.
+    pub marker_error: Color32,
+    pub marker_success: Color32,
+    pub marker_info: Color32,
+    pub marker_warning: Color32,
+
+    // Scope display tokens.
+    //
+    // `scope_grid` is a translucent overlay drawn on top of the scope
+    // trace; its alpha is polarity-dependent (a low-alpha amber that
+    // reads as a hint on dark scopes turns into a stripe on light
+    // scopes), so each theme tunes its own alpha.
+    // `scope_label` is the small text label drawn next to scope ticks.
+    pub scope_grid: Color32,
+    pub scope_label: Color32,
+
     // Role colours — one per clip/track role
     pub role_video: Color32,
     pub role_dialogue: Color32,
@@ -105,6 +127,14 @@ pub struct ThemeColors {
     pub text_accent: HexColor,
     pub text_on_accent: HexColor,
 
+    pub marker_error: HexColor,
+    pub marker_success: HexColor,
+    pub marker_info: HexColor,
+    pub marker_warning: HexColor,
+
+    pub scope_grid: HexColor,
+    pub scope_label: HexColor,
+
     pub role_video: HexColor,
     pub role_dialogue: HexColor,
     pub role_music: HexColor,
@@ -139,6 +169,12 @@ impl From<ThemeColors> for KlippTheme {
             text_dim: c.text_dim.0,
             text_accent: c.text_accent.0,
             text_on_accent: c.text_on_accent.0,
+            marker_error: c.marker_error.0,
+            marker_success: c.marker_success.0,
+            marker_info: c.marker_info.0,
+            marker_warning: c.marker_warning.0,
+            scope_grid: c.scope_grid.0,
+            scope_label: c.scope_label.0,
             role_video: c.role_video.0,
             role_dialogue: c.role_dialogue.0,
             role_music: c.role_music.0,

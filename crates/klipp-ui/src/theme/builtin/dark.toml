@@ -50,6 +50,28 @@ text_accent    = "#e8a020"
 # amber/gold background MUST use this colour, never light text.
 text_on_accent = "#1a1a1e"
 
+# ── Functional marker / status colours ──
+# Semantic naming so high-contrast / colour-blind themes can pick
+# their own hues without breaking the use sites. `marker_error` is
+# anywhere we signal destruction / reject / failure (delete buttons,
+# out-points, render queue failures). `marker_success` is anywhere
+# we signal positive state (linked indicators, render-complete).
+# `marker_info` is the cool-blue colour-science indicator (BT.709
+# badges, colorspace tags). `marker_warning` is the warm signalling
+# yellow for non-critical alerts.
+marker_error   = "#c83c3c"
+marker_success = "#64c878"
+marker_info    = "#3c78c8"
+marker_warning = "#c8a028"
+
+# ── Scope display tokens ──
+# `scope_grid` is a translucent overlay; alpha is polarity-dependent.
+# Hex is premultiplied — RGB = source * (alpha/255). For dark mode:
+# source amber (245,180,60) at alpha 32/255 ≈ 12 % → premultiplied
+# RGB (30,22,7), alpha 0x20.
+scope_grid  = "#1e160720"
+scope_label = "#907830"
+
 # ── Role colours (one per clip/track role) ──
 # User can override per-role via Preferences → Appearance; these are
 # the defaults the theme ships with.
