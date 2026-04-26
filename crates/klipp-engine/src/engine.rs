@@ -432,7 +432,34 @@ fn should_publish_gpu_viewer() -> bool {
     use std::sync::OnceLock;
     static GATE: OnceLock<bool> = OnceLock::new();
     *GATE.get_or_init(|| {
-        std::env::var("KLIPP_GPU_VIEWER").ok().as_deref() == Some("1")
+        let want_viewer = std::env::var("KLIPP_GPU_VIEWER").ok().as_deref() == Some("1");
+        if !want_viewer {
+            return false;
+        }
+        // The GPU viewer hand-off allocates `fb.gpu_output` on the
+        // engine's wgpu device, then the UI registers a TextureView
+        // of that texture with eframe-wgpu's renderer. wgpu-22's
+        // wgpu_core stores resources per `Instance`; engine and UI
+        // each have their own Instance unless the shared-device
+        // path is enabled. Cross-Hub TextureView lookups panic in
+        // `wgpu-core/src/storage.rs:79` ("TextureView[Id(N,vk)]
+        // does not exist") on the very first
+        // `register_native_texture` call. Until KLIPP_SHARED_GPU_DEVICE
+        // is fixed (deadlock on `device.poll` — see main.rs comments)
+        // the viewer path can ONLY engage when both env flags are on,
+        // so `KLIPP_GPU_VIEWER=1` alone silently no-ops instead of
+        // crashing.
+        let want_shared = std::env::var("KLIPP_SHARED_GPU_DEVICE").ok().as_deref() == Some("1");
+        if !want_shared {
+            tracing::warn!(
+                "KLIPP_GPU_VIEWER=1 ignored: requires KLIPP_SHARED_GPU_DEVICE=1 too. \
+                 Without device sharing, fb.gpu_output lives on the engine wgpu Hub \
+                 and egui-wgpu cannot register a TextureView from a different Hub — \
+                 the cross-device BindGroup creation panics in wgpu_core storage."
+            );
+            return false;
+        }
+        true
     })
 }
 
@@ -6651,13 +6678,31 @@ impl PlaybackEngine {
         // that case.
         if should_publish_gpu_viewer() && (width * 4) % 256 == 0 {
             mark_stage(EngineStage::GpuEncodeToTexture);
+            // When the grade chain just ran, its final linear-RGBA
+            // output is still in `buf_a`/`buf_b` on the GPU — the
+            // CPU `result_linear` we hold is a mirror produced by
+            // the chain-tail download. Routing the viewer texture
+            // from that on-GPU buffer via `encode_grade_to_texture`
+            // skips the 33 MB PCIe re-upload that
+            // `linear_rgba_to_texture_gpu` would otherwise do
+            // (~5 ms at 1080p). Falls back to the CPU-upload path
+            // when no chain ran (identity graph, pure-CPU node, or
+            // executor produced its result without engaging GPU).
+            let chain_slot = self.graph_executor.last_chain_final_slot();
             if let Some(gpu) = self.graph_executor.gpu_pipeline_mut() {
                 let device = gpu.device();
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 let tex = fb.ensure_gpu_output(&device, width, height);
                 drop(fb);
                 if let Some(tex) = tex {
-                    let _ = gpu.linear_rgba_to_texture_gpu(&result_linear, width, height, &tex);
+                    match chain_slot {
+                        Some(slot_a) => {
+                            let _ = gpu.encode_grade_to_texture(slot_a, width, height, &tex);
+                        }
+                        None => {
+                            let _ = gpu.linear_rgba_to_texture_gpu(&result_linear, width, height, &tex);
+                        }
+                    }
                 }
             }
         }

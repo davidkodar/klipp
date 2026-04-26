@@ -76,6 +76,19 @@ impl GpuContext {
         ))
         .ok()?;
 
+        // Diagnostic: route uncaptured wgpu errors (validation,
+        // out-of-memory, lost device) into tracing instead of letting
+        // them surface as opaque storage-lookup panics inside
+        // wgpu-core. Without this the GPU-COMPOUND-PANIC class shows
+        // up as a bare `TextureView[Id(N,vk)] does not exist` panic
+        // with no upstream context; with it, the original wgpu
+        // validation message that names the offending resource
+        // appears in klipp-debug.log immediately before the abort.
+        device.on_uncaptured_error(Box::new(|err| {
+            tracing::error!("WGPU_UNCAPTURED on engine device: {err}");
+            tracing::error!("WGPU_UNCAPTURED debug:\n{err:#?}");
+        }));
+
         // `instance` is dropped at scope exit — wgpu's device /
         // queue keep the underlying driver resources alive via their
         // own refcounts.

@@ -37,6 +37,17 @@ pub struct ViewerPanel {
     // (first use, resolution change).
     pub gpu_texture_id: Option<egui::TextureId>,
     pub gpu_texture_gen: u64,
+    /// Owned wgpu `TextureView` backing the registered `gpu_texture_id`.
+    /// MUST stay alive for the lifetime of `gpu_texture_id`: wgpu 22's
+    /// `BindGroup` records the view's storage Id without taking a
+    /// reference-counted clone, so once this `TextureView` drops, the
+    /// next egui paint that samples `gpu_texture_id` panics with
+    /// "TextureView[Id(N,vk)] does not exist". Replaced atomically with
+    /// the new view inside `refresh_gpu_viewer_texture` whenever a new
+    /// texture generation appears; the previous view drops one step
+    /// after `renderer.free_texture(old_id)` releases egui-wgpu's
+    /// internal BindGroup so storage cleanup is well-ordered.
+    pub gpu_texture_view: Option<wgpu::TextureView>,
 }
 
 impl ViewerPanel {

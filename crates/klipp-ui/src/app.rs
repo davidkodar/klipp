@@ -18550,20 +18550,35 @@ impl KlippApp {
 
         // Build a view from the Arc'd texture. wgpu::Texture::create_view
         // takes &self, so the Arc holder keeps the underlying texture
-        // alive as long as the view is used.
+        // alive — but the view itself is a separate resource.
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut renderer = render_state.renderer.write();
-        // Free the previously-registered id, if any — egui-wgpu
-        // otherwise accumulates bindings for every resized frame.
+        // Order matters here. egui-wgpu's `register_native_texture`
+        // creates an internal BindGroup that records the new view's
+        // wgpu storage `Id` BUT does NOT take a refcounted clone —
+        // wgpu 22's BindGroup tracks resources by Id only. Free the
+        // previous TextureId FIRST so egui-wgpu drops the old
+        // BindGroup; only after that is it safe to drop the previous
+        // `gpu_texture_view` (handle drop tells wgpu_core to mark
+        // the storage slot Vacant). If we dropped the view before
+        // the BindGroup, the next paint that samples the old id
+        // panics with "TextureView[Id(N,vk)] does not exist" — this
+        // was the recurring "first-frame post compound / first-grade-
+        // tweak" crash documented as GPU-COMPOUND-PANIC.
         if let Some(old_id) = self.viewer.gpu_texture_id.take() {
             renderer.free_texture(&old_id);
+            self.viewer.gpu_texture_view = None;
         }
         let new_id = renderer.register_native_texture(
             &render_state.device,
             &view,
             wgpu::FilterMode::Linear,
         );
+        // Keep the new view alive for as long as the registered id
+        // is used. Replaces the previous view (already dropped above
+        // after the corresponding `free_texture` call).
+        self.viewer.gpu_texture_view = Some(view);
         self.viewer.gpu_texture_id = Some(new_id);
         self.viewer.gpu_texture_gen = gen;
         tracing::debug!("GPU_VIEWER registered id={:?} gen={}", new_id, gen);

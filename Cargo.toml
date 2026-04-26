@@ -137,7 +137,12 @@ opt-level = 3
 lto = "thin"           # Link-time optimization for smaller/faster binary
 codegen-units = 8      # Smaller LLVM units to keep LTO from blowing its stack
                        # (was 1, then 4; klipp-ui growth pushed us to 8).
-strip = true           # Strip debug symbols from release binary
+# Line tables (no full DWARF) so panics produce useful backtraces while
+# we hunt the wgpu TextureView lifetime crash. Adds ~5-10 MB to the
+# binary, no perf cost. Revert to `strip = true` once the crash is
+# fixed and we no longer need release-mode symbols.
+debug = "line-tables-only"
+strip = false
 panic = "abort"        # Smaller binary, no unwinding overhead
 
 [profile.profiling]

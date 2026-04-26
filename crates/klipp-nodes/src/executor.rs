@@ -109,6 +109,20 @@ pub struct GraphExecutor {
     /// `start_chain` so a second chain segment within the same
     /// `execute_linear` call falls back to the normal upload path.
     gpu_chain_preseeded: bool,
+    /// After the most recent `execute_linear*` call, the slot
+    /// (`buf_a` if `true`, `buf_b` if `false`) that holds the chain's
+    /// final linear-RGBA output, if a chain ran at all. `None` when
+    /// the graph was identity, ran entirely on CPU, or didn't engage
+    /// the GPU chain.
+    ///
+    /// Set by `flush_chain` immediately before `chain_tail` is
+    /// cleared, and reset to `None` at the start of every
+    /// `execute_linear_with_thumbs` call. Lets the engine route the
+    /// chain output straight into a viewer texture via
+    /// `encode_grade_to_texture(slot, ...)` instead of re-uploading
+    /// the just-downloaded `Vec<f32>` at the legacy texture-publish
+    /// boundary.
+    last_chain_final_slot: Option<bool>,
     /// Current depth of recursive `execute_linear_with_thumbs` calls
     /// triggered by `NodeKind::Compound` nodes. Bumped on entry to
     /// the compound arm of `execute_node`, decremented on exit.
@@ -242,6 +256,7 @@ impl GraphExecutor {
             matte_image_cache: HashMap::new(),
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
+            last_chain_final_slot: None,
             compound_depth: 0,
         }
     }
@@ -275,6 +290,7 @@ impl GraphExecutor {
             matte_image_cache: HashMap::new(),
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
+            last_chain_final_slot: None,
             compound_depth: 0,
         }
     }
@@ -438,6 +454,9 @@ impl GraphExecutor {
         visible_nodes: Option<&std::collections::HashSet<NodeId>>,
     ) -> Result<(Vec<f32>, Option<Vec<f32>>, std::collections::HashMap<NodeId, Vec<u8>>), ExecutorError> {
         self.ensure_gpu();
+        // Reset chain-state metadata before this run; populated by
+        // `flush_chain` if the graph engages the GPU chain.
+        self.last_chain_final_slot = None;
         let t_total = std::time::Instant::now();
         let mut per_node_ms: Vec<(String, f64)> = Vec::new();
         let mut chain_flush_count: u32 = 0;
@@ -1709,11 +1728,35 @@ impl GraphExecutor {
         // previous submit_chain() + download_chain_output_linear()
         // two-submit pattern.
         let linear = gpu.flush_chain_and_download_linear(slot_a, pixel_count);
+        // Stash the slot so the engine can route the on-GPU buffer
+        // straight into a viewer texture without re-uploading the
+        // CPU mirror we just downloaded. The download itself is
+        // unavoidable here — node_outputs still expects an
+        // `Arc<Vec<f32>>` for downstream CPU-only consumers — but
+        // overwriting `last_chain_final_slot` makes the GPU copy
+        // available to the engine for the texture-bind path that
+        // doesn't need the CPU copy at all.
+        self.last_chain_final_slot = Some(slot_a);
         let arc = Arc::new(linear);
         if Some(tail_id) == matte_tap {
             *tapped_output = Some(arc.clone());
         }
         node_outputs.insert(tail_id, arc);
+    }
+
+    /// After the most recent `execute_linear*` call, returns the chain
+    /// buffer slot (`Some(true)` = `buf_a`, `Some(false)` = `buf_b`)
+    /// that holds the linear-RGBA chain output, or `None` if the
+    /// graph ran identity / pure-CPU and the GPU chain never
+    /// engaged. Lets the engine route the chain's GPU-resident
+    /// output straight into a viewer texture (via
+    /// `encode_grade_to_texture`) instead of paying a 33 MB PCIe
+    /// upload to re-seed the buffer it already produced.
+    ///
+    /// Reset to `None` at the top of every `execute_linear_with_thumbs`
+    /// call so a stale slot can't survive across executions.
+    pub fn last_chain_final_slot(&self) -> Option<bool> {
+        self.last_chain_final_slot
     }
 
     #[allow(clippy::too_many_arguments)]
