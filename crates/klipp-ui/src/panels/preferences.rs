@@ -2014,6 +2014,27 @@ impl PreferencesPanel {
         // ── THEME section ──
         Self::section_header(ui, "THEME");
 
+        // Theme mode (Dark / Light)
+        Self::setting_row_with_subtitle(ui, "Theme", "Light mode swaps the palette to off-white panels with dark text", |ui| {
+            let current_label = match prefs.appearance.theme_mode {
+                crate::prefs::ThemeMode::Dark => "Dark",
+                crate::prefs::ThemeMode::Light => "Light",
+            };
+            egui::ComboBox::from_id_salt("theme_mode")
+                .selected_text(current_label)
+                .width(90.0)
+                .show_ui(ui, |ui| {
+                    for (mode, label) in [
+                        (crate::prefs::ThemeMode::Dark, "Dark"),
+                        (crate::prefs::ThemeMode::Light, "Light"),
+                    ] {
+                        if ui.selectable_value(&mut prefs.appearance.theme_mode, mode, label).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
+
         // UI scale
         Self::setting_row_with_subtitle(ui, "UI scale", "Auto matches your system DPI settings", |ui| {
             let scales: &[(u32, &str)] = &[

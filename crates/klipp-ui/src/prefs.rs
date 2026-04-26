@@ -1177,6 +1177,24 @@ impl Default for AudioHardwarePrefs {
     }
 }
 
+/// Theme mode — selects between the built-in dark and light palettes
+/// in [`crate::theme::KlippTheme`]. Default is Dark to match the
+/// look-and-feel users have today; explicit Light flips every theme
+/// token to its light-mode equivalent (off-white backgrounds, dark
+/// text, contrast-tuned accent), with role colors and the user's
+/// custom accent preserved across both modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThemeMode {
+    Dark,
+    Light,
+}
+
+impl Default for ThemeMode {
+    fn default() -> Self {
+        Self::Dark
+    }
+}
+
 /// Appearance / theme preferences.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppearancePrefs {
@@ -1186,6 +1204,10 @@ pub struct AppearancePrefs {
     /// UI scale percentage. 0 = Auto (match system DPI).
     #[serde(default)]
     pub ui_scale_percent: u32,
+    /// Theme mode (Dark / Light). Defaults to Dark for back-compat
+    /// with the legacy single-palette behaviour.
+    #[serde(default)]
+    pub theme_mode: ThemeMode,
     /// Accent color [R, G, B].
     #[serde(default = "default_accent_color")]
     pub accent_color: [u8; 3],
@@ -1222,6 +1244,7 @@ impl Default for AppearancePrefs {
         Self {
             ui_text_size: default_ui_text_size(),
             ui_scale_percent: 0, // Auto
+            theme_mode: ThemeMode::default(),
             accent_color: default_accent_color(),
             playhead_color: default_accent_color(),
             role_video: default_role_video(), role_dialogue: default_role_dialogue(),

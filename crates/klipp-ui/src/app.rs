@@ -19085,6 +19085,13 @@ impl eframe::App for KlippApp {
             if let Err(e) = self.prefs.save() {
                 tracing::warn!("Failed to save preferences: {e}");
             }
+            // Live theme reload — picks up Theme dropdown (Dark /
+            // Light), accent colour change, role colour edits without
+            // requiring a restart. Also re-applies egui visuals so
+            // built-in widgets (popups, scrollbars, selection
+            // highlights) match the new palette polarity.
+            self.theme = KlippTheme::from_prefs(&self.prefs.appearance);
+            self.theme.apply_to_egui(ctx);
             self.prefs_dirty = false;
             self.prefs_last_save = std::time::Instant::now();
         }
