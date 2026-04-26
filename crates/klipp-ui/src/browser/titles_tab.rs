@@ -1130,7 +1130,7 @@ fn title_card(ui: &mut egui::Ui, theme: &KlippTheme, title: &TitleTemplate, widt
             egui::pos2(preview_rect.max.x - 18.0, preview_rect.min.y + 2.0),
             egui::vec2(16.0, 12.0),
         );
-        ui.painter().rect_filled(badge_rect, 3.0, egui::Color32::from_rgba_premultiplied(100, 60, 200, 180));
+        ui.painter().rect_filled(badge_rect, 3.0, egui::Color32::from_rgba_premultiplied(theme.role_graphics.r(), theme.role_graphics.g(), theme.role_graphics.b(), 180));
         ui.painter().text(
             badge_rect.center(),
             egui::Align2::CENTER_CENTER,

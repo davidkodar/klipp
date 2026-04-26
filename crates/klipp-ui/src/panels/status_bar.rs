@@ -77,11 +77,11 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             let (mode_label, mode_color) = match state.edit_mode {
                 klipp_timeline::magnetic::EditMode::Insert => (
                     "INSERT",
-                    egui::Color32::from_rgb(232, 160, 32),
+                    theme.accent,
                 ),
                 klipp_timeline::magnetic::EditMode::Overwrite => (
                     "OVERWRITE",
-                    egui::Color32::from_rgb(60, 120, 220),
+                    theme.marker_info,
                 ),
             };
             let (badge_rect, _) =
@@ -114,9 +114,9 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
                 .is_some();
             let link_label = if is_linked { "\u{1F517}" } else { "\u{26D3}\u{FE0E}" };
             let link_color = if is_linked {
-                egui::Color32::from_rgb(100, 200, 120)
+                theme.marker_success
             } else {
-                egui::Color32::from_rgb(120, 120, 130)
+                theme.text_dim
             };
             ui.add_space(6.0);
             ui.colored_label(link_color, egui::RichText::new(link_label).size(11.0));
@@ -133,9 +133,9 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
             // Audio backend status
             let (audio_dot_rect, _) = ui.allocate_exact_size(egui::vec2(5.0, 5.0), egui::Sense::hover());
             if state.audio_backend_ok {
-                ui.painter().circle_filled(audio_dot_rect.center(), 2.5, egui::Color32::from_rgb(80, 200, 80));
+                ui.painter().circle_filled(audio_dot_rect.center(), 2.5, theme.marker_success);
             } else {
-                ui.painter().circle_filled(audio_dot_rect.center(), 2.5, egui::Color32::from_rgb(210, 50, 50));
+                ui.painter().circle_filled(audio_dot_rect.center(), 2.5, theme.marker_error);
             }
             let sr_khz = state.audio_sample_rate as f32 / 1000.0;
             let sr_label = if sr_khz == sr_khz.floor() {
@@ -214,9 +214,9 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
                 let pct = (progress * 100.0) as u32;
                 let text_alpha = (alpha * 255.0) as u8;
                 let bar_color = if show_skim_active {
-                    egui::Color32::from_rgb(0x70, 0xb0, 0x90)
+                    theme.accent_dim
                 } else {
-                    egui::Color32::from_rgb(0x50, 0xd0, 0x70) // green for done
+                    theme.marker_success // green for done
                 };
 
                 ui.label(

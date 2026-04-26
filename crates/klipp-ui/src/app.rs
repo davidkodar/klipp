@@ -16953,7 +16953,7 @@ impl KlippApp {
                 ui.label(
                     egui::RichText::new("Your changes will be lost if you don't save them.")
                         .size(11.0)
-                        .color(egui::Color32::from_rgb(160, 160, 165)),
+                        .color(self.theme.text_dim),
                 );
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
@@ -18812,14 +18812,14 @@ impl eframe::App for KlippApp {
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     let (rect, _) = ui.allocate_exact_size(screen.size(), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 20));
-                    ui.painter().rect_stroke(rect.shrink(4.0), 8.0, egui::Stroke::new(2.0_f32, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 120)));
+                    ui.painter().rect_filled(rect, 0.0, self.theme.accent_subtle);
+                    ui.painter().rect_stroke(rect.shrink(4.0), 8.0, egui::Stroke::new(2.0_f32, self.theme.accent_glow));
                     ui.painter().text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
                         "Drop media files to import",
                         egui::FontId::proportional(18.0),
-                        egui::Color32::from_rgba_unmultiplied(232, 160, 32, 200),
+                        self.theme.text_accent,
                     );
                 });
         }
@@ -19426,8 +19426,8 @@ impl eframe::App for KlippApp {
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     egui::Frame::window(ui.style())
-                        .fill(egui::Color32::from_rgb(0x1a, 0x1a, 0x20))
-                        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x40, 0x40, 0x50)))
+                        .fill(self.theme.bg_panel)
+                        .stroke(egui::Stroke::new(1.0_f32, self.theme.border))
                         .rounding(8.0)
                         .inner_margin(8.0)
                         .show(ui, |ui| {
@@ -19465,14 +19465,14 @@ impl eframe::App for KlippApp {
                             for (i, (label, shortcut, cmd)) in filtered.iter().take(max_visible).enumerate() {
                                 let is_selected = i == *sel;
                                 let bg = if is_selected {
-                                    egui::Color32::from_rgb(0x30, 0x40, 0x60)
+                                    self.theme.bg_hover
                                 } else {
                                     egui::Color32::TRANSPARENT
                                 };
                                 let text_color = if cmd.is_some() {
-                                    egui::Color32::from_rgb(0xe0, 0xe0, 0xe8)
+                                    self.theme.text_primary
                                 } else {
-                                    egui::Color32::from_rgb(0x80, 0x80, 0x90)
+                                    self.theme.text_dim
                                 };
 
                                 {
@@ -19491,7 +19491,7 @@ impl eframe::App for KlippApp {
                                             egui::Align2::RIGHT_CENTER,
                                             shortcut,
                                             egui::FontId::monospace(10.0),
-                                            egui::Color32::from_rgb(0x60, 0x60, 0x70),
+                                            self.theme.text_dim,
                                         );
                                     }
                                     if ui.rect_contains_pointer(r) && ui.input(|i| i.pointer.primary_clicked()) {
@@ -19503,7 +19503,7 @@ impl eframe::App for KlippApp {
 
                             if filtered.is_empty() {
                                 ui.colored_label(
-                                    egui::Color32::from_rgb(0x60, 0x60, 0x70),
+                                    self.theme.text_dim,
                                     "No matching commands",
                                 );
                             }
@@ -19536,7 +19536,7 @@ impl eframe::App for KlippApp {
                             let resp = ui.selectable_label(false,
                                 egui::RichText::new(format!("  {label}"))
                                     .size(11.0)
-                                    .color(egui::Color32::from_rgb(100, 100, 120))
+                                    .color(self.theme.text_dim)
                             );
                             if resp.clicked() {
                                 // Redo (redo_count - i) steps
@@ -19546,7 +19546,7 @@ impl eframe::App for KlippApp {
                             }
                         }
                         // Current state marker
-                        ui.colored_label(egui::Color32::from_rgb(200, 160, 40),
+                        ui.colored_label(self.theme.accent,
                             egui::RichText::new("\u{25B6} Current State").size(11.0));
                         // Undo stack (past states, most recent first)
                         let undo = self.state.history.undo_entries();
@@ -19660,14 +19660,14 @@ impl eframe::App for KlippApp {
                             for (id, filename, path) in &offline_items {
                                 ui.horizontal(|ui| {
                                     ui.colored_label(
-                                        egui::Color32::from_rgb(255, 80, 80),
+                                        self.theme.marker_error,
                                         "OFFLINE",
                                     );
                                     ui.label(filename);
                                     ui.label(
                                         egui::RichText::new(path.to_string_lossy())
                                             .size(10.0)
-                                            .color(egui::Color32::from_rgb(120, 120, 130)),
+                                            .color(self.theme.text_dim),
                                     );
                                     if ui.small_button("Browse...").clicked() {
                                         // Filter the file picker to the original extension when
@@ -19750,6 +19750,7 @@ impl eframe::App for KlippApp {
                 &lufs_history,
                 lufs_target,
                 &spectrum_history,
+                &self.theme,
             );
         }
 
@@ -19929,8 +19930,8 @@ impl eframe::App for KlippApp {
                         .order(egui::Order::Foreground)
                         .show(ctx, |ui| {
                             egui::Frame::popup(ui.style())
-                                .fill(egui::Color32::from_rgb(35, 35, 42))
-                                .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(70, 70, 85)))
+                                .fill(self.theme.bg_raised)
+                                .stroke(egui::Stroke::new(1.0_f32, self.theme.border))
                                 .rounding(6.0)
                                 .inner_margin(egui::Margin::symmetric(16.0, 10.0))
                                 .show(ui, |ui| {
@@ -19942,18 +19943,18 @@ impl eframe::App for KlippApp {
                                         if is_generating {
                                             ui.label(
                                                 egui::RichText::new(format!("{} — {:.0}%{}", msg_clone, avg_progress * 100.0, eta_str))
-                                                    .color(egui::Color32::from_rgb(200, 200, 210))
+                                                    .color(self.theme.text_primary)
                                                     .size(12.0),
                                             );
                                         } else {
                                             ui.label(
                                                 egui::RichText::new(&msg_clone)
-                                                    .color(egui::Color32::from_rgb(200, 200, 210))
+                                                    .color(self.theme.text_primary)
                                                     .size(12.0),
                                             );
                                         }
                                         ui.add_space(8.0);
-                                        if ui.add(egui::Button::image(Icon::X.image(12.0).tint(egui::Color32::from_rgb(220, 220, 230)))).on_hover_text("Dismiss").clicked() {
+                                        if ui.add(egui::Button::image(Icon::X.image(12.0).tint(self.theme.text_primary))).on_hover_text("Dismiss").clicked() {
                                             self.state.proxy_toast_dismissed = true;
                                         }
                                     });
@@ -21273,7 +21274,7 @@ impl KlippApp {
                         // Codec hint
                         ui.label("");
                         ui.colored_label(
-                            egui::Color32::from_rgb(130, 150, 170),
+                            self.theme.text_dim,
                             self.export_dialog.video_codec.hint(),
                         );
                         ui.end_row();
@@ -21537,7 +21538,7 @@ impl KlippApp {
                         ui.label(
                             egui::RichText::new("Add markers to the timeline to use this mode.")
                                 .small()
-                                .color(egui::Color32::from_rgb(0x80, 0x80, 0x90)),
+                                .color(self.theme.text_dim),
                         );
                     });
                 }
@@ -21587,7 +21588,7 @@ impl KlippApp {
                     {
                         ui.label(
                             egui::RichText::new("\u{26A0} WebM subtitle support varies by player")
-                                .color(egui::Color32::from_rgb(0xc0, 0x90, 0x30))
+                                .color(self.theme.marker_warning)
                                 .size(11.0),
                         );
                     }
@@ -21617,7 +21618,7 @@ impl KlippApp {
                         ui.indent("chapters_hint", |ui| {
                             ui.label(
                                 egui::RichText::new("\u{26A0} No markers in sequence")
-                                    .color(egui::Color32::from_rgb(0xb4, 0x8c, 0x3c))
+                                    .color(self.theme.marker_warning)
                                     .size(11.0),
                             );
                         });
@@ -22337,7 +22338,7 @@ impl KlippApp {
                     ui.label(format!("Media files:  {online_count} online"));
                     if offline_count > 0 {
                         ui.colored_label(
-                            egui::Color32::from_rgb(0xc0, 0x90, 0x30),
+                            self.theme.marker_warning,
                             format!(
                                 "\u{26A0} {offline_count} offline file(s) will be skipped",
                             ),
@@ -22727,6 +22728,7 @@ impl KlippApp {
                                 self.state.playback == PlaybackState::Playing,
                                 bottom_scope_cursor,
                                 self.state.scope_cursor_show,
+                                &self.theme,
                             );
                         });
                     }
@@ -22897,7 +22899,7 @@ impl KlippApp {
         // helper — same skim texture, same metadata card, same In/Out
         // markers, same edit buttons users already saw when clicking the
         // old "Source" toggle. No duplicated logic.
-        self.viewer.show_source_viewer(ui, &self.state, video_rect, all_cmds);
+        self.viewer.show_source_viewer(ui, &self.state, &self.theme, video_rect, all_cmds);
 
         // Reuse the same scrub bar + play bar the Program Viewer renders,
         // routing scrub-bar drags and the timecode display to the source
@@ -23496,7 +23498,7 @@ impl KlippApp {
                         egui::Align2::CENTER_CENTER,
                         "\u{1F3B5}",
                         egui::FontId::proportional(64.0),
-                        egui::Color32::from_rgb(0xe8, 0xa0, 0x20),
+                        self.theme.text_accent,
                     );
                 }
 
@@ -23550,7 +23552,7 @@ impl KlippApp {
                     egui::Align2::CENTER_CENTER,
                     &info_text,
                     egui::FontId::proportional(12.0),
-                    egui::Color32::from_rgb(0xd0, 0xd0, 0xd8),
+                    self.theme.text_primary,
                 );
 
                 // ── Dismiss: click backdrop, Escape, or Spacebar ──
@@ -23789,8 +23791,8 @@ impl KlippApp {
                             ("G", egui::Color32::from_rgb(0x40, 0xb0, 0x40), &mut self.state.scope_show_g),
                             ("B", egui::Color32::from_rgb(0x40, 0x50, 0xd0), &mut self.state.scope_show_b),
                         ] {
-                            let bg = if *enabled { color } else { egui::Color32::from_rgb(0x30, 0x30, 0x35) };
-                            let text_c = if *enabled { egui::Color32::WHITE } else { egui::Color32::from_rgb(0x60, 0x60, 0x68) };
+                            let bg = if *enabled { color } else { theme.bg_raised };
+                            let text_c = if *enabled { egui::Color32::WHITE } else { theme.text_dim };
                             let btn = egui::Button::new(egui::RichText::new(label).size(9.0).color(text_c).strong())
                                 .fill(bg)
                                 .min_size(egui::vec2(20.0, 16.0))
@@ -23815,7 +23817,7 @@ impl KlippApp {
                         let picker_active = self.state.scope_cursor_show;
                         let picker_locked = self.state.scope_cursor_locked;
                         let picker_color = if picker_locked {
-                            egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
+                            theme.accent
                         } else if picker_active {
                             theme.text_accent
                         } else {
@@ -23981,6 +23983,7 @@ impl KlippApp {
                 self.state.playback == PlaybackState::Playing,
                 bottom_scope_cursor,
                 self.state.scope_cursor_show,
+                &self.theme,
             );
         });
         // U-6: same guard as render_color_ws_bottom_tools. Scopes only
@@ -24172,7 +24175,7 @@ impl KlippApp {
                         egui::Align2::CENTER_CENTER,
                         "Clip not found in sequence",
                         egui::FontId::proportional(12.0),
-                        egui::Color32::from_rgb(100, 100, 110),
+                        self.theme.text_dim,
                     );
                 }
             } else {
@@ -24181,7 +24184,7 @@ impl KlippApp {
                     egui::Align2::CENTER_CENTER,
                     "Select a clip to view its node graph",
                     egui::FontId::proportional(12.0),
-                    egui::Color32::from_rgb(100, 100, 110),
+                    self.theme.text_dim,
                 );
             }
         });

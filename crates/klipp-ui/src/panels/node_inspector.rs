@@ -469,8 +469,8 @@ impl NodeInspectorPanel {
 
                     let painter = col_ui.painter().clone();
                     let _text_dim = theme.text_dim;
-                    let accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
-                    let track_bg = egui::Color32::from_rgb(0x3a, 0x3a, 0x46);
+                    let accent = theme.accent;
+                    let track_bg = theme.bg_raised;
                     let slider_h = 14.0;
                     let label_h = 12.0;
                     let margin = 12.0;
@@ -488,7 +488,7 @@ impl NodeInspectorPanel {
                         egui::Align2::CENTER_CENTER,
                         "Saturation",
                         egui::FontId::proportional(8.0),
-                        egui::Color32::from_rgb(0x80, 0x80, 0x90),
+                        theme.text_dim,
                     );
                     let sat_track_y = sat_label_y + label_h + 2.0;
                     let sat_track_rect = egui::Rect::from_min_size(
@@ -521,7 +521,7 @@ impl NodeInspectorPanel {
                     let sat_thumb_x = cx + sat_t * track_draw_w;
                     painter.circle_filled(egui::pos2(sat_thumb_x, sat_track_y + slider_h / 2.0), 4.0, accent);
                     let is_default = s.abs() < 0.005;
-                    let val_color = if is_default { egui::Color32::from_rgb(0x90, 0x90, 0xa0) } else { accent };
+                    let val_color = if is_default { theme.text_dim } else { accent };
                     painter.text(
                         egui::pos2(cx + track_draw_w + value_w - 2.0, sat_track_y + slider_h / 2.0),
                         egui::Align2::RIGHT_CENTER,
@@ -537,7 +537,7 @@ impl NodeInspectorPanel {
                         egui::Align2::CENTER_CENTER,
                         "Brightness",
                         egui::FontId::proportional(8.0),
-                        egui::Color32::from_rgb(0x80, 0x80, 0x90),
+                        theme.text_dim,
                     );
                     let bri_track_y = bri_label_y + label_h + 2.0;
                     let bri_track_rect = egui::Rect::from_min_size(
@@ -570,7 +570,7 @@ impl NodeInspectorPanel {
                     let bri_thumb_x = cx + bri_t * track_draw_w;
                     painter.circle_filled(egui::pos2(bri_thumb_x, bri_track_y + slider_h / 2.0), 4.0, accent);
                     let is_default = b.abs() < 0.005;
-                    let val_color = if is_default { egui::Color32::from_rgb(0x90, 0x90, 0xa0) } else { accent };
+                    let val_color = if is_default { theme.text_dim } else { accent };
                     painter.text(
                         egui::pos2(cx + track_draw_w + value_w - 2.0, bri_track_y + slider_h / 2.0),
                         egui::Align2::RIGHT_CENTER,
@@ -1773,7 +1773,7 @@ impl NodeInspectorPanel {
                         let size = egui::vec2(26.0, 22.0);
                         let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
                         let bg = if active { color } else { egui::Color32::from_rgba_premultiplied(255, 255, 255, 18) };
-                        let text_color = if active { egui::Color32::from_rgb(0x1a, 0x1a, 0x1c) } else { color };
+                        let text_color = if active { theme.text_on_accent } else { color };
                         ui.painter().rect_filled(rect, 4.0, bg);
                         ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(0.5_f32,
                             egui::Color32::from_rgba_premultiplied(255, 255, 255, 30)));
@@ -2355,8 +2355,8 @@ impl NodeInspectorPanel {
         let painter = ui.painter();
 
         // Background circle
-        painter.circle_filled(center, radius + 4.0, egui::Color32::from_rgb(0x18, 0x18, 0x20));
-        painter.circle_stroke(center, radius, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
+        painter.circle_filled(center, radius + 4.0, theme.bg_deep);
+        painter.circle_stroke(center, radius, egui::Stroke::new(1.0_f32, theme.border));
 
         // Crosshair lines
         painter.line_segment(

@@ -59,34 +59,34 @@ fn lufs_to_t(lufs: f32) -> f32 {
 }
 
 /// Color for a LUFS level relative to target (for bars).
-fn lufs_bar_color(lufs: f32, target: f32) -> egui::Color32 {
+fn lufs_bar_color(lufs: f32, target: f32, theme: &KlippTheme) -> egui::Color32 {
     if !lufs.is_finite() {
-        return egui::Color32::from_rgb(0x30, 0x30, 0x38);
+        return theme.bg_raised;
     }
     let diff = lufs - target;
     if diff > 2.0 {
-        egui::Color32::from_rgb(0xe0, 0x40, 0x40)
+        theme.marker_error
     } else if diff >= -2.0 {
-        egui::Color32::from_rgb(0x40, 0xc0, 0x40)
+        theme.marker_success
     } else if diff >= -8.0 {
-        egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
+        theme.marker_warning
     } else {
-        egui::Color32::from_rgb(0x40, 0x70, 0xa0)
+        theme.marker_info
     }
 }
 
 /// Color for LUFS text readout.
-fn lufs_text_color(lufs: f32, target: f32) -> egui::Color32 {
+fn lufs_text_color(lufs: f32, target: f32, theme: &KlippTheme) -> egui::Color32 {
     if !lufs.is_finite() {
-        return egui::Color32::from_rgb(0x50, 0x50, 0x60);
+        return theme.text_dim;
     }
     let diff = lufs - target;
     if diff > 2.0 {
-        egui::Color32::from_rgb(0xe0, 0x50, 0x50)
+        theme.marker_error
     } else if diff.abs() <= 2.0 {
-        egui::Color32::from_rgb(0x50, 0xd0, 0x50)
+        theme.marker_success
     } else {
-        egui::Color32::from_rgb(0xe8, 0xa8, 0x30)
+        theme.marker_warning
     }
 }
 
@@ -101,22 +101,22 @@ fn draw_peak_bar(
     bottom: f32,
     bar_w: f32,
     peak_linear: f32,
-    _theme: &KlippTheme,
+    theme: &KlippTheme,
 ) {
     let h = bottom - top;
     let bar_rect = egui::Rect::from_min_size(egui::pos2(x, top), egui::vec2(bar_w, h));
     // Dark fill + visible border so empty meters are still visible
-    painter.rect_filled(bar_rect, 1.0, egui::Color32::from_rgb(0x14, 0x14, 0x18));
-    painter.rect_stroke(bar_rect, 1.0, egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
+    painter.rect_filled(bar_rect, 1.0, theme.bg_deep);
+    painter.rect_stroke(bar_rect, 1.0, egui::Stroke::new(0.5_f32, theme.bg_raised));
 
     let db = vol_to_db(peak_linear);
     let t = db_to_t(db);
     if t <= 0.0 { return; }
 
     let zones: &[(f32, f32, egui::Color32)] = &[
-        (0.0, db_to_t(-6.0), egui::Color32::from_rgb(0x30, 0xa0, 0x30)),
-        (db_to_t(-6.0), db_to_t(-1.0), egui::Color32::from_rgb(0xd0, 0xa0, 0x18)),
-        (db_to_t(-1.0), 1.0, egui::Color32::from_rgb(0xd0, 0x38, 0x38)),
+        (0.0, db_to_t(-6.0), theme.marker_success),
+        (db_to_t(-6.0), db_to_t(-1.0), theme.marker_warning),
+        (db_to_t(-1.0), 1.0, theme.marker_error),
     ];
 
     for &(zone_start, zone_end, color) in zones {
@@ -159,8 +159,8 @@ fn draw_lufs_bar(
 ) {
     let h = bottom - top;
     let bar_rect = egui::Rect::from_min_size(egui::pos2(x, top), egui::vec2(bar_w, h));
-    painter.rect_filled(bar_rect, 1.0, egui::Color32::from_rgb(0x14, 0x14, 0x18));
-    painter.rect_stroke(bar_rect, 1.0, egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
+    painter.rect_filled(bar_rect, 1.0, theme.bg_deep);
+    painter.rect_stroke(bar_rect, 1.0, egui::Stroke::new(0.5_f32, theme.bg_raised));
 
     // Green target zone (subtle background)
     let on_lo = lufs_to_t(target - 2.0);
@@ -171,7 +171,7 @@ fn draw_lufs_bar(
                 egui::pos2(x, bottom - on_hi * h),
                 egui::pos2(x + bar_w, bottom - on_lo * h),
             ),
-            0.0, egui::Color32::from_rgba_premultiplied(0x30, 0x80, 0x30, 25),
+            0.0, theme.marker_success.linear_multiply(0.10),
         );
     }
 
@@ -180,7 +180,7 @@ fn draw_lufs_bar(
     if i_t > 0.0 {
         painter.rect_filled(
             egui::Rect::from_min_max(egui::pos2(x, bottom - i_t * h), egui::pos2(x + bar_w, bottom)),
-            0.0, lufs_bar_color(integrated, target).linear_multiply(0.35),
+            0.0, lufs_bar_color(integrated, target, theme).linear_multiply(0.35),
         );
     }
 
@@ -192,7 +192,7 @@ fn draw_lufs_bar(
                 egui::pos2(x + 1.0, bottom - st_t * h),
                 egui::pos2(x + bar_w - 1.0, bottom),
             ),
-            0.0, lufs_bar_color(short_term, target).linear_multiply(0.55),
+            0.0, lufs_bar_color(short_term, target, theme).linear_multiply(0.55),
         );
     }
 
@@ -204,7 +204,7 @@ fn draw_lufs_bar(
                 egui::pos2(x + 3.0, bottom - m_t * h),
                 egui::pos2(x + bar_w - 3.0, bottom),
             ),
-            0.0, lufs_bar_color(momentary, target).linear_multiply(0.85),
+            0.0, lufs_bar_color(momentary, target, theme).linear_multiply(0.85),
         );
     }
 
@@ -214,7 +214,7 @@ fn draw_lufs_bar(
         let ty = bottom - target_t * h;
         painter.line_segment(
             [egui::pos2(x - 1.0, ty), egui::pos2(x + bar_w + 1.0, ty)],
-            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x50, 0xd0, 0x50)),
+            egui::Stroke::new(1.0_f32, theme.marker_success),
         );
     }
 
@@ -224,7 +224,7 @@ fn draw_lufs_bar(
         if tp_t > 0.0 {
             let tp_y = bottom - tp_t * h;
             let tp_color = if true_peak_dbfs > -1.0 {
-                egui::Color32::from_rgb(0xe0, 0x40, 0x40)
+                theme.marker_error
             } else { theme.text_secondary };
             painter.line_segment(
                 [egui::pos2(x + bar_w, tp_y), egui::pos2(x + bar_w + 3.0, tp_y)],
@@ -239,7 +239,7 @@ fn draw_lufs_bar(
         let tick_y = bottom - tick_t * h;
         painter.line_segment(
             [egui::pos2(x - 2.0, tick_y), egui::pos2(x, tick_y)],
-            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x50, 0x50, 0x58)),
+            egui::Stroke::new(1.0_f32, theme.border),
         );
     }
 }
@@ -272,8 +272,8 @@ fn fader_strip(
 
     let painter = ui.painter_at(rect);
     // Strip background + border (consistent with master)
-    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x1a, 0x1a, 0x22));
-    painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x2a, 0x2a, 0x36)));
+    painter.rect_filled(rect, 2.0, theme.bg_panel);
+    painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, theme.border));
 
     let inner_left = rect.min.x + STRIP_PAD;
     let inner_right = rect.max.x - STRIP_PAD;
@@ -361,7 +361,7 @@ fn fader_strip(
         egui::pos2(pan_x, pan_rect.center().y),
         egui::vec2(thumb_w, thumb_h),
     );
-    painter.rect_filled(thumb_rect, 3.0, egui::Color32::from_rgb(0xc0, 0xc0, 0xc8));
+    painter.rect_filled(thumb_rect, 3.0, theme.text_secondary);
     painter.rect_stroke(thumb_rect, 3.0, egui::Stroke::new(0.5_f32, theme.border));
     // Pan interaction
     let pan_resp = ui.allocate_rect(pan_rect.expand(2.0), egui::Sense::click_and_drag());
@@ -416,7 +416,7 @@ fn fader_strip(
     let vol_t = (*volume / 2.0).clamp(0.0, 1.0);
     let thumb_y = fader_bottom - vol_t * FADER_TRACK_H;
     let fill_color = if *muted { theme.text_dim } else if *volume > 1.0 {
-        egui::Color32::from_rgb(0xc0, 0x40, 0x40)
+        theme.marker_error
     } else { theme.accent };
     if *volume > 0.001 {
         painter.rect_filled(
@@ -425,11 +425,11 @@ fn fader_strip(
         );
     }
     let thumb_rect = egui::Rect::from_center_size(egui::pos2(fader_cx, thumb_y), egui::vec2(16.0, 8.0));
-    painter.rect_filled(thumb_rect, 2.0, egui::Color32::from_rgb(0xd0, 0xd0, 0xd8));
+    painter.rect_filled(thumb_rect, 2.0, theme.text_primary);
     painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(1.0_f32, fill_color));
     painter.line_segment(
         [egui::pos2(fader_cx - 5.0, thumb_y), egui::pos2(fader_cx + 5.0, thumb_y)],
-        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x60, 0x60, 0x68)),
+        egui::Stroke::new(1.0_f32, theme.text_dim),
     );
 
     // Fader interaction
@@ -466,7 +466,7 @@ fn fader_strip(
         let tick_y = fader_bottom - tick_t * FADER_TRACK_H;
         painter.line_segment(
             [egui::pos2(tick_x - 2.0, tick_y), egui::pos2(tick_x, tick_y)],
-            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x50, 0x50, 0x58)),
+            egui::Stroke::new(1.0_f32, theme.border),
         );
     }
 
@@ -489,7 +489,7 @@ fn fader_strip(
 
     // Mute
     let mute_rect = egui::Rect::from_min_size(egui::pos2(btn_left, y), btn_size);
-    let mute_bg = if *muted { egui::Color32::from_rgb(0xc0, 0x30, 0x30) } else { theme.bg_raised };
+    let mute_bg = if *muted { theme.marker_error } else { theme.bg_raised };
     let mute_tc = if *muted { egui::Color32::WHITE } else { theme.text_secondary };
     painter.rect_filled(mute_rect, 3.0, mute_bg);
     painter.rect_stroke(mute_rect, 3.0, egui::Stroke::new(1.0_f32, theme.border));
@@ -545,8 +545,8 @@ fn master_strip(
     let painter = ui.painter_at(rect);
 
     // Master background — just slightly lighter than track strips for subtle distinction
-    painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x1e, 0x1e, 0x28));
-    painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x2a, 0x2a, 0x36)));
+    painter.rect_filled(rect, 2.0, theme.bg_panel_alt);
+    painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, theme.border));
 
     let mut y = rect.min.y + 10.0;
 
@@ -568,9 +568,9 @@ fn master_strip(
         egui::pos2(rect.max.x - 14.0, y + 6.0), egui::vec2(12.0, 12.0),
     );
     let clip_color = if clip_indicator {
-        egui::Color32::from_rgb(0xe0, 0x30, 0x30)
+        theme.marker_error
     } else {
-        egui::Color32::from_rgb(0x30, 0x30, 0x38)
+        theme.bg_raised
     };
     painter.circle_filled(clip_rect.center(), 5.0, clip_color);
     if clip_indicator {
@@ -616,7 +616,7 @@ fn master_strip(
     let vol_t = (*master_volume / 2.0).clamp(0.0, 1.0);
     let thumb_y = fader_bottom - vol_t * FADER_TRACK_H;
     let fill_color = if *master_volume > 1.0 {
-        egui::Color32::from_rgb(0xc0, 0x40, 0x40)
+        theme.marker_error
     } else { theme.accent };
     if *master_volume > 0.001 {
         painter.rect_filled(
@@ -625,11 +625,11 @@ fn master_strip(
         );
     }
     let thumb_rect = egui::Rect::from_center_size(egui::pos2(fader_cx, thumb_y), egui::vec2(18.0, 8.0));
-    painter.rect_filled(thumb_rect, 2.0, egui::Color32::from_rgb(0xd0, 0xd0, 0xd8));
+    painter.rect_filled(thumb_rect, 2.0, theme.text_primary);
     painter.rect_stroke(thumb_rect, 2.0, egui::Stroke::new(1.0_f32, fill_color));
     painter.line_segment(
         [egui::pos2(fader_cx - 6.0, thumb_y), egui::pos2(fader_cx + 6.0, thumb_y)],
-        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x60, 0x60, 0x68)),
+        egui::Stroke::new(1.0_f32, theme.text_dim),
     );
 
     let fader_hit = egui::Rect::from_min_max(
@@ -677,13 +677,13 @@ fn master_strip(
     painter.text(
         egui::pos2(col2_x, y + 4.0), egui::Align2::LEFT_CENTER,
         &format!("I:{}", format_lufs(lufs_integrated)),
-        egui::FontId::monospace(8.0), lufs_text_color(lufs_integrated, lufs_target),
+        egui::FontId::monospace(8.0), lufs_text_color(lufs_integrated, lufs_target, theme),
     );
     y += 11.0;
 
     // Row 2: Peak | Short-term
     let peak_db = vol_to_db(master_peak_l.max(master_peak_r));
-    let peak_color = if peak_db > -1.0 { egui::Color32::from_rgb(0xe0, 0x40, 0x40) } else { theme.text_dim };
+    let peak_color = if peak_db > -1.0 { theme.marker_error } else { theme.text_dim };
     painter.text(
         egui::pos2(col1_x, y + 4.0), egui::Align2::LEFT_CENTER,
         &format!("Pk{}", format_db(peak_db)),
@@ -692,13 +692,13 @@ fn master_strip(
     painter.text(
         egui::pos2(col2_x, y + 4.0), egui::Align2::LEFT_CENTER,
         &format!("S:{}", format_lufs(lufs_short_term)),
-        egui::FontId::monospace(7.0), egui::Color32::from_rgb(0x90, 0x90, 0xa0),
+        egui::FontId::monospace(7.0), theme.text_dim,
     );
     y += 10.0;
 
     // Row 3: TP | Momentary
     let tp_color = if lufs_true_peak_dbfs > -1.0 && lufs_true_peak_dbfs.is_finite() {
-        egui::Color32::from_rgb(0xe0, 0x40, 0x40)
+        theme.marker_error
     } else { theme.text_dim };
     let tp_text = format!("TP{}", format_lufs(lufs_true_peak_dbfs));
     painter.text(
@@ -722,7 +722,7 @@ fn master_strip(
     painter.text(
         egui::pos2(col2_x, y + 4.0), egui::Align2::LEFT_CENTER,
         &format!("M:{}", format_lufs(lufs_momentary)),
-        egui::FontId::monospace(7.0), egui::Color32::from_rgb(0x90, 0x90, 0xa0),
+        egui::FontId::monospace(7.0), theme.text_dim,
     );
     y += 10.0;
 
@@ -730,7 +730,7 @@ fn master_strip(
     painter.text(
         egui::pos2(col1_x, y + 4.0), egui::Align2::LEFT_CENTER,
         &format!("LRA {:.1} LU", lufs_lra),
-        egui::FontId::monospace(7.0), egui::Color32::from_rgb(0x80, 0x90, 0xb0),
+        egui::FontId::monospace(7.0), theme.text_dim,
     );
     y += 12.0;
 
@@ -933,7 +933,7 @@ pub fn draw_inspector_meter(
     if state.clip_indicator {
         painter.text(
             egui::pos2(label_x + 32.0, bar_top + 6.0), egui::Align2::LEFT_CENTER,
-            "CLIP", egui::FontId::monospace(9.0), egui::Color32::from_rgb(0xe0, 0x30, 0x30),
+            "CLIP", egui::FontId::monospace(9.0), theme.marker_error,
         );
     }
 
@@ -943,7 +943,7 @@ pub fn draw_inspector_meter(
         egui::pos2(rect.min.x + 6.0, ry + 5.0), egui::Align2::LEFT_CENTER,
         &format!("I: {} LUFS", format_lufs(state.lufs_integrated)),
         egui::FontId::monospace(10.0),
-        lufs_text_color(state.lufs_integrated, state.lufs_target),
+        lufs_text_color(state.lufs_integrated, state.lufs_target, theme),
     );
     painter.text(
         egui::pos2(rect.min.x + 6.0, ry + 19.0), egui::Align2::LEFT_CENTER,
@@ -952,13 +952,13 @@ pub fn draw_inspector_meter(
             format_lufs(state.lufs_momentary),
             format_lufs(state.lufs_true_peak_dbfs)),
         egui::FontId::monospace(9.0),
-        egui::Color32::from_rgb(0x90, 0x90, 0xa0),
+        theme.text_dim,
     );
     painter.text(
         egui::pos2(rect.min.x + 6.0, ry + 33.0), egui::Align2::LEFT_CENTER,
         &format!("LRA: {:.1} LU", state.lufs_lra),
         egui::FontId::monospace(9.0),
-        egui::Color32::from_rgb(0x80, 0x90, 0xb0),
+        theme.text_dim,
     );
 
     ui.add_space(8.0);

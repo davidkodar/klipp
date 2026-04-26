@@ -45,7 +45,7 @@ pub fn show_file_info(
                         egui::Sense::hover(),
                     );
                     // Dark backdrop so letterbox bars don't show through.
-                    ui.painter().rect_filled(rect, 4.0, egui::Color32::from_rgb(18, 18, 18));
+                    ui.painter().rect_filled(rect, 4.0, theme.bg_deep);
                     // Aspect-fit the texture inside the box.
                     let sz = tex.size();
                     let img_aspect = sz[0] as f32 / sz[1].max(1) as f32;

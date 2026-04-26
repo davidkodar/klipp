@@ -1,5 +1,6 @@
 use crate::icons::Icon;
 use crate::state::AppState;
+use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, Fps, RationalTime, ViewerMode};
 use klipp_engine::PlaybackState;
 
@@ -45,7 +46,7 @@ impl Default for TransportBar {
 }
 
 impl TransportBar {
-    pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
+    pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         // Transport is enabled if there's something to play: either the engine
         // has a file loaded (Stopped/Paused/Playing) or the timeline has clips
@@ -60,7 +61,7 @@ impl TransportBar {
         ui.horizontal_centered(|ui| {
             ui.add_space(16.0);
 
-            let icon_tint = egui::Color32::from_rgb(220, 220, 230);
+            let icon_tint = theme.text_primary;
 
             // Go to start
             if ui
@@ -141,9 +142,9 @@ impl TransportBar {
             // if none exists, so the button is always enabled.
             {
                 let rec_color = if state.is_recording {
-                    egui::Color32::from_rgb(232, 50, 50)
+                    theme.marker_error
                 } else {
-                    egui::Color32::from_rgb(150, 50, 50)
+                    theme.accent_dim
                 };
                 // U+25CF BLACK CIRCLE — renders in egui's default font set.
                 // U+23FA (the proper "record" glyph) is in Misc Technical and
@@ -215,11 +216,11 @@ impl TransportBar {
                     egui::Sense::click(),
                 );
                 let (bg, fg) = if loop_active {
-                    (egui::Color32::from_rgb(232, 160, 32), egui::Color32::BLACK)
+                    (theme.accent, theme.text_on_accent)
                 } else if resp.hovered() {
-                    (egui::Color32::from_rgb(42, 42, 50), egui::Color32::from_rgb(200, 200, 210))
+                    (theme.bg_raised, theme.text_secondary)
                 } else {
-                    (egui::Color32::TRANSPARENT, egui::Color32::from_rgb(100, 100, 110))
+                    (egui::Color32::TRANSPARENT, theme.text_dim)
                 };
                 ui.painter().rect_filled(rect, rect.height() / 2.0, bg);
                 // Loop icon: 270° arc + arrowhead
@@ -270,7 +271,7 @@ impl TransportBar {
                         egui::RichText::new(&playhead_str)
                             .monospace()
                             .size(18.0)
-                            .color(egui::Color32::WHITE),
+                            .color(theme.text_primary),
                     )
                     .sense(egui::Sense::click()),
                 );
@@ -287,7 +288,7 @@ impl TransportBar {
                 egui::RichText::new(format!(" / {}", duration_str))
                     .monospace()
                     .size(14.0)
-                    .color(egui::Color32::from_rgb(100, 100, 110)),
+                    .color(theme.text_dim),
             );
 
             // Range display (only when in or out is set)
@@ -297,8 +298,8 @@ impl TransportBar {
                 ui.separator();
                 ui.add_space(4.0);
 
-                let amber = egui::Color32::from_rgb(232, 160, 32);
-                let dim = egui::Color32::from_rgb(120, 120, 130);
+                let amber = theme.accent;
+                let dim = theme.text_dim;
 
                 if let Some(in_pt) = state.sequence().in_point {
                     ui.label(egui::RichText::new("In ").size(10.0).color(dim));
@@ -339,11 +340,11 @@ impl TransportBar {
             ui.add_space(24.0);
 
             // Master volume slider + mute
-            ui.label(egui::RichText::new("Master").size(10.0).color(egui::Color32::from_rgb(120, 120, 130)));
+            ui.label(egui::RichText::new("Master").size(10.0).color(theme.text_dim));
             let mute_color = if state.master_muted {
-                egui::Color32::from_rgb(255, 80, 80)
+                theme.marker_error
             } else {
-                egui::Color32::from_rgb(100, 100, 110)
+                theme.text_dim
             };
             let mute_icon = if state.master_muted { Icon::SpeakerSlash } else { Icon::SpeakerHigh };
             if ui.add(egui::Button::image(mute_icon.image(12.0).tint(mute_color))
@@ -361,7 +362,7 @@ impl TransportBar {
                 cmds.push(AppCommand::SetMasterVolume(effective));
             }
             let vol_pct = (state.master_volume * 100.0) as u32;
-            ui.label(egui::RichText::new(format!("{}%", vol_pct)).size(10.0).color(egui::Color32::from_rgb(140, 140, 150)));
+            ui.label(egui::RichText::new(format!("{}%", vol_pct)).size(10.0).color(theme.text_dim));
 
             // ── System audio mute warning ──
             // When the OS-level app stream is muted (e.g. user clicked
@@ -373,8 +374,8 @@ impl TransportBar {
                     egui::RichText::new("\u{26a0} MUTED BY SYSTEM")
                         .size(9.0)
                         .strong()
-                        .color(egui::Color32::from_rgb(255, 60, 60))
-                        .background_color(egui::Color32::from_rgba_unmultiplied(255, 60, 60, 30)),
+                        .color(theme.marker_error)
+                        .background_color(egui::Color32::from_rgba_unmultiplied(theme.marker_error.r(), theme.marker_error.g(), theme.marker_error.b(), 30)),
                 )
                 .on_hover_text(
                     "Klipp's audio is muted at the OS level.\n\
@@ -392,15 +393,15 @@ impl TransportBar {
                     egui::pos2(vu_rect.left(), vu_rect.top() + ch as f32 * (vu_h + 1.0)),
                     egui::vec2(vu_w, vu_h),
                 );
-                painter.rect_filled(bar, 1.0, egui::Color32::from_rgb(20, 20, 25));
+                painter.rect_filled(bar, 1.0, theme.bg_deep);
                 let fill = (peak.min(1.0) * vu_w).max(0.0);
                 if fill > 0.0 {
                     let color = if peak > 0.9 {
-                        egui::Color32::from_rgb(220, 50, 50)
+                        theme.marker_error
                     } else if peak > 0.7 {
-                        egui::Color32::from_rgb(220, 180, 40)
+                        theme.marker_warning
                     } else {
-                        egui::Color32::from_rgb(50, 180, 70)
+                        theme.marker_success
                     };
                     painter.rect_filled(
                         egui::Rect::from_min_size(bar.left_top(), egui::vec2(fill, vu_h)),
@@ -419,7 +420,7 @@ impl TransportBar {
                 ui.label(
                     egui::RichText::new(format!("Rendering: {} {}%", label, pct))
                         .size(11.0)
-                        .color(egui::Color32::from_rgb(200, 180, 60)),
+                        .color(theme.accent),
                 );
 
                 // Mini progress bar
@@ -427,18 +428,18 @@ impl TransportBar {
                 let bar_h = 8.0;
                 let (bar_rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
                 let painter = ui.painter();
-                painter.rect_filled(bar_rect, 2.0, egui::Color32::from_rgb(30, 30, 35));
+                painter.rect_filled(bar_rect, 2.0, theme.bg_panel_alt);
                 let fill_w = (progress * bar_w).max(0.0).min(bar_w);
                 if fill_w > 0.0 {
                     painter.rect_filled(
                         egui::Rect::from_min_size(bar_rect.left_top(), egui::vec2(fill_w, bar_h)),
                         2.0,
-                        egui::Color32::from_rgb(200, 180, 60),
+                        theme.accent,
                     );
                 }
 
                 // Cancel button
-                if ui.add(egui::Button::image(Icon::XCircle.bold(14.0).tint(egui::Color32::from_rgb(200, 80, 80)))
+                if ui.add(egui::Button::image(Icon::XCircle.bold(14.0).tint(theme.marker_error))
                     .min_size(egui::vec2(18.0, 18.0))).on_hover_text("Cancel render").clicked() {
                     cmds.push(AppCommand::CancelExport);
                 }

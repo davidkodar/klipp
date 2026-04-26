@@ -290,7 +290,7 @@ pub fn show(
                 ui.painter().rect_stroke(
                     panel_rect,
                     0.0,
-                    egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(100, 180, 255)),
+                    egui::Stroke::new(2.0_f32, theme.marker_info),
                 );
                 if !any_down {
                     state.drag_drop.end();
@@ -353,6 +353,7 @@ fn paint_usage_badges(
     accent: egui::Color32,
     loaded_in_source: bool,
     on_timeline: bool,
+    theme: &KlippTheme,
 ) {
     if loaded_in_source {
         painter.rect_stroke(
@@ -367,7 +368,7 @@ fn paint_usage_badges(
             egui::pos2(thumb_rect.min.x, thumb_rect.max.y - bar_h),
             thumb_rect.max,
         );
-        painter.rect_filled(bar, 0.0, egui::Color32::from_rgb(220, 50, 50));
+        painter.rect_filled(bar, 0.0, theme.marker_error);
     }
 }
 
@@ -428,10 +429,11 @@ fn draw_info_icon_with_tooltip(
     let text_secondary = theme.text_secondary;
     let text_dim = theme.text_dim;
     let text_accent = theme.text_accent;
+    let bg_panel_alt = theme.bg_panel_alt;
 
     resp.on_hover_ui_at_pointer(move |ui| {
         egui::Frame::none()
-            .fill(egui::Color32::from_rgb(0x1e, 0x1e, 0x26))
+            .fill(bg_panel_alt)
             .stroke(egui::Stroke::new(1.0_f32, border_light))
             .rounding(5.0)
             .inner_margin(egui::Margin::symmetric(10.0, 8.0))
@@ -549,7 +551,7 @@ fn build_info_tooltip_rows(item: &klipp_media::MediaItem) -> Vec<(&'static str, 
 /// Dim a thumbnail and overlay an OFFLINE pill in the top-left corner.
 /// Used by both list and grid views to flag media whose source file is
 /// no longer present at the stored path.
-fn paint_offline_badge(painter: &egui::Painter, thumb_rect: egui::Rect) {
+fn paint_offline_badge(painter: &egui::Painter, thumb_rect: egui::Rect, theme: &KlippTheme) {
     // Darken the thumbnail with a semi-transparent black overlay.
     painter.rect_filled(
         thumb_rect,
@@ -566,7 +568,7 @@ fn paint_offline_badge(painter: &egui::Painter, thumb_rect: egui::Rect) {
     let pill_size = egui::vec2(galley.size().x + pad_x * 2.0, galley.size().y + pad_y * 2.0);
     let pill_pos = egui::pos2(thumb_rect.min.x + 4.0, thumb_rect.min.y + 4.0);
     let pill_rect = egui::Rect::from_min_size(pill_pos, pill_size);
-    painter.rect_filled(pill_rect, 2.0, egui::Color32::from_rgb(220, 60, 60));
+    painter.rect_filled(pill_rect, 2.0, theme.marker_error);
     painter.text(
         pill_rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -655,7 +657,7 @@ fn render_list_view(
                 ui.painter().rect_stroke(
                     header_resp.rect,
                     2.0,
-                    egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(232, 160, 32)),
+                    egui::Stroke::new(2.0_f32, theme.accent),
                 );
                 if !ui.ctx().input(|i| i.pointer.primary_down()) {
                     // Released over bin header — move item
@@ -727,7 +729,7 @@ fn render_list_view(
             let bg = if is_selected {
                 theme.accent_subtle
             } else if hovered {
-                egui::Color32::from_rgb(42, 42, 50)
+                theme.bg_hover
             } else {
                 egui::Color32::TRANSPARENT
             };
@@ -738,7 +740,7 @@ fn render_list_view(
                 ui.painter().rect_filled(
                     egui::Rect::from_min_size(row_rect.min, egui::vec2(2.0, row_h)),
                     0.0,
-                    egui::Color32::from_rgb(232, 160, 32),
+                    theme.accent,
                 );
             }
 
@@ -787,7 +789,7 @@ fn render_list_view(
 
             // Offline badge: dim the thumbnail and overlay an OFFLINE pill.
             if item.offline {
-                paint_offline_badge(ui.painter(), thumb_rect);
+                paint_offline_badge(ui.painter(), thumb_rect, theme);
             }
 
             // Usage indicators: source-loaded border + on-timeline dot.
@@ -797,6 +799,7 @@ fn render_list_view(
                 theme.accent,
                 state.source_media_id == Some(item.id),
                 is_media_used(state, item.id),
+                theme,
             );
 
             // Hover skim (list view: use whole row as skim area)
@@ -849,7 +852,7 @@ fn render_list_view(
                     egui::Align2::LEFT_TOP,
                     &stars,
                     egui::FontId::monospace(10.0),
-                    egui::Color32::from_rgb(232, 160, 32),
+                    theme.accent,
                 );
                 meta_x = stars_rect.max.x;
                 let sep_rect = ui.painter().text(
@@ -885,7 +888,7 @@ fn render_list_view(
                             "Rating: {}",
                             "\u{2605}".repeat(item.rating as usize)
                         ))
-                        .color(egui::Color32::from_rgb(232, 160, 32)),
+                        .color(theme.accent),
                     );
                 }
                 ui.label(format!("{} x {}", item.resolution.width, item.resolution.height));
@@ -1108,12 +1111,12 @@ fn render_grid_view(
             if state.skim_transcoding.contains(&item.id) {
                 let spin_center = egui::pos2(thumb_rect.max.x - 14.0, thumb_rect.min.y + 10.0);
                 let spin_rect = egui::Rect::from_center_size(spin_center, egui::vec2(12.0, 12.0));
-                Icon::ArrowClockwise.image(12.0).tint(egui::Color32::from_rgba_premultiplied(255, 255, 255, 140)).paint_at(ui, spin_rect);
+                Icon::ArrowClockwise.image(12.0).tint(egui::Color32::from_rgba_premultiplied(theme.text_primary.r(), theme.text_primary.g(), theme.text_primary.b(), 140)).paint_at(ui, spin_rect);
             }
 
             // Card border (drawn after thumbnail so it's on top)
             let border_color = if is_selected {
-                egui::Color32::from_rgb(232, 160, 32)
+                theme.accent
             } else if hovered {
                 theme.accent_dim
             } else {
@@ -1123,7 +1126,7 @@ fn render_grid_view(
 
             // Offline badge: dim the thumbnail and overlay an OFFLINE pill.
             if item.offline {
-                paint_offline_badge(ui.painter(), thumb_rect);
+                paint_offline_badge(ui.painter(), thumb_rect, theme);
             }
 
             // Usage indicators: source-loaded border + on-timeline red bar.
@@ -1133,6 +1136,7 @@ fn render_grid_view(
                 theme.accent,
                 state.source_media_id == Some(item.id),
                 is_media_used(state, item.id),
+                theme,
             );
 
             // (i) info icon with rich hover tooltip — full filename, path,
@@ -1193,7 +1197,7 @@ fn render_grid_view(
                     egui::Align2::LEFT_TOP,
                     &stars,
                     egui::FontId::monospace(9.0),
-                    egui::Color32::from_rgb(232, 160, 32),
+                    theme.accent,
                 );
                 meta_x = stars_rect.max.x;
                 let sep_rect = ui.painter().text(
@@ -1265,7 +1269,7 @@ fn render_grid_view(
                                     egui::pos2(sr, thumb_rect.max.y),
                                 ),
                                 0.0,
-                                egui::Color32::from_rgba_premultiplied(232, 160, 32, 60),
+                                egui::Color32::from_rgba_premultiplied(theme.accent.r(), theme.accent.g(), theme.accent.b(), 60),
                             );
                         } else if dx > 8.0 {
                             state.dragging_media = Some(item.id);
@@ -1291,7 +1295,7 @@ fn render_grid_view(
                             egui::pos2(sr, thumb_rect.max.y),
                         ),
                         0.0,
-                        egui::Color32::from_rgba_premultiplied(232, 160, 32, 60),
+                        egui::Color32::from_rgba_premultiplied(theme.accent.r(), theme.accent.g(), theme.accent.b(), 60),
                     );
                 }
             }

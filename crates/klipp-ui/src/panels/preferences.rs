@@ -1,4 +1,5 @@
 use crate::prefs::Preferences;
+use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, MarkerColor, ProxyResolution};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,14 +60,20 @@ impl Default for PreferencesPanel {
 impl PreferencesPanel {
     // ── Design constants ──
     const SIDEBAR_W: f32 = 270.0;
-    const ACCENT: egui::Color32 = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
-    const SECTION_BG: egui::Color32 = egui::Color32::from_rgb(0x1e, 0x1e, 0x24);
-    const ROW_BG: egui::Color32 = egui::Color32::from_rgb(0x1a, 0x1a, 0x20);
-    const CATEGORY_TEXT: egui::Color32 = egui::Color32::from_rgb(0x80, 0x70, 0x50);
-    const DIM_TEXT: egui::Color32 = egui::Color32::from_rgb(0x70, 0x70, 0x80);
-    const NORMAL_TEXT: egui::Color32 = egui::Color32::from_rgb(0xd0, 0xd0, 0xd8);
+
+    // Theme-token-driven palette accessors. These read the built-in
+    // Dark default theme rather than the live registry — this panel
+    // pre-dates KlippTheme plumbing through `show()`. Acceptable for
+    // static lookup-table init; live theme switching for the prefs
+    // window itself (e.g. accent recolour) is a future enhancement.
+    fn accent() -> egui::Color32 { KlippTheme::default().accent }
+    fn section_bg() -> egui::Color32 { KlippTheme::default().bg_panel }
+    fn row_bg() -> egui::Color32 { KlippTheme::default().bg_panel_alt }
+    fn category_text() -> egui::Color32 { KlippTheme::default().text_accent }
+    fn dim_text() -> egui::Color32 { KlippTheme::default().text_dim }
+    fn normal_text() -> egui::Color32 { KlippTheme::default().text_primary }
     /// Text color for use ON amber/gold backgrounds — must be dark for readability.
-    const TEXT_ON_ACCENT: egui::Color32 = egui::Color32::from_rgb(0x1a, 0x1a, 0x1e);
+    fn text_on_accent() -> egui::Color32 { KlippTheme::default().text_on_accent }
 
     /// Show the preferences window. Returns (still_open, commands).
     pub fn show(
@@ -137,18 +144,18 @@ impl PreferencesPanel {
             .default_width(win_w)
             .default_height(win_h)
             .default_pos(egui::pos2(screen.center().x - win_w / 2.0, screen.center().y - win_h / 2.0))
-            .frame(egui::Frame::window(&ctx.style()).fill(egui::Color32::from_rgb(0x14, 0x14, 0x18)).rounding(10.0).inner_margin(0.0))
+            .frame(egui::Frame::window(&ctx.style()).fill(KlippTheme::default().bg_void).rounding(10.0).inner_margin(0.0))
             .show(ctx, |ui| {
                 let win_rect = ui.max_rect();
 
                 // ── Title bar ──
                 let title_h = 40.0;
                 let title_rect = egui::Rect::from_min_size(win_rect.min, egui::vec2(win_rect.width(), title_h));
-                ui.painter().rect_filled(title_rect, egui::Rounding { nw: 10.0, ne: 10.0, sw: 0.0, se: 0.0 }, egui::Color32::from_rgb(0x1a, 0x1a, 0x1e));
+                ui.painter().rect_filled(title_rect, egui::Rounding { nw: 10.0, ne: 10.0, sw: 0.0, se: 0.0 }, KlippTheme::default().bg_deep);
                 // Close button (red circle)
                 let close_center = egui::pos2(title_rect.left() + 20.0, title_rect.center().y);
                 let close_resp = ui.allocate_rect(egui::Rect::from_center_size(close_center, egui::vec2(16.0, 16.0)), egui::Sense::click());
-                ui.painter().circle_filled(close_center, 7.0, egui::Color32::from_rgb(0xf0, 0x40, 0x40));
+                ui.painter().circle_filled(close_center, 7.0, KlippTheme::default().marker_error);
                 if close_resp.hovered() {
                     // Draw X with two crossing lines instead of a font glyph
                     let s = 3.0; // half-size of the X
@@ -158,7 +165,7 @@ impl PreferencesPanel {
                 }
                 if close_resp.clicked() { open = false; }
                 // Title text
-                ui.painter().text(title_rect.center(), egui::Align2::CENTER_CENTER, "Preferences", egui::FontId::proportional(14.0), Self::NORMAL_TEXT);
+                ui.painter().text(title_rect.center(), egui::Align2::CENTER_CENTER, "Preferences", egui::FontId::proportional(14.0), Self::normal_text());
 
                 // ── Search bar ──
                 let search_h = 36.0;
@@ -166,8 +173,8 @@ impl PreferencesPanel {
                     egui::pos2(win_rect.left() + 12.0, title_rect.bottom() + 4.0),
                     egui::vec2(win_rect.width() - 24.0, search_h),
                 );
-                ui.painter().rect_filled(search_rect, 6.0, egui::Color32::from_rgb(0x20, 0x20, 0x26));
-                ui.painter().rect_stroke(search_rect, 6.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
+                ui.painter().rect_filled(search_rect, 6.0, KlippTheme::default().bg_panel_alt);
+                ui.painter().rect_stroke(search_rect, 6.0, egui::Stroke::new(1.0_f32, KlippTheme::default().bg_hover));
                 // Interactive search input — vertically centered in the bar
                 let text_h = 18.0;
                 let text_rect = egui::Rect::from_min_max(
@@ -181,7 +188,7 @@ impl PreferencesPanel {
                             .frame(false)
                             .hint_text("Search preferences...")
                             .desired_width(text_rect.width())
-                            .text_color(Self::NORMAL_TEXT)
+                            .text_color(Self::normal_text())
                     );
                 });
                 // Search icon
@@ -190,7 +197,7 @@ impl PreferencesPanel {
                     egui::Align2::LEFT_CENTER,
                     "Q",
                     egui::FontId::proportional(11.0),
-                    Self::DIM_TEXT,
+                    Self::dim_text(),
                 );
 
                 // ── Main content area ──
@@ -213,7 +220,7 @@ impl PreferencesPanel {
                 // Draw sidebar divider
                 ui.painter().line_segment(
                     [egui::pos2(sidebar_rect.right(), sidebar_rect.top()), egui::pos2(sidebar_rect.right(), sidebar_rect.bottom())],
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x28, 0x28, 0x30)),
+                    egui::Stroke::new(1.0_f32, KlippTheme::default().border),
                 );
 
                 // ── Sidebar navigation ──
@@ -315,11 +322,11 @@ impl PreferencesPanel {
                     win_rect.max,
                 );
                 let bottom_painter = ui.painter().clone();
-                bottom_painter.rect_filled(bottom_rect, egui::Rounding { nw: 0.0, ne: 0.0, sw: 10.0, se: 10.0 }, egui::Color32::from_rgb(0x18, 0x18, 0x1c));
+                bottom_painter.rect_filled(bottom_rect, egui::Rounding { nw: 0.0, ne: 0.0, sw: 10.0, se: 10.0 }, KlippTheme::default().bg_deep);
                 // Separator line
                 bottom_painter.line_segment(
                     [egui::pos2(bottom_rect.left(), bottom_rect.top()), egui::pos2(bottom_rect.right(), bottom_rect.top())],
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x28, 0x28, 0x30)),
+                    egui::Stroke::new(1.0_f32, KlippTheme::default().border),
                 );
                 // "Changes saved automatically" text
                 bottom_painter.text(
@@ -327,7 +334,7 @@ impl PreferencesPanel {
                     egui::Align2::LEFT_CENTER,
                     "Changes saved automatically",
                     egui::FontId::proportional(11.0),
-                    Self::DIM_TEXT,
+                    Self::dim_text(),
                 );
                 // Done button (amber)
                 let done_rect = egui::Rect::from_min_size(
@@ -335,7 +342,7 @@ impl PreferencesPanel {
                     egui::vec2(66.0, 28.0),
                 );
                 let done_resp = ui.allocate_rect(done_rect, egui::Sense::click());
-                let done_bg = if done_resp.hovered() { egui::Color32::from_rgb(0xf0, 0xb0, 0x30) } else { Self::ACCENT };
+                let done_bg = if done_resp.hovered() { KlippTheme::default().accent } else { Self::accent() };
                 bottom_painter.rect_filled(done_rect, 6.0, done_bg);
                 bottom_painter.text(done_rect.center(), egui::Align2::CENTER_CENTER, "Done", egui::FontId::proportional(12.0).clone(), egui::Color32::BLACK);
                 if done_resp.clicked() { open = false; }
@@ -345,10 +352,10 @@ impl PreferencesPanel {
                     egui::vec2(106.0, 28.0),
                 );
                 let reset_resp = ui.allocate_rect(reset_rect, egui::Sense::click());
-                let reset_bg = if reset_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+                let reset_bg = if reset_resp.hovered() { KlippTheme::default().bg_hover } else { KlippTheme::default().bg_raised };
                 bottom_painter.rect_filled(reset_rect, 6.0, reset_bg);
-                bottom_painter.rect_stroke(reset_rect, 6.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x40, 0x40, 0x48)));
-                bottom_painter.text(reset_rect.center(), egui::Align2::CENTER_CENTER, "Reset to defaults", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
+                bottom_painter.rect_stroke(reset_rect, 6.0, egui::Stroke::new(1.0_f32, KlippTheme::default().border_light));
+                bottom_painter.text(reset_rect.center(), egui::Align2::CENTER_CENTER, "Reset to defaults", egui::FontId::proportional(11.0), Self::normal_text());
                 if reset_resp.clicked() {
                     *prefs = Preferences::default();
                     *prefs_dirty = true;
@@ -398,7 +405,7 @@ impl PreferencesPanel {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add_space(12.0);
-            ui.label(egui::RichText::new(label).size(10.0).color(Self::CATEGORY_TEXT).strong());
+            ui.label(egui::RichText::new(label).size(10.0).color(Self::category_text()).strong());
         });
         ui.add_space(2.0);
     }
@@ -411,12 +418,12 @@ impl PreferencesPanel {
 
         if is_active {
             // Solid amber background — use dark text for readability
-            ui.painter().rect_filled(rect, 5.0, Self::ACCENT);
+            ui.painter().rect_filled(rect, 5.0, Self::accent());
         } else if resp.hovered() {
-            ui.painter().rect_filled(rect, 5.0, egui::Color32::from_rgb(0x22, 0x22, 0x28));
+            ui.painter().rect_filled(rect, 5.0, KlippTheme::default().bg_hover);
         }
 
-        let text_color = if is_active { Self::TEXT_ON_ACCENT } else { Self::NORMAL_TEXT };
+        let text_color = if is_active { Self::text_on_accent() } else { Self::normal_text() };
         ui.painter().text(
             egui::pos2(rect.left() + 10.0, rect.center().y),
             egui::Align2::LEFT_CENTER,
@@ -450,13 +457,13 @@ impl PreferencesPanel {
     fn section_header(ui: &mut egui::Ui, label: &str) {
         ui.add_space(8.0);
         let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 4.0, Self::SECTION_BG);
+        ui.painter().rect_filled(rect, 4.0, Self::section_bg());
         ui.painter().text(
             egui::pos2(rect.left() + 14.0, rect.center().y),
             egui::Align2::LEFT_CENTER,
             label,
             egui::FontId::proportional(10.0),
-            Self::CATEGORY_TEXT,
+            Self::category_text(),
         );
     }
 
@@ -487,7 +494,7 @@ impl PreferencesPanel {
                 0.0,
                 egui::text::TextFormat {
                     font_id: egui::FontId::proportional(10.0),
-                    color: Self::DIM_TEXT,
+                    color: Self::dim_text(),
                     ..Default::default()
                 },
             );
@@ -506,11 +513,11 @@ impl PreferencesPanel {
         };
 
         let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+        ui.painter().rect_filled(rect, 0.0, Self::row_bg());
         // Subtle separator
         ui.painter().line_segment(
             [egui::pos2(rect.left() + LABEL_PAD_X, rect.bottom()), egui::pos2(rect.right() - LABEL_PAD_X, rect.bottom())],
-            egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+            egui::Stroke::new(0.5_f32, KlippTheme::default().bg_raised),
         );
         // Label (+ optional multi-line subtitle)
         if let Some(g) = subtitle_galley {
@@ -519,12 +526,12 @@ impl PreferencesPanel {
                 egui::Align2::LEFT_CENTER,
                 label,
                 egui::FontId::proportional(12.0),
-                Self::NORMAL_TEXT,
+                Self::normal_text(),
             );
             ui.painter().galley(
                 egui::pos2(rect.left() + LABEL_PAD_X, rect.top() + SUBTITLE_TOP),
                 g,
-                Self::DIM_TEXT,
+                Self::dim_text(),
             );
         } else {
             ui.painter().text(
@@ -532,7 +539,7 @@ impl PreferencesPanel {
                 egui::Align2::LEFT_CENTER,
                 label,
                 egui::FontId::proportional(12.0),
-                Self::NORMAL_TEXT,
+                Self::normal_text(),
             );
         }
         // Right-aligned widget area. When a subtitle is present,
@@ -563,7 +570,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("General").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.label(egui::RichText::new("General").strong().size(18.0).color(Self::normal_text()));
         });
 
         // ── STARTUP section ──
@@ -636,7 +643,7 @@ impl PreferencesPanel {
             let dir_text = prefs.general.default_project_dir.as_ref()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| "(not set)".into());
-            ui.label(egui::RichText::new(&dir_text).size(11.0).color(Self::DIM_TEXT));
+            ui.label(egui::RichText::new(&dir_text).size(11.0).color(Self::dim_text()));
         });
 
         Self::setting_row(ui, "Recent projects to show", |ui| {
@@ -677,7 +684,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Playback").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.label(egui::RichText::new("Playback").strong().size(18.0).color(Self::normal_text()));
         });
         ui.add_space(4.0);
 
@@ -846,7 +853,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Editing").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.label(egui::RichText::new("Editing").strong().size(18.0).color(Self::normal_text()));
         });
         ui.add_space(4.0);
 
@@ -1047,7 +1054,7 @@ impl PreferencesPanel {
                 egui::RichText::new("File Browser")
                     .strong()
                     .size(18.0)
-                    .color(Self::NORMAL_TEXT),
+                    .color(Self::normal_text()),
             );
         });
         ui.add_space(4.0);
@@ -1328,7 +1335,7 @@ impl PreferencesPanel {
                     ui.label(
                         egui::RichText::new("none")
                             .size(11.0)
-                            .color(Self::DIM_TEXT),
+                            .color(Self::dim_text()),
                     );
                 },
             );
@@ -1341,7 +1348,7 @@ impl PreferencesPanel {
                         if prefs.file_browser.pinned_folders.len() == 1 { "" } else { "s" }
                     ))
                     .size(11.0)
-                    .color(Self::DIM_TEXT),
+                    .color(Self::dim_text()),
                 );
             });
             // Each pinned folder gets its own row showing the path and an
@@ -1372,7 +1379,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Audio").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.label(egui::RichText::new("Audio").strong().size(18.0).color(Self::normal_text()));
         });
         ui.add_space(4.0);
 
@@ -1504,7 +1511,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Export").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.label(egui::RichText::new("Export").strong().size(18.0).color(Self::normal_text()));
         });
         ui.add_space(4.0);
 
@@ -1565,27 +1572,27 @@ impl PreferencesPanel {
         {
             let row_h = 36.0;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+            ui.painter().rect_filled(rect, 0.0, Self::row_bg());
             ui.painter().line_segment(
                 [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                egui::Stroke::new(0.5_f32, KlippTheme::default().bg_raised),
             );
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 "Default export folder",
                 egui::FontId::proportional(12.0),
-                Self::NORMAL_TEXT,
+                Self::normal_text(),
             );
             let btn_rect = egui::Rect::from_min_size(
                 egui::pos2(rect.right() - 80.0, rect.top() + 6.0),
                 egui::vec2(66.0, 24.0),
             );
             let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
-            let btn_bg = if btn_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+            let btn_bg = if btn_resp.hovered() { KlippTheme::default().bg_hover } else { KlippTheme::default().bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
-            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Browse...", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, KlippTheme::default().border_light));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Browse...", egui::FontId::proportional(11.0), Self::normal_text());
             let display = prefs.export.default_output_dir.as_ref()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| "~/Videos/Exports".into());
@@ -1594,7 +1601,7 @@ impl PreferencesPanel {
                 egui::Align2::RIGHT_CENTER,
                 &display,
                 egui::FontId::proportional(11.0),
-                Self::DIM_TEXT,
+                Self::dim_text(),
             );
             if btn_resp.clicked() {
                 if let Some(path) = rfd::FileDialog::new().set_title("Default Export Folder").pick_folder() {
@@ -1677,7 +1684,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Proxy").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.label(egui::RichText::new("Proxy").strong().size(18.0).color(Self::normal_text()));
         });
         ui.add_space(4.0);
 
@@ -1725,17 +1732,17 @@ impl PreferencesPanel {
         {
             let row_h = 36.0;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+            ui.painter().rect_filled(rect, 0.0, Self::row_bg());
             ui.painter().line_segment(
                 [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                egui::Stroke::new(0.5_f32, KlippTheme::default().bg_raised),
             );
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 "Proxy cache",
                 egui::FontId::proportional(12.0),
-                Self::NORMAL_TEXT,
+                Self::normal_text(),
             );
             // Browse button
             let btn_rect = egui::Rect::from_min_size(
@@ -1743,10 +1750,10 @@ impl PreferencesPanel {
                 egui::vec2(66.0, 24.0),
             );
             let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
-            let btn_bg = if btn_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+            let btn_bg = if btn_resp.hovered() { KlippTheme::default().bg_hover } else { KlippTheme::default().bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
-            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Browse...", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, KlippTheme::default().border_light));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Browse...", egui::FontId::proportional(11.0), Self::normal_text());
             // Path display
             let display = prefs.proxy.proxy_cache_dir.as_ref()
                 .map(|p| p.to_string_lossy().to_string())
@@ -1756,7 +1763,7 @@ impl PreferencesPanel {
                 egui::Align2::RIGHT_CENTER,
                 &display,
                 egui::FontId::proportional(11.0),
-                Self::DIM_TEXT,
+                Self::dim_text(),
             );
             if btn_resp.clicked() {
                 if let Some(path) = rfd::FileDialog::new().set_title("Proxy Cache Folder").pick_folder() {
@@ -1794,22 +1801,22 @@ impl PreferencesPanel {
                 );
                 let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
                 let bg = if resp.hovered() {
-                    egui::Color32::from_rgb(0x30, 0x30, 0x38)
+                    KlippTheme::default().bg_hover
                 } else {
-                    egui::Color32::from_rgb(0x24, 0x24, 0x2c)
+                    KlippTheme::default().bg_raised
                 };
                 ui.painter().rect_filled(btn_rect, 4.0, bg);
                 ui.painter().rect_stroke(
                     btn_rect,
                     4.0,
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x38, 0x38, 0x42)),
+                    egui::Stroke::new(1.0_f32, KlippTheme::default().border_light),
                 );
                 ui.painter().text(
                     btn_rect.center(),
                     egui::Align2::CENTER_CENTER,
                     "Open Cache Manager\u{2026}",
                     egui::FontId::proportional(11.0),
-                    Self::NORMAL_TEXT,
+                    Self::normal_text(),
                 );
                 if resp.clicked() {
                     cmds.push(AppCommand::OpenCacheManager);
@@ -1827,7 +1834,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("External Tools").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.label(egui::RichText::new("External Tools").strong().size(18.0).color(Self::normal_text()));
         });
         ui.add_space(4.0);
 
@@ -1891,7 +1898,7 @@ impl PreferencesPanel {
                      macOS/Windows support is deferred.",
                 )
                 .size(10.5)
-                .color(Self::DIM_TEXT),
+                .color(Self::dim_text()),
             );
         });
     }
@@ -1904,16 +1911,16 @@ impl PreferencesPanel {
         // Page heading with "Restart required" badge
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("System").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.label(egui::RichText::new("System").strong().size(18.0).color(Self::normal_text()));
             ui.add_space(8.0);
             // Restart required badge
             let badge_text = "Restart required";
             let badge_font = egui::FontId::proportional(10.0);
-            let text_galley = ui.painter().layout_no_wrap(badge_text.to_string(), badge_font.clone(), Self::ACCENT);
+            let text_galley = ui.painter().layout_no_wrap(badge_text.to_string(), badge_font.clone(), Self::accent());
             let badge_size = egui::vec2(text_galley.size().x + 12.0, 20.0);
             let (badge_rect, _) = ui.allocate_exact_size(badge_size, egui::Sense::hover());
-            ui.painter().rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, Self::ACCENT));
-            ui.painter().text(badge_rect.center(), egui::Align2::CENTER_CENTER, badge_text, badge_font, Self::ACCENT);
+            ui.painter().rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, Self::accent()));
+            ui.painter().text(badge_rect.center(), egui::Align2::CENTER_CENTER, badge_text, badge_font, Self::accent());
         });
         ui.add_space(4.0);
 
@@ -2015,7 +2022,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Appearance").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.label(egui::RichText::new("Appearance").strong().size(18.0).color(Self::normal_text()));
         });
 
         // ── THEME section ──
@@ -2094,10 +2101,10 @@ impl PreferencesPanel {
         {
             let row_h = 48.0;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+            ui.painter().rect_filled(rect, 0.0, Self::row_bg());
             ui.painter().line_segment(
                 [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                egui::Stroke::new(0.5_f32, KlippTheme::default().bg_raised),
             );
             // Label + subtitle
             ui.painter().text(
@@ -2105,14 +2112,14 @@ impl PreferencesPanel {
                 egui::Align2::LEFT_CENTER,
                 "Accent color",
                 egui::FontId::proportional(12.0),
-                Self::NORMAL_TEXT,
+                Self::normal_text(),
             );
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.top() + 32.0),
                 egui::Align2::LEFT_CENTER,
                 "Used for selections and active state",
                 egui::FontId::proportional(10.0),
-                Self::DIM_TEXT,
+                Self::dim_text(),
             );
             // Color preset circles (right-aligned)
             let presets: &[[u8; 3]] = &[
@@ -2153,10 +2160,10 @@ impl PreferencesPanel {
         let role_color_row = |ui: &mut egui::Ui, label: &str, rgb: &mut [u8; 3], dirty: &mut bool, _id_salt: &str| {
             let row_h = 36.0;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+            ui.painter().rect_filled(rect, 0.0, Self::row_bg());
             ui.painter().line_segment(
                 [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                egui::Stroke::new(0.5_f32, KlippTheme::default().bg_raised),
             );
             // Label
             ui.painter().text(
@@ -2164,7 +2171,7 @@ impl PreferencesPanel {
                 egui::Align2::LEFT_CENTER,
                 label,
                 egui::FontId::proportional(12.0),
-                Self::NORMAL_TEXT,
+                Self::normal_text(),
             );
             // Edit button (right side)
             let edit_rect = egui::Rect::from_min_size(
@@ -2172,10 +2179,10 @@ impl PreferencesPanel {
                 egui::vec2(56.0, 24.0),
             );
             let edit_resp = ui.allocate_rect(edit_rect, egui::Sense::click());
-            let edit_bg = if edit_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+            let edit_bg = if edit_resp.hovered() { KlippTheme::default().bg_hover } else { KlippTheme::default().bg_raised };
             ui.painter().rect_filled(edit_rect, 4.0, edit_bg);
-            ui.painter().rect_stroke(edit_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
-            ui.painter().text(edit_rect.center(), egui::Align2::CENTER_CENTER, "Edit...", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
+            ui.painter().rect_stroke(edit_rect, 4.0, egui::Stroke::new(1.0_f32, KlippTheme::default().border_light));
+            ui.painter().text(edit_rect.center(), egui::Align2::CENTER_CENTER, "Edit...", egui::FontId::proportional(11.0), Self::normal_text());
             // Color swatch (before Edit button)
             let swatch_center = egui::pos2(edit_rect.left() - 18.0, rect.center().y);
             let c = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
@@ -2223,7 +2230,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Audio hardware").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.label(egui::RichText::new("Audio hardware").strong().size(18.0).color(Self::normal_text()));
         });
         ui.add_space(4.0);
 
@@ -2426,7 +2433,7 @@ impl PreferencesPanel {
                 ui.label(
                     egui::RichText::new(host_name)
                         .size(12.0)
-                        .color(Self::NORMAL_TEXT),
+                        .color(Self::normal_text()),
                 );
             },
         );
@@ -2443,7 +2450,7 @@ impl PreferencesPanel {
                     ui.label(
                         egui::RichText::new("\u{2014}")
                             .size(12.0)
-                            .color(Self::DIM_TEXT),
+                            .color(Self::dim_text()),
                     );
                 },
             );
@@ -2464,7 +2471,7 @@ impl PreferencesPanel {
                 ui.label(
                     egui::RichText::new(count_label)
                         .size(11.0)
-                        .color(Self::DIM_TEXT),
+                        .color(Self::dim_text()),
                 );
             });
 
@@ -2494,7 +2501,7 @@ impl PreferencesPanel {
                         ui.label(
                             egui::RichText::new("default")
                                 .size(10.0)
-                                .color(Self::ACCENT),
+                                .color(Self::accent()),
                         );
                     } else {
                         ui.label("");
@@ -2508,7 +2515,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Cache").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.label(egui::RichText::new("Cache").strong().size(18.0).color(Self::normal_text()));
         });
         ui.add_space(4.0);
 
@@ -2519,10 +2526,10 @@ impl PreferencesPanel {
         let cache_dir_row = |ui: &mut egui::Ui, label: &str, path: &mut Option<std::path::PathBuf>, default_display: &str, dirty: &mut bool, _id: &str| {
             let row_h = 36.0;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+            ui.painter().rect_filled(rect, 0.0, Self::row_bg());
             ui.painter().line_segment(
                 [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                egui::Stroke::new(0.5_f32, KlippTheme::default().bg_raised),
             );
             // Label
             ui.painter().text(
@@ -2530,7 +2537,7 @@ impl PreferencesPanel {
                 egui::Align2::LEFT_CENTER,
                 label,
                 egui::FontId::proportional(12.0),
-                Self::NORMAL_TEXT,
+                Self::normal_text(),
             );
             // Browse button
             let btn_rect = egui::Rect::from_min_size(
@@ -2538,10 +2545,10 @@ impl PreferencesPanel {
                 egui::vec2(66.0, 24.0),
             );
             let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
-            let btn_bg = if btn_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+            let btn_bg = if btn_resp.hovered() { KlippTheme::default().bg_hover } else { KlippTheme::default().bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
-            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Browse...", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, KlippTheme::default().border_light));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Browse...", egui::FontId::proportional(11.0), Self::normal_text());
             // Path display (dim, before button)
             let display = path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| default_display.to_string());
             ui.painter().text(
@@ -2549,7 +2556,7 @@ impl PreferencesPanel {
                 egui::Align2::RIGHT_CENTER,
                 &display,
                 egui::FontId::proportional(11.0),
-                Self::DIM_TEXT,
+                Self::dim_text(),
             );
             if btn_resp.clicked() {
                 if let Some(p) = rfd::FileDialog::new().set_title(label).pick_folder() {
@@ -2685,7 +2692,7 @@ impl PreferencesPanel {
             ui.label(
                 egui::RichText::new("\u{24D8}")  // ⓘ circled small letter i
                     .size(13.0)
-                    .color(Self::DIM_TEXT),
+                    .color(Self::dim_text()),
             ).on_hover_text(
                 "Skim is a hover-preview proxy: 1080p H.264 with a \
                  short GOP for fast per-frame seek. Source resolution \
@@ -2766,10 +2773,10 @@ impl PreferencesPanel {
         let clear_btn = |ui: &mut egui::Ui, label: &str| -> bool {
             let resp = ui.allocate_response(egui::vec2(56.0, 24.0), egui::Sense::click());
             let btn_rect = resp.rect;
-            let bg = if resp.hovered() { egui::Color32::from_rgb(0x40, 0x28, 0x18) } else { egui::Color32::from_rgb(0x30, 0x20, 0x10) };
+            let bg = if resp.hovered() { KlippTheme::default().bg_hover } else { KlippTheme::default().bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, Self::ACCENT));
-            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(11.0), Self::ACCENT);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, Self::accent()));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(11.0), Self::accent());
             resp.clicked()
         };
         let wipe_dir = |dir: &std::path::Path| {
@@ -2825,10 +2832,10 @@ impl PreferencesPanel {
         Self::setting_row_with_subtitle(ui, "Orphaned cache files", "Files not used by any project", |ui| {
             let resp = ui.allocate_response(egui::vec2(100.0, 24.0), egui::Sense::click());
             let btn_rect = resp.rect;
-            let bg = if resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+            let bg = if resp.hovered() { KlippTheme::default().bg_hover } else { KlippTheme::default().bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, Self::ACCENT));
-            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Scan & Clean", egui::FontId::proportional(11.0), Self::ACCENT);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, Self::accent()));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Scan & Clean", egui::FontId::proportional(11.0), Self::accent());
             if resp.clicked() {
                 cmds.push(AppCommand::CleanOrphanedCaches);
             }
@@ -2840,10 +2847,10 @@ impl PreferencesPanel {
         Self::setting_row_with_subtitle(ui, "All caches", &format_size(total_size), |ui| {
             let resp = ui.allocate_response(egui::vec2(70.0, 24.0), egui::Sense::click());
             let btn_rect = resp.rect;
-            let bg = if resp.hovered() { egui::Color32::from_rgb(0x50, 0x20, 0x10) } else { egui::Color32::from_rgb(0x40, 0x18, 0x08) };
+            let bg = if resp.hovered() { KlippTheme::default().bg_hover } else { KlippTheme::default().bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0xe0, 0x60, 0x30)));
-            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear all", egui::FontId::proportional(11.0), egui::Color32::from_rgb(0xe0, 0x60, 0x30));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, KlippTheme::default().marker_error));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear all", egui::FontId::proportional(11.0), KlippTheme::default().marker_error);
             if resp.clicked() {
                 // Stage the destructive action behind a confirmation modal
                 // so a stray click doesn't nuke tens of GB of regenerable
@@ -2907,7 +2914,7 @@ impl PreferencesPanel {
                         "Caches are regenerated automatically as needed, \
                         but rebuilding them takes time on next playback / export.",
                     )
-                    .color(Self::DIM_TEXT)
+                    .color(Self::dim_text())
                     .size(11.0),
                 );
                 ui.add_space(12.0);
@@ -2917,7 +2924,7 @@ impl PreferencesPanel {
                     let delete_btn = egui::Button::new(
                         egui::RichText::new("Delete all").color(egui::Color32::WHITE),
                     )
-                    .fill(egui::Color32::from_rgb(0xc0, 0x40, 0x20));
+                    .fill(KlippTheme::default().marker_error);
                     if ui.add(delete_btn).clicked() {
                         do_clear = true;
                         close = true;
@@ -2946,7 +2953,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Color").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.label(egui::RichText::new("Color").strong().size(18.0).color(Self::normal_text()));
         });
         ui.add_space(4.0);
 
@@ -3054,7 +3061,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Titles").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.label(egui::RichText::new("Titles").strong().size(18.0).color(Self::normal_text()));
         });
         ui.add_space(4.0);
 
@@ -3241,7 +3248,7 @@ impl PreferencesPanel {
             }
             // Show approximate IRE equivalent (BT.709 legal range: 16=0 IRE, 235=100 IRE)
             let ire = (v as f32 - 16.0) / 2.19;
-            ui.label(egui::RichText::new(format!("{ire:.0}% IRE")).color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).size(11.0));
+            ui.label(egui::RichText::new(format!("{ire:.0}% IRE")).color(KlippTheme::default().text_dim).size(11.0));
         });
         ui.horizontal(|ui| {
             ui.label("Low threshold (underexposure):");
@@ -3250,7 +3257,7 @@ impl PreferencesPanel {
                 prefs.viewer.zebra_low_threshold = v; *dirty = true;
             }
             let ire = (v as f32 - 16.0) / 2.19;
-            ui.label(egui::RichText::new(format!("{ire:.0}% IRE")).color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).size(11.0));
+            ui.label(egui::RichText::new(format!("{ire:.0}% IRE")).color(KlippTheme::default().text_dim).size(11.0));
         });
 
         ui.add_space(12.0);
@@ -3355,18 +3362,18 @@ impl PreferencesPanel {
         let overlaps = prefs.viewer.false_color_palette.overlapping_stops();
         let unmapped = prefs.viewer.false_color_palette.unmapped_count();
         if !overlaps.is_empty() {
-            ui.colored_label(egui::Color32::from_rgb(0xff, 0x40, 0x40),
+            ui.colored_label(KlippTheme::default().marker_error,
                 format!("{} overlapping stop pair(s) — resolve manually", overlaps.len()));
         }
         if unmapped > 0 {
-            ui.colored_label(egui::Color32::from_rgb(0xc0, 0x90, 0x30),
+            ui.colored_label(KlippTheme::default().marker_warning,
                 format!("{unmapped} luma value(s) unmapped (will show source color)"));
         }
 
         ui.add_space(4.0);
 
         // Column headers
-        let dim_text = egui::Color32::from_rgb(0x70, 0x70, 0x80);
+        let dim_text = Self::dim_text();
         ui.horizontal(|ui| {
             ui.add_space(4.0);
             ui.label(egui::RichText::new("#").color(dim_text).size(10.0));
@@ -3396,7 +3403,7 @@ impl PreferencesPanel {
                 ui.add_space(4.0);
                 let num_text = format!("{}", i + 1);
                 if is_overlap {
-                    ui.label(egui::RichText::new(&num_text).color(egui::Color32::from_rgb(0xff, 0x40, 0x40)).size(11.0));
+                    ui.label(egui::RichText::new(&num_text).color(KlippTheme::default().marker_error).size(11.0));
                 } else {
                     ui.label(egui::RichText::new(&num_text).color(dim_text).size(11.0));
                 }
@@ -3484,7 +3491,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Advanced").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.label(egui::RichText::new("Advanced").strong().size(18.0).color(Self::normal_text()));
         });
         ui.add_space(4.0);
 
@@ -3532,10 +3539,10 @@ impl PreferencesPanel {
         Self::setting_row(ui, "Reset window layout", |ui| {
             let btn_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(90.0, 24.0));
             let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
-            let bg = if resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+            let bg = if resp.hovered() { KlippTheme::default().bg_hover } else { KlippTheme::default().bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
-            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset layout", egui::FontId::proportional(11.0), Self::NORMAL_TEXT);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, KlippTheme::default().border_light));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset layout", egui::FontId::proportional(11.0), Self::normal_text());
             if resp.clicked() {
                 // Reset egui memory (window positions, sizes)
                 ui.ctx().memory_mut(|mem| *mem = Default::default());
@@ -3545,11 +3552,11 @@ impl PreferencesPanel {
         Self::setting_row(ui, "Clear recent projects", |ui| {
             let btn_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(56.0, 24.0));
             let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
-            let bg = if resp.hovered() { egui::Color32::from_rgb(0x40, 0x28, 0x18) } else { egui::Color32::from_rgb(0x30, 0x20, 0x10) };
+            let bg = if resp.hovered() { KlippTheme::default().bg_hover } else { KlippTheme::default().bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, Self::ACCENT));
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, Self::accent()));
             // CONTRAST RULE: accent-bordered button uses accent text on dark bg
-            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear", egui::FontId::proportional(11.0), Self::ACCENT);
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Clear", egui::FontId::proportional(11.0), Self::accent());
             if resp.clicked() {
                 prefs.general.recent_projects.clear();
                 *dirty = true;
@@ -3559,10 +3566,10 @@ impl PreferencesPanel {
         Self::setting_row_with_subtitle(ui, "Reset all preferences", "Restores factory defaults", |ui| {
             let btn_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(110.0, 24.0));
             let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
-            let bg = if resp.hovered() { egui::Color32::from_rgb(0x40, 0x28, 0x18) } else { egui::Color32::from_rgb(0x30, 0x20, 0x10) };
+            let bg = if resp.hovered() { KlippTheme::default().bg_hover } else { KlippTheme::default().bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, Self::ACCENT));
-            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset everything", egui::FontId::proportional(11.0), Self::ACCENT);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, Self::accent()));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset everything", egui::FontId::proportional(11.0), Self::accent());
             if resp.clicked() {
                 *prefs = crate::prefs::Preferences::default();
                 *dirty = true;
@@ -3576,20 +3583,20 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("Keyboard shortcuts").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.label(egui::RichText::new("Keyboard shortcuts").strong().size(18.0).color(Self::normal_text()));
         });
         ui.add_space(4.0);
 
         // ── SHORTCUTS section header with Reset all button ──
         {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 4.0, Self::SECTION_BG);
+            ui.painter().rect_filled(rect, 4.0, Self::section_bg());
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 "SHORTCUTS",
                 egui::FontId::proportional(10.0),
-                Self::CATEGORY_TEXT,
+                Self::category_text(),
             );
             // Reset all to defaults button (right-aligned)
             let btn_rect = egui::Rect::from_min_size(
@@ -3597,10 +3604,10 @@ impl PreferencesPanel {
                 egui::vec2(116.0, 22.0),
             );
             let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
-            let btn_bg = if btn_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) } else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+            let btn_bg = if btn_resp.hovered() { KlippTheme::default().bg_hover } else { KlippTheme::default().bg_raised };
             ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
-            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset all to defaults", egui::FontId::proportional(10.0), Self::NORMAL_TEXT);
+            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, KlippTheme::default().border_light));
+            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Reset all to defaults", egui::FontId::proportional(10.0), Self::normal_text());
             if btn_resp.clicked() {
                 *key_bindings = KeyBindings::defaults();
                 let _ = key_bindings.save();
@@ -3611,8 +3618,8 @@ impl PreferencesPanel {
         let conflicts = key_bindings.find_conflicts();
         if !conflicts.is_empty() {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0 + conflicts.len() as f32 * 18.0), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgb(0x3a, 0x20, 0x18));
-            let warn_color = egui::Color32::from_rgb(0xff, 0x80, 0x50);
+            ui.painter().rect_filled(rect, 0.0, KlippTheme::default().bg_raised);
+            let warn_color = KlippTheme::default().marker_warning;
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.top() + 12.0),
                 egui::Align2::LEFT_CENTER,
@@ -3626,7 +3633,7 @@ impl PreferencesPanel {
                     egui::Align2::LEFT_CENTER,
                     format!("{} and {} both use {}", KeyBindings::action_label(a), KeyBindings::action_label(b), combo.display()),
                     egui::FontId::proportional(10.0),
-                    egui::Color32::from_rgb(0xff, 0xb0, 0x70),
+                    KlippTheme::default().marker_warning,
                 );
             }
         }
@@ -3634,13 +3641,13 @@ impl PreferencesPanel {
         // If remapping, show capture banner
         if let Some((ref action_name, combo_idx)) = self.remapping.clone() {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgb(0x2a, 0x28, 0x18));
+            ui.painter().rect_filled(rect, 0.0, KlippTheme::default().bg_raised);
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 format!("Press a key combination for \"{}\" (Escape to cancel)", KeyBindings::action_label(action_name)),
                 egui::FontId::proportional(11.0),
-                Self::ACCENT,
+                Self::accent(),
             );
 
             let input = ui.input(|i| i.clone());
@@ -3673,13 +3680,13 @@ impl PreferencesPanel {
 
             // Category sub-header (dim, smaller than section header)
             let (cat_rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover());
-            ui.painter().rect_filled(cat_rect, 0.0, Self::ROW_BG);
+            ui.painter().rect_filled(cat_rect, 0.0, Self::row_bg());
             ui.painter().text(
                 egui::pos2(cat_rect.left() + 14.0, cat_rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 category.to_uppercase(),
                 egui::FontId::proportional(10.0),
-                Self::DIM_TEXT,
+                Self::dim_text(),
             );
 
             // Action rows
@@ -3690,10 +3697,10 @@ impl PreferencesPanel {
 
                 let row_h = 36.0;
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-                ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+                ui.painter().rect_filled(rect, 0.0, Self::row_bg());
                 ui.painter().line_segment(
                     [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                    egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                    egui::Stroke::new(0.5_f32, KlippTheme::default().bg_raised),
                 );
 
                 // Action label
@@ -3702,7 +3709,7 @@ impl PreferencesPanel {
                     egui::Align2::LEFT_CENTER,
                     label,
                     egui::FontId::proportional(12.0),
-                    Self::NORMAL_TEXT,
+                    Self::normal_text(),
                 );
 
                 // "Set" button (rightmost)
@@ -3711,13 +3718,13 @@ impl PreferencesPanel {
                     egui::vec2(36.0, 24.0),
                 );
                 let set_resp = ui.allocate_rect(set_rect, egui::Sense::click());
-                let set_bg = if is_remapping { egui::Color32::from_rgb(0x3a, 0x30, 0x18) }
-                    else if set_resp.hovered() { egui::Color32::from_rgb(0x30, 0x30, 0x38) }
-                    else { egui::Color32::from_rgb(0x24, 0x24, 0x2c) };
+                let set_bg = if is_remapping { KlippTheme::default().bg_raised }
+                    else if set_resp.hovered() { KlippTheme::default().bg_hover }
+                    else { KlippTheme::default().bg_raised };
                 ui.painter().rect_filled(set_rect, 4.0, set_bg);
-                ui.painter().rect_stroke(set_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x38, 0x38, 0x42)));
+                ui.painter().rect_stroke(set_rect, 4.0, egui::Stroke::new(1.0_f32, KlippTheme::default().border_light));
                 let set_label = if is_remapping { "..." } else { "Set" };
-                ui.painter().text(set_rect.center(), egui::Align2::CENTER_CENTER, set_label, egui::FontId::proportional(10.0), Self::NORMAL_TEXT);
+                ui.painter().text(set_rect.center(), egui::Align2::CENTER_CENTER, set_label, egui::FontId::proportional(10.0), Self::normal_text());
                 if set_resp.clicked() && !is_remapping {
                     self.remapping = Some((action.to_string(), 0));
                 }
@@ -3739,16 +3746,16 @@ impl PreferencesPanel {
                         // Draw each key as a separate pill, right-to-left
                         for part in parts.iter().rev() {
                             let font = egui::FontId::proportional(10.0);
-                            let text_galley = ui.painter().layout_no_wrap(part.to_string(), font.clone(), Self::NORMAL_TEXT);
+                            let text_galley = ui.painter().layout_no_wrap(part.to_string(), font.clone(), Self::normal_text());
                             let pill_w = text_galley.size().x + 12.0;
                             let pill_h = 20.0;
                             let pill_rect = egui::Rect::from_min_size(
                                 egui::pos2(x - pill_w, rect.center().y - pill_h / 2.0),
                                 egui::vec2(pill_w, pill_h),
                             );
-                            ui.painter().rect_filled(pill_rect, 4.0, egui::Color32::from_rgb(0x28, 0x28, 0x30));
-                            ui.painter().rect_stroke(pill_rect, 4.0, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x3a, 0x3a, 0x44)));
-                            ui.painter().text(pill_rect.center(), egui::Align2::CENTER_CENTER, *part, font, Self::NORMAL_TEXT);
+                            ui.painter().rect_filled(pill_rect, 4.0, KlippTheme::default().border);
+                            ui.painter().rect_stroke(pill_rect, 4.0, egui::Stroke::new(1.0_f32, KlippTheme::default().border_light));
+                            ui.painter().text(pill_rect.center(), egui::Align2::CENTER_CENTER, *part, font, Self::normal_text());
                             x = pill_rect.left() - 3.0;
                         }
                         x -= 6.0; // gap between multiple combos
@@ -3760,7 +3767,7 @@ impl PreferencesPanel {
                         egui::Align2::RIGHT_CENTER,
                         "\u{2014}",
                         egui::FontId::proportional(12.0),
-                        Self::DIM_TEXT,
+                        Self::dim_text(),
                     );
                 }
             }
@@ -3771,7 +3778,7 @@ impl PreferencesPanel {
         // Page heading
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("About Klipp").strong().size(18.0).color(Self::NORMAL_TEXT));
+            ui.label(egui::RichText::new("About Klipp").strong().size(18.0).color(Self::normal_text()));
         });
         ui.add_space(4.0);
 
@@ -3779,15 +3786,15 @@ impl PreferencesPanel {
         Self::section_header(ui, "APPLICATION");
 
         Self::setting_row(ui, "Version", |ui| {
-            ui.label(egui::RichText::new(env!("CARGO_PKG_VERSION")).color(Self::DIM_TEXT));
+            ui.label(egui::RichText::new(env!("CARGO_PKG_VERSION")).color(Self::dim_text()));
         });
 
         Self::setting_row(ui, "Author", |ui| {
-            ui.label(egui::RichText::new("David Bolin").color(Self::DIM_TEXT));
+            ui.label(egui::RichText::new("David Bolin").color(Self::dim_text()));
         });
 
         Self::setting_row(ui, "License", |ui| {
-            ui.label(egui::RichText::new("GPL v3.0").color(Self::DIM_TEXT));
+            ui.label(egui::RichText::new("GPL v3.0").color(Self::dim_text()));
         });
 
         // ── DETECTED HARDWARE section ──
@@ -3802,7 +3809,7 @@ impl PreferencesPanel {
                 .map(|s| s.trim().to_string())
                 .unwrap_or_else(|| "Unknown".into());
             let display = if model.len() > 40 { format!("{}...", &model[..37]) } else { model };
-            ui.label(egui::RichText::new(display).color(Self::DIM_TEXT).size(11.0));
+            ui.label(egui::RichText::new(display).color(Self::dim_text()).size(11.0));
         });
 
         // GPU — extract just the model name from lspci (e.g. "GeForce RTX 4080")
@@ -3869,11 +3876,11 @@ impl PreferencesPanel {
 
             if driver_info.is_empty() {
                 Self::setting_row(ui, "GPU", |ui| {
-                    ui.label(egui::RichText::new(&gpu_name).color(Self::DIM_TEXT).size(11.0));
+                    ui.label(egui::RichText::new(&gpu_name).color(Self::dim_text()).size(11.0));
                 });
             } else {
                 Self::setting_row_with_subtitle(ui, "GPU", &driver_info, |ui| {
-                    ui.label(egui::RichText::new(&gpu_name).color(Self::DIM_TEXT).size(11.0));
+                    ui.label(egui::RichText::new(&gpu_name).color(Self::dim_text()).size(11.0));
                 });
             }
         }
@@ -3893,7 +3900,7 @@ impl PreferencesPanel {
                 .copied()
                 .unwrap_or((usable_gb.ceil()) as u64);
             let display = format!("{} GB ({:.1} GB usable)", installed_gb, usable_gb);
-            ui.label(egui::RichText::new(display).color(Self::DIM_TEXT));
+            ui.label(egui::RichText::new(display).color(Self::dim_text()));
         });
 
         // Audio — show primary sound card (skip GPU HDMI audio) + backend
@@ -3909,7 +3916,7 @@ impl PreferencesPanel {
                     !gpu_keywords.iter().any(|kw| lower.contains(kw))
                 })
                 .unwrap_or_else(|| "Default device".into());
-            ui.label(egui::RichText::new(primary).color(Self::DIM_TEXT).size(11.0));
+            ui.label(egui::RichText::new(primary).color(Self::dim_text()).size(11.0));
         });
 
         // ── TECHNOLOGY section ──
@@ -3918,24 +3925,24 @@ impl PreferencesPanel {
         let tech_row = |ui: &mut egui::Ui, name: &str, desc: &str| {
             let row_h = 36.0;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+            ui.painter().rect_filled(rect, 0.0, Self::row_bg());
             ui.painter().line_segment(
                 [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                egui::Stroke::new(0.5_f32, KlippTheme::default().bg_raised),
             );
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 name,
                 egui::FontId::proportional(12.0),
-                Self::NORMAL_TEXT,
+                Self::normal_text(),
             );
             ui.painter().text(
                 egui::pos2(rect.right() - 14.0, rect.center().y),
                 egui::Align2::RIGHT_CENTER,
                 desc,
                 egui::FontId::proportional(11.0),
-                Self::DIM_TEXT,
+                Self::dim_text(),
             );
         };
 
@@ -3954,17 +3961,17 @@ impl PreferencesPanel {
         let ack_row = |ui: &mut egui::Ui, text: &str| {
             let row_h = 28.0;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, Self::ROW_BG);
+            ui.painter().rect_filled(rect, 0.0, Self::row_bg());
             ui.painter().line_segment(
                 [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x24, 0x24, 0x2c)),
+                egui::Stroke::new(0.5_f32, KlippTheme::default().bg_raised),
             );
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 text,
                 egui::FontId::proportional(11.0),
-                Self::DIM_TEXT,
+                Self::dim_text(),
             );
         };
 
@@ -3978,7 +3985,7 @@ impl PreferencesPanel {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.add_space(14.0);
-            ui.label(egui::RichText::new("\u{00a9} 2025\u{2013}2026 David Bolin. All rights reserved.").size(10.0).color(Self::DIM_TEXT));
+            ui.label(egui::RichText::new("\u{00a9} 2025\u{2013}2026 David Bolin. All rights reserved.").size(10.0).color(Self::dim_text()));
         });
     }
 }

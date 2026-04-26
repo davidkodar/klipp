@@ -93,9 +93,9 @@ pub fn show(
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.add_space(12.0);
                             let badge_color = if is_active {
-                                egui::Color32::from_rgb(60, 60, 65)
+                                theme.bg_hover
                             } else {
-                                egui::Color32::from_rgb(45, 45, 50)
+                                theme.bg_raised
                             };
                             let badge = egui::Button::new(
                                 egui::RichText::new(format!("{}", count))
@@ -166,9 +166,9 @@ pub fn show(
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.add_space(12.0);
                             let badge_color = if is_active {
-                                egui::Color32::from_rgb(60, 60, 65)
+                                theme.bg_hover
                             } else {
-                                egui::Color32::from_rgb(45, 45, 50)
+                                theme.bg_raised
                             };
                             let badge = egui::Button::new(
                                 egui::RichText::new(format!("{}", count))
@@ -233,9 +233,9 @@ pub fn show(
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.add_space(12.0);
                             let badge_color = if is_active {
-                                egui::Color32::from_rgb(60, 60, 65)
+                                theme.bg_hover
                             } else {
-                                egui::Color32::from_rgb(45, 45, 50)
+                                theme.bg_raised
                             };
                             let badge = egui::Button::new(
                                 egui::RichText::new(format!("{}", count)).size(9.0).color(theme.text_dim)
@@ -270,8 +270,8 @@ pub fn show(
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
             let pill = |ui: &mut egui::Ui, label: &str, active: &mut bool, color: egui::Color32| {
-                let bg = if *active { color } else { egui::Color32::from_rgb(50, 50, 55) };
-                let text_color = if *active { egui::Color32::WHITE } else { egui::Color32::from_rgb(120, 120, 130) };
+                let bg = if *active { color } else { theme.bg_raised };
+                let text_color = if *active { egui::Color32::WHITE } else { theme.text_dim };
                 let resp = ui.add(
                     egui::Button::new(egui::RichText::new(label).size(9.0).color(text_color))
                         .fill(bg)
@@ -285,11 +285,11 @@ pub fn show(
             let builtin_count = all_effects.iter().filter(|fx| matches!(fx.source, crate::browser::effect_registry::EffectSource::Builtin(_) | crate::browser::effect_registry::EffectSource::Audio(_))).count();
             let ofx_count = all_effects.iter().filter(|fx| matches!(fx.source, crate::browser::effect_registry::EffectSource::Ofx(_))).count();
 
-            pill(ui, &format!("Built-in ({})", builtin_count), &mut state.effect_filter_builtin, egui::Color32::from_rgb(60, 150, 80));
+            pill(ui, &format!("Built-in ({})", builtin_count), &mut state.effect_filter_builtin, theme.marker_success);
             if ofx_count > 0 {
-                pill(ui, &format!("OFX ({})", ofx_count), &mut state.effect_filter_ofx, egui::Color32::from_rgb(80, 120, 200));
+                pill(ui, &format!("OFX ({})", ofx_count), &mut state.effect_filter_ofx, theme.marker_info);
             }
-            pill(ui, "Hide unsupported", &mut state.effect_filter_hide_unsupported, egui::Color32::from_rgb(140, 70, 70));
+            pill(ui, "Hide unsupported", &mut state.effect_filter_hide_unsupported, theme.marker_error);
         });
         ui.add_space(2.0);
 
@@ -373,9 +373,9 @@ pub fn show(
                                 // Matches the amber/gold used by the media-bin
                                 // clip rating stars — one visual vocabulary for
                                 // "starred" across the app.
-                                egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
+                                theme.accent
                             } else if star_resp.hovered() {
-                                egui::Color32::from_rgb(220, 220, 230)
+                                theme.text_primary
                             } else {
                                 // Dim when not hovered and not starred — avoids
                                 // visual clutter on the grid.
@@ -534,7 +534,7 @@ pub fn show(
                         ui.label(
                             egui::RichText::new("Drag to timeline to apply")
                                 .size(9.0)
-                                .color(egui::Color32::from_rgb(90, 90, 100)),
+                                .color(theme.text_dim),
                         );
                     });
                 });
@@ -572,7 +572,7 @@ fn effect_card(
     painter.rect_filled(preview_rect, rounding, theme.bg_panel);
 
     // Subtle dark frame around the card (always visible)
-    painter.rect_stroke(preview_rect, rounding, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(45, 45, 50)));
+    painter.rect_stroke(preview_rect, rounding, egui::Stroke::new(1.0_f32, theme.border));
 
     // Brighter border on hover
     if hovered {
@@ -603,10 +603,10 @@ fn effect_card(
 
     // Source badge on the preview area (top-right corner)
     let (badge_text, badge_color) = match &fx.source {
-        crate::browser::effect_registry::EffectSource::Ofx(_) => ("OFX", egui::Color32::from_rgba_unmultiplied(80, 120, 200, 200)),
-        crate::browser::effect_registry::EffectSource::Builtin(_) => ("Built-in", egui::Color32::from_rgba_unmultiplied(60, 150, 80, 200)),
-        crate::browser::effect_registry::EffectSource::Audio(_) => ("Built-in", egui::Color32::from_rgba_unmultiplied(60, 150, 80, 200)),
-        crate::browser::effect_registry::EffectSource::Ladspa(_) => ("LADSPA", egui::Color32::from_rgba_unmultiplied(170, 120, 60, 220)),
+        crate::browser::effect_registry::EffectSource::Ofx(_) => ("OFX", egui::Color32::from_rgba_unmultiplied(theme.marker_info.r(), theme.marker_info.g(), theme.marker_info.b(), 200)),
+        crate::browser::effect_registry::EffectSource::Builtin(_) => ("Built-in", egui::Color32::from_rgba_unmultiplied(theme.marker_success.r(), theme.marker_success.g(), theme.marker_success.b(), 200)),
+        crate::browser::effect_registry::EffectSource::Audio(_) => ("Built-in", egui::Color32::from_rgba_unmultiplied(theme.marker_success.r(), theme.marker_success.g(), theme.marker_success.b(), 200)),
+        crate::browser::effect_registry::EffectSource::Ladspa(_) => ("LADSPA", egui::Color32::from_rgba_unmultiplied(theme.accent.r(), theme.accent.g(), theme.accent.b(), 220)),
     };
     {
         let badge_font = egui::FontId::monospace(8.0);
@@ -670,19 +670,19 @@ fn effect_card(
             || plugin_id.contains("Keyer") || plugin_id.contains("IDistort")
             || plugin_id.contains("STMap") || plugin_id.contains("VectorToColor")
         {
-            ui.label(egui::RichText::new("CPU only — adjust while paused, apply on export").size(9.0).color(egui::Color32::from_rgb(220, 160, 60)));
+            ui.label(egui::RichText::new("CPU only — adjust while paused, apply on export").size(9.0).color(theme.marker_warning));
         }
         if plugin_id.contains("Retime") || plugin_id.contains("SlitScan") || plugin_id.contains("timeOffset") {
-            ui.label(egui::RichText::new("Render only — not real-time, applied on export").size(9.0).color(egui::Color32::from_rgb(200, 100, 100)));
+            ui.label(egui::RichText::new("Render only — not real-time, applied on export").size(9.0).color(theme.marker_error));
         }
         if plugin_id.contains("anaglyph") || plugin_id.contains("joinView") || plugin_id.contains("mixView")
             || plugin_id.contains("oneView") || plugin_id.contains("sideBySide")
             || name.contains("Anaglyph") || name.contains("Join Views") || name.contains("Mix Views")
             || name.contains("One View") || name.contains("Side By Side")
         {
-            ui.label(egui::RichText::new("Requires multi-view — stereo 3D not supported yet").size(9.0).color(egui::Color32::from_rgb(180, 80, 80)));
+            ui.label(egui::RichText::new("Requires multi-view — stereo 3D not supported yet").size(9.0).color(theme.marker_error));
         }
-        ui.label(egui::RichText::new("Double-click to apply").size(9.0).color(egui::Color32::from_rgb(100, 100, 110)));
+        ui.label(egui::RichText::new("Double-click to apply").size(9.0).color(theme.text_dim));
     });
 
     resp

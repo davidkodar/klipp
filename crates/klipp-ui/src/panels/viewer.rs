@@ -283,7 +283,7 @@ impl ViewerPanel {
         );
     }
 
-    fn draw_empty_state(&mut self, ui: &mut egui::Ui, viewer_rect: egui::Rect) {
+    fn draw_empty_state(&mut self, ui: &mut egui::Ui, viewer_rect: egui::Rect, theme: &KlippTheme) {
         // Empty state: Klipp logo at 40% opacity
         let center = viewer_rect.center();
         let logo_tex = self.logo_texture.get_or_insert_with(|| {
@@ -302,7 +302,9 @@ impl ViewerPanel {
             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
             egui::Color32::from_white_alpha(102),
         );
-        let logo_color = egui::Color32::from_rgba_premultiplied(232, 160, 32, 102);
+        let logo_color = egui::Color32::from_rgba_unmultiplied(
+            theme.accent.r(), theme.accent.g(), theme.accent.b(), 102,
+        );
         ui.painter().text(
             egui::pos2(center.x, center.y + logo_size * 0.5),
             egui::Align2::CENTER_CENTER,
@@ -320,6 +322,7 @@ impl ViewerPanel {
         ui: &mut egui::Ui,
         state: &mut AppState,
         viewer_rect: egui::Rect,
+        theme: &KlippTheme,
     ) -> Option<ViewerFrameState> {
         // Extract media info up-front so the borrow is short-lived
         let current_media_info: Option<(u32, u32, bool)> = state.sequence().tracks.iter()
@@ -331,7 +334,7 @@ impl ViewerPanel {
         let has_content = state.playback != PlaybackState::Idle || current_media_info.is_some();
 
         if !has_content {
-            self.draw_empty_state(ui, viewer_rect);
+            self.draw_empty_state(ui, viewer_rect, theme);
             return None;
         }
 
@@ -441,6 +444,7 @@ impl ViewerPanel {
         &mut self,
         ui: &mut egui::Ui,
         state: &mut AppState,
+        theme: &KlippTheme,
         frame: &ViewerFrameState,
     ) {
         let image_rect = frame.image_rect;
@@ -449,13 +453,13 @@ impl ViewerPanel {
         let effect_compare_active = state.split_compare_effect.is_some();
         let split_x = image_rect.min.x + state.split_position * image_rect.width();
         let divider_color = if grade_still_active {
-            egui::Color32::from_rgb(0x40, 0xc0, 0xe0) // cyan for grade still compare
+            theme.marker_info // cool blue for grade still compare
         } else if stab_compare_active {
-            egui::Color32::from_rgb(0x60, 0xd0, 0x80) // green for stabilization compare
+            theme.marker_success // green for stabilization compare
         } else if effect_compare_active {
-            egui::Color32::from_rgb(0xc8, 0x78, 0xff) // purple for per-effect compare
+            egui::Color32::from_rgb(0xc8, 0x78, 0xff) // purple for per-effect compare (no semantic token)
         } else {
-            egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
+            theme.accent
         };
 
         // Vertical divider line
@@ -700,6 +704,7 @@ impl ViewerPanel {
         &mut self,
         ui: &mut egui::Ui,
         state: &mut AppState,
+        theme: &KlippTheme,
         cmds: &mut Vec<AppCommand>,
         frame: &ViewerFrameState,
     ) {
@@ -719,18 +724,18 @@ impl ViewerPanel {
             );
             let resp = ui.allocate_rect(btn_rect, egui::Sense::click());
             let bg = if is_active {
-                egui::Color32::from_rgb(0xe8, 0xa0, 0x20) // amber for active
+                theme.accent
             } else if resp.hovered() {
-                egui::Color32::from_rgb(0x30, 0x30, 0x38)
+                theme.bg_hover
             } else {
-                egui::Color32::from_rgb(0x22, 0x22, 0x28)
+                theme.bg_panel
             };
             ui.painter().rect_filled(btn_rect, 4.0, bg);
             // CONTRAST RULE: dark text on amber background
             let text_color = if is_active {
-                egui::Color32::from_rgb(0x1a, 0x1a, 0x1e)
+                theme.text_on_accent
             } else {
-                egui::Color32::WHITE
+                theme.text_primary
             };
             ui.painter().text(
                 btn_rect.center(),
@@ -1103,7 +1108,7 @@ impl ViewerPanel {
         let _ = cmds;
 
         let lb_h = viewer_rect.height() * 0.08;
-        let frame = match self.compute_video_layout(ui, state, viewer_rect) {
+        let frame = match self.compute_video_layout(ui, state, viewer_rect, theme) {
             Some(f) => f,
             None => return,
         };
@@ -1167,7 +1172,7 @@ impl ViewerPanel {
             || state.stabilization_compare_active
             || state.split_compare_effect.is_some();
         if show_split_divider {
-            self.draw_split_divider(ui, state, &frame);
+            self.draw_split_divider(ui, state, theme, &frame);
             // Keyboard nudge: ←/→ move the split by 0.02. Only consumed
             // while a compare mode is active so the same keys remain free
             // for transport / track navigation in normal viewer mode.
@@ -1190,7 +1195,7 @@ impl ViewerPanel {
         self.draw_mask_handles(ui, state, image_rect, cmds);
 
         // ── Point tracking overlay ──
-        self.draw_track_points(ui, state, image_rect, cmds);
+        self.draw_track_points(ui, state, image_rect, cmds, theme);
 
         // ── Overlay mode badge (top-right of video) ──
         self.draw_overlay_badges(ui.painter(), state, &frame);
@@ -1217,12 +1222,12 @@ impl ViewerPanel {
 
         // ── Multicam angle bar (shown below the viewer when multicam is active) ──
         if state.multicam_viewer_active && state.multicam_angle_count > 0 {
-            self.draw_multicam_angle_bar(ui, state, cmds, &frame);
+            self.draw_multicam_angle_bar(ui, state, theme, cmds, &frame);
         }
 
         // Performance overlay
         if state.show_perf_overlay {
-            self.draw_perf_overlay(ui, state, image_rect);
+            self.draw_perf_overlay(ui, state, image_rect, theme);
         }
 
         self.handle_scope_cursor_input(ui, state, &frame);
@@ -1356,7 +1361,7 @@ impl ViewerPanel {
         let cy = rect.center().y;
 
         // Background
-        ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgb(24, 24, 30));
+        ui.painter().rect_filled(rect, 0.0, theme.bg_deep);
 
         // ── Left: Timecode ── (per-viewer: source clip time vs. timeline time)
         let (tc_secs, tc_rate) = match viewer_kind {
@@ -1414,7 +1419,7 @@ impl ViewerPanel {
                 egui::Align2::LEFT_CENTER,
                 &tc_str,
                 egui::FontId::monospace(14.0),
-                egui::Color32::from_rgb(200, 200, 210),
+                theme.text_primary,
             );
             if tc_resp.clicked() {
                 state.editing_timecode = true;
@@ -1429,10 +1434,10 @@ impl ViewerPanel {
         let total_w = 7.0 * btn_size + play_size - btn_size + 6.0 * btn_spacing;
         let mut x = rect.center().x - total_w / 2.0;
 
-        let nav_fg = egui::Color32::from_rgb(220, 220, 230);
-        let nav_bg = egui::Color32::from_rgb(40, 40, 48);
-        let nav_hover = egui::Color32::from_rgb(55, 55, 65);
-        let disabled_fg = egui::Color32::from_rgb(80, 80, 90);
+        let nav_fg = theme.text_primary;
+        let nav_bg = theme.bg_panel;
+        let nav_hover = theme.bg_hover;
+        let disabled_fg = theme.text_dim;
 
         // Helper closure: every push from this playbar goes through
         // viewer-routing so the source-side playbar drives the source
@@ -1464,11 +1469,11 @@ impl ViewerPanel {
                 ViewerMode::Source => state.source_playback == PlaybackState::Playing,
                 ViewerMode::Program => state.playback == PlaybackState::Playing,
             };
-            let bg = if enabled { theme.accent } else { egui::Color32::from_rgb(80, 60, 20) };
+            let bg = if enabled { theme.accent } else { theme.accent_dim };
             ui.painter().rect_filled(play_rect, play_size / 2.0, bg);
             let play_icon = if is_playing { Icon::Pause } else { Icon::Play };
             let icon_rect = egui::Rect::from_center_size(play_rect.center(), egui::vec2(18.0, 18.0));
-            play_icon.bold(18.0).tint(egui::Color32::BLACK).paint_at(ui, icon_rect);
+            play_icon.bold(18.0).tint(theme.text_on_accent).paint_at(ui, icon_rect);
             let clicked = resp.clicked();
             resp.on_hover_text("Play / Pause (Space)");
             if clicked && enabled {
@@ -1507,7 +1512,7 @@ impl ViewerPanel {
             egui::Align2::RIGHT_CENTER,
             &vol_text,
             egui::FontId::monospace(10.0),
-            egui::Color32::from_rgb(140, 140, 150),
+            theme.text_dim,
         );
 
         // Volume slider — right edge sits 6px LEFT of the volume %'s left edge.
@@ -1543,9 +1548,9 @@ impl ViewerPanel {
             .on_hover_text(if state.master_muted { "Unmute master output" } else { "Mute master output" });
         let mute_icon = if state.master_muted { Icon::SpeakerSlash } else { Icon::SpeakerHigh };
         let mute_color = if state.master_muted {
-            egui::Color32::from_rgb(255, 80, 80)
+            theme.marker_error
         } else {
-            egui::Color32::from_rgb(160, 160, 170)
+            theme.text_secondary
         };
         let mute_icon_rect = egui::Rect::from_center_size(mute_rect.center(), egui::vec2(14.0, 14.0));
         mute_icon.image(14.0).tint(mute_color).paint_at(ui, mute_icon_rect);
@@ -1582,11 +1587,11 @@ impl ViewerPanel {
             );
             let xform_resp = ui.allocate_rect(xform_rect, egui::Sense::click());
             let xform_color = if !xform_enabled {
-                egui::Color32::from_rgb(60, 60, 70)
+                theme.text_dim
             } else if state.show_transform_controls {
                 theme.accent
             } else {
-                egui::Color32::from_rgb(160, 160, 170)
+                theme.text_secondary
             };
             let stroke_w = if xform_enabled { 1.5 } else { 1.2 };
             let ir = xform_rect.shrink(4.0);
@@ -1621,7 +1626,7 @@ impl ViewerPanel {
             let cam_color = if cam_resp.hovered() {
                 theme.accent
             } else {
-                egui::Color32::from_rgb(160, 160, 170)
+                theme.text_secondary
             };
             let body = cam_rect.shrink2(egui::vec2(3.0, 5.0));
             ui.painter().rect_stroke(body, 2.0, egui::Stroke::new(1.2_f32, cam_color));
@@ -1678,6 +1683,7 @@ impl ViewerPanel {
         ui: &mut egui::Ui,
         state: &AppState,
         image_rect: egui::Rect,
+        theme: &KlippTheme,
     ) {
         let font = egui::FontId::monospace(11.0);
         let line_h = 15.0;
@@ -1810,17 +1816,17 @@ impl ViewerPanel {
         for (i, line) in lines.iter().enumerate() {
             let _ = i;
             let color = if line.starts_with("● REC") {
-                egui::Color32::from_rgb(255, 80, 80)
+                theme.marker_error
             } else if line.starts_with("Decode:") && state.perf_hw_decode {
-                egui::Color32::from_rgb(100, 255, 100)
+                theme.marker_success
             } else if line.starts_with("Drops:") && state.perf_drops_last_sec > 0 {
-                egui::Color32::from_rgb(255, 100, 100)
+                theme.marker_error
             } else if line.starts_with("Budget:") && budget_exceeded {
-                egui::Color32::from_rgb(255, 140, 100)
+                theme.marker_warning
             } else if line.starts_with("CPU:") && state.perf_cpu_percent > 80.0 {
-                egui::Color32::from_rgb(255, 180, 80)
+                theme.marker_warning
             } else {
-                egui::Color32::from_rgb(220, 220, 230)
+                theme.text_primary
             };
             ui.painter().text(
                 egui::pos2(box_pos.x + pad, box_pos.y + pad + i as f32 * line_h),
@@ -1839,6 +1845,7 @@ impl ViewerPanel {
         state: &mut AppState,
         image_rect: egui::Rect,
         cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
     ) {
         // Tracking placement mode: badge + click to place. The mode badge
         // alone signals tracking — no inner border that would compete with
@@ -1847,13 +1854,15 @@ impl ViewerPanel {
             // "TRACKING" label top-left
             let label_pos = egui::pos2(image_rect.left() + 8.0, image_rect.top() + 8.0);
             let label_bg = egui::Rect::from_min_size(label_pos, egui::vec2(80.0, 18.0));
-            ui.painter().rect_filled(label_bg, 3.0, egui::Color32::from_rgba_unmultiplied(0xe8, 0xa0, 0x20, 200));
+            ui.painter().rect_filled(label_bg, 3.0, egui::Color32::from_rgba_unmultiplied(
+                theme.accent.r(), theme.accent.g(), theme.accent.b(), 200,
+            ));
             ui.painter().text(
                 egui::pos2(label_bg.center().x, label_bg.center().y),
                 egui::Align2::CENTER_CENTER,
                 "TRACKING",
                 egui::FontId::proportional(10.0),
-                egui::Color32::from_rgb(0x1a, 0x1a, 0x1a),
+                theme.text_on_accent,
             );
 
             // Click to place tracker
@@ -2911,6 +2920,7 @@ impl ViewerPanel {
         &mut self,
         ui: &mut egui::Ui,
         state: &AppState,
+        theme: &KlippTheme,
         viewer_rect: egui::Rect,
         cmds: &mut Vec<AppCommand>,
     ) {
@@ -2976,7 +2986,7 @@ impl ViewerPanel {
                     );
 
                     // Graphical IN/OUT markers
-                    Self::draw_source_in_out_markers(ui, &image_rect, media);
+                    Self::draw_source_in_out_markers(ui, &image_rect, media, theme);
                 }
                 return;
             }
@@ -2988,9 +2998,9 @@ impl ViewerPanel {
         if let Some(media) = media {
             let cx = viewer_rect.center().x;
             let cy = viewer_rect.center().y;
-            let dim = egui::Color32::from_rgb(120, 120, 130);
-            let label_col = egui::Color32::from_rgb(180, 180, 190);
-            let val_col = egui::Color32::from_rgb(210, 210, 220);
+            let dim = theme.text_dim;
+            let label_col = theme.text_secondary;
+            let val_col = theme.text_primary;
 
             ui.painter().text(
                 egui::pos2(cx, cy - 60.0),
@@ -3056,11 +3066,11 @@ impl ViewerPanel {
                 egui::Align2::CENTER_CENTER,
                 format!("In: {}  Out: {}", in_str, out_str),
                 egui::FontId::monospace(12.0),
-                egui::Color32::from_rgb(200, 160, 80),
+                theme.text_accent,
             );
 
             // Graphical IN/OUT markers on the viewer rect
-            Self::draw_source_in_out_markers(ui, &viewer_rect, media);
+            Self::draw_source_in_out_markers(ui, &viewer_rect, media, theme);
 
             // Edit buttons. Subclip is enabled only when the source clip has
             // an IN and OUT set AND is not itself a subclip — creating a
@@ -3093,16 +3103,16 @@ impl ViewerPanel {
                 );
                 let resp = ui.allocate_rect(rect, if *enabled { egui::Sense::click() } else { egui::Sense::hover() });
                 let fill = if !enabled {
-                    egui::Color32::from_rgb(30, 30, 35)
+                    theme.bg_deep
                 } else if resp.hovered() {
-                    egui::Color32::from_rgb(60, 60, 70)
+                    theme.bg_hover
                 } else {
-                    egui::Color32::from_rgb(45, 45, 55)
+                    theme.bg_raised
                 };
                 let text_color = if *enabled {
-                    egui::Color32::WHITE
+                    theme.text_primary
                 } else {
-                    egui::Color32::from_rgb(70, 70, 80)
+                    theme.text_dim
                 };
                 ui.painter().rect_filled(rect, 3.0, fill);
                 ui.painter().text(
@@ -3122,7 +3132,7 @@ impl ViewerPanel {
                 egui::Align2::CENTER_CENTER,
                 "Click a media item to load it here",
                 egui::FontId::proportional(14.0),
-                egui::Color32::from_rgb(80, 80, 90),
+                theme.text_dim,
             );
         }
     }
@@ -3132,8 +3142,9 @@ impl ViewerPanel {
         ui: &mut egui::Ui,
         image_rect: &egui::Rect,
         media: &klipp_media::MediaItem,
+        theme: &KlippTheme,
     ) {
-        let amber = egui::Color32::from_rgb(232, 160, 32);
+        let amber = theme.accent;
         let bar_h = 4.0_f32;
         let marker_w = 3.0_f32;
         let label_font = egui::FontId::monospace(8.0);
@@ -3203,7 +3214,9 @@ impl ViewerPanel {
             );
             ui.painter().rect_filled(
                 fill_rect, 0.0,
-                egui::Color32::from_rgba_unmultiplied(232, 160, 32, 60),
+                egui::Color32::from_rgba_unmultiplied(
+                    theme.accent.r(), theme.accent.g(), theme.accent.b(), 60,
+                ),
             );
         }
     }

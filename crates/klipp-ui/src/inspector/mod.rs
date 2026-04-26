@@ -127,9 +127,9 @@ impl NewInspectorPanel {
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(banner_rect), |ui| {
                 // Amber background
                 ui.painter().rect_filled(banner_rect, 0.0,
-                    egui::Color32::from_rgba_premultiplied(232, 160, 32, 30));
+                    egui::Color32::from_rgba_premultiplied(theme.accent.r(), theme.accent.g(), theme.accent.b(), 30));
                 ui.painter().hline(banner_rect.x_range(), banner_rect.max.y,
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(232, 160, 32, 60)));
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(theme.accent.r(), theme.accent.g(), theme.accent.b(), 60)));
 
                 // Color bar on left
                 let bar_rect = egui::Rect::from_min_size(
@@ -139,8 +139,8 @@ impl NewInspectorPanel {
                 ui.painter().rect_filled(bar_rect, 0.0, role_color);
 
                 // Text — dark colors for readability on amber background
-                let banner_text = egui::Color32::from_rgb(180, 120, 20);
-                let banner_tc = egui::Color32::from_rgb(140, 100, 30);
+                let banner_text = theme.text_on_accent;
+                let banner_tc = theme.text_on_accent;
                 ui.painter().text(
                     egui::pos2(banner_rect.min.x + 12.0, banner_rect.center().y),
                     egui::Align2::LEFT_CENTER,
@@ -417,7 +417,7 @@ fn font_style_to_u8(style: klipp_timeline::FontStyle) -> u8 {
 
 fn show_title_editor(
     ui: &mut egui::Ui,
-    _theme: &KlippTheme,
+    theme: &KlippTheme,
     clip: &klipp_timeline::Clip,
     state: &AppState,
     cmds: &mut Vec<AppCommand>,
@@ -434,16 +434,16 @@ fn show_title_editor(
     } else {
         td.text.clone()
     };
-    ui.label(egui::RichText::new(&preview).size(11.0).color(egui::Color32::from_rgb(180, 180, 190)));
+    ui.label(egui::RichText::new(&preview).size(11.0).color(theme.text_secondary));
     if state.viewer_text_edit {
         if let Some((s, e)) = state.viewer_text_selection.or(state.viewer_text_selection_locked) {
             let selected_text = if e <= td.text.len() { &td.text[s..e] } else { "" };
             if !selected_text.is_empty() {
-                ui.label(egui::RichText::new(format!("Selected: \"{}\"", selected_text)).size(9.0).color(egui::Color32::from_rgb(255, 195, 50)));
+                ui.label(egui::RichText::new(format!("Selected: \"{}\"", selected_text)).size(9.0).color(theme.accent));
             }
         }
     } else {
-        ui.label(egui::RichText::new("Double-click in viewer to edit").size(9.0).color(egui::Color32::from_rgb(100, 100, 110)));
+        ui.label(egui::RichText::new("Double-click in viewer to edit").size(9.0).color(theme.text_dim));
     }
     ui.add_space(8.0);
 
@@ -479,8 +479,8 @@ fn show_title_editor(
     let is_bold = matches!(td.font_style, klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic);
     let is_italic = matches!(td.font_style, klipp_timeline::FontStyle::Italic | klipp_timeline::FontStyle::BoldItalic);
     ui.horizontal(|ui| {
-        let bold_text = if is_bold { egui::RichText::new(" B ").strong() } else { egui::RichText::new(" B ").color(egui::Color32::from_rgb(120, 120, 130)) };
-        let italic_text = if is_italic { egui::RichText::new(" I ").italics() } else { egui::RichText::new(" I ").color(egui::Color32::from_rgb(120, 120, 130)) };
+        let bold_text = if is_bold { egui::RichText::new(" B ").strong() } else { egui::RichText::new(" B ").color(theme.text_dim) };
+        let italic_text = if is_italic { egui::RichText::new(" I ").italics() } else { egui::RichText::new(" I ").color(theme.text_dim) };
         if ui.selectable_label(is_bold, bold_text).clicked() {
             let new_style = match (!is_bold, is_italic) {
                 (true, true) => klipp_timeline::FontStyle::BoldItalic, (true, false) => klipp_timeline::FontStyle::Bold,
@@ -531,7 +531,7 @@ fn show_title_editor(
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Size").strong().size(11.0));
         if size_is_mixed {
-            ui.label(egui::RichText::new("Mixed").size(9.0).color(egui::Color32::from_rgb(255, 195, 50)));
+            ui.label(egui::RichText::new("Mixed").size(9.0).color(theme.accent));
         }
     });
     let mut font_size = display_size;
@@ -573,7 +573,7 @@ fn show_title_editor(
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Color").strong().size(11.0));
         if color_is_mixed {
-            ui.label(egui::RichText::new("Mixed").size(9.0).color(egui::Color32::from_rgb(255, 195, 50)));
+            ui.label(egui::RichText::new("Mixed").size(9.0).color(theme.accent));
         }
     });
     let mut color = egui::Color32::from_rgba_premultiplied(display_color[0], display_color[1], display_color[2], display_color[3]);
@@ -645,7 +645,7 @@ fn show_title_editor(
     if has_selection && sel_range.1 > sel_range.0 {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Effects:").size(9.0).color(egui::Color32::from_rgb(140, 140, 150)));
+            ui.label(egui::RichText::new("Effects:").size(9.0).color(theme.text_dim));
             // Rainbow — each character gets a different color
             if ui.small_button("Rainbow").clicked() {
                 let rainbow: &[[u8; 4]] = &[
@@ -735,7 +735,7 @@ fn show_title_editor(
     if !td.style_runs.is_empty() {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("{} style runs", td.style_runs.len())).size(9.0).color(egui::Color32::from_rgb(120, 120, 130)));
+            ui.label(egui::RichText::new(format!("{} style runs", td.style_runs.len())).size(9.0).color(theme.text_dim));
             if ui.small_button("Clear All").clicked() {
                 cmds.push(AppCommand::ClearTitleStyleRuns { clip_id });
             }
@@ -3506,7 +3506,7 @@ fn show_transition_inspector(
             if ui
                 .add(egui::Button::new(
                     egui::RichText::new("Remove Transition")
-                        .color(egui::Color32::from_rgb(255, 180, 180))
+                        .color(theme.marker_error)
                         .size(11.0),
                 ))
                 .clicked()
@@ -3527,8 +3527,8 @@ fn show_transition_inspector(
             let ha = klipp_validation::handles::compute_handle_availability(
                 transition, clip_a, clip_b, &state.media_pool,
             );
-            let warn_color = egui::Color32::from_rgb(220, 60, 60);
-            let amber_color = egui::Color32::from_rgb(255, 195, 50);
+            let warn_color = theme.marker_error;
+            let amber_color = theme.accent;
             let rate = transition.duration.rate.max(1) as f64;
 
             if ha.has_shortfall() || ha.has_unknown() {

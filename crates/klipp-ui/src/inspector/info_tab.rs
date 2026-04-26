@@ -177,7 +177,7 @@ pub fn show_no_selection(
                         egui::pos2(rect.min.x + 10.0, rect.min.y + 12.0), egui::Align2::LEFT_CENTER,
                         "MISSING MEDIA", egui::FontId::proportional(9.0), theme.text_dim,
                     );
-                    let mc = if missing_count == 0 { egui::Color32::from_rgb(80, 200, 120) } else { egui::Color32::from_rgb(210, 60, 60) };
+                    let mc = if missing_count == 0 { theme.marker_success } else { theme.marker_error };
                     ui.painter().text(
                         egui::pos2(rect.min.x + 10.0, rect.min.y + 30.0), egui::Align2::LEFT_CENTER,
                         format!("{missing_count}"), egui::FontId::proportional(18.0), mc,
@@ -192,7 +192,7 @@ pub fn show_no_selection(
                         egui::pos2(rect.min.x + 10.0, rect.min.y + 12.0), egui::Align2::LEFT_CENTER,
                         "OFFLINE CLIPS", egui::FontId::proportional(9.0), theme.text_dim,
                     );
-                    let oc = if offline_count == 0 { egui::Color32::from_rgb(80, 200, 120) } else { egui::Color32::from_rgb(210, 60, 60) };
+                    let oc = if offline_count == 0 { theme.marker_success } else { theme.marker_error };
                     ui.painter().text(
                         egui::pos2(rect.min.x + 10.0, rect.min.y + 30.0), egui::Align2::LEFT_CENTER,
                         format!("{offline_count}"), egui::FontId::proportional(18.0), oc,
@@ -310,11 +310,11 @@ pub fn show_no_selection(
         });
 
         let free_color = if free_bytes < 1_000_000_000 {
-            egui::Color32::from_rgb(210, 60, 60)
+            theme.marker_error
         } else if free_bytes < 10_000_000_000 {
             theme.accent
         } else {
-            egui::Color32::from_rgb(80, 200, 120)
+            theme.marker_success
         };
         info_row_custom(ui, theme, pad, row_h, w, "Free disk space", |ui, rx, cy| {
             ui.painter().text(
@@ -418,10 +418,10 @@ pub fn show_bin_media(
         info_row_custom(ui, theme, pad, row_h, w, "Colour", |ui, rx, cy| {
             use klipp_media::ColourSpace;
             let (badge_text, badge_color, sub_text) = match media.colour_space {
-                ColourSpace::Sdr => ("SDR", egui::Color32::from_rgb(60, 120, 200), "BT.709"),
-                ColourSpace::Hdr10 => ("HDR10", egui::Color32::from_rgb(220, 140, 30), "BT.2020"),
-                ColourSpace::Hlg => ("HLG", egui::Color32::from_rgb(200, 100, 40), "BT.2020"),
-                ColourSpace::Unknown => ("SDR", egui::Color32::from_rgb(60, 120, 200), "BT.709"),
+                ColourSpace::Sdr => ("SDR", theme.marker_info, "BT.709"),
+                ColourSpace::Hdr10 => ("HDR10", theme.marker_warning, "BT.2020"),
+                ColourSpace::Hlg => ("HLG", theme.accent, "BT.2020"),
+                ColourSpace::Unknown => ("SDR", theme.marker_info, "BT.709"),
             };
             let sub_galley = ui.painter().layout_no_wrap(sub_text.to_string(), egui::FontId::proportional(12.0), dim);
             let sub_w = sub_galley.size().x;
@@ -498,7 +498,7 @@ pub fn show_bin_media(
         // Proxy
         info_row_custom(ui, theme, pad, row_h, w, "Proxy", |ui, rx, cy| {
             if media.proxy_ready {
-                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, "Ready", egui::FontId::proportional(13.0), egui::Color32::from_rgb(100, 200, 120));
+                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, "Ready", egui::FontId::proportional(13.0), theme.marker_success);
             } else {
                 ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, "None", egui::FontId::proportional(13.0), dim);
             }
@@ -825,10 +825,10 @@ pub fn show_clip(
         info_row_custom(ui, theme, pad, row_h, w, "Colour", |ui, rx, cy| {
             use klipp_media::ColourSpace;
             let (badge_text, badge_color, sub_text) = match media.colour_space {
-                ColourSpace::Sdr => ("SDR", egui::Color32::from_rgb(60, 120, 200), "BT.709"),
-                ColourSpace::Hdr10 => ("HDR10", egui::Color32::from_rgb(220, 140, 30), "BT.2020"),
-                ColourSpace::Hlg => ("HLG", egui::Color32::from_rgb(200, 100, 40), "BT.2020"),
-                ColourSpace::Unknown => ("SDR", egui::Color32::from_rgb(60, 120, 200), "BT.709"),
+                ColourSpace::Sdr => ("SDR", theme.marker_info, "BT.709"),
+                ColourSpace::Hdr10 => ("HDR10", theme.marker_warning, "BT.2020"),
+                ColourSpace::Hlg => ("HLG", theme.accent, "BT.2020"),
+                ColourSpace::Unknown => ("SDR", theme.marker_info, "BT.709"),
             };
 
             // Sub-text
@@ -911,7 +911,7 @@ pub fn show_clip(
                 ui.painter().text(
                     egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
                     "Ready", egui::FontId::proportional(13.0),
-                    egui::Color32::from_rgb(100, 200, 120),
+                    theme.marker_success,
                 );
             } else if is_generating {
                 let progress = state.proxy_progress.get(&media.id).copied().unwrap_or(0.0);
@@ -919,7 +919,7 @@ pub fn show_clip(
                     egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
                     format!("{:.0}%", progress * 100.0),
                     egui::FontId::proportional(13.0),
-                    egui::Color32::from_rgb(220, 180, 60),
+                    theme.marker_warning,
                 );
                 ui.ctx().request_repaint();
             } else {
@@ -1109,7 +1109,7 @@ pub fn show_clip(
                 egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
                 track_name,
                 egui::FontId::proportional(13.0),
-                egui::Color32::from_rgb(80, 160, 220),
+                theme.marker_info,
             );
         });
 
@@ -1117,11 +1117,11 @@ pub fn show_clip(
         info_row_custom(ui, theme, pad, row_h, w, "Speed", |ui, rx, cy| {
             let speed = clip.speed;
             let color = if (speed - 1.0).abs() < 0.001 {
-                egui::Color32::from_rgb(100, 200, 120) // green
+                theme.marker_success // green
             } else if speed > 1.0 {
-                egui::Color32::from_rgb(220, 180, 60) // amber
+                theme.marker_warning // amber
             } else {
-                egui::Color32::from_rgb(200, 80, 80) // red
+                theme.marker_error // red
             };
             ui.painter().text(
                 egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
