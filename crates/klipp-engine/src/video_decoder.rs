@@ -41,7 +41,7 @@
 //! nvidia-vaapi-driver), so those codecs skip directly to software
 //! even when VAAPI is available. See `open_gpu_decoder`.
 
-use crate::frame::{Frame, GpuFrame};
+use crate::frame::GpuFrame;
 use crate::types::{FrameQueue, LinearFrame, SharedFrameQueue};
 use crossbeam_channel::{Receiver, Sender};
 use klipp_color::transfer::srgb_to_linear;
@@ -54,11 +54,13 @@ use tracing::{debug, info, warn};
 
 /// Gate for the GPU-resident decode path. When on, NV12 / P010
 /// hardware-decode output stays on the GPU as an `Arc<wgpu::Buffer>`
-/// and the decoded `LinearFrame` carries a `gpu_source` attachment
-/// alongside the usual CPU `data`. Phase 4d's grade chain binds the
-/// buffer directly; until then this is a no-op for playback — same
-/// shader dispatch, same readback, just the buffer lingers for the
-/// consumer.
+/// inside `LinearFrame.gpu_source`, and the decode thread does NOT
+/// pay the GPU→CPU readback fence. Engine consumers that still need
+/// CPU `data` realise it lazily on demand via
+/// [`LinearFrame::ensure_cpu_data`], so the readback (when actually
+/// required) moves off the decode thread onto the engine thread,
+/// pipelined with other engine work instead of serialising the
+/// decoder behind `device.poll(Wait)`.
 ///
 /// Read once per process via `OnceLock` so the env check doesn't
 /// poke syscalls on the decode hot path.
@@ -1325,37 +1327,41 @@ unsafe fn download_hw_frame(
             // BT.709 matrix/primaries, and limited vs full range from
             // these IDs — no ad-hoc HDR sniffing in the host code.
             let color_ids = klipp_core::color_ids::ids(source_cs);
-            let (rgba_data, gpu_source) = if should_attach_gpu_source() {
+            let (linear, gpu_source) = if should_attach_gpu_source() {
+                // Phase 4d.1: GPU-resident handoff. The shader runs;
+                // we attach the resulting wgpu::Buffer to gpu_source
+                // and skip the readback + linearise entirely. The
+                // engine's grade chain consumes the buffer directly
+                // via `prime_chain_from_gpu_u8_buffer`. CPU `data`
+                // stays empty; consumers that need it call
+                // `LinearFrame::ensure_cpu_data` on demand.
                 let buffer = converter.convert_p010_to_rgba_on_gpu(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
                     out_w, out_h, source_rotation as u32, color_ids,
                 );
                 let device = converter.device();
                 let queue = converter.queue();
-                let readback = Frame::Gpu(GpuFrame::new(
-                    device.clone(), queue.clone(), Arc::clone(&buffer), out_w, out_h,
-                ));
-                let bytes = readback.into_cpu().data;
                 let attach = Arc::new(GpuFrame::new(device, queue, buffer, out_w, out_h));
-                (bytes, Some(attach))
+                (Vec::new(), Some(attach))
             } else {
                 let bytes = converter.convert_p010_to_rgba(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
                     out_w, out_h, source_rotation as u32, color_ids,
                 );
-                (bytes, None)
+                let t_linear = std::time::Instant::now();
+                let lin = rgba_u8_to_linear(&bytes);
+                PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
+                (lin, None)
             };
             // Reuse the NV12 perf bucket — the meaning is identical
             // (GPU YUV→RGBA encode time per frame).
             PERF_NV12_CONV_US.fetch_add(t_p010.elapsed().as_micros() as u64, Ordering::Relaxed);
 
             av_frame_free(&mut (sw_frame as *mut _));
-            let t_linear = std::time::Instant::now();
-            let linear = rgba_u8_to_linear(&rgba_data);
-            PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
 
             let count = CALL_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
             PERF_GPU_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+            log_first_resident_delivery(gpu_source.is_some(), "p010_cuvid");
             maybe_log_hw_download_stats(
                 count, &CALL_COUNT, &PERF_HW_DL_US, &PERF_NV12_CONV_US,
                 &PERF_LINEAR_ENCODE_US, &PERF_SW_SCALE_US,
@@ -1388,35 +1394,36 @@ unsafe fn download_hw_frame(
 
             let t_nv12 = std::time::Instant::now();
             let color_ids = klipp_core::color_ids::ids(source_cs);
-            let (rgba_data, gpu_source) = if should_attach_gpu_source() {
+            let (linear, gpu_source) = if should_attach_gpu_source() {
+                // Phase 4d.1: see P010 path above. NV12 follows the
+                // same GPU-resident handoff — no readback, no
+                // linearise; the engine consumes the wgpu::Buffer
+                // directly when it primes the chain.
                 let buffer = converter.convert_nv12_to_rgba_on_gpu(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
                     out_w, out_h, source_rotation as u32, color_ids,
                 );
                 let device = converter.device();
                 let queue = converter.queue();
-                let readback = Frame::Gpu(GpuFrame::new(
-                    device.clone(), queue.clone(), Arc::clone(&buffer), out_w, out_h,
-                ));
-                let bytes = readback.into_cpu().data;
                 let attach = Arc::new(GpuFrame::new(device, queue, buffer, out_w, out_h));
-                (bytes, Some(attach))
+                (Vec::new(), Some(attach))
             } else {
                 let bytes = converter.convert_nv12_to_rgba(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
                     out_w, out_h, source_rotation as u32, color_ids,
                 );
-                (bytes, None)
+                let t_linear = std::time::Instant::now();
+                let lin = rgba_u8_to_linear(&bytes);
+                PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
+                (lin, None)
             };
             PERF_NV12_CONV_US.fetch_add(t_nv12.elapsed().as_micros() as u64, Ordering::Relaxed);
 
             av_frame_free(&mut (sw_frame as *mut _));
-            let t_linear = std::time::Instant::now();
-            let linear = rgba_u8_to_linear(&rgba_data);
-            PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
 
             let count = CALL_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
             PERF_GPU_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+            log_first_resident_delivery(gpu_source.is_some(), "nv12_cuvid");
             maybe_log_hw_download_stats(
                 count,
                 &CALL_COUNT,
@@ -1553,6 +1560,7 @@ unsafe fn download_hw_frame(
     };
 
     let count = CALL_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    log_first_resident_delivery(false, "swscale_cpu");
     maybe_log_hw_download_stats(
         count,
         &CALL_COUNT,
@@ -1573,6 +1581,32 @@ unsafe fn download_hw_frame(
         gpu_source: None,
         colorspace: source_cs,
     })
+}
+
+/// One-shot info log per delivery mode so the operator can confirm
+/// whether the decoder actually delivered a GPU-resident `gpu_source`
+/// or fell through to CPU `data`. Helps validate
+/// `KLIPP_GPU_FRAMES=1` end-to-end without sifting per-frame trace.
+/// `mode` is a short tag distinguishing which path produced the
+/// frame (e.g. `p010_cuvid`, `nv12_cuvid`, `swscale_cpu`).
+fn log_first_resident_delivery(gpu_resident: bool, mode: &'static str) {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    static GPU_LOGGED: AtomicBool = AtomicBool::new(false);
+    static CPU_LOGGED: AtomicBool = AtomicBool::new(false);
+    if gpu_resident {
+        if !GPU_LOGGED.swap(true, Ordering::Relaxed) {
+            tracing::info!(
+                "decode delivery: GPU-resident frame delivered (mode={mode}; \
+                 gpu_source attached, CPU readback deferred until consumer asks)"
+            );
+        }
+    } else if !CPU_LOGGED.swap(true, Ordering::Relaxed) {
+        tracing::info!(
+            "decode delivery: CPU frame delivered (mode={mode}; \
+             gpu_source absent, full CPU data populated up front)"
+        );
+    }
 }
 
 /// Log + reset accumulated per-stage timing every 60 frames so the

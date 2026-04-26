@@ -3370,7 +3370,7 @@ impl PlaybackEngine {
             }
         }
 
-        let frame = match display_frame {
+        let mut frame = match display_frame {
             Some(f) => f,
             None => {
                 if self.v1_decoder.is_none() && !self.audio_sources.is_empty() {
@@ -3580,6 +3580,13 @@ impl PlaybackEngine {
         // trip via `frame.into_rgba().to_linear()`.
         let (final_w, final_h) = (frame.width, frame.height);
         let t_pp_full = std::time::Instant::now();
+        // Phase 4d.1: realise CPU `data` from `gpu_source` if the
+        // decoder deferred it. The grade chain consumes the GPU
+        // buffer directly via `prime_chain_from_gpu_u8_buffer`, but
+        // the CPU encode path inside `post_process_rgba` (pregrade
+        // cache, scope reencode) still wants linear-f32. No-op when
+        // `data` is already populated (SW decode, KLIPP_GPU_FRAMES=0).
+        frame.ensure_cpu_data();
         let gpu_source = frame.gpu_source.clone();
         let v1_graded_linear = self.post_process_rgba_with_gpu_source(
             frame.data, final_w, final_h, gpu_source.as_ref(),
@@ -5236,7 +5243,7 @@ impl PlaybackEngine {
                 dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop()
             }).filter(|f| !f.is_eof);
 
-            if let Some(frame) = next_frame {
+            if let Some(mut frame) = next_frame {
                 let chirp_pos = frame.pts_secs();
                 let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 if let Some(clip) = seq.tracks.get(self.current_track_index)
@@ -5256,6 +5263,7 @@ impl PlaybackEngine {
                 // Cache pre-grade frame as u8 for backward stepping
                 // (frame_cache stores u8). Feed linear straight into
                 // post_process_rgba so the hot path stays in linear.
+                frame.ensure_cpu_data();
                 let rgba_u8 = linear_rgba_to_u8(&frame.data);
                 self.frame_cache.insert(self.playhead.value, Arc::new(rgba_u8), w, h);
                 let gpu_source = frame.gpu_source.clone();
@@ -5292,7 +5300,7 @@ impl PlaybackEngine {
                 // Pop frame in a limited scope to avoid borrowing self across post_process
                 let popped = self.v1_decoder.as_ref()
                     .and_then(|dec| dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop());
-                if let Some(frame) = popped {
+                if let Some(mut frame) = popped {
                     if frame.is_eof {
                         if let Some(dec) = &self.v1_decoder { dec.pause(); }
                         return;
@@ -5317,6 +5325,7 @@ impl PlaybackEngine {
                     let (w, h) = (frame.width, frame.height);
                     // Cache pre-grade frame as u8 for backward
                     // stepping; post_process_rgba stays linear.
+                    frame.ensure_cpu_data();
                     let rgba_u8 = linear_rgba_to_u8(&frame.data);
                     self.frame_cache.insert(self.playhead.value, Arc::new(rgba_u8), w, h);
                     let gpu_source = frame.gpu_source.clone();
@@ -5373,7 +5382,7 @@ impl PlaybackEngine {
             while std::time::Instant::now() < deadline {
                 let popped = self.v1_decoder.as_ref()
                     .and_then(|dec| dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop());
-                if let Some(frame) = popped {
+                if let Some(mut frame) = popped {
                     if frame.is_eof { break; }
                     let (w, h) = (frame.width, frame.height);
 
@@ -5397,6 +5406,7 @@ impl PlaybackEngine {
                     // Cache the pre-grade frame as u8 for backward
                     // stepping; the display path stays in linear until
                     // the viewer seam below.
+                    frame.ensure_cpu_data();
                     let rgba_u8 = linear_rgba_to_u8(&frame.data);
                     self.frame_cache.insert(frame_num, Arc::new(rgba_u8), w, h);
 
@@ -5694,11 +5704,12 @@ impl PlaybackEngine {
                 }
                 best
             });
-            if let Some(frame) = best {
+            if let Some(mut frame) = best {
                 let (w, h) = (frame.width, frame.height);
                 // LinearFrame carries linear natively — feed it
                 // straight into post_process_rgba, display-transform
                 // once at the viewer seam.
+                frame.ensure_cpu_data();
                 let gpu_source = frame.gpu_source.clone();
                 let final_linear = self.post_process_rgba_with_gpu_source(
                     frame.data, w, h, gpu_source.as_ref(),
@@ -5739,8 +5750,9 @@ impl PlaybackEngine {
             }
             best
         });
-        let Some(frame) = frame else { return false; };
+        let Some(mut frame) = frame else { return false; };
         let (w, h) = (frame.width, frame.height);
+        frame.ensure_cpu_data();
         let gpu_source = frame.gpu_source.clone();
         let final_linear = self.post_process_rgba_with_gpu_source(
             frame.data, w, h, gpu_source.as_ref(),
