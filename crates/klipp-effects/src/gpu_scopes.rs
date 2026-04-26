@@ -339,8 +339,14 @@ impl GpuScopesPipeline {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        self.device.poll(wgpu::Maintain::Wait);
-        rx.recv().ok().and_then(|r| r.ok());
+        // Non-blocking poll loop instead of `Maintain::Wait` — see
+        // crate::gpu::poll_until_mapped doc for why Wait deadlocks
+        // on a UI-shared device. Histogram readback drops the
+        // mapped data on timeout/error and returns an empty Vec
+        // so the scope renderer falls back to its previous frame.
+        if crate::gpu::poll_until_mapped(&self.device, &rx).is_err() {
+            return Vec::new();
+        }
 
         let data = slice.get_mapped_range();
         let result: Vec<u32> = bytemuck::cast_slice(&data).to_vec();

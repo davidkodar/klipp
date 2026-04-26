@@ -360,7 +360,7 @@ const WORKGROUP_SIZE: u32 = 256;
 /// giving up. 2 s is far longer than any real GPU operation needs,
 /// but short enough that a genuine hang gets flagged before the
 /// engine watchdog notices.
-const MAP_POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+pub const MAP_POLL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Fine-grained "inside which GPU call" marker, parallel to the
 /// engine's `ENGINE_STAGE` waypoint. The grade-path stall we chase
@@ -454,7 +454,7 @@ pub fn mark_gpu_stage(s: GpuStage) {
 /// Returns the channel's result on success, or
 /// `Err(RecvError)`-style substitute when the timeout expires so
 /// callers can treat it as a device-lost-equivalent and fall back.
-fn poll_until_mapped(
+pub fn poll_until_mapped(
     device: &wgpu::Device,
     rx: &std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
 ) -> Result<Result<(), wgpu::BufferAsyncError>, std::sync::mpsc::RecvTimeoutError> {
@@ -2121,8 +2121,12 @@ impl GpuEffectsPipeline {
         let slice = staging.slice(..out_bytes);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-        self.device.poll(wgpu::Maintain::Wait);
-        let result = match rx.recv() {
+        // Non-blocking poll loop instead of `Maintain::Wait` — on a
+        // UI-shared device, Wait never returns because eframe-wgpu
+        // keeps the queue non-empty with continuous egui submits.
+        // `poll_until_mapped` drives the map callback via Poll until
+        // it fires (or times out at 2 s).
+        let result = match poll_until_mapped(&self.device, &rx) {
             Ok(Ok(())) => {
                 let data = slice.get_mapped_range();
                 let result = data.to_vec();

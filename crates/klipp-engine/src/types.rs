@@ -246,9 +246,12 @@ fn readback_gpu_frame_to_u8(gpu: &crate::frame::GpuFrame) -> Vec<u8> {
     slice.map_async(wgpu::MapMode::Read, move |res| {
         let _ = tx.send(res);
     });
-    gpu.device.poll(wgpu::Maintain::Wait);
-
-    match rx.recv() {
+    // Non-blocking poll loop instead of `Maintain::Wait` — see
+    // `klipp_effects::gpu::poll_until_mapped` for why Wait
+    // deadlocks on a UI-shared device. Falls back to a zero-filled
+    // buffer if the map times out (engine treats as device-lost-
+    // equivalent and the next frame retries).
+    match klipp_effects::gpu::poll_until_mapped(&gpu.device, &rx) {
         Ok(Ok(())) => {
             let mapped = slice.get_mapped_range();
             let v = mapped.to_vec();
