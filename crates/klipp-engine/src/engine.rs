@@ -879,6 +879,13 @@ pub struct PlaybackEngine {
     source_mixer_track_index: usize,
     /// Which scope mode to render on GPU (0=waveform, 1=parade, 2=vectorscope, 3=histogram).
     scope_render_mode: u8,
+    /// Whether the scope panel is actually visible in the UI.
+    /// Drives `should_render_scope()` together with the time-based
+    /// throttle. Default `false` so a fresh engine doesn't burn the
+    /// per-frame scope budget on data nobody is looking at — UI
+    /// flips it on via `AppCommand::SetScopesVisible(true)` when
+    /// the scopes panel opens.
+    scopes_visible: bool,
     /// Wall-clock timestamp of the last GPU scope render. Used to
     /// throttle scope refresh to ~10 Hz — colourists can't perceive
     /// scope updates faster than that, and each scope render costs
@@ -1224,6 +1231,7 @@ impl PlaybackEngine {
             // gets allocated lazily on first source-audio attach.
             source_mixer_track_index: 64,
             scope_render_mode: 0,
+            scopes_visible: false,
             last_scope_render: std::time::Instant::now() - std::time::Duration::from_secs(1),
             matte_preview_node: None,
             cached_pregrade_frame: None,
@@ -2087,6 +2095,9 @@ impl PlaybackEngine {
 
             AppCommand::SetScopeRenderMode { mode } => {
                 self.scope_render_mode = mode;
+            }
+            AppCommand::SetScopesVisible(visible) => {
+                self.scopes_visible = visible;
             }
             AppCommand::RenderScopesForFrame { rgba, width, height } => {
                 // Run the same GPU scope shaders the playback pipeline uses
@@ -7775,7 +7786,8 @@ impl PlaybackEngine {
     /// budget during playback with sliders active.
     fn should_render_scope(&self) -> bool {
         const SCOPE_MIN_INTERVAL_MS: u128 = 100;
-        self.last_scope_render.elapsed().as_millis() >= SCOPE_MIN_INTERVAL_MS
+        self.scopes_visible
+            && self.last_scope_render.elapsed().as_millis() >= SCOPE_MIN_INTERVAL_MS
     }
 
     /// Wait for a video frame near `target_secs` to appear in the queue.

@@ -781,8 +781,15 @@ impl NodeInspectorPanel {
                 });
             }
             if delete_this {
-                masks.masks.remove(mask_idx);
-                masks_changed = true;
+                // Route through the AppCommand handler so the
+                // centralized cleanup runs — it drops any TrackPoint
+                // bound to this (mask_node_id, mask_index) and
+                // slides remaining tracker bindings down to match
+                // the post-removal indices. The previous in-place
+                // `masks.masks.remove(mask_idx)` here bypassed all
+                // of that, leaving orphaned trackers attached to a
+                // mask that no longer existed.
+                cmds.push(AppCommand::RemoveMaskShape { clip_id, mask_index: mask_idx });
                 break;
             }
             if !mask_enabled { continue; }

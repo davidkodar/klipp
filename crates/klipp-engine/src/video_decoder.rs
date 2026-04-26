@@ -380,47 +380,170 @@ impl Drop for VideoDecoder {
 
 /// Which hardware acceleration is active
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum HwAccel {
+pub(crate) enum HwAccel {
     Cuda,
     Vaapi,
     Software,
 }
 
 /// Callback for FFmpeg codec negotiation — selects the preferred HW pixel format.
+///
+/// Returns `AV_PIX_FMT_CUDA` whenever it's offered so ffmpeg keeps the frame
+/// on the GPU (`AVHWFrame`) instead of auto-downloading. When CUDA isn't in
+/// the candidate list, falls back to `*pix_fmts` (ffmpeg's own first
+/// preference) — that lets the decoder still produce a software frame for
+/// codecs / profiles NVDEC can't handle. The downstream `is_hw_frame` check
+/// on `AVPixelFormat::AV_PIX_FMT_CUDA` then routes those software frames to
+/// `convert_sw_frame` instead of `download_hw_frame`.
+///
+/// Strict mode (`KLIPP_STRICT_HW_DECODE=1`) flips the fallback to
+/// `AV_PIX_FMT_NONE` instead — the official ffmpeg `hw_decode.c` example
+/// pattern. That forces ffmpeg to back off to its own software decoder
+/// rather than silently auto-downloading. Useful when investigating "HW
+/// negotiated at init then SW frames showed up mid-stream" symptoms;
+/// off by default because it's a bigger behaviour change for every codec
+/// that doesn't have a CUDA hwaccel built in.
+/// Convert an `AVPixelFormat` to its ffmpeg name string for human-
+/// readable diagnostic logs (e.g. "cuda", "yuv420p10le", "vaapi").
+/// Falls back to the integer value when ffmpeg returns NULL (out-of-
+/// range / unknown format).
+unsafe fn pix_fmt_name(f: ffmpeg_next::ffi::AVPixelFormat) -> String {
+    let p = ffmpeg_next::ffi::av_get_pix_fmt_name(f);
+    if p.is_null() {
+        format!("?{}", f as i32)
+    } else {
+        std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+    }
+}
+
+/// Set up an `AVHWFramesContext` on the codec context so the decoder
+/// has somewhere to put HW frames in `hw_pix_fmt`. Mirrors ffmpeg's
+/// `hw_decode.c` example pattern. Without this step, returning a HW
+/// pixel format from `get_format` succeeds at the API level but the
+/// decoder silently falls back to a software output format because
+/// it has no hw_frames_ctx to allocate output buffers from — exactly
+/// the symptom we observed on Sony A6700 HEVC Main 10 (first call
+/// picks CUDA, follow-up calls offer no CUDA → SW auto-download).
+///
+/// Returns `true` on success. On failure, logs the cause and lets
+/// the caller decide whether to still accept the HW format (ffmpeg
+/// will then fall back internally — no worse than the pre-fix state).
+unsafe fn install_hw_frames_ctx(
+    ctx: *mut ffmpeg_next::ffi::AVCodecContext,
+    hw_pix_fmt: ffmpeg_next::ffi::AVPixelFormat,
+) -> bool {
+    use ffmpeg_next::ffi::*;
+    if (*ctx).hw_device_ctx.is_null() {
+        warn!("install_hw_frames_ctx: hw_device_ctx is NULL");
+        return false;
+    }
+    let device_ref = (*ctx).hw_device_ctx;
+    let mut frames_ref: *mut AVBufferRef = std::ptr::null_mut();
+    let rc = avcodec_get_hw_frames_parameters(ctx, device_ref, hw_pix_fmt, &mut frames_ref);
+    if rc < 0 || frames_ref.is_null() {
+        warn!("install_hw_frames_ctx: avcodec_get_hw_frames_parameters returned {rc}");
+        return false;
+    }
+    let init_rc = av_hwframe_ctx_init(frames_ref);
+    if init_rc < 0 {
+        warn!("install_hw_frames_ctx: av_hwframe_ctx_init returned {init_rc}");
+        av_buffer_unref(&mut frames_ref);
+        return false;
+    }
+    (*ctx).hw_frames_ctx = av_buffer_ref(frames_ref);
+    av_buffer_unref(&mut frames_ref);
+    true
+}
+
 unsafe extern "C" fn cuda_get_format(
-    _ctx: *mut ffmpeg_next::ffi::AVCodecContext,
+    ctx: *mut ffmpeg_next::ffi::AVCodecContext,
     pix_fmts: *const ffmpeg_next::ffi::AVPixelFormat,
 ) -> ffmpeg_next::ffi::AVPixelFormat {
     use ffmpeg_next::ffi::AVPixelFormat;
 
+    // Walk the candidate list once, hunting for CUDA + collecting
+    // names for the diagnostic log. Most lists are 2–4 entries long
+    // so the double pass is negligible.
     let mut p = pix_fmts;
+    let mut candidates: Vec<String> = Vec::with_capacity(8);
     while *p != AVPixelFormat::AV_PIX_FMT_NONE {
+        candidates.push(pix_fmt_name(*p));
         if *p == AVPixelFormat::AV_PIX_FMT_CUDA {
-            info!("CUDA get_format: selected AV_PIX_FMT_CUDA");
+            // Install hw_frames_ctx before returning the HW format —
+            // see `install_hw_frames_ctx` for why this matters.
+            // Already installed (re-negotiation pass with the same
+            // codec context) is fine; we only set it the first time.
+            let already_set = !(*ctx).hw_frames_ctx.is_null();
+            let ok = already_set
+                || install_hw_frames_ctx(ctx, AVPixelFormat::AV_PIX_FMT_CUDA);
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static LOGGED: AtomicBool = AtomicBool::new(false);
+            if !LOGGED.swap(true, Ordering::Relaxed) {
+                info!(
+                    "CUDA get_format: selected AV_PIX_FMT_CUDA (candidates={candidates:?}, \
+                     hw_frames_ctx={})",
+                    if already_set { "already set" }
+                    else if ok { "installed" }
+                    else { "INSTALL FAILED — decoder will fall back to SW" },
+                );
+            }
             return AVPixelFormat::AV_PIX_FMT_CUDA;
         }
         p = p.add(1);
     }
-    warn!("CUDA get_format: AV_PIX_FMT_CUDA not in candidate list, using fallback");
-    *pix_fmts
+    let strict = std::env::var("KLIPP_STRICT_HW_DECODE").as_deref() == Ok("1");
+    if strict {
+        warn!(
+            "CUDA get_format: AV_PIX_FMT_CUDA not offered (candidates={candidates:?}); \
+             KLIPP_STRICT_HW_DECODE=1 → returning AV_PIX_FMT_NONE"
+        );
+        AVPixelFormat::AV_PIX_FMT_NONE
+    } else {
+        warn!(
+            "CUDA get_format: AV_PIX_FMT_CUDA not offered (candidates={candidates:?}); \
+             falling back to ffmpeg's first preference (software decode for this pass)"
+        );
+        *pix_fmts
+    }
 }
 
 unsafe extern "C" fn vaapi_get_format(
-    _ctx: *mut ffmpeg_next::ffi::AVCodecContext,
+    ctx: *mut ffmpeg_next::ffi::AVCodecContext,
     pix_fmts: *const ffmpeg_next::ffi::AVPixelFormat,
 ) -> ffmpeg_next::ffi::AVPixelFormat {
     use ffmpeg_next::ffi::AVPixelFormat;
 
     let mut p = pix_fmts;
+    let mut candidates: Vec<String> = Vec::with_capacity(8);
     while *p != AVPixelFormat::AV_PIX_FMT_NONE {
+        candidates.push(pix_fmt_name(*p));
         if *p == AVPixelFormat::AV_PIX_FMT_VAAPI {
-            info!("VAAPI get_format: selected AV_PIX_FMT_VAAPI");
+            let already_set = !(*ctx).hw_frames_ctx.is_null();
+            let ok = already_set
+                || install_hw_frames_ctx(ctx, AVPixelFormat::AV_PIX_FMT_VAAPI);
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static LOGGED: AtomicBool = AtomicBool::new(false);
+            if !LOGGED.swap(true, Ordering::Relaxed) {
+                info!(
+                    "VAAPI get_format: selected AV_PIX_FMT_VAAPI (candidates={candidates:?}, \
+                     hw_frames_ctx={})",
+                    if already_set { "already set" }
+                    else if ok { "installed" }
+                    else { "INSTALL FAILED" },
+                );
+            }
             return AVPixelFormat::AV_PIX_FMT_VAAPI;
         }
         p = p.add(1);
     }
-    warn!("VAAPI get_format: AV_PIX_FMT_VAAPI not in candidate list, using fallback");
-    *pix_fmts
+    let strict = std::env::var("KLIPP_STRICT_HW_DECODE").as_deref() == Ok("1");
+    if strict {
+        warn!("VAAPI get_format: AV_PIX_FMT_VAAPI not offered (candidates={candidates:?}); KLIPP_STRICT_HW_DECODE=1 → AV_PIX_FMT_NONE");
+        AVPixelFormat::AV_PIX_FMT_NONE
+    } else {
+        warn!("VAAPI get_format: AV_PIX_FMT_VAAPI not offered (candidates={candidates:?}); falling back to first preference");
+        *pix_fmts
+    }
 }
 
 /// Try to initialize CUDA (NVDEC) on the codec context. Returns true if successful.
@@ -453,6 +576,464 @@ pub(crate) unsafe fn try_init_cuda(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodec
     av_buffer_unref(&mut hw_device_ctx);
     info!("Hardware decode: CUDA (NVDEC) initialized");
     true
+}
+
+/// Manual FFI declarations for libavcodec's bitstream-filter API.
+///
+/// `ffmpeg-sys-next` 8.1.0's bindgen invocation only includes
+/// `libavcodec/avcodec.h`; the BSF API was split into a separate
+/// `libavcodec/bsf.h` upstream and isn't bound. The symbols are
+/// already linked transitively (libavcodec is in our link line) so
+/// we just need the declarations.
+///
+/// **ABI assumption:** the `AVBSFContext` field order below mirrors
+/// ffmpeg's public header `libavcodec/bsf.h` exactly. The layout has
+/// been stable since the BSF API was added (~2017); any reordering
+/// would be an ABI break across the entire libavcodec ecosystem so
+/// it's vanishingly unlikely. We only access `par_in` and `par_out`
+/// — the other fields are present so the field offsets are correct.
+mod bsf_ffi {
+    use ffmpeg_next::ffi::{AVCodecParameters, AVPacket, AVRational};
+    use std::os::raw::{c_char, c_int, c_void};
+
+    #[repr(C)]
+    pub struct AVClass {
+        _opaque: [u8; 0],
+    }
+
+    #[repr(C)]
+    pub struct AVBitStreamFilter {
+        _opaque: [u8; 0],
+    }
+
+    /// Mirror of `AVBSFContext` from `libavcodec/bsf.h`. We only
+    /// touch `par_in` / `par_out`; the other fields are declared so
+    /// the offsets are correct.
+    #[repr(C)]
+    pub struct AVBSFContext {
+        pub av_class: *const AVClass,
+        pub filter: *const AVBitStreamFilter,
+        pub priv_data: *mut c_void,
+        pub par_in: *mut AVCodecParameters,
+        pub par_out: *mut AVCodecParameters,
+        pub time_base_in: AVRational,
+        pub time_base_out: AVRational,
+    }
+
+    extern "C" {
+        pub fn av_bsf_get_by_name(name: *const c_char) -> *const AVBitStreamFilter;
+        pub fn av_bsf_alloc(filter: *const AVBitStreamFilter, ctx: *mut *mut AVBSFContext) -> c_int;
+        pub fn av_bsf_init(ctx: *mut AVBSFContext) -> c_int;
+        pub fn av_bsf_send_packet(ctx: *mut AVBSFContext, pkt: *mut AVPacket) -> c_int;
+        pub fn av_bsf_receive_packet(ctx: *mut AVBSFContext, pkt: *mut AVPacket) -> c_int;
+        pub fn av_bsf_free(ctx: *mut *mut AVBSFContext);
+    }
+}
+
+/// Map an ffmpeg codec ID to its `*_cuvid` decoder name when one
+/// exists. cuvid decoders are NVIDIA's dedicated NVDEC implementations
+/// — they produce CUDA hwframes natively (`AV_PIX_FMT_CUDA`) and
+/// don't rely on the fragile "standard codec + cuda hwaccel +
+/// hw_frames_ctx" negotiation that we observed silently falling back
+/// to software in our build. Used by every NLE's NVDEC path.
+fn cuvid_decoder_name(codec_id: ffmpeg_next::codec::Id) -> Option<&'static str> {
+    use ffmpeg_next::codec::Id;
+    Some(match codec_id {
+        Id::HEVC => "hevc_cuvid",
+        Id::H264 => "h264_cuvid",
+        Id::AV1 => "av1_cuvid",
+        Id::VP9 => "vp9_cuvid",
+        Id::VP8 => "vp8_cuvid",
+        Id::MPEG2VIDEO => "mpeg2_cuvid",
+        Id::MPEG1VIDEO => "mpeg1_cuvid",
+        Id::MPEG4 => "mpeg4_cuvid",
+        Id::VC1 => "vc1_cuvid",
+        Id::MJPEG => "mjpeg_cuvid",
+        _ => return None,
+    })
+}
+
+/// Decide whether a bitstream filter is needed in front of the cuvid
+/// decoder for this codec, based on the extradata format. cuvid wants
+/// annex-B framing for H.264 / HEVC; MP4/MOV containers store these
+/// in length-prefixed avcc / hvcc ("isobmff") format, distinguishable
+/// by the first byte of `extradata` being `0x01` (the version byte
+/// of the avcC / hvcC box). Without the matching `*_mp4toannexb`
+/// BSF, cuvid rejects the packet stream with `Invalid argument`.
+///
+/// Other codecs (AV1, VP9, MPEG-{1,2,4}, VC-1) don't need a BSF in
+/// front of cuvid because their bitstream format is the same in MP4
+/// as on the wire.
+fn cuvid_bsf_name(
+    codec_id: ffmpeg_next::codec::Id,
+    extradata: &[u8],
+) -> Option<&'static str> {
+    use ffmpeg_next::codec::Id;
+    if extradata.is_empty() || extradata[0] != 0x01 {
+        // Annex-B already (or no extradata at all) — no BSF needed.
+        return None;
+    }
+    match codec_id {
+        Id::H264 => Some("h264_mp4toannexb"),
+        Id::HEVC => Some("hevc_mp4toannexb"),
+        _ => None,
+    }
+}
+
+/// Owned wrapper around `*mut AVBSFContext` that frees on drop. The
+/// raw pointer is `Send` because we only use it from the decoder
+/// thread that owns the context — the BSF API itself is single-
+/// threaded.
+pub(crate) struct BsfContext {
+    ptr: *mut bsf_ffi::AVBSFContext,
+    name: &'static str,
+}
+
+unsafe impl Send for BsfContext {}
+
+impl BsfContext {
+    pub(crate) fn as_ptr(&self) -> *mut bsf_ffi::AVBSFContext {
+        self.ptr
+    }
+
+    pub(crate) fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+impl Drop for BsfContext {
+    fn drop(&mut self) {
+        unsafe { bsf_ffi::av_bsf_free(&mut self.ptr) };
+    }
+}
+
+/// Allocate + init a bitstream filter for `codec_params`. Returns
+/// `None` if the named filter doesn't exist in this ffmpeg build,
+/// allocation fails, or init fails — caller falls back to whatever
+/// decoder path doesn't need the filter.
+unsafe fn try_create_bsf(
+    name: &'static str,
+    codec_params: *mut ffmpeg_next::ffi::AVCodecParameters,
+) -> Option<BsfContext> {
+    use ffmpeg_next::ffi::*;
+    use std::ffi::CString;
+    let cname = CString::new(name).ok()?;
+    let filter = bsf_ffi::av_bsf_get_by_name(cname.as_ptr());
+    if filter.is_null() {
+        warn!("BSF: av_bsf_get_by_name({name}) returned NULL");
+        return None;
+    }
+    let mut ctx: *mut bsf_ffi::AVBSFContext = std::ptr::null_mut();
+    let alloc_rc = bsf_ffi::av_bsf_alloc(filter, &mut ctx);
+    if alloc_rc < 0 || ctx.is_null() {
+        warn!("BSF: av_bsf_alloc({name}) returned {alloc_rc}");
+        return None;
+    }
+    let owned = BsfContext { ptr: ctx, name };
+    let copy_rc = avcodec_parameters_copy((*owned.ptr).par_in, codec_params);
+    if copy_rc < 0 {
+        warn!("BSF: avcodec_parameters_copy({name}) returned {copy_rc}");
+        return None; // Drop frees the BSF
+    }
+    let init_rc = bsf_ffi::av_bsf_init(owned.ptr);
+    if init_rc < 0 {
+        warn!("BSF: av_bsf_init({name}) returned {init_rc}");
+        return None;
+    }
+    Some(owned)
+}
+
+/// Build a codec context backed by a `*_cuvid` decoder, with a
+/// matching `*_mp4toannexb` bitstream filter if the source extradata
+/// is in avcc / hvcc format. Returns `(codec_context, optional_bsf)`
+/// on success — the caller owns both and must keep the BSF alive for
+/// the decoder's lifetime.
+///
+/// Returns `None` when:
+///   * cuvid isn't built into this ffmpeg, OR
+///   * this codec id has no cuvid variant, OR
+///   * the required BSF (if any) can't be created, OR
+///   * CUDA device init fails.
+///
+/// The decode loop must route demuxer packets through the BSF (when
+/// `Some`) via `bsf_send_packet` / `bsf_receive_packet` before each
+/// `decoder.send_packet()` — see the loop in `decode_thread_main`.
+fn try_open_cuvid_decoder(
+    stream: &ffmpeg_next::format::stream::Stream,
+) -> Option<(ffmpeg_next::codec::Context, Option<BsfContext>)> {
+    use ffmpeg_next::ffi::*;
+    let codec_id = stream.parameters().id();
+    let cuvid_name = cuvid_decoder_name(codec_id)?;
+    let codec = ffmpeg_next::codec::decoder::find_by_name(cuvid_name)?;
+
+    // Read extradata to decide whether a BSF is needed.
+    let params_ptr = unsafe { stream.parameters().as_ptr() } as *mut AVCodecParameters;
+    let extradata: &[u8] = unsafe {
+        if (*params_ptr).extradata.is_null() || (*params_ptr).extradata_size <= 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(
+                (*params_ptr).extradata,
+                (*params_ptr).extradata_size as usize,
+            )
+        }
+    };
+    let bsf = if let Some(bsf_name) = cuvid_bsf_name(codec_id, extradata) {
+        let b = unsafe { try_create_bsf(bsf_name, params_ptr)? };
+        Some(b)
+    } else {
+        None
+    };
+
+    // The codec context must use the BSF's *output* parameters when
+    // a BSF is in play (the BSF rewrites the extradata format), and
+    // the stream's parameters otherwise.
+    let codec_params: *const AVCodecParameters = match &bsf {
+        Some(b) => unsafe { (*b.as_ptr()).par_out as *const _ },
+        None => unsafe { stream.parameters().as_ptr() },
+    };
+
+    let mut ctx = ffmpeg_next::codec::Context::new_with_codec(codec);
+    let (src_w, src_h) = unsafe {
+        let p = stream.parameters().as_ptr();
+        ((*p).width.max(0) as u32, (*p).height.max(0) as u32)
+    };
+    // For HW decode the PCIe transfer cost of the hwframe dominates
+    // — at 4K HEVC, `av_hwframe_transfer_data` is ~41 ms / frame,
+    // which alone exceeds the 24 fps budget. Every pro NLE handles
+    // this by capping playback resolution to a smaller "preview"
+    // size (Resolve / Premiere / FCP all do "Half Res" or similar
+    // by default) and reserving full-res for export. We mirror
+    // that: cuvid downscales to fit a 1080p bounding box on the GPU
+    // via NVDEC, then we transfer the smaller frame. Saves ~4× over
+    // PCIe and keeps the playhead smooth.
+    //
+    // The user's `max_playback_height` pref still drives the SW
+    // decode path + export pipeline — it just doesn't override the
+    // HW transfer cap because that's about PCIe physics, not user
+    // intent.
+    let (resize_w, resize_h) = hw_transfer_cap_dimensions(src_w, src_h);
+    let want_resize = resize_w != src_w || resize_h != src_h;
+    unsafe {
+        let ctx_ptr = ctx.as_mut_ptr();
+        if ctx_ptr.is_null() {
+            warn!("cuvid: avcodec_alloc_context3 returned NULL for {cuvid_name}");
+            return None;
+        }
+        let rc = avcodec_parameters_to_context(ctx_ptr, codec_params);
+        if rc < 0 {
+            warn!("cuvid: avcodec_parameters_to_context failed for {cuvid_name}: rc={rc}");
+            return None;
+        }
+        // Wire `pkt_timebase` from the stream so cuvid stops warning
+        // "Invalid pkt_timebase, passing timestamps as-is." — no
+        // visible behaviour change (PTS already worked via the
+        // fallback) but removes the ambiguity flag for any future
+        // frame-accurate seek code that consults the timebase.
+        let stb = stream.time_base();
+        (*ctx_ptr).pkt_timebase = AVRational {
+            num: stb.numerator(),
+            den: stb.denominator(),
+        };
+        // GPU-side resize via cuvid's `resize` private option. NVDEC
+        // does the downscale before frames are handed off — saves
+        // ~3× the transfer cost at 4K because we move 1080p worth
+        // of pixels over PCIe instead of 4K. At 4K 24p HEVC this
+        // drops `av_hwframe_transfer_data` from ~41 ms / frame down
+        // to ~10 ms, which clears the budget for everything
+        // downstream and stops the playhead racing the decode.
+        // Skipped when source is already at playback resolution
+        // (passing `resize=WxH` with the same dimensions still
+        // configures NVDEC's resize path unnecessarily).
+        if want_resize {
+            use std::ffi::CString;
+            let resize_str = format!("{resize_w}x{resize_h}");
+            let cname = CString::new("resize").unwrap();
+            let cval = CString::new(resize_str.as_str()).unwrap();
+            let opt_rc = av_opt_set(
+                (*ctx_ptr).priv_data,
+                cname.as_ptr(),
+                cval.as_ptr(),
+                AV_OPT_SEARCH_CHILDREN,
+            );
+            if opt_rc < 0 {
+                warn!(
+                    "cuvid: av_opt_set(resize={resize_str}) failed rc={opt_rc} on {cuvid_name}; \
+                     decode will run at source resolution and downscale on the host"
+                );
+            }
+        }
+        if !try_init_cuda(ctx_ptr) {
+            return None;
+        }
+    }
+    info!(
+        "cuvid: opened {cuvid_name} for codec_id={codec_id:?} src={src_w}x{src_h}{}{}",
+        if want_resize { format!(" → resize={resize_w}x{resize_h} (NVDEC)") } else { String::new() },
+        match &bsf {
+            Some(b) => format!(" / BSF '{}'", b.name()),
+            None => String::new(),
+        },
+    );
+    Some((ctx, bsf))
+}
+
+/// Push a packet through a BSF and drain *all* of its output into
+/// the decoder. Returns `Ok(())` on success or after EAGAIN (BSF
+/// needs more input); other errors propagate.
+unsafe fn bsf_route_packet_to_decoder(
+    bsf: &BsfContext,
+    decoder: &mut ffmpeg_next::decoder::Video,
+    packet: &mut ffmpeg_next::Packet,
+) -> Result<(), i32> {
+    use ffmpeg_next::codec::packet::Mut;
+    let send_rc = bsf_ffi::av_bsf_send_packet(bsf.as_ptr(), packet.as_mut_ptr());
+    if send_rc < 0 {
+        return Err(send_rc);
+    }
+    loop {
+        let mut filtered = ffmpeg_next::Packet::empty();
+        let recv_rc = bsf_ffi::av_bsf_receive_packet(bsf.as_ptr(), filtered.as_mut_ptr());
+        const AVERROR_EAGAIN: i32 = -11; // EAGAIN
+        const AVERROR_EOF: i32 = -541478725; // FFERRTAG('E','O','F',' ')
+        if recv_rc == AVERROR_EAGAIN || recv_rc == AVERROR_EOF {
+            return Ok(());
+        }
+        if recv_rc < 0 {
+            return Err(recv_rc);
+        }
+        // Send to decoder; if EAGAIN here, we need to drain decoder
+        // first — but we've already drained via the caller's loop.
+        // A second EAGAIN is rare; log and stash if it happens.
+        if let Err(e) = decoder.send_packet(&filtered) {
+            warn!("BSF: decoder.send_packet returned {e}");
+        }
+    }
+}
+
+/// Flush the BSF on EOF: send a NULL packet, drain remaining outputs.
+unsafe fn bsf_flush_to_decoder(
+    bsf: &BsfContext,
+    decoder: &mut ffmpeg_next::decoder::Video,
+) {
+    use ffmpeg_next::codec::packet::Mut;
+    bsf_ffi::av_bsf_send_packet(bsf.as_ptr(), std::ptr::null_mut());
+    loop {
+        let mut filtered = ffmpeg_next::Packet::empty();
+        let rc = bsf_ffi::av_bsf_receive_packet(bsf.as_ptr(), filtered.as_mut_ptr());
+        if rc < 0 {
+            return;
+        }
+        let _ = decoder.send_packet(&filtered);
+    }
+}
+
+/// Result of opening a video decoder: the opened `Video`, the
+/// hardware tier it ended up using, and any bitstream filter that
+/// must run in front of `decoder.send_packet()` for the decode loop
+/// (only present on the cuvid path for H.264 / HEVC in MP4).
+pub(crate) struct OpenedDecoder {
+    pub(crate) decoder: ffmpeg_next::decoder::Video,
+    pub(crate) hw_accel: HwAccel,
+    pub(crate) bsf: Option<BsfContext>,
+}
+
+/// Apply the `thread_count` policy to a fresh codec context. Pure
+/// software decoders read `DECODE_THREADS_PREF` (0 = ffmpeg auto);
+/// HW decoders default to the same but `KLIPP_HW_SINGLE_THREAD=1`
+/// pins them to a single thread (NVDEC parallelises on the GPU; CPU
+/// worker threads can confuse hwaccel negotiation — see the
+/// commentary on `KLIPP_HW_SINGLE_THREAD`).
+unsafe fn apply_thread_count(
+    ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext,
+    hw_accel: HwAccel,
+) {
+    let hw_single_thread = hw_accel != HwAccel::Software
+        && std::env::var("KLIPP_HW_SINGLE_THREAD").as_deref() == Ok("1");
+    let tc = if hw_single_thread {
+        1
+    } else {
+        DECODE_THREADS_PREF.load(std::sync::atomic::Ordering::Relaxed) as i32
+    };
+    (*ctx_ptr).thread_count = tc;
+    if hw_accel != HwAccel::Software {
+        info!(
+            "decode_thread: HW={:?}, thread_count set to {tc}{}",
+            hw_accel,
+            if hw_single_thread { " (KLIPP_HW_SINGLE_THREAD=1)" } else { " (default)" },
+        );
+    }
+}
+
+/// Open the video decoder for `stream`, walking the cuvid → standard
+/// + CUDA → standard + VAAPI → software ladder. Each tier is
+/// attempted; if its `decoder.video()` open fails (codec / profile
+/// not supported, hwaccel init failed, …), we drop the half-built
+/// context and try the next tier.
+///
+/// Returns the first tier that successfully produced an opened
+/// `Video`. The returned `OpenedDecoder.bsf` is `Some` only on the
+/// cuvid path for codecs that require an `*_mp4toannexb` filter
+/// (H.264 + HEVC out of MP4 / MOV containers).
+pub(crate) fn open_video_decoder(
+    stream: &ffmpeg_next::format::stream::Stream,
+    hw_enabled: bool,
+    try_cuvid: bool,
+) -> Result<OpenedDecoder, ffmpeg_next::Error> {
+    // Tier 1: cuvid (standalone NVDEC). Only attempted when the
+    // pref AND the env-var gate both authorise it.
+    if try_cuvid {
+        if let Some((mut ctx, bsf)) = try_open_cuvid_decoder(stream) {
+            unsafe { apply_thread_count(ctx.as_mut_ptr(), HwAccel::Cuda) };
+            match ctx.decoder().video() {
+                Ok(decoder) => {
+                    return Ok(OpenedDecoder {
+                        decoder,
+                        hw_accel: HwAccel::Cuda,
+                        bsf,
+                    });
+                }
+                Err(e) => {
+                    // Most common cause: NVDEC doesn't support this
+                    // codec / profile combination (e.g. H.264 Hi10P
+                    // is unsupported on every consumer NVIDIA GPU).
+                    // Fall through to the standard codec path which
+                    // will hand off to software for unsupported HW
+                    // codecs.
+                    warn!(
+                        "cuvid: avcodec_open2 failed for codec {:?}: {e} \
+                         — falling back to standard codec",
+                        stream.parameters().id(),
+                    );
+                    // `bsf` and `ctx` drop here automatically.
+                    drop(bsf);
+                }
+            }
+        }
+    }
+
+    // Tier 2 / 3 / 4: standard codec context with HW-accel
+    // attempted in order. `try_init_cuda` and `try_init_vaapi`
+    // mutate the context with `hw_device_ctx` + `get_format`; if
+    // both decline (HW pref off or device init fails) we end up on
+    // the software path with no extra plumbing.
+    let mut ctx = ffmpeg_next::codec::context::Context::from_parameters(stream.parameters())?;
+    let hw_accel = unsafe {
+        if hw_enabled && try_init_cuda(ctx.as_mut_ptr()) {
+            HwAccel::Cuda
+        } else if hw_enabled && try_init_vaapi(ctx.as_mut_ptr()) {
+            HwAccel::Vaapi
+        } else {
+            HwAccel::Software
+        }
+    };
+    unsafe { apply_thread_count(ctx.as_mut_ptr(), hw_accel) };
+    let decoder = ctx.decoder().video()?;
+    Ok(OpenedDecoder {
+        decoder,
+        hw_accel,
+        bsf: None,
+    })
 }
 
 /// Try to initialize VAAPI on the codec context. Returns true if successful.
@@ -588,6 +1169,25 @@ fn max_playback_width() -> u32 {
 
 /// Compute output dimensions that fit within MAX_PLAYBACK, preserving aspect ratio.
 /// For 90°/270° rotation, the effective display dimensions are swapped before scaling.
+/// HW-decode-specific playback dimensions. Caps at 1080p (1920×1080
+/// bounding box, aspect-preserving) regardless of user prefs, because
+/// PCIe transfer of full-res hwframes costs more than the realtime
+/// frame budget allows (~41 ms / frame at 4K). Source-resolution HW
+/// playback is reserved for export, not edit-time scrubbing — same
+/// convention as every pro NLE.
+fn hw_transfer_cap_dimensions(src_w: u32, src_h: u32) -> (u32, u32) {
+    const HW_MAX_W: u32 = 1920;
+    const HW_MAX_H: u32 = 1080;
+    if src_w <= HW_MAX_W && src_h <= HW_MAX_H {
+        return (src_w, src_h);
+    }
+    let scale = (HW_MAX_W as f64 / src_w as f64)
+        .min(HW_MAX_H as f64 / src_h as f64);
+    let out_w = ((src_w as f64 * scale) as u32) & !1; // even width
+    let out_h = ((src_h as f64 * scale) as u32) & !1; // even height
+    (out_w.max(2), out_h.max(2))
+}
+
 fn playback_dimensions(src_w: u32, src_h: u32, rotation: i32) -> (u32, u32) {
     // For rotation, the effective display dimensions are swapped
     let (eff_w, eff_h) = if rotation == 90 || rotation == 270 {
@@ -1047,46 +1647,51 @@ fn decode_thread_main(
     let stream_index = video_stream.index();
     let time_base = video_stream.time_base();
 
-    // Decoder selection: CUDA (NVDEC) → VAAPI → Software with multi-threading
-    // CUDA works for all codecs on NVIDIA (including AV1/VP9).
-    // VAAPI works for H.264/HEVC but nvidia-vaapi-driver has broken transfers for AV1/VP9.
-    // Software fallback uses multi-threaded libdav1d/libvpx.
-    let mut codec_ctx = match ffmpeg_next::codec::context::Context::from_parameters(video_stream.parameters()) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            warn!("decode_thread: codec context error: {e}");
-            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(LinearFrame::eof());
-            return;
-        }
-    };
-
-    // Try hardware acceleration: CUDA first, then VAAPI (skipped when pref disabled)
+    // Decoder selection ladder (each tier is attempted; if its
+    // `decoder.video()` open fails — codec / profile not supported,
+    // hwaccel init failed, etc. — we drop the half-built context and
+    // try the next tier:
+    //
+    //   1. cuvid (`*_cuvid`)   — NVIDIA's dedicated NVDEC decoders.
+    //                            Native CUDA hwframes; needs a
+    //                            `*_mp4toannexb` BSF in front for
+    //                            H.264 / HEVC stored in MP4.
+    //                            Limits: H.264 Hi10P (10-bit) is not
+    //                            supported in NVDEC hardware on any
+    //                            consumer NVIDIA GPU — `h264_cuvid`
+    //                            errors with "Bit depth 10 with this
+    //                            chroma format is not supported".
+    //                            HEVC Main 10 (10-bit HEVC) IS
+    //                            supported and is the path we want
+    //                            for Sony / iPhone / etc. footage.
+    //   2. CUDA hwaccel        — standard codec + cuda hwaccel +
+    //                            hw_frames_ctx. ffmpeg CLI uses this
+    //                            shape; we observed silent SW fallback
+    //                            in our setup but it's harmless.
+    //   3. VAAPI hwaccel       — H.264 / HEVC on Intel iGPU.
+    //                            `nvidia-vaapi-driver` is broken for
+    //                            AV1 / VP9 (all-zero frames).
+    //   4. Software            — libdav1d / libvpx multi-threaded.
+    //
+    // Cuvid behind `KLIPP_USE_CUVID=1` while we extend coverage and
+    // test against the full codec matrix. When it succeeds the BSF
+    // (if any) lives alongside the codec context for the lifetime of
+    // this decode thread; the decode loop pipes every packet through
+    // the BSF before sending it to the decoder.
     let hw_enabled = HARDWARE_DECODE_PREF.load(std::sync::atomic::Ordering::Relaxed);
-    let hw_accel = unsafe {
-        if hw_enabled && try_init_cuda(codec_ctx.as_mut_ptr()) {
-            HwAccel::Cuda
-        } else if hw_enabled && try_init_vaapi(codec_ctx.as_mut_ptr()) {
-            HwAccel::Vaapi
-        } else {
-            HwAccel::Software
-        }
-    };
+    let try_cuvid = hw_enabled && std::env::var("KLIPP_USE_CUVID").as_deref() == Ok("1");
 
-    // Enable multi-threaded decoding — helps SW fallback (libdav1d uses all cores),
-    // and doesn't hurt HW decode (ffmpeg ignores thread_count for HW decoders).
-    unsafe {
-        let tc = DECODE_THREADS_PREF.load(std::sync::atomic::Ordering::Relaxed);
-        (*codec_ctx.as_mut_ptr()).thread_count = tc as i32;
-    }
-
-    let mut decoder = match codec_ctx.decoder().video() {
-        Ok(d) => d,
+    let opened = match open_video_decoder(&video_stream, hw_enabled, try_cuvid) {
+        Ok(o) => o,
         Err(e) => {
             warn!("decode_thread: video decoder error: {e}");
             frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(LinearFrame::eof());
             return;
         }
     };
+    let mut decoder = opened.decoder;
+    let bsf_ctx = opened.bsf;
+    let hw_accel = opened.hw_accel;
 
     if hw_accel != HwAccel::Software {
         hw_active_flag.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1305,6 +1910,26 @@ fn decode_thread_main(
                 fmt == ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_CUDA as i32
                     || fmt == ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_VAAPI as i32
             };
+            // One-shot per-process: log the actual format the master
+            // decoder delivered + which path we're routing to. The
+            // `get_format` callback can succeed at init but later
+            // worker probes still authorise SW auto-download — this
+            // tells us what actually arrives instead of guessing.
+            {
+                use std::sync::atomic::AtomicBool;
+                static LOGGED: AtomicBool = AtomicBool::new(false);
+                if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    let fmt_name = unsafe {
+                        let f = std::mem::transmute::<i32, ffmpeg_next::ffi::AVPixelFormat>((*received_frame.as_ptr()).format);
+                        pix_fmt_name(f)
+                    };
+                    info!(
+                        "decode_thread: first delivered frame fmt={fmt_name} → routing to {}",
+                        if is_hw_frame { "download_hw_frame (GPU shader path)" }
+                        else { "convert_sw_frame (CPU path)" },
+                    );
+                }
+            }
 
             let t_transfer = std::time::Instant::now();
             let frame_result = if is_hw_frame {
@@ -1368,13 +1993,25 @@ fn decode_thread_main(
         if paused { continue; } // broke out of drain loop due to pause command
 
         // ── Phase 2: Feed next packet to the decoder ──
+        //
+        // When `bsf_ctx` is `Some`, packets go through the bitstream
+        // filter first — `bsf_route_packet_to_decoder` handles both
+        // sending the input packet to the BSF and forwarding all
+        // resulting filtered packets to the decoder. This is
+        // required for cuvid decoders consuming H.264/HEVC out of
+        // MP4 containers (avcc/hvcc → annex B).
 
         // Retry pending packet first (was EAGAIN last time)
-        if let Some(pkt) = pending_packet.take() {
-            match decoder.send_packet(&pkt) {
+        if let Some(mut pkt) = pending_packet.take() {
+            let send_result = if let Some(bsf) = bsf_ctx.as_ref() {
+                unsafe { bsf_route_packet_to_decoder(bsf, &mut decoder, &mut pkt) }
+                    .map_err(|rc| ffmpeg_next::Error::from(rc))
+            } else {
+                decoder.send_packet(&pkt)
+            };
+            match send_result {
                 Ok(()) => {}
                 Err(e) => {
-                    // Still EAGAIN? Shouldn't happen since we just drained. Keep it.
                     warn!("decode_thread: send_packet retry failed: {e}");
                     pending_packet = Some(pkt);
                     std::thread::sleep(Duration::from_millis(1));
@@ -1384,19 +2021,25 @@ fn decode_thread_main(
         } else if !eof_from_demuxer {
             // Read next packet from demuxer
             match packets.next() {
-                Some((stream, packet)) => {
+                Some((stream, mut packet)) => {
                     if stream.index() == stream_index {
-                        match decoder.send_packet(&packet) {
-                            Ok(()) => {}
-                            Err(_) => {
-                                // EAGAIN: decoder buffer full. Save packet and drain first.
-                                pending_packet = Some(packet);
-                            }
+                        let send_result = if let Some(bsf) = bsf_ctx.as_ref() {
+                            unsafe { bsf_route_packet_to_decoder(bsf, &mut decoder, &mut packet) }
+                                .map_err(|rc| ffmpeg_next::Error::from(rc))
+                        } else {
+                            decoder.send_packet(&packet)
+                        };
+                        if send_result.is_err() {
+                            // EAGAIN: decoder buffer full. Save packet and drain first.
+                            pending_packet = Some(packet);
                         }
                     }
                     // Non-video packets: just skip, loop will continue to drain+feed
                 }
                 None => {
+                    if let Some(bsf) = bsf_ctx.as_ref() {
+                        unsafe { bsf_flush_to_decoder(bsf, &mut decoder) };
+                    }
                     let _ = decoder.send_eof();
                     eof_from_demuxer = true;
                 }

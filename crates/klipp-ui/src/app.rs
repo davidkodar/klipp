@@ -214,6 +214,13 @@ pub struct KlippApp {
     /// engine command channel at UI fps rate — ~120 commands/sec of
     /// no-op work).
     last_sent_scope_mode: Option<u8>,
+    /// Same change-tracking pattern as `last_sent_scope_mode` for the
+    /// scope-panel visibility flag. The engine uses this to skip the
+    /// per-frame `linear_rgba_to_u8` re-encode and the GPU scope
+    /// shader pass when the panel is hidden — together those cost
+    /// ~12 ms / 1080p frame and were eating most of the playback
+    /// budget for users who don't have scopes open.
+    last_sent_scopes_visible: Option<bool>,
     // GUI redesign
     theme: KlippTheme,
     layout: LayoutState,
@@ -419,6 +426,7 @@ impl KlippApp {
             last_scope_preview_refresh: std::time::Instant::now()
                 - std::time::Duration::from_secs(1),
             last_sent_scope_mode: None,
+            last_sent_scopes_visible: None,
             theme,
             layout,
             layout_dirty: false,
@@ -10432,13 +10440,31 @@ impl KlippApp {
             }
             AppCommand::SetNodeMasks { clip_id, node_id, masks } => {
                 let node_id = *node_id;
+                let clip_id_val = *clip_id;
                 let masks = masks.clone();
-                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                let new_len = masks.masks.len();
+                self.with_current_clip_graph_mut(clip_id_val, needs_refresh, |graph| {
                     if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
                         node.params.masks = Some(masks);
                         node.enabled = true;
                     }
                 });
+                // Defensive tracker cleanup: any TrackPoint bound to
+                // (node_id, mask_index) where mask_index now points
+                // past the end of the new mask list is orphaned and
+                // would update a non-existent mask every frame. Drops
+                // those + leaves bindings into the still-valid range
+                // alone. Mirrors the cleanup on `RemoveMaskShape`
+                // and covers every callsite of `SetNodeMasks` that
+                // shrinks the list (whether today's UI ever does so
+                // or not — defending against future regressions).
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id_val) {
+                    clip.track_points.retain(|tp| match tp.linked_mask {
+                        Some((nid, mi)) if nid == node_id => mi < new_len,
+                        _ => true,
+                    });
+                }
                 true
             }
             AppCommand::SetNodeColorMatch { clip_id, node_id, settings } => {
@@ -18827,6 +18853,19 @@ impl eframe::App for KlippApp {
             if self.last_sent_scope_mode != Some(mode_byte) {
                 let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: mode_byte });
                 self.last_sent_scope_mode = Some(mode_byte);
+            }
+        }
+
+        // Sync scope-panel visibility to the engine — same change-
+        // tracking pattern as the mode sync above. Catches every
+        // mutation site (keyboard toggle, button click, layout
+        // restore) without per-site plumbing because we observe the
+        // current state value once per UI frame.
+        {
+            let visible = self.state.show_scopes;
+            if self.last_sent_scopes_visible != Some(visible) {
+                let _ = self.cmd_tx.send(AppCommand::SetScopesVisible(visible));
+                self.last_sent_scopes_visible = Some(visible);
             }
         }
 

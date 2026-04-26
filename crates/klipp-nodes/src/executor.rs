@@ -753,15 +753,21 @@ impl GraphExecutor {
             // the matte raster to `matte_buf` without breaking the
             // chain. The downstream MaskCutout will then extend the
             // chain via `apply_mask_cutout_chain`, keeping the entire
-            // Source → Corrector → MaskCutout → Output chain GPU-
-            // resident. Skipping any of the conditions falls through
-            // to the existing CPU/GPU+download path below, which
-            // breaks the chain (correctness > perf for the
-            // odd-graph cases).
-            if node.kind == NodeKind::Mask
-                && self.gpu.is_some()
-                && chain_tail.is_some()
-            {
+            // Source → [optional Corrector] → MaskCutout → Output
+            // chain GPU-resident. The mask itself rasterises into a
+            // dedicated `matte_buf` that's separate from the chain's
+            // ping-pong slots — so this short-circuit doesn't depend
+            // on the chain already being live. When no upstream
+            // grade is active (the common "I just want to mask out
+            // a region" case) the Mask still publishes its matte to
+            // GPU memory, and the downstream `MaskCutout` then
+            // *starts* the chain itself (uploads the source, reads
+            // `matte_buf`, dispatches the cutout shader). Previously
+            // we required `chain_tail.is_some()` here, which meant
+            // pure-mask graphs (no Corrector with non-default
+            // params) ran the entire mask + multiply on CPU at
+            // ~60–110 ms / 4K frame.
+            if node.kind == NodeKind::Mask && self.gpu.is_some() {
                 let consumers: Vec<&Edge> = graph.edges.iter()
                     .filter(|e| e.from_node == node_id)
                     .collect();
@@ -2089,17 +2095,25 @@ impl GraphExecutor {
             }
 
             NodeKind::Mask => {
-                // No masks — or all masks deleted / disabled — should
-                // act as "no region selected = entire frame", so the
-                // matte is all-1. The previous behaviour (returning
-                // an all-zero matte for an empty stack) blacked out
-                // the viewer the moment a user removed the last mask
-                // from a Mask + MaskCutout pair the colour-tab flow
-                // had auto-wired.
+                // Empty mask stack — or all masks disabled — must
+                // behave like "entire frame selected" so the
+                // downstream MaskCutout doesn't black out the viewer.
+                // The all-1 matte that used to fix that costs 130 MB
+                // / frame to allocate at 4K (and another 41 ms in
+                // MaskCutout's per-pixel multiply against it) — both
+                // for "no change". Returning an empty `Vec` instead
+                // is functionally equivalent: every downstream matte
+                // consumer (`MaskCutout`, `CombineMattes`,
+                // `ApplyMatte`) already treats a size-mismatched /
+                // empty matte as "passthrough source" — that's what
+                // they do for unwired-input cases too. Drops a stale
+                // Mask + MaskCutout pair (left behind by
+                // `RemoveMaskShape` after the user removes the last
+                // shape) from ~57 ms / 4K frame to nothing.
                 let stack_has_active = params.masks.as_ref()
                     .map_or(false, |ms| ms.masks.iter().any(|m| m.enabled));
                 if !stack_has_active {
-                    return vec![1.0f32; (width as usize) * (height as usize) * 4];
+                    return Vec::new();
                 }
                 if let Some(masks) = &params.masks {
                     // Cache lookup: for static masks (no keyframes)

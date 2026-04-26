@@ -785,6 +785,14 @@ pub enum AppCommand {
     SetScopeTapNode { clip_id: ClipId, node_id: Option<uuid::Uuid> },
     /// Set which scope mode the engine should render (0=waveform, 1=parade, 3=histogram).
     SetScopeRenderMode { mode: u8 },
+    /// Tell the engine whether the scope panel is actually visible
+    /// in the UI. The engine uses this to skip the per-frame
+    /// `linear_rgba_to_u8` re-encode and the GPU scope shader pass —
+    /// both fire from `post_process_rgba` regardless of mode and
+    /// cost ~12 ms / 1080p frame on CPU. Without the flag the
+    /// engine has no way to know the scope panel is hidden and
+    /// burns the budget on data nobody is looking at.
+    SetScopesVisible(bool),
     /// Render the engine's GPU scope shaders against an arbitrary RGBA frame
     /// (used for media-browser hover skim and timeline scrub) and write the
     /// resulting 720×256 texture into `frame_buffer.scope_texture`. Same code

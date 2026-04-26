@@ -302,7 +302,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
             }).collect();
             track.clips = t.clips.iter().map(|c| {
                 let clip_kind = load_clip_kind(c, project_dir);
-                Clip {
+                let mut clip = Clip {
                     id: ClipId(parse_uuid(&c.id).unwrap_or_else(|_| Uuid::new_v4())),
                     kind: clip_kind,
                     timeline_in: RationalTime { value: c.timeline_in, rate: c.rate },
@@ -406,7 +406,42 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     stabilization_data: None,
                     smoothed_trajectory: None,
                     track_points: c.track_points.clone(),
+                };
+                // Self-heal orphaned mask trackers from older
+                // projects that were saved before the inspector's
+                // delete-mask button routed through the centralized
+                // cleanup. A `TrackPoint` whose `linked_mask` points
+                // at a Mask node that no longer exists in any grade
+                // version (or at a `mask_index` past the end of the
+                // mask stack on whichever Mask node it does match)
+                // would otherwise stay attached forever and there's
+                // no UI to remove an orphaned tracker because the
+                // Untrack button lives inside the missing mask's
+                // inspector row. Drop them at load time.
+                let mask_counts: std::collections::HashMap<uuid::Uuid, usize> = clip
+                    .grade_versions.iter()
+                    .flat_map(|gv| gv.node_graph.nodes.iter())
+                    .filter(|n| n.kind == klipp_nodes::NodeKind::Mask)
+                    .map(|n| {
+                        let count = n.params.masks.as_ref()
+                            .map(|ms| ms.masks.len())
+                            .unwrap_or(0);
+                        (n.id, count)
+                    })
+                    .collect();
+                let pre = clip.track_points.len();
+                clip.track_points.retain(|tp| match tp.linked_mask {
+                    None => true,
+                    Some((nid, mi)) => mask_counts.get(&nid).map_or(false, |&n| mi < n),
+                });
+                let dropped = pre - clip.track_points.len();
+                if dropped > 0 {
+                    tracing::info!(
+                        "load: pruned {dropped} orphaned mask tracker(s) from clip {:?}",
+                        clip.id,
+                    );
                 }
+                clip
             }).collect();
             track
         }).collect(),

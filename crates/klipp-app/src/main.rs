@@ -45,10 +45,19 @@ fn main() -> Result<()> {
         let _t = LogTimer::new("ffmpeg::init");
         ffmpeg_next::init().expect("Failed to initialize ffmpeg");
     }
-    // Suppress ffmpeg's stderr output (VAAPI init failures, thread count warnings, CUDA errors).
-    // All important decode info is captured through our own tracing system.
-    // AV_LOG_FATAL = only show unrecoverable crashes.
-    unsafe { ffmpeg_next::ffi::av_log_set_level(ffmpeg_next::ffi::AV_LOG_FATAL as i32) };
+    // Route ffmpeg's own log channel through our tracing subscriber
+    // so cuvid / hwaccel / decoder error messages land in
+    // `klipp-debug.log` alongside the rest. Without this, ffmpeg's
+    // diagnostics go to stderr (invisible when launched from a
+    // GUI) — silently swallowing the actual cause of "decoder error:
+    // Invalid argument" and similar rabbit holes. The default level
+    // is WARNING so the log isn't spammed with INFO-level chatter
+    // (codec-init details, container probe noise) while real
+    // problems still come through.
+    unsafe {
+        ffmpeg_next::ffi::av_log_set_level(ffmpeg_next::ffi::AV_LOG_WARNING as i32);
+        ffmpeg_next::ffi::av_log_set_callback(Some(klipp_engine::ffmpeg_log_to_tracing));
+    }
 
     // Log to klipp-debug.log, truncated on each launch
     let log_file = std::fs::File::create("klipp-debug.log")
