@@ -1707,13 +1707,20 @@ fn decode_thread_main(
     //                            AV1 / VP9 (all-zero frames).
     //   4. Software            — libdav1d / libvpx multi-threaded.
     //
-    // Cuvid behind `KLIPP_USE_CUVID=1` while we extend coverage and
-    // test against the full codec matrix. When it succeeds the BSF
-    // (if any) lives alongside the codec context for the lifetime of
-    // this decode thread; the decode loop pipes every packet through
-    // the BSF before sending it to the decoder.
+    // Cuvid is now the default HW path. Codec matrix verified end-
+    // to-end: H.264 8-bit (1080p + 4K), HEVC Main 10 (Sony A6700,
+    // 4K), AV1 8-bit + 10-bit, VP9 Profile 2 — all open via cuvid
+    // when supported, and unsupported profiles (notably H.264 Hi10P,
+    // which no consumer NVIDIA GPU can handle) drop cleanly to the
+    // standard codec path via the avcodec_open2-failure branch in
+    // open_video_decoder. `KLIPP_USE_CUVID=0` disables cuvid and
+    // forces the standard CUDA hwaccel / VAAPI / SW ladder for
+    // diagnosis. When cuvid succeeds the BSF (if any) lives
+    // alongside the codec context for the lifetime of this decode
+    // thread; the decode loop pipes every packet through the BSF
+    // before sending it to the decoder.
     let hw_enabled = HARDWARE_DECODE_PREF.load(std::sync::atomic::Ordering::Relaxed);
-    let try_cuvid = hw_enabled && std::env::var("KLIPP_USE_CUVID").as_deref() == Ok("1");
+    let try_cuvid = hw_enabled && std::env::var("KLIPP_USE_CUVID").as_deref() != Ok("0");
 
     let opened = match open_video_decoder(&video_stream, hw_enabled, try_cuvid) {
         Ok(o) => o,
