@@ -1,0 +1,30 @@
+[package]
+name = "klipp-smoke"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Headless single-frame engine harness — replaces "open the GUI app,
+# import a clip, click around" loops with a CLI tool that decodes
+# one frame at a chosen time, optionally runs a node graph on it,
+# and dumps the result as PNG + a JSON of stage timings.
+#
+# Deliberately kept thin: depends on klipp-engine (decode + grade)
+# and klipp-core (data types), nothing UI / eframe / egui. Builds
+# in seconds and is the fast feedback loop for engine changes.
+
+[[bin]]
+name = "klipp-smoke"
+path = "src/main.rs"
+
+[dependencies]
+klipp-core = { workspace = true }
+klipp-engine = { workspace = true }
+klipp-media = { workspace = true }
+klipp-timeline = { workspace = true }
+klipp-nodes = { workspace = true }
+anyhow = { workspace = true }
+png = "0.17"
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

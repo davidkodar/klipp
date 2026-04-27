@@ -2372,12 +2372,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "klipp-smoke"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "klipp-core",
+ "klipp-engine",
+ "klipp-media",
+ "klipp-nodes",
+ "klipp-timeline",
+ "png 0.17.16",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "klipp-testing"
 version = "0.1.0"
 dependencies = [
  "klipp-color",
  "klipp-core",
  "klipp-engine",
+ "png 0.17.16",
 ]
 
 [[package]]

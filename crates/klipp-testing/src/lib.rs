@@ -26,4 +26,5 @@
 
 pub mod diff;
 pub mod fixtures;
+pub mod snapshot;
 pub mod transfer;

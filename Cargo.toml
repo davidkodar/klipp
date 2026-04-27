@@ -20,6 +20,7 @@ members = [
     "crates/klipp-jobs",
     "crates/klipp-testing",
     "crates/klipp-perf",
+    "crates/klipp-smoke",
 ]
 resolver = "2"
 
