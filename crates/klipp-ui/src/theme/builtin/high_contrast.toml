@@ -1,0 +1,95 @@
+# Klipp built-in High Contrast theme.
+#
+# Accessibility-focused palette modelled on Windows High Contrast
+# Dark + WCAG AAA contrast targets (≥ 7:1 for body text). Pure
+# black backgrounds, pure white text, bright saturated yellow
+# accent — the de-facto convention for low-vision and screen-
+# magnifier workflows.
+#
+# Compromises vs the regular themes:
+# - No subtle six-step bg gradient. Background depth cues use
+#   high-contrast borders instead, which read for low-vision users
+#   that subtle shade differences don't.
+# - Markers and role colours are pure-saturated rather than the
+#   muted mid-value hues of the other themes. This is intentional —
+#   colour-coded clip roles need to be unambiguously distinct, not
+#   tasteful.
+# - Accent is pure yellow, not amber. Yellow is the standard HC
+#   accent because it's the brightest perceived hue at any
+#   luminance and pairs cleanly with pure-black text.
+
+name = "High Contrast"
+
+[colors]
+# ── Backgrounds ──
+# Pure / near-pure black. Depth cues come from borders, not from
+# subtle bg gradient.
+bg_void       = "#000000"
+bg_deep       = "#000000"
+bg_panel      = "#0a0a0a"
+bg_panel_alt  = "#141414"
+bg_raised     = "#1e1e1e"
+bg_hover      = "#2c2c2c"
+bg_viewer     = "#000000"
+
+# ── Borders ──
+# Mid-grey to white — significantly brighter than the regular
+# themes so dividers read against the near-black bgs.
+border        = "#808080"
+border_light  = "#c0c0c0"
+resizer_idle  = "#ffffff"
+
+# ── Accent ──
+# Pure saturated yellow — the Windows High Contrast standard.
+# Brightest perceived hue at any luminance; pairs cleanly with
+# pure-black text-on-accent.
+accent        = "#ffff00"
+accent_dim    = "#c0c000"
+accent_glow   = "#30300030"
+accent_subtle = "#18180018"
+# Pure cyan — maximally distinct from yellow accent in hue, hits
+# the same brightness so it carries equal weight visually.
+accent_alt    = "#00ffff"
+
+# ── Text ──
+# Pure white primary, lightly-greyed secondary / dim — staying
+# above the AAA 7:1 contrast threshold against bg_panel even at
+# the dimmest tier.
+text_primary   = "#ffffff"
+text_secondary = "#d0d0d0"
+text_dim       = "#a0a0a0"
+text_accent    = "#ffff00"
+# Pure black text-on-yellow gives ~19.5:1 contrast — way above
+# AAA — exactly what HC themes are about.
+text_on_accent = "#000000"
+
+# ── Functional marker colours ──
+# Bright, saturated, unambiguously distinct — colour-coding for
+# accessibility wants maximum hue separation, not muted aesthetic
+# harmony.
+marker_error   = "#ff4040"
+marker_success = "#40ff40"
+marker_info    = "#4080ff"
+marker_warning = "#ffaa00"
+
+# ── Scope display tokens ──
+# Bright yellow grid + labels for legibility against the pure-
+# black scope canvas.
+scope_grid  = "#40400040"
+scope_label = "#ffff00"
+scope_bg    = "#000000"
+
+# ── Role colours ──
+# Bright pure-saturated set — every role gets a hue clearly
+# distinct from every other role, even for users with reduced
+# colour vision. Per-role overrides in Preferences still win.
+role_video     = "#4080ff"
+role_dialogue  = "#40ff40"
+role_music     = "#00ffff"
+role_sfx       = "#ff8040"
+role_title     = "#ff4040"
+role_broll     = "#80a0ff"
+role_ambience  = "#ff40ff"
+role_foley     = "#ff80c0"
+role_voiceover = "#00ffc0"
+role_graphics  = "#ffff00"

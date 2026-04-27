@@ -39,6 +39,7 @@ pub const BUILTIN_SOLARIZED_DARK: &str = include_str!("builtin/solarized_dark.to
 pub const BUILTIN_CREAM: &str = include_str!("builtin/cream.toml");
 pub const BUILTIN_SLATE: &str = include_str!("builtin/slate.toml");
 pub const BUILTIN_NORD: &str = include_str!("builtin/nord.toml");
+pub const BUILTIN_HIGH_CONTRAST: &str = include_str!("builtin/high_contrast.toml");
 
 /// Default theme name used when [`crate::prefs::AppearancePrefs::theme_name`]
 /// references a theme that the registry doesn't know about (e.g. a
@@ -107,6 +108,7 @@ impl ThemeRegistry {
             BUILTIN_CREAM,
             BUILTIN_SLATE,
             BUILTIN_NORD,
+            BUILTIN_HIGH_CONTRAST,
         ] {
             match parse_theme_file(raw) {
                 Ok(file) => {
