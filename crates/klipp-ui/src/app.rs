@@ -20462,8 +20462,25 @@ impl KlippApp {
                     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
                     run_ffmpeg(&arg_refs, "skim-encode-hdr")
                 } else {
+                    // `-hwaccel_output_format cuda` is mandatory when
+                    // we want `scale_cuda` (in `nvenc_vf`) to consume
+                    // the decoded frames directly. Without it,
+                    // `-hwaccel cuda` silently downloads each frame
+                    // to a software pixel format (yuv420p10le for a
+                    // 10-bit source), then `scale_cuda` rejects the
+                    // CPU input with "Impossible to convert between
+                    // the formats supported by the filter 'graph -1
+                    // input from stream 0:0' and the filter
+                    // 'auto_scale_0'" — the whole nvenc tier fails
+                    // and we fall through to the libx264 CPU path
+                    // (which is ~10× slower at 4K).
+                    //
+                    // The HDR chain in ffmpeg_caps already passes
+                    // this pair; the SDR hardcoded path was missing
+                    // the output-format flag.
                     run_ffmpeg(&[
                         "-y", "-hwaccel", "cuda",
+                        "-hwaccel_output_format", "cuda",
                         "-ss", &start_ss,
                         "-i", src,
                         "-c:v", "h264_nvenc", "-g", "15", "-preset", "p1",
