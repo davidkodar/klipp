@@ -1,0 +1,78 @@
+# Klipp built-in Nord theme.
+#
+# Palette by Arctic Ice Studio (https://www.nordtheme.com).
+# Cool blue-grey neutrals (Polar Night) with frost cyan accent and
+# the full Aurora set for marker / role colours. Distinct from
+# Solarized's warm yellow accent — gives users a second "designer
+# colour palette" option that demonstrates the registry handles
+# any aesthetic, not just amber-warm.
+
+name = "Nord"
+
+[colors]
+# ── Backgrounds ──
+# Nord Polar Night (nord0–nord3) stacked across the six bg slots
+# with small interpolated steps so depth cues still read.
+bg_void       = "#2e3440"
+bg_deep       = "#353c4a"
+bg_panel      = "#3b4252"
+bg_panel_alt  = "#434c5e"
+bg_raised     = "#4c566a"
+bg_hover      = "#565e72"
+bg_viewer     = "#2a303c"
+
+# ── Borders ──
+# nord2 / nord3 — subtle dividers on the cool neutral bgs.
+border        = "#434c5e"
+border_light  = "#4c566a"
+resizer_idle  = "#5c647a"
+
+# ── Accent ──
+# Nord Frost cyan (nord8) — the canonical Nord accent. Glow alphas
+# tuned for the cool dark backgrounds.
+accent        = "#88c0d0"
+accent_dim    = "#5e8a9a"
+accent_glow   = "#202d313c"
+accent_subtle = "#1017191e"
+# Nord Aurora purple (nord15) — distinct from the cyan accent for
+# A/B-compare / Title-clip identity.
+accent_alt    = "#b48ead"
+
+# ── Text ──
+# Nord Snow Storm (nord4 / nord6) — light blue-tinted whites.
+text_primary   = "#eceff4"
+text_secondary = "#d8dee9"
+text_dim       = "#8590a3"
+text_accent    = "#88c0d0"
+# Dark text for use on cyan-accent backgrounds.
+text_on_accent = "#2e3440"
+
+# ── Functional marker colours ──
+# Direct Nord Aurora mapping: red / green / blue / yellow.
+marker_error   = "#bf616a"
+marker_success = "#a3be8c"
+marker_info    = "#81a1c1"
+marker_warning = "#ebcb8b"
+
+# ── Scope display tokens ──
+# Nord yellow grid (matches the Aurora yellow), darker yellow
+# tick labels.
+scope_grid  = "#3b332340"
+scope_label = "#ebcb8b"
+# Slightly darker / cooler than nord0 so the scope canvas reads
+# as "tool window" inside the surrounding Polar Night chrome.
+scope_bg    = "#1a1f28"
+
+# ── Role colours ──
+# Full Nord Aurora + Frost set — every clip role gets a distinct
+# hue from the canonical palette.
+role_video     = "#5e81ac"
+role_dialogue  = "#a3be8c"
+role_music     = "#88c0d0"
+role_sfx       = "#d08770"
+role_title     = "#bf616a"
+role_broll     = "#81a1c1"
+role_ambience  = "#b48ead"
+role_foley     = "#d08770"
+role_voiceover = "#8fbcbb"
+role_graphics  = "#ebcb8b"

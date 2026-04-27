@@ -1,0 +1,80 @@
+# Klipp built-in Cream theme — soft warm light.
+#
+# Bridges the gap between Dark and pure-white Light. Backgrounds are
+# warm off-creams (think paper, not LED), text is dark warm brown
+# rather than near-black, accent is a deeper amber so it carries
+# enough weight against the lighter surfaces. Easier on the eyes
+# than Light during long sessions.
+
+name = "Cream"
+
+[colors]
+# ── Backgrounds ──
+# Six-step warm cream gradient. Lighter at the top of the chrome
+# (raised cards = nearly-white cream), slightly darker at the
+# borders (void = window edge, viewer = letterbox).
+bg_void       = "#e2dccf"
+bg_deep       = "#ebe5d8"
+bg_panel      = "#f2ece0"
+bg_panel_alt  = "#ede7da"
+bg_raised     = "#f8f3e7"
+bg_hover      = "#d8d2c5"
+bg_viewer     = "#d0cabd"
+
+# ── Borders ──
+# Warm grey, a couple of shades darker than the bg gradient.
+border        = "#c8c2b5"
+border_light  = "#b0aa9d"
+resizer_idle  = "#a8a294"
+
+# ── Accent ──
+# Deeper amber than Light's accent — the cream backgrounds need
+# more weight in the accent to read as "this is the important
+# thing", and the warm bg lets a darker amber feel right.
+accent        = "#b87810"
+accent_dim    = "#8a5a0c"
+accent_glow   = "#2e1e0440"
+accent_subtle = "#160e021e"
+# Dark dusty purple — sits well against the warm cream tones
+# without competing with the amber accent.
+accent_alt    = "#783c8e"
+
+# ── Text ──
+# Dark warm brown rather than pure black — matches the warm bg
+# polarity so text feels like ink on paper, not a sharp contrast
+# stripe.
+text_primary   = "#2a2520"
+text_secondary = "#585045"
+text_dim       = "#888070"
+text_accent    = "#985810"
+text_on_accent = "#1c1814"
+
+# ── Functional marker colours ──
+# Saturated mid-value hues that read on warm cream without
+# clashing with the bg's warm cast.
+marker_error   = "#b8302c"
+marker_success = "#3a8e4c"
+marker_info    = "#1e5a8c"
+marker_warning = "#a86810"
+
+# ── Scope display tokens ──
+scope_grid  = "#3e2d0f40"
+scope_label = "#5a4814"
+# Same convention as Light — scope canvas stays dark even on a
+# light theme so the trace colours remain legible.
+scope_bg    = "#1a1a1c"
+
+# ── Role colours ──
+# Saturated mid-value hues — same set as the other built-ins so
+# clip identity is consistent across themes. Per-role overrides
+# in Preferences still win.
+role_video     = "#2d6fa8"
+role_dialogue  = "#3a8c6e"
+role_music     = "#4285f4"
+role_sfx       = "#a85c2d"
+role_title     = "#c0392b"
+role_broll     = "#4a6ea8"
+role_ambience  = "#9c27b0"
+role_foley     = "#e91e63"
+role_voiceover = "#0096a8"
+role_graphics  = "#c8a010"

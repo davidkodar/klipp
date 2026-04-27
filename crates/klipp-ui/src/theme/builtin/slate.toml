@@ -1,0 +1,70 @@
+# Klipp built-in Slate theme — neutral mid-grey.
+#
+# Sits between Dark and Light: backgrounds are mid greys, text
+# stays light (mid-grey is closer to dark in luminance, so the
+# polarity is "dark-mode style with softer backgrounds"). Designed
+# for users who find Dark too dark but Light too bright — a
+# comfortable working surface that doesn't punch holes in either
+# direction.
+
+name = "Slate"
+
+[colors]
+# ── Backgrounds ──
+# Six-step neutral grey gradient. Closer to Dark in feel than
+# Light because text-on-bg luminance still favours dark mode.
+bg_void       = "#2c2c30"
+bg_deep       = "#34343a"
+bg_panel      = "#3c3c44"
+bg_panel_alt  = "#42424a"
+bg_raised     = "#4a4a52"
+bg_hover      = "#545460"
+bg_viewer     = "#28282c"
+
+# ── Borders ──
+border        = "#4a4a52"
+border_light  = "#5c5c66"
+resizer_idle  = "#66666e"
+
+# ── Accent ──
+# Same warm amber as Dark — works cleanly against the neutral
+# greys.
+accent        = "#e8a020"
+accent_dim    = "#a06e14"
+accent_glow   = "#1701052e"
+accent_subtle = "#150e0317"
+# Magenta-purple — distinct from the warm accent for compare /
+# Title-clip identity.
+accent_alt    = "#c878ff"
+
+# ── Text ──
+# Light text since the polarity check (text_primary luminance vs
+# bg_panel luminance) still treats Slate as "dark mode".
+text_primary   = "#e8e8ee"
+text_secondary = "#a8a8b0"
+text_dim       = "#76767e"
+text_accent    = "#e8a020"
+text_on_accent = "#1a1a1e"
+
+# ── Functional marker colours ──
+marker_error   = "#c83c3c"
+marker_success = "#64c878"
+marker_info    = "#3c78c8"
+marker_warning = "#c8a028"
+
+# ── Scope display tokens ──
+scope_grid  = "#1e160720"
+scope_label = "#907830"
+scope_bg    = "#1a1a1c"
+
+# ── Role colours ──
+role_video     = "#2d6fa8"
+role_dialogue  = "#3a8c6e"
+role_music     = "#4285f4"
+role_sfx       = "#a85c2d"
+role_title     = "#c0392b"
+role_broll     = "#4a6ea8"
+role_ambience  = "#9c27b0"
+role_foley     = "#e91e63"
+role_voiceover = "#00bcd4"
+role_graphics  = "#ffeb3b"
