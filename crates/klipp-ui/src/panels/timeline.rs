@@ -358,6 +358,56 @@ enum TrimEdge {
     Right,
 }
 
+/// Compute the post-clamp `(timeline_in, timeline_out)` for a slide drag.
+///
+/// Slide moves the centre clip's timeline window by `dt`, simultaneously
+/// stretching the left neighbour's out and pulling the right neighbour's in
+/// by the same delta. The two neighbour constraints are: each neighbour must
+/// keep at least 1 frame of duration. When dt would push a neighbour below
+/// that floor, the centre clip's window is corrected so the floor is just
+/// preserved.
+///
+/// `left_constraint` is `(left_in, orig_left_out)` — the left neighbour's
+/// fixed `timeline_in` and its `timeline_out` BEFORE the slide. Similarly
+/// `right_constraint` is `(right_out, orig_right_in)`. Either may be `None`
+/// when there is no neighbour on that side; that side then carries no
+/// constraint.
+pub(crate) fn slide_clamped_window(
+    orig_tl_in: klipp_core::RationalTime,
+    orig_tl_out: klipp_core::RationalTime,
+    dt: klipp_core::RationalTime,
+    left_constraint: Option<(klipp_core::RationalTime, klipp_core::RationalTime)>,
+    right_constraint: Option<(klipp_core::RationalTime, klipp_core::RationalTime)>,
+) -> (klipp_core::RationalTime, klipp_core::RationalTime) {
+    let mut new_tl_in = orig_tl_in + dt;
+    let mut new_tl_out = orig_tl_out + dt;
+
+    if let Some((left_in, orig_left_out)) = left_constraint {
+        let min_dur = klipp_core::RationalTime { value: 1, rate: orig_left_out.rate };
+        let min_left_out = left_in + min_dur;
+        let new_left_out = orig_left_out + dt;
+        if new_left_out.value < min_left_out.value {
+            let correction = min_left_out - new_left_out;
+            new_tl_in += correction;
+            new_tl_out += correction;
+        }
+    }
+
+    if let Some((right_out, orig_right_in)) = right_constraint {
+        let recalc_dt = new_tl_in - orig_tl_in;
+        let new_right_in = orig_right_in + recalc_dt;
+        let min_dur = klipp_core::RationalTime { value: 1, rate: orig_right_in.rate };
+        if (right_out - new_right_in).value < min_dur.value {
+            let max_right_in = right_out - min_dur;
+            let correction = new_right_in - max_right_in;
+            new_tl_in -= correction;
+            new_tl_out -= correction;
+        }
+    }
+
+    (new_tl_in, new_tl_out)
+}
+
 /// Compute the post-clamp `(source_in, source_out)` for a slip drag.
 ///
 /// `dt` is the slip delta in the same rate as the originals. The clamps mirror
@@ -7104,7 +7154,6 @@ impl TimelinePanel {
         state: &mut AppState,
         cmds: &mut Vec<AppCommand>,
         track_idx: usize,
-        clips: &[klipp_timeline::Clip],
         content_rect: &egui::Rect,
         track_rect: &egui::Rect,
         zoom: f32,
@@ -7123,46 +7172,32 @@ impl TimelinePanel {
                         let dt_secs = dx as f64 / zoom as f64;
                         let dt = RationalTime::from_secs_f64(dt_secs, slide.original_timeline_in.rate);
 
-                        let mut new_tl_in = slide.original_timeline_in + dt;
-                        let mut new_tl_out = slide.original_timeline_out + dt;
-
-                        // Clamp: left neighbor can't get negative duration
-                        if let (Some(left_id), Some(orig_left_out)) = (slide.left_clip_id, slide.original_left_out) {
-                            // Left neighbor's new out = original_left_out + dt
-                            // Its in stays the same, so duration = (orig_left_out + dt) - left_in
-                            // We need the left clip's timeline_in
-                            let left_in = state.sequence().tracks.get(track_idx)
+                        // Look up neighbour constraints from current state in
+                        // a tightly-scoped block. The left/right clamps need
+                        // the neighbour's CURRENT timeline_in/out to compute
+                        // minimum durations.
+                        let left_constraint = if let (Some(left_id), Some(orig_left_out)) = (slide.left_clip_id, slide.original_left_out) {
+                            state.sequence().tracks.get(track_idx)
                                 .and_then(|t| t.find_clip(left_id))
-                                .map(|c| c.timeline_in);
-                            if let Some(left_in) = left_in {
-                                let min_dur = RationalTime { value: 1, rate: orig_left_out.rate };
-                                let min_left_out = left_in + min_dur;
-                                let new_left_out = orig_left_out + dt;
-                                if new_left_out.value < min_left_out.value {
-                                    let correction = min_left_out - new_left_out;
-                                    new_tl_in += correction;
-                                    new_tl_out += correction;
-                                }
-                            }
-                        }
-
-                        // Clamp: right neighbor can't get negative duration
-                        if let (Some(right_id), Some(orig_right_in)) = (slide.right_clip_id, slide.original_right_in) {
-                            let right_out = state.sequence().tracks.get(track_idx)
+                                .map(|c| (c.timeline_in, orig_left_out))
+                        } else {
+                            None
+                        };
+                        let right_constraint = if let (Some(right_id), Some(orig_right_in)) = (slide.right_clip_id, slide.original_right_in) {
+                            state.sequence().tracks.get(track_idx)
                                 .and_then(|t| t.find_clip(right_id))
-                                .map(|c| c.timeline_out);
-                            if let Some(right_out) = right_out {
-                                let recalc_dt = new_tl_in - slide.original_timeline_in;
-                                let new_right_in = orig_right_in + recalc_dt;
-                                let min_dur = RationalTime { value: 1, rate: orig_right_in.rate };
-                                if (right_out - new_right_in).value < min_dur.value {
-                                    let max_right_in = right_out - min_dur;
-                                    let correction = new_right_in - max_right_in;
-                                    new_tl_in -= correction;
-                                    new_tl_out -= correction;
-                                }
-                            }
-                        }
+                                .map(|c| (c.timeline_out, orig_right_in))
+                        } else {
+                            None
+                        };
+
+                        let (new_tl_in, new_tl_out) = slide_clamped_window(
+                            slide.original_timeline_in,
+                            slide.original_timeline_out,
+                            dt,
+                            left_constraint,
+                            right_constraint,
+                        );
 
                         let actual_dt = new_tl_in - slide.original_timeline_in;
 
@@ -7220,15 +7255,28 @@ impl TimelinePanel {
                         painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER,
                             &badge_text, egui::FontId::monospace(9.0), mi);
 
-                        // Highlight all three involved clips
+                        // Highlight all three involved clips. The mutations
+                        // above moved their timeline positions, so we look
+                        // them up via state.sequence() here — the highlight
+                        // tracks the clip in real time on this frame instead
+                        // of lagging by one (the original code used a pre-
+                        // mutation snapshot and lagged by one frame, which
+                        // was an incidental side-effect of the &[Clip]
+                        // parameter, not a deliberate visual choice).
                         let highlight_color = egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 50);
                         let highlight_border = egui::Color32::from_rgba_unmultiplied(mi.r(), mi.g(), mi.b(), 140);
-                        for cid in [Some(slide.clip_id), slide.left_clip_id, slide.right_clip_id].into_iter().flatten() {
-                            if let Some(clip) = clips.iter().find(|c| c.id == cid) {
-                                let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
-                                painter.rect_filled(cr, 3.0, highlight_color);
-                                painter.rect_stroke(cr, 3.0, egui::Stroke::new(1.5_f32, highlight_border));
-                            }
+                        let cids = [Some(slide.clip_id), slide.left_clip_id, slide.right_clip_id];
+                        let highlight_rects: Vec<egui::Rect> = state.sequence().tracks.get(track_idx)
+                            .map(|t| {
+                                cids.iter().filter_map(|c| *c)
+                                    .filter_map(|cid| t.find_clip(cid))
+                                    .map(|clip| Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        for cr in highlight_rects {
+                            painter.rect_filled(cr, 3.0, highlight_color);
+                            painter.rect_stroke(cr, 3.0, egui::Stroke::new(1.5_f32, highlight_border));
                         }
                     }
                 }
@@ -8705,7 +8753,7 @@ impl TimelinePanel {
 
         self.process_slip_drag(ui, painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
 
-        self.process_slide_drag(ui, painter, state, cmds, track_idx, &post_loop_clips, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
+        self.process_slide_drag(ui, painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
 
         self.process_clip_drag(ui, painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, fps, snap_enabled, snap_threshold_secs, &snap_targets, track_height, pointer_pos, pointer_down, pointer_released);
     }
@@ -11935,6 +11983,77 @@ mod tests {
         assert_eq!(ni.value, 0);
         assert_eq!(no.value, 240);
         assert_eq!(no.value - ni.value, 240, "window shrunk to media length");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // slide_clamped_window
+    //
+    // Slide moves the centre clip's timeline window by `dt` and pulls
+    // both neighbours by the same delta. Each neighbour must keep at
+    // least 1 frame of duration; when dt would shrink one below that
+    // floor, the centre window is corrected so the floor is just
+    // preserved. The right clamp uses the LEFT-CORRECTED dt, so the
+    // tests exercise both clamps independently and in combination.
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn slide_clamp_no_neighbours_translates_rigidly() {
+        let orig_in = rt(0, 24);
+        let orig_out = rt(48, 24);
+        let dt = rt(24, 24);
+        let (ni, no) = slide_clamped_window(orig_in, orig_out, dt, None, None);
+        assert_eq!(ni.value, 24);
+        assert_eq!(no.value, 72);
+    }
+
+    #[test]
+    fn slide_clamp_left_neighbour_caps_negative_dt() {
+        // Left neighbour: in=0, orig_out=24 (1s, 24 frames wide).
+        // Centre: in=24, out=72. dt=-30 (negative slide) would push
+        // left_out to -6, far below in+1f=1. Clamp must lift dt back
+        // to where left has exactly 1 frame: left_out = 1.
+        let orig_in = rt(24, 24);
+        let orig_out = rt(72, 24);
+        let dt = rt(-30, 24);
+        let left = Some((rt(0, 24), rt(24, 24))); // (left_in, orig_left_out)
+
+        let (ni, no) = slide_clamped_window(orig_in, orig_out, dt, left, None);
+        // After clamp: dt becomes -23 (left_out from 24 → 1). Centre
+        // shifts by -23.
+        assert_eq!(ni.value, 1);
+        assert_eq!(no.value, 49);
+    }
+
+    #[test]
+    fn slide_clamp_right_neighbour_caps_positive_dt() {
+        // Right neighbour: orig_in=72, out=120 (2s wide). Centre: in=24,
+        // out=72. dt=+30 would push right_in to 102, leaving only 18
+        // frames — still > 1f, so no clamp. Try dt=+47 — right_in=119,
+        // gap to right_out is 1f, exactly the floor. dt=+48 would put
+        // right_in at 120 = right_out (zero duration), clamp activates.
+        let orig_in = rt(24, 24);
+        let orig_out = rt(72, 24);
+        let dt = rt(48, 24);
+        let right = Some((rt(120, 24), rt(72, 24))); // (right_out, orig_right_in)
+
+        let (ni, no) = slide_clamped_window(orig_in, orig_out, dt, None, right);
+        // After clamp: right_in clamped to right_out - 1f = 119,
+        // correction = (orig_right_in + 48) - 119 = 1, so dt becomes 47.
+        assert_eq!(ni.value, 71);
+        assert_eq!(no.value, 119);
+    }
+
+    #[test]
+    fn slide_clamp_no_clamp_when_within_bounds() {
+        let orig_in = rt(48, 24);
+        let orig_out = rt(96, 24);
+        let dt = rt(12, 24);
+        let left = Some((rt(0, 24), rt(48, 24)));     // left_out can grow to 60 (>1)
+        let right = Some((rt(144, 24), rt(96, 24))); // right_in can grow to 108, still 36f gap
+
+        let (ni, no) = slide_clamped_window(orig_in, orig_out, dt, left, right);
+        assert_eq!(ni.value, 60);
+        assert_eq!(no.value, 108);
     }
 
     #[test]
