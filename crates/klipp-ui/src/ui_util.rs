@@ -40,7 +40,14 @@ pub fn decode_png_or_fallback(bytes: &[u8]) -> egui::ColorImage {
         tracing::warn!("decode_png_or_fallback: PNG header read failed");
         return fallback();
     };
-    let mut buf = vec![0u8; reader.output_buffer_size()];
+    // png 0.18 returns Option<usize> here — None when the buffer
+    // size would overflow usize (huge dimensions). Treat that as a
+    // decode failure and fall back to the placeholder.
+    let Some(buf_size) = reader.output_buffer_size() else {
+        tracing::warn!("decode_png_or_fallback: PNG dimensions overflow buffer size");
+        return fallback();
+    };
+    let mut buf = vec![0u8; buf_size];
     let Ok(info) = reader.next_frame(&mut buf) else {
         tracing::warn!("decode_png_or_fallback: PNG frame decode failed");
         return fallback();

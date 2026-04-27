@@ -15,7 +15,7 @@ path = "src/lib.rs"
 # klipp-testing in via [dev-dependencies] so png never reaches a
 # release binary.
 [dependencies]
-png = "0.17"
+png = "0.18"
 
 # dev-dependencies only — wired into the ground-truth spec tests that
 # exercise the real linear-light pipeline implementations. Avoid

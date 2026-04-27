@@ -246,7 +246,12 @@ fn read_png(path: &Path) -> std::io::Result<(Vec<u8>, u32, u32)> {
             "golden PNG must be 8-bit, got {:?}", info.bit_depth,
         )));
     }
-    let mut buf = vec![0u8; reader.output_buffer_size()];
+    // png 0.18: output_buffer_size returns Option<usize> (None on
+    // dimension overflow). Goldens are tiny test fixtures, but
+    // surface the error rather than panic-via-unwrap.
+    let buf_size = reader.output_buffer_size()
+        .ok_or_else(|| std::io::Error::other("PNG dimensions overflow buffer size"))?;
+    let mut buf = vec![0u8; buf_size];
     reader.next_frame(&mut buf).map_err(io_err)?;
     Ok((buf, w, h))
 }

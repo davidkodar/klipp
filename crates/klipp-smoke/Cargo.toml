@@ -24,7 +24,7 @@ klipp-media = { workspace = true }
 klipp-timeline = { workspace = true }
 klipp-nodes = { workspace = true }
 anyhow = { workspace = true }
-png = "0.17"
+png = "0.18"
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

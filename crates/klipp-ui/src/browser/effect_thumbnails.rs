@@ -16,7 +16,11 @@ static REFERENCE_PNG: &[u8] = include_bytes!("../../../../assets/effect_preview_
 fn load_embedded_reference() -> Option<ReferenceFrame> {
     let decoder = png::Decoder::new(std::io::Cursor::new(REFERENCE_PNG));
     let mut reader = decoder.read_info().ok()?;
-    let mut buf = vec![0u8; reader.output_buffer_size()];
+    // png 0.18 returns Option<usize> for output_buffer_size —
+    // None means the buffer would overflow. The embedded reference
+    // PNG is small and known-good; on overflow, just give up.
+    let buf_size = reader.output_buffer_size()?;
+    let mut buf = vec![0u8; buf_size];
     let info = reader.next_frame(&mut buf).ok()?;
     let w = info.width;
     let h = info.height;

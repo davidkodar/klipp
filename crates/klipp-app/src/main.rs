@@ -364,7 +364,12 @@ fn main() -> Result<()> {
         let png_bytes = include_bytes!("../../../assets/icons/klipp_app_icons/hicolor/256x256/apps/klipp.png");
         let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes.as_slice()));
         let mut reader = decoder.read_info().expect("Failed to decode app icon PNG");
-        let mut buf = vec![0u8; reader.output_buffer_size()];
+        // png 0.18: output_buffer_size returns Option<usize>. The
+        // app icon is a known-good baked asset; if dimensions
+        // overflow the host's usize we have bigger problems.
+        let buf_size = reader.output_buffer_size()
+            .expect("App icon PNG has dimensions that overflow usize");
+        let mut buf = vec![0u8; buf_size];
         let info = reader.next_frame(&mut buf).expect("Failed to read app icon frame");
         let rgba = match info.color_type {
             png::ColorType::Rgba => buf[..info.buffer_size()].to_vec(),

@@ -2169,7 +2169,7 @@ dependencies = [
  "klipp-title",
  "klipp-ui",
  "libc",
- "png 0.17.16",
+ "png 0.18.1",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2384,7 +2384,7 @@ dependencies = [
  "klipp-media",
  "klipp-nodes",
  "klipp-timeline",
- "png 0.17.16",
+ "png 0.18.1",
  "serde_json",
  "tracing",
  "tracing-subscriber",
@@ -2397,7 +2397,7 @@ dependencies = [
  "klipp-color",
  "klipp-core",
  "klipp-engine",
- "png 0.17.16",
+ "png 0.18.1",
 ]
 
 [[package]]
@@ -2463,7 +2463,7 @@ dependencies = [
  "klipp-validation",
  "libc",
  "notify",
- "png 0.17.16",
+ "png 0.18.1",
  "rfd",
  "serde",
  "serde_json",
