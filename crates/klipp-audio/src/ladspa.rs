@@ -85,6 +85,56 @@ pub struct LadspaDescriptor {
 pub type LadspaDescriptorFunction =
     unsafe extern "C" fn(c_ulong) -> *const LadspaDescriptor;
 
+// ─── Descriptor iteration cap ──────────────────────────────────────────────
+//
+// LADSPA bundles in practice expose 1–50 descriptors. The plugin's
+// `ladspa_descriptor(i)` is supposed to return null when the iterator
+// runs out, but a buggy or malicious plugin can return non-null
+// forever. The host must bound the walk so it can't hang.
+//
+// Used by both the discovery walk (`scan_path`) and the find-by-label
+// walk in `LadspaEffect::new` — see CODE_AUDIT C-7.
+pub(crate) const LADSPA_DESCRIPTOR_CAP: usize = 4096;
+
+/// Outcome of a bounded descriptor walk that's looking for a specific label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DescriptorLookup {
+    /// Plugin returned a descriptor whose label matched at this index.
+    FoundAt(usize),
+    /// Plugin returned null before the cap (normal termination).
+    NotFound,
+    /// Cap was reached without a null OR a match — the plugin is misbehaving.
+    CapHit,
+}
+
+/// Walk a plugin's descriptor list looking for one whose label matches.
+///
+/// `label_at(i)` returns `Some(label)` for a descriptor at index `i`, or
+/// `None` if the plugin's `ladspa_descriptor(i)` returned null at that
+/// index (the documented end-of-iteration sentinel).
+///
+/// Bounded by `cap` so a non-terminating plugin can't hang the host.
+pub(crate) fn find_descriptor_index_by_label<F>(
+    cap: usize,
+    label: &str,
+    mut label_at: F,
+) -> DescriptorLookup
+where
+    F: FnMut(usize) -> Option<String>,
+{
+    for i in 0..cap {
+        match label_at(i) {
+            None => return DescriptorLookup::NotFound,
+            Some(this_label) => {
+                if this_label == label {
+                    return DescriptorLookup::FoundAt(i);
+                }
+            }
+        }
+    }
+    DescriptorLookup::CapHit
+}
+
 // ─── Discovery types ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -251,10 +301,8 @@ pub fn scan_ladspa_library(path: &Path) -> Vec<LadspaPluginInfo> {
 
     // Guard descriptor iteration with catch_unwind so a single broken plugin
     // inside a bundle-style .so doesn't abort the whole discovery walk.
-    // Upper bound: LADSPA bundles in practice expose 1-50 descriptors;
-    // cap at 4096 so a broken or malicious plugin that returns non-null
-    // for every index can't hang discovery indefinitely.
-    const LADSPA_DESCRIPTOR_CAP: usize = 4096;
+    // The iteration is bounded by LADSPA_DESCRIPTOR_CAP — see the
+    // module-scope const for the rationale.
     let path_buf = path.to_path_buf();
     let df = *descriptor_fn;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -425,22 +473,45 @@ impl LadspaEffect {
             unsafe { lib.get(b"ladspa_descriptor\0") }
                 .map_err(|_| "ladspa_descriptor symbol missing".to_string())?;
 
-        // Find descriptor with matching label.
+        // Find descriptor with matching label. Bounded by
+        // LADSPA_DESCRIPTOR_CAP — a buggy plugin that returns non-null
+        // for every index would otherwise loop ~4 billion times before
+        // the host realised the label wasn't there. See CODE_AUDIT C-7.
         let mut descriptor_ptr: *const LadspaDescriptor = std::ptr::null();
-        for i in 0..u32::MAX as usize {
-            let raw = unsafe { descriptor_fn(i as c_ulong) };
-            if raw.is_null() {
-                break;
+        let lookup = find_descriptor_index_by_label(
+            LADSPA_DESCRIPTOR_CAP,
+            label,
+            |i| {
+                let raw = unsafe { descriptor_fn(i as c_ulong) };
+                if raw.is_null() {
+                    None
+                } else {
+                    let d = unsafe { &*raw };
+                    let dl = unsafe { cstr_to_string(d.label) };
+                    if dl == label {
+                        // Capture the matching pointer so the caller can
+                        // instantiate from it after the lookup returns.
+                        descriptor_ptr = raw;
+                    }
+                    Some(dl)
+                }
+            },
+        );
+        match lookup {
+            DescriptorLookup::FoundAt(_) => { /* descriptor_ptr is set */ }
+            DescriptorLookup::NotFound => {
+                return Err(format!("label '{label}' not found in {}", path.display()));
             }
-            let d = unsafe { &*raw };
-            let dl = unsafe { cstr_to_string(d.label) };
-            if dl == label {
-                descriptor_ptr = raw;
-                break;
+            DescriptorLookup::CapHit => {
+                tracing::warn!(
+                    "LADSPA: hit {}-descriptor cap looking for '{}' in {} — plugin may be non-terminating",
+                    LADSPA_DESCRIPTOR_CAP, label, path.display(),
+                );
+                return Err(format!(
+                    "label '{label}' not found within descriptor cap in {}",
+                    path.display()
+                ));
             }
-        }
-        if descriptor_ptr.is_null() {
-            return Err(format!("label '{label}' not found in {}", path.display()));
         }
 
         // Rebuild an info record from the selected descriptor so we own our
@@ -900,5 +971,89 @@ mod tests {
         assert_eq!(unit_hint_for_port_name("Delay Time"), ParamUnit::Ms);
         assert_eq!(unit_hint_for_port_name("Ratio"), ParamUnit::Ratio);
         assert_eq!(unit_hint_for_port_name("Dry/Wet"), ParamUnit::None);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // find_descriptor_index_by_label — closes CODE_AUDIT C-7.
+    //
+    // The find-by-label walk in LadspaEffect::new previously did
+    //   for i in 0..u32::MAX as usize { … }
+    // which would loop ~4 billion times on a buggy plugin that returns
+    // non-null for every index without a matching label. The fix
+    // bounds the walk by LADSPA_DESCRIPTOR_CAP (the same constant
+    // already used by the discovery loop). These tests exercise the
+    // four reachable outcomes via stub closures so the loop's
+    // termination logic is testable without loading a real .so.
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn descriptor_cap_is_bounded_and_reasonable() {
+        // Future "let me bump this back to u32::MAX" surfaces in CI.
+        assert!(LADSPA_DESCRIPTOR_CAP <= 8192,
+            "cap must stay bounded so a buggy plugin can't hang the host");
+        assert!(LADSPA_DESCRIPTOR_CAP >= 256,
+            "cap must allow legitimately large LADSPA bundles (some expose 100+)");
+    }
+
+    #[test]
+    fn find_descriptor_returns_first_match_and_short_circuits() {
+        // Plugin returns labels "a", "b", "c", "target", "more" then null.
+        let labels = vec!["a", "b", "c", "target", "more"];
+        let mut visited = 0usize;
+        let result = find_descriptor_index_by_label(
+            LADSPA_DESCRIPTOR_CAP,
+            "target",
+            |i| {
+                visited = visited.max(i + 1);
+                labels.get(i).map(|s| s.to_string())
+            },
+        );
+        assert_eq!(result, DescriptorLookup::FoundAt(3));
+        assert_eq!(visited, 4, "must short-circuit on match — index 4 should not be probed");
+    }
+
+    #[test]
+    fn find_descriptor_returns_not_found_when_plugin_terminates() {
+        // Plugin returns labels "a", "b", "c" then null at index 3.
+        // Cap is huge but null arrives first — we should NOT report cap-hit.
+        let labels = vec!["a", "b", "c"];
+        let result = find_descriptor_index_by_label(
+            LADSPA_DESCRIPTOR_CAP,
+            "missing",
+            |i| labels.get(i).map(|s| s.to_string()),
+        );
+        assert_eq!(result, DescriptorLookup::NotFound);
+    }
+
+    #[test]
+    fn find_descriptor_returns_cap_hit_on_non_terminating_plugin() {
+        // The exact bug C-7 calls out: plugin returns non-null for every
+        // index AND the label never matches. Without the cap this would
+        // loop ~4 billion times. With the cap it must report CapHit and
+        // call count must equal cap.
+        let mut call_count = 0usize;
+        let cap = 16; // small cap to keep the test fast
+        let result = find_descriptor_index_by_label(
+            cap,
+            "needle",
+            |_i| {
+                call_count += 1;
+                Some("haystack".to_string())
+            },
+        );
+        assert_eq!(result, DescriptorLookup::CapHit);
+        assert_eq!(call_count, cap,
+            "non-terminating plugin must be probed exactly `cap` times — neither more (loop bound bug) nor fewer (early exit bug)");
+    }
+
+    #[test]
+    fn find_descriptor_handles_empty_plugin() {
+        // Plugin returns null at index 0 — empty descriptor list.
+        let result = find_descriptor_index_by_label(
+            LADSPA_DESCRIPTOR_CAP,
+            "anything",
+            |_i| None,
+        );
+        assert_eq!(result, DescriptorLookup::NotFound);
     }
 }
