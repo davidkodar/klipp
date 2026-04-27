@@ -2213,6 +2213,9 @@ name = "klipp-effects"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "klipp-color",
+ "klipp-core",
+ "klipp-testing",
  "pollster 0.4.0",
  "serde",
  "tracing",

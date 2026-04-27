@@ -121,6 +121,7 @@ klipp-title  = { path = "crates/klipp-title" }
 klipp-render  = { path = "crates/klipp-render" }
 klipp-export  = { path = "crates/klipp-export" }
 klipp-ui      = { path = "crates/klipp-ui" }
+klipp-testing = { path = "crates/klipp-testing" }
 
 # ─── Workspace-wide profile settings ────────────────────────────────────────
 [profile.dev]

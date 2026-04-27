@@ -12,3 +12,6 @@ bytemuck = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
+klipp-color = { workspace = true }
+klipp-core = { workspace = true }
+klipp-testing = { workspace = true }

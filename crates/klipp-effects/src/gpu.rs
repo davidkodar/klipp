@@ -2578,7 +2578,12 @@ impl GpuEffectsPipeline {
         self.write_params(&p);
         self.dispatch(&self.mask_pipeline, buf_a, buf_b, workgroups);
 
-        self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
+        // Use the raw download — the mask shader writes a 0..1
+        // coverage value to the RGB channels, NOT a linear-light
+        // luminance, so the sRGB-encoding `download_linear_rgba_as_u8`
+        // would apply on top is wrong. See `download_raw_rgba_as_u8`
+        // for the full diagnosis.
+        self.download_raw_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
     /// Apply hue/sat curves on the GPU using pre-computed LUTs.
@@ -4579,6 +4584,38 @@ impl GpuEffectsPipeline {
         }
         let linear: &[f32] = bytemuck::cast_slice(&bytes);
         linear_f32_rgba_to_u8(linear)
+    }
+
+    /// Same as [`download_linear_rgba_as_u8`] but treats the buffer
+    /// as already-perceptual / alpha data — no sRGB encoding applied
+    /// on the way out. Used by mask matte downloads where the
+    /// shader writes a 0..1 coverage value (not a linear-light
+    /// luminance) to all RGB channels and the consumer (the test
+    /// harness, an image viewer, the CPU compositor) expects that
+    /// value to land at byte position `(matte * 255 + 0.5) as u8`
+    /// without any gamma curve. Without this path, mask matte 0.5
+    /// gets gamma-encoded to ~187/255 instead of the expected
+    /// 128/255 — a 60-LSB drift that hid in production until the
+    /// CPU-vs-GPU parity test caught it.
+    fn download_raw_rgba_as_u8(
+        &self,
+        source: &wgpu::Buffer,
+        pixel_count: usize,
+    ) -> Vec<u8> {
+        let byte_size = (pixel_count * 16) as u64;
+        let bytes = self.download(source, byte_size);
+        if bytes.len() < pixel_count * 16 {
+            return vec![0u8; pixel_count * 4];
+        }
+        let f32s: &[f32] = bytemuck::cast_slice(&bytes);
+        let mut out = Vec::with_capacity(pixel_count * 4);
+        for chunk in f32s.chunks_exact(4) {
+            out.push((chunk[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+            out.push((chunk[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+            out.push((chunk[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+            out.push((chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+        }
+        out
     }
 
     /// Download `pixel_count` linear-f32 RGBA vec4s from a pixel
