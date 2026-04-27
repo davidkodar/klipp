@@ -473,6 +473,39 @@ pub struct MediaItemJson {
     pub colour_space: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_rotation: Option<i32>,
+    // Probed metadata — preserved across save/load so the log-format
+    // heuristic (`MediaItem::detect_log_format`) still works on
+    // re-load. Without these the project file forgets the camera
+    // tags and every reopen falls back to Srgb on cameras whose
+    // make/model isn't tagged in the container (Sony A6700, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_make: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bit_depth: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_bitrate_kbps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_bitrate_kbps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_primaries: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_transfer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_format: Option<String>,
+    /// User's per-media log format choice. Promoted from the
+    /// Inspector dropdown when the user picks a format on a clip
+    /// whose source media is still on the Srgb default — see
+    /// `apply_detected_log_format` in app.rs.
+    #[serde(default, skip_serializing_if = "is_default_log_format")]
+    pub log_format: klipp_core::LogFormat,
+}
+
+fn is_default_log_format(f: &klipp_core::LogFormat) -> bool {
+    *f == klipp_core::LogFormat::default()
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -950,8 +950,14 @@ impl Clip {
         speed_integral_keyframes(&self.speed_keyframes, timeline_elapsed_secs, fps, self.speed)
     }
 
-    /// Set the InputTransform node's log_format on this clip's node graph.
-    /// If the format is Srgb (default), does nothing.
+    /// Set the InputTransform node's log_format on this clip's node
+    /// graph. If the format is Srgb (default), does nothing. If no
+    /// InputTransform node exists (current default graph is Source
+    /// → Corrector → Output and ships without one), splice a fresh
+    /// IDT in immediately after Source so the IDT runs before any
+    /// grading. Without this splice, calling this method on a
+    /// default-graph clip silently no-ops and the user sees flat
+    /// log footage in the program viewer.
     pub fn set_input_log_format(&mut self, format: klipp_core::LogFormat) {
         if format == klipp_core::LogFormat::Srgb {
             return;
@@ -960,7 +966,63 @@ impl Clip {
             .find(|n| n.kind == klipp_nodes::NodeKind::InputTransform)
         {
             node.params.log_format = Some(format);
+            return;
         }
+        // No IDT — splice one in after the Source node. We need the
+        // existing Source → next-node edge so we can re-route it
+        // through the new IDT.
+        let source_id = match self.node_graph.nodes.iter()
+            .find(|n| n.kind == klipp_nodes::NodeKind::Source)
+            .map(|n| n.id)
+        {
+            Some(id) => id,
+            None => return, // graph has no Source — bail rather than corrupt it
+        };
+        let new_idt_id = klipp_nodes::NodeId::new_v4();
+        let mut idt_node = klipp_nodes::Node {
+            id: new_idt_id,
+            kind: klipp_nodes::NodeKind::InputTransform,
+            label: "Input Transform".into(),
+            enabled: true,
+            params: klipp_nodes::NodeParams::default(),
+            keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        };
+        idt_node.params.log_format = Some(format);
+        // Re-route every edge that started at Source to start at the
+        // new IDT instead, then add the Source → IDT bridge. Keeps
+        // every downstream consumer wired exactly as before, just
+        // with one extra node in front.
+        for edge in self.node_graph.edges.iter_mut() {
+            if edge.from_node == source_id {
+                edge.from_node = new_idt_id;
+            }
+        }
+        self.node_graph.edges.push(klipp_nodes::Edge {
+            from_node: source_id,
+            from_port: 0,
+            to_node: new_idt_id,
+            to_port: 0,
+        });
+        // Insert the new node right after Source so editor layout
+        // reads top-to-bottom in the expected order. Position it
+        // halfway between Source and the next node so the V2 editor
+        // doesn't draw it on top of an existing node.
+        let source_idx = self.node_graph.nodes.iter()
+            .position(|n| n.id == source_id)
+            .unwrap_or(0);
+        self.node_graph.nodes.insert(source_idx + 1, idt_node);
+        // Position the new node 110 px right of Source — same step
+        // size the default graph layout uses.
+        let source_pos = self.node_graph.node_positions
+            .get(&source_id)
+            .copied()
+            .unwrap_or(klipp_nodes::NodePos { x: 0.0, y: 0.0 });
+        self.node_graph.node_positions.insert(
+            new_idt_id,
+            klipp_nodes::NodePos { x: source_pos.x + 110.0, y: source_pos.y },
+        );
     }
 
     /// Create a gap placeholder clip with the given timeline extent.

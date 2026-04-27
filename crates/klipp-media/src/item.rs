@@ -306,6 +306,28 @@ impl MediaItem {
             return LogFormat::AppleLog;
         }
 
+        // Last-ditch encoder-string heuristic for files with no
+        // make/model metadata. Many cameras strip those tags but
+        // still write a recognisable encoder signature; without
+        // this, "Sony A6700 / A7S / FX-series 10-bit HEVC straight
+        // out of camera" lands as Srgb because the container
+        // carries `color_transfer=unknown` AND `camera_make=` empty
+        // — the heuristic above has nothing to match. Cross-check
+        // with bit depth so we don't claim S-Log3 for an 8-bit
+        // GoPro that happens to use the same encoder name.
+        let encoder = self.encoder.as_deref().unwrap_or("").to_lowercase();
+        if !encoder.is_empty() {
+            // "HEVC Coding" — Sony's signature on consumer / prosumer
+            // HEVC out-of-camera (A6700, A7S III, A1, FX3, FX30, etc.)
+            // when no other metadata is written. Always paired with
+            // 10-bit (already gated above), the user is overwhelmingly
+            // likely to be shooting S-Log3 if they bothered with the
+            // 10-bit setting.
+            if encoder.contains("hevc coding") {
+                return LogFormat::SLog3;
+            }
+        }
+
         LogFormat::Srgb
     }
 }

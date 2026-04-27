@@ -393,6 +393,16 @@ fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
         color_label: item.color_label.to_u8(),
         colour_space: item.colour_space.to_u8(),
         source_rotation: if item.source_rotation == 0 { None } else { Some(item.source_rotation) },
+        camera_make: item.camera_make.clone(),
+        camera_model: item.camera_model.clone(),
+        encoder: item.encoder.clone(),
+        bit_depth: item.bit_depth,
+        video_bitrate_kbps: item.video_bitrate_kbps,
+        audio_bitrate_kbps: item.audio_bitrate_kbps,
+        color_primaries: item.color_primaries.clone(),
+        color_transfer: item.color_transfer.clone(),
+        pixel_format: item.pixel_format.clone(),
+        log_format: item.log_format,
     }
 }
 

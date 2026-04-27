@@ -2826,15 +2826,22 @@ impl KlippApp {
         }
     }
 
-    /// Apply the auto-detected log format from the media pool to a clip's InputTransform node.
+    /// Seed the clip's InputTransform node `log_format` from the
+    /// source media. User per-media override (`MediaItem.log_format`,
+    /// set whenever the user picks a format on any clip of this
+    /// media) wins over the heuristic (`detected_log_format`); the
+    /// heuristic wins over Srgb default. Skipped entirely when the
+    /// effective format is Srgb so we don't insert pointless
+    /// `Some(Srgb)` overrides on plain SDR clips.
     fn apply_detected_log_format(&mut self, clip_id: klipp_core::ClipId, media_id: klipp_core::MediaId) {
-        let detected = self.state.media_pool.get(&media_id)
-            .map(|m| m.detected_log_format)
+        let (user_lf, detected_lf) = self.state.media_pool.get(&media_id)
+            .map(|m| (m.log_format, m.detected_log_format))
             .unwrap_or_default();
-        if detected != klipp_core::LogFormat::Srgb {
+        let effective = if user_lf != klipp_core::LogFormat::default() { user_lf } else { detected_lf };
+        if effective != klipp_core::LogFormat::Srgb {
             let seq = &mut self.state.sequences[self.state.active_sequence_idx];
             if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
-                clip.set_input_log_format(detected);
+                clip.set_input_log_format(effective);
             }
         }
     }
@@ -8720,6 +8727,16 @@ impl KlippApp {
                                     ac.linked_clip_id = Some(video_clip_id);
                                 }
 
+                                // Seed the IDT with the auto-detected log
+                                // format on the video clip (audio clip has
+                                // no InputTransform path). Without this,
+                                // V+A drag-import lands the camera-log
+                                // footage with no IDT applied — the user
+                                // sees a flat raw-log image and has to
+                                // pick the format manually for every
+                                // imported clip.
+                                self.apply_detected_log_format(video_clip_id, *media_id);
+
                                 self.state.selected_clip = Some(video_clip_id);
                                 self.sync_sequence_to_engine();
                                 self.state.dirty = true;
@@ -8740,6 +8757,12 @@ impl KlippApp {
                                     if let Some(c) = track.find_clip_mut(clip_id) {
                                         c.source_rotation = item.source_rotation;
                                     }
+                                }
+                                // Seed the IDT with the auto-detected log
+                                // format (video-only path; audio has no
+                                // InputTransform).
+                                if has_video {
+                                    self.apply_detected_log_format(clip_id, *media_id);
                                 }
                                 self.state.selected_clip = Some(clip_id);
                                 self.sync_sequence_to_engine();
@@ -10963,20 +10986,33 @@ impl KlippApp {
                 true
             }
             AppCommand::SetClipLogFormat { clip_id, log_format } => {
-                let mut found = false;
+                let mut media_id_for_writeback: Option<klipp_core::MediaId> = None;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut()
-                            .find(|n| n.kind == klipp_nodes::NodeKind::InputTransform)
-                        {
-                            node.params.log_format = Some(*log_format);
-                            found = true;
-                        }
+                        // `set_input_log_format` splices an
+                        // InputTransform into the default Source →
+                        // Corrector → Output graph if one isn't
+                        // present yet — covers the common case
+                        // where the user picks a format on a freshly
+                        // added clip whose default graph has no IDT.
+                        clip.set_input_log_format(*log_format);
+                        media_id_for_writeback = clip.media_id();
                         break;
                     }
                 }
-                if !found {
-                    self.state.toast.show("Add an Input Transform node to apply log decoding");
+                // Promote the user's choice to the source media's
+                // own `log_format` so the next clip imported from
+                // the same media inherits it via
+                // `apply_detected_log_format`. Only write back when
+                // the media is still on the default — don't clobber
+                // a deliberate per-media setting the user has made
+                // elsewhere.
+                if let Some(mid) = media_id_for_writeback {
+                    if let Some(item) = self.state.media_pool.get_mut(&mid) {
+                        if item.log_format == klipp_core::LogFormat::default() {
+                            item.log_format = *log_format;
+                        }
+                    }
                 }
                 *needs_refresh = true;
                 true

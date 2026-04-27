@@ -8071,10 +8071,27 @@ impl PlaybackEngine {
                 let camera_model = fmt_meta.get("com.apple.quicktime.model")
                     .or_else(|| fmt_meta.get("model"))
                     .map(|s| s.to_string());
-                let encoder = fmt_meta.get("encoder")
+                // Encoder tag: try format-level first, then fall
+                // back to stream-level. Sony cameras (A6700 etc.)
+                // write `encoder=HEVC Coding` only at the stream
+                // level — without this fallback the tag is invisible
+                // and the log-format heuristic loses its only signal
+                // on out-of-camera Sony HEVC files.
+                let mut encoder = fmt_meta.get("encoder")
                     .or_else(|| fmt_meta.get("encoding_tool"))
                     .or_else(|| fmt_meta.get("com.apple.quicktime.software"))
                     .map(|s| s.to_string());
+                if encoder.is_none() {
+                    for stream in format_ctx.streams() {
+                        let m = stream.metadata();
+                        if let Some(e) = m.get("encoder")
+                            .or_else(|| m.get("encoding_tool"))
+                        {
+                            encoder = Some(e.to_string());
+                            break;
+                        }
+                    }
+                }
 
                 // Extract bit depth, bitrate, pixel format, color info from video stream
                 let mut bit_depth: Option<u8> = None;

@@ -127,7 +127,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
         if offline {
             warn!("Media file not found, marking offline: {:?}", path);
         }
-        let media_item = MediaItem {
+        let mut media_item = MediaItem {
             id: MediaId(parse_uuid(&item_json.id)?),
             path,
             filename: item_json.filename.clone(),
@@ -164,22 +164,28 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             color_label: klipp_media::ColorLabel::from_u8(item_json.color_label),
             colour_space: klipp_media::ColourSpace::from_u8(item_json.colour_space),
             needs_reprobe: false,
-            log_format: Default::default(),
+            log_format: item_json.log_format,
             source_rotation: item_json.source_rotation.unwrap_or(0),
-            camera_make: None,
-            camera_model: None,
-            encoder: None,
-            bit_depth: None,
-            video_bitrate_kbps: None,
-            audio_bitrate_kbps: None,
-            color_primaries: None,
-            color_transfer: None,
-            pixel_format: None,
+            camera_make: item_json.camera_make.clone(),
+            camera_model: item_json.camera_model.clone(),
+            encoder: item_json.encoder.clone(),
+            bit_depth: item_json.bit_depth,
+            video_bitrate_kbps: item_json.video_bitrate_kbps,
+            audio_bitrate_kbps: item_json.audio_bitrate_kbps,
+            color_primaries: item_json.color_primaries.clone(),
+            color_transfer: item_json.color_transfer.clone(),
+            pixel_format: item_json.pixel_format.clone(),
             detected_log_format: Default::default(),
             skim_file: None,
             waveform_data: None,
             audio_cache: None,
         };
+        // Re-run the log-format heuristic now that the metadata
+        // fields are restored, so files saved before #35 (or files
+        // whose detected format wasn't serialised) get the right
+        // IDT seed on next clip-add. Cheap (no I/O — pure
+        // string/bit-depth heuristic) and idempotent.
+        media_item.detected_log_format = media_item.detect_log_format();
         media_pool.add(media_item);
     }
 
