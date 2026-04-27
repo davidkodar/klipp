@@ -1,0 +1,89 @@
+# cargo-deny configuration for Klipp.
+#
+# Closes CODE_AUDIT DEP-CI-DENY (the config side). The CI integration
+# side (DEP-CI-UDEPS for udeps and a wired-in cargo audit/deny job)
+# is tracked separately as it depends on CI workflow infrastructure
+# that lives outside the source tree.
+#
+# Usage:
+#   cargo deny check          # all sections below
+#   cargo deny check advisories
+#   cargo deny check licenses
+#   cargo deny check bans
+#   cargo deny check sources
+#
+# Schema reference:
+#   https://embarkstudios.github.io/cargo-deny/checks/cfg.html
+
+[graph]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# ─── Security advisories (RustSec database) ─────────────────────────
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Yanked-version warnings are common in long-tail transitive deps;
+# treat as warn so they surface in CI logs without failing the build
+# when the only fix is upstream.
+yanked = "warn"
+# A handful of unmaintained / soundness advisories inherited from
+# transitive deps we can't bump without an upstream egui/winit/eframe
+# release. Add specific RUSTSEC-XXXX-NNNN ids here as they surface;
+# blanket "ignore" is intentionally empty so new advisories DO break
+# the build.
+ignore = []
+
+# ─── Licenses ───────────────────────────────────────────────────────
+[licenses]
+# Permissive licenses we accept. Klipp is itself a proprietary app;
+# we depend on permissive open-source crates only.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "CC0-1.0",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+# ─── Banned crates / version pins ───────────────────────────────────
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+# Tracker entries DEP-ROXMLTREE-DUP and (the transitive remnant of)
+# DEP-PNG-ALIGN both surface as "multiple-versions" warnings on
+# crates we can't deduplicate without bumping upstream egui/resvg.
+# Annotate them as known-acceptable so a fresh duplicate (one we
+# CAN fix) stands out in CI noise.
+skip = [
+    # Pulled by tiny-skia → resvg → egui_extras (and sctk-adwaita →
+    # winit). Our direct deps are aligned at 0.18; the 0.17 dup is
+    # third-party transitive. See CODE_AUDIT DEP-PNG-ALIGN.
+    { name = "png", version = "0.17" },
+    # Pulled by usvg-parser → resvg → egui_extras. Our direct dep
+    # is 0.20. See CODE_AUDIT DEP-ROXMLTREE-DUP.
+    { name = "roxmltree", version = "0.19" },
+]
+skip-tree = []
+deny = []
+
+# ─── Source registries ──────────────────────────────────────────────
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
