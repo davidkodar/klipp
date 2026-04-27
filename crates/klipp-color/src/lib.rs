@@ -50,6 +50,7 @@ pub mod huesat;
 pub mod linear;
 pub mod lut;
 pub mod masks;
+pub mod primaries;
 pub mod qualifier;
 pub mod pipeline;
 pub mod scopes;

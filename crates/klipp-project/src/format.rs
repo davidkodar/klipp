@@ -33,6 +33,12 @@ pub struct ProjectJson {
     /// Last horizontal timeline scroll position when saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeline_scroll_x: Option<f32>,
+    /// Working colorspace for this project's grade chain. Old project
+    /// files written before Phase E lack this field; serde default
+    /// gives them `Rec709Linear`, matching the pipeline's behaviour
+    /// before the upgrade so existing projects open unchanged.
+    #[serde(default)]
+    pub working_colorspace: klipp_core::WorkingColorspace,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -523,4 +529,75 @@ pub struct MarkerJson {
 
 fn default_marker_color_str() -> String {
     "Blue".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `.klipp` project.json from before Phase E (no `working_colorspace`
+    /// field) must deserialise as `Rec709Linear` — that's the
+    /// back-compat contract for any existing project on disk.
+    #[test]
+    fn legacy_project_json_defaults_working_colorspace_to_rec709_linear() {
+        let legacy = r#"{
+            "version": "1.0.0",
+            "klipp_version_min": "0.1.0",
+            "sequences": []
+        }"#;
+        let project: ProjectJson = serde_json::from_str(legacy)
+            .expect("legacy project.json should deserialise");
+        assert_eq!(
+            project.working_colorspace,
+            klipp_core::WorkingColorspace::Rec709Linear,
+            "old projects without working_colorspace must default to Rec709Linear",
+        );
+    }
+
+    /// Round-trip with a non-default value to confirm serde writes
+    /// and reads the field correctly. `AcesCG` is the value that
+    /// distinguishes a wide-gamut working space from the legacy default.
+    #[test]
+    fn working_colorspace_round_trips_when_set() {
+        let project = ProjectJson {
+            version: "1.0.0".to_string(),
+            klipp_version_min: "0.1.0".to_string(),
+            klipp_version: None,
+            saved_at: None,
+            created_at: None,
+            platform: None,
+            sequences: vec![],
+            active_sequence_id: None,
+            notes: String::new(),
+            timeline_zoom: None,
+            timeline_scroll_x: None,
+            working_colorspace: klipp_core::WorkingColorspace::AcesCG,
+        };
+        let serialised = serde_json::to_string(&project).expect("serialise");
+        let back: ProjectJson = serde_json::from_str(&serialised).expect("deserialise");
+        assert_eq!(
+            back.working_colorspace,
+            klipp_core::WorkingColorspace::AcesCG,
+        );
+    }
+
+    /// Pin the on-disk variant names. The string tags are part of the
+    /// `.klipp` file format contract — a future enum rename must
+    /// migrate, not silently break old projects on load.
+    #[test]
+    fn working_colorspace_serialises_to_stable_names() {
+        use klipp_core::WorkingColorspace;
+        assert_eq!(
+            serde_json::to_string(&WorkingColorspace::Rec709Linear).unwrap(),
+            "\"Rec709Linear\"",
+        );
+        assert_eq!(
+            serde_json::to_string(&WorkingColorspace::AcesCG).unwrap(),
+            "\"AcesCG\"",
+        );
+        assert_eq!(
+            serde_json::to_string(&WorkingColorspace::Bt2020Linear).unwrap(),
+            "\"Bt2020Linear\"",
+        );
+    }
 }

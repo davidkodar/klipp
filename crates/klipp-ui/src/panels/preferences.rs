@@ -2976,30 +2976,11 @@ impl PreferencesPanel {
         });
         ui.add_space(4.0);
 
-        // ── WORKING SPACE section ──
-        Self::section_header(ui, "WORKING SPACE", theme);
-
-        Self::setting_row(ui, "Working color space", theme, |ui| {
-            use klipp_core::ColorSpace;
-            let label = match prefs.color.working_color_space {
-                ColorSpace::Srgb => "sRGB",
-                ColorSpace::Rec709 => "Rec.709",
-                ColorSpace::Rec2020 => "Rec.2020",
-                ColorSpace::P3D65 => "DCI-P3 D65",
-                ColorSpace::AcesCG => "ACEScg",
-                _ => "Other",
-            };
-            egui::ComboBox::from_id_salt("working_cs")
-                .selected_text(label)
-                .width(90.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.color.working_color_space, ColorSpace::Srgb, "sRGB").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.color.working_color_space, ColorSpace::Rec709, "Rec.709").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.color.working_color_space, ColorSpace::Rec2020, "Rec.2020").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.color.working_color_space, ColorSpace::P3D65, "DCI-P3 D65").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.color.working_color_space, ColorSpace::AcesCG, "ACEScg").changed() { *dirty = true; }
-                });
-        });
+        // ── LUTs section ──
+        // Working colorspace lives on the project (Project.working_colorspace),
+        // not on user prefs — it's a creative decision that travels with the
+        // project, the way every professional NLE handles it.
+        Self::section_header(ui, "LUTs", theme);
 
         Self::setting_row_with_subtitle(ui, "Viewer LUT", "Applied after color pipeline for display", theme, |ui| {
             let display = prefs.color.viewer_lut_path.as_ref()

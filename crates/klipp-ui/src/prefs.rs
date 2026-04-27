@@ -1360,9 +1360,6 @@ impl Default for MediaCachePrefs {
 /// Color grading preferences.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColorPrefs {
-    /// Working color space.
-    #[serde(default)]
-    pub working_color_space: klipp_core::ColorSpace,
     /// Viewer LUT file path (applied for display only).
     #[serde(default)]
     pub viewer_lut_path: Option<PathBuf>,
@@ -1392,7 +1389,6 @@ fn default_skin_angle() -> f32 { 123.0 }
 impl Default for ColorPrefs {
     fn default() -> Self {
         Self {
-            working_color_space: klipp_core::ColorSpace::Rec709,
             viewer_lut_path: None,
             lut_interpolation: Default::default(),
             scope_quality: Default::default(),
@@ -1890,7 +1886,6 @@ mod tests {
         assert_eq!(rt.media_cache.thumbnail_height, 256);
 
         // ColorPrefs
-        assert_eq!(rt.color.working_color_space, klipp_core::ColorSpace::Rec709);
         assert!(rt.color.viewer_lut_path.is_none());
         assert_eq!(rt.color.scope_quality, klipp_core::ScopeQuality::Medium);
         assert_eq!(rt.color.scope_update_interval_ms, 32);
@@ -1968,7 +1963,6 @@ mod tests {
         assert_eq!(prefs.audio_hardware.sample_rate, 48000);
         assert_eq!(prefs.appearance.ui_text_size, 13.0);
         assert_eq!(prefs.media_cache.max_cache_size_gb, 20);
-        assert_eq!(prefs.color.working_color_space, klipp_core::ColorSpace::Rec709);
         assert!(prefs.title.default_font.is_empty());
         assert_eq!(prefs.timeline.clip_colors.len(), 6);
         assert_eq!(prefs.viewer.grid_color, [200, 200, 200, 80]);
@@ -2132,7 +2126,6 @@ mod tests {
         prefs.media_cache.thumbnail_height = 200;
 
         // ColorPrefs
-        prefs.color.working_color_space = klipp_core::ColorSpace::Rec2020;
         prefs.color.viewer_lut_path = Some(PathBuf::from("/luts/my.cube"));
         prefs.color.scope_quality = klipp_core::ScopeQuality::High;
         prefs.color.scope_update_interval_ms = 64;
@@ -2254,7 +2247,6 @@ mod tests {
         assert_eq!(rt.media_cache.skim_transcode_quality, 28);
         assert_eq!(rt.media_cache.thumbnail_height, 200);
 
-        assert_eq!(rt.color.working_color_space, klipp_core::ColorSpace::Rec2020);
         assert_eq!(rt.color.viewer_lut_path.as_ref().unwrap().to_str().unwrap(), "/luts/my.cube");
         assert_eq!(rt.color.scope_quality, klipp_core::ScopeQuality::High);
         assert_eq!(rt.color.scope_update_interval_ms, 64);
@@ -2330,7 +2322,6 @@ mod tests {
         assert_eq!(prefs.appearance.ui_text_size, 13.0);
         assert_eq!(prefs.appearance.accent_color, [0xe8, 0xa0, 0x20]);
         assert_eq!(prefs.media_cache.max_cache_size_gb, 20);
-        assert_eq!(prefs.color.working_color_space, klipp_core::ColorSpace::Rec709);
         assert!(prefs.title.default_font.is_empty());
         assert_eq!(prefs.timeline.clip_colors.len(), 6);
         assert_eq!(prefs.viewer.grid_color, [200, 200, 200, 80]);

@@ -87,6 +87,7 @@ pub fn save_project_with_color_and_backups(
         notes: notes.to_string(),
         timeline_zoom,
         timeline_scroll_x,
+        working_colorspace: klipp_core::WorkingColorspace::default(),
     };
 
     let project_json = serde_json::to_string_pretty(&project)
