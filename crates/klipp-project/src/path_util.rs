@@ -383,6 +383,73 @@ mod tests {
         assert_eq!(preserved, b"original content",
             "atomic_write failure must NOT corrupt the original target file");
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // sanitize_fps / sanitize_resolution — closes CODE_AUDIT SEC-2.
+    //
+    // A malformed project.json (or hand-edited file) carrying
+    // fps.den == 0 used to flow through Fps::new(num, 0) on the
+    // native load path, producing NaN / inf rates that corrupt every
+    // downstream timeline calculation. The native load path now
+    // funnels MediaItem and Sequence fps + resolution through these
+    // sanitizers, the same helpers the importer paths already use.
+    // These tests pin the helper contracts so a future refactor that
+    // weakens the bound (e.g. removes the zero-substitute) surfaces
+    // in CI.
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn sanitize_fps_substitutes_film_24_on_zero_denominator() {
+        let fps = sanitize_fps(30, 0);
+        assert_eq!(fps, klipp_core::Fps::film_24(),
+            "den=0 must substitute 24/1, not produce NaN/inf");
+    }
+
+    #[test]
+    fn sanitize_fps_substitutes_film_24_on_zero_numerator() {
+        let fps = sanitize_fps(0, 1);
+        assert_eq!(fps, klipp_core::Fps::film_24(),
+            "num=0 must substitute 24/1");
+    }
+
+    #[test]
+    fn sanitize_fps_clamps_oversize_numerator() {
+        let fps = sanitize_fps(MAX_FPS_NUMERATOR + 1, 1);
+        assert_eq!(fps, klipp_core::Fps::new(MAX_FPS_NUMERATOR, 1),
+            "num > cap must clamp, not pass through");
+    }
+
+    #[test]
+    fn sanitize_fps_passes_valid_values_unchanged() {
+        // Common production rates round-trip identical.
+        assert_eq!(sanitize_fps(24000, 1001), klipp_core::Fps::new(24000, 1001));
+        assert_eq!(sanitize_fps(30000, 1001), klipp_core::Fps::new(30000, 1001));
+        assert_eq!(sanitize_fps(60, 1), klipp_core::Fps::new(60, 1));
+    }
+
+    #[test]
+    fn sanitize_resolution_substitutes_1080p_on_zero_dimension() {
+        assert_eq!(sanitize_resolution(0, 1080),
+            klipp_core::Resolution { width: 1920, height: 1080 });
+        assert_eq!(sanitize_resolution(1920, 0),
+            klipp_core::Resolution { width: 1920, height: 1080 });
+    }
+
+    #[test]
+    fn sanitize_resolution_clamps_oversize() {
+        let res = sanitize_resolution(MAX_FRAME_DIMENSION + 1, 1080);
+        assert_eq!(res.width, MAX_FRAME_DIMENSION,
+            "width > cap must clamp to MAX_FRAME_DIMENSION");
+        assert_eq!(res.height, 1080, "height under cap must round-trip unchanged");
+    }
+
+    #[test]
+    fn sanitize_resolution_passes_valid_values_unchanged() {
+        assert_eq!(sanitize_resolution(1920, 1080),
+            klipp_core::Resolution { width: 1920, height: 1080 });
+        assert_eq!(sanitize_resolution(3840, 2160),
+            klipp_core::Resolution { width: 3840, height: 2160 });
+    }
 }
 
 pub fn read_capped(path: &Path, max_bytes: u64) -> Result<Vec<u8>, std::io::Error> {

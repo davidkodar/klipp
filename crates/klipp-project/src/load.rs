@@ -1,5 +1,8 @@
 use crate::format::*;
-use crate::path_util::{resolve_media_path, read_to_string_capped, MAX_INPUT_FILE_BYTES};
+use crate::path_util::{
+    resolve_media_path, read_to_string_capped, sanitize_fps, sanitize_resolution,
+    MAX_INPUT_FILE_BYTES,
+};
 use klipp_core::*;
 use klipp_media::{MediaItem, MediaPool};
 use klipp_timeline::{
@@ -132,11 +135,11 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             path,
             filename: item_json.filename.clone(),
             duration: RationalTime { value: item_json.duration_frames, rate: item_json.duration_rate },
-            fps: Fps::new(item_json.fps.num, item_json.fps.den),
-            resolution: Resolution {
-                width: item_json.resolution.width,
-                height: item_json.resolution.height,
-            },
+            fps: sanitize_fps(item_json.fps.num, item_json.fps.den),
+            resolution: sanitize_resolution(
+                item_json.resolution.width,
+                item_json.resolution.height,
+            ),
             video_codec: item_json.video_codec.clone(),
             audio_codec: item_json.audio_codec.clone(),
             has_audio: item_json.has_audio,
@@ -269,11 +272,11 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
     Ok(Sequence {
         id: SequenceId(parse_uuid(&seq_json.id)?),
         name: seq_json.name.clone(),
-        fps: Fps::new(seq_json.fps.num, seq_json.fps.den),
-        resolution: Resolution {
-            width: seq_json.resolution.width,
-            height: seq_json.resolution.height,
-        },
+        fps: sanitize_fps(seq_json.fps.num, seq_json.fps.den),
+        resolution: sanitize_resolution(
+            seq_json.resolution.width,
+            seq_json.resolution.height,
+        ),
         tracks: seq_json.tracks.iter().map(|t| {
             let kind = match t.kind.as_str() {
                 "Audio" => TrackKind::Audio,
@@ -628,7 +631,7 @@ pub fn load_looks(dir: &Path) -> Vec<Look> {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().map_or(true, |e| e != "json") { continue; }
-        match std::fs::read_to_string(&path) {
+        match read_to_string_capped(&path, MAX_INPUT_FILE_BYTES) {
             Ok(text) => match serde_json::from_str::<Look>(&text) {
                 Ok(look) => out.push(look),
                 Err(e) => warn!("Skipping corrupt Look {:?}: {e}", path),
