@@ -68,3 +68,80 @@ pub fn decode_png_or_fallback(bytes: &[u8]) -> egui::ColorImage {
         pixels,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ═══════════════════════════════════════════════════════════════
+    // PANIC-VIEWER regression — closes CODE_AUDIT PANIC-VIEWER.
+    //
+    // The original tracker entry pointed at three sites
+    // (viewer.rs:276-289, toolbar.rs:193, launch_screen.rs:70) that
+    // used `decoder.read_info().expect("...")` on baked-in PNG
+    // assets. If the asset pipeline ever stripped a PNG (or a
+    // corrupt file landed in a future runtime asset path), startup
+    // would crash. All three sites now route through
+    // decode_png_or_fallback, which returns a 1×1 transparent
+    // placeholder on every PNG-error path. These tests pin that
+    // contract so a future tightening can't silently re-introduce
+    // the panic.
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn decode_png_recovers_from_garbage_bytes() {
+        // Random non-PNG bytes — must NOT panic, must return the
+        // 1×1 transparent placeholder.
+        let img = decode_png_or_fallback(b"this is not a PNG file at all");
+        assert_eq!(img.size, [1, 1], "garbage must yield 1×1 placeholder");
+        assert_eq!(img.pixels.len(), 1);
+        assert_eq!(img.pixels[0], egui::Color32::TRANSPARENT);
+    }
+
+    #[test]
+    fn decode_png_recovers_from_empty_bytes() {
+        // Empty buffer — header read fails immediately.
+        let img = decode_png_or_fallback(&[]);
+        assert_eq!(img.size, [1, 1]);
+        assert_eq!(img.pixels[0], egui::Color32::TRANSPARENT);
+    }
+
+    #[test]
+    fn decode_png_recovers_from_truncated_png() {
+        // Valid PNG signature but the rest is missing — read_info
+        // succeeds far enough to advance, then next_frame hits the
+        // truncated body.
+        let mut bytes = vec![137, 80, 78, 71, 13, 10, 26, 10]; // PNG magic
+        bytes.extend_from_slice(b"truncated junk after the magic");
+        let img = decode_png_or_fallback(&bytes);
+        assert_eq!(img.size, [1, 1],
+            "truncated PNG must fall through to placeholder, not panic");
+    }
+
+    #[test]
+    fn decode_png_loads_a_valid_2x2_rgba_png() {
+        // Build a minimal 2×2 RGBA PNG inline so the test doesn't
+        // depend on any on-disk asset. Sanity: the happy path
+        // returns the right dimensions, not the placeholder.
+        let mut buf = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut buf, 2, 2);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().expect("write header");
+            // 4 RGBA pixels: red, green, blue, white.
+            writer.write_image_data(&[
+                255, 0, 0, 255,
+                0, 255, 0, 255,
+                0, 0, 255, 255,
+                255, 255, 255, 255,
+            ]).expect("write image data");
+        }
+        let img = decode_png_or_fallback(&buf);
+        assert_eq!(img.size, [2, 2], "valid PNG must decode at full size");
+        assert_eq!(img.pixels.len(), 4);
+        // Spot-check the red pixel.
+        assert_eq!(img.pixels[0].r(), 255);
+        assert_eq!(img.pixels[0].g(), 0);
+    }
+}
