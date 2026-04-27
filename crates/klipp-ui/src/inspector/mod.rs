@@ -45,16 +45,11 @@ impl NewInspectorPanel {
             }
         }
 
-        // Resolve selected clip (timeline) or selected media (bin)
-        let clip_id = state.selected_clip;
-        let clip_info = clip_id.and_then(|cid| {
-            state
-                .sequence()
-                .tracks
-                .iter()
-                .enumerate()
-                .find_map(|(ti, t)| t.find_clip(cid).map(|c| (ti, c)))
-        });
+        // Resolve selected clip (timeline) or selected media (bin).
+        // `selected_clip_loc()` is the cached form of the previous
+        // tracks-iter walk — closes CODE_AUDIT U-11 (steady state
+        // is one Track::find_clip rather than tracks × clips).
+        let clip_info = state.selected_clip_loc();
         let media = clip_info
             .and_then(|(_, c)| c.media_id().and_then(|mid| state.media_pool.get(&mid)));
 

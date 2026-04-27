@@ -354,6 +354,21 @@ pub struct AppState {
 
     // Selection
     pub selected_clip: Option<ClipId>,
+    /// Single-frame lookup cache for `selected_clip_loc()`. Stores
+    /// `(clip_id, track_idx)` of the most recently resolved selection.
+    /// On the next call, the helper checks the cached track first
+    /// (`Track::find_clip`, O(clips_in_one_track)) and falls back to
+    /// a full sequence walk only if the cache is stale (clip moved
+    /// tracks, was deleted, or selection changed). Self-healing —
+    /// nothing else needs to invalidate it. Cell so the helper can
+    /// take `&self` and still update the cache.
+    ///
+    /// Closes CODE_AUDIT U-11. Inspector and viewer paths previously
+    /// did `tracks.iter().find_map(|t| t.find_clip(cid))` per render
+    /// — O(tracks × clips) per frame. With this cache, the steady
+    /// state is O(1) (single-track find_clip), with the full walk
+    /// only on actual selection / topology change.
+    pub selected_clip_loc_cache: std::cell::Cell<Option<(ClipId, usize)>>,
     /// UI-only state — not undoable. Multi-clip selection is managed directly
     /// for performance (marquee updates every frame). Do not convert to commands.
     pub selected_clips: Vec<ClipId>,
@@ -1997,6 +2012,7 @@ impl Default for AppState {
             last_timeline_content_width: 800.0,
             show_overview_bar: true,
             selected_clip: None,
+            selected_clip_loc_cache: std::cell::Cell::new(None),
             selected_transition: None,
             selected_clips: Vec::new(),
             hovered_clip: None,
@@ -2375,6 +2391,65 @@ impl AppState {
     pub fn sequence_duration(&self) -> Timecode {
         self.sequence().total_duration()
     }
+
+    /// Resolve `selected_clip` to its (track_idx, &Clip) location in
+    /// the active sequence, using the `selected_clip_loc_cache` to
+    /// avoid the O(tracks × clips) walk on every UI render.
+    ///
+    /// Cache contract: stores `(clip_id, track_idx)`. The next call
+    /// checks the cached track first; if the clip is still there it
+    /// returns immediately. Cache misses (clip moved tracks, was
+    /// deleted, or selection changed) trigger a full sequence walk
+    /// and refresh the cache. Self-healing — call sites don't have
+    /// to invalidate after edits.
+    ///
+    /// Returns `None` when no clip is selected, or the selected clip
+    /// id no longer exists in the active sequence (in which case
+    /// the cache is also cleared).
+    pub fn selected_clip_loc(&self) -> Option<(usize, &klipp_timeline::Clip)> {
+        let cid = self.selected_clip?;
+        find_clip_cached(self.sequence(), cid, &self.selected_clip_loc_cache)
+    }
+}
+
+/// Free-function form of the selected-clip cached lookup. Extracted
+/// so the cache-hit / cache-miss / stale / deleted paths can be unit-
+/// tested directly against a `Sequence` + `Cell<...>` pair without
+/// having to materialise a full `AppState`.
+pub(crate) fn find_clip_cached<'a>(
+    seq: &'a klipp_timeline::Sequence,
+    cid: klipp_core::ClipId,
+    cache: &std::cell::Cell<Option<(klipp_core::ClipId, usize)>>,
+) -> Option<(usize, &'a klipp_timeline::Clip)> {
+    // Fast path: cache says this clip lives on `cached_ti`. Verify
+    // it's still there (one Track::find_clip).
+    if let Some((cached_cid, cached_ti)) = cache.get() {
+        if cached_cid == cid {
+            if let Some(track) = seq.tracks.get(cached_ti) {
+                if let Some(clip) = track.find_clip(cid) {
+                    return Some((cached_ti, clip));
+                }
+            }
+            // Same id, cache stale (clip moved tracks or track
+            // deleted). Fall through to the full walk; the
+            // refreshed cache write below covers the next call.
+        }
+        // selected_clip changed since the cache was set —
+        // also fall through.
+    }
+    // Slow path: walk every track. Updates the cache so the next
+    // call hits the fast path.
+    for (ti, track) in seq.tracks.iter().enumerate() {
+        if let Some(clip) = track.find_clip(cid) {
+            cache.set(Some((cid, ti)));
+            return Some((ti, clip));
+        }
+    }
+    // Phantom selection — clip id doesn't exist anywhere. Clear
+    // the cache so we don't keep paying the full-walk cost
+    // searching for a non-existent id.
+    cache.set(None);
+    None
 }
 
 #[cfg(test)]
@@ -2548,5 +2623,119 @@ mod tests {
         let color = layouts.iter().find(|l| l.name == "Color").unwrap();
         assert!(color.show_color_panel);
         assert!(color.color_panel_height.is_some());
+    }
+
+    // ── selected-clip cache (U-11) ──
+
+    fn make_seq_with(clip_specs: &[(usize, klipp_core::ClipId)]) -> klipp_timeline::Sequence {
+        // 4-track sequence; `clip_specs` is a list of (track_idx,
+        // clip_id) entries to populate. Each clip is a 1-second
+        // gap-on-video — content doesn't matter for these tests, only
+        // the (track, id) topology does.
+        let mut seq = klipp_timeline::Sequence::new_default();
+        // new_default has 1 video + 1 audio. Pad with extra video tracks.
+        while seq.tracks.iter().filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video)).count() < 4 {
+            seq.add_video_track(format!("V{}", seq.tracks.len()));
+        }
+        for &(ti, cid) in clip_specs {
+            // Build a minimal Media-kind clip directly so we can
+            // pin the id ourselves (append_clip allocates a fresh id).
+            let one_sec = klipp_core::Timecode { value: 24, rate: 24 };
+            let mut clip = klipp_timeline::Clip {
+                id: cid,
+                kind: klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() },
+                timeline_in: klipp_core::Timecode { value: 0, rate: 24 },
+                timeline_out: one_sec,
+                source_in: klipp_core::Timecode { value: 0, rate: 24 },
+                source_out: one_sec,
+                ..klipp_timeline::Clip::gap(
+                    klipp_core::Timecode { value: 0, rate: 24 },
+                    one_sec,
+                )
+            };
+            // gap() set kind to Gap; restore Media + the ids above.
+            clip.id = cid;
+            clip.kind = klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() };
+            seq.tracks[ti].clips.push(clip);
+        }
+        seq
+    }
+
+    #[test]
+    fn find_clip_cached_warm_path_returns_clip_and_populates_cache() {
+        let cid = klipp_core::ClipId::new();
+        let seq = make_seq_with(&[(2, cid)]);
+        let cache = std::cell::Cell::new(None);
+        let (ti, clip) = find_clip_cached(&seq, cid, &cache).expect("first lookup");
+        assert_eq!(ti, 2, "clip is on track 2");
+        assert_eq!(clip.id, cid);
+        assert_eq!(cache.get(), Some((cid, 2)), "cache populated after first walk");
+    }
+
+    #[test]
+    fn find_clip_cached_fast_path_uses_cache_when_clip_unmoved() {
+        let cid = klipp_core::ClipId::new();
+        let seq = make_seq_with(&[(2, cid)]);
+        // Pre-seed cache with the correct location — this is what
+        // a steady-state UI render sees on every frame after the
+        // first.
+        let cache = std::cell::Cell::new(Some((cid, 2)));
+        let (ti, clip) = find_clip_cached(&seq, cid, &cache).expect("cached lookup");
+        assert_eq!(ti, 2);
+        assert_eq!(clip.id, cid);
+        assert_eq!(cache.get(), Some((cid, 2)), "cache unchanged on fast path");
+    }
+
+    #[test]
+    fn find_clip_cached_self_heals_when_clip_moves_tracks() {
+        let cid = klipp_core::ClipId::new();
+        // Cache says clip is on track 0, but actually it's on track 3
+        // — simulates a "clip dragged to a different track between
+        // frames" without an explicit invalidation.
+        let seq = make_seq_with(&[(3, cid)]);
+        let cache = std::cell::Cell::new(Some((cid, 0)));
+        let (ti, clip) = find_clip_cached(&seq, cid, &cache).expect("self-heal");
+        assert_eq!(ti, 3);
+        assert_eq!(clip.id, cid);
+        assert_eq!(cache.get(), Some((cid, 3)), "cache updated to new track");
+    }
+
+    #[test]
+    fn find_clip_cached_clears_cache_when_clip_deleted() {
+        let cid = klipp_core::ClipId::new();
+        let seq = make_seq_with(&[]); // clip not in any track
+        let cache = std::cell::Cell::new(Some((cid, 1))); // stale cache
+        let result = find_clip_cached(&seq, cid, &cache);
+        assert!(result.is_none(), "deleted clip → None");
+        assert_eq!(cache.get(), None, "cache cleared on phantom id");
+    }
+
+    #[test]
+    fn find_clip_cached_handles_selection_change() {
+        // Cache holds clip A; we now ask about clip B (which exists
+        // on a different track). The helper must walk and update.
+        let a = klipp_core::ClipId::new();
+        let b = klipp_core::ClipId::new();
+        let seq = make_seq_with(&[(0, a), (3, b)]);
+        let cache = std::cell::Cell::new(Some((a, 0)));
+        let (ti, clip) = find_clip_cached(&seq, b, &cache).expect("new selection");
+        assert_eq!(ti, 3);
+        assert_eq!(clip.id, b);
+        assert_eq!(cache.get(), Some((b, 3)), "cache updated to the new clip's location");
+    }
+
+    #[test]
+    fn find_clip_cached_clears_cache_when_track_deleted_under_us() {
+        // Cache holds (cid, track 5) but seq only has 4 tracks now —
+        // the helper's `seq.tracks.get(cached_ti)` returns None and
+        // it falls through to the full walk; if the clip isn't
+        // anywhere else, cache clears. Guards the
+        // tracks-shrink-without-invalidate path.
+        let cid = klipp_core::ClipId::new();
+        let seq = make_seq_with(&[]); // empty
+        let cache = std::cell::Cell::new(Some((cid, 5))); // out-of-range track
+        let result = find_clip_cached(&seq, cid, &cache);
+        assert!(result.is_none());
+        assert_eq!(cache.get(), None);
     }
 }
