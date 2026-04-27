@@ -1,6 +1,7 @@
 pub mod video_tab;
 pub mod audio_tab;
 pub mod audio_fx_inspector;
+pub mod color_and_luts;
 pub mod effects_tab;
 pub mod info_tab;
 pub mod modifier_ui;
@@ -361,7 +362,7 @@ impl NewInspectorPanel {
                     }
                 }
                 InspectorTab::Color => {
-                    crate::panels::inspector::show_color_and_luts(ui, state, theme, &mut cmds);
+                    crate::inspector::color_and_luts::show_color_and_luts(ui, state, theme, &mut cmds);
                 }
                 InspectorTab::Title => {
                     if let Some((_, clip)) = clip_info {
