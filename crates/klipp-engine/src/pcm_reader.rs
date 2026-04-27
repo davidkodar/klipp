@@ -326,6 +326,11 @@ fn pcm_feed_thread(
     anti_click: Arc<AtomicBool>,
     audio_effects: Vec<AudioEffectInstance>,
 ) {
+    // CODE_AUDIT C-4: flush denormals on this DSP thread — same reason
+    // as in audio_decoder. A silent PCM region with biquads engaged
+    // would otherwise accumulate denormal state and stall the FPU.
+    klipp_audio::flush_denormals_to_zero();
+
     // PCM data already comes in as `Vec<f32>` (converted at open() time so
     // the buffer is guaranteed 4-byte aligned — see the comment in
     // `PcmAudioFeeder::open`). No per-thread cast needed.

@@ -183,6 +183,11 @@ fn audio_decode_thread(
     seek_generation: Arc<AtomicU64>,
     audio_effects: Vec<AudioEffectInstance>,
 ) {
+    // CODE_AUDIT C-4: flush denormals on this DSP thread so a silent
+    // input (between clips, post-fade-out) can't drop the biquad/EQ
+    // state into denormal range and stall the FPU ~50–100×.
+    klipp_audio::flush_denormals_to_zero();
+
     let mut format_ctx = match ffmpeg_next::format::input(&path) {
         Ok(ctx) => ctx,
         Err(e) => {

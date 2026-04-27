@@ -355,6 +355,24 @@ impl AudioOutput {
                         "klipp-cpal-output",
                         &OUTPUT_CALLBACK_PANIC_LOGGED,
                         || {
+                            // CODE_AUDIT C-4: flush denormals once per
+                            // cpal-thread first call. The callback runs
+                            // on a dedicated thread (see LAST_GEN below),
+                            // so this thread_local once is sufficient.
+                            // Defensive — the mixer threads upstream
+                            // already flush, but the callback does its
+                            // own volume/pan math that can produce
+                            // denormals in-place.
+                            thread_local! {
+                                static FTZ_INIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+                            }
+                            FTZ_INIT.with(|f| {
+                                if !f.get() {
+                                    klipp_audio::flush_denormals_to_zero();
+                                    f.set(true);
+                                }
+                            });
+
                             // Check for seek — if generation changed, drain stale buffer
                             let current_gen = seek_gen_flag.load(Ordering::Acquire);
                             // Use a thread-local to track last seen generation
