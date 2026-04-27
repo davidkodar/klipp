@@ -5394,7 +5394,6 @@ impl TimelinePanel {
         state: &mut AppState,
         cmds: &mut Vec<AppCommand>,
         track_idx: usize,
-        clips: &[klipp_timeline::Clip],
         content_rect: &egui::Rect,
         track_rect: &egui::Rect,
         zoom: f32,
@@ -5441,7 +5440,22 @@ impl TimelinePanel {
                     }
                 }
 
-                if let Some((_, hit_clip)) = self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
+                // Hit-test against the live clips slice; copy out the small
+                // Copy fields we need so the borrow ends before any &mut state
+                // mutation below.
+                let hit_data: Option<(klipp_core::ClipId, klipp_core::RationalTime, klipp_core::RationalTime, bool, Option<klipp_core::GroupId>)> = {
+                    let clips_slice = &state.sequence().tracks[track_idx].clips;
+                    self.hit_test_clip_body(clips_slice, content_rect, track_rect, zoom, scroll, track_height, pos)
+                        .map(|(_, hit_clip)| (
+                            hit_clip.id,
+                            hit_clip.timeline_in,
+                            hit_clip.timeline_out,
+                            matches!(hit_clip.kind, klipp_timeline::ClipKind::Sequence { .. }),
+                            hit_clip.group_id,
+                        ))
+                };
+
+                if let Some((hit_clip_id, hit_tl_in, hit_tl_out, _hit_is_seq, hit_group_id)) = hit_data {
                     if state.active_tool == Tool::Blade {
                         // Snap blade position when snap is enabled (hold Shift to override)
                         let mut cut_secs = click_secs;
@@ -5487,13 +5501,13 @@ impl TimelinePanel {
                         let cut_tc = RationalTime::from_secs_f64(cut_secs, fps.rate());
                         cmds.push(AppCommand::BladeClip {
                             track_index: track_idx,
-                            clip_id: hit_clip.id,
+                            clip_id: hit_clip_id,
                             cut_at: cut_tc,
                         });
                     } else if state.active_tool == Tool::Range {
                         // Range tool: click on clip = set range to clip boundaries
-                        cmds.push(AppCommand::SetSequenceInPoint(hit_clip.timeline_in));
-                        cmds.push(AppCommand::SetSequenceOutPoint(hit_clip.timeline_out));
+                        cmds.push(AppCommand::SetSequenceInPoint(hit_tl_in));
+                        cmds.push(AppCommand::SetSequenceOutPoint(hit_tl_out));
                         state.toast.show("Range: clip selected");
                     } else {
                         let modifiers = ui.input(|i| i.modifiers);
@@ -5508,15 +5522,15 @@ impl TimelinePanel {
                             //     from whatever remains.
                             //   - Otherwise add it and make it the new primary.
                             if let Some(prev) = state.selected_clip {
-                                if prev != hit_clip.id && !state.selected_clips.contains(&prev) {
+                                if prev != hit_clip_id && !state.selected_clips.contains(&prev) {
                                     state.selected_clips.push(prev);
                                 }
                             }
                             let already_in_multi = state
                                 .selected_clips
                                 .iter()
-                                .position(|&id| id == hit_clip.id);
-                            let was_primary = state.selected_clip == Some(hit_clip.id);
+                                .position(|&id| id == hit_clip_id);
+                            let was_primary = state.selected_clip == Some(hit_clip_id);
                             if already_in_multi.is_some() || was_primary {
                                 if let Some(pos) = already_in_multi {
                                     state.selected_clips.remove(pos);
@@ -5524,12 +5538,12 @@ impl TimelinePanel {
                                 let new_primary = state.selected_clips.last().copied();
                                 cmds.push(AppCommand::SelectClip(new_primary));
                             } else {
-                                state.selected_clips.push(hit_clip.id);
-                                cmds.push(AppCommand::SelectClip(Some(hit_clip.id)));
+                                state.selected_clips.push(hit_clip_id);
+                                cmds.push(AppCommand::SelectClip(Some(hit_clip_id)));
                             }
                         } else {
                             // If clip is grouped, select all group members
-                            if let Some(gid) = hit_clip.group_id {
+                            if let Some(gid) = hit_group_id {
                                 state.selected_clips = state.sequence().tracks.iter()
                                     .flat_map(|t| t.clips.iter())
                                     .filter(|c| c.group_id == Some(gid))
@@ -5538,7 +5552,7 @@ impl TimelinePanel {
                             } else {
                                 state.selected_clips.clear();
                             }
-                            cmds.push(AppCommand::SelectClip(Some(hit_clip.id)));
+                            cmds.push(AppCommand::SelectClip(Some(hit_clip_id)));
                         }
                         state.selected_transition = None;
                         // Clear media browser selection so inspector shows timeline clip (State 3)
@@ -5567,9 +5581,14 @@ impl TimelinePanel {
         // Double-click: open compound clips
         if track_response.double_clicked() {
             if let Some(pos) = track_response.interact_pointer_pos {
-                if let Some((_, hit_clip)) = self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
-                    if matches!(hit_clip.kind, klipp_timeline::ClipKind::Sequence { .. }) {
-                        cmds.push(AppCommand::OpenCompoundClip { clip_id: hit_clip.id });
+                let dbl_hit: Option<(klipp_core::ClipId, bool)> = {
+                    let clips_slice = &state.sequence().tracks[track_idx].clips;
+                    self.hit_test_clip_body(clips_slice, content_rect, track_rect, zoom, scroll, track_height, pos)
+                        .map(|(_, hit_clip)| (hit_clip.id, matches!(hit_clip.kind, klipp_timeline::ClipKind::Sequence { .. })))
+                };
+                if let Some((hit_clip_id, is_seq)) = dbl_hit {
+                    if is_seq {
+                        cmds.push(AppCommand::OpenCompoundClip { clip_id: hit_clip_id });
                     }
                 }
             }
@@ -8662,7 +8681,7 @@ impl TimelinePanel {
 
         self.show_clip_context_menu(ui, &track_response, state, cmds, track_idx, &post_loop_clips, content_rect, zoom, scroll, track_height, track_rect, pointer_pos, fps);
 
-        self.handle_clip_click(ui, &track_response, state, cmds, track_idx, &post_loop_clips, content_rect, track_rect, zoom, scroll, track_height, fps);
+        self.handle_clip_click(ui, &track_response, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, fps);
 
         self.detect_drag_start(ui, &track_response, state, cmds, track_idx, &post_loop_clips, content_rect, track_rect, zoom, scroll, track_height, track_kind, pointer_pos);
 
@@ -12054,6 +12073,79 @@ mod tests {
         let (ni, no) = slide_clamped_window(orig_in, orig_out, dt, left, right);
         assert_eq!(ni.value, 60);
         assert_eq!(no.value, 108);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // hit_test_clip_body
+    //
+    // handle_clip_click now feeds hit_test_clip_body the live
+    // state.sequence().tracks[track_idx].clips slice instead of an
+    // owned snapshot. The old snapshot was an arbitrary copy of the
+    // SAME slice, so the hit-test result must match bit-for-bit. These
+    // tests pin the behaviour that the refactor relies on:
+    //   1. A click inside one clip's screen rect returns that clip.
+    //   2. A click in the gap between two non-overlapping clips
+    //      returns None.
+    //   3. When clips overlap (compound clips on a single track), the
+    //      LATER-stored clip wins (the iter().rev() priority order).
+    // ═══════════════════════════════════════════════════════════════
+
+    fn make_video_clip_at(timeline_in: i64, timeline_out: i64) -> klipp_timeline::Clip {
+        klipp_timeline::Clip::media(
+            klipp_core::MediaId::new(),
+            tc24(timeline_in), tc24(timeline_out),
+            tc24(0), tc24(timeline_out - timeline_in),
+        )
+    }
+
+    #[test]
+    fn hit_test_clip_body_inside_clip_returns_it() {
+        let panel = TimelinePanel::default();
+        // Two clips, no overlap: [0..48f] and [60..108f] at 24 fps.
+        let clips = vec![
+            make_video_clip_at(0, 48),
+            make_video_clip_at(60, 108),
+        ];
+        let content = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(2000.0, 100.0));
+        let track = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(2000.0, 80.0));
+        // 100 px/sec zoom: 2s clip is 200px, 0.5s gap is 50px,
+        // second clip is 200px starting at x=250.
+        let pos_in_first = egui::pos2(50.0, 40.0);
+        let got = panel.hit_test_clip_body(&clips, &content, &track, 100.0, 0.0, 80.0, pos_in_first);
+        assert!(got.is_some());
+        assert_eq!(got.unwrap().1.id, clips[0].id);
+    }
+
+    #[test]
+    fn hit_test_clip_body_in_gap_returns_none() {
+        let panel = TimelinePanel::default();
+        let clips = vec![
+            make_video_clip_at(0, 48),
+            make_video_clip_at(60, 108),
+        ];
+        let content = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(2000.0, 100.0));
+        let track = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(2000.0, 80.0));
+        // Inside the 50px gap.
+        let pos_in_gap = egui::pos2(225.0, 40.0);
+        let got = panel.hit_test_clip_body(&clips, &content, &track, 100.0, 0.0, 80.0, pos_in_gap);
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn hit_test_clip_body_overlapping_returns_later_clip() {
+        let panel = TimelinePanel::default();
+        // Two clips occupying the same span — `iter().rev()` priority
+        // means the second clip in storage order wins on overlap.
+        let clips = vec![
+            make_video_clip_at(0, 48),
+            make_video_clip_at(0, 48),
+        ];
+        let content = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(2000.0, 100.0));
+        let track = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(2000.0, 80.0));
+        let pos = egui::pos2(50.0, 40.0);
+        let got = panel.hit_test_clip_body(&clips, &content, &track, 100.0, 0.0, 80.0, pos);
+        assert!(got.is_some());
+        assert_eq!(got.unwrap().1.id, clips[1].id, "later clip wins on overlap");
     }
 
     #[test]
