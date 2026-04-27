@@ -2165,8 +2165,17 @@ impl KlippApp {
             .map(|e| (e.name.clone(), e.source.clone()))
             .collect();
         self.state.effect_thumbnails.generate_all_if_needed(&effects);
-        // Poll completed thumbnails
-        self.state.effect_thumbnails.poll_and_upload(ctx);
+        // Poll completed thumbnails. Any displaced TextureHandle
+        // (re-render of an effect that already had a thumbnail) is
+        // routed into the deferred-drop bucket so its underlying
+        // wgpu texture survives the current frame's submit — egui
+        // BindGroups in flight still reference it. Hit #5 of the
+        // defer-drop trap (memory: feedback_defer_drop_texture).
+        let drops_slot = self.state.deferred_texture_drops_slot;
+        self.state.effect_thumbnails.poll_and_upload(
+            ctx,
+            &mut self.state.deferred_texture_drops[drops_slot],
+        );
     }
 
     /// Show nearest filmstrip thumbnail as instant viewer preview while full-res decodes.

@@ -207,7 +207,20 @@ impl ThumbnailRenderer {
     }
 
     /// Poll for completed thumbnails and upload as egui textures.
-    pub fn poll_and_upload(&mut self, ctx: &egui::Context) {
+    ///
+    /// Any `TextureHandle` displaced from `self.textures` (i.e., a
+    /// re-render arrived for an effect that already had a thumbnail)
+    /// is appended to `displaced` instead of being dropped inline.
+    /// Caller pushes them into the app's deferred-drop bucket so the
+    /// underlying wgpu texture survives the current frame's submit —
+    /// dropping a `TextureHandle` mid-`update()` panics on the next
+    /// queue.submit when an in-flight egui BindGroup still references
+    /// the dying texture (`feedback_defer_drop_texture` memory).
+    pub fn poll_and_upload(
+        &mut self,
+        ctx: &egui::Context,
+        displaced: &mut Vec<egui::TextureHandle>,
+    ) {
         let mut received_any = false;
         while let Ok(result) = self.rx.try_recv() {
             self.ofx_pending.remove(&result.effect_name);
@@ -230,7 +243,17 @@ impl ThumbnailRenderer {
                 image,
                 egui::TextureOptions::LINEAR,
             );
-            self.textures.insert(result.effect_name, texture);
+            // Defer-drop the previous handle for this effect, if any.
+            // HashMap::insert drops the displaced value at end of stmt
+            // — exactly the mid-frame TextureHandle drop the
+            // defer-drop pattern exists to prevent.
+            if let Some(old) = self.textures.insert(result.effect_name, texture) {
+                tracing::debug!(
+                    "TEX_DEFER_DROP id={:?} name=fx_thumb_re_render reason=re-rendered",
+                    old.id(),
+                );
+                displaced.push(old);
+            }
             received_any = true;
         }
 
