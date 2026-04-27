@@ -7,6 +7,29 @@ pub struct LutData {
     pub data: Vec<f32>, // r,g,b interleaved, size^3 * 3 floats
 }
 
+impl LutData {
+    /// Identity LUT of the given size (each grid point maps to its own
+    /// position in the unit cube). Used as the passthrough fallback when
+    /// `load_lut` fails — see `klipp-nodes/src/executor.rs` Lut3D paths.
+    /// `size = 2` is the minimum (the 8 corners of the unit cube); since
+    /// identity is linear, trilinear interpolation between the corners
+    /// reproduces the identity exactly.
+    pub fn identity(size: usize) -> Self {
+        let mut data = Vec::with_capacity(size * size * size * 3);
+        let n1 = (size.saturating_sub(1).max(1)) as f32;
+        for b in 0..size {
+            for g in 0..size {
+                for r in 0..size {
+                    data.push(r as f32 / n1);
+                    data.push(g as f32 / n1);
+                    data.push(b as f32 / n1);
+                }
+            }
+        }
+        LutData { size, data }
+    }
+}
+
 #[derive(Debug)]
 pub enum LutError {
     IoError(std::io::Error),
@@ -530,18 +553,10 @@ mod tests {
     use super::*;
 
     fn identity_lut(size: usize) -> LutData {
-        let mut data = Vec::with_capacity(size * size * size * 3);
-        let n1 = (size - 1) as f32;
-        for b in 0..size {
-            for g in 0..size {
-                for r in 0..size {
-                    data.push(r as f32 / n1);
-                    data.push(g as f32 / n1);
-                    data.push(b as f32 / n1);
-                }
-            }
-        }
-        LutData { size, data }
+        // Existing tests below use this local helper; it now just defers
+        // to the public LutData::identity so the public path stays
+        // exercised by the same passthrough assertions.
+        LutData::identity(size)
     }
 
     #[test]
@@ -599,6 +614,35 @@ mod tests {
     fn parse_cube_invalid_size() {
         let text = "LUT_3D_SIZE 0\n";
         assert!(matches!(parse_cube(text), Err(LutError::InvalidSize(0))));
+    }
+
+    #[test]
+    fn identity_lut_size2_is_passthrough() {
+        // CODE_AUDIT C-9: size=2 is the smallest identity LUT and is
+        // what executor.rs uses as the load-failure fallback. Pin that
+        // it really is passthrough (vs the previous all-zero-data
+        // fallback that silently rendered black).
+        let lut = LutData::identity(2);
+        assert_eq!(lut.size, 2);
+        assert_eq!(lut.data.len(), 2 * 2 * 2 * 3);
+        for sample in [
+            [0u8, 0, 0, 255],
+            [50, 100, 150, 255],
+            [128, 128, 128, 255],
+            [200, 50, 25, 255],
+            [255, 255, 255, 255],
+        ] {
+            let mut px = sample.to_vec();
+            apply_3d_lut(&mut px, &lut, 1.0);
+            for ch in 0..3 {
+                assert!(
+                    (px[ch] as i16 - sample[ch] as i16).unsigned_abs() <= 1,
+                    "size=2 identity LUT must be passthrough; ch {}: got {}, expected {}",
+                    ch, px[ch], sample[ch]
+                );
+            }
+            assert_eq!(px[3], sample[3], "alpha must be untouched");
+        }
     }
 
     #[test]

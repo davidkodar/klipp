@@ -1416,13 +1416,13 @@ impl GraphExecutor {
                     .lut_cache
                     .entry(path.clone())
                     .or_insert_with(|| {
-                        // Fall back to a 2x2x2 IDENTITY LUT when the
-                        // file can't be read — previously this was an
-                        // all-zero LUT (size=2, data=vec![0.0; 24])
-                        // which silently rendered the clip black with
-                        // no warning. Identity passthrough keeps the
-                        // image visible and the warn log points at the
-                        // broken path so the user can relink.
+                        // Fall back to a 2×2×2 IDENTITY LUT when the file
+                        // can't be read — earlier code used an all-zero
+                        // LUT (data=vec![0.0; 24]) which silently
+                        // rendered the clip black. Identity passthrough
+                        // keeps the image visible and the warn log
+                        // points at the broken path so the user can
+                        // relink. See CODE_AUDIT C-9.
                         match klipp_color::load_lut(path) {
                             Ok(lut) => Arc::new(lut),
                             Err(e) => {
@@ -1430,15 +1430,7 @@ impl GraphExecutor {
                                     "Lut3D: load failed for {:?}: {} — passing through",
                                     path, e,
                                 );
-                                Arc::new(LutData {
-                                    size: 2,
-                                    data: vec![
-                                        0.0, 0.0, 0.0,  1.0, 0.0, 0.0,
-                                        0.0, 1.0, 0.0,  1.0, 1.0, 0.0,
-                                        0.0, 0.0, 1.0,  1.0, 0.0, 1.0,
-                                        0.0, 1.0, 1.0,  1.0, 1.0, 1.0,
-                                    ],
-                                })
+                                Arc::new(LutData::identity(2))
                             }
                         }
                     })
@@ -2477,13 +2469,21 @@ impl GraphExecutor {
                         .lut_cache
                         .entry(path.clone())
                         .or_insert_with(|| {
-                            Arc::new(
-                                klipp_color::load_lut(path)
-                                    .unwrap_or(LutData {
-                                        size: 2,
-                                        data: vec![0.0; 24],
-                                    }),
-                            )
+                            // Identity-LUT passthrough on load failure —
+                            // matches the chain Lut3D site above. See
+                            // CODE_AUDIT C-9: the previous fallback was
+                            // an all-zero size-2 LUT, which rendered the
+                            // clip black silently with no log.
+                            match klipp_color::load_lut(path) {
+                                Ok(lut) => Arc::new(lut),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Lut3D: load failed for {:?}: {} — passing through",
+                                        path, e,
+                                    );
+                                    Arc::new(LutData::identity(2))
+                                }
+                            }
                         })
                         .clone();
                     let opacity = params.lut_opacity.unwrap_or(1.0);
