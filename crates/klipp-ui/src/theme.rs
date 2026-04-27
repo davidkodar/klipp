@@ -90,6 +90,15 @@ pub struct KlippTheme {
     // `scope_label` is the small text label drawn next to scope ticks.
     pub scope_grid: Color32,
     pub scope_label: Color32,
+    /// Background fill of the scope display surface (waveform /
+    /// parade / vectorscope / histogram canvas). Industry-standard
+    /// NLEs (Resolve, Premiere, FCP) keep this near-black even in
+    /// their Light themes because the trace colours (white / RGB
+    /// channel hues / luminance gradients) are designed to read on
+    /// dark backgrounds. A future light-friendly trace shader could
+    /// let this pick up the surrounding panel polarity, but until
+    /// then themes that try to invert it will lose trace legibility.
+    pub scope_bg: Color32,
 
     // Role colours — one per clip/track role
     pub role_video: Color32,
@@ -145,6 +154,7 @@ pub struct ThemeColors {
 
     pub scope_grid: HexColor,
     pub scope_label: HexColor,
+    pub scope_bg: HexColor,
 
     pub role_video: HexColor,
     pub role_dialogue: HexColor,
@@ -187,6 +197,7 @@ impl From<ThemeColors> for KlippTheme {
             marker_warning: c.marker_warning.0,
             scope_grid: c.scope_grid.0,
             scope_label: c.scope_label.0,
+            scope_bg: c.scope_bg.0,
             role_video: c.role_video.0,
             role_dialogue: c.role_dialogue.0,
             role_music: c.role_music.0,

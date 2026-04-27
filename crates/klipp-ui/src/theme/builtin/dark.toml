@@ -75,6 +75,7 @@ marker_warning = "#c8a028"
 # RGB (30,22,7), alpha 0x20.
 scope_grid  = "#1e160720"
 scope_label = "#907830"
+scope_bg    = "#040407"
 
 # ── Role colours (one per clip/track role) ──
 # User can override per-role via Preferences → Appearance; these are

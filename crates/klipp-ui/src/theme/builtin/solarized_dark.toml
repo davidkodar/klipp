@@ -61,6 +61,9 @@ marker_warning = "#cb4b16"
 # labels.
 scope_grid  = "#170f0020"
 scope_label = "#7d5e00"
+# Slight cyan tint on the scope bg — matches Solarized's overall
+# tone while staying dark enough for the trace colours.
+scope_bg    = "#001017"
 
 # ── Role colours ──
 # Solarized accent palette — every clip role gets a distinct hue

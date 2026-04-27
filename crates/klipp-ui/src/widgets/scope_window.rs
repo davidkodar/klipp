@@ -280,8 +280,13 @@ fn draw_pane(
     // Use painter_at to ensure we can paint anywhere in the pane
     let p = ui.painter_at(pane_rect);
 
-    // Dark background for content
-    p.rect_filled(content_rect, 0.0, egui::Color32::from_rgb(0x04, 0x04, 0x07));
+    // Scope display surface — themed via `scope_bg` so each theme
+    // can pick a backdrop tuned to its trace colours. Dark + Solarized
+    // stay near-black; Light theme uses a softer dark grey so the
+    // scope panel doesn't punch a stark black hole through the
+    // otherwise light UI while still keeping the trace colours
+    // (which are designed for dark backgrounds) legible.
+    p.rect_filled(content_rect, 0.0, theme.scope_bg);
 
     // Header background
     p.rect_filled(header_rect, 0.0, theme.bg_deep);

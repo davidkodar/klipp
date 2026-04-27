@@ -64,6 +64,12 @@ marker_warning = "#a87810"
 # white. Source amber (245,180,60) at alpha 64/255 ≈ 25 %.
 scope_grid  = "#3d2d0f40"
 scope_label = "#604c14"
+# Scope display surface stays dark even in Light theme — the trace
+# colours (white luminance, RGB channel hues) are designed to read
+# on dark backgrounds. A theme can override this if it pairs the
+# bg with a custom trace shader; the default is industry-standard
+# "scope on black" regardless of polarity.
+scope_bg    = "#1a1a1c"
 
 # ── Role colours ──
 # Saturated mid-value hues that sit OK on either polarity. Per-role
