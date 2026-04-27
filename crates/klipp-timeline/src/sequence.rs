@@ -216,17 +216,33 @@ impl Sequence {
         // Collect IDs of clips being removed so we can unlink them
         let removed_ids: Vec<ClipId> = self.tracks[pos].clips.iter().map(|c| c.id).collect();
         self.tracks.remove(pos);
-        // Clear dangling linked_clip_id references
+        self.purge_dangling_linked_clip_ids(&removed_ids);
+        Ok(())
+    }
+
+    /// Clear `linked_clip_id` on every clip whose link target is in
+    /// `removed`. Use this from any code path that removes clips
+    /// permanently (track removal, ripple_delete) so other clips on
+    /// surviving tracks don't keep dangling references.
+    ///
+    /// Closes CODE_AUDIT T-3. The asymmetric-link case (third-party
+    /// clip C points at deleted clip A while A's own linked_clip_id
+    /// points at unrelated clip B) used to leak dangling refs from
+    /// ripple_delete. Centralising the sweep here means every clip
+    /// removal path sees the same cleanup.
+    pub fn purge_dangling_linked_clip_ids(&mut self, removed: &[ClipId]) {
+        if removed.is_empty() {
+            return;
+        }
         for track in &mut self.tracks {
             for clip in &mut track.clips {
                 if let Some(linked) = clip.linked_clip_id {
-                    if removed_ids.contains(&linked) {
+                    if removed.contains(&linked) {
                         clip.linked_clip_id = None;
                     }
                 }
             }
         }
-        Ok(())
     }
 
     // ═══════════════════════════════════════════════════════════════════

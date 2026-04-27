@@ -420,6 +420,17 @@ impl MagneticEditor {
         // Remove the clip
         sequence.tracks[track_idx].clips.remove(clip_idx);
 
+        // Clear any third-party clips with `linked_clip_id` pointing
+        // at the deleted clip (or its just-removed linked partner).
+        // The explicit pair-removal above handles symmetric A↔B
+        // links, but a stray clip C with C.linked_clip_id == A.id
+        // would otherwise be left dangling. Closes CODE_AUDIT T-3.
+        let mut purged_ids = vec![removed_clip.id];
+        if let Some((ref lc, _)) = removed_linked_clip {
+            purged_ids.push(lc.id);
+        }
+        sequence.purge_dangling_linked_clip_ids(&purged_ids);
+
         // Repack primary track
         let rippled_clips = if sequence.tracks[track_idx].magnetic_role == TrackRole::Primary {
             repack_primary(sequence)
@@ -2160,6 +2171,93 @@ mod tests {
         assert_eq!(track.clips[0].timeline_out, tc(24));
         assert_eq!(track.clips[1].timeline_in, tc(24));
         assert_eq!(track.clips[1].timeline_out, tc(48));
+    }
+
+    #[test]
+    fn ripple_delete_clears_third_party_linked_clip_ids() {
+        // Setup: primary track [A][B][C]. A connected track holds D
+        // anchored to A, with D.linked_clip_id pointing at A. After
+        // ripple_delete(A), D's linked_clip_id was previously left
+        // dangling (T-3): A is gone but D still claims to be linked
+        // to it. Closes CODE_AUDIT T-3.
+        let mut seq = make_sequence(&[(0, 24), (24, 48), (48, 72)]);
+        let a_id = seq.tracks[0].clips[0].id;
+
+        // Add a connected track with a clip D pointing at A.
+        let mut connected = Track::new("Video 2", TrackKind::Video);
+        connected.magnetic_role = TrackRole::Connected;
+        let mut d_clip = media_clip(0, 12);
+        d_clip.linked_clip_id = Some(a_id);
+        connected.clips.push(d_clip);
+        seq.tracks.push(connected);
+
+        MagneticEditor::ripple_delete(&mut seq, a_id);
+
+        // D survives but its dangling link to A is cleared.
+        let surviving = &seq.tracks[1].clips[0];
+        assert_eq!(
+            surviving.linked_clip_id, None,
+            "ripple_delete must purge linked_clip_id pointing at the removed clip"
+        );
+    }
+
+    #[test]
+    fn ripple_delete_clears_links_to_partner_clip_too() {
+        // Symmetric pair A↔B: A.linked_clip_id = B, B.linked_clip_id = A.
+        // ripple_delete(A) removes both A and B (existing behaviour).
+        // A third clip C with C.linked_clip_id = B was previously
+        // also left dangling because the cleanup only ran on A's id.
+        // Closes CODE_AUDIT T-3 — partner-id sweep.
+        let mut seq = make_sequence(&[(0, 24), (24, 48)]);
+        let a_id = seq.tracks[0].clips[0].id;
+
+        // Audio track with B linked to A.
+        let mut audio = Track::new("Audio 1", TrackKind::Audio);
+        let mut b_clip = media_clip(0, 24);
+        b_clip.linked_clip_id = Some(a_id);
+        audio.clips.push(b_clip);
+        let b_id = audio.clips[0].id;
+        // Make A point back at B (symmetric link).
+        seq.tracks[0].clips[0].linked_clip_id = Some(b_id);
+        seq.tracks.push(audio);
+
+        // Third clip C with linked_clip_id pointing at B.
+        let mut connected = Track::new("Video 2", TrackKind::Video);
+        connected.magnetic_role = TrackRole::Connected;
+        let mut c_clip = media_clip(0, 12);
+        c_clip.linked_clip_id = Some(b_id);
+        connected.clips.push(c_clip);
+        seq.tracks.push(connected);
+
+        MagneticEditor::ripple_delete(&mut seq, a_id);
+
+        // A and B are gone; C survives with link cleared.
+        let c_surviving = &seq.tracks[2].clips[0];
+        assert_eq!(
+            c_surviving.linked_clip_id, None,
+            "ripple_delete must also purge links pointing at the partner clip"
+        );
+    }
+
+    #[test]
+    fn purge_dangling_linked_clip_ids_only_clears_matched_ids() {
+        // Direct unit test on Sequence::purge_dangling_linked_clip_ids:
+        // unrelated linked_clip_id values must round-trip unchanged
+        // (a future "let me simplify the contains check" must not
+        // wipe links to surviving clips). Closes CODE_AUDIT T-3.
+        let mut seq = make_sequence(&[(0, 24), (24, 48)]);
+        let survivor_id = seq.tracks[0].clips[1].id;
+        let removed_id = seq.tracks[0].clips[0].id;
+
+        // Clip with link to a surviving clip — must not be cleared.
+        seq.tracks[0].clips[1].linked_clip_id = Some(survivor_id);
+
+        seq.purge_dangling_linked_clip_ids(&[removed_id]);
+
+        assert_eq!(
+            seq.tracks[0].clips[1].linked_clip_id, Some(survivor_id),
+            "purge must not touch links to surviving clips"
+        );
     }
 
     // ─────────────────────────────────────────────────────────────
