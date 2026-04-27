@@ -135,6 +135,39 @@ where
     DescriptorLookup::CapHit
 }
 
+// ─── LADSPA latency-port readback policy ───────────────────────────────────
+//
+// LADSPA v1 has no dedicated latency field. The de-facto convention is a
+// control-OUTPUT port literally named "latency" that the plugin writes on
+// every `run()` call. The host-side policy below converts the most recent
+// f32 sample-count the plugin wrote into a u32 the host can use for
+// alignment, with three guards:
+//
+//   * No latency port at all (`slot == None`) → 0.
+//   * Slot index out of bounds (defensive — should never happen in
+//     practice since `control_out_sinks` is sized once at construction
+//     and indexed by an enum-checked slot) → 0.
+//   * Plugin wrote NaN, +∞, or a negative value (some misbehaving
+//     plugins emit garbage when the calc isn't ready) → 0.
+//   * Otherwise: round half-up to u32 (some plugins report fractional
+//     samples for look-ahead windows).
+//
+// CODE_AUDIT C-8 — extracted as a free function so the policy is
+// pinned by unit tests without needing to construct a real LadspaEffect
+// (which requires a .so + libloading + audio thread).
+pub(crate) fn read_latency_samples(slot: Option<usize>, control_out_sinks: &[f32]) -> u32 {
+    let s = match slot {
+        Some(s) if s < control_out_sinks.len() => s,
+        _ => return 0,
+    };
+    let samples = control_out_sinks[s];
+    if samples.is_finite() && samples > 0.0 {
+        (samples + 0.5) as u32
+    } else {
+        0
+    }
+}
+
 // ─── Discovery types ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -778,20 +811,12 @@ impl AudioEffect for LadspaEffect {
         // scan port names and remember the slot (if any); here we read
         // the most recent value the plugin wrote there.
         //
-        // The value is in samples. Some plugins report fractional
-        // latency (look-ahead windows); round half-up and clamp to
-        // non-negative. Plugins without a latency port report 0.
-        match self.latency_slot {
-            Some(slot) => {
-                let samples = self.control_out_sinks[slot];
-                if samples.is_finite() && samples > 0.0 {
-                    (samples + 0.5) as u32
-                } else {
-                    0
-                }
-            }
-            None => 0,
-        }
+        // See `read_latency_samples` (free function below) for the
+        // readback policy — NaN/infinity/negative guards, half-up
+        // rounding to u32, slot-out-of-bounds guard. Extracted so the
+        // policy is unit-testable without constructing a real
+        // LadspaEffect.
+        read_latency_samples(self.latency_slot, &self.control_out_sinks)
     }
 
     fn serialize_params(&self) -> Vec<(String, f32)> {
@@ -1044,6 +1069,78 @@ mod tests {
         assert_eq!(result, DescriptorLookup::CapHit);
         assert_eq!(call_count, cap,
             "non-terminating plugin must be probed exactly `cap` times — neither more (loop bound bug) nor fewer (early exit bug)");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // read_latency_samples — closes CODE_AUDIT C-8.
+    //
+    // The 2026-04-20 array entry claimed the latency port-name scan
+    // shipped, and today's audit confirmed the production code (port
+    // scan at construction, control_out_sinks readback at query) is
+    // present and correct. These tests pin the readback policy so a
+    // future "let me drop the NaN/negative guards" or "let me change
+    // the rounding" surfaces in CI rather than as wrong A/V alignment
+    // when an audio effect with a latency port is engaged.
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn latency_returns_zero_when_plugin_has_no_latency_port() {
+        // Slot=None is the common case: most LADSPA plugins don't
+        // expose a "latency" control output. The host must report 0
+        // delay so A/V sync isn't perturbed by a phantom shift.
+        assert_eq!(read_latency_samples(None, &[]), 0);
+        assert_eq!(read_latency_samples(None, &[42.0, 7.0]), 0);
+    }
+
+    #[test]
+    fn latency_reads_the_correct_slot() {
+        // Slot points into control_out_sinks; the value at that slot
+        // is the plugin's last-written latency in samples.
+        let sinks = vec![0.0, 64.0, 0.0]; // slot 1 holds the latency
+        assert_eq!(read_latency_samples(Some(1), &sinks), 64);
+    }
+
+    #[test]
+    fn latency_rounds_fractional_samples_half_up() {
+        // Look-ahead limiters / FFT plugins often report fractional
+        // sample latency. Half-up matches the comment in the production
+        // body and keeps the host's alignment within ±0.5 sample.
+        assert_eq!(read_latency_samples(Some(0), &[5.5]), 6,
+            "5.5 must round to 6 (half-up)");
+        assert_eq!(read_latency_samples(Some(0), &[5.4]), 5,
+            "5.4 must round to 5");
+        assert_eq!(read_latency_samples(Some(0), &[5.0]), 5,
+            "exact 5.0 stays 5");
+    }
+
+    #[test]
+    fn latency_clamps_garbage_values_to_zero() {
+        // Some plugins emit NaN or +/-inf during the first few run()
+        // calls before their internal state stabilises. The host
+        // refuses to propagate that into A/V alignment.
+        assert_eq!(read_latency_samples(Some(0), &[f32::NAN]), 0,
+            "NaN latency must clamp to 0, not panic");
+        assert_eq!(read_latency_samples(Some(0), &[f32::INFINITY]), 0,
+            "+inf latency must clamp to 0");
+        assert_eq!(read_latency_samples(Some(0), &[f32::NEG_INFINITY]), 0,
+            "-inf latency must clamp to 0");
+        assert_eq!(read_latency_samples(Some(0), &[-3.0]), 0,
+            "negative latency is nonsensical → 0");
+        assert_eq!(read_latency_samples(Some(0), &[0.0]), 0,
+            "exactly 0.0 → 0 (not interesting; just pinning behaviour)");
+    }
+
+    #[test]
+    fn latency_with_out_of_bounds_slot_returns_zero_no_panic() {
+        // Defensive: the latency_slot is set at construction from
+        // control_out_indices.len(), which equals control_out_sinks.len()
+        // for the lifetime of LadspaEffect, so an out-of-bounds slot is
+        // unreachable in normal flow. But pinning the guard means a
+        // future refactor that desyncs the two can't crash the audio
+        // thread. The original inline match would have indexed
+        // control_out_sinks[slot] and panicked.
+        assert_eq!(read_latency_samples(Some(99), &[0.0, 0.0]), 0);
+        assert_eq!(read_latency_samples(Some(0), &[]), 0);
     }
 
     #[test]
