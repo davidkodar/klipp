@@ -33,11 +33,20 @@ struct BandState {
     envelope: [f32; MAX_CHANNELS],
 }
 
-/// Multi-band noise gate for real-time noise reduction.
+/// Multi-band gate.
 ///
 /// Splits the signal into 8 frequency bands via biquad bandpass filters,
 /// then gates each band independently based on an envelope follower.
 /// Allocation-free in `process()`.
+///
+/// NOTE — this is NOT spectral-subtraction noise reduction. It has no
+/// noise-profile capture step, and bandpass filter banks don't sum
+/// flat: even at zero "reduction" the output has frequency-response
+/// ripple from the bandpass overlap. The Rust struct name and
+/// `type_id` remain `NoiseReduction` / `"noise_reduction"` so existing
+/// .klipp projects keep loading; the user-facing `name()` advertises
+/// the honest behaviour ("Multi-band Gate"). See CODE_AUDIT C-3.
+/// Replacing this with STFT spectral subtraction is a future job.
 pub struct NoiseReduction {
     sample_rate: f32,
     reduction: f32,
@@ -112,7 +121,7 @@ static PARAM_DESCS: &[AudioParamDescriptor] = &[
 
 impl AudioEffect for NoiseReduction {
     fn type_id(&self) -> &'static str { "noise_reduction" }
-    fn name(&self) -> &'static str { "Noise Reduction" }
+    fn name(&self) -> &'static str { "Multi-band Gate" }
     fn param_descriptors(&self) -> &[AudioParamDescriptor] { PARAM_DESCS }
 
     fn get_param(&self, name: &str) -> Option<f32> {

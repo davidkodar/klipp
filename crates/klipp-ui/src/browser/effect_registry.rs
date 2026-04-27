@@ -483,7 +483,12 @@ impl EffectRegistry {
                 grouping: "Dynamics".into(),
             },
             EffectEntry {
-                name: "Noise Reduction".into(),
+                // CODE_AUDIT C-3: this effect is a multi-band gate, not
+                // spectral-subtraction NR. The internal type_id stays
+                // "noise_reduction" so saved .klipp projects keep
+                // loading; the user-facing name advertises the honest
+                // behaviour.
+                name: "Multi-band Gate".into(),
                 category: EffectCategory::AudioDynamics,
                 source: EffectSource::Audio("noise_reduction".into()),
                 source_label: "Built-in",

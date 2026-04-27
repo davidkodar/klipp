@@ -215,7 +215,7 @@ pub fn available_effects() -> Vec<(&'static str, &'static str)> {
         ("reverb", "Reverb"),
         ("delay", "Delay"),
         ("deesser", "De-Esser"),
-        ("noise_reduction", "Noise Reduction"),
+        ("noise_reduction", "Multi-band Gate"),
         ("declick", "De-click"),
         ("normalize", "Normalize"),
         ("pitch_shift", "Pitch Shift"),

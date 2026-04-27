@@ -766,3 +766,51 @@ fn normalize_params_roundtrip() {
     assert_eq!(fx2.get_param("target_lufs"), Some(-18.0));
     assert_eq!(fx2.get_param("mode"), Some(0.0));
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Honest-naming regression — closes CODE_AUDIT C-3 and C-5.
+//
+// Two effects had user-facing names that didn't match what the code
+// actually does:
+//
+//   * "Noise Reduction" was an 8-band noise gate (no spectral
+//     subtraction, no noise-profile capture). Renamed to "Multi-band
+//     Gate" — the type_id stays "noise_reduction" so existing .klipp
+//     projects keep loading.
+//   * "Brick-wall limiter" doc comment promised look-ahead behaviour;
+//     the implementation is feed-forward instant-gain-reduction (no
+//     look-ahead). Doc comment now acknowledges the absence; the
+//     display name "Limiter" stays since it's generic.
+//
+// These tests pin the honest names so a future "let me restore the
+// marketing names" surfaces in CI.
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn noise_reduction_type_id_is_stable_for_klipp_project_compat() {
+    // .klipp projects serialise audio_effects by type_id, so renaming
+    // the type_id would break any project saved with the old effect.
+    // The user-facing name() got renamed in the C-3 audit but type_id
+    // MUST stay.
+    let fx = create_effect("noise_reduction", SR).expect("type_id must still resolve");
+    assert_eq!(fx.type_id(), "noise_reduction",
+        "type_id is the saved-project key — must not change");
+}
+
+#[test]
+fn noise_reduction_name_advertises_multiband_gate() {
+    // The display name now matches what the code actually does.
+    let fx = create_effect("noise_reduction", SR).unwrap();
+    assert_eq!(fx.name(), "Multi-band Gate",
+        "user-facing name must be the honest 'Multi-band Gate', NOT the marketing 'Noise Reduction' (no spectral subtraction)");
+}
+
+#[test]
+fn limiter_type_id_and_display_name_are_stable() {
+    // The C-5 fix is doc-comment-only — type_id and display name don't
+    // change. This test pins them so a future doc-cleanup pass that
+    // bundled in a rename would surface in CI.
+    let fx = create_effect("limiter", SR).expect("limiter must register");
+    assert_eq!(fx.type_id(), "limiter");
+    assert_eq!(fx.name(), "Limiter");
+}
