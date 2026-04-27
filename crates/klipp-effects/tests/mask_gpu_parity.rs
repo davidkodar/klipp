@@ -53,13 +53,10 @@ fn mask_to_gpu_def(mask: &Mask) -> Option<GpuMaskDef> {
                 mask.feather, mask.invert, mask.opacity,
             ))
         }
-        MaskShape::Bezier { points: _ } => {
-            // Today: GPU has no bezier path. The bezier-bearing
-            // fixture cases below assert this returns None — that
-            // failure flips to a passing comparison the moment the
-            // GPU shader gains the bezier branch.
-            None
-        }
+        MaskShape::Bezier { points } => Some(GpuMaskDef::bezier(
+            points.clone(),
+            mask.feather, mask.invert, mask.opacity,
+        )),
     }
 }
 
@@ -146,7 +143,7 @@ fn fixtures() -> Vec<ParityCase> {
             }] },
             expects_gpu_gap: false,
         },
-        // ── Bezier — today's gap, target of #40 ──
+        // ── Bezier (#40 ships these) ──
         ParityCase {
             name: "bezier_triangle",
             width: 96, height: 64,
@@ -159,7 +156,7 @@ fn fixtures() -> Vec<ParityCase> {
                 feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                 keyframes: Default::default(),
             }] },
-            expects_gpu_gap: true,
+            expects_gpu_gap: false,
         },
         ParityCase {
             name: "bezier_square_with_feather",
@@ -174,12 +171,11 @@ fn fixtures() -> Vec<ParityCase> {
                 feather: 0.08, invert: false, opacity: 1.0, enabled: true,
                 keyframes: Default::default(),
             }] },
-            expects_gpu_gap: true,
+            expects_gpu_gap: false,
         },
-        // Multi-mask union mixing GPU-supported + bezier — once
-        // bezier is wired this is also the test that proves the
-        // !has_bezier short-circuit got removed (the whole stack
-        // takes the GPU path).
+        // Multi-mask union mixing supported shapes + bezier — proves
+        // the storage-buffer architecture handles a heterogeneous
+        // stack in one dispatch (no per-shape pipeline switching).
         ParityCase {
             name: "circle_union_bezier",
             width: 96, height: 64,
@@ -197,7 +193,59 @@ fn fixtures() -> Vec<ParityCase> {
                     keyframes: Default::default(),
                 },
             ] },
-            expects_gpu_gap: true,
+            expects_gpu_gap: false,
+        },
+        // Stress test: 8 masks in one stack — proves the
+        // 4-mask cap is gone. Mixed shapes so it also catches
+        // any per-shape regression.
+        ParityCase {
+            name: "eight_mask_stack_no_cap",
+            width: 96, height: 64,
+            masks: MaskStack { masks: vec![
+                Mask {
+                    shape: MaskShape::Circle { center_x: 0.15, center_y: 0.3, radius: 0.06 },
+                    feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                    keyframes: Default::default(),
+                },
+                Mask {
+                    shape: MaskShape::Circle { center_x: 0.35, center_y: 0.3, radius: 0.06 },
+                    feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                    keyframes: Default::default(),
+                },
+                Mask {
+                    shape: MaskShape::Circle { center_x: 0.55, center_y: 0.3, radius: 0.06 },
+                    feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                    keyframes: Default::default(),
+                },
+                Mask {
+                    shape: MaskShape::Circle { center_x: 0.75, center_y: 0.3, radius: 0.06 },
+                    feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                    keyframes: Default::default(),
+                },
+                Mask {
+                    shape: MaskShape::Rectangle { center_x: 0.2, center_y: 0.7, width: 0.1, height: 0.1, rotation: 0.0 },
+                    feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                    keyframes: Default::default(),
+                },
+                Mask {
+                    shape: MaskShape::Rectangle { center_x: 0.5, center_y: 0.7, width: 0.1, height: 0.1, rotation: 0.0 },
+                    feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                    keyframes: Default::default(),
+                },
+                Mask {
+                    shape: MaskShape::Rectangle { center_x: 0.8, center_y: 0.7, width: 0.1, height: 0.1, rotation: 0.0 },
+                    feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                    keyframes: Default::default(),
+                },
+                Mask {
+                    shape: MaskShape::Bezier { points: vec![
+                        (0.05, 0.05), (0.95, 0.05), (0.95, 0.15), (0.05, 0.15),
+                    ] },
+                    feather: 0.0, invert: false, opacity: 1.0, enabled: true,
+                    keyframes: Default::default(),
+                },
+            ] },
+            expects_gpu_gap: false,
         },
     ]
 }

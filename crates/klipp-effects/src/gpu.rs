@@ -58,8 +58,17 @@ fn linear_f32_rgba_to_u8(linear: &[f32]) -> Vec<u8> {
 }
 
 /// Definition of a single mask for GPU dispatch.
+///
+/// All shape variants share the flat-field representation
+/// (`shape_type` + cx/cy/p1/p2/p3 + feather + flags); the bezier
+/// variant additionally carries a normalised-coord point list. The
+/// pipeline pools every mask's points into a single storage buffer
+/// at dispatch time, with `bezier_offset`/`bezier_count` per record
+/// recording the slice — so there is no per-mask cap and no per-
+/// point-count cap, just whatever the GPU storage-buffer size limit
+/// allows (hundreds of thousands of points in practice).
 pub struct GpuMaskDef {
-    /// 0=circle, 1=rectangle, 2=linear_gradient
+    /// 0=circle, 1=rectangle, 2=linear_gradient, 3=bezier
     pub shape_type: u32,
     pub cx: f32,
     pub cy: f32,
@@ -69,17 +78,43 @@ pub struct GpuMaskDef {
     pub feather: f32,
     /// bit 0 = invert, bits 8-15 = opacity (0-255)
     pub flags: u32,
+    /// Closed-polygon control points for bezier shapes. Empty for
+    /// every other shape. Coords are normalised (0..1) on width.
+    pub bezier_points: Vec<(f32, f32)>,
 }
 
 impl GpuMaskDef {
     pub fn circle(cx: f32, cy: f32, radius: f32, feather: f32, invert: bool, opacity: f32) -> Self {
-        Self { shape_type: 0, cx, cy, p1: radius, p2: 0.0, p3: 0.0, feather, flags: Self::make_flags(invert, opacity) }
+        Self {
+            shape_type: 0, cx, cy, p1: radius, p2: 0.0, p3: 0.0, feather,
+            flags: Self::make_flags(invert, opacity),
+            bezier_points: Vec::new(),
+        }
     }
     pub fn rectangle(cx: f32, cy: f32, w: f32, h: f32, rotation: f32, feather: f32, invert: bool, opacity: f32) -> Self {
-        Self { shape_type: 1, cx, cy, p1: w, p2: h, p3: rotation, feather, flags: Self::make_flags(invert, opacity) }
+        Self {
+            shape_type: 1, cx, cy, p1: w, p2: h, p3: rotation, feather,
+            flags: Self::make_flags(invert, opacity),
+            bezier_points: Vec::new(),
+        }
     }
     pub fn linear_gradient(sx: f32, sy: f32, ex: f32, ey: f32, feather: f32, invert: bool, opacity: f32) -> Self {
-        Self { shape_type: 2, cx: sx, cy: sy, p1: ex, p2: ey, p3: 0.0, feather, flags: Self::make_flags(invert, opacity) }
+        Self {
+            shape_type: 2, cx: sx, cy: sy, p1: ex, p2: ey, p3: 0.0, feather,
+            flags: Self::make_flags(invert, opacity),
+            bezier_points: Vec::new(),
+        }
+    }
+    /// `points` are closed-polygon control vertices in normalised
+    /// (0..1) width-relative coords. The polygon is closed by the
+    /// shader (last → first edge added implicitly). Fewer than 3
+    /// points produce an empty matte (CPU rasteriser does the same).
+    pub fn bezier(points: Vec<(f32, f32)>, feather: f32, invert: bool, opacity: f32) -> Self {
+        Self {
+            shape_type: 3, cx: 0.0, cy: 0.0, p1: 0.0, p2: 0.0, p3: 0.0, feather,
+            flags: Self::make_flags(invert, opacity),
+            bezier_points: points,
+        }
     }
     fn make_flags(invert: bool, opacity: f32) -> u32 {
         let opacity_byte = (opacity.clamp(0.0, 1.0) * 255.0) as u32;
@@ -277,6 +312,15 @@ pub struct GpuEffectsPipeline {
     /// MaskCutout dispatch can run mid-chain without colliding with
     /// the ping-pong slots or with clarity / transitions.
     matte_buf: Option<wgpu::Buffer>,
+    /// Storage buffer holding the per-mask `MaskRecord` array for
+    /// the v2 mask pipeline. Sized lazily to the largest stack
+    /// seen so far; small (48 B per mask) so we keep the slack.
+    mask_records_buf: Option<wgpu::Buffer>,
+    /// Pooled bezier control points for the v2 mask pipeline. All
+    /// bezier shapes' points concatenate into this buffer; each
+    /// MaskRecord carries `bezier_offset` + `bezier_count` to slice
+    /// its own range. 8 B per point.
+    mask_points_buf: Option<wgpu::Buffer>,
     staging_read: Option<wgpu::Buffer>,
     params_buf: wgpu::Buffer,
     /// Ring of uniform buffers used by chain dispatches. Every `*_chain`
@@ -743,6 +787,66 @@ impl GpuEffectsPipeline {
             bind_group_layouts: &[&huesat_bgl],
             push_constant_ranges: &[],
         });
+
+        // Mask v2 bind group layout — purpose-built for the
+        // storage-buffer mask architecture. 4 bindings:
+        //   0: output (storage, write) — the matte vec4<f32> buffer
+        //   1: params (uniform) — frame constants only (width,
+        //                          height, mask_count, _pad)
+        //   2: records (storage, read) — array<MaskRecord> with
+        //                                 per-mask shape data + bezier
+        //                                 offsets into binding 3
+        //   3: points  (storage, read) — pooled bezier control points
+        //                                 (vec2<f32>) across all masks
+        // No "input" buffer (the original mask shader reused the
+        // 3-binding effects layout and ignored its input slot — we
+        // drop the slot entirely here for clarity).
+        let mask_v2_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("mask_v2_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false, min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false, min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false, min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false, min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let mask_v2_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("mask_v2_pl"),
+            bind_group_layouts: &[&mask_v2_bgl],
+            push_constant_ranges: &[],
+        });
         let huesat_pipeline = create_pipeline(&device, &huesat_pl, "huesat", SHADER_HUESAT);
         let lut3d_pipeline = create_pipeline(&device, &huesat_pl, "lut3d", SHADER_LUT3D);
         let equalize_pipeline = create_pipeline(&device, &huesat_pl, "equalize", SHADER_EQUALIZE);
@@ -755,7 +859,7 @@ impl GpuEffectsPipeline {
         let clarity_blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "clarity_blur_v", SHADER_CLARITY_BLUR_V);
         let clarity_apply_pipeline = create_pipeline(&device, &huesat_pl, "clarity_apply", SHADER_CLARITY_APPLY);
         let mask_cutout_pipeline = create_pipeline(&device, &huesat_pl, "mask_cutout", SHADER_MASK_CUTOUT);
-        let mask_pipeline = create_pipeline(&device, &pipeline_layout, "mask", SHADER_MASK);
+        let mask_pipeline = create_pipeline(&device, &mask_v2_pl, "mask_v2", SHADER_MASK_V2);
         let color_balance_pipeline = create_pipeline(&device, &pipeline_layout, "color_balance", SHADER_COLOR_BALANCE);
         let wheel_sat_bri_pipeline = create_pipeline(&device, &pipeline_layout, "wheel_sat_bri", SHADER_WHEEL_SAT_BRI);
         let rgb_curves_pipeline = create_pipeline(&device, &huesat_pl, "rgb_curves", SHADER_RGB_CURVES);
@@ -979,6 +1083,8 @@ impl GpuEffectsPipeline {
             buf_b: None,
             buf_c: None,
             matte_buf: None,
+            mask_records_buf: None,
+            mask_points_buf: None,
             staging_read: None,
             params_buf,
             params_ring,
@@ -2531,8 +2637,14 @@ impl GpuEffectsPipeline {
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
-    /// Generate a mask matte on GPU. Supports up to 4 masks (circle, rect, linear gradient).
-    /// Returns greyscale RGBA (R=G=B=matte, A=255).
+    /// Generate a mask matte on GPU. Supports an unbounded number
+    /// of masks of any shape (circle / rectangle / linear gradient
+    /// / bezier polygon) — per-mask shape data lands in a storage
+    /// buffer rather than the previous fixed-size uniform, and
+    /// pooled bezier control points live in a second storage
+    /// buffer keyed by per-record `bezier_offset` / `bezier_count`.
+    ///
+    /// Returns greyscale RGBA8 (R=G=B=matte, A=255).
     pub fn generate_mask_gpu(
         &mut self,
         width: u32,
@@ -2545,45 +2657,171 @@ impl GpuEffectsPipeline {
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
-
-        let buf_a = self.buf_a.as_ref().unwrap();
-        let buf_b = self.buf_b.as_ref().unwrap();
-
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
-        let mut p = GpuMaskParams {
-            width, height, mask_count: masks.len().min(4) as u32, _pad: 0,
-            m0_type: 3, m0_cx: 0.0, m0_cy: 0.0, m0_p1: 0.0, m0_p2: 0.0, m0_p3: 0.0, m0_feather: 0.0, m0_flags: 0,
-            m1_type: 3, m1_cx: 0.0, m1_cy: 0.0, m1_p1: 0.0, m1_p2: 0.0, m1_p3: 0.0, m1_feather: 0.0, m1_flags: 0,
-            m2_type: 3, m2_cx: 0.0, m2_cy: 0.0, m2_p1: 0.0, m2_p2: 0.0, m2_p3: 0.0, m2_feather: 0.0, m2_flags: 0,
-            m3_type: 3, m3_cx: 0.0, m3_cy: 0.0, m3_p1: 0.0, m3_p2: 0.0, m3_p3: 0.0, m3_feather: 0.0, m3_flags: 0,
-        };
+        // Pre-allocate everything `&mut self` needs BEFORE we
+        // start handing out `&` borrows of self.buf_b — wgpu::Buffer
+        // is not Clone in 22.x so we can't make an owned copy to
+        // hand to a `&mut self` dispatch. Instead we make
+        // `dispatch_mask_v2` `&self`-only and build buffers up
+        // front.
+        let (records, points) = Self::build_mask_storage(masks);
+        let records_bytes = (records.len() * std::mem::size_of::<MaskRecord>()) as u64;
+        let points_bytes = (points.len() * std::mem::size_of::<[f32; 2]>()) as u64;
+        self.ensure_mask_storage_buffers(records_bytes, points_bytes);
 
-        let set = |slot: usize, p: &mut GpuMaskParams, m: &GpuMaskDef| {
-            let (ty, cx, cy, p1, p2, p3, feather, flags) = (m.shape_type, m.cx, m.cy, m.p1, m.p2, m.p3, m.feather, m.flags);
-            match slot {
-                0 => { p.m0_type = ty; p.m0_cx = cx; p.m0_cy = cy; p.m0_p1 = p1; p.m0_p2 = p2; p.m0_p3 = p3; p.m0_feather = feather; p.m0_flags = flags; }
-                1 => { p.m1_type = ty; p.m1_cx = cx; p.m1_cy = cy; p.m1_p1 = p1; p.m1_p2 = p2; p.m1_p3 = p3; p.m1_feather = feather; p.m1_flags = flags; }
-                2 => { p.m2_type = ty; p.m2_cx = cx; p.m2_cy = cy; p.m2_p1 = p1; p.m2_p2 = p2; p.m2_p3 = p3; p.m2_feather = feather; p.m2_flags = flags; }
-                3 => { p.m3_type = ty; p.m3_cx = cx; p.m3_cy = cy; p.m3_p1 = p1; p.m3_p2 = p2; p.m3_p3 = p3; p.m3_feather = feather; p.m3_flags = flags; }
-                _ => {}
-            }
-        };
+        let dest = self.buf_b.as_ref().expect("ensure_buffers populated buf_b");
+        self.dispatch_mask_v2(width, height, &records, &points, masks.len() as u32, dest, workgroups);
+        self.download_raw_rgba_as_u8(dest, (width * height) as usize)
+    }
 
-        for (i, m) in masks.iter().enumerate().take(4) {
-            set(i, &mut p, m);
+    /// Build the per-mask records and pooled bezier-points arrays
+    /// from a slice of [`GpuMaskDef`]. Returns the records (one
+    /// per input mask, with `bezier_offset` / `bezier_count` set
+    /// for bezier shapes) and the flat point pool (concatenation
+    /// of every bezier mask's points in stack order).
+    fn build_mask_storage(masks: &[GpuMaskDef]) -> (Vec<MaskRecord>, Vec<[f32; 2]>) {
+        let mut records: Vec<MaskRecord> = Vec::with_capacity(masks.len());
+        let mut points: Vec<[f32; 2]> = Vec::new();
+        for m in masks {
+            let (offset, count) = if m.shape_type == 3 {
+                let off = points.len() as u32;
+                let n = m.bezier_points.len() as u32;
+                points.extend(m.bezier_points.iter().map(|&(x, y)| [x, y]));
+                (off, n)
+            } else {
+                (0, 0)
+            };
+            records.push(MaskRecord {
+                shape_type: m.shape_type,
+                flags: m.flags,
+                bezier_offset: offset,
+                bezier_count: count,
+                cx: m.cx, cy: m.cy, p1: m.p1, p2: m.p2,
+                p3: m.p3, feather: m.feather, _pad0: 0, _pad1: 0,
+            });
         }
+        (records, points)
+    }
 
-        self.write_params(&p);
-        self.dispatch(&self.mask_pipeline, buf_a, buf_b, workgroups);
+    /// Ensure the records + points storage buffers are at least
+    /// the requested sizes. Storage buffers can't be size 0 in
+    /// wgpu (it'd fail validation), so we floor each at 16 bytes
+    /// of placeholder data — empty-bezier-stack draws still need
+    /// valid bind-group entries.
+    fn ensure_mask_storage_buffers(&mut self, records_bytes: u64, points_bytes: u64) {
+        let records_bytes = records_bytes.max(48);  // one MaskRecord
+        let points_bytes = points_bytes.max(8);     // one vec2<f32>
+        let need_records = self.mask_records_buf.as_ref()
+            .map_or(true, |b| b.size() < records_bytes);
+        if need_records {
+            self.mask_records_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("mask_records_buf"),
+                size: records_bytes.next_power_of_two().max(48),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let need_points = self.mask_points_buf.as_ref()
+            .map_or(true, |b| b.size() < points_bytes);
+        if need_points {
+            self.mask_points_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("mask_points_buf"),
+                size: points_bytes.next_power_of_two().max(8),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+    }
 
-        // Use the raw download — the mask shader writes a 0..1
-        // coverage value to the RGB channels, NOT a linear-light
-        // luminance, so the sRGB-encoding `download_linear_rgba_as_u8`
-        // would apply on top is wrong. See `download_raw_rgba_as_u8`
-        // for the full diagnosis.
-        self.download_raw_rgba_as_u8(buf_b, (width * height) as usize)
+    /// Write the storage buffers, build a 4-binding bind group on
+    /// the v2 layout, and dispatch the mask pipeline writing to
+    /// `dest` (which is `buf_b` for the CPU-download path and
+    /// `matte_buf` for the GPU-resident chain path). Shared
+    /// helper so the two callers stay in sync.
+    ///
+    /// Caller is responsible for `ensure_buffers` (the dest buffer)
+    /// AND `ensure_mask_storage_buffers` (records + points buffers)
+    /// BEFORE calling — those need `&mut self`, this dispatch only
+    /// needs `&self` so we can hold a `&Buffer` to `dest` from
+    /// inside `self.buf_b` / `self.matte_buf` while calling.
+    fn dispatch_mask_v2(
+        &self,
+        width: u32,
+        height: u32,
+        records: &[MaskRecord],
+        points: &[[f32; 2]],
+        mask_count: u32,
+        dest: &wgpu::Buffer,
+        workgroups: u32,
+    ) {
+        // Empty-stack guard: write a placeholder all-zero record
+        // and point so the bind-group's storage buffers are
+        // non-empty (wgpu validation rejects 0-byte storage
+        // buffers in a binding). The shader's `mask_count` gate
+        // means the placeholders never execute.
+        let placeholder_record = [MaskRecord {
+            shape_type: 0, flags: 0, bezier_offset: 0, bezier_count: 0,
+            cx: 0.0, cy: 0.0, p1: 0.0, p2: 0.0,
+            p3: 0.0, feather: 0.0, _pad0: 0, _pad1: 0,
+        }];
+        let placeholder_point = [[0.0_f32, 0.0_f32]];
+        let records_bytes_to_write: &[u8] = if records.is_empty() {
+            bytemuck::cast_slice(&placeholder_record)
+        } else {
+            bytemuck::cast_slice(records)
+        };
+        let points_bytes_to_write: &[u8] = if points.is_empty() {
+            bytemuck::cast_slice(&placeholder_point)
+        } else {
+            bytemuck::cast_slice(points)
+        };
+
+        let records_buf = self.mask_records_buf.as_ref()
+            .expect("ensure_mask_storage_buffers must run before dispatch_mask_v2");
+        let points_buf = self.mask_points_buf.as_ref()
+            .expect("ensure_mask_storage_buffers must run before dispatch_mask_v2");
+        self.queue.write_buffer(records_buf, 0, records_bytes_to_write);
+        self.queue.write_buffer(points_buf, 0, points_bytes_to_write);
+
+        // write_params is &mut self elsewhere; inline the small
+        // uniform write here so this helper stays &self.
+        let params = GpuMaskParams {
+            width, height,
+            mask_count,
+            _pad: 0,
+        };
+        self.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
+
+        // Pull the bind group layout straight off the pipeline so
+        // we don't have to keep a second handle around in the
+        // pipeline struct for every dispatch.
+        let bgl = self.mask_pipeline.get_bind_group_layout(0);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("mask_v2_bg"),
+            layout: &bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: dest.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: records_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: points_buf.as_entire_binding() },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("mask_v2_enc"),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("mask_v2_pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.mask_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.device.poll(wgpu::Maintain::Poll);
     }
 
     /// Apply hue/sat curves on the GPU using pre-computed LUTs.
@@ -3272,8 +3510,9 @@ impl GpuEffectsPipeline {
     /// `matte_buf` write happens BEFORE `apply_mask_cutout_chain` in
     /// the same `begin_chain` / `submit_chain` pair.
     ///
-    /// Bezier shapes are not supported by the underlying mask shader
-    /// (same as `generate_mask_gpu`); callers must filter them out.
+    /// All shape variants are supported, including bezier polygons
+    /// (per-mask shape data is in a storage buffer, not the
+    /// uniform — there is no shape cap).
     pub fn generate_mask_gpu_to_matte_buf(
         &mut self,
         width: u32,
@@ -3285,34 +3524,16 @@ impl GpuEffectsPipeline {
         }
         let byte_size = (width * height * 16) as u64;
         self.ensure_buffers(byte_size);
-
-        let buf_a = self.buf_a.as_ref().unwrap();
-        let matte_buf = self.matte_buf.as_ref().unwrap();
         let pixel_count = width * height;
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
-        let mut p = GpuMaskParams {
-            width, height, mask_count: masks.len().min(4) as u32, _pad: 0,
-            m0_type: 3, m0_cx: 0.0, m0_cy: 0.0, m0_p1: 0.0, m0_p2: 0.0, m0_p3: 0.0, m0_feather: 0.0, m0_flags: 0,
-            m1_type: 3, m1_cx: 0.0, m1_cy: 0.0, m1_p1: 0.0, m1_p2: 0.0, m1_p3: 0.0, m1_feather: 0.0, m1_flags: 0,
-            m2_type: 3, m2_cx: 0.0, m2_cy: 0.0, m2_p1: 0.0, m2_p2: 0.0, m2_p3: 0.0, m2_feather: 0.0, m2_flags: 0,
-            m3_type: 3, m3_cx: 0.0, m3_cy: 0.0, m3_p1: 0.0, m3_p2: 0.0, m3_p3: 0.0, m3_feather: 0.0, m3_flags: 0,
-        };
-        let set = |slot: usize, p: &mut GpuMaskParams, m: &GpuMaskDef| {
-            let (ty, cx, cy, p1, p2, p3, feather, flags) = (m.shape_type, m.cx, m.cy, m.p1, m.p2, m.p3, m.feather, m.flags);
-            match slot {
-                0 => { p.m0_type = ty; p.m0_cx = cx; p.m0_cy = cy; p.m0_p1 = p1; p.m0_p2 = p2; p.m0_p3 = p3; p.m0_feather = feather; p.m0_flags = flags; }
-                1 => { p.m1_type = ty; p.m1_cx = cx; p.m1_cy = cy; p.m1_p1 = p1; p.m1_p2 = p2; p.m1_p3 = p3; p.m1_feather = feather; p.m1_flags = flags; }
-                2 => { p.m2_type = ty; p.m2_cx = cx; p.m2_cy = cy; p.m2_p1 = p1; p.m2_p2 = p2; p.m2_p3 = p3; p.m2_feather = feather; p.m2_flags = flags; }
-                3 => { p.m3_type = ty; p.m3_cx = cx; p.m3_cy = cy; p.m3_p1 = p1; p.m3_p2 = p2; p.m3_p3 = p3; p.m3_feather = feather; p.m3_flags = flags; }
-                _ => {}
-            }
-        };
-        for (i, m) in masks.iter().enumerate().take(4) {
-            set(i, &mut p, m);
-        }
-        self.write_params(&p);
-        self.dispatch(&self.mask_pipeline, buf_a, matte_buf, workgroups);
+        let (records, points) = Self::build_mask_storage(masks);
+        let records_bytes = (records.len() * std::mem::size_of::<MaskRecord>()) as u64;
+        let points_bytes = (points.len() * std::mem::size_of::<[f32; 2]>()) as u64;
+        self.ensure_mask_storage_buffers(records_bytes, points_bytes);
+
+        let matte = self.matte_buf.as_ref().expect("matte_buf populated by ensure_buffers");
+        self.dispatch_mask_v2(width, height, &records, &points, masks.len() as u32, matte, workgroups);
     }
 
     /// Dispatch-only mask cutout — multiplies the chain frame by
@@ -5098,6 +5319,10 @@ struct GpuScopeRenderParams {
     out_w: u32, out_h: u32, num_cols: u32, max_count: u32,
 }
 
+/// Mask-pipeline frame constants. Per-mask shape data is in the
+/// `MaskRecord` storage buffer (binding 2); per-bezier points are
+/// pooled in another storage buffer (binding 3). The uniform only
+/// holds frame-wide knobs.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GpuMaskParams {
@@ -5105,13 +5330,23 @@ struct GpuMaskParams {
     height: u32,
     mask_count: u32,
     _pad: u32,
-    // 4 masks × 8 fields = 32 u32s
-    m0_type: u32, m0_cx: f32, m0_cy: f32, m0_p1: f32, m0_p2: f32, m0_p3: f32, m0_feather: f32, m0_flags: u32,
-    m1_type: u32, m1_cx: f32, m1_cy: f32, m1_p1: f32, m1_p2: f32, m1_p3: f32, m1_feather: f32, m1_flags: u32,
-    m2_type: u32, m2_cx: f32, m2_cy: f32, m2_p1: f32, m2_p2: f32, m2_p3: f32, m2_feather: f32, m2_flags: u32,
-    m3_type: u32, m3_cx: f32, m3_cy: f32, m3_p1: f32, m3_p2: f32, m3_p3: f32, m3_feather: f32, m3_flags: u32,
 }
-// 36 fields × 4 bytes = 144 bytes
+// 4 fields × 4 bytes = 16 bytes — the smallest legal uniform.
+
+/// One per-mask record in the storage buffer. Layout matches the
+/// WGSL `MaskRecord` struct in [`SHADER_MASK_V2`] one-for-one (12
+/// `u32`/`f32` slots = 48 bytes, naturally 16-byte aligned for
+/// `array<MaskRecord>` in std430).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MaskRecord {
+    shape_type: u32,     // 0=circle, 1=rect, 2=gradient, 3=bezier
+    flags: u32,          // bit 0 invert, bits 8-15 opacity (0-255)
+    bezier_offset: u32,  // index into points buffer (bezier only)
+    bezier_count: u32,   // number of points (bezier only)
+    cx: f32, cy: f32, p1: f32, p2: f32,
+    p3: f32, feather: f32, _pad0: u32, _pad1: u32,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -9463,22 +9698,40 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-// ── Mask matte generation (SDF-based power windows) ───────────────────────────
-const SHADER_MASK: &str = "
+// ── Mask matte generation (SDF-based power windows, v2 storage layout) ─────
+//
+// All per-mask shape data lives in a storage buffer (`records`),
+// pooled bezier control points live in a second storage buffer
+// (`points`), and the uniform only carries frame constants. This
+// removes the previous 4-mask cap and unblocks Bezier shapes —
+// which can have arbitrary point counts and so don't fit in a
+// fixed-size uniform.
+//
+// Coverage value (`matte`) is written to all RGB channels as a 0..1
+// alpha. The CPU readback path uses `download_raw_rgba_as_u8` (no
+// sRGB transform); writing to the linear storage buffer is a no-op
+// conversion as long as readers don't gamma-encode it.
+const SHADER_MASK_V2: &str = "
 struct Params {
     width: u32,
     height: u32,
     mask_count: u32,
     _pad: u32,
-    m0_type: u32, m0_cx: f32, m0_cy: f32, m0_p1: f32, m0_p2: f32, m0_p3: f32, m0_feather: f32, m0_flags: u32,
-    m1_type: u32, m1_cx: f32, m1_cy: f32, m1_p1: f32, m1_p2: f32, m1_p3: f32, m1_feather: f32, m1_flags: u32,
-    m2_type: u32, m2_cx: f32, m2_cy: f32, m2_p1: f32, m2_p2: f32, m2_p3: f32, m2_feather: f32, m2_flags: u32,
-    m3_type: u32, m3_cx: f32, m3_cy: f32, m3_p1: f32, m3_p2: f32, m3_p3: f32, m3_feather: f32, m3_flags: u32,
 }
 
-@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(2) var<uniform> params: Params;
+struct MaskRecord {
+    shape_type: u32,
+    flags: u32,
+    bezier_offset: u32,
+    bezier_count: u32,
+    cx: f32, cy: f32, p1: f32, p2: f32,
+    p3: f32, feather: f32, _pad0: u32, _pad1: u32,
+}
+
+@group(0) @binding(0) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(1) var<uniform> params: Params;
+@group(0) @binding(2) var<storage, read> records: array<MaskRecord>;
+@group(0) @binding(3) var<storage, read> points: array<vec2<f32>>;
 
 fn smooth_step_sdf(dist: f32, feather: f32) -> f32 {
     if dist <= 0.0 { return 1.0; }
@@ -9489,27 +9742,76 @@ fn smooth_step_sdf(dist: f32, feather: f32) -> f32 {
     return 0.0;
 }
 
-fn eval_mask(nx: f32, ny: f32, aspect: f32,
-    shape_type: u32, cx: f32, cy: f32, p1: f32, p2: f32, p3: f32,
-    feather: f32, flags: u32) -> f32
-{
+// Signed-distance to a closed polygon using the same winding-
+// number + min edge distance algorithm as the CPU rasteriser at
+// klipp-color/src/masks.rs:80-115. Returns negative inside,
+// positive outside, in normalised width-relative units.
+fn bezier_sdf(nx: f32, ny: f32, aspect: f32, offset: u32, count: u32) -> f32 {
+    if count < 3u { return 1.0; }
+    let px = nx;
+    let py = ny / aspect;
+    var min_dist_sq: f32 = 1.0e30;
+    var winding: i32 = 0;
+    for (var i: u32 = 0u; i < count; i = i + 1u) {
+        let a_raw = points[offset + i];
+        let b_raw = points[offset + ((i + 1u) % count)];
+        let ax = a_raw.x;
+        let ay = a_raw.y / aspect;
+        let bx = b_raw.x;
+        let by = b_raw.y / aspect;
+        let ex = bx - ax;
+        let ey = by - ay;
+        let dx = px - ax;
+        let dy = py - ay;
+        let denom = ex * ex + ey * ey;
+        var t: f32 = 0.0;
+        if denom > 0.0 {
+            t = clamp((dx * ex + dy * ey) / denom, 0.0, 1.0);
+        }
+        let cx = ax + t * ex - px;
+        let cy = ay + t * ey - py;
+        let d2 = cx * cx + cy * cy;
+        if d2 < min_dist_sq { min_dist_sq = d2; }
+        // Winding-number contribution. CPU uses the classic
+        // ray-casting algorithm — match the branches exactly so
+        // the parity test stays clean.
+        if ay <= py {
+            if by > py {
+                let cross = ex * (py - ay) - ey * (px - ax);
+                if cross > 0.0 { winding = winding + 1; }
+            }
+        } else {
+            if by <= py {
+                let cross = ex * (py - ay) - ey * (px - ax);
+                if cross < 0.0 { winding = winding - 1; }
+            }
+        }
+    }
+    let dist = sqrt(min_dist_sq);
+    if winding != 0 { return -dist; }
+    return dist;
+}
+
+fn eval_record(rec: MaskRecord, nx: f32, ny: f32, aspect: f32) -> f32 {
     var dist: f32;
-    switch shape_type {
+    switch rec.shape_type {
         case 0u: {
-            let dx = nx - cx;
-            let dy = (ny - cy) / aspect;
-            dist = sqrt(dx * dx + dy * dy) - p1;
+            // circle
+            let dx = nx - rec.cx;
+            let dy = (ny - rec.cy) / aspect;
+            dist = sqrt(dx * dx + dy * dy) - rec.p1;
         }
         case 1u: {
-            let rad = p3 * 3.14159265 / 180.0;
+            // rectangle
+            let rad = rec.p3 * 3.14159265 / 180.0;
             let cos_r = cos(rad);
             let sin_r = sin(rad);
-            let dx = nx - cx;
-            let dy = (ny - cy) / aspect;
+            let dx = nx - rec.cx;
+            let dy = (ny - rec.cy) / aspect;
             let lx = abs(dx * cos_r + dy * sin_r);
             let ly = abs(-dx * sin_r + dy * cos_r);
-            let hw = p1 / 2.0;
-            let hh = p2 / 2.0;
+            let hw = rec.p1 / 2.0;
+            let hh = rec.p2 / 2.0;
             let ox = lx - hw;
             let oy = ly - hh;
             let outside = sqrt(max(ox, 0.0) * max(ox, 0.0) + max(oy, 0.0) * max(oy, 0.0));
@@ -9517,21 +9819,28 @@ fn eval_mask(nx: f32, ny: f32, aspect: f32,
             dist = outside + inside;
         }
         case 2u: {
-            let gx = p1 - cx;
-            let gy = (p2 - cy) / aspect;
-            let glen = sqrt(gx * gx + gy * gy);
-            if glen < 0.0001 { dist = 0.0; } else {
-                let dx = nx - cx;
-                let dy = (ny - cy) / aspect;
-                let t = (dx * gx + dy * gy) / (glen * glen);
+            // linear gradient
+            let gx = rec.p1 - rec.cx;
+            let gy = (rec.p2 - rec.cy) / aspect;
+            let glen2 = gx * gx + gy * gy;
+            if glen2 < 1.0e-8 {
+                dist = 0.0;
+            } else {
+                let dx = nx - rec.cx;
+                let dy = (ny - rec.cy) / aspect;
+                let t = (dx * gx + dy * gy) / glen2;
                 dist = t - 0.5;
             }
         }
+        case 3u: {
+            // bezier polygon
+            dist = bezier_sdf(nx, ny, aspect, rec.bezier_offset, rec.bezier_count);
+        }
         default: { dist = 1.0; }
     }
-    var m = smooth_step_sdf(dist, feather);
-    if (flags & 1u) != 0u { m = 1.0 - m; }
-    let opacity = f32((flags >> 8u) & 0xFFu) / 255.0;
+    var m = smooth_step_sdf(dist, rec.feather);
+    if (rec.flags & 1u) != 0u { m = 1.0 - m; }
+    let opacity = f32((rec.flags >> 8u) & 0xFFu) / 255.0;
     return m * opacity;
 }
 
@@ -9539,7 +9848,6 @@ fn eval_mask(nx: f32, ny: f32, aspect: f32,
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-
     let x = idx % params.width;
     let y = idx / params.width;
     let nx = f32(x) / f32(max(params.width - 1u, 1u));
@@ -9547,16 +9855,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let aspect = f32(params.height) / f32(params.width);
 
     var matte: f32 = 0.0;
-    if params.mask_count >= 1u { matte = max(matte, eval_mask(nx, ny, aspect, params.m0_type, params.m0_cx, params.m0_cy, params.m0_p1, params.m0_p2, params.m0_p3, params.m0_feather, params.m0_flags)); }
-    if params.mask_count >= 2u { matte = max(matte, eval_mask(nx, ny, aspect, params.m1_type, params.m1_cx, params.m1_cy, params.m1_p1, params.m1_p2, params.m1_p3, params.m1_feather, params.m1_flags)); }
-    if params.mask_count >= 3u { matte = max(matte, eval_mask(nx, ny, aspect, params.m2_type, params.m2_cx, params.m2_cy, params.m2_p1, params.m2_p2, params.m2_p3, params.m2_feather, params.m2_flags)); }
-    if params.mask_count >= 4u { matte = max(matte, eval_mask(nx, ny, aspect, params.m3_type, params.m3_cx, params.m3_cy, params.m3_p1, params.m3_p2, params.m3_p3, params.m3_feather, params.m3_flags)); }
-
+    for (var i: u32 = 0u; i < params.mask_count; i = i + 1u) {
+        let m = eval_record(records[i], nx, ny, aspect);
+        matte = max(matte, m);
+    }
     let m = clamp(matte, 0.0, 1.0);
-    // Matte is a single-channel luminance. We store it in all of RGB
-    // (callers read it as an RGBA triplet where R=G=B=matte). The
-    // value is already in a linear [0,1] domain — writing a neutral
-    // grey to a linear storage target is a no-op conversion.
     output[idx] = vec4<f32>(m, m, m, 1.0);
 }
 ";

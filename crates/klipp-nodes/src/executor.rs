@@ -802,10 +802,12 @@ impl GraphExecutor {
                         .filter_map(mask_to_gpu_def)
                         .collect())
                     .unwrap_or_default();
-                let has_bezier = masks_opt.as_ref()
-                    .map_or(false, |ms| ms.masks.iter()
-                        .any(|m| m.enabled && matches!(m.shape, klipp_core::MaskShape::Bezier { .. })));
-                if single_cutout_target && !gpu_ready_masks.is_empty() && !has_bezier {
+                // Bezier shapes are now supported on the GPU path
+                // (storage-buffer mask architecture, klipp-effects
+                // SHADER_MASK_V2). The previous `!has_bezier` gate
+                // forced the entire stack to fall through to CPU
+                // even for one bezier — now removed.
+                if single_cutout_target && !gpu_ready_masks.is_empty() {
                     if let Some(gpu) = self.gpu.as_mut() {
                         gpu.generate_mask_gpu_to_matte_buf(width, height, &gpu_ready_masks);
                     }
@@ -2201,9 +2203,11 @@ impl GraphExecutor {
                             .filter(|m| m.enabled)
                             .filter_map(mask_to_gpu_def)
                             .collect();
-                        let has_bezier = evaluated.masks.iter()
-                            .any(|m| m.enabled && matches!(m.shape, klipp_core::MaskShape::Bezier { .. }));
-                        if !gpu_masks.is_empty() && !has_bezier {
+                        // Bezier shapes are now first-class on the
+                        // GPU path; the v2 mask pipeline (storage-
+                        // buffer records + pooled bezier points) has
+                        // no shape cap and no bezier exclusion.
+                        if !gpu_masks.is_empty() {
                             Some(gpu.generate_mask_gpu(width, height, &gpu_masks))
                         } else {
                             None
@@ -2939,7 +2943,11 @@ fn corrector_has_active_stage(p: &NodeParams) -> bool {
         || p.warper_params.as_ref().map_or(false, |w| !w.is_identity())
 }
 
-/// Convert a klipp_core::Mask to a GpuMaskDef. Returns None for Bezier shapes.
+/// Convert a klipp_core::Mask to a GpuMaskDef. Every shape variant
+/// is supported on the GPU as of the v2 mask pipeline (storage-buffer
+/// records + pooled bezier points). Bezier shapes carry their
+/// control points through verbatim — the dispatch helper pools them
+/// across all masks in the stack into a single storage buffer.
 fn mask_to_gpu_def(mask: &klipp_core::Mask) -> Option<klipp_effects::gpu::GpuMaskDef> {
     use klipp_core::MaskShape;
     use klipp_effects::gpu::GpuMaskDef;
@@ -2950,7 +2958,8 @@ fn mask_to_gpu_def(mask: &klipp_core::Mask) -> Option<klipp_effects::gpu::GpuMas
             Some(GpuMaskDef::rectangle(*center_x, *center_y, *width, *height, *rotation, mask.feather, mask.invert, mask.opacity)),
         MaskShape::LinearGradient { start_x, start_y, end_x, end_y } =>
             Some(GpuMaskDef::linear_gradient(*start_x, *start_y, *end_x, *end_y, mask.feather, mask.invert, mask.opacity)),
-        MaskShape::Bezier { .. } => None,
+        MaskShape::Bezier { points } =>
+            Some(GpuMaskDef::bezier(points.clone(), mask.feather, mask.invert, mask.opacity)),
     }
 }
 
