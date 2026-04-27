@@ -358,6 +358,35 @@ enum TrimEdge {
     Right,
 }
 
+/// Which body-drag gesture a press should start, given the active tool and
+/// the alt/shift modifier state. Mirrors the inline `do_slide / do_slip /
+/// do_move` cascade in `detect_drag_start`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BodyDragGesture {
+    Slide,
+    Slip,
+    Move,
+    None,
+}
+
+pub(crate) fn body_drag_gesture(
+    active_tool: Tool,
+    alt_held: bool,
+    shift_held: bool,
+) -> BodyDragGesture {
+    let is_select = active_tool == Tool::Select;
+    let is_trim = active_tool == Tool::Trim;
+    if (is_select && alt_held && shift_held) || (is_trim && shift_held) {
+        BodyDragGesture::Slide
+    } else if (is_select && alt_held && !shift_held) || (is_trim && !shift_held) {
+        BodyDragGesture::Slip
+    } else if is_select && !alt_held && !shift_held {
+        BodyDragGesture::Move
+    } else {
+        BodyDragGesture::None
+    }
+}
+
 /// Compute the post-clamp `(timeline_in, timeline_out)` for a slide drag.
 ///
 /// Slide moves the centre clip's timeline window by `dt`, simultaneously
@@ -5107,7 +5136,6 @@ impl TimelinePanel {
         state: &mut AppState,
         cmds: &mut Vec<AppCommand>,
         track_idx: usize,
-        clips: &[klipp_timeline::Clip],
         content_rect: &egui::Rect,
         track_rect: &egui::Rect,
         zoom: f32,
@@ -5122,149 +5150,159 @@ impl TimelinePanel {
         if track_response.drag_started() {
             let decision_pos = self.press_origin.or(pointer_pos);
             if let Some(pos) = decision_pos {
-                // Zero: check if pointer is near a fade handle (top corner of audio clip)
+                // Zero: check if pointer is near a fade handle (top corner of audio clip).
+                // This block has a state mutation (state.dragging_fade_handle), so it
+                // splits into Phase 1 (scan, no &mut) and Phase 2 (apply, no clip borrow).
                 let mut started_fade_drag = false;
                 if state.active_tool == Tool::Select {
-                    for clip in clips {
-                        if clip.kind.is_gap() { continue; }
-                        let clip_has_audio = track_kind == TrackKind::Audio
-                            || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).is_some_and(|m| m.has_audio);
-                        if !clip_has_audio { continue; }
-                        let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
-                        if cr.width() < 20.0 { continue; }
+                    let fade_hit: Option<(klipp_core::ClipId, klipp_core::ClipId, bool, f32, f32, f32, f32, f32, f32)> = {
+                        let clips = &state.sequence().tracks[track_idx].clips;
+                        let mut found = None;
+                        for clip in clips {
+                            if clip.kind.is_gap() { continue; }
+                            let clip_has_audio = track_kind == TrackKind::Audio
+                                || clip.media_id().and_then(|mid| state.media_pool.get(&mid)).is_some_and(|m| m.has_audio);
+                            if !clip_has_audio { continue; }
+                            let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
+                            if cr.width() < 20.0 { continue; }
 
-                        // Resolve current fade values
-                        let (cur_fi, cur_fo) = if let Some(linked_id) = clip.linked_clip_id {
-                            let mut fi = clip.fade_in_secs;
-                            let mut fo = clip.fade_out_secs;
-                            for t in &state.sequence().tracks {
-                                if let Some(vc) = t.find_clip(linked_id) {
-                                    fi = vc.fade_in_secs;
-                                    fo = vc.fade_out_secs;
-                                    break;
+                            // Resolve current fade values (reads linked clip if any).
+                            let (cur_fi, cur_fo) = if let Some(linked_id) = clip.linked_clip_id {
+                                let mut fi = clip.fade_in_secs;
+                                let mut fo = clip.fade_out_secs;
+                                for t in &state.sequence().tracks {
+                                    if let Some(vc) = t.find_clip(linked_id) {
+                                        fi = vc.fade_in_secs;
+                                        fo = vc.fade_out_secs;
+                                        break;
+                                    }
                                 }
-                            }
-                            (fi, fo)
-                        } else {
-                            (clip.fade_in_secs, clip.fade_out_secs)
-                        };
-                        let clip_dur_secs = clip.duration().to_secs_f64() as f32;
-                        let fi_offset_px = if clip_dur_secs > 0.001 { (cur_fi / clip_dur_secs) * cr.width() } else { 0.0 };
-                        let fi_x = cr.left() + fi_offset_px;
-                        let fo_offset_px = if clip_dur_secs > 0.001 { (cur_fo / clip_dur_secs) * cr.width() } else { 0.0 };
-                        let fo_x = cr.right() - fo_offset_px;
-
-                        let near_fi = (pos.x - fi_x).abs() < 8.0 && (pos.y - cr.top()).abs() < 10.0
-                            && cr.contains(pos) && content_rect.contains(pos);
-                        let near_fo = (pos.x - fo_x).abs() < 8.0 && (pos.y - cr.top()).abs() < 10.0
-                            && cr.contains(pos) && content_rect.contains(pos);
-
-                        if near_fi {
-                            // Resolve the clip_id for the UpdateClipAudio command
-                            let cmd_clip_id = clip.linked_clip_id.unwrap_or(clip.id);
-                            // Emit BeginAudioDrag for undo tracking
-                            let (g, v, p, fi_s, fo_s) = if let Some(linked_id) = clip.linked_clip_id {
-                                state.sequence().tracks.iter()
-                                    .find_map(|t| t.find_clip(linked_id))
-                                    .map(|c| (c.gain, c.volume, c.pan, c.fade_in_secs, c.fade_out_secs))
-                                    .unwrap_or((1.0, 1.0, 0.0, cur_fi, cur_fo))
+                                (fi, fo)
                             } else {
-                                (clip.gain, clip.volume, clip.pan, cur_fi, cur_fo)
+                                (clip.fade_in_secs, clip.fade_out_secs)
                             };
-                            cmds.push(AppCommand::BeginAudioDrag {
-                                key: format!("fade_handle_{:?}", cmd_clip_id),
-                                clip_id: cmd_clip_id,
-                                old_gain: g, old_volume: v, old_pan: p,
-                                old_fade_in: fi_s, old_fade_out: fo_s,
-                            });
-                            state.dragging_fade_handle = Some((clip.id, true, cur_fi));
-                            started_fade_drag = true;
-                            break;
-                        }
-                        if near_fo {
-                            let cmd_clip_id = clip.linked_clip_id.unwrap_or(clip.id);
-                            let (g, v, p, fi_s, fo_s) = if let Some(linked_id) = clip.linked_clip_id {
-                                state.sequence().tracks.iter()
-                                    .find_map(|t| t.find_clip(linked_id))
-                                    .map(|c| (c.gain, c.volume, c.pan, c.fade_in_secs, c.fade_out_secs))
-                                    .unwrap_or((1.0, 1.0, 0.0, cur_fi, cur_fo))
-                            } else {
-                                (clip.gain, clip.volume, clip.pan, cur_fi, cur_fo)
-                            };
-                            cmds.push(AppCommand::BeginAudioDrag {
-                                key: format!("fade_handle_{:?}", cmd_clip_id),
-                                clip_id: cmd_clip_id,
-                                old_gain: g, old_volume: v, old_pan: p,
-                                old_fade_in: fi_s, old_fade_out: fo_s,
-                            });
-                            state.dragging_fade_handle = Some((clip.id, false, cur_fo));
-                            started_fade_drag = true;
-                            break;
-                        }
-                    }
-                }
-                // Check for roll trim junction before regular trim (Select or Trim tool)
-                let mut started_roll_trim = false;
-                if !started_fade_drag
-                    && (state.active_tool == Tool::Select || state.active_tool == Tool::Trim)
-                    && clips.len() >= 2
-                {
-                    let roll_threshold = 4.0_f32;
-                    for i in 0..clips.len() - 1 {
-                        if clips[i].kind.is_gap() || clips[i + 1].kind.is_gap() { continue; }
-                        let cr_a = Self::clip_screen_rect(&clips[i], content_rect, track_rect, zoom, scroll, track_height);
-                        let cr_b = Self::clip_screen_rect(&clips[i + 1], content_rect, track_rect, zoom, scroll, track_height);
-                        let junction_x = (cr_a.right() + cr_b.left()) / 2.0;
-                        if (pos.x - junction_x).abs() < roll_threshold
-                            && pos.y >= track_rect.top() && pos.y <= track_rect.top() + track_height
-                        {
-                            // Verify clips are truly adjacent (no gap)
-                            let gap_secs = (clips[i + 1].timeline_in - clips[i].timeline_out).to_secs_f64().abs();
-                            if gap_secs < 0.001 {
-                                tracing::debug!("drag_started ROLL TRIM: clip_a={:?}, clip_b={:?}", clips[i].id, clips[i + 1].id);
-                                self.roll_trimming = Some(RollTrimState {
-                                    clip_a_id: clips[i].id,
-                                    clip_b_id: clips[i + 1].id,
-                                    track_idx,
-                                    start_x: pos.x,
-                                    original_boundary: clips[i].timeline_out,
-                                    original_a_source_out: clips[i].source_out,
-                                    original_b_source_in: clips[i + 1].source_in,
-                                    original_a_timeline_out: clips[i].timeline_out,
-                                    original_b_timeline_in: clips[i + 1].timeline_in,
-                                });
-                                started_roll_trim = true;
+                            let clip_dur_secs = clip.duration().to_secs_f64() as f32;
+                            let fi_offset_px = if clip_dur_secs > 0.001 { (cur_fi / clip_dur_secs) * cr.width() } else { 0.0 };
+                            let fi_x = cr.left() + fi_offset_px;
+                            let fo_offset_px = if clip_dur_secs > 0.001 { (cur_fo / clip_dur_secs) * cr.width() } else { 0.0 };
+                            let fo_x = cr.right() - fo_offset_px;
+
+                            let near_fi = (pos.x - fi_x).abs() < 8.0 && (pos.y - cr.top()).abs() < 10.0
+                                && cr.contains(pos) && content_rect.contains(pos);
+                            let near_fo = (pos.x - fo_x).abs() < 8.0 && (pos.y - cr.top()).abs() < 10.0
+                                && cr.contains(pos) && content_rect.contains(pos);
+
+                            if near_fi || near_fo {
+                                let is_in = near_fi;
+                                let cmd_clip_id = clip.linked_clip_id.unwrap_or(clip.id);
+                                let (g, v, p, fi_s, fo_s) = if let Some(linked_id) = clip.linked_clip_id {
+                                    state.sequence().tracks.iter()
+                                        .find_map(|t| t.find_clip(linked_id))
+                                        .map(|c| (c.gain, c.volume, c.pan, c.fade_in_secs, c.fade_out_secs))
+                                        .unwrap_or((1.0, 1.0, 0.0, cur_fi, cur_fo))
+                                } else {
+                                    (clip.gain, clip.volume, clip.pan, cur_fi, cur_fo)
+                                };
+                                let cur = if is_in { cur_fi } else { cur_fo };
+                                found = Some((clip.id, cmd_clip_id, is_in, cur, g, v, p, fi_s, fo_s));
                                 break;
                             }
                         }
+                        found
+                    };
+                    if let Some((clip_id, cmd_clip_id, is_in, cur, g, v, p, fi_s, fo_s)) = fade_hit {
+                        cmds.push(AppCommand::BeginAudioDrag {
+                            key: format!("fade_handle_{:?}", cmd_clip_id),
+                            clip_id: cmd_clip_id,
+                            old_gain: g, old_volume: v, old_pan: p,
+                            old_fade_in: fi_s, old_fade_out: fo_s,
+                        });
+                        state.dragging_fade_handle = Some((clip_id, is_in, cur));
+                        started_fade_drag = true;
+                    }
+                }
+                // Check for roll trim junction before regular trim (Select or Trim tool).
+                // This block only mutates `self.roll_trimming`, never state, so the
+                // immutable borrow into state.sequence() is safe across the loop.
+                let mut started_roll_trim = false;
+                if !started_fade_drag
+                    && (state.active_tool == Tool::Select || state.active_tool == Tool::Trim)
+                {
+                    let roll_threshold = 4.0_f32;
+                    let roll_hit: Option<RollTrimState> = {
+                        let clips = &state.sequence().tracks[track_idx].clips;
+                        if clips.len() < 2 {
+                            None
+                        } else {
+                            let mut found = None;
+                            for i in 0..clips.len() - 1 {
+                                if clips[i].kind.is_gap() || clips[i + 1].kind.is_gap() { continue; }
+                                let cr_a = Self::clip_screen_rect(&clips[i], content_rect, track_rect, zoom, scroll, track_height);
+                                let cr_b = Self::clip_screen_rect(&clips[i + 1], content_rect, track_rect, zoom, scroll, track_height);
+                                let junction_x = (cr_a.right() + cr_b.left()) / 2.0;
+                                if (pos.x - junction_x).abs() < roll_threshold
+                                    && pos.y >= track_rect.top() && pos.y <= track_rect.top() + track_height
+                                {
+                                    let gap_secs = (clips[i + 1].timeline_in - clips[i].timeline_out).to_secs_f64().abs();
+                                    if gap_secs < 0.001 {
+                                        tracing::debug!("drag_started ROLL TRIM: clip_a={:?}, clip_b={:?}", clips[i].id, clips[i + 1].id);
+                                        found = Some(RollTrimState {
+                                            clip_a_id: clips[i].id,
+                                            clip_b_id: clips[i + 1].id,
+                                            track_idx,
+                                            start_x: pos.x,
+                                            original_boundary: clips[i].timeline_out,
+                                            original_a_source_out: clips[i].source_out,
+                                            original_b_source_in: clips[i + 1].source_in,
+                                            original_a_timeline_out: clips[i].timeline_out,
+                                            original_b_timeline_in: clips[i + 1].timeline_in,
+                                        });
+                                        break;
+                                    }
+                                }
+                            }
+                            found
+                        }
+                    };
+                    if let Some(rt) = roll_hit {
+                        self.roll_trimming = Some(rt);
+                        started_roll_trim = true;
                     }
                 }
                 // First: check if pointer is near any clip edge (trim)
                 if !started_fade_drag && !started_roll_trim {
-                if let Some((_cr, hit_clip, edge)) = self.hit_test_edge(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
-                    tracing::debug!("drag_started TRIM: clip={:?}, edge={:?}", hit_clip.id, match edge { TrimEdge::Left => "left", TrimEdge::Right => "right" });
-                    // Collect subsequent clips for ripple trim
-                    let subsequent = if state.ripple_enabled {
-                        clips.iter()
-                            .filter(|c| c.id != hit_clip.id && c.timeline_in >= hit_clip.timeline_in)
+                // Edge hit: copy out the small Copy fields the trim state needs
+                // so we can drop the clips borrow before the ripple-collect step
+                // which itself re-borrows clips (and again before any state &mut).
+                let edge_hit: Option<(klipp_core::ClipId, klipp_core::RationalTime, klipp_core::RationalTime, klipp_core::RationalTime, klipp_core::RationalTime, TrimEdge)> = {
+                    let clips = &state.sequence().tracks[track_idx].clips;
+                    self.hit_test_edge(clips, content_rect, track_rect, zoom, scroll, track_height, pos)
+                        .map(|(_, hc, edge)| (hc.id, hc.source_in, hc.source_out, hc.timeline_in, hc.timeline_out, edge))
+                };
+                if let Some((hit_clip_id, hit_src_in, hit_src_out, hit_tl_in, hit_tl_out, edge)) = edge_hit {
+                    tracing::debug!("drag_started TRIM: clip={:?}, edge={:?}", hit_clip_id, match edge { TrimEdge::Left => "left", TrimEdge::Right => "right" });
+                    let subsequent: Vec<(klipp_core::ClipId, klipp_core::RationalTime, klipp_core::RationalTime)> = if state.ripple_enabled {
+                        state.sequence().tracks[track_idx].clips.iter()
+                            .filter(|c| c.id != hit_clip_id && c.timeline_in >= hit_tl_in)
                             .map(|c| (c.id, c.timeline_in, c.timeline_out))
                             .collect()
                     } else {
                         Vec::new()
                     };
                     self.trimming_clip = Some(TrimState {
-                        clip_id: hit_clip.id,
+                        clip_id: hit_clip_id,
                         track_idx,
                         edge,
                         start_x: pos.x,
-                        original_source_in: hit_clip.source_in,
-                        original_source_out: hit_clip.source_out,
-                        original_timeline_in: hit_clip.timeline_in,
-                        original_timeline_out: hit_clip.timeline_out,
+                        original_source_in: hit_src_in,
+                        original_source_out: hit_src_out,
+                        original_timeline_in: hit_tl_in,
+                        original_timeline_out: hit_tl_out,
                         subsequent_clips: subsequent,
                     });
                 }
-                // Range tool: drag anywhere in track area sets range
+                // Range tool: drag anywhere in track area sets range. No clip
+                // borrow live here, so the state.range_drag mutation is fine.
                 else if state.active_tool == Tool::Range {
                     let x_in_content = pos.x - content_rect.left() + scroll;
                     let anchor_secs = (x_in_content as f64 / zoom as f64).max(0.0);
@@ -5275,108 +5313,113 @@ impl TimelinePanel {
                     });
                 }
                 // Second: check if pointer is inside a clip body (drag/move or slip/slide)
-                else if let Some((_cr, hit_clip)) = self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
-                    if state.active_tool == Tool::Select || state.active_tool == Tool::Trim {
+                else {
+                    // Phase 1: collect everything the body branches need from the
+                    // hit clip and (if any) its left/right neighbours into one
+                    // owned struct. After this scope `state` is fully free.
+                    #[allow(clippy::type_complexity)]
+                    let body_hit: Option<(
+                        klipp_core::ClipId,
+                        klipp_core::RationalTime, // timeline_in
+                        klipp_core::RationalTime, // timeline_out
+                        klipp_core::RationalTime, // source_in
+                        klipp_core::RationalTime, // source_out
+                        Option<klipp_core::ClipId>, // linked_clip_id
+                        Option<klipp_core::MediaId>, // media_id
+                        Option<(klipp_core::ClipId, klipp_core::RationalTime, klipp_core::RationalTime)>, // left: id, timeline_out, source_out
+                        Option<(klipp_core::ClipId, klipp_core::RationalTime, klipp_core::RationalTime)>, // right: id, timeline_in, source_in
+                    )> = {
+                        let clips = &state.sequence().tracks[track_idx].clips;
+                        self.hit_test_clip_body(clips, content_rect, track_rect, zoom, scroll, track_height, pos)
+                            .map(|(_, hc)| {
+                                let clip_idx = clips.iter().position(|c| c.id == hc.id);
+                                let left = clip_idx.and_then(|i| if i > 0 {
+                                    let lc = &clips[i - 1];
+                                    if !lc.kind.is_gap() { Some((lc.id, lc.timeline_out, lc.source_out)) } else { None }
+                                } else { None });
+                                let right = clip_idx.and_then(|i| if i + 1 < clips.len() {
+                                    let rc = &clips[i + 1];
+                                    if !rc.kind.is_gap() { Some((rc.id, rc.timeline_in, rc.source_in)) } else { None }
+                                } else { None });
+                                (hc.id, hc.timeline_in, hc.timeline_out, hc.source_in, hc.source_out, hc.linked_clip_id, hc.media_id(), left, right)
+                            })
+                    };
+
+                    if let Some((hit_id, hit_tl_in, hit_tl_out, hit_src_in, hit_src_out, linked_id, media_id, left, right)) = body_hit {
                         let alt_held = ui.input(|i| i.modifiers.alt);
                         let shift_held = ui.input(|i| i.modifiers.shift);
-                        let is_select = state.active_tool == Tool::Select;
-                        let is_trim = state.active_tool == Tool::Trim;
-                        // Gesture priority (modifier-aware):
-                        //   Select + Alt+Shift  OR  Trim + Shift  -> SLIDE
-                        //   Select + Alt         OR  Trim (no mod) -> SLIP
-                        //   Select (no mod)                        -> MOVE (Trim has no MOVE — clip body = SLIP)
-                        let do_slide = (is_select && alt_held && shift_held) || (is_trim && shift_held);
-                        let do_slip  = (is_select && alt_held && !shift_held) || (is_trim && !shift_held);
-                        let do_move  = is_select && !alt_held && !shift_held;
+                        let gesture = body_drag_gesture(state.active_tool, alt_held, shift_held);
+                        if matches!(gesture, BodyDragGesture::Slide | BodyDragGesture::Slip | BodyDragGesture::Move) {
 
-                        if do_slide {
-                            // SLIDE gesture
-                            tracing::debug!("drag_started SLIDE: clip={:?}", hit_clip.id);
-                            // Find left and right neighbor clips on the same track
-                            let clip_idx = clips.iter().position(|c| c.id == hit_clip.id);
-                            let left = clip_idx.and_then(|i| {
-                                if i > 0 {
-                                    let lc = &clips[i - 1];
-                                    if !lc.kind.is_gap() { Some(lc) } else { None }
-                                } else { None }
-                            });
-                            let right = clip_idx.and_then(|i| {
-                                if i + 1 < clips.len() {
-                                    let rc = &clips[i + 1];
-                                    if !rc.kind.is_gap() { Some(rc) } else { None }
-                                } else { None }
-                            });
-                            let linked_id = hit_clip.linked_clip_id;
-                            let (linked_orig_in, linked_orig_out) = linked_id
-                                .and_then(|lid| {
+                            if matches!(gesture, BodyDragGesture::Slide) {
+                                tracing::debug!("drag_started SLIDE: clip={:?}", hit_id);
+                                let (linked_orig_in, linked_orig_out) = linked_id
+                                    .and_then(|lid| {
+                                        state.sequence().tracks.iter()
+                                            .flat_map(|t| t.clips.iter())
+                                            .find(|c| c.id == lid)
+                                            .map(|c| (c.timeline_in, c.timeline_out))
+                                    })
+                                    .map(|(a, b)| (Some(a), Some(b)))
+                                    .unwrap_or((None, None));
+                                self.sliding_clip = Some(SlideState {
+                                    clip_id: hit_id,
+                                    track_idx,
+                                    start_x: pos.x,
+                                    original_timeline_in: hit_tl_in,
+                                    original_timeline_out: hit_tl_out,
+                                    left_clip_id: left.map(|(id, _, _)| id),
+                                    original_left_out: left.map(|(_, tl_out, _)| tl_out),
+                                    original_left_source_out: left.map(|(_, _, src_out)| src_out),
+                                    right_clip_id: right.map(|(id, _, _)| id),
+                                    original_right_in: right.map(|(_, tl_in, _)| tl_in),
+                                    original_right_source_in: right.map(|(_, _, src_in)| src_in),
+                                    linked_clip_id: linked_id,
+                                    linked_original_in: linked_orig_in,
+                                    linked_original_out: linked_orig_out,
+                                });
+                            } else if matches!(gesture, BodyDragGesture::Slip) {
+                                tracing::debug!("drag_started SLIP: clip={:?}", hit_id);
+                                let media_dur = media_id.and_then(|mid| {
+                                    state.media_pool.get(&mid).map(|m| m.duration)
+                                });
+                                let (linked_src_in, linked_src_out) = linked_id
+                                    .and_then(|lid| {
+                                        state.sequence().tracks.iter()
+                                            .flat_map(|t| t.clips.iter())
+                                            .find(|c| c.id == lid)
+                                            .map(|c| (c.source_in, c.source_out))
+                                    })
+                                    .map(|(a, b)| (Some(a), Some(b)))
+                                    .unwrap_or((None, None));
+                                self.slipping_clip = Some(SlipState {
+                                    clip_id: hit_id,
+                                    track_idx,
+                                    start_x: pos.x,
+                                    original_source_in: hit_src_in,
+                                    original_source_out: hit_src_out,
+                                    media_duration: media_dur,
+                                    linked_clip_id: linked_id,
+                                    linked_original_source_in: linked_src_in,
+                                    linked_original_source_out: linked_src_out,
+                                });
+                            } else if matches!(gesture, BodyDragGesture::Move) {
+                                tracing::debug!("drag_started MOVE: clip={:?}", hit_id);
+                                let linked_orig = linked_id.and_then(|lid| {
                                     state.sequence().tracks.iter()
                                         .flat_map(|t| t.clips.iter())
                                         .find(|c| c.id == lid)
-                                        .map(|c| (c.timeline_in, c.timeline_out))
-                                })
-                                .map(|(a, b)| (Some(a), Some(b)))
-                                .unwrap_or((None, None));
-                            self.sliding_clip = Some(SlideState {
-                                clip_id: hit_clip.id,
-                                track_idx,
-                                start_x: pos.x,
-                                original_timeline_in: hit_clip.timeline_in,
-                                original_timeline_out: hit_clip.timeline_out,
-                                left_clip_id: left.map(|c| c.id),
-                                original_left_out: left.map(|c| c.timeline_out),
-                                original_left_source_out: left.map(|c| c.source_out),
-                                right_clip_id: right.map(|c| c.id),
-                                original_right_in: right.map(|c| c.timeline_in),
-                                original_right_source_in: right.map(|c| c.source_in),
-                                linked_clip_id: linked_id,
-                                linked_original_in: linked_orig_in,
-                                linked_original_out: linked_orig_out,
-                            });
-                        } else if do_slip {
-                            // SLIP gesture
-                            tracing::debug!("drag_started SLIP: clip={:?}", hit_clip.id);
-                            let media_dur = hit_clip.media_id().and_then(|mid| {
-                                state.media_pool.get(&mid).map(|m| m.duration)
-                            });
-                            let linked_id = hit_clip.linked_clip_id;
-                            let (linked_src_in, linked_src_out) = linked_id
-                                .and_then(|lid| {
-                                    state.sequence().tracks.iter()
-                                        .flat_map(|t| t.clips.iter())
-                                        .find(|c| c.id == lid)
-                                        .map(|c| (c.source_in, c.source_out))
-                                })
-                                .map(|(a, b)| (Some(a), Some(b)))
-                                .unwrap_or((None, None));
-                            self.slipping_clip = Some(SlipState {
-                                clip_id: hit_clip.id,
-                                track_idx,
-                                start_x: pos.x,
-                                original_source_in: hit_clip.source_in,
-                                original_source_out: hit_clip.source_out,
-                                media_duration: media_dur,
-                                linked_clip_id: linked_id,
-                                linked_original_source_in: linked_src_in,
-                                linked_original_source_out: linked_src_out,
-                            });
-                        } else if do_move {
-                            // Normal drag/move (Select with no modifier — never in Trim)
-                            tracing::debug!("drag_started MOVE: clip={:?}", hit_clip.id);
-                            let linked_id = hit_clip.linked_clip_id;
-                            let linked_orig = linked_id.and_then(|lid| {
-                                state.sequence().tracks.iter()
-                                    .flat_map(|t| t.clips.iter())
-                                    .find(|c| c.id == lid)
-                                    .map(|c| c.timeline_in)
-                            });
-                            self.dragging_clip = Some(DragState {
-                                clip_id: hit_clip.id,
-                                track_idx,
-                                start_x: pos.x,
-                                original_timeline_in: hit_clip.timeline_in,
-                                linked_clip_id: linked_id,
-                                linked_original_in: linked_orig,
-                            });
+                                        .map(|c| c.timeline_in)
+                                });
+                                self.dragging_clip = Some(DragState {
+                                    clip_id: hit_id,
+                                    track_idx,
+                                    start_x: pos.x,
+                                    original_timeline_in: hit_tl_in,
+                                    linked_clip_id: linked_id,
+                                    linked_original_in: linked_orig,
+                                });
+                            }
                         }
                     }
                 }
@@ -8683,7 +8726,7 @@ impl TimelinePanel {
 
         self.handle_clip_click(ui, &track_response, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, fps);
 
-        self.detect_drag_start(ui, &track_response, state, cmds, track_idx, &post_loop_clips, content_rect, track_rect, zoom, scroll, track_height, track_kind, pointer_pos);
+        self.detect_drag_start(ui, &track_response, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, track_kind, pointer_pos);
 
         self.process_fade_drag(state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
 
@@ -12089,6 +12132,61 @@ mod tests {
     //   3. When clips overlap (compound clips on a single track), the
     //      LATER-stored clip wins (the iter().rev() priority order).
     // ═══════════════════════════════════════════════════════════════
+
+    // ═══════════════════════════════════════════════════════════════
+    // body_drag_gesture
+    //
+    // The detect_drag_start "what gesture should this body-press start"
+    // matrix is now an extracted free function so the priority can be
+    // pinned without spinning up a TimelinePanel + AppState. The eight
+    // combinations of (Select|Trim) × (alt) × (shift) are enumerated.
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn body_drag_gesture_select_no_modifier_is_move() {
+        assert_eq!(body_drag_gesture(Tool::Select, false, false), BodyDragGesture::Move);
+    }
+
+    #[test]
+    fn body_drag_gesture_select_alt_is_slip() {
+        assert_eq!(body_drag_gesture(Tool::Select, true, false), BodyDragGesture::Slip);
+    }
+
+    #[test]
+    fn body_drag_gesture_select_alt_shift_is_slide() {
+        assert_eq!(body_drag_gesture(Tool::Select, true, true), BodyDragGesture::Slide);
+    }
+
+    #[test]
+    fn body_drag_gesture_select_shift_only_is_none() {
+        // Shift on Select without Alt has no body-drag meaning — the
+        // multi-select click handler picks it up instead.
+        assert_eq!(body_drag_gesture(Tool::Select, false, true), BodyDragGesture::None);
+    }
+
+    #[test]
+    fn body_drag_gesture_trim_no_modifier_is_slip() {
+        // Trim has no MOVE — clip body = SLIP.
+        assert_eq!(body_drag_gesture(Tool::Trim, false, false), BodyDragGesture::Slip);
+    }
+
+    #[test]
+    fn body_drag_gesture_trim_shift_is_slide() {
+        assert_eq!(body_drag_gesture(Tool::Trim, false, true), BodyDragGesture::Slide);
+    }
+
+    #[test]
+    fn body_drag_gesture_trim_alt_is_slip() {
+        // Alt is Select-only — Trim ignores it, so still SLIP (no-mod path).
+        assert_eq!(body_drag_gesture(Tool::Trim, true, false), BodyDragGesture::Slip);
+    }
+
+    #[test]
+    fn body_drag_gesture_blade_returns_none() {
+        // Blade tool isn't a body-drag origin — no gesture starts.
+        assert_eq!(body_drag_gesture(Tool::Blade, false, false), BodyDragGesture::None);
+        assert_eq!(body_drag_gesture(Tool::Blade, true, true), BodyDragGesture::None);
+    }
 
     fn make_video_clip_at(timeline_in: i64, timeline_out: i64) -> klipp_timeline::Clip {
         klipp_timeline::Clip::media(
