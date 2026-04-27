@@ -176,6 +176,44 @@ impl OfxPlugin {
     }
 }
 
+impl Drop for OfxPlugin {
+    fn drop(&mut self) {
+        // Mirror the OFX plugin lifecycle: kOfxActionLoad ran during
+        // initialise_plugin, so the matching kOfxActionUnload runs
+        // here. Plugins use Unload to release persistent resources
+        // (CUDA contexts, license checks, GL caches); skipping it
+        // leaks across host tear-down. Closes CODE_AUDIT FFI-2.
+        //
+        // raw is only null if construction failed before the field
+        // was set; in normal flow it's either a Box::into_raw'd
+        // pointer (test injection) or the dylib's plugin entry.
+        if !self.raw.is_null() {
+            let raw = unsafe { &*self.raw };
+            if self.initialized {
+                if let Some(main_entry) = raw.main_entry {
+                    let _ = unsafe {
+                        main_entry(
+                            b"OfxActionUnload\0".as_ptr() as *const c_char,
+                            std::ptr::null(),
+                            std::ptr::null(),
+                            std::ptr::null_mut(),
+                        )
+                    };
+                }
+            }
+            // Test-injected plugins took ownership of the raw struct
+            // via Box::into_raw at registration time; reclaim the
+            // Box so it deallocates rather than leaking. Real plugins
+            // (Some(_lib)) own their raw pointer through the dylib's
+            // static storage — Drop on the Arc<Library> below
+            // releases everything. Closes CODE_AUDIT FFI-1.
+            if self._lib.is_none() {
+                let _ = unsafe { Box::from_raw(self.raw as *mut ffi::OfxPluginRaw) };
+            }
+        }
+    }
+}
+
 // ── fetchSuite dispatcher ────────────────────────────────────────────
 
 unsafe extern "C" fn fetch_suite_fn(

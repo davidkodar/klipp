@@ -549,4 +549,103 @@ mod tests {
 
         println!("CUDA GPU render pipeline test PASSED: host→device→plugin→device→host");
     }
+
+    // ─────────────────────────────────────────────────────────────────
+    // FFI-1 + FFI-2: OfxPlugin Drop must call OfxActionUnload on
+    // initialised plugins and reclaim the Box for test-injected raw
+    // pointers. Without this, plugins that allocate persistent
+    // resources during Load (CUDA contexts, license tokens, GL
+    // caches) leak across host tear-down, and register_raw_plugin
+    // leaks a Box::into_raw'd OfxPluginRaw on every test.
+    // ─────────────────────────────────────────────────────────────────
+
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static UNLOAD_COUNT: AtomicU32 = AtomicU32::new(0);
+
+    static COUNTER_PLUGIN_ID: &[u8] = b"com.klipp.test.unload_counter\0";
+
+    unsafe extern "C" fn counter_main_entry(
+        action: *const c_char,
+        _handle: *const c_void,
+        _in_args: *const c_void,
+        _out_args: *mut c_void,
+    ) -> c_int {
+        let action_str = CStr::from_ptr(action).to_string_lossy();
+        if action_str.as_ref() == "OfxActionUnload" {
+            UNLOAD_COUNT.fetch_add(1, Ordering::SeqCst);
+        }
+        // Load + Describe + DescribeInContext + Unload: REPLY_DEFAULT
+        // is accepted by the host as success for all of them.
+        K_OFX_STAT_REPLY_DEFAULT
+    }
+
+    fn make_counter_plugin_raw() -> OfxPluginRaw {
+        OfxPluginRaw {
+            plugin_api: PLUGIN_API.as_ptr() as *const c_char,
+            api_version: 1,
+            plugin_identifier: COUNTER_PLUGIN_ID.as_ptr() as *const c_char,
+            plugin_version_major: 1,
+            plugin_version_minor: 0,
+            set_host: Some(set_host_fn),
+            main_entry: Some(counter_main_entry),
+        }
+    }
+
+    #[test]
+    fn drop_calls_ofx_action_unload_on_initialised_plugin() {
+        let _guard = lock_tests();
+        UNLOAD_COUNT.store(0, Ordering::SeqCst);
+        {
+            let mut host = OfxHostRuntime::new();
+            let idx = host.register_raw_plugin(make_counter_plugin_raw());
+            host.initialise_plugin(idx).expect("init");
+            // host drops here at end of scope.
+        }
+        assert_eq!(
+            UNLOAD_COUNT.load(Ordering::SeqCst),
+            1,
+            "OfxPlugin::drop must invoke main_entry(OfxActionUnload) exactly \
+             once on an initialised plugin (FFI-2)"
+        );
+    }
+
+    #[test]
+    fn drop_skips_unload_for_uninitialised_plugin() {
+        // If the host failed to initialise a plugin (Load returned
+        // an error), the plugin never saw kOfxActionLoad — calling
+        // Unload on it would be an asymmetric ABI call. Drop must
+        // skip Unload when initialized==false. The Box-reclaim still
+        // runs (otherwise FFI-1's leak persists).
+        let _guard = lock_tests();
+        UNLOAD_COUNT.store(0, Ordering::SeqCst);
+        {
+            let mut host = OfxHostRuntime::new();
+            let _idx = host.register_raw_plugin(make_counter_plugin_raw());
+            // Skip initialise_plugin — leave initialized=false.
+        }
+        assert_eq!(
+            UNLOAD_COUNT.load(Ordering::SeqCst),
+            0,
+            "OfxPlugin::drop must NOT invoke OfxActionUnload on an \
+             uninitialised plugin (Load was never called)"
+        );
+    }
+
+    #[test]
+    fn drop_runs_for_test_injected_plugin_without_panic() {
+        // The Box::into_raw at register_raw_plugin used to leak the
+        // OfxPluginRaw on every test. Drop now reclaims the Box via
+        // Box::from_raw when _lib is None. We can't directly assert
+        // "leak gone" without leak-detection infra, but we can assert
+        // that Drop runs to completion without panicking — the same
+        // path that would corrupt memory if from_raw were applied to
+        // a non-Box pointer (closes FFI-1).
+        let _guard = lock_tests();
+        for _ in 0..5 {
+            let mut host = OfxHostRuntime::new();
+            host.register_raw_plugin(make_counter_plugin_raw());
+            // Drop on each iteration — five clean teardowns.
+        }
+    }
 }
