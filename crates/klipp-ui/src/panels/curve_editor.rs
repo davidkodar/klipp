@@ -519,8 +519,8 @@ impl CurveEditorPanel {
         theme: &KlippTheme,
     ) {
         let painter = ui.painter();
-        let grid_stroke = Stroke::new(0.5_f32, Color32::from_rgba_premultiplied(40, 40, 50, 128));
-        let grid_stroke_major = Stroke::new(0.8_f32, Color32::from_rgba_premultiplied(50, 50, 65, 180));
+        let grid_stroke = Stroke::new(0.5_f32, theme.border);
+        let grid_stroke_major = Stroke::new(0.8_f32, theme.border_light);
         let label_font = egui::FontId::proportional(9.0);
 
         // Clip the painter to graph rect
@@ -754,7 +754,7 @@ impl CurveEditorPanel {
 
             // Draw bezier tangent handles if this keyframe is selected
             if Some(i) == selected_kf_idx {
-                let handle_color = Color32::from_rgb(0x60, 0xa0, 0xe0);
+                let handle_color = theme.marker_info;
                 let handle_stroke = Stroke::new(1.0_f32, handle_color);
 
                 // In-tangent
@@ -779,7 +779,7 @@ impl CurveEditorPanel {
             // Draw diamond
             let is_selected = Some(i) == selected_kf_idx;
             let diamond_color = if is_selected {
-                Color32::WHITE
+                theme.text_primary
             } else {
                 theme.accent
             };
@@ -793,7 +793,7 @@ impl CurveEditorPanel {
             painter.add(egui::Shape::convex_polygon(
                 diamond,
                 diamond_color,
-                Stroke::new(0.8_f32, Color32::from_rgb(0x40, 0x40, 0x40)),
+                Stroke::new(0.8_f32, theme.border),
             ));
         }
 

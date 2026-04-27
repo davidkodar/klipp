@@ -45,6 +45,7 @@ pub const PIXELS_PER_FRAME: f32 = 8.0;
 pub fn jog_wheel(
     ui: &mut egui::Ui,
     state: &mut JogWheelState,
+    theme: &crate::theme::KlippTheme,
     radius: f32,
 ) -> i32 {
     let size = egui::vec2(radius * 2.0, radius * 2.0);
@@ -56,16 +57,16 @@ pub fn jog_wheel(
 
     // Outer ring — amber when dragging, muted grey otherwise.
     let ring_color = if is_active {
-        egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
+        theme.accent
     } else if response.hovered() {
-        egui::Color32::from_gray(140)
+        theme.text_secondary
     } else {
-        egui::Color32::from_gray(80)
+        theme.border_light
     };
     painter.circle_stroke(center, radius, egui::Stroke::new(2.0_f32, ring_color));
 
     // Inner fill — dark disc so the tick marks show up cleanly.
-    painter.circle_filled(center, radius - 3.0, egui::Color32::from_gray(30));
+    painter.circle_filled(center, radius - 3.0, theme.bg_raised);
 
     // Tick marks at 12 clock positions.
     for i in 0..12 {
@@ -75,7 +76,7 @@ pub fn jog_wheel(
         let dir = egui::vec2(angle.sin(), -angle.cos());
         painter.line_segment(
             [center + dir * inner, center + dir * outer],
-            egui::Stroke::new(1.0_f32, egui::Color32::from_gray(100)),
+            egui::Stroke::new(1.0_f32, theme.border_light),
         );
     }
 
@@ -85,7 +86,7 @@ pub fn jog_wheel(
         egui::Align2::CENTER_CENTER,
         "JOG",
         egui::FontId::proportional(9.0),
-        egui::Color32::from_gray(120),
+        theme.text_dim,
     );
 
     // ── Drag → frame-step conversion ──

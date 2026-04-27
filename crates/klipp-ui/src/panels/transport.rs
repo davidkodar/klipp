@@ -181,6 +181,7 @@ impl TransportBar {
             let jog_frames = crate::widgets::jog_wheel::jog_wheel(
                 ui,
                 &mut state.jog_wheel_state,
+                theme,
                 16.0,
             );
             if jog_frames != 0 {

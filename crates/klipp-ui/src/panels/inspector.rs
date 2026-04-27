@@ -81,7 +81,7 @@ pub fn show_color_and_luts(
             ui.horizontal(|ui| {
                 ui.add_space(12.0);
                 ui.label(egui::RichText::new("Input Color Space").size(10.0)
-                    .color(egui::Color32::from_rgb(0x90, 0x90, 0xa0)));
+                    .color(theme.text_dim));
             });
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -124,7 +124,7 @@ pub fn show_color_and_luts(
             if ui.button(
                 egui::RichText::new("Open Color Panel  (C)")
                     .size(11.0)
-                    .color(egui::Color32::from_rgb(0xe8, 0xa0, 0x20)),
+                    .color(theme.accent),
             ).clicked() {
                 cmds.push(AppCommand::ToggleColorPanel);
             }
@@ -147,9 +147,9 @@ pub fn show_color_and_luts(
                     cmds.push(AppCommand::SetGlobalLutEnabled(enabled));
                 }
                 let label_color = if state.global_lut_enabled {
-                    egui::Color32::from_rgb(100, 200, 120)
+                    theme.marker_success
                 } else {
-                    egui::Color32::from_rgb(120, 120, 130)
+                    theme.text_dim
                 };
                 ui.colored_label(label_color, &filename);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -236,9 +236,9 @@ pub fn show_color_and_luts(
                             );
                             // Background: subtle highlight for active, hover for others
                             if is_active {
-                                ui.painter().rect_filled(rect, 2.0, egui::Color32::from_rgba_premultiplied(232, 160, 32, 30));
+                                ui.painter().rect_filled(rect, 2.0, theme.accent_subtle);
                             } else if resp.hovered() {
-                                ui.painter().rect_filled(rect, 2.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 12));
+                                ui.painter().rect_filled(rect, 2.0, theme.bg_hover);
                             }
                             // LUT preview thumbnail (lazy-loaded only when visible)
                             let thumb_rect = egui::Rect::from_min_size(
@@ -254,14 +254,14 @@ pub fn show_color_and_luts(
                                         egui::Color32::WHITE,
                                     );
                                     // Subtle border around thumbnail
-                                    ui.painter().rect_stroke(thumb_rect, 1.0, egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(60, 60, 65)));
+                                    ui.painter().rect_stroke(thumb_rect, 1.0, egui::Stroke::new(0.5_f32, theme.border));
                                 }
                             }
                             // Text: white for active, dim for others
                             let text_color = if is_active {
-                                egui::Color32::from_rgb(255, 255, 255)
+                                theme.text_primary
                             } else {
-                                egui::Color32::from_rgb(180, 180, 190)
+                                theme.text_dim
                             };
                             let text_x = rect.min.x + thumb_size + 12.0;
                             // Active indicator dot
@@ -269,7 +269,7 @@ pub fn show_color_and_luts(
                                 ui.painter().circle_filled(
                                     egui::pos2(text_x, rect.center().y),
                                     3.0,
-                                    egui::Color32::from_rgb(232, 160, 32),
+                                    theme.accent,
                                 );
                             }
                             ui.painter().text(
