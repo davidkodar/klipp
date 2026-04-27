@@ -279,13 +279,28 @@ fn flog_eotf_scalar(c: f32) -> f32 {
     return (pow(10.0, (s - 0.790453) / 0.344676) - 0.064829) / a;
 }
 
-// Apple Log inverse OETF (iPhone 15 Pro+, Apple's published formula).
+// Apple Log inverse OETF (iPhone 15 Pro+) — Apple Log Profile,
+// 2023 whitepaper. Three-segment curve with constants:
+//   R0=-0.05641088, RT=0.01, C=47.28711236,
+//   BETA=0.00964052, GAMMA=0.08550479, DELTA=0.69336945.
+// Pt (toe-to-log transition in V space) = C*(RT-R0)^2 ≈ 0.20859.
+// Mirrors klipp_color::camera_log::apple_log_to_linear exactly so
+// the GPU and CPU paths produce identical scene-linear values.
+// Previous body was a placeholder scaffold (s/357.04167 toe,
+// 2^((s-0.47132)/0.05)*0.01 log) — wrong by ~13× at mid-gray.
 fn apple_log_eotf_scalar(c: f32) -> f32 {
     let s = clamp(c, 0.0, 1.0);
-    if s < 0.1 {
-        return s / 357.04167;
+    let r0: f32 = -0.05641088;
+    let rt: f32 = 0.01;
+    let c_const: f32 = 47.28711236;
+    let beta: f32 = 0.00964052;
+    let gamma: f32 = 0.08550479;
+    let delta: f32 = 0.69336945;
+    let pt: f32 = c_const * (rt - r0) * (rt - r0);
+    if s < pt {
+        return sqrt(s / c_const) + r0;
     }
-    return pow(2.0, (s - 0.47132) / 0.05) * 0.01;
+    return pow(2.0, (s - delta) / gamma) - beta;
 }
 
 // Nikon N-Log inverse OETF.

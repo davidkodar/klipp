@@ -137,10 +137,39 @@ pub fn flog_to_linear(c: f32) -> f32 {
 }
 
 /// Apple Log inverse OETF (iPhone 15 Pro+).
+///
+/// Three-segment curve per the Apple Log Profile whitepaper (2023):
+///   V  < 0   → L = R₀                  (negative anchor, sensor toe)
+///   V  < Pₜ  → L = √(V/C) + R₀         (quadratic toe matching the
+///                                       forward V = C·(L−R₀)²)
+///   V ≥ Pₜ  → L = 2^((V−δ)/γ) − β      (log segment)
+///
+/// Constants pulled directly from Apple's whitepaper. `Pₜ` derives
+/// from `C·(Rₜ−R₀)²` so the toe and log pieces meet at L = Rₜ = 0.01
+/// exactly even if any constant is retuned later. Mirrors the
+/// implementation already present at `transforms.rs::log_to_linear`
+/// for `LogFormat::AppleLog` — keeping the two in lock-step.
+///
+/// History: previous body was `s/357.04167` toe + `2^((s−0.47132)/0.05)·0.01`
+/// log — placeholder constants from an early scaffold pass that
+/// never got the real numbers. Decoded mid-gray to ≈0.015 instead
+/// of 0.18 (off by 13×). Caught in #57 by a parity test against
+/// the whitepaper spec values.
 #[inline]
 pub fn apple_log_to_linear(c: f32) -> f32 {
-    let s = c.clamp(0.0, 1.0);
-    if s < 0.1 { s / 357.041_67 } else { 2.0_f32.powf((s - 0.471_32) / 0.05) * 0.01 }
+    const R0:    f32 = -0.05641088;
+    const RT:    f32 =  0.01;
+    const C:     f32 = 47.28711236;
+    const BETA:  f32 =  0.00964052;
+    const GAMMA: f32 =  0.08550479;
+    const DELTA: f32 =  0.69336945;
+    const PT:    f32 = C * (RT - R0) * (RT - R0);
+    let v = c.clamp(0.0, 1.0);
+    if v < PT {
+        (v / C).sqrt() + R0
+    } else {
+        2.0_f32.powf((v - DELTA) / GAMMA) - BETA
+    }
 }
 
 /// Nikon N-Log inverse OETF.
@@ -667,6 +696,51 @@ mod tests {
         // hold pure BT.2020 primaries without going negative or > 1).
         let out = primaries_to_bt709([1.0, 0.0, 0.0], ColorPrimaries::Bt2020);
         assert!(out[0] > 1.0, "BT.2020 red → BT.709 should overshoot, got {:?}", out);
+    }
+
+    #[test]
+    fn apple_log_matches_2023_profile_spec() {
+        // Reference values for Apple Log Profile (2023 whitepaper):
+        //   V  < 0   → L = R₀
+        //   V  < Pₜ  → L = √(V/C) + R₀     (toe segment)
+        //   V ≥ Pₜ  → L = 2^((V−δ)/γ) − β  (log segment)
+        // with R₀=-0.05641088, Rₜ=0.01, C=47.28711236,
+        //      β=0.00964052, γ=0.08550479, δ=0.69336945.
+        // Pₜ = C·(Rₜ−R₀)² ≈ 0.20859.
+        //
+        // The reference values below were computed from those
+        // constants by hand and double-checked against the
+        // `transforms.rs::log_to_linear(LogFormat::AppleLog, …)`
+        // path that already had the correct decoder.
+        //
+        // The previous `apple_log_to_linear` was a placeholder that
+        // produced ~0.0149 at V=0.5 (where the spec says ≈0.20).
+        // That bug silently corrupted every iPhone 15 Pro AppleLog
+        // clip flowing through the `ColorTransfer::AppleLog` decoder
+        // path — visible as a low-contrast / muddy-mid look that
+        // colourists would wrongly try to grade out instead of
+        // identifying as a bad IDT.
+        let cases: &[(f32, f32, &str)] = &[
+            // V    expected L                description
+            (0.0,    -0.05641088,             "code 0 → R₀ (toe anchor)"),
+            (0.1,    -0.01043,                "toe segment ≈ √(V/C)+R₀"),
+            (0.488,   0.18,                   "≈18% mid-gray reference"),
+            (0.5,     0.19883,                "log segment, just past Pₜ"),
+            (0.7,     1.04443,                "log segment, > 1.0 highlight"),
+            (1.0,    12.00427,                "max code, full HDR highlight"),
+        ];
+        for &(v, expected, desc) in cases {
+            let got = apple_log_to_linear(v);
+            // 0.005 absolute tolerance — well below mid-grey
+            // perceptual threshold; large enough to absorb any
+            // tiny f32 drift between the reference implementation
+            // and ours.
+            let diff = (got - expected).abs();
+            assert!(
+                diff < 0.005,
+                "Apple Log V={v}: expected L≈{expected} ({desc}), got {got}, diff={diff}",
+            );
+        }
     }
 
     #[test]
