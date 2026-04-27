@@ -20391,8 +20391,24 @@ impl KlippApp {
                 //     case falls back to the previous CPU-only path.
                 //     Cuts a 4K HDR transcode from ~30 min to ~3 min
                 //     on a 4080.
-                let nvenc_vf = format!("scale_cuda=-2:{target_height}");
-                let cpu_vf_sdr = format!("scale=-2:{target_height}");
+                // CRITICAL: `format=yuv420p` forces 8-bit 4:2:0 output
+                // even when the source is 10-bit. Without this, a 10-bit
+                // SDR source (e.g. Sony S-Log3 HEVC Main 10 with BT.709
+                // tags) propagated bit depth through `scale_cuda` →
+                // `h264_nvenc` produced H.264 Hi10P, which NVDEC on
+                // every consumer NVIDIA GPU rejects with "Bit depth 10
+                // with this chroma format is not supported". The skim
+                // then fell back to software decode, defeating its
+                // entire purpose. Forcing yuv420p makes the skim
+                // unambiguously NVDEC-decodable on playback.
+                //
+                // Skims are a browser-preview / hover-scrub artefact,
+                // not a grading source — 8-bit precision is the right
+                // trade. A future iteration could auto-detect 10-bit
+                // input and use `hevc_nvenc -profile:v main10` instead
+                // for users who want 10-bit-preserving skims.
+                let nvenc_vf = format!("scale_cuda=-2:{target_height}:format=yuv420p");
+                let cpu_vf_sdr = format!("scale=-2:{target_height},format=yuv420p");
                 let qp_str = skim_quality.to_string();
                 let start_ss = (resume_from_segment * SEGMENT_DURATION_SECS).to_string();
                 let seg_time = SEGMENT_DURATION_SECS.to_string();
