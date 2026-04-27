@@ -27,6 +27,77 @@ use std::sync::{Arc, Mutex, RwLock};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+/// Append a single message to klipp-debug.log (best-effort,
+/// async-signal-safe-ish: open + write + close, no allocator
+/// surprises). Used by both the panic hook and the native
+/// signal handler so a hard crash still leaves a trace.
+fn write_crash_marker(msg: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("klipp-debug.log")?;
+    writeln!(f, "[CRASH-MARKER] {msg}")?;
+    f.flush()?;
+    Ok(())
+}
+
+/// Install handlers for SIGSEGV / SIGABRT / SIGBUS / SIGILL.
+/// On a native crash we write a minimal marker (signal name +
+/// best-effort backtrace from the `backtrace` crate is *not* used
+/// here — allocator may be wedged) into klipp-debug.log, then
+/// re-raise so the OS coredump path still runs. Without this a
+/// segfault leaves zero trace.
+fn install_native_crash_handler() {
+    // Note: writing inside a signal handler is technically
+    // restricted to async-signal-safe calls. `write(2)` and
+    // `open(2)` are both signal-safe; `std::fs::OpenOptions`
+    // boils down to those, but its error path can allocate.
+    // For our purposes (debug build aiding diagnosis), the
+    // best-effort write is fine even if it occasionally
+    // double-faults; the raised default handler still runs.
+    extern "C" fn handler(signum: libc::c_int) {
+        let name = match signum {
+            libc::SIGSEGV => "SIGSEGV",
+            libc::SIGABRT => "SIGABRT",
+            libc::SIGBUS  => "SIGBUS",
+            libc::SIGILL  => "SIGILL",
+            libc::SIGFPE  => "SIGFPE",
+            _ => "SIG?",
+        };
+        // Async-signal-safe: write(2) directly to a path the
+        // process can open in the handler. Truncated info but
+        // enough to know "the app hit a native crash."
+        let msg = format!(
+            "[CRASH-MARKER] NATIVE_CRASH signal={name} ({signum}) — process aborting\n"
+        );
+        unsafe {
+            let path = b"klipp-debug.log\0";
+            let fd = libc::open(
+                path.as_ptr() as *const _,
+                libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT,
+                0o644,
+            );
+            if fd >= 0 {
+                let _ = libc::write(fd, msg.as_ptr() as *const _, msg.len());
+                let _ = libc::close(fd);
+            }
+            // Restore default disposition and re-raise so the OS
+            // generates a core dump and the parent shell sees the
+            // expected exit status.
+            libc::signal(signum, libc::SIG_DFL);
+            libc::raise(signum);
+        }
+    }
+    unsafe {
+        libc::signal(libc::SIGSEGV, handler as libc::sighandler_t);
+        libc::signal(libc::SIGABRT, handler as libc::sighandler_t);
+        libc::signal(libc::SIGBUS,  handler as libc::sighandler_t);
+        libc::signal(libc::SIGILL,  handler as libc::sighandler_t);
+        libc::signal(libc::SIGFPE,  handler as libc::sighandler_t);
+    }
+}
+
 fn main() -> Result<()> {
     // Anchor T0 for STARTUP_PERF measurements as the very first thing in main.
     mark_process_start();
@@ -86,6 +157,15 @@ fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
+    // Force RUST_BACKTRACE on so the panic hook below carries a real
+    // stack — without this, release builds emit "Backtrace::capture
+    // is disabled" and the log line above is useless. Set BEFORE the
+    // panic hook installs so the first capture sees it.
+    if std::env::var_os("RUST_BACKTRACE").is_none() {
+        // SAFETY: main thread, before any threads spawn.
+        unsafe { std::env::set_var("RUST_BACKTRACE", "full"); }
+    }
+
     // Route Rust panics (from any thread) into klipp-debug.log via tracing.
     // Without this, `panic = "abort"` + stripped release symbols makes
     // background-thread panics invisible — stderr goes nowhere when the app
@@ -108,8 +188,21 @@ fn main() -> Result<()> {
             location = %location,
             "PANIC: {message}\nbacktrace:\n{backtrace}"
         );
+        // Belt-and-braces: also write directly to klipp-debug.log in
+        // case tracing's writer is wedged (panic mid-log-flush etc.).
+        let _ = write_crash_marker(&format!(
+            "PANIC thread={thread_name} at {location}: {message}\n{backtrace}\n"
+        ));
         default_hook(panic_info);
     }));
+
+    // Native crash handler — catches SIGSEGV / SIGABRT / SIGBUS /
+    // SIGILL that hit C-side code (FFmpeg, NVDEC, wgpu drivers).
+    // The Rust panic hook above does not see those because they
+    // come in as POSIX signals before any unwinding. Without this,
+    // a hard FFmpeg crash leaves zero trace in klipp-debug.log and
+    // looks like the app "just disappeared."
+    install_native_crash_handler();
 
     mark("main entered (logging up)");
     info!("Klipp starting up");

@@ -456,6 +456,12 @@ pub struct AppState {
     // Source viewer
     pub source_media_id: Option<MediaId>,
     pub source_playhead: Timecode,
+    /// Last wall-clock when the source-viewer scrub bar dispatched
+    /// a `SeekSource` to the engine. Used to throttle drag-fire to
+    /// ~30 Hz so the engine's decoder thread isn't pinned with
+    /// per-UI-frame demux + BSF + seek work that the user can't
+    /// perceive at sub-33 ms granularity anyway.
+    pub source_seek_dispatch_at: Option<std::time::Instant>,
     /// First-frame texture for the currently-loaded source clip. The
     /// `MediaId` is paired with the texture so a stale frame from a
     /// previous load is dropped the moment the user switches clips,
@@ -558,6 +564,13 @@ pub struct AppState {
     pub browser_skim_texture: Option<egui::TextureHandle>,
     pub browser_skim_media_id: Option<MediaId>,
     pub skim_transcoding: std::collections::HashSet<MediaId>,
+    /// In-flight skim transcodes keyed by output path. The Vec
+    /// holds every MediaId that wants notifying when this output
+    /// completes — multiple MediaIds (e.g. project-pool path vs
+    /// file-browser absolute path) can canonicalize to the same
+    /// source file and would otherwise both spawn ffmpeg jobs that
+    /// race on the shared parts/ dir.
+    pub skim_in_flight_paths: std::collections::HashMap<std::path::PathBuf, Vec<MediaId>>,
     /// Active skim transcode progress: (filename, progress 0.0..1.0)
     pub skim_transcode_status: Option<(String, f32)>,
     /// When the last skim transcode finished (for "Done" display)
@@ -2029,6 +2042,7 @@ impl Default for AppState {
             speed_dialog_reverse: false,
             source_media_id: None,
             source_playhead: Timecode::zero(),
+            source_seek_dispatch_at: None,
             source_video_texture: None,
             source_playback: PlaybackState::Idle,
             source_live_texture: None,
@@ -2060,6 +2074,7 @@ impl Default for AppState {
             browser_skim_texture: None,
             browser_skim_media_id: None,
             skim_transcoding: std::collections::HashSet::new(),
+            skim_in_flight_paths: std::collections::HashMap::new(),
             skim_transcode_status: None,
             skim_transcode_done_at: None,
             browser_skim_pending: None,

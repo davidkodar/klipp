@@ -1840,20 +1840,19 @@ fn decode_thread_main(
             return;
         }
 
+        // Drain the entire pending queue first, coalescing
+        // SeekTo to the last one. A scrub-drag can pile dozens
+        // of seeks onto this thread; processing each one means a
+        // full avformat seek + decode preroll (~50 ms on 4K
+        // HEVC), pinning the CPU and stalling the visible
+        // playhead behind the cursor by hundreds of ms. Only the
+        // newest scrub target matters.
+        let mut latest_seek: Option<f64> = None;
+        let mut got_stop = false;
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 DecodeCommand::SeekTo(secs) => {
-                    let ts = (secs * 1_000_000.0) as i64;
-                    debug!("decode_thread: seek to {secs:.3}s (ts={ts} us)");
-                    drop(packets);
-                    let _ = format_ctx.seek(ts, ..ts);
-                    packets = format_ctx.packets();
-                    decoder.flush();
-                    frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                    seek_target = Some(secs);
-                    eof_sent = false;
-                    eof_from_demuxer = false;
-                    pending_packet = None;
+                    latest_seek = Some(secs);
                 }
                 DecodeCommand::Pause => paused = true,
                 DecodeCommand::Resume => {
@@ -1861,10 +1860,27 @@ fn decode_thread_main(
                     eof_sent = false;
                 }
                 DecodeCommand::Stop => {
-                    debug!("decode_thread: stop");
-                    return;
+                    got_stop = true;
+                    break;
                 }
             }
+        }
+        if got_stop {
+            debug!("decode_thread: stop");
+            return;
+        }
+        if let Some(secs) = latest_seek {
+            let ts = (secs * 1_000_000.0) as i64;
+            debug!("decode_thread: seek to {secs:.3}s (ts={ts} us)");
+            drop(packets);
+            let _ = format_ctx.seek(ts, ..ts);
+            packets = format_ctx.packets();
+            decoder.flush();
+            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            seek_target = Some(secs);
+            eof_sent = false;
+            eof_from_demuxer = false;
+            pending_packet = None;
         }
 
         if paused {
@@ -1891,28 +1907,38 @@ fn decode_thread_main(
             // retry receive_frame once a slot opens.
             if frame_queue.lock().unwrap_or_else(|e| e.into_inner()).is_full() {
                 std::thread::sleep(Duration::from_millis(1));
-                // Re-check commands (seek/stop) while waiting
-                if let Ok(cmd) = cmd_rx.try_recv() {
+                // Re-check commands (seek/stop) while waiting.
+                // Drain the whole queue and coalesce SeekTo to the
+                // latest, same reasoning as the top-of-loop drain.
+                let mut latest_inner_seek: Option<f64> = None;
+                let mut inner_break = false;
+                let mut inner_return = false;
+                while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
                         DecodeCommand::SeekTo(secs) => {
-                            let ts = (secs * 1_000_000.0) as i64;
-                            debug!("decode_thread: seek to {secs:.3}s (ts={ts} us) (in drain)");
-                            drop(packets);
-                            let _ = format_ctx.seek(ts, ..ts);
-                            packets = format_ctx.packets();
-                            decoder.flush();
-                            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                            seek_target = Some(secs);
-                            eof_sent = false;
-                            eof_from_demuxer = false;
-                            pending_packet = None;
-                            break; // restart outer loop
+                            latest_inner_seek = Some(secs);
                         }
-                        DecodeCommand::Pause => { paused = true; break; }
+                        DecodeCommand::Pause => { paused = true; inner_break = true; break; }
                         DecodeCommand::Resume => { paused = false; eof_sent = false; }
-                        DecodeCommand::Stop => { return; }
+                        DecodeCommand::Stop => { inner_return = true; break; }
                     }
                 }
+                if inner_return { return; }
+                if let Some(secs) = latest_inner_seek {
+                    let ts = (secs * 1_000_000.0) as i64;
+                    debug!("decode_thread: seek to {secs:.3}s (ts={ts} us) (in drain)");
+                    drop(packets);
+                    let _ = format_ctx.seek(ts, ..ts);
+                    packets = format_ctx.packets();
+                    decoder.flush();
+                    frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                    seek_target = Some(secs);
+                    eof_sent = false;
+                    eof_from_demuxer = false;
+                    pending_packet = None;
+                    break; // restart outer loop
+                }
+                if inner_break { break; }
                 continue; // retry drain
             }
 

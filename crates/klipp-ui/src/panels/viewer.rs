@@ -128,6 +128,9 @@ impl ViewerPanel {
             egui::vec2(rect.width(), SCRUB_H),
         );
         self.draw_scrub_bar(ui, state, theme, scrub_rect, viewer_kind, &mut cmds);
+        // (state mut-borrow flows through to scrub_bar so the
+        // playhead can update visually on the same frame the user
+        // drags — without that the bar lags engine seek latency.)
         let playbar_rect = egui::Rect::from_min_size(
             egui::pos2(rect.min.x, scrub_rect.max.y),
             egui::vec2(rect.width(), PLAYBAR_H),
@@ -1241,7 +1244,7 @@ impl ViewerPanel {
     fn draw_scrub_bar(
         &mut self,
         ui: &mut egui::Ui,
-        state: &AppState,
+        state: &mut AppState,
         theme: &KlippTheme,
         rect: egui::Rect,
         viewer_kind: ViewerMode,
@@ -1341,11 +1344,52 @@ impl ViewerPanel {
                         .clamp(0.0, 1.0) as f64;
                     let target_secs = t * dur_secs;
                     let target_tc = klipp_core::Timecode::from_secs_f64(target_secs, rate);
-                    let cmd = match viewer_kind {
-                        ViewerMode::Program => AppCommand::SeekTo(target_tc),
-                        ViewerMode::Source => AppCommand::SeekSource(target_tc),
+                    // Instant visual feedback: paint the playhead at
+                    // the cursor position right now, on this frame,
+                    // instead of waiting for the engine seek to ack.
+                    // Without this, the yellow blob lags the cursor
+                    // by the seek latency and scrubbing feels
+                    // disconnected from the input.
+                    match viewer_kind {
+                        ViewerMode::Source => {
+                            state.source_playhead = target_tc;
+                        }
+                        ViewerMode::Program => {
+                            state.playhead = target_tc;
+                            state.playhead_smooth_secs = target_secs;
+                            state.playhead_anchor = target_tc;
+                            state.playhead_anchor_wall = std::time::Instant::now();
+                        }
+                    }
+                    // Throttle engine dispatch to ~30 Hz. UI repaints
+                    // at 60+ Hz on drag — sending a SeekSource per
+                    // frame piles 30+ events on the engine in a
+                    // single second; even with command coalescing
+                    // each one keeps the decoder thread spinning on
+                    // demux + BSF work and the fan winds up. 33 ms
+                    // is below the human-perception floor for scrub
+                    // smoothness so we lose nothing visually. The
+                    // final position on drag-release always lands
+                    // (gated below).
+                    let now = std::time::Instant::now();
+                    let throttled = match viewer_kind {
+                        ViewerMode::Source => state
+                            .source_seek_dispatch_at
+                            .map(|t| now.duration_since(t) < std::time::Duration::from_millis(33))
+                            .unwrap_or(false),
+                        ViewerMode::Program => false,
                     };
-                    cmds.push(cmd);
+                    let drag_release = resp.drag_stopped();
+                    if !throttled || drag_release || resp.clicked() {
+                        let cmd = match viewer_kind {
+                            ViewerMode::Program => AppCommand::SeekTo(target_tc),
+                            ViewerMode::Source => {
+                                state.source_seek_dispatch_at = Some(now);
+                                AppCommand::SeekSource(target_tc)
+                            }
+                        };
+                        cmds.push(cmd);
+                    }
                 }
             }
         }
@@ -1360,7 +1404,19 @@ impl ViewerPanel {
         viewer_kind: ViewerMode,
         cmds: &mut Vec<AppCommand>,
     ) {
-        let enabled = state.playback != PlaybackState::Idle;
+        // Per-viewer enable. The Source playbar gates on "is a
+        // clip loaded into the source viewer?" because
+        // `state.source_playback` only transitions to Playing /
+        // Paused — it stays Idle until the source engine has
+        // played at least once, which the user can't trigger if
+        // the button itself is disabled (chicken-and-egg). The
+        // Program playbar keeps the existing "engine non-Idle"
+        // gate, which the timeline engine sets to Stopped when a
+        // project loads.
+        let enabled = match viewer_kind {
+            ViewerMode::Source => state.source_media_id.is_some(),
+            ViewerMode::Program => state.playback != PlaybackState::Idle,
+        };
         let fps_val = state.fps.as_f64();
         let cy = rect.center().y;
 
@@ -2941,21 +2997,21 @@ impl ViewerPanel {
             .as_ref()
             .and_then(|(mid, tex)| (Some(*mid) == state.source_media_id).then_some(tex));
         let live_tex = state.source_live_texture.as_ref();
-        // Priority depends on whether the source viewer is playing:
-        //   - Playing  → engine-decoded live frame wins (smooth video).
-        //   - Paused   → legacy thumbnail decoder wins (fast scrubs).
-        //                The engine's 500ms-per-seek decode would
-        //                bottleneck a drag-scrub against a 4K source;
-        //                the legacy `generate_thumbnail_at_size` path
-        //                returns small frames in tens of ms, which is
-        //                what makes scrubbing feel instant. Engine
-        //                seeks still run in the background and update
-        //                `source_live_texture` for the eventual Play.
-        // Browser skim hover overlay always wins on top.
+        // Live texture (engine-decoded) always wins over the cold-
+        // start thumbnail. Previously we deferred to the thumbnail
+        // when paused because the engine seek was 500 ms-per-frame
+        // and the thumbnail decoder was the only thing fast enough
+        // to follow a drag — that's no longer true: seek_source
+        // now dispatches the seek without blocking, and the per-
+        // tick paused-drain pumps the resulting frame into
+        // `source_live_texture` within ~30 ms. Showing the stale
+        // thumbnail during scrub was why "frames don't follow the
+        // progressbar." Browser skim hover overlay still wins on
+        // top of everything.
         let playback_tex = if state.source_playback == klipp_engine::PlaybackState::Playing {
             live_tex.or(committed_tex)
         } else {
-            committed_tex.or(live_tex)
+            live_tex.or(committed_tex)
         };
         let active_tex = state.browser_skim_texture.as_ref().or(playback_tex);
         if let Some(tex) = active_tex {

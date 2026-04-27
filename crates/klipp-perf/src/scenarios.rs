@@ -122,6 +122,8 @@ fn mk_node(id: NodeId, kind: NodeKind, label: &str, params: NodeParams) -> Node 
         enabled: true,
         params,
         keyframes: NodeKeyframeTracks::default(),
+        output_link: None,
+        input_links: Vec::new(),
     }
 }
 

@@ -4126,9 +4126,24 @@ impl KlippApp {
                         if !item.offline && item.path.exists()
                             && !item.video_codec.is_empty()
                         {
+                            // Prefer the skim file (1080p H.264 8-bit
+                            // all-keyframes) over the source for the
+                            // source viewer's persistent decoder.
+                            // Scrubbing 4K HEVC = 50–100 ms per
+                            // NVDEC seek; 1080p H.264 = 5–15 ms — the
+                            // difference between "9 of 10 frames
+                            // missed" on a drag and a frame-perfect
+                            // scrub. Falls back to the original
+                            // source when the skim hasn't built yet.
+                            let decode_path = item
+                                .skim_file
+                                .as_ref()
+                                .filter(|p| p.exists())
+                                .cloned()
+                                .unwrap_or_else(|| item.path.clone());
                             let _ = self.cmd_tx.send(AppCommand::SetSourceMedia {
                                 media_id: *media_id,
-                                path: item.path.clone(),
+                                path: decode_path,
                                 source_rotation: item.source_rotation,
                             });
                         }
@@ -4150,13 +4165,17 @@ impl KlippApp {
                         secs.max(0.0)
                     };
                     self.state.source_playhead = Timecode::from_secs_f64(clamped_secs, tc.rate);
-                    // Two-track refresh: the legacy thumbnail decoder
-                    // produces a small first-frame texture immediately,
-                    // and we forward the seek to the engine so its
-                    // persistent decoder updates `source_frame_buffer`
-                    // (the path the viewer actually paints from once the
-                    // engine has produced a frame).
-                    self.start_source_frame_decode_at(mid, clamped_secs);
+                    // Engine-only path: the persistent NVDEC decoder
+                    // bound by `SetSourceMedia` is now responsible for
+                    // every seek's decoded frame (lands in
+                    // `source_frame_buffer`). The legacy
+                    // `start_source_frame_decode_at` was spawning a
+                    // SOFTWARE-decode thread per SeekSource — at
+                    // 30 Hz scrub-dispatch that pinned every CPU
+                    // core in fresh-ffmpeg-context-open + software
+                    // HEVC decode + swscale, starving the timeline
+                    // engine to ~1 frame per 3 s. Removed; the
+                    // engine seek alone produces the frame.
                     let _ = self.cmd_tx.send(AppCommand::SeekSource(
                         Timecode::from_secs_f64(clamped_secs, tc.rate),
                     ));
@@ -20085,6 +20104,8 @@ impl KlippApp {
             if item.skim_file.as_ref().is_some_and(|p| p.exists()) {
                 return;
             }
+            // Dedupe by output path is done after `skim_path` is
+            // computed below — see the `skim_in_flight_paths` check.
             let source_path = item.path.clone();
             let duration_secs = item.duration.to_secs_f64();
             let filename = item.filename.clone();
@@ -20149,6 +20170,25 @@ impl KlippApp {
                 return;
             }
 
+            // Already in-flight for this output path? Register as a
+            // waiter and let the originating job's complete event
+            // populate our `item.skim_file` too. Two MediaIds (e.g.
+            // project pool path vs file browser absolute path) can
+            // canonicalize to the same source file and would
+            // otherwise both spawn ffmpeg jobs that race on the
+            // shared parts/ directory.
+            if let Some(waiters) = self.state.skim_in_flight_paths.get_mut(&skim_path) {
+                if !waiters.contains(&media_id) {
+                    waiters.push(media_id);
+                    self.state.skim_transcoding.insert(media_id);
+                    tracing::info!(
+                        "Skim transcode dedupe: {:?} already in flight, registered MediaId({}) as waiter",
+                        skim_path, media_id,
+                    );
+                }
+                return;
+            }
+
             // No cache — skip fresh generation if preference is off
             let skim_enabled = self.state.project_auto_skim
                 .unwrap_or(self.prefs.editing.auto_generate_skim);
@@ -20158,6 +20198,7 @@ impl KlippApp {
             }
 
             self.state.skim_transcoding.insert(media_id);
+            self.state.skim_in_flight_paths.insert(skim_path.clone(), vec![media_id]);
             self.state.skim_transcode_status = Some((filename.clone(), 0.0));
 
             // Wrap the transcode in a SubprocessJob so the global
@@ -20552,6 +20593,7 @@ impl KlippApp {
                         job.mark_done();
                         let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
                             media_id,
+                            path: skim_path.clone(),
                             error: "no segments produced".into(),
                         });
                         return;
@@ -20573,6 +20615,7 @@ impl KlippApp {
                         job.mark_done();
                         let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
                             media_id,
+                            path: skim_path.clone(),
                             error: format!("concat list write: {e}"),
                         });
                         return;
@@ -20684,6 +20727,7 @@ impl KlippApp {
                                 let _ = std::fs::remove_file(&concat_partial);
                                 let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
                                     media_id,
+                                    path: skim_path.clone(),
                                     error: format!("publish rename failed: {e}"),
                                 });
                             } else {
@@ -20724,6 +20768,7 @@ impl KlippApp {
                             let _ = std::fs::remove_file(&concat_partial);
                             let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
                                 media_id,
+                                path: skim_path.clone(),
                                 error: format!("concat ffmpeg exited with {s}"),
                             });
                         }
@@ -20731,6 +20776,7 @@ impl KlippApp {
                             let _ = std::fs::remove_file(&concat_partial);
                             let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
                                 media_id,
+                                path: skim_path.clone(),
                                 error: format!("concat ffmpeg failed: {e}"),
                             });
                         }
@@ -20749,6 +20795,7 @@ impl KlippApp {
                         Err(e) => {
                             let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
                                 media_id,
+                                path: skim_path.clone(),
                                 error: format!("Failed to run ffmpeg: {}", e),
                             });
                         }
@@ -20758,6 +20805,7 @@ impl KlippApp {
                             // for the next attempt to resume.
                             let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
                                 media_id,
+                                path: skim_path.clone(),
                                 error: format!("ffmpeg exited with {s}"),
                             });
                         }
@@ -20825,29 +20873,58 @@ impl KlippApp {
                     self.state.skim_transcode_status = Some((filename, progress));
                 }
                 AppEvent::SkimTranscodeComplete { media_id, path } => {
-                    self.state.skim_transcoding.remove(&media_id);
+                    // Wire skim_file for the originating MediaId AND
+                    // every dedupe waiter that registered against the
+                    // same output path. Without this, a second
+                    // MediaId pointing to the same source file (e.g.
+                    // project pool path vs file browser absolute
+                    // path) would never learn the cache file exists
+                    // and would keep falling back to live source
+                    // decode on hover.
+                    let waiters = self.state.skim_in_flight_paths
+                        .remove(&path)
+                        .unwrap_or_else(|| vec![media_id]);
+                    for mid in &waiters {
+                        self.state.skim_transcoding.remove(mid);
+                        if let Some(item) = self.state.media_pool.get_mut(mid) {
+                            item.skim_file = Some(path.clone());
+                        }
+                    }
                     if self.state.skim_transcoding.is_empty() {
                         self.state.skim_transcode_status = None;
                         self.state.skim_transcode_done_at = Some(std::time::Instant::now());
-                    }
-                    if let Some(item) = self.state.media_pool.get_mut(&media_id) {
-                        item.skim_file = Some(path.clone());
                     }
                     self.sync_media_pool_to_engine();
                     let filename = self.state.media_pool.get(&media_id)
                         .map(|m| m.filename.clone())
                         .unwrap_or_default();
-                    tracing::info!("Skim transcode complete for {}: {}", filename, path.display());
+                    tracing::info!(
+                        "Skim transcode complete for {}: {} ({} media id(s) wired)",
+                        filename, path.display(), waiters.len(),
+                    );
                 }
-                AppEvent::SkimTranscodeFailed { media_id, error } => {
-                    self.state.skim_transcoding.remove(&media_id);
+                AppEvent::SkimTranscodeFailed { media_id, path, error } => {
+                    // Drop the originator AND any dedupe waiters
+                    // from `skim_transcoding`. They'll re-request
+                    // naturally on the next hover/import; we don't
+                    // auto-respawn here because the same race could
+                    // re-trigger.
+                    let waiters = self.state.skim_in_flight_paths
+                        .remove(&path)
+                        .unwrap_or_else(|| vec![media_id]);
+                    for mid in &waiters {
+                        self.state.skim_transcoding.remove(mid);
+                    }
                     if self.state.skim_transcoding.is_empty() {
                         self.state.skim_transcode_status = None;
                     }
                     let filename = self.state.media_pool.get(&media_id)
                         .map(|m| m.filename.clone())
                         .unwrap_or_default();
-                    tracing::warn!("Skim transcode failed for {}: {}", filename, error);
+                    tracing::warn!(
+                        "Skim transcode failed for {}: {} (cleared {} waiter(s))",
+                        filename, error, waiters.len(),
+                    );
                 }
                 AppEvent::BrowserSkimFrameReady { media_id, rgba, width, height, target } => {
                     if !rgba.is_empty() && width > 0 && height > 0 {

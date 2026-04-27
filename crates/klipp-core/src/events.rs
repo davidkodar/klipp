@@ -1652,7 +1652,7 @@ pub enum AppEvent {
     // Skim transcode
     SkimTranscodeProgress { media_id: MediaId, progress: f32 },
     SkimTranscodeComplete { media_id: MediaId, path: PathBuf },
-    SkimTranscodeFailed { media_id: MediaId, error: String },
+    SkimTranscodeFailed { media_id: MediaId, path: PathBuf, error: String },
 
     // Browser skim frame
     BrowserSkimFrameReady { media_id: MediaId, rgba: Vec<u8>, width: u32, height: u32, target: ViewerMode },

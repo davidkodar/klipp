@@ -888,6 +888,23 @@ pub struct PlaybackEngine {
     /// than dragging the timeline `MasterClock` into source territory.
     source_clock_anchor_wall: std::time::Instant,
     source_clock_anchor_secs: f64,
+    /// True after the source decoder has signalled EOF for the
+    /// currently-bound media. The next `play_source` consults this
+    /// to rebuild the decoder before resuming, otherwise the BSF
+    /// stays latched in EOF state and rejects every packet.
+    source_at_eof: bool,
+    /// True when the source viewer is paused but expects to receive
+    /// one more frame from the decoder (just after `set_source_media`
+    /// or `seek_source`). The per-tick paused-drain pops exactly one
+    /// frame in that state, then clears the flag — without it, the
+    /// drain pops every frame the decoder buffers and the playhead
+    /// walks forward on its own (looks like the progressbar is
+    /// "playing" right after a click).
+    source_drain_pending: bool,
+    /// Rotation passed to `VideoDecoder::open` for the bound source
+    /// media — held so an EOF-restart rebuild can recreate the
+    /// decoder with the same orientation as the original open.
+    source_rotation: i32,
     /// Audio source for the bound media — mixed via the existing
     /// `mixer` on a dedicated source-viewer track. Muted whenever
     /// `source_state != Playing` (and the timeline pre-mutes its own
@@ -1248,6 +1265,9 @@ impl PlaybackEngine {
             source_fps: 24.0,
             source_clock_anchor_wall: std::time::Instant::now(),
             source_clock_anchor_secs: 0.0,
+            source_at_eof: false,
+            source_drain_pending: false,
+            source_rotation: 0,
             source_audio_source: None,
             source_frame_buffer,
             // Reserve a track index past anything the timeline mixer
@@ -1480,6 +1500,16 @@ impl PlaybackEngine {
             // doing real per-tick work.
             if self.source_state == PlaybackState::Playing {
                 self.update_source_playback();
+            } else if self.source_decoder.is_some() && self.source_drain_pending {
+                // Paused-drain: a recent seek/load is waiting on
+                // its target frame to land. Pop ONE frame and stop;
+                // the gate prevents the drain from stepping through
+                // the full decoder queue every tick (which made the
+                // playhead walk forward on its own and looked like
+                // the progressbar was "playing" right after a click).
+                if self.drain_one_source_frame_to_buffer() {
+                    self.source_drain_pending = false;
+                }
             }
 
             if applied > 0
@@ -2201,9 +2231,15 @@ impl PlaybackEngine {
                 self.set_source_media(path, source_rotation);
             }
             AppCommand::PlaySource => {
+                debug!(
+                    "PlaySource command received, source_state={:?}, source_decoder={}",
+                    self.source_state,
+                    self.source_decoder.is_some(),
+                );
                 self.play_source();
             }
             AppCommand::PauseSource => {
+                debug!("PauseSource command received, source_state={:?}", self.source_state);
                 self.pause_source();
             }
             AppCommand::SeekSource(tc) => {
@@ -8215,8 +8251,16 @@ impl PlaybackEngine {
                 dec.resume();
                 self.source_decoder = Some(dec);
                 self.source_path = Some(path.clone());
+                self.source_rotation = source_rotation;
                 self.source_state = PlaybackState::Paused;
                 self.source_playhead_secs = 0.0;
+                self.source_at_eof = false;
+                // Arm a single paused-drain so the per-tick loop
+                // pops the very first decoded frame to the viewer
+                // (the cold-start poster). Cleared after one frame
+                // lands so the playhead doesn't keep walking on its
+                // own through the rest of the buffered queue.
+                self.source_drain_pending = true;
                 // Detect FPS from the file via a tiny ffmpeg probe — needed
                 // for `StepSource` and to pace the playback advance. Falls
                 // back to 24 fps on probe failure so a step still moves.
@@ -8235,6 +8279,26 @@ impl PlaybackEngine {
         }
     }
 
+    /// Rebuild the source decoder from scratch when the previous
+    /// playback hit EOF. ffmpeg's mp4toannexb / annexb BSFs latch
+    /// to EOF once they see it and reject every subsequent packet
+    /// ("A non-NULL packet sent after an EOF"); a plain `dec.seek`
+    /// or `dec.resume` is not enough to recover. Tear the decoder
+    /// down and reopen so the BSF starts fresh.
+    fn rebuild_source_decoder_if_at_eof(&mut self) {
+        if !self.source_at_eof {
+            return;
+        }
+        self.source_at_eof = false;
+        let Some(path) = self.source_path.clone() else { return };
+        let rotation = self.source_rotation;
+        // `set_source_media` early-returns when the path matches —
+        // clear `source_path` so the rebuild takes the full open +
+        // decode-thread spawn path.
+        self.source_path = None;
+        self.set_source_media(path, rotation);
+    }
+
     /// Begin source-viewer playback. Auto-pauses the timeline so the
     /// audio mixer doesn't have two viewers feeding it simultaneously.
     /// Resumes the source decoder, anchors the wall-clock to the
@@ -8242,8 +8306,17 @@ impl PlaybackEngine {
     /// source audio source.
     fn play_source(&mut self) {
         if self.source_decoder.is_none() {
+            tracing::warn!("play_source: source_decoder is None, ignoring Play");
             return;
         }
+        tracing::info!(
+            "play_source: starting playback (source_state was {:?}, at_eof={})",
+            self.source_state, self.source_at_eof,
+        );
+        // If the previous play hit EOF, the BSF is latched and a
+        // plain resume won't produce frames — rebuild the decoder
+        // before resuming.
+        self.rebuild_source_decoder_if_at_eof();
         // Mutual exclusion: stop the timeline before the source takes
         // over. `Pause` is a no-op when the timeline isn't playing.
         if self.state == PlaybackState::Playing {
@@ -8318,6 +8391,11 @@ impl PlaybackEngine {
             return;
         }
         let secs = secs.max(0.0);
+        // If we're parked at EOF, the BSF rejects every packet —
+        // each seek would block in `grab_one_source_frame_timeout`
+        // for 500ms producing nothing. Rebuild before seeking so a
+        // scrub on the post-EOF clip stays responsive.
+        self.rebuild_source_decoder_if_at_eof();
         let was_playing = self.source_state == PlaybackState::Playing;
         if let Some(ref dec) = self.source_decoder {
             dec.seek(secs);
@@ -8328,9 +8406,21 @@ impl PlaybackEngine {
             src.seek(secs);
         }
         self.source_playhead_secs = secs;
-        // Decode one frame so the viewer doesn't show the pre-seek
-        // image while waiting for the next playback tick.
-        self.grab_one_source_frame_timeout(Duration::from_millis(500));
+        // Fire-and-forget: do NOT block here waiting for the
+        // decoder to produce the seek-target frame. The per-tick
+        // paused-drain picks the frame up the moment it lands.
+        //
+        // History: the previous 50 ms blocking wait pinned the
+        // engine thread at 100 % during scrub. 30 Hz UI dispatch
+        // × 50 ms wait = engine spending all its time inside this
+        // one function, leaving no slot for the paused-drain (so
+        // frames never reached the viewer) and no slot for the
+        // decoder thread to actually finish its previous seek
+        // before the next one piled on. By returning immediately
+        // here we let the engine tick at full rate and let the
+        // decoder coalesce SeekTo commands aggressively (its own
+        // queue accumulates while it works).
+        self.source_drain_pending = true;
         if was_playing {
             // Re-anchor the clock at the new playhead so playback
             // continues from here.
@@ -8339,9 +8429,15 @@ impl PlaybackEngine {
             if let Some(ref dec) = self.source_decoder {
                 dec.resume();
             }
-        } else if let Some(ref dec) = self.source_decoder {
-            dec.pause();
         }
+        // NOTE: do NOT pause the decoder when we're paused-seeking.
+        // Sending Pause right after Resume + SeekTo means the
+        // decoder thread coalesces the queue and ends up in its
+        // paused-sleep branch — the seek is applied (format_ctx
+        // moves) but no frames are produced, so the viewer keeps
+        // painting the pre-seek image. The decoder backpressures
+        // naturally once its 16-frame queue fills, which is the
+        // correct way to "rest" between scrubs.
         let _ = self.event_tx.send(AppEvent::SourcePlayheadMoved(
             self.source_playhead_secs,
         ));
@@ -8397,16 +8493,24 @@ impl PlaybackEngine {
         // — popping all queued frames per tick would burn through the
         // buffer in a few ms and stall on EOF.
         let frame = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop();
-        let Some(frame) = frame else { return };
+        let Some(mut frame) = frame else { return };
         if frame.is_eof {
-            // End of file — pause cleanly so the next Play restarts
-            // playback from the beginning (handled in play_source by
-            // resetting the clock anchor; for now we just pause).
+            // End of file — flag it and pause. The next play_source
+            // call will seek back to 0 before resuming, otherwise
+            // the decoder stays parked at EOF and produces no
+            // frames on the second click.
+            self.source_at_eof = true;
             self.pause_source();
             return;
         }
         let frame_pts = frame.pts_secs();
         let (w, h) = (frame.width, frame.height);
+        // GPU-resident decode (KLIPP_GPU_FRAMES=1) ships with empty
+        // `frame.data` until ensure_cpu_data() is called — without
+        // this the source viewer writes empty buffers, the upload
+        // path bails on the size mismatch, and the viewer stays on
+        // the static thumbnail with playback "invisible".
+        frame.ensure_cpu_data();
         // Linear f32 → sRGB u8 for the frame buffer (no grading on
         // the source viewer — this is the raw media).
         let rgba_u8 = linear_rgba_to_u8(&frame.data);
@@ -8440,6 +8544,45 @@ impl PlaybackEngine {
         (self.repaint_cb)();
     }
 
+    /// Non-blocking sibling of `grab_one_source_frame_timeout`.
+    /// Pops a single ready frame off the source decoder queue (if
+    /// any) and writes it to `source_frame_buffer`. Does NOT wait
+    /// for the decoder. Called from the engine tick when the
+    /// source viewer is paused, so frames that arrive a tick or
+    /// two after a fast `seek_source` (50 ms timeout) still reach
+    /// the viewer instead of stalling in the queue.
+    /// Returns true if a frame was consumed (so the per-tick caller
+    /// can clear its "drain pending" flag and stop pumping until
+    /// the next seek). Returns false on empty queue / EOF — the
+    /// caller leaves the flag set so it tries again next tick.
+    fn drain_one_source_frame_to_buffer(&mut self) -> bool {
+        let Some(dec) = self.source_decoder.as_ref() else { return false };
+        let frame = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop();
+        let Some(mut frame) = frame else { return false };
+        if frame.is_eof {
+            // EOF arriving while paused — flag it so the next play
+            // does the rebuild, but don't change state (we're
+            // already paused). Treat as "consumed" so the caller
+            // doesn't keep retrying forever on a dead queue.
+            self.source_at_eof = true;
+            return true;
+        }
+        let (w, h) = (frame.width, frame.height);
+        frame.ensure_cpu_data();
+        let rgba_u8 = linear_rgba_to_u8(&frame.data);
+        {
+            let mut fb = self.source_frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            fb.write_frame(rgba_u8, w, h);
+        }
+        self.source_playhead_secs = frame.pts_secs();
+        let _ = self.event_tx.send(AppEvent::FrameReady);
+        let _ = self.event_tx.send(AppEvent::SourcePlayheadMoved(
+            self.source_playhead_secs,
+        ));
+        (self.repaint_cb)();
+        true
+    }
+
     /// Wait up to `timeout` for the source decoder to produce a
     /// frame, then post-process it into the source frame buffer.
     /// Used by `set_source_media` and `seek_source` to seed the
@@ -8450,9 +8593,13 @@ impl PlaybackEngine {
         let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
             let frame = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop();
-            if let Some(frame) = frame {
+            if let Some(mut frame) = frame {
                 if frame.is_eof { return; }
                 let (w, h) = (frame.width, frame.height);
+                // GPU-resident frames ship with empty `data` until
+                // ensure_cpu_data() materialises it — see matching
+                // call in update_source_playback.
+                frame.ensure_cpu_data();
                 let rgba_u8 = linear_rgba_to_u8(&frame.data);
                 {
                     let mut fb = self.source_frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
@@ -8536,6 +8683,7 @@ fn coalesce_commands(commands: Vec<AppCommand>) -> Vec<AppCommand> {
 
     let mut result = Vec::with_capacity(commands.len());
     let mut last_seek: Option<AppCommand> = None;
+    let mut last_source_seek: Option<AppCommand> = None;
     let mut relative_sum: i64 = 0;
     let mut has_sequence_updated = false;
 
@@ -8558,6 +8706,16 @@ fn coalesce_commands(commands: Vec<AppCommand>) -> Vec<AppCommand> {
                 }
                 relative_sum += frames;
             }
+            AppCommand::SeekSource(_) => {
+                // Source-viewer scrub-drag fires one SeekSource per
+                // drag-frame; each handler blocks up to ~500ms in
+                // grab_one_source_frame_timeout. Without coalescing,
+                // a one-second drag queues 30+ seeks and freezes the
+                // engine thread for many seconds (watchdog stall +
+                // user kills the app). Only the latest target
+                // matters — discard the rest.
+                last_source_seek = Some(cmd);
+            }
             AppCommand::SequenceUpdated => {
                 has_sequence_updated = true;
             }
@@ -8570,6 +8728,9 @@ fn coalesce_commands(commands: Vec<AppCommand>) -> Vec<AppCommand> {
                 if let Some(seek) = last_seek.take() {
                     result.push(seek);
                 }
+                if let Some(seek) = last_source_seek.take() {
+                    result.push(seek);
+                }
                 result.push(cmd);
             }
         }
@@ -8580,6 +8741,9 @@ fn coalesce_commands(commands: Vec<AppCommand>) -> Vec<AppCommand> {
         result.push(AppCommand::SeekRelative(relative_sum));
     }
     if let Some(seek) = last_seek.take() {
+        result.push(seek);
+    }
+    if let Some(seek) = last_source_seek.take() {
         result.push(seek);
     }
     if has_sequence_updated {
