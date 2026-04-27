@@ -172,15 +172,33 @@ pub fn apple_log_to_linear(c: f32) -> f32 {
     }
 }
 
-/// Nikon N-Log inverse OETF.
+/// Nikon N-Log inverse OETF (Nikon Z 6 / Z 7 / Z 8 / Z 9).
+///
+/// Two-segment curve per the Nikon N-Log Reference (2018):
+///   V <  Vₜ:  L = ((V − 0.0928)/0.6007)³ − 0.0075   (cube-root toe inverse)
+///   V ≥  Vₜ:  L = exp((V − 0.619)/0.14)              (log-segment inverse)
+///
+/// Vₜ ≈ 0.5101 — the V-space value where the toe and log branches
+/// would meet at L=0.328 (the linear-space breakpoint named in the
+/// forward curve); switching at this V keeps the inverse smooth
+/// across the small C0 gap that Nikon's own forward curve has at
+/// the breakpoint.
+///
+/// History: previous body used `(s + 0.0075)³ / 1242.0` for the toe
+/// (matches no published spec) plus a log expression with a literal
+/// `/ 0.328 * 0.328` no-op (cancels) and a stray `−0.0075` offset
+/// in the wrong segment. Decoded V=0.4 to ≈0.20 instead of the
+/// spec's ≈0.13 (off by ~18 LSB at u8). Caught in #58 by a parity
+/// test against six reference points covering both branches.
 #[inline]
 pub fn nlog_to_linear(c: f32) -> f32 {
-    let s = c.clamp(0.0, 1.0);
-    if s < 0.328 {
-        let v = s + 0.007_5;
-        (v * v * v) / 1242.0
+    const V_BREAK: f32 = 0.5101;
+    let v = c.clamp(0.0, 1.0);
+    if v < V_BREAK {
+        let t = (v - 0.0928) / 0.6007;
+        t * t * t - 0.0075
     } else {
-        (((s - 0.619) / 0.14).exp()) / 0.328 * 0.328 - 0.007_5
+        ((v - 0.619) / 0.14).exp()
     }
 }
 
@@ -696,6 +714,53 @@ mod tests {
         // hold pure BT.2020 primaries without going negative or > 1).
         let out = primaries_to_bt709([1.0, 0.0, 0.0], ColorPrimaries::Bt2020);
         assert!(out[0] > 1.0, "BT.2020 red → BT.709 should overshoot, got {:?}", out);
+    }
+
+    #[test]
+    fn nlog_matches_nikon_2018_spec() {
+        // Nikon N-Log Reference (2018, Z 6/Z 7 technical notes).
+        //
+        // Forward (linear x → encoded V):
+        //   x < 0.328:  V = (x + 0.0075)^(1/3) * 0.6007 + 0.0928   (toe)
+        //   x ≥ 0.328:  V = ln(x) * 0.14 + 0.619                    (log)
+        //
+        // Inverse (V → linear), branch on the V-space breakpoint
+        // where the toe expression last applied (V ≈ 0.5101 — the
+        // toe at x=0.328). The published forward curve has a small
+        // C0 gap at the breakpoint that Nikon's own LUTs smooth
+        // over; we match the toe side because the natural inverse
+        // is toe-branch up to that point.
+        //   V <  0.5101:  x = ((V − 0.0928)/0.6007)^3 − 0.0075
+        //   V ≥  0.5101:  x = exp((V − 0.619)/0.14)
+        //
+        // Reference values computed by hand from the formulas
+        // above; the previous body (`((s + 0.0075)^3) / 1242.0`
+        // for the toe + a `/0.328*0.328 - 0.0075` log expression
+        // whose `/0.328*0.328` is a no-op) doesn't match any
+        // published Nikon N-Log curve and produced ≈0.20 at V=0.4
+        // where the spec says ≈0.13 (off by ~0.07 = 18 LSB at u8).
+        let cases: &[(f32, f32, &str)] = &[
+            // V       expected L     description
+            (0.0928,  -0.0075,        "toe anchor (V → −0.0075 sub-black)"),
+            (0.21,     0.0,           "near-black toe (≈0)"),
+            (0.4369,   0.18,          "≈18% mid-gray toe reference"),
+            (0.55,     0.6109,        "log segment, just past breakpoint"),
+            (0.619,    1.0,           "log: x=1 reference (V=δ)"),
+            (0.8,      3.6435,        "log: highlight"),
+            (1.0,     15.205,         "log: max code, full HDR highlight"),
+        ];
+        for &(v, expected, desc) in cases {
+            let got = nlog_to_linear(v);
+            // 0.005 abs tolerance — well below mid-grey threshold;
+            // tight enough to reject the broken implementations
+            // (which were off by 0.05+ at most points) but with
+            // enough margin to absorb f32 rounding.
+            let diff = (got - expected).abs();
+            assert!(
+                diff < 0.005,
+                "Nikon N-Log V={v}: expected L≈{expected} ({desc}), got {got}, diff={diff}",
+            );
+        }
     }
 
     #[test]

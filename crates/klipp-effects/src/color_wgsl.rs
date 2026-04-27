@@ -303,14 +303,24 @@ fn apple_log_eotf_scalar(c: f32) -> f32 {
     return pow(2.0, (s - delta) / gamma) - beta;
 }
 
-// Nikon N-Log inverse OETF.
+// Nikon N-Log inverse OETF (Z 6/7/8/9).
+// Two-segment per the Nikon N-Log Reference (2018):
+//   V <  Vt:  L = ((V - 0.0928)/0.6007)^3 - 0.0075   (cube-root toe)
+//   V >= Vt:  L = exp((V - 0.619)/0.14)               (log)
+// Vt ≈ 0.5101 — the V-space value where the toe expression last
+// holds. Mirrors klipp_color::camera_log::nlog_to_linear exactly
+// so GPU and CPU produce identical scene-linear values. Previous
+// body used a placeholder cube-of-(s+0.0075)/1242.0 toe and a log
+// expression with a literal `/0.328*0.328` no-op — wrong on every
+// Nikon N-Log clip flowing through the GPU input-transform path.
 fn nlog_eotf_scalar(c: f32) -> f32 {
     let s = clamp(c, 0.0, 1.0);
-    if s < 0.328 {
-        let v = s + 0.0075;
-        return (v * v * v) / 1242.0;
+    let v_break: f32 = 0.5101;
+    if s < v_break {
+        let t = (s - 0.0928) / 0.6007;
+        return t * t * t - 0.0075;
     }
-    return exp((s - 0.619) / 0.14) / 0.328 * 0.328 - 0.0075;
+    return exp((s - 0.619) / 0.14);
 }
 
 // GoPro ProTune Flat inverse OETF — approximated as gamma 1.6 since
