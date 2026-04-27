@@ -10126,6 +10126,8 @@ mod param_change_queue_tests {
                     enabled: true,
                     params: klipp_nodes::NodeParams::default(),
                     keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+                    output_link: None,
+                    input_links: vec![],
                 });
                 break;
             }

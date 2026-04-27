@@ -33,6 +33,16 @@ pub struct GpuNv12Converter {
 ///
 /// 12 u32s = 48 bytes, 16-byte aligned — fits the WGSL uniform
 /// alignment rules without padding.
+///
+/// `primaries_matrix` carries the pre-computed source-primaries →
+/// working-space matrix as 3 rows × `vec4<f32>` (12 floats; the 4th
+/// component of each row is padding for WGSL's `vec3<f32>` alignment).
+/// The engine builds it via
+/// `klipp_color::camera_log::primaries_to_working_matrix(primaries,
+/// working_colorspace)` and passes it through `pack_primaries_matrix`.
+/// Sliding the working-space choice into the matrix keeps the shader
+/// simple — one matmul per pixel regardless of which working space
+/// the project is in.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Nv12Params {
@@ -46,13 +56,20 @@ struct Nv12Params {
     /// `[range, matrix_id, transfer_id, primaries_id]` from
     /// `klipp_core::color_ids::ids(SourceColorspace)`. Drives the
     /// shader's branching for limited/full range, BT.709/BT.601/
-    /// BT.2020 matrix, EOTF selection, and gamut conversion to the
-    /// engine's BT.709 working space.
+    /// BT.2020 matrix, and EOTF selection. `primaries_id` is no
+    /// longer consumed by the shader — gamut conversion now goes
+    /// through `primaries_matrix` — but the field is preserved on
+    /// the API boundary for future per-primaries dispatch (e.g.
+    /// gamut-mapping modes that DO need to know the source identity).
     color_range: u32,
     matrix_id: u32,
     transfer_id: u32,
     primaries_id: u32,
     _pad1: u32,
+    /// Source-primaries → working-space matrix, packed as 3 rows ×
+    /// vec4 (12 floats). Row 0 is dotted against (R, G, B, _) to
+    /// produce out.R, etc.
+    primaries_matrix: [[f32; 4]; 3],
 }
 
 /// Per-shader code that runs after the shared colourspace prelude
@@ -83,6 +100,11 @@ struct Params {
     transfer_id: u32,
     primaries_id: u32,
     _pad1: u32,
+    // Source-primaries → working-space matrix (3 rows × vec4; the .w
+    // of each row is unused padding for WGSL's vec3 alignment).
+    primaries_row0: vec4<f32>,
+    primaries_row1: vec4<f32>,
+    primaries_row2: vec4<f32>,
 }
 
 @compute @workgroup_size(16, 16)
@@ -132,13 +154,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // 1. Range normalise (limited 16/235 vs full 0/255).
     // 2. YUV → display-encoded RGB via the source's matrix.
     // 3. Inverse EOTF → linear-light in source primaries.
-    // 4. Source primaries → BT.709 working space.
+    // 4. Source primaries → working space via the uniform matrix.
     // Then re-encode to sRGB for the u8 hand-off.
     let yuv = yuv_normalise(y_val, u_val, v_val, params.color_range, 255.0);
     let rgb_display = yuv_to_rgb_display(yuv, params.matrix_id);
     let rgb_linear  = display_to_linear(rgb_display, params.transfer_id);
-    let rgb_bt709   = primaries_to_bt709(rgb_linear, params.primaries_id);
-    let rgb_srgb    = linear_to_srgb_vec(rgb_bt709);
+    let rgb_working = vec3<f32>(
+        dot(params.primaries_row0.xyz, rgb_linear),
+        dot(params.primaries_row1.xyz, rgb_linear),
+        dot(params.primaries_row2.xyz, rgb_linear),
+    );
+    let rgb_srgb    = linear_to_srgb_vec(rgb_working);
 
     let ri = u32(clamp(rgb_srgb.x * 255.0 + 0.5, 0.0, 255.0));
     let gi = u32(clamp(rgb_srgb.y * 255.0 + 0.5, 0.0, 255.0));
@@ -360,6 +386,16 @@ impl GpuNv12Converter {
     /// - `y_stride`, `uv_stride`: byte stride per row for each plane
     /// - `dst_width`, `dst_height`: desired output dimensions (caller must swap for 90°/270°)
     /// - `rotation`: source rotation in degrees (0, 90, 180, 270)
+    /// - `color_ids`: `[range, matrix_id, transfer_id, primaries_id]`
+    ///   from `klipp_core::color_ids::ids(SourceColorspace)`.
+    /// - `primaries_matrix`: source-primaries → working-space 3x3,
+    ///   row-major. Pass [`crate::color_wgsl::pack_primaries_matrix`]
+    ///   the output of `klipp_color::camera_log::primaries_to_working_matrix`
+    ///   to get the working-space matrix; the helper packs to the
+    ///   3-row vec4 layout the shader expects. For pure BT.709 SDR
+    ///   sources targeting `Rec709Linear` working space, identity
+    ///   ([`crate::color_wgsl::IDENTITY_PRIMARIES_MATRIX_PACKED`])
+    ///   is correct.
     ///
     /// Returns the RGBA pixel data (dst_width * dst_height * 4 bytes).
     #[allow(clippy::too_many_arguments)]
@@ -374,9 +410,8 @@ impl GpuNv12Converter {
         dst_width: u32,
         dst_height: u32,
         rotation: u32,
-        // `color_ids` is `[range, matrix_id, transfer_id, primaries_id]`
-        // from `klipp_core::color_ids::ids(SourceColorspace)`.
         color_ids: [u32; 4],
+        primaries_matrix: [[f32; 4]; 3],
     ) -> Vec<u8> {
         let y_size = y_data.len() as u64;
         let uv_size = uv_data.len() as u64;
@@ -408,6 +443,7 @@ impl GpuNv12Converter {
             transfer_id: color_ids[2],
             primaries_id: color_ids[3],
             _pad1: 0,
+            primaries_matrix,
         };
         self.queue
             .write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
@@ -527,6 +563,7 @@ impl GpuNv12Converter {
         rotation: u32,
         // `color_ids` is `[range, matrix_id, transfer_id, primaries_id]`.
         color_ids: [u32; 4],
+        primaries_matrix: [[f32; 4]; 3],
     ) -> std::sync::Arc<wgpu::Buffer> {
         let y_size = y_data.len() as u64;
         let uv_size = uv_data.len() as u64;
@@ -565,6 +602,7 @@ impl GpuNv12Converter {
             transfer_id: color_ids[2],
             primaries_id: color_ids[3],
             _pad1: 0,
+            primaries_matrix,
         };
         self.queue
             .write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));

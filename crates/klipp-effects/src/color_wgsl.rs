@@ -69,6 +69,35 @@ const PRIMARIES_RED_WIDE_GAMUT: u32 = 106u;
 const PRIMARIES_BMD_WIDE_GAMUT: u32 = 107u;
 "#;
 
+/// Pack a row-major 3x3 matrix into the WGSL-friendly layout used by
+/// the decoder shaders' `Params` uniform: three rows, each padded to
+/// `vec4<f32>` so consecutive rows land on 16-byte boundaries (WGSL's
+/// alignment rule for `vec3<f32>` in uniform memory). The 4th element
+/// of each row is unused padding; callers don't read it.
+///
+/// The shader dots the input RGB against each row to produce the
+/// output channel — i.e. `out_r = dot(row0, rgb)` etc. That keeps the
+/// WGSL identical regardless of which working space the matrix
+/// represents (BT.709 / ACEScg / future BT.2020 etc.).
+#[inline]
+pub fn pack_primaries_matrix(m: [[f32; 3]; 3]) -> [[f32; 4]; 3] {
+    [
+        [m[0][0], m[0][1], m[0][2], 0.0],
+        [m[1][0], m[1][1], m[1][2], 0.0],
+        [m[2][0], m[2][1], m[2][2], 0.0],
+    ]
+}
+
+/// 3x3 identity in the same packed layout. Useful as a default when a
+/// caller doesn't have the source colourspace yet (e.g. the tests
+/// that exercise BT.709 SDR sources where source-primaries already
+/// match the working-space basis).
+pub const IDENTITY_PRIMARIES_MATRIX_PACKED: [[f32; 4]; 3] = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+];
+
 /// Helper functions for the four conversion stages:
 ///
 /// 1. `yuv_normalise(y, u, v, range, bit_depth_max)` — raw codepoint
@@ -411,102 +440,14 @@ fn display_to_linear(rgb: vec3<f32>, transfer_id: u32) -> vec3<f32> {
     return vec3<f32>(srgb_eotf_scalar(rgb.x), srgb_eotf_scalar(rgb.y), srgb_eotf_scalar(rgb.z));
 }
 
-fn primaries_to_bt709(rgb: vec3<f32>, primaries_id: u32) -> vec3<f32> {
-    if primaries_id == PRIMARIES_BT2020 {
-        return vec3<f32>(
-             1.6605 * rgb.x - 0.5876 * rgb.y - 0.0728 * rgb.z,
-            -0.1246 * rgb.x + 1.1329 * rgb.y - 0.0083 * rgb.z,
-            -0.0182 * rgb.x - 0.1006 * rgb.y + 1.1187 * rgb.z,
-        );
-    }
-    if primaries_id == PRIMARIES_BT601_525 {
-        return vec3<f32>(
-             0.93954 * rgb.x + 0.05033 * rgb.y + 0.01013 * rgb.z,
-             0.01788 * rgb.x + 0.96567 * rgb.y + 0.01646 * rgb.z,
-            -0.00164 * rgb.x - 0.00492 * rgb.y + 1.00656 * rgb.z,
-        );
-    }
-    if primaries_id == PRIMARIES_BT601_625 {
-        return vec3<f32>(
-             1.0440 * rgb.x - 0.0440 * rgb.y + 0.0000 * rgb.z,
-             0.0000 * rgb.x + 1.0000 * rgb.y + 0.0000 * rgb.z,
-             0.0000 * rgb.x + 0.0118 * rgb.y + 0.9882 * rgb.z,
-        );
-    }
-    if primaries_id == PRIMARIES_DCI_P3 || primaries_id == PRIMARIES_DISPLAY_P3 {
-        return vec3<f32>(
-             1.2249 * rgb.x - 0.2247 * rgb.y + 0.0000 * rgb.z,
-            -0.0420 * rgb.x + 1.0419 * rgb.y + 0.0000 * rgb.z,
-            -0.0197 * rgb.x - 0.0786 * rgb.y + 1.0979 * rgb.z,
-        );
-    }
-    if primaries_id == PRIMARIES_S_GAMUT3_CINE {
-        // Sony S-Gamut3.Cine → BT.709 (D65, derived from Sony's
-        // published primaries chromaticities).
-        return vec3<f32>(
-             1.6266404351 * rgb.x - 0.5402460389 * rgb.y - 0.0863943962 * rgb.z,
-            -0.1040630717 * rgb.x + 1.1066743058 * rgb.y - 0.0026112341 * rgb.z,
-            -0.0035849832 * rgb.x - 0.0793220782 * rgb.y + 1.0828952420 * rgb.z,
-        );
-    }
-    if primaries_id == PRIMARIES_S_GAMUT3 {
-        // Sony S-Gamut3 → BT.709.
-        return vec3<f32>(
-             1.5523622260 * rgb.x - 0.4338073145 * rgb.y - 0.1185549155 * rgb.z,
-            -0.1727860457 * rgb.x + 1.2107692775 * rgb.y - 0.0379832320 * rgb.z,
-            -0.0163914533 * rgb.x - 0.0922769512 * rgb.y + 1.1086684045 * rgb.z,
-        );
-    }
-    if primaries_id == PRIMARIES_V_GAMUT {
-        // Panasonic V-Gamut → BT.709 (D65).
-        return vec3<f32>(
-             1.806576 * rgb.x - 0.695697 * rgb.y - 0.110879 * rgb.z,
-            -0.170395 * rgb.x + 1.305812 * rgb.y - 0.135417 * rgb.z,
-            -0.020835 * rgb.x - 0.149682 * rgb.y + 1.170517 * rgb.z,
-        );
-    }
-    if primaries_id == PRIMARIES_CANON_CINEMA_GAMUT {
-        // Canon Cinema Gamut → BT.709 (D65).
-        return vec3<f32>(
-             1.6630010742 * rgb.x - 0.4274550481 * rgb.y - 0.2355460261 * rgb.z,
-            -0.1018375801 * rgb.x + 1.4476878574 * rgb.y - 0.3458502773 * rgb.z,
-             0.0046119080 * rgb.x - 0.0763517721 * rgb.y + 1.0717398641 * rgb.z,
-        );
-    }
-    if primaries_id == PRIMARIES_ALEXA_WIDE_GAMUT_3 {
-        // ARRI Alexa Wide Gamut 3 → BT.709.
-        return vec3<f32>(
-             1.485583 * rgb.x - 0.401961 * rgb.y - 0.083622 * rgb.z,
-            -0.077419 * rgb.x + 1.176592 * rgb.y - 0.099173 * rgb.z,
-             0.008382 * rgb.x - 0.072473 * rgb.y + 1.064091 * rgb.z,
-        );
-    }
-    if primaries_id == PRIMARIES_ALEXA_WIDE_GAMUT_4 {
-        // ARRI Alexa Wide Gamut 4 → BT.709 (Alexa 35).
-        return vec3<f32>(
-             1.789066 * rgb.x - 0.620925 * rgb.y - 0.168141 * rgb.z,
-            -0.245664 * rgb.x + 1.422466 * rgb.y - 0.176802 * rgb.z,
-            -0.001624 * rgb.x - 0.142113 * rgb.y + 1.143737 * rgb.z,
-        );
-    }
-    if primaries_id == PRIMARIES_RED_WIDE_GAMUT {
-        // RED Wide Gamut RGB → BT.709 (RWG → REC709, REDcine X).
-        return vec3<f32>(
-             1.412345 * rgb.x - 0.524711 * rgb.y + 0.112366 * rgb.z,
-            -0.177228 * rgb.x + 1.337117 * rgb.y - 0.159889 * rgb.z,
-             0.024029 * rgb.x - 0.230596 * rgb.y + 1.206567 * rgb.z,
-        );
-    }
-    if primaries_id == PRIMARIES_BMD_WIDE_GAMUT {
-        // Blackmagic Wide Gamut Gen 5 → BT.709.
-        return vec3<f32>(
-             1.4842933208 * rgb.x - 0.4234837425 * rgb.y - 0.0608095783 * rgb.z,
-            -0.0958915308 * rgb.x + 1.1813166193 * rgb.y - 0.0854250885 * rgb.z,
-            -0.0010055519 * rgb.x - 0.0529880375 * rgb.y + 1.0539935894 * rgb.z,
-        );
-    }
-    return rgb;
-}
+// `primaries_to_bt709` used to live here as a switch on `primaries_id`.
+// Removed when the gamut-conversion stage moved to a per-frame uniform
+// matrix (see `Params.primaries_row{0,1,2}` in `nv12_gpu.rs` /
+// `p010_gpu.rs`). Pre-computing the matrix on the CPU (via
+// `klipp_color::camera_log::primaries_to_working_matrix`) and dotting
+// it against `rgb` in WGSL keeps the shader simple AND lets a single
+// matmul handle any working space (BT.709, ACEScg, future BT.2020),
+// not just the BT.709 destination the switch was hard-coded for.
 
 fn linear_to_srgb_scalar(c: f32) -> f32 {
     let s = clamp(c, 0.0, 1.0);
@@ -562,13 +503,60 @@ mod tests {
             "fn yuv_normalise(",
             "fn yuv_to_rgb_display(",
             "fn display_to_linear(",
-            "fn primaries_to_bt709(",
             "fn linear_to_srgb_vec(",
             "fn srgb_eotf_scalar(",
             "fn pq_eotf_scalar(",
             "fn hlg_eotf_scalar(",
         ] {
             assert!(h.contains(name), "missing WGSL helper: {name}");
+        }
+    }
+
+    /// Gamut conversion now lives in the decoder shaders' `Params`
+    /// uniform, not in `WGSL_HELPERS`. The old switch-on-primaries-id
+    /// function is intentionally absent; this test pins that decision
+    /// so a future "let's bring it back" tweak fails loudly and gets
+    /// a justification in the diff.
+    #[test]
+    fn helpers_does_not_define_legacy_primaries_to_bt709() {
+        assert!(
+            !super::WGSL_HELPERS.contains("fn primaries_to_bt709("),
+            "primaries_to_bt709 helper was deliberately removed when \
+             gamut conversion moved to a uniform matrix; reintroducing \
+             it without removing the matrix path would be two sources \
+             of truth",
+        );
+    }
+
+    /// Identity-matrix smoke test for the matrix-packing helper. The
+    /// shader treats each row as a `vec3<f32>` (with the `.w` slot
+    /// unused padding); the helper must place the identity diagonal
+    /// at `[i][i]` and zero everything else.
+    #[test]
+    fn pack_primaries_matrix_identity() {
+        let id = super::pack_primaries_matrix([
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]);
+        assert_eq!(id, super::IDENTITY_PRIMARIES_MATRIX_PACKED);
+    }
+
+    #[test]
+    fn pack_primaries_matrix_preserves_first_three_columns() {
+        // Arbitrary matrix; each input row shows up in the first three
+        // slots of the corresponding output row, with 0.0 padding.
+        let m = [
+            [0.1, 0.2, 0.3],
+            [0.4, 0.5, 0.6],
+            [0.7, 0.8, 0.9],
+        ];
+        let p = super::pack_primaries_matrix(m);
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_eq!(p[i][j], m[i][j], "row {i} col {j}");
+            }
+            assert_eq!(p[i][3], 0.0, "row {i} pad slot");
         }
     }
 }

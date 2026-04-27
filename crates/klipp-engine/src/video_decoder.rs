@@ -204,6 +204,34 @@ unsafe fn sws_get_coefficients_for_matrix(matrix: klipp_core::ColorMatrix) -> [i
     [ *ptr.add(0), *ptr.add(1), *ptr.add(2), *ptr.add(3) ]
 }
 
+/// Compute the source-primaries → working-space matrix (packed for
+/// the WGSL `Params` uniform) for the active project working space.
+///
+/// Reads `WORKING_COLORSPACE_PREF` lock-free, calls into klipp-color
+/// for the matrix, then packs to the 3-row vec4 layout the decoder
+/// shaders expect. Centralised here so all four GPU call sites
+/// (NV12 + P010, each with `_on_gpu` + readback variants) share one
+/// matrix-selection rule.
+///
+/// Caveat for non-`Rec709Linear` working spaces: the GPU decoder's
+/// final stage re-encodes via the sRGB EOTF for the existing CPU
+/// hand-off. That round-trip is bit-stable for linear BT.709 values
+/// in `[0, 1]`, but ACEScg values can exceed that range and will
+/// quantise/clip on the encode. The clean fix is to keep the
+/// GPU-resident `_on_gpu` path GPU-resident through the grade chain
+/// (PERF-GPU-RESIDENT-SCOPE in the tracker); for now non-`Rec709`
+/// projects accept the quantisation as a known limitation of the
+/// CPU-readback path.
+fn primaries_matrix_for_source(
+    source_cs: klipp_core::SourceColorspace,
+) -> [[f32; 4]; 3] {
+    let m = klipp_color::camera_log::primaries_to_working_matrix(
+        source_cs.primaries,
+        working_colorspace(),
+    );
+    klipp_effects::color_wgsl::pack_primaries_matrix(m)
+}
+
 /// sRGB-decode a RGBA u8 byte slice into a linear f32 RGBA buffer.
 /// Alpha stays linear (no gamma on alpha, per sRGB spec).
 fn rgba_u8_to_linear(rgba: &[u8]) -> Vec<f32> {
@@ -1360,18 +1388,20 @@ unsafe fn download_hw_frame(
                 // via `prime_chain_from_gpu_u8_buffer`. CPU `data`
                 // stays empty; consumers that need it call
                 // `LinearFrame::ensure_cpu_data` on demand.
+                let pm = primaries_matrix_for_source(source_cs);
                 let buffer = converter.convert_p010_to_rgba_on_gpu(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32, color_ids,
+                    out_w, out_h, source_rotation as u32, color_ids, pm,
                 );
                 let device = converter.device();
                 let queue = converter.queue();
                 let attach = Arc::new(GpuFrame::new(device, queue, buffer, out_w, out_h));
                 (Vec::new(), Some(attach))
             } else {
+                let pm = primaries_matrix_for_source(source_cs);
                 let bytes = converter.convert_p010_to_rgba(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32, color_ids,
+                    out_w, out_h, source_rotation as u32, color_ids, pm,
                 );
                 let t_linear = std::time::Instant::now();
                 let lin = rgba_u8_to_linear(&bytes);
@@ -1424,18 +1454,20 @@ unsafe fn download_hw_frame(
                 // same GPU-resident handoff — no readback, no
                 // linearise; the engine consumes the wgpu::Buffer
                 // directly when it primes the chain.
+                let pm = primaries_matrix_for_source(source_cs);
                 let buffer = converter.convert_nv12_to_rgba_on_gpu(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32, color_ids,
+                    out_w, out_h, source_rotation as u32, color_ids, pm,
                 );
                 let device = converter.device();
                 let queue = converter.queue();
                 let attach = Arc::new(GpuFrame::new(device, queue, buffer, out_w, out_h));
                 (Vec::new(), Some(attach))
             } else {
+                let pm = primaries_matrix_for_source(source_cs);
                 let bytes = converter.convert_nv12_to_rgba(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32, color_ids,
+                    out_w, out_h, source_rotation as u32, color_ids, pm,
                 );
                 let t_linear = std::time::Instant::now();
                 let lin = rgba_u8_to_linear(&bytes);

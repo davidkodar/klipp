@@ -11,8 +11,15 @@
 
 use std::sync::Arc;
 
+use klipp_effects::color_wgsl::IDENTITY_PRIMARIES_MATRIX_PACKED;
 use klipp_effects::nv12_gpu::GpuNv12Converter;
 use klipp_engine::{Frame, GpuFrame};
+
+/// `color_ids` for a BT.709 limited-range SDR source — the default
+/// the test fixture's synthesised YUV frames represent. `[0, 0, 0, 0]`
+/// in numeric form: limited range, BT.709 matrix, BT.709 transfer,
+/// BT.709 primaries.
+const COLOR_IDS_BT709_SDR: [u32; 4] = [0, 0, 0, 0];
 
 /// 1280×720 is a realistic NV12 size (smallest 16:9 HD). Smaller
 /// would still exercise the shader but larger is closer to the real
@@ -54,12 +61,14 @@ fn gpu_buffer_readback_matches_cpu_download() {
     // Path A: existing CPU-download. Authoritative reference.
     let cpu_bytes = conv.convert_nv12_to_rgba(
         &y, &uv, W, H, y_stride, uv_stride, W, H, 0,
+        COLOR_IDS_BT709_SDR, IDENTITY_PRIMARIES_MATRIX_PACKED,
     );
 
     // Path B: new GPU-resident output, then readback via
     // Frame::into_cpu(). Must produce the same bytes.
     let gpu_buffer = conv.convert_nv12_to_rgba_on_gpu(
         &y, &uv, W, H, y_stride, uv_stride, W, H, 0,
+        COLOR_IDS_BT709_SDR, IDENTITY_PRIMARIES_MATRIX_PACKED,
     );
     let frame = Frame::Gpu(GpuFrame::new(conv.device(), conv.queue(), gpu_buffer, W, H));
     let gpu_bytes = frame.into_cpu().data;
@@ -83,14 +92,20 @@ fn successive_gpu_buffers_are_independent() {
 
     let (y1, uv1, ys, us) = make_nv12(W, H);
 
-    let buf1 = conv.convert_nv12_to_rgba_on_gpu(&y1, &uv1, W, H, ys, us, W, H, 0);
+    let buf1 = conv.convert_nv12_to_rgba_on_gpu(
+        &y1, &uv1, W, H, ys, us, W, H, 0,
+        COLOR_IDS_BT709_SDR, IDENTITY_PRIMARIES_MATRIX_PACKED,
+    );
     // Second conversion with DIFFERENT luma must not change buf1's
     // contents.
     let mut y2 = y1.clone();
     for b in y2.iter_mut() {
         *b = b.wrapping_add(33);
     }
-    let buf2 = conv.convert_nv12_to_rgba_on_gpu(&y2, &uv1, W, H, ys, us, W, H, 0);
+    let buf2 = conv.convert_nv12_to_rgba_on_gpu(
+        &y2, &uv1, W, H, ys, us, W, H, 0,
+        COLOR_IDS_BT709_SDR, IDENTITY_PRIMARIES_MATRIX_PACKED,
+    );
 
     let frame1 = Frame::Gpu(GpuFrame::new(conv.device(), conv.queue(), Arc::clone(&buf1), W, H));
     let frame2 = Frame::Gpu(GpuFrame::new(conv.device(), conv.queue(), Arc::clone(&buf2), W, H));

@@ -39,15 +39,24 @@ pub struct GpuP010Converter {
     cached_output_size: u64,
 }
 
-/// 12 u32s = 48 bytes, 16-byte aligned. `color_range` /
-/// `matrix_id` / `transfer_id` / `primaries_id` come from
-/// `klipp_core::color_ids::ids(SourceColorspace)`. The legacy
-/// `is_hdr` boolean is dropped — `transfer_id == TRANSFER_PQ` is
-/// the new HDR signal, and `primaries_id == PRIMARIES_BT2020`
-/// triggers the gamut conversion. The shader's HDR tone-map is
-/// folded into `display_to_linear` (PQ EOTF outputs scene-linear
-/// up to 10000 cd/m²; the existing SDR display transform handles
-/// the further roll-off).
+/// `color_range` / `matrix_id` / `transfer_id` / `primaries_id`
+/// come from `klipp_core::color_ids::ids(SourceColorspace)`. The
+/// legacy `is_hdr` boolean is dropped — `transfer_id == TRANSFER_PQ`
+/// is the new HDR signal, and `transfer_id == TRANSFER_HLG` similarly
+/// triggers the tone-map. The shader's HDR tone-map is folded into
+/// `display_to_linear` (PQ EOTF outputs scene-linear up to 10000
+/// cd/m²; the existing SDR display transform handles the further
+/// roll-off).
+///
+/// `primaries_matrix` carries the pre-computed source-primaries →
+/// working-space matrix as 3 rows × `vec4<f32>` (12 floats; the 4th
+/// component of each row is padding for WGSL's `vec3<f32>` alignment).
+/// The engine builds it via
+/// `klipp_color::camera_log::primaries_to_working_matrix(primaries,
+/// working_colorspace)` and packs it through
+/// `crate::color_wgsl::pack_primaries_matrix`. Sliding the working-
+/// space choice into the matrix keeps the shader simple — one matmul
+/// per pixel regardless of which working space the project is in.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct P010Params {
@@ -63,6 +72,7 @@ struct P010Params {
     transfer_id: u32,
     primaries_id: u32,
     _pad1: u32,
+    primaries_matrix: [[f32; 4]; 3],
 }
 
 /// P010-specific WGSL — runs after the shared
@@ -90,6 +100,9 @@ struct Params {
     transfer_id: u32,
     primaries_id: u32,
     _pad1: u32,
+    primaries_row0: vec4<f32>,
+    primaries_row1: vec4<f32>,
+    primaries_row2: vec4<f32>,
 }
 
 // 16-bit LE sample at byte offset `byte_idx` from u32-packed arrays.
@@ -188,7 +201,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     //   2. YUV → display-encoded RGB via the source matrix.
     //   3. Inverse EOTF → linear (in source primaries; cd/m² for PQ).
     //   4. (HDR only) ACES filmic tone-map scene-linear → SDR linear.
-    //   5. Source primaries → BT.709 working space.
+    //   5. Source primaries → working space via the uniform matrix.
     // Then re-encode to sRGB-u8 for the existing CPU/GPU hand-off.
     let yuv = yuv_normalise(y_10, u_10, v_10, params.color_range, 1023.0);
     let rgb_display = yuv_to_rgb_display(yuv, params.matrix_id);
@@ -196,8 +209,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (params.transfer_id == TRANSFER_PQ || params.transfer_id == TRANSFER_HLG) {
         rgb_linear = tone_map_hdr_vec(rgb_linear);
     }
-    let rgb_bt709 = primaries_to_bt709(rgb_linear, params.primaries_id);
-    let rgb_srgb  = linear_to_srgb_vec(rgb_bt709);
+    let rgb_working = vec3<f32>(
+        dot(params.primaries_row0.xyz, rgb_linear),
+        dot(params.primaries_row1.xyz, rgb_linear),
+        dot(params.primaries_row2.xyz, rgb_linear),
+    );
+    let rgb_srgb  = linear_to_srgb_vec(rgb_working);
 
     let r_b = u32(clamp(rgb_srgb.x * 255.0 + 0.5, 0.0, 255.0));
     let g_b = u32(clamp(rgb_srgb.y * 255.0 + 0.5, 0.0, 255.0));
@@ -338,8 +355,11 @@ impl GpuP010Converter {
     ///   Each chroma pair is two 16-bit LE samples (U then V, upper-10).
     /// - `color_ids`: `[range, matrix_id, transfer_id, primaries_id]`
     ///   from `klipp_core::color_ids::ids(SourceColorspace)`. Drives
-    ///   range normalisation, YUV→RGB matrix, EOTF, and gamut
-    ///   conversion. PQ / HLG transfers also get the HDR tone-map.
+    ///   range normalisation, YUV→RGB matrix, EOTF, and HDR
+    ///   tone-mapping. `primaries_id` is no longer consumed by the
+    ///   shader — gamut conversion now goes through `primaries_matrix`.
+    /// - `primaries_matrix`: source-primaries → working-space matrix
+    ///   packed via [`crate::color_wgsl::pack_primaries_matrix`].
     #[allow(clippy::too_many_arguments)]
     pub fn convert_p010_to_rgba(
         &mut self,
@@ -353,6 +373,7 @@ impl GpuP010Converter {
         dst_height: u32,
         rotation: u32,
         color_ids: [u32; 4],
+        primaries_matrix: [[f32; 4]; 3],
     ) -> Vec<u8> {
         let y_size = y_data.len() as u64;
         let uv_size = uv_data.len() as u64;
@@ -398,6 +419,7 @@ impl GpuP010Converter {
             transfer_id: color_ids[2],
             primaries_id: color_ids[3],
             _pad1: 0,
+            primaries_matrix,
         };
         self.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
 
@@ -487,6 +509,7 @@ impl GpuP010Converter {
         dst_height: u32,
         rotation: u32,
         color_ids: [u32; 4],
+        primaries_matrix: [[f32; 4]; 3],
     ) -> std::sync::Arc<wgpu::Buffer> {
         let y_size = y_data.len() as u64;
         let uv_size = uv_data.len() as u64;
@@ -529,6 +552,7 @@ impl GpuP010Converter {
             transfer_id: color_ids[2],
             primaries_id: color_ids[3],
             _pad1: 0,
+            primaries_matrix,
         };
         self.queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
 
@@ -609,7 +633,8 @@ mod tests {
             1, // PRIMARIES_BT2020
         ];
         let out = conv.convert_p010_to_rgba(
-            &y, &uv, w, h, y_stride, uv_stride, w, h, 0, sdr_ids,
+            &y, &uv, w, h, y_stride, uv_stride, w, h, 0,
+            sdr_ids, crate::color_wgsl::IDENTITY_PRIMARIES_MATRIX_PACKED,
         );
         assert_eq!(out.len(), (w * h * 4) as usize);
         // Sample one pixel — should be near (255, 255, 255, 255).
@@ -626,7 +651,8 @@ mod tests {
         let (w, h) = (4u32, 4u32);
         let (y, uv) = flat_p010(w, h, 64, 512, 512); // limited-range black, neutral chroma
         let out = conv.convert_p010_to_rgba(
-            &y, &uv, w, h, w * 2, w * 2, w, h, 0, [0, 0, 0, 0],
+            &y, &uv, w, h, w * 2, w * 2, w, h, 0,
+            [0, 0, 0, 0], crate::color_wgsl::IDENTITY_PRIMARIES_MATRIX_PACKED,
         );
         let r = out[0]; let g = out[1]; let b = out[2];
         assert!(r <= 4 && g <= 4 && b <= 4,
@@ -644,7 +670,8 @@ mod tests {
         let (y, uv) = flat_p010(w, h, 580, 512, 512);
         // [LIMITED, BT2020_NCL, PQ, BT2020] = [0, 2, 3, 1]
         let out = conv.convert_p010_to_rgba(
-            &y, &uv, w, h, w * 2, w * 2, w, h, 0, [0, 2, 3, 1],
+            &y, &uv, w, h, w * 2, w * 2, w, h, 0,
+            [0, 2, 3, 1], crate::color_wgsl::IDENTITY_PRIMARIES_MATRIX_PACKED,
         );
         let r = out[0]; let g = out[1]; let b = out[2];
         // After Hable tone-map at exposure=4, 100 nits should land in

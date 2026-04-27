@@ -40,16 +40,19 @@ fn color_balance_graph() -> NodeGraph {
             id: source, kind: NodeKind::Source, label: "Source".into(),
             enabled: true, params: NodeParams::default(),
             keyframes: NodeKeyframeTracks::default(),
+            output_link: None, input_links: vec![],
         },
         Node {
             id: colorbal, kind: NodeKind::ColorBalance, label: "CB".into(),
             enabled: true, params: p,
             keyframes: NodeKeyframeTracks::default(),
+            output_link: None, input_links: vec![],
         },
         Node {
             id: output, kind: NodeKind::Output, label: "Output".into(),
             enabled: true, params: NodeParams::default(),
             keyframes: NodeKeyframeTracks::default(),
+            output_link: None, input_links: vec![],
         },
     ];
     let edges = vec![
