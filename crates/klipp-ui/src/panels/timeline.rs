@@ -358,6 +358,45 @@ enum TrimEdge {
     Right,
 }
 
+/// Compute the post-clamp `(source_in, source_out)` for a slip drag.
+///
+/// `dt` is the slip delta in the same rate as the originals. The clamps mirror
+/// the inline behaviour of `process_slip_drag` before the &[Clip] dependency
+/// was removed:
+///
+///   1. `source_in >= 0` — if the shifted in went negative, snap it to 0 and
+///      add the shortfall onto the out so the window keeps its original width.
+///   2. `source_out <= media_duration` — if the shifted out overshot the media
+///      end (when known), snap out to the end and pull in back by the same
+///      overshoot. The follow-up `source_in >= 0` clamp is re-applied so a
+///      clip whose window is wider than the media file can't push in negative.
+pub(crate) fn slip_clamped_source_range(
+    orig_in: klipp_core::RationalTime,
+    orig_out: klipp_core::RationalTime,
+    dt: klipp_core::RationalTime,
+    media_duration: Option<klipp_core::RationalTime>,
+) -> (klipp_core::RationalTime, klipp_core::RationalTime) {
+    let mut new_src_in = orig_in + dt;
+    let mut new_src_out = orig_out + dt;
+
+    if new_src_in.value < 0 {
+        let shift = klipp_core::RationalTime { value: -new_src_in.value, rate: new_src_in.rate };
+        new_src_in.value = 0;
+        new_src_out += shift;
+    }
+    if let Some(media_dur) = media_duration {
+        let media_dur_rt = media_dur.rescale_to(new_src_out.rate);
+        if new_src_out.value > media_dur_rt.value {
+            let overshoot = klipp_core::RationalTime { value: new_src_out.value - media_dur_rt.value, rate: new_src_out.rate };
+            new_src_out = media_dur_rt;
+            new_src_in -= overshoot;
+            if new_src_in.value < 0 { new_src_in.value = 0; }
+        }
+    }
+
+    (new_src_in, new_src_out)
+}
+
 /// Audio params for the per-frame `UpdateClipAudio` command emitted while a
 /// fade-handle is being dragged. Returns the linked video clip's params when
 /// `clip` has `linked_clip_id`, otherwise the clip's own fields.
@@ -7258,7 +7297,6 @@ impl TimelinePanel {
         state: &mut AppState,
         cmds: &mut Vec<AppCommand>,
         track_idx: usize,
-        clips: &[klipp_timeline::Clip],
         content_rect: &egui::Rect,
         track_rect: &egui::Rect,
         zoom: f32,
@@ -7277,25 +7315,12 @@ impl TimelinePanel {
                         let dt_secs = dx as f64 / zoom as f64;
                         let dt = RationalTime::from_secs_f64(dt_secs, slip.original_source_in.rate);
 
-                        let mut new_src_in = slip.original_source_in + dt;
-                        let mut new_src_out = slip.original_source_out + dt;
-
-                        // Clamp: source_in >= 0
-                        if new_src_in.value < 0 {
-                            let shift = RationalTime { value: -new_src_in.value, rate: new_src_in.rate };
-                            new_src_in.value = 0;
-                            new_src_out += shift;
-                        }
-                        // Clamp: source_out <= media duration
-                        if let Some(media_dur) = slip.media_duration {
-                            let media_dur_rt = media_dur.rescale_to(new_src_out.rate);
-                            if new_src_out.value > media_dur_rt.value {
-                                let overshoot = RationalTime { value: new_src_out.value - media_dur_rt.value, rate: new_src_out.rate };
-                                new_src_out = media_dur_rt;
-                                new_src_in -= overshoot;
-                                if new_src_in.value < 0 { new_src_in.value = 0; }
-                            }
-                        }
+                        let (new_src_in, new_src_out) = slip_clamped_source_range(
+                            slip.original_source_in,
+                            slip.original_source_out,
+                            dt,
+                            slip.media_duration,
+                        );
 
                         // Apply slip to clip
                         if let Some(track) = state.sequence_mut().tracks.get_mut(track_idx) {
@@ -7331,9 +7356,15 @@ impl TimelinePanel {
                         painter.text(badge_rect.center(), egui::Align2::CENTER_CENTER,
                             &badge_text, egui::FontId::monospace(9.0), acc);
 
-                        // Draw semi-transparent directional arrow overlay on the clip
-                        if let Some(clip) = clips.iter().find(|c| c.id == slip.clip_id) {
-                            let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
+                        // Draw semi-transparent directional arrow overlay on
+                        // the clip. Slip changes source_in/out only, so the
+                        // clip's screen rect (driven by timeline_in + duration)
+                        // is unchanged whether we look it up before or after
+                        // the mutation above.
+                        let overlay_rect = state.sequence().tracks.get(track_idx)
+                            .and_then(|t| t.find_clip(slip.clip_id))
+                            .map(|clip| Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height));
+                        if let Some(cr) = overlay_rect {
                             let overlay_color = egui::Color32::from_rgba_unmultiplied(acc.r(), acc.g(), acc.b(), 40);
                             painter.rect_filled(cr, 3.0, overlay_color);
                         }
@@ -8672,7 +8703,7 @@ impl TimelinePanel {
 
         self.process_roll_trim(painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, fps, snap_enabled, pointer_pos, pointer_down, pointer_released);
 
-        self.process_slip_drag(ui, painter, state, cmds, track_idx, &post_loop_clips, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
+        self.process_slip_drag(ui, painter, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
 
         self.process_slide_drag(ui, painter, state, cmds, track_idx, &post_loop_clips, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
 
@@ -11829,6 +11860,92 @@ mod tests {
         let clip = make_audio_clip(0.4, 0.5, 0.6, 7.0, 8.0);
         let short = resolve_fade_drag_target_short(&seq, &clip).unwrap();
         assert_eq!(short, (0.4, 0.5, 0.6, 7.0, 8.0));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // slip_clamped_source_range
+    //
+    // Pure clamp-math extracted from process_slip_drag's inner block.
+    // Asserts the four invariants that the original inline code held:
+    //   1. Within-bounds dt: window translates rigidly, both endpoints
+    //      shift by exactly dt and width is preserved.
+    //   2. Negative `in` shifts in to 0 and pushes `out` by the
+    //      shortfall, keeping width.
+    //   3. Out beyond media length pulls out back to the media end and
+    //      `in` back by the same overshoot, keeping width.
+    //   4. dt so large both clamps fire — `in` = 0, `out` = media end,
+    //      width may be reduced down to the media length.
+    // ═══════════════════════════════════════════════════════════════
+
+    fn rt(value: i64, rate: u32) -> klipp_core::RationalTime {
+        klipp_core::RationalTime { value, rate }
+    }
+
+    #[test]
+    fn slip_clamp_within_bounds_translates_rigidly() {
+        let orig_in = rt(48, 24);   // 2s
+        let orig_out = rt(120, 24); // 5s — width = 3s
+        let dt = rt(24, 24);        // +1s
+        let media = Some(rt(240, 24)); // 10s
+
+        let (ni, no) = slip_clamped_source_range(orig_in, orig_out, dt, media);
+        assert_eq!(ni.value, 72);
+        assert_eq!(no.value, 144);
+        assert_eq!(no.value - ni.value, 72, "width preserved");
+    }
+
+    #[test]
+    fn slip_clamp_negative_in_snaps_to_zero_and_shifts_out() {
+        let orig_in = rt(24, 24);  // 1s
+        let orig_out = rt(96, 24); // 4s — width = 3s
+        let dt = rt(-48, 24);      // -2s, would put in at -1s
+        let media = Some(rt(240, 24)); // 10s — won't trigger out clamp
+
+        let (ni, no) = slip_clamped_source_range(orig_in, orig_out, dt, media);
+        assert_eq!(ni.value, 0, "in snaps to 0");
+        assert_eq!(no.value, 72, "out re-shifted by the shortfall (1s)");
+        assert_eq!(no.value - ni.value, 72, "width still 3s");
+    }
+
+    #[test]
+    fn slip_clamp_out_beyond_media_pulls_in_back() {
+        let orig_in = rt(48, 24);  // 2s
+        let orig_out = rt(168, 24); // 7s — width = 5s
+        let dt = rt(96, 24);       // +4s, would put out at 11s
+        let media = Some(rt(240, 24)); // 10s
+
+        let (ni, no) = slip_clamped_source_range(orig_in, orig_out, dt, media);
+        assert_eq!(no.value, 240, "out snaps to media end");
+        assert_eq!(ni.value, 120, "in pulled back by 1s overshoot — was 6s, now 5s");
+        assert_eq!(no.value - ni.value, 120, "width still 5s");
+    }
+
+    #[test]
+    fn slip_clamp_both_ends_clip_window_to_media() {
+        // Window is 12s wide but media is only 10s. The first clamp
+        // fixes in=0, then the out-clamp overshoots and pulls in
+        // negative again — the `if new_src_in.value < 0` re-clamp
+        // catches it.
+        let orig_in = rt(0, 24);
+        let orig_out = rt(288, 24); // 12s — wider than media
+        let dt = rt(-24, 24);       // -1s, in goes to -1, out to 11
+        let media = Some(rt(240, 24)); // 10s
+
+        let (ni, no) = slip_clamped_source_range(orig_in, orig_out, dt, media);
+        assert_eq!(ni.value, 0);
+        assert_eq!(no.value, 240);
+        assert_eq!(no.value - ni.value, 240, "window shrunk to media length");
+    }
+
+    #[test]
+    fn slip_clamp_no_media_duration_only_in_clamp_applies() {
+        let orig_in = rt(24, 24);
+        let orig_out = rt(96, 24);
+        let dt = rt(-48, 24);
+        // No media duration — out is unchecked.
+        let (ni, no) = slip_clamped_source_range(orig_in, orig_out, dt, None);
+        assert_eq!(ni.value, 0);
+        assert_eq!(no.value, 72, "no media bound, out shifts freely (with shortfall add-on)");
     }
 
     #[test]
