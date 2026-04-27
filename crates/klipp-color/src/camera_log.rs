@@ -16,6 +16,7 @@
 
 use klipp_core::{
     ColorMatrix, ColorPrimaries, ColorRange, ColorTransfer, SourceColorspace,
+    WorkingColorspace,
 };
 
 // ─── Per-transfer inverse OETFs ─────────────────────────────────────
@@ -363,12 +364,12 @@ fn mul3(m: [[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
 // ─── Full decode pipeline (CPU mirror of the WGSL shaders) ──────────
 
 /// Decode an RGBA u8 byte slice produced by ffmpeg's swscale into a
-/// linear-light f32 buffer in BT.709 working-space primaries.
+/// linear-light f32 buffer in the requested working colorspace.
 ///
 /// Pipeline:
 ///   1. u8 → normalised f32 in `[0, 1]`.
 ///   2. Inverse EOTF for `cs.transfer` → linear in source primaries.
-///   3. `cs.primaries → BT.709` matrix → linear in BT.709.
+///   3. `cs.primaries → working-space primaries` matrix.
 ///
 /// `cs.range` and `cs.matrix` are *not* applied here — those are
 /// already handled by swscale's `sws_setColorspaceDetails` call when
@@ -376,21 +377,26 @@ fn mul3(m: [[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
 /// from un-configured swscale will give the wrong answer.
 ///
 /// Alpha stays linear (per sRGB convention; not gamma-encoded).
-pub fn rgba_u8_to_linear_bt709(rgba: &[u8], cs: SourceColorspace) -> Vec<f32> {
+pub fn rgba_u8_to_linear(
+    rgba: &[u8],
+    cs: SourceColorspace,
+    ws: WorkingColorspace,
+) -> Vec<f32> {
     let n_pixels = rgba.len() / 4;
     let mut out = Vec::with_capacity(n_pixels * 4);
     // SAFETY: writing exactly `n_pixels * 4` values.
     unsafe { out.set_len(n_pixels * 4); }
     let _ = cs.matrix; // matrix is applied by swscale, not here.
+    let m = primaries_to_working_matrix(cs.primaries, ws);
     for (i, chunk) in rgba.chunks_exact(4).enumerate() {
         let r = apply_inverse_eotf(chunk[0] as f32 / 255.0, cs.transfer);
         let g = apply_inverse_eotf(chunk[1] as f32 / 255.0, cs.transfer);
         let b = apply_inverse_eotf(chunk[2] as f32 / 255.0, cs.transfer);
-        let bt709 = primaries_to_bt709([r, g, b], cs.primaries);
+        let working = mul3(m, [r, g, b]);
         let o = i * 4;
-        out[o]     = bt709[0];
-        out[o + 1] = bt709[1];
-        out[o + 2] = bt709[2];
+        out[o]     = working[0];
+        out[o + 1] = working[1];
+        out[o + 2] = working[2];
         out[o + 3] = chunk[3] as f32 / 255.0;
     }
     let _ = ColorMatrix::Bt709; // silence the unused-import warning
@@ -399,14 +405,34 @@ pub fn rgba_u8_to_linear_bt709(rgba: &[u8], cs: SourceColorspace) -> Vec<f32> {
     out
 }
 
-/// Same as [`rgba_u8_to_linear_bt709`] but reads `RGBA64LE` (u16
+/// Back-compat wrapper for [`rgba_u8_to_linear`] pinned to
+/// [`WorkingColorspace::Rec709Linear`]. Matches the long-standing
+/// pre-upgrade behaviour byte-for-byte.
+#[inline]
+pub fn rgba_u8_to_linear_bt709(rgba: &[u8], cs: SourceColorspace) -> Vec<f32> {
+    rgba_u8_to_linear(rgba, cs, WorkingColorspace::Rec709Linear)
+}
+
+/// ACEScg sibling of [`rgba_u8_to_linear_bt709`]. Output is in linear
+/// AP1 primaries (D60 white), ready for an ACES-grade chain.
+#[inline]
+pub fn rgba_u8_to_linear_acescg(rgba: &[u8], cs: SourceColorspace) -> Vec<f32> {
+    rgba_u8_to_linear(rgba, cs, WorkingColorspace::AcesCG)
+}
+
+/// Same as [`rgba_u8_to_linear`] but reads `RGBA64LE` (u16
 /// little-endian, 16 bits per channel) — the swscale output format
 /// used for >=10-bit sources to preserve precision through the
 /// linear-light step.
-pub fn rgba64_le_to_linear_bt709(rgba64: &[u8], cs: SourceColorspace) -> Vec<f32> {
+pub fn rgba64_le_to_linear(
+    rgba64: &[u8],
+    cs: SourceColorspace,
+    ws: WorkingColorspace,
+) -> Vec<f32> {
     let n_pixels = rgba64.len() / 8; // 8 bytes per pixel (u16 × 4).
     let mut out = Vec::with_capacity(n_pixels * 4);
     unsafe { out.set_len(n_pixels * 4); }
+    let m = primaries_to_working_matrix(cs.primaries, ws);
     for (i, chunk) in rgba64.chunks_exact(8).enumerate() {
         let r = u16::from_le_bytes([chunk[0], chunk[1]]) as f32 / 65535.0;
         let g = u16::from_le_bytes([chunk[2], chunk[3]]) as f32 / 65535.0;
@@ -415,14 +441,27 @@ pub fn rgba64_le_to_linear_bt709(rgba64: &[u8], cs: SourceColorspace) -> Vec<f32
         let r_lin = apply_inverse_eotf(r, cs.transfer);
         let g_lin = apply_inverse_eotf(g, cs.transfer);
         let b_lin = apply_inverse_eotf(b, cs.transfer);
-        let bt709 = primaries_to_bt709([r_lin, g_lin, b_lin], cs.primaries);
+        let working = mul3(m, [r_lin, g_lin, b_lin]);
         let o = i * 4;
-        out[o]     = bt709[0];
-        out[o + 1] = bt709[1];
-        out[o + 2] = bt709[2];
+        out[o]     = working[0];
+        out[o + 1] = working[1];
+        out[o + 2] = working[2];
         out[o + 3] = a;
     }
     out
+}
+
+/// Back-compat wrapper for [`rgba64_le_to_linear`] pinned to
+/// [`WorkingColorspace::Rec709Linear`].
+#[inline]
+pub fn rgba64_le_to_linear_bt709(rgba64: &[u8], cs: SourceColorspace) -> Vec<f32> {
+    rgba64_le_to_linear(rgba64, cs, WorkingColorspace::Rec709Linear)
+}
+
+/// ACEScg sibling of [`rgba64_le_to_linear_bt709`].
+#[inline]
+pub fn rgba64_le_to_linear_acescg(rgba64: &[u8], cs: SourceColorspace) -> Vec<f32> {
+    rgba64_le_to_linear(rgba64, cs, WorkingColorspace::AcesCG)
 }
 
 // ─── Direct YUV→linear-BT.709 converter for YUV420P10LE ─────────────
@@ -438,6 +477,43 @@ fn matrix_coefficients(matrix: ColorMatrix) -> (f32, f32, f32, f32) {
         | ColorMatrix::Bt2020Cl => ( 1.4746, 1.8814, -0.16455, -0.57135),
         ColorMatrix::Smpte240 => ( 1.576,  1.826,  -0.227,    -0.477),
         _ => ( 1.5748, 1.8556, -0.1873, -0.4681),
+    }
+}
+
+/// 3×3 source-primaries → target-working-space matrix, baked once
+/// per frame and reused per-pixel.
+///
+/// For [`WorkingColorspace::Rec709Linear`] (the long-standing
+/// pipeline default) this returns exactly the same matrix as
+/// [`primaries_to_bt709_matrix`] — i.e. behaviour is byte-identical
+/// to the pre-upgrade decoder.
+///
+/// For [`WorkingColorspace::AcesCG`] the source-primaries → BT.709
+/// matrix is composed with [`crate::primaries::bt709_to_acescg`] so
+/// the per-pixel cost stays at one 3×3 multiply: source → AP1
+/// directly, no intermediate BT.709 hop.
+///
+/// [`WorkingColorspace::Bt2020Linear`] currently routes through the
+/// BT.709 matrix as a placeholder — Bt2020Linear has no end-to-end
+/// pipeline behind it yet. Wiring lands later; until then a project
+/// set to Bt2020Linear behaves the same as Rec709Linear.
+pub fn primaries_to_working_matrix(
+    p: ColorPrimaries,
+    ws: WorkingColorspace,
+) -> [[f32; 3]; 3] {
+    let to_bt709 = primaries_to_bt709_matrix(p);
+    match ws {
+        WorkingColorspace::Rec709Linear => to_bt709,
+        WorkingColorspace::AcesCG => {
+            // Compose: AP1_RGB = M_709→AP1 · M_src→709 · src_RGB
+            // Doing the composition once per frame keeps the per-pixel
+            // hot loop at one 3×3 multiply instead of two.
+            crate::primaries::matrix3_mul(
+                crate::primaries::bt709_to_acescg(),
+                to_bt709,
+            )
+        }
+        WorkingColorspace::Bt2020Linear => to_bt709,
     }
 }
 
@@ -553,7 +629,7 @@ impl EotfLut {
 }
 
 /// Decode YUV420P10LE planes directly into a linear-light f32 RGBA
-/// buffer in BT.709 working-space primaries.
+/// buffer in the requested working colorspace.
 ///
 /// Skips libswscale entirely — we observed swscale's
 /// `YUV420P10LE → RGBA64LE` path producing channel-clamped output
@@ -561,7 +637,7 @@ impl EotfLut {
 /// `sws_setColorspaceDetails` configuration. This direct path uses
 /// the AVFrame's raw 10-bit planes, applies the source's range +
 /// matrix → display-encoded RGB, then the same EOTF + gamut chain
-/// as [`rgba_u8_to_linear_bt709`] / [`rgba64_le_to_linear_bt709`].
+/// as [`rgba_u8_to_linear`] / [`rgba64_le_to_linear`].
 ///
 /// Resize is nearest-neighbour to match the existing playback
 /// downscale behaviour. Output dimensions come from the caller
@@ -572,7 +648,7 @@ impl EotfLut {
 /// per-row byte stride. Caller must provide sources sized
 /// `src_h * y_stride` / `src_h/2 * u_stride` / `src_h/2 * v_stride`.
 #[allow(clippy::too_many_arguments)]
-pub fn yuv420p10le_to_linear_bt709(
+pub fn yuv420p10le_to_linear(
     y_data: &[u8],
     u_data: &[u8],
     v_data: &[u8],
@@ -584,6 +660,7 @@ pub fn yuv420p10le_to_linear_bt709(
     dst_w: u32,
     dst_h: u32,
     cs: SourceColorspace,
+    ws: WorkingColorspace,
 ) -> Vec<f32> {
     let (cv_r, cu_b, cu_g, cv_g) = matrix_coefficients(cs.matrix);
     // 10-bit range constants. Limited: Y 64..940 / UV 64..960.
@@ -595,17 +672,24 @@ pub fn yuv420p10le_to_linear_bt709(
         ColorRange::Full =>    ( 0.0_f32, 1.0 / 1023.0, 512.0_f32, 1.0 / 1023.0),
     };
     // Build a 1025-entry LUT of the source's inverse-EOTF and a 3×3
-    // matrix for the primaries → BT.709 step. Both are constant
-    // across the whole frame; computing them inside the per-pixel
-    // loop was the dominant cost in the first naïve implementation.
+    // primaries-conversion matrix for the requested working space.
+    // Both are constant across the whole frame; computing them inside
+    // the per-pixel loop was the dominant cost in the first naïve
+    // implementation.
     let eotf = EotfLut::new(cs.transfer);
-    let pm = primaries_to_bt709_matrix(cs.primaries);
+    let pm = primaries_to_working_matrix(cs.primaries, ws);
     let (m00, m01, m02) = (pm[0][0], pm[0][1], pm[0][2]);
     let (m10, m11, m12) = (pm[1][0], pm[1][1], pm[1][2]);
     let (m20, m21, m22) = (pm[2][0], pm[2][1], pm[2][2]);
-    let primaries_is_identity = matches!(cs.primaries,
-        ColorPrimaries::Bt709 | ColorPrimaries::Bt470M
-        | ColorPrimaries::Smpte428 | ColorPrimaries::Ebu3213);
+    // Identity-matrix shortcut: skip the per-pixel matmul when the
+    // source primaries already match the working space's basis. Only
+    // valid for `Rec709Linear` working space — under `AcesCG` even a
+    // BT.709 source needs the BT.709 → AP1 hop, so we always run the
+    // matmul.
+    let primaries_is_identity = matches!(ws, WorkingColorspace::Rec709Linear)
+        && matches!(cs.primaries,
+            ColorPrimaries::Bt709 | ColorPrimaries::Bt470M
+            | ColorPrimaries::Smpte428 | ColorPrimaries::Ebu3213);
 
     use rayon::prelude::*;
     let dst_w_us = dst_w as usize;
@@ -646,7 +730,7 @@ pub fn yuv420p10le_to_linear_bt709(
                 let r_lin = eotf.lookup(r_disp);
                 let g_lin = eotf.lookup(g_disp);
                 let b_lin = eotf.lookup(b_disp);
-                let (r709, g709, b709) = if primaries_is_identity {
+                let (r_out, g_out, b_out) = if primaries_is_identity {
                     (r_lin, g_lin, b_lin)
                 } else {
                     (
@@ -656,13 +740,64 @@ pub fn yuv420p10le_to_linear_bt709(
                     )
                 };
                 let o = dx * 4;
-                row_out[o]     = r709;
-                row_out[o + 1] = g709;
-                row_out[o + 2] = b709;
+                row_out[o]     = r_out;
+                row_out[o + 1] = g_out;
+                row_out[o + 2] = b_out;
                 row_out[o + 3] = 1.0;
             }
         });
     out
+}
+
+/// Back-compat wrapper for [`yuv420p10le_to_linear`] pinned to
+/// [`WorkingColorspace::Rec709Linear`]. Matches the long-standing
+/// pre-upgrade behaviour byte-for-byte.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub fn yuv420p10le_to_linear_bt709(
+    y_data: &[u8],
+    u_data: &[u8],
+    v_data: &[u8],
+    y_stride: usize,
+    u_stride: usize,
+    v_stride: usize,
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+    cs: SourceColorspace,
+) -> Vec<f32> {
+    yuv420p10le_to_linear(
+        y_data, u_data, v_data,
+        y_stride, u_stride, v_stride,
+        src_w, src_h, dst_w, dst_h,
+        cs, WorkingColorspace::Rec709Linear,
+    )
+}
+
+/// ACEScg sibling of [`yuv420p10le_to_linear_bt709`]. Output is in
+/// linear AP1 primaries — input for an ACES grade chain.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub fn yuv420p10le_to_linear_acescg(
+    y_data: &[u8],
+    u_data: &[u8],
+    v_data: &[u8],
+    y_stride: usize,
+    u_stride: usize,
+    v_stride: usize,
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+    cs: SourceColorspace,
+) -> Vec<f32> {
+    yuv420p10le_to_linear(
+        y_data, u_data, v_data,
+        y_stride, u_stride, v_stride,
+        src_w, src_h, dst_w, dst_h,
+        cs, WorkingColorspace::AcesCG,
+    )
 }
 
 #[cfg(test)]
@@ -849,5 +984,151 @@ mod tests {
         assert!((new[1] - exp_g).abs() < 1e-6);
         assert!((new[2] - exp_b).abs() < 1e-6);
         assert_eq!(new[3], 1.0);
+    }
+
+    // ─── ACEScg working-space dispatch ──────────────────────────
+
+    /// Direct invariant: the working-space matrix selector should
+    /// satisfy `M_to_acescg = bt709_to_acescg · M_to_bt709` for every
+    /// source primaries variant. If the composition logic in
+    /// `primaries_to_working_matrix` ever drifts, this fires before
+    /// any pixel-level test does.
+    #[test]
+    fn working_matrix_acescg_equals_composed_bt709() {
+        use crate::primaries::{bt709_to_acescg, matrix3_mul};
+        let primaries_set = [
+            ColorPrimaries::Bt709,
+            ColorPrimaries::Bt2020,
+            ColorPrimaries::Bt601_525,
+            ColorPrimaries::Bt601_625,
+            ColorPrimaries::DciP3,
+            ColorPrimaries::DisplayP3,
+            ColorPrimaries::SGamut3Cine,
+            ColorPrimaries::SGamut3,
+            ColorPrimaries::VGamut,
+            ColorPrimaries::CanonCinemaGamut,
+            ColorPrimaries::AlexaWideGamut3,
+            ColorPrimaries::AlexaWideGamut4,
+            ColorPrimaries::RedWideGamut,
+            ColorPrimaries::BmdWideGamut,
+        ];
+        let to_acescg = bt709_to_acescg();
+        for p in primaries_set {
+            let direct = primaries_to_working_matrix(p, WorkingColorspace::AcesCG);
+            let composed = matrix3_mul(
+                to_acescg,
+                primaries_to_working_matrix(p, WorkingColorspace::Rec709Linear),
+            );
+            for i in 0..3 {
+                for j in 0..3 {
+                    let d = direct[i][j];
+                    let c = composed[i][j];
+                    assert!(
+                        (d - c).abs() < 1e-6,
+                        "primaries {p:?} M_acescg[{i}][{j}]={d}, composed={c}",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Pixel-level oracle: rgba_u8 ACEScg output must equal the
+    /// BT.709 output run through `bt709_to_acescg` per-pixel.
+    /// Tolerance is 1e-4 absolute — comfortably above f32 quantisation
+    /// noise but tight enough to catch a transposed or scaled matrix.
+    /// Exercises a non-trivial primaries variant (S-Gamut3.Cine /
+    /// S-Log3) so the composed matrix actually does work, not just
+    /// the BT.709-identity path.
+    #[test]
+    fn rgba_u8_acescg_matches_bt709_via_acescg_matrix() {
+        use crate::primaries::{bt709_to_acescg, matrix3_mul_vec};
+        let cs = SourceColorspace {
+            range: ColorRange::Full,
+            matrix: ColorMatrix::Bt709,
+            primaries: ColorPrimaries::SGamut3Cine,
+            transfer: ColorTransfer::SLog3,
+        };
+        // Synthesised RGBA pixels covering low / mid / high signal —
+        // S-Log3 mid-grey is ~108/255 (0.41 in normalised input).
+        let rgba: Vec<u8> = vec![
+             40,  60,  80, 255,    // shadows
+            108, 128, 148, 255,    // mid-grey neighbourhood
+            200, 180, 160, 255,    // highlights
+            255,   0, 128, 255,    // saturated red / mid green / mid blue
+              0, 255,   0,  64,    // pure green, semi-transparent
+        ];
+        let bt709 = rgba_u8_to_linear_bt709(&rgba, cs);
+        let acescg = rgba_u8_to_linear_acescg(&rgba, cs);
+        assert_eq!(bt709.len(), acescg.len());
+        let m = bt709_to_acescg();
+        for i in 0..(rgba.len() / 4) {
+            let o = i * 4;
+            let expected = matrix3_mul_vec(m, [bt709[o], bt709[o+1], bt709[o+2]]);
+            for k in 0..3 {
+                let diff = (acescg[o+k] - expected[k]).abs();
+                assert!(
+                    diff < 1e-4,
+                    "pixel {i} ch {k}: bt709={} → expected_acescg={}, got={}, diff={diff}",
+                    bt709[o+k], expected[k], acescg[o+k],
+                );
+            }
+            // Alpha is colourspace-invariant.
+            assert_eq!(bt709[o+3], acescg[o+3]);
+        }
+    }
+
+    /// rgba64_le sibling of the rgba_u8 oracle — same invariant on
+    /// the 16-bit input path. Uses BT.2020 / PQ to exercise both a
+    /// wide-gamut primaries variant and the PQ EOTF.
+    #[test]
+    fn rgba64_le_acescg_matches_bt709_via_acescg_matrix() {
+        use crate::primaries::{bt709_to_acescg, matrix3_mul_vec};
+        let cs = SourceColorspace {
+            range: ColorRange::Limited,
+            matrix: ColorMatrix::Bt2020Ncl,
+            primaries: ColorPrimaries::Bt2020,
+            transfer: ColorTransfer::Pq,
+        };
+        // Three pixels, RGBA u16 little-endian (8 bytes each).
+        // Mid-grey, saturated red, and a near-clipped green.
+        let mut rgba64 = Vec::new();
+        for px in [
+            [0x4000u16, 0x4000, 0x4000, 0xFFFF],
+            [0xC000,    0x2000, 0x1000, 0xFFFF],
+            [0x0800,    0xE000, 0x0800, 0xFFFF],
+        ] {
+            for v in px {
+                rgba64.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        let bt709 = rgba64_le_to_linear_bt709(&rgba64, cs);
+        let acescg = rgba64_le_to_linear_acescg(&rgba64, cs);
+        let m = bt709_to_acescg();
+        for i in 0..(rgba64.len() / 8) {
+            let o = i * 4;
+            let expected = matrix3_mul_vec(m, [bt709[o], bt709[o+1], bt709[o+2]]);
+            for k in 0..3 {
+                let diff = (acescg[o+k] - expected[k]).abs();
+                assert!(
+                    diff < 1e-4,
+                    "rgba64 pixel {i} ch {k}: diff={diff}",
+                );
+            }
+            assert_eq!(bt709[o+3], acescg[o+3]);
+        }
+    }
+
+    /// Sanity: the back-compat `_bt709` wrapper produces byte-
+    /// identical output to the underlying `_to_linear` call with
+    /// `WorkingColorspace::Rec709Linear`. If this drifts, every
+    /// existing caller of the `_bt709` API is silently changing
+    /// behaviour.
+    #[test]
+    fn bt709_wrapper_is_byte_identical_to_rec709_linear_dispatch() {
+        let cs = SourceColorspace::BT709_LIMITED_SDR;
+        let rgba: Vec<u8> = (0..256).map(|v| v as u8).collect();
+        let via_wrapper = rgba_u8_to_linear_bt709(&rgba, cs);
+        let via_dispatch = rgba_u8_to_linear(&rgba, cs, WorkingColorspace::Rec709Linear);
+        assert_eq!(via_wrapper, via_dispatch);
     }
 }

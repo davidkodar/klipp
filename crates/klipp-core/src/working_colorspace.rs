@@ -27,19 +27,48 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum WorkingColorspace {
     /// Linear-light, BT.709 / sRGB primaries, D65 white. The pipeline's
-    /// behaviour through Phase D and the back-compat default for any
-    /// project file written before Phase E.
+    /// long-standing behaviour and the back-compat default for any
+    /// project file written before the working-space upgrade.
     #[default]
     Rec709Linear,
     /// Linear-light, ACES AP1 primaries, D60 white. The ACES working
     /// space used by Resolve, Baselight, Nuke. New projects default
-    /// here once the Phase E pipeline is wired through (Sessions 2-7).
+    /// here once the full ACES pipeline is wired through.
     AcesCG,
     /// Linear-light, BT.2020 primaries, D65 white. HDR-only delivery
     /// pipelines that want a wider gamut than BT.709 without the ACES
     /// RRT tone curve. Less common — use only when explicitly asked
     /// for; ACEScg is the well-tested path.
     Bt2020Linear,
+}
+
+impl WorkingColorspace {
+    /// Wire-stable u8 tag — used by callers that need to pack the
+    /// enum into a `u8`-sized atomic, an FFI integer, or a fixed-width
+    /// project-file field. Discriminants are pinned so a future
+    /// reorder of the enum can't silently change the meaning of an
+    /// already-stored value.
+    #[inline]
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            WorkingColorspace::Rec709Linear => 0,
+            WorkingColorspace::AcesCG => 1,
+            WorkingColorspace::Bt2020Linear => 2,
+        }
+    }
+
+    /// Inverse of [`Self::as_u8`]. Unknown tags fall back to
+    /// [`Self::Rec709Linear`] — the safe default that matches
+    /// pre-upgrade behaviour, so a corrupted atomic never produces
+    /// a wider-gamut surprise.
+    #[inline]
+    pub const fn from_u8(tag: u8) -> Self {
+        match tag {
+            1 => WorkingColorspace::AcesCG,
+            2 => WorkingColorspace::Bt2020Linear,
+            _ => WorkingColorspace::Rec709Linear,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -57,6 +86,36 @@ mod tests {
         assert_ne!(WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG);
         assert_ne!(WorkingColorspace::AcesCG, WorkingColorspace::Bt2020Linear);
         assert_ne!(WorkingColorspace::Rec709Linear, WorkingColorspace::Bt2020Linear);
+    }
+
+    #[test]
+    fn u8_round_trip() {
+        for ws in [
+            WorkingColorspace::Rec709Linear,
+            WorkingColorspace::AcesCG,
+            WorkingColorspace::Bt2020Linear,
+        ] {
+            assert_eq!(WorkingColorspace::from_u8(ws.as_u8()), ws);
+        }
+    }
+
+    #[test]
+    fn u8_tags_are_stable() {
+        // Pin the wire tags. Reordering the enum or inserting a new
+        // variant must not silently change these — atomic stores and
+        // FFI consumers depend on them.
+        assert_eq!(WorkingColorspace::Rec709Linear.as_u8(), 0);
+        assert_eq!(WorkingColorspace::AcesCG.as_u8(), 1);
+        assert_eq!(WorkingColorspace::Bt2020Linear.as_u8(), 2);
+    }
+
+    #[test]
+    fn unknown_u8_falls_back_to_rec709_linear() {
+        // A corrupted atomic or FFI value must not produce a
+        // wider-gamut surprise — the safe fallback is the default.
+        for tag in [3u8, 7, 42, 255] {
+            assert_eq!(WorkingColorspace::from_u8(tag), WorkingColorspace::Rec709Linear);
+        }
     }
 
     // The serde-tagged JSON round-trip + back-compat tests live in

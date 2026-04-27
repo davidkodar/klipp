@@ -1108,6 +1108,31 @@ pub fn optimised_playback_mode() -> u8 {
     OPTIMISED_PLAYBACK_PREF.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Working colorspace the decoder lands frames in. u8 tag matches
+/// `klipp_core::WorkingColorspace::as_u8`:
+///   0 = Rec709Linear (default — pre-upgrade pipeline behaviour)
+///   1 = AcesCG       (linear AP1 primaries, D60 white)
+///   2 = Bt2020Linear (placeholder until end-to-end Rec.2020 lands)
+/// Unknown tags fall back to `Rec709Linear` via
+/// `WorkingColorspace::from_u8`. The setter is the only sanctioned way
+/// to change this — driven by project state when a `.klipp` file
+/// loads / changes.
+static WORKING_COLORSPACE_PREF: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Set the active working colorspace. Called by the engine when the
+/// loaded project's `working_colorspace` changes.
+pub fn set_working_colorspace(ws: klipp_core::WorkingColorspace) {
+    WORKING_COLORSPACE_PREF.store(ws.as_u8(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Read the active working colorspace. Lock-free; safe to call from
+/// the decode thread per-frame.
+fn working_colorspace() -> klipp_core::WorkingColorspace {
+    klipp_core::WorkingColorspace::from_u8(
+        WORKING_COLORSPACE_PREF.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
 /// Decide whether the playback decoder should open the skim file
 /// instead of the original source. Pure function — separated from the
 /// engine so it's unit-testable. Three inputs:
@@ -2178,11 +2203,12 @@ fn convert_sw_frame(
         let y_data = received_frame.data(0);
         let u_data = received_frame.data(1);
         let v_data = received_frame.data(2);
-        let linear = klipp_color::camera_log::yuv420p10le_to_linear_bt709(
+        let linear = klipp_color::camera_log::yuv420p10le_to_linear(
             y_data, u_data, v_data,
             y_stride, u_stride, v_stride,
             src_w, src_h, dst_w, dst_h,
             source_cs,
+            working_colorspace(),
         );
         let (final_w, final_h) = if source_rotation == 90 || source_rotation == 270 {
             (dst_h, dst_w)
@@ -2367,9 +2393,11 @@ fn convert_sw_frame(
     // 8-bit we rotate the u8 then linearise — cheaper and bit-
     // identical to the old output. Either way, the linear-decode
     // step uses the colourspace-aware path so log curves and
-    // wide-gamut sources reach BT.709 working space correctly.
+    // wide-gamut sources reach the project's working space
+    // correctly.
+    let ws = working_colorspace();
     let linear_data = if is_hi_bit_depth {
-        let linear = klipp_color::camera_log::rgba64_le_to_linear_bt709(&raw_data, source_cs);
+        let linear = klipp_color::camera_log::rgba64_le_to_linear(&raw_data, source_cs, ws);
         if source_rotation != 0 {
             rotate_linear_rgba(&linear, width, height, source_rotation).0
         } else {
@@ -2377,9 +2405,9 @@ fn convert_sw_frame(
         }
     } else if source_rotation != 0 {
         let (rotated, _rw, _rh) = crate::engine::rotate_rgba(&raw_data, width, height, source_rotation);
-        klipp_color::camera_log::rgba_u8_to_linear_bt709(&rotated, source_cs)
+        klipp_color::camera_log::rgba_u8_to_linear(&rotated, source_cs, ws)
     } else {
-        klipp_color::camera_log::rgba_u8_to_linear_bt709(&raw_data, source_cs)
+        klipp_color::camera_log::rgba_u8_to_linear(&raw_data, source_cs, ws)
     };
 
     let (final_w, final_h) = if source_rotation == 90 || source_rotation == 270 {
