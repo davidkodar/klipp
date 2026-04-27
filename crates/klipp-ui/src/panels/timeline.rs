@@ -5647,7 +5647,6 @@ impl TimelinePanel {
         state: &mut AppState,
         cmds: &mut Vec<AppCommand>,
         track_idx: usize,
-        clips: &[klipp_timeline::Clip],
         content_rect: &egui::Rect,
         zoom: f32,
         scroll: f32,
@@ -5659,9 +5658,14 @@ impl TimelinePanel {
         // Right-click context menu on clips (suppressed when keyframe context menu was opened)
         if track_response.secondary_clicked() && !self.suppress_clip_context_menu {
             if let Some(pos) = pointer_pos {
-                if let Some((_, hit_clip)) = self.hit_test_clip_body(&clips, content_rect, track_rect, zoom, scroll, track_height, pos) {
+                let hit_id: Option<klipp_core::ClipId> = {
+                    let clips = &state.sequence().tracks[track_idx].clips;
+                    self.hit_test_clip_body(clips, content_rect, track_rect, zoom, scroll, track_height, pos)
+                        .map(|(_, hit_clip)| hit_clip.id)
+                };
+                if let Some(hit_clip_id) = hit_id {
                     // Store the clip id so the context menu can use it
-                    cmds.push(AppCommand::SelectClip(Some(hit_clip.id)));
+                    cmds.push(AppCommand::SelectClip(Some(hit_clip_id)));
                 }
             }
         }
@@ -8574,12 +8578,6 @@ impl TimelinePanel {
         let track_kind = state.sequence().tracks[track_idx].kind;
         let track_id = state.sequence().tracks[track_idx].id;
         let clips_len = state.sequence().tracks[track_idx].clips.len();
-        // Post-loop helpers (`process_fade_drag`, `handle_clip_click`,
-        // `show_clip_context_menu`, drag-state processors) still take a
-        // `&[Clip]` slice alongside `&mut AppState`. Until those callees are
-        // also rewritten to take `track_idx` and re-borrow internally we keep
-        // a single owned snapshot for the post-loop block.
-        let post_loop_clips: Vec<klipp_timeline::Clip> = state.sequence().tracks[track_idx].clips.clone();
 
         let zoom = state.timeline_zoom;
         let scroll = state.timeline_scroll_x;
@@ -8679,10 +8677,16 @@ impl TimelinePanel {
         // Draw transition indicators between clips
         self.draw_transition_overlays(ui, painter, content_rect, track_rect, track_idx, state, zoom, scroll, track_height);
 
-        self.draw_audio_crossfade_indicators(painter, &post_loop_clips, content_rect, track_rect, state, track_kind, fps, zoom, scroll);
-        self.draw_anchor_connection_lines(painter, &post_loop_clips, content_rect, track_rect, state, zoom, scroll);
-        self.draw_collision_indicators(painter, &post_loop_clips, content_rect, track_rect, state, track_idx, zoom, scroll);
-        self.handle_trim_hover(painter, ui, state, track_idx, &post_loop_clips, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, track_kind, interactive);
+        // The remaining post-loop helpers all take `state: &AppState`
+        // (read-only), so the slice borrow from state.sequence() coexists
+        // with passing `state` immutably into each call.
+        {
+            let clips_slice = &state.sequence().tracks[track_idx].clips[..];
+            self.draw_audio_crossfade_indicators(painter, clips_slice, content_rect, track_rect, state, track_kind, fps, zoom, scroll);
+            self.draw_anchor_connection_lines(painter, clips_slice, content_rect, track_rect, state, zoom, scroll);
+            self.draw_collision_indicators(painter, clips_slice, content_rect, track_rect, state, track_idx, zoom, scroll);
+            self.handle_trim_hover(painter, ui, state, track_idx, clips_slice, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, track_kind, interactive);
+        }
 
         if !interactive {
             return;
@@ -8722,7 +8726,7 @@ impl TimelinePanel {
             }
         }
 
-        self.show_clip_context_menu(ui, &track_response, state, cmds, track_idx, &post_loop_clips, content_rect, zoom, scroll, track_height, track_rect, pointer_pos, fps);
+        self.show_clip_context_menu(ui, &track_response, state, cmds, track_idx, content_rect, zoom, scroll, track_height, track_rect, pointer_pos, fps);
 
         self.handle_clip_click(ui, &track_response, state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, fps);
 
