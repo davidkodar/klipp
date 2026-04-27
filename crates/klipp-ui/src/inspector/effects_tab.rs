@@ -240,7 +240,7 @@ pub fn show(
             .interact(compare_rect, ui.id().with(("bfx_cmp", i)), egui::Sense::click())
             .on_hover_text(if compare_active { "Stop A/B compare" } else { "A/B compare: bypass vs applied" });
         let compare_tint = if compare_active {
-            egui::Color32::from_rgb(0xc8, 0x78, 0xff)
+            theme.accent_alt
         } else if compare_resp.hovered() {
             theme.text_primary
         } else {
@@ -505,7 +505,7 @@ pub fn show(
             .interact(compare_rect, ui.id().with(("ofx_cmp", i)), egui::Sense::click())
             .on_hover_text(if compare_active { "Stop A/B compare" } else { "A/B compare: bypass vs applied" });
         let compare_tint = if compare_active {
-            egui::Color32::from_rgb(0xc8, 0x78, 0xff)
+            theme.accent_alt
         } else if compare_resp.hovered() {
             theme.text_primary
         } else {

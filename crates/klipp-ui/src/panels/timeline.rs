@@ -1358,7 +1358,7 @@ impl TimelinePanel {
                             painter.rect_stroke(
                                 clip_rect,
                                 3.0,
-                                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(160, 100, 220)),
+                                egui::Stroke::new(2.0_f32, theme().accent_alt),
                             );
                             break;
                         }
@@ -1556,7 +1556,7 @@ impl TimelinePanel {
                         painter.rect_stroke(
                             track_rect,
                             0.0,
-                            egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(180, 140, 255)),
+                            egui::Stroke::new(2.0_f32, theme().accent_alt),
                         );
                         if !any_down {
                             if let Some(crate::drag_drop::DragPayload::Title { title_data, template_name, animation }) = state.drag_drop.end() {

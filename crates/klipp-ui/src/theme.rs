@@ -49,6 +49,16 @@ pub struct KlippTheme {
     pub accent_dim: Color32,
     pub accent_glow: Color32,
     pub accent_subtle: Color32,
+    /// Secondary accent — used for things that need to read as
+    /// "different from the primary accent" without taking on a
+    /// status meaning. Examples in the codebase: per-effect A/B
+    /// compare highlight, Title-clip identity badge, drag-drop
+    /// highlight on Effect / Title payloads (where the primary
+    /// accent's amber would clash with the orange Effect / red
+    /// Title role colours). A theme can pick any colour here as
+    /// long as it's perceptually distinct from `accent` on its
+    /// background polarity.
+    pub accent_alt: Color32,
 
     // Text
     pub text_primary: Color32,
@@ -120,6 +130,7 @@ pub struct ThemeColors {
     pub accent_dim: HexColor,
     pub accent_glow: HexColor,
     pub accent_subtle: HexColor,
+    pub accent_alt: HexColor,
 
     pub text_primary: HexColor,
     pub text_secondary: HexColor,
@@ -164,6 +175,7 @@ impl From<ThemeColors> for KlippTheme {
             accent_dim: c.accent_dim.0,
             accent_glow: c.accent_glow.0,
             accent_subtle: c.accent_subtle.0,
+            accent_alt: c.accent_alt.0,
             text_primary: c.text_primary.0,
             text_secondary: c.text_secondary.0,
             text_dim: c.text_dim.0,

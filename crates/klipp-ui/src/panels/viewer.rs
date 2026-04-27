@@ -457,7 +457,7 @@ impl ViewerPanel {
         } else if stab_compare_active {
             theme.marker_success // green for stabilization compare
         } else if effect_compare_active {
-            egui::Color32::from_rgb(0xc8, 0x78, 0xff) // purple for per-effect compare (no semantic token)
+            theme.accent_alt // per-effect compare — distinct from primary accent
         } else {
             theme.accent
         };

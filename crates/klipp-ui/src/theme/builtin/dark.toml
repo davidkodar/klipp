@@ -40,6 +40,10 @@ accent_dim    = "#a06e14"
 # Hex format here is #rrggbbaa with already-premultiplied channels.
 accent_glow   = "#1701052e"
 accent_subtle = "#150e0317"
+# Secondary accent — distinct from the warm amber for things that
+# would clash with role colours (Effect orange, Title red). Bright
+# magenta-purple reads cleanly against dark bgs.
+accent_alt    = "#c878ff"
 
 # ── Text ──
 text_primary   = "#e8e8ee"
