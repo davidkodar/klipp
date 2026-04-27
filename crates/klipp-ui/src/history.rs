@@ -1003,3 +1003,200 @@ mod bin_undo_tests {
         assert_bin_consistent(&pool, mid, Some("Bin A"), Some(bin_a_id));
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Drag-coalesce defensive-path tests — regression-pin CODE_AUDIT U-3
+// and U-4. The two production fixes this guards are:
+//
+//   * combine_old_new — wildcard arm logs + falls back to old command
+//     (was: silently returned new.command.clone(), throwing away
+//     old state, so undo was a no-op for any future variant).
+//   * end_drag — when pending_coalesce_key is Some but
+//     pending_old_entry is None (caller invoked end_drag without
+//     begin_drag, or an intervening path stole the snapshot), the
+//     final state is pushed on its own (was: silently dropped).
+//
+// Both look intentional from the inline comments, but neither was
+// covered by tests. Without these regression tests a future cleanup
+// could re-introduce the original bugs and only surface them the
+// next time a user lost an edit.
+// ═══════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod drag_coalesce_tests {
+    use super::*;
+    use klipp_core::ClipId;
+
+    fn audio_entry(gain: f32) -> HistoryEntry {
+        // Single-variant entry with `gain` propagated to old AND new
+        // sides — callers fold separate "old" and "new" snapshots into
+        // begin_drag / end_drag, so each individual entry just carries
+        // the same value on both sides.
+        HistoryEntry {
+            sequence_idx: 0,
+            command: EditCommand::EditClipAudio {
+                clip_id: ClipId::new(),
+                old_gain: gain, old_volume: gain, old_pan: 0.0,
+                old_fade_in: 0.0, old_fade_out: 0.0,
+                old_channel_config: klipp_core::ChannelConfig::default(),
+                new_gain: gain, new_volume: gain, new_pan: 0.0,
+                new_fade_in: 0.0, new_fade_out: 0.0,
+                new_channel_config: klipp_core::ChannelConfig::default(),
+            },
+        }
+    }
+
+    fn slip_entry() -> HistoryEntry {
+        // A non-coalesce-eligible variant — used to construct a
+        // mismatched (old, new) pair for combine_old_new's wildcard
+        // arm. LegacySlipClip has no matching arm in combine_old_new,
+        // so pairing it with EditClipAudio reaches the fallback.
+        HistoryEntry {
+            sequence_idx: 0,
+            command: EditCommand::LegacySlipClip {
+                clip_id: ClipId::new(),
+                old_source_in: klipp_core::RationalTime::ZERO,
+                old_source_out: klipp_core::RationalTime::ZERO,
+                new_source_in: klipp_core::RationalTime::ZERO,
+                new_source_out: klipp_core::RationalTime::ZERO,
+            },
+        }
+    }
+
+    // ── U-3: combine_old_new ────────────────────────────────────────
+
+    #[test]
+    fn combine_old_new_clip_audio_takes_old_pre_and_new_post() {
+        // Happy path: identical variants on both sides. The combined
+        // entry must carry old_* from `old_entry` and new_* from
+        // `new_entry` so undo rolls back to the pre-drag state and
+        // redo restores the post-drag state.
+        let old = HistoryEntry {
+            sequence_idx: 7,
+            command: EditCommand::EditClipAudio {
+                clip_id: ClipId::new(),
+                old_gain: 1.0, old_volume: 1.0, old_pan: 0.0,
+                old_fade_in: 0.5, old_fade_out: 0.25,
+                old_channel_config: klipp_core::ChannelConfig::default(),
+                new_gain: 1.0, new_volume: 1.0, new_pan: 0.0,
+                new_fade_in: 0.5, new_fade_out: 0.25,
+                new_channel_config: klipp_core::ChannelConfig::default(),
+            },
+        };
+        let new = HistoryEntry {
+            sequence_idx: 7,
+            command: EditCommand::EditClipAudio {
+                clip_id: ClipId::new(),
+                old_gain: 9.0, old_volume: 9.0, old_pan: 0.9,
+                old_fade_in: 9.0, old_fade_out: 9.0,
+                old_channel_config: klipp_core::ChannelConfig::default(),
+                new_gain: 5.0, new_volume: 0.7, new_pan: -0.3,
+                new_fade_in: 1.5, new_fade_out: 0.75,
+                new_channel_config: klipp_core::ChannelConfig::default(),
+            },
+        };
+        let combined = combine_old_new(old, new);
+        assert_eq!(combined.sequence_idx, 7);
+        match combined.command {
+            EditCommand::EditClipAudio {
+                old_gain, old_volume, old_pan, old_fade_in, old_fade_out,
+                new_gain, new_volume, new_pan, new_fade_in, new_fade_out,
+                ..
+            } => {
+                // OLD side comes from `old_entry` (1.0 / 0.5 / 0.25),
+                // NOT from `new_entry`'s old_* (9.0).
+                assert_eq!(old_gain, 1.0);
+                assert_eq!(old_volume, 1.0);
+                assert_eq!(old_pan, 0.0);
+                assert_eq!(old_fade_in, 0.5);
+                assert_eq!(old_fade_out, 0.25);
+                // NEW side comes from `new_entry` (5.0 / 0.7 / -0.3 / 1.5 / 0.75).
+                assert_eq!(new_gain, 5.0);
+                assert_eq!(new_volume, 0.7);
+                assert_eq!(new_pan, -0.3);
+                assert_eq!(new_fade_in, 1.5);
+                assert_eq!(new_fade_out, 0.75);
+            }
+            _ => panic!("expected EditClipAudio after coalesce"),
+        }
+    }
+
+    // The wildcard arm in combine_old_new behaves differently in
+    // debug vs release: debug_assert! fires loudly in debug builds,
+    // and release returns old_entry.command.clone() so the user gets
+    // an undo that at least rolls back to the pre-drag state. Pair
+    // of cfg-gated tests pin both halves of that contract.
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unhandled variant pair")]
+    fn combine_old_new_unmatched_variants_trips_debug_assert_in_debug() {
+        // Pairing EditClipAudio (coalesce-eligible) with LegacySlipClip
+        // (no matching arm) hits the wildcard. CI in debug catches a
+        // future "I added a new coalesce-eligible variant and forgot
+        // to extend combine_old_new" before it ships.
+        let _ = combine_old_new(audio_entry(1.0), slip_entry());
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn combine_old_new_unmatched_variants_falls_back_to_old_in_release() {
+        // In release the debug_assert is a no-op and the wildcard
+        // falls back to old_entry.command.clone(). The pre-drag
+        // command MUST be carried through so undo rolls back to the
+        // last known-good state — the original U-3 bug was that the
+        // wildcard returned new.command, throwing away old state.
+        let old = audio_entry(1.0);
+        let new = slip_entry();
+        let combined = combine_old_new(old, new);
+        match combined.command {
+            EditCommand::EditClipAudio { old_gain, .. } => {
+                assert_eq!(old_gain, 1.0,
+                    "wildcard fallback must carry the pre-drag command (old), not the post-drag command (new)");
+            }
+            other => panic!("expected EditClipAudio (from old_entry), got {other:?}"),
+        }
+    }
+
+    // ── U-4: end_drag ───────────────────────────────────────────────
+
+    #[test]
+    fn end_drag_pushes_final_when_pending_old_entry_missing() {
+        // Inconsistent state: pending_coalesce_key is Some but
+        // pending_old_entry is None. The defensive else branch must
+        // push final_state on its own so the user's edit survives —
+        // before the fix this dropped the edit on the floor.
+        let mut h = CommandHistory::new();
+        h.pending_coalesce_key = Some("test_key".to_string());
+        h.pending_old_entry = None;
+
+        let final_state = audio_entry(2.5);
+        h.end_drag(final_state);
+
+        assert_eq!(h.undo_stack.len(), 1, "final_state must reach the undo stack");
+        match &h.undo_stack[0].command {
+            EditCommand::EditClipAudio { new_gain, .. } => {
+                assert_eq!(*new_gain, 2.5, "the pushed entry IS the final_state we passed");
+            }
+            other => panic!("expected EditClipAudio, got {other:?}"),
+        }
+        // The stale coalesce state is cleared either way.
+        assert!(h.pending_coalesce_key.is_none());
+        assert!(h.pending_old_entry.is_none());
+    }
+
+    #[test]
+    fn end_drag_no_op_when_no_pending_drag() {
+        // The OTHER path: end_drag called without a prior begin_drag
+        // (e.g. duplicate end_drag firing from two callers). Both
+        // pending_* are None — the function should silently no-op,
+        // NOT push final_state. This pin makes that intentional vs
+        // accidental: changing this behaviour later would surface
+        // here.
+        let mut h = CommandHistory::new();
+        let final_state = audio_entry(7.0);
+        h.end_drag(final_state);
+
+        assert_eq!(h.undo_stack.len(), 0,
+            "no pending drag = no-op; stale duplicate end_drag should not produce a phantom undo entry");
+    }
+}
