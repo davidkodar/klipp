@@ -358,6 +358,43 @@ enum TrimEdge {
     Right,
 }
 
+/// Audio params for the per-frame `UpdateClipAudio` command emitted while a
+/// fade-handle is being dragged. Returns the linked video clip's params when
+/// `clip` has `linked_clip_id`, otherwise the clip's own fields.
+pub(crate) fn resolve_fade_drag_target_full(
+    seq: &klipp_timeline::Sequence,
+    clip: &klipp_timeline::Clip,
+) -> Option<(
+    f32, f32, f32, f32, f32,
+    klipp_core::FadeCurve,
+    klipp_core::FadeCurve,
+    klipp_timeline::ChannelConfig,
+)> {
+    if let Some(linked_id) = clip.linked_clip_id {
+        seq.tracks.iter()
+            .find_map(|t| t.find_clip(linked_id))
+            .map(|c| (c.gain, c.volume, c.pan, c.fade_in_secs, c.fade_out_secs, c.fade_in_curve, c.fade_out_curve, c.channel_config))
+    } else {
+        Some((clip.gain, clip.volume, clip.pan, clip.fade_in_secs, clip.fade_out_secs, clip.fade_in_curve, clip.fade_out_curve, clip.channel_config))
+    }
+}
+
+/// Audio params for the `EndAudioDrag` command emitted on fade-handle release.
+/// Same linked-clip resolution as `resolve_fade_drag_target_full`, but only
+/// the subset of fields the End command needs.
+pub(crate) fn resolve_fade_drag_target_short(
+    seq: &klipp_timeline::Sequence,
+    clip: &klipp_timeline::Clip,
+) -> Option<(f32, f32, f32, f32, f32)> {
+    if let Some(linked_id) = clip.linked_clip_id {
+        seq.tracks.iter()
+            .find_map(|t| t.find_clip(linked_id))
+            .map(|c| (c.gain, c.volume, c.pan, c.fade_in_secs, c.fade_out_secs))
+    } else {
+        Some((clip.gain, clip.volume, clip.pan, clip.fade_in_secs, clip.fade_out_secs))
+    }
+}
+
 impl TimelinePanel {
     pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
         // Sync timeline prefs into thread-locals for this frame
@@ -4295,7 +4332,7 @@ impl TimelinePanel {
         };
         if show_fade && clip_rect.width() > 8.0 && !clip.kind.is_gap() {
             // Resolve fade params (same pattern as rubber band)
-            let resolve_fade = |c: &klipp_timeline::Clip| -> (f32, f32, klipp_timeline::FadeCurve, klipp_timeline::FadeCurve) {
+            let resolve_fade = |c: &klipp_timeline::Clip| -> (f32, f32, klipp_core::FadeCurve, klipp_core::FadeCurve) {
                 (c.fade_in_secs, c.fade_out_secs, c.fade_in_curve, c.fade_out_curve)
             };
             let (fi_secs, fo_secs, fi_curve, fo_curve) = if let Some(linked_id) = clip.linked_clip_id {
@@ -4315,12 +4352,12 @@ impl TimelinePanel {
             let fade_clip_painter = painter.with_clip_rect(clip_rect);
 
             // Curve evaluation: maps t in 0..1 through the selected curve shape
-            let eval_curve = |t: f32, curve: klipp_timeline::FadeCurve| -> f32 {
+            let eval_curve = |t: f32, curve: klipp_core::FadeCurve| -> f32 {
                 match curve {
-                    klipp_timeline::FadeCurve::Linear => t,
-                    klipp_timeline::FadeCurve::Exponential => t * t,
-                    klipp_timeline::FadeCurve::Logarithmic => 1.0 - (1.0 - t) * (1.0 - t),
-                    klipp_timeline::FadeCurve::SCurve => 3.0 * t * t - 2.0 * t * t * t,
+                    klipp_core::FadeCurve::Linear => t,
+                    klipp_core::FadeCurve::Exponential => t * t,
+                    klipp_core::FadeCurve::Logarithmic => 1.0 - (1.0 - t) * (1.0 - t),
+                    klipp_core::FadeCurve::SCurve => 3.0 * t * t - 2.0 * t * t * t,
                 }
             };
 
@@ -4536,7 +4573,7 @@ impl TimelinePanel {
                                 .clamp(0.1, 8.0);
 
                             // Resolve fade params for waveform shaping (FCP-style tapered waveform)
-                            let wf_resolve_fade = |c: &klipp_timeline::Clip| -> (f32, f32, klipp_timeline::FadeCurve, klipp_timeline::FadeCurve) {
+                            let wf_resolve_fade = |c: &klipp_timeline::Clip| -> (f32, f32, klipp_core::FadeCurve, klipp_core::FadeCurve) {
                                 (c.fade_in_secs, c.fade_out_secs, c.fade_in_curve, c.fade_out_curve)
                             };
                             let (wf_fi_secs, wf_fo_secs, wf_fi_curve, wf_fo_curve) = if let Some(linked_id) = clip.linked_clip_id {
@@ -4559,20 +4596,20 @@ impl TimelinePanel {
                                 if wf_fi_secs > 0.001 && col_time < wf_fi_secs {
                                     let frac = (col_time / wf_fi_secs).clamp(0.0, 1.0);
                                     gain = match wf_fi_curve {
-                                        klipp_timeline::FadeCurve::Linear => frac,
-                                        klipp_timeline::FadeCurve::Exponential => frac * frac,
-                                        klipp_timeline::FadeCurve::Logarithmic => 1.0 - (1.0 - frac) * (1.0 - frac),
-                                        klipp_timeline::FadeCurve::SCurve => 3.0 * frac * frac - 2.0 * frac * frac * frac,
+                                        klipp_core::FadeCurve::Linear => frac,
+                                        klipp_core::FadeCurve::Exponential => frac * frac,
+                                        klipp_core::FadeCurve::Logarithmic => 1.0 - (1.0 - frac) * (1.0 - frac),
+                                        klipp_core::FadeCurve::SCurve => 3.0 * frac * frac - 2.0 * frac * frac * frac,
                                     };
                                 }
                                 if wf_fo_secs > 0.001 && wf_clip_dur > 0.001 && col_time > wf_clip_dur - wf_fo_secs {
                                     let remaining = wf_clip_dur - col_time;
                                     let frac = (remaining / wf_fo_secs).clamp(0.0, 1.0);
                                     gain *= match wf_fo_curve {
-                                        klipp_timeline::FadeCurve::Linear => frac,
-                                        klipp_timeline::FadeCurve::Exponential => frac * frac,
-                                        klipp_timeline::FadeCurve::Logarithmic => 1.0 - (1.0 - frac) * (1.0 - frac),
-                                        klipp_timeline::FadeCurve::SCurve => 3.0 * frac * frac - 2.0 * frac * frac * frac,
+                                        klipp_core::FadeCurve::Linear => frac,
+                                        klipp_core::FadeCurve::Exponential => frac * frac,
+                                        klipp_core::FadeCurve::Logarithmic => 1.0 - (1.0 - frac) * (1.0 - frac),
+                                        klipp_core::FadeCurve::SCurve => 3.0 * frac * frac - 2.0 * frac * frac * frac,
                                     };
                                 }
                                 gain
@@ -4886,7 +4923,7 @@ impl TimelinePanel {
         &mut self,
         state: &mut AppState,
         cmds: &mut Vec<AppCommand>,
-        clips: &[klipp_timeline::Clip],
+        track_idx: usize,
         content_rect: &egui::Rect,
         track_rect: &egui::Rect,
         zoom: f32,
@@ -4897,72 +4934,78 @@ impl TimelinePanel {
         pointer_released: bool,
     ) {
         // ── Fade handle drag processing ──────────────────────────────────
-        if let Some((fade_clip_id, is_fade_in, _original_fade)) = state.dragging_fade_handle {
-            if let Some(pos) = pointer_pos {
-                if pointer_down {
-                    // Find the clip to get its rect
-                    if let Some(clip) = clips.iter().find(|c| c.id == fade_clip_id) {
+        let Some((fade_clip_id, is_fade_in, _original_fade)) = state.dragging_fade_handle else {
+            return;
+        };
+
+        if let Some(pos) = pointer_pos {
+            if pointer_down {
+                // Phase 1: extract everything we need from the dragged clip
+                // (and its linked counterpart, if any). After this block all
+                // borrows into `state` are dropped.
+                let drag_data = {
+                    let clip_opt = state.sequence().tracks[track_idx].clips.iter()
+                        .find(|c| c.id == fade_clip_id);
+                    if let Some(clip) = clip_opt {
                         let cr = Self::clip_screen_rect(clip, content_rect, track_rect, zoom, scroll, track_height);
                         let clip_dur_secs = clip.duration().to_secs_f64() as f32;
-                        if clip_dur_secs > 0.001 && cr.width() > 0.0 {
-                            let frac = if is_fade_in {
-                                ((pos.x - cr.left()) / cr.width()).clamp(0.0, 0.95)
-                            } else {
-                                ((cr.right() - pos.x) / cr.width()).clamp(0.0, 0.95)
-                            };
-                            let new_fade = frac * clip_dur_secs;
+                        let cmd_clip_id = clip.linked_clip_id.unwrap_or(clip.id);
+                        let target = resolve_fade_drag_target_full(state.sequence(), clip);
+                        Some((cr, clip_dur_secs, cmd_clip_id, target))
+                    } else {
+                        None
+                    }
+                };
 
-                            // Resolve the command clip_id (linked video clip for linked audio)
-                            let cmd_clip_id = clip.linked_clip_id.unwrap_or(clip.id);
+                if let Some((cr, clip_dur_secs, cmd_clip_id, target)) = drag_data {
+                    if clip_dur_secs > 0.001 && cr.width() > 0.0 {
+                        let frac = if is_fade_in {
+                            ((pos.x - cr.left()) / cr.width()).clamp(0.0, 0.95)
+                        } else {
+                            ((cr.right() - pos.x) / cr.width()).clamp(0.0, 0.95)
+                        };
+                        let new_fade = frac * clip_dur_secs;
 
-                            // Read current audio params from the target clip
-                            let target = if let Some(linked_id) = clip.linked_clip_id {
-                                state.sequence().tracks.iter()
-                                    .find_map(|t| t.find_clip(linked_id))
-                                    .map(|c| (c.gain, c.volume, c.pan, c.fade_in_secs, c.fade_out_secs, c.fade_in_curve, c.fade_out_curve, c.channel_config))
-                            } else {
-                                Some((clip.gain, clip.volume, clip.pan, clip.fade_in_secs, clip.fade_out_secs, clip.fade_in_curve, clip.fade_out_curve, clip.channel_config))
-                            };
-
-                            if let Some((gain, volume, pan, fi, fo, fi_c, fo_c, ch)) = target {
-                                let (new_fi, new_fo) = if is_fade_in { (new_fade, fo) } else { (fi, new_fade) };
-                                cmds.push(AppCommand::UpdateClipAudio {
-                                    clip_id: cmd_clip_id,
-                                    gain, volume, pan,
-                                    fade_in_secs: new_fi,
-                                    fade_out_secs: new_fo,
-                                    fade_in_curve: fi_c,
-                                    fade_out_curve: fo_c,
-                                    channel_config: ch,
-                                });
-                            }
+                        if let Some((gain, volume, pan, fi, fo, fi_c, fo_c, ch)) = target {
+                            let (new_fi, new_fo) = if is_fade_in { (new_fade, fo) } else { (fi, new_fade) };
+                            cmds.push(AppCommand::UpdateClipAudio {
+                                clip_id: cmd_clip_id,
+                                gain, volume, pan,
+                                fade_in_secs: new_fi,
+                                fade_out_secs: new_fo,
+                                fade_in_curve: fi_c,
+                                fade_out_curve: fo_c,
+                                channel_config: ch,
+                            });
                         }
                     }
                 }
             }
-            // Release: end drag
-            if pointer_released || !pointer_down {
-                // Emit EndAudioDrag for undo
-                if let Some(clip) = clips.iter().find(|c| c.id == fade_clip_id) {
+        }
+
+        // Release: end drag
+        if pointer_released || !pointer_down {
+            let end_data = {
+                let clip_opt = state.sequence().tracks[track_idx].clips.iter()
+                    .find(|c| c.id == fade_clip_id);
+                clip_opt.map(|clip| {
                     let cmd_clip_id = clip.linked_clip_id.unwrap_or(clip.id);
-                    let target = if let Some(linked_id) = clip.linked_clip_id {
-                        state.sequence().tracks.iter()
-                            .find_map(|t| t.find_clip(linked_id))
-                            .map(|c| (c.gain, c.volume, c.pan, c.fade_in_secs, c.fade_out_secs))
-                    } else {
-                        Some((clip.gain, clip.volume, clip.pan, clip.fade_in_secs, clip.fade_out_secs))
-                    };
-                    if let Some((g, v, p, fi, fo)) = target {
-                        cmds.push(AppCommand::EndAudioDrag {
-                            key: format!("fade_handle_{:?}", cmd_clip_id),
-                            clip_id: cmd_clip_id,
-                            new_gain: g, new_volume: v, new_pan: p,
-                            new_fade_in: fi, new_fade_out: fo,
-                        });
-                    }
+                    let target = resolve_fade_drag_target_short(state.sequence(), clip);
+                    (cmd_clip_id, target)
+                })
+            };
+
+            if let Some((cmd_clip_id, target)) = end_data {
+                if let Some((g, v, p, fi, fo)) = target {
+                    cmds.push(AppCommand::EndAudioDrag {
+                        key: format!("fade_handle_{:?}", cmd_clip_id),
+                        clip_id: cmd_clip_id,
+                        new_gain: g, new_volume: v, new_pan: p,
+                        new_fade_in: fi, new_fade_out: fo,
+                    });
                 }
-                state.dragging_fade_handle = None;
             }
+            state.dragging_fade_handle = None;
         }
     }
 
@@ -8544,7 +8587,7 @@ impl TimelinePanel {
 
         self.detect_drag_start(ui, &track_response, state, cmds, track_idx, &post_loop_clips, content_rect, track_rect, zoom, scroll, track_height, track_kind, pointer_pos);
 
-        self.process_fade_drag(state, cmds, &post_loop_clips, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
+        self.process_fade_drag(state, cmds, track_idx, content_rect, track_rect, zoom, scroll, track_height, pointer_pos, pointer_down, pointer_released);
 
         // Collect snap targets upfront (avoids borrow conflicts with state mutation)
         let snap_enabled = state.snap_enabled && !ui.input(|i| i.modifiers.shift);
@@ -9273,7 +9316,7 @@ impl TimelinePanel {
             kf_volume,
         ) = {
             let clip = &state.sequence().tracks[track_idx].clips[clip_index];
-            let resolve_clip = |c: &klipp_timeline::Clip| -> (f32, Vec<klipp_core::Keyframe>, klipp_core::ClipId, f32, f32, f32, f32, klipp_timeline::FadeCurve, klipp_timeline::FadeCurve, klipp_timeline::ChannelConfig) {
+            let resolve_clip = |c: &klipp_timeline::Clip| -> (f32, Vec<klipp_core::Keyframe>, klipp_core::ClipId, f32, f32, f32, f32, klipp_core::FadeCurve, klipp_core::FadeCurve, klipp_timeline::ChannelConfig) {
                 let (static_val, kfs) = match rb_param {
                     klipp_core::AudioParam::Volume => (c.volume, c.volume_keyframes.clone()),
                     klipp_core::AudioParam::Pan => (c.pan, c.pan_keyframes.clone()),
@@ -11695,6 +11738,111 @@ mod tests {
         let s = format_shortfall_tooltip(&ha, 24);
         assert!(s.contains("Clip A: availability unknown"));
         assert!(s.contains("Clip B: availability unknown"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // resolve_fade_drag_target_{full,short}
+    //
+    // Test that the helper drives the same audio-param resolution that
+    // process_fade_drag previously did inline against `&[Clip]`. The
+    // refactored process_fade_drag now looks the dragged clip up via
+    // state.sequence().tracks[track_idx], which only changes WHERE the
+    // clip comes from — the resolution rules for unlinked vs linked
+    // clips must remain bit-identical.
+    // ═══════════════════════════════════════════════════════════════
+
+    fn tc24(frames: i64) -> klipp_core::RationalTime {
+        klipp_core::RationalTime::from_frames(frames, 24)
+    }
+
+    fn make_audio_clip(gain: f32, volume: f32, pan: f32, fi: f32, fo: f32) -> klipp_timeline::Clip {
+        let mut c = klipp_timeline::Clip::media(
+            klipp_core::MediaId::new(),
+            tc24(0), tc24(48), tc24(0), tc24(48),
+        );
+        c.gain = gain;
+        c.volume = volume;
+        c.pan = pan;
+        c.fade_in_secs = fi;
+        c.fade_out_secs = fo;
+        c.fade_in_curve = klipp_core::FadeCurve::Linear;
+        c.fade_out_curve = klipp_core::FadeCurve::SCurve;
+        c.channel_config = klipp_core::ChannelConfig::MonoDownmix;
+        c
+    }
+
+    fn empty_seq() -> klipp_timeline::Sequence {
+        klipp_timeline::Sequence::new_default()
+    }
+
+    #[test]
+    fn fade_drag_full_unlinked_returns_clip_own_fields() {
+        let seq = empty_seq();
+        let clip = make_audio_clip(0.7, 0.6, -0.25, 1.5, 2.5);
+        let got = resolve_fade_drag_target_full(&seq, &clip)
+            .expect("unlinked clip always resolves to its own fields");
+        assert_eq!(got.0, 0.7);
+        assert_eq!(got.1, 0.6);
+        assert_eq!(got.2, -0.25);
+        assert_eq!(got.3, 1.5);
+        assert_eq!(got.4, 2.5);
+        assert!(matches!(got.5, klipp_core::FadeCurve::Linear));
+        assert!(matches!(got.6, klipp_core::FadeCurve::SCurve));
+        assert!(matches!(got.7, klipp_core::ChannelConfig::MonoDownmix));
+    }
+
+    #[test]
+    fn fade_drag_full_linked_resolves_to_linked_clip() {
+        let mut seq = empty_seq();
+        // Put the linked target on the video track of the default sequence.
+        let linked = make_audio_clip(0.9, 0.8, 0.0, 0.5, 1.0);
+        let linked_id = linked.id;
+        seq.tracks[0].clips.push(linked);
+
+        // The audio clip points at it via linked_clip_id. Its OWN params
+        // are deliberately different so a regression that ignored
+        // linked_clip_id would surface here.
+        let mut audio = make_audio_clip(0.1, 0.2, 0.3, 4.0, 5.0);
+        audio.linked_clip_id = Some(linked_id);
+
+        let got = resolve_fade_drag_target_full(&seq, &audio)
+            .expect("linked clip exists in seq");
+        assert_eq!(got.0, 0.9, "gain should come from linked, not audio's own");
+        assert_eq!(got.1, 0.8);
+        assert_eq!(got.2, 0.0);
+        assert_eq!(got.3, 0.5);
+        assert_eq!(got.4, 1.0);
+    }
+
+    #[test]
+    fn fade_drag_full_linked_missing_returns_none() {
+        let seq = empty_seq();
+        let mut audio = make_audio_clip(0.1, 0.2, 0.3, 4.0, 5.0);
+        // Reference an id that doesn't exist anywhere in seq.
+        audio.linked_clip_id = Some(klipp_core::ClipId::new());
+        assert!(resolve_fade_drag_target_full(&seq, &audio).is_none());
+    }
+
+    #[test]
+    fn fade_drag_short_unlinked_matches_full() {
+        let seq = empty_seq();
+        let clip = make_audio_clip(0.4, 0.5, 0.6, 7.0, 8.0);
+        let short = resolve_fade_drag_target_short(&seq, &clip).unwrap();
+        assert_eq!(short, (0.4, 0.5, 0.6, 7.0, 8.0));
+    }
+
+    #[test]
+    fn fade_drag_short_linked_resolves_to_linked() {
+        let mut seq = empty_seq();
+        let linked = make_audio_clip(0.55, 0.66, 0.77, 1.1, 2.2);
+        let linked_id = linked.id;
+        seq.tracks[0].clips.push(linked);
+
+        let mut audio = make_audio_clip(0.0, 0.0, 0.0, 0.0, 0.0);
+        audio.linked_clip_id = Some(linked_id);
+
+        let short = resolve_fade_drag_target_short(&seq, &audio).unwrap();
+        assert_eq!(short, (0.55, 0.66, 0.77, 1.1, 2.2));
     }
 }
 
