@@ -214,6 +214,13 @@ pub fn scrubby_param_row(
             let tint = if reset_rect.hovered() {
                 egui::Color32::from_rgb(220, 220, 225)
             } else {
+                // TODO: when scrubby_param_row gains a theme
+                // parameter, replace with theme.overlay(80) so the
+                // idle reset icon has correct contrast on Light
+                // theme. Currently safe-leaving as polarity-neutral
+                // translucent white because the alternative
+                // (theme.overlay) requires plumbing theme through
+                // every caller of this widely-reused widget.
                 egui::Color32::from_rgba_premultiplied(255, 255, 255, 80)
             };
             let icon_rect = egui::Rect::from_center_size(reset_rect_inner.center(), egui::vec2(11.0, 11.0));

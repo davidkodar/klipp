@@ -278,6 +278,27 @@ impl KlippTheme {
         t
     }
 
+    /// Polarity-aware "soft chrome overlay" — translucent white on
+    /// dark themes, translucent black on light themes, at the
+    /// requested alpha (0-255). Use anywhere the previous code
+    /// hardcoded `Color32::from_rgba_premultiplied(255, 255, 255, N)`
+    /// for "subtle white veil over the panel" — section dividers,
+    /// dim text on amber rows, faint icon tints, etc. Light theme
+    /// flips polarity so the overlay still reads as a soft grey
+    /// against the bg instead of being invisible (white-on-white).
+    ///
+    /// Premultiplied alpha format: RGB == alpha (so the colour is
+    /// pre-blended with its own opacity). On dark, that's a fully
+    /// premultiplied translucent white; on light, fully
+    /// premultiplied translucent black (RGB = 0, alpha = N).
+    pub fn overlay(&self, alpha: u8) -> Color32 {
+        if self.is_light() {
+            Color32::from_rgba_premultiplied(0, 0, 0, alpha)
+        } else {
+            Color32::from_rgba_premultiplied(alpha, alpha, alpha, alpha)
+        }
+    }
+
     /// Return the theme color for a clip role.
     pub fn clip_role_color(&self, role: klipp_timeline::ClipRole) -> Color32 {
         use klipp_timeline::ClipRole;

@@ -412,6 +412,9 @@ fn draw_info_icon_with_tooltip(
     let tint = if resp.hovered() {
         egui::Color32::WHITE
     } else {
+        // Icon sits on a black-translucent backing — stays light
+        // regardless of theme polarity (the backing is the contrast
+        // partner, not the panel underneath).
         egui::Color32::from_rgba_premultiplied(255, 255, 255, 220)
     };
     Icon::Info.image(icon_size).tint(tint).paint_at(ui, icon_rect);
@@ -1520,6 +1523,9 @@ fn handle_hover_skim(
             egui::Pos2::new(hover_pos.x, skim_rect.min.y),
             egui::Pos2::new(hover_pos.x, skim_rect.max.y),
         ],
+        // Skim cursor sits on top of the thumbnail content (any
+        // colour) — polarity-neutral white-with-alpha so it reads
+        // against bright OR dark video frames in either theme.
         egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)),
     );
 

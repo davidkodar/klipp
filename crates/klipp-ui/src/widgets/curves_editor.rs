@@ -94,7 +94,7 @@ pub fn curves_editor_sized(
     // This is the unmodified straight line so user can see deviation
     painter.line_segment(
         [egui::pos2(rect.min.x, rect.max.y), egui::pos2(rect.max.x, rect.min.y)],
-        egui::Stroke::new(1.2_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 50)),
+        egui::Stroke::new(1.2_f32, theme.overlay(50)),
     );
 
     // Ensure minimum identity endpoints exist — empty curves get [0,0] and [1,1]

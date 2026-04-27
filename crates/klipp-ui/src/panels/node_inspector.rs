@@ -149,7 +149,7 @@ impl NodeInspectorPanel {
             let painter = ui.painter().clone();
             painter.line_segment(
                 [egui::pos2(tab_rect.min.x, tab_rect.max.y), egui::pos2(tab_rect.max.x, tab_rect.max.y)],
-                egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 18)),
+                egui::Stroke::new(0.5_f32, theme.border),
             );
 
             for (i, (tab, label)) in [
@@ -163,7 +163,7 @@ impl NodeInspectorPanel {
                 let x = tab_rect.min.x + i as f32 * tab_w;
                 let rect = egui::Rect::from_min_size(egui::pos2(x, tab_rect.min.y), egui::vec2(tab_w, tab_h));
 
-                let color = if active { theme.text_accent } else { egui::Color32::from_rgba_premultiplied(255, 255, 255, 107) };
+                let color = if active { theme.text_accent } else { theme.text_secondary };
                 painter.text(rect.center(), egui::Align2::CENTER_CENTER, label,
                     egui::FontId::proportional(11.0), color);
 
@@ -1079,7 +1079,7 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: val });
                     }
                 }
-                section_divider(ui);
+                section_divider(ui, theme);
             }
         }
 
@@ -1107,7 +1107,7 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "clarity".into(), value: cval });
                     }
                 }
-                section_divider(ui);
+                section_divider(ui, theme);
             }
         }
 
@@ -1135,7 +1135,7 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "vibrance".into(), value: vval });
                     }
                 }
-                section_divider(ui);
+                section_divider(ui, theme);
             }
         }
 
@@ -1172,7 +1172,7 @@ impl NodeInspectorPanel {
                         }
                     }
                 }
-                section_divider(ui);
+                section_divider(ui, theme);
             }
         }
 
@@ -1231,8 +1231,8 @@ impl NodeInspectorPanel {
                 // Global Mix: subtle grey → white
                 let mut mix = node.params.global_mix.unwrap_or(1.0);
                 if gradient_slider_row(ui, "Global Mix", &mut mix, 0.0..=1.0,
-                    egui::Color32::from_rgba_premultiplied(255, 255, 255, 20),
-                    egui::Color32::from_rgba_premultiplied(255, 255, 255, 90), theme, cmds, clip_id)
+                    theme.overlay(20),
+                    theme.overlay(90), theme, cmds, clip_id)
                 {
                     node.params.global_mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "global_mix".into(), value: mix });
@@ -1272,7 +1272,7 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_radius".into(), value: r as f32 });
                     }
                 }
-                section_divider(ui);
+                section_divider(ui, theme);
             }
         }
 
@@ -1345,7 +1345,7 @@ impl NodeInspectorPanel {
                     ).size(10.0).color(theme.text_dim));
                 });
             }
-            section_divider(ui);
+            section_divider(ui, theme);
         }
     }
 
@@ -1466,31 +1466,31 @@ impl NodeInspectorPanel {
         match kind {
             NodeKind::Exposure => {
                 let mut val = params.exposure.unwrap_or(0.0);
-                if grade_slider(ui, "Exposure", &mut val, -3.0..=3.0, "stops", cmds, clip_id) {
+                if grade_slider(ui, "Exposure", &mut val, -3.0..=3.0, "stops", cmds, clip_id, theme) {
                     params.exposure = Some(val);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "exposure".into(), value: val });
                 }
             }
             NodeKind::Contrast => {
                 let mut val = params.contrast.unwrap_or(0.0);
-                if grade_slider(ui, "Contrast", &mut val, -1.0..=1.0, "", cmds, clip_id) {
+                if grade_slider(ui, "Contrast", &mut val, -1.0..=1.0, "", cmds, clip_id, theme) {
                     params.contrast = Some(val);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "contrast".into(), value: val });
                 }
                 let mut cval = params.clarity.unwrap_or(0.0);
-                if grade_slider(ui, "Clarity", &mut cval, -1.0..=1.0, "", cmds, clip_id) {
+                if grade_slider(ui, "Clarity", &mut cval, -1.0..=1.0, "", cmds, clip_id, theme) {
                     params.clarity = Some(cval);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "clarity".into(), value: cval });
                 }
             }
             NodeKind::Saturation => {
                 let mut val = params.saturation.unwrap_or(1.0);
-                if grade_slider(ui, "Saturation", &mut val, 0.0..=2.0, "", cmds, clip_id) {
+                if grade_slider(ui, "Saturation", &mut val, 0.0..=2.0, "", cmds, clip_id, theme) {
                     params.saturation = Some(val);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "saturation".into(), value: val });
                 }
                 let mut vval = params.vibrance.unwrap_or(0.0);
-                if grade_slider(ui, "Vibrance", &mut vval, -1.0..=1.0, "", cmds, clip_id) {
+                if grade_slider(ui, "Vibrance", &mut vval, -1.0..=1.0, "", cmds, clip_id, theme) {
                     params.vibrance = Some(vval);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "vibrance".into(), value: vval });
                 }
@@ -1503,7 +1503,7 @@ impl NodeInspectorPanel {
                     ("Blacks", params.blacks.unwrap_or(0.0), "blacks"),
                 ] {
                     let mut val = field;
-                    if grade_slider(ui, label, &mut val, -1.0..=1.0, "", cmds, clip_id) {
+                    if grade_slider(ui, label, &mut val, -1.0..=1.0, "", cmds, clip_id, theme) {
                         params.apply_override(param_name, val);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: param_name.into(), value: val });
                     }
@@ -1734,7 +1734,7 @@ impl NodeInspectorPanel {
                                 params.apply_override(bri_name, b);
                                 cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.into(), value: b });
                             }
-                            section_divider(ui);
+                            section_divider(ui, theme);
                         }
                     }
                 }
@@ -1772,11 +1772,11 @@ impl NodeInspectorPanel {
                         let active = self.active_curve_channel == ch;
                         let size = egui::vec2(26.0, 22.0);
                         let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-                        let bg = if active { color } else { egui::Color32::from_rgba_premultiplied(255, 255, 255, 18) };
+                        let bg = if active { color } else { theme.overlay(18) };
                         let text_color = if active { theme.text_on_accent } else { color };
                         ui.painter().rect_filled(rect, 4.0, bg);
                         ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(0.5_f32,
-                            egui::Color32::from_rgba_premultiplied(255, 255, 255, 30)));
+                            theme.overlay(30)));
                         ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER,
                             label, egui::FontId::proportional(11.0), text_color);
                         if resp.clicked() { self.active_curve_channel = ch; }
@@ -1790,7 +1790,7 @@ impl NodeInspectorPanel {
                         let icon_tint = if resp.hovered() {
                             theme.text_accent
                         } else {
-                            egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)
+                            theme.overlay(100)
                         };
                         let icon_rect = egui::Rect::from_center_size(r.center(), egui::vec2(12.0, 12.0));
                         Icon::Eyedropper.image(12.0).tint(icon_tint).paint_at(ui, icon_rect);
@@ -1825,7 +1825,7 @@ impl NodeInspectorPanel {
                     ui.add_space(PAD);
                     let mut preserve = params.curves_preserve_luma.unwrap_or(false);
                     if ui.checkbox(&mut preserve, egui::RichText::new("Preserve Luma").size(11.0)
-                        .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 140))).changed()
+                        .color(theme.overlay(140))).changed()
                     {
                         params.curves_preserve_luma = Some(preserve);
                     }
@@ -1867,7 +1867,7 @@ impl NodeInspectorPanel {
                         ui.painter().circle_filled(dot_rect.center(), 4.0, *color);
                         // Label
                         ui.label(egui::RichText::new(*label).size(10.0)
-                            .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 180)));
+                            .color(theme.overlay(180)));
 
                         // Push icons to the right
                         let remaining = ui.available_width() - PAD;
@@ -1882,7 +1882,7 @@ impl NodeInspectorPanel {
                             let ed_tint = if ed_resp.hovered() {
                                 theme.text_accent
                             } else {
-                                egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)
+                                theme.overlay(100)
                             };
                             let ed_icon_rect = egui::Rect::from_center_size(ed_resp.rect.center(), egui::vec2(12.0, 12.0));
                             Icon::Eyedropper.image(12.0).tint(ed_tint).paint_at(ui, ed_icon_rect);
@@ -1898,7 +1898,7 @@ impl NodeInspectorPanel {
                             let rs_tint = if rs_resp.hovered() {
                                 theme.text_accent
                             } else {
-                                egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)
+                                theme.overlay(100)
                             };
                             let rs_icon_rect = egui::Rect::from_center_size(rs_resp.rect.center(), egui::vec2(12.0, 12.0));
                             Icon::ArrowCounterClockwise.image(12.0).tint(rs_tint).paint_at(ui, rs_icon_rect);
@@ -1947,7 +1947,7 @@ impl NodeInspectorPanel {
                     ui.add_space(PAD);
                     let mut preserve = params.curves_preserve_luma.unwrap_or(false);
                     if ui.checkbox(&mut preserve, egui::RichText::new("Preserve Luma").size(11.0)
-                        .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 128))).changed()
+                        .color(theme.overlay(128))).changed()
                     {
                         params.curves_preserve_luma = Some(preserve);
                     }
@@ -1969,7 +1969,7 @@ impl NodeInspectorPanel {
                     ("Global Mix", "global_mix", params.global_mix.unwrap_or(1.0), 0.0..=1.0),
                 ] {
                     let mut v = val;
-                    if grade_slider(ui, label, &mut v, range, "", cmds, clip_id) {
+                    if grade_slider(ui, label, &mut v, range, "", cmds, clip_id, theme) {
                         params.apply_override(pname, v);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: pname.into(), value: v });
                     }
@@ -1984,25 +1984,25 @@ impl NodeInspectorPanel {
                 ui.checkbox(&mut qual.enabled, "Enabled");
                 if qual.enabled {
                     let mut hc = qual.hue_center;
-                    if grade_slider(ui, "Hue Center", &mut hc, 0.0..=360.0, "deg", cmds, clip_id) { qual.hue_center = hc; }
+                    if grade_slider(ui, "Hue Center", &mut hc, 0.0..=360.0, "deg", cmds, clip_id, theme) { qual.hue_center = hc; }
                     let mut hw = qual.hue_width;
-                    if grade_slider(ui, "Hue Width", &mut hw, 0.0..=180.0, "deg", cmds, clip_id) { qual.hue_width = hw; }
+                    if grade_slider(ui, "Hue Width", &mut hw, 0.0..=180.0, "deg", cmds, clip_id, theme) { qual.hue_width = hw; }
                     let mut hs = qual.hue_soft;
-                    if grade_slider(ui, "Hue Soft", &mut hs, 0.0..=90.0, "deg", cmds, clip_id) { qual.hue_soft = hs; }
+                    if grade_slider(ui, "Hue Soft", &mut hs, 0.0..=90.0, "deg", cmds, clip_id, theme) { qual.hue_soft = hs; }
                     ui.add_space(4.0);
                     let mut sl = qual.sat_low;
-                    if grade_slider(ui, "Sat Low", &mut sl, 0.0..=1.0, "", cmds, clip_id) { qual.sat_low = sl; }
+                    if grade_slider(ui, "Sat Low", &mut sl, 0.0..=1.0, "", cmds, clip_id, theme) { qual.sat_low = sl; }
                     let mut sh = qual.sat_high;
-                    if grade_slider(ui, "Sat High", &mut sh, 0.0..=1.0, "", cmds, clip_id) { qual.sat_high = sh; }
+                    if grade_slider(ui, "Sat High", &mut sh, 0.0..=1.0, "", cmds, clip_id, theme) { qual.sat_high = sh; }
                     let mut ss = qual.sat_soft;
-                    if grade_slider(ui, "Sat Soft", &mut ss, 0.0..=1.0, "", cmds, clip_id) { qual.sat_soft = ss; }
+                    if grade_slider(ui, "Sat Soft", &mut ss, 0.0..=1.0, "", cmds, clip_id, theme) { qual.sat_soft = ss; }
                     ui.add_space(4.0);
                     let mut ll = qual.lum_low;
-                    if grade_slider(ui, "Lum Low", &mut ll, 0.0..=1.0, "", cmds, clip_id) { qual.lum_low = ll; }
+                    if grade_slider(ui, "Lum Low", &mut ll, 0.0..=1.0, "", cmds, clip_id, theme) { qual.lum_low = ll; }
                     let mut lh = qual.lum_high;
-                    if grade_slider(ui, "Lum High", &mut lh, 0.0..=1.0, "", cmds, clip_id) { qual.lum_high = lh; }
+                    if grade_slider(ui, "Lum High", &mut lh, 0.0..=1.0, "", cmds, clip_id, theme) { qual.lum_high = lh; }
                     let mut ls = qual.lum_soft;
-                    if grade_slider(ui, "Lum Soft", &mut ls, 0.0..=1.0, "", cmds, clip_id) { qual.lum_soft = ls; }
+                    if grade_slider(ui, "Lum Soft", &mut ls, 0.0..=1.0, "", cmds, clip_id, theme) { qual.lum_soft = ls; }
                     ui.checkbox(&mut qual.invert, "Invert");
                     cmds.push(AppCommand::SetNodeQualifier { clip_id, node_id, qualifier: qual.clone() });
                 }
@@ -2016,13 +2016,13 @@ impl NodeInspectorPanel {
                 ui.checkbox(&mut grain.enabled, "Enabled");
                 if grain.enabled {
                     let mut a = grain.amount;
-                    if grade_slider(ui, "Amount", &mut a, 0.0..=1.0, "", cmds, clip_id) { grain.amount = a; }
+                    if grade_slider(ui, "Amount", &mut a, 0.0..=1.0, "", cmds, clip_id, theme) { grain.amount = a; }
                     let mut s = grain.size;
-                    if grade_slider(ui, "Size", &mut s, 0.5..=3.0, "", cmds, clip_id) { grain.size = s; }
+                    if grade_slider(ui, "Size", &mut s, 0.5..=3.0, "", cmds, clip_id, theme) { grain.size = s; }
                     let mut sh = grain.shadows;
-                    if grade_slider(ui, "Shadows", &mut sh, 0.0..=1.0, "", cmds, clip_id) { grain.shadows = sh; }
+                    if grade_slider(ui, "Shadows", &mut sh, 0.0..=1.0, "", cmds, clip_id, theme) { grain.shadows = sh; }
                     let mut hi = grain.highlights;
-                    if grade_slider(ui, "Highlights", &mut hi, 0.0..=1.0, "", cmds, clip_id) { grain.highlights = hi; }
+                    if grade_slider(ui, "Highlights", &mut hi, 0.0..=1.0, "", cmds, clip_id, theme) { grain.highlights = hi; }
                     ui.checkbox(&mut grain.monochrome, "Monochrome");
                 }
             }
@@ -2033,31 +2033,31 @@ impl NodeInspectorPanel {
                     ui.label(egui::RichText::new("No LUT loaded").size(10.0).color(theme.text_dim));
                 }
                 let mut opacity = params.lut_opacity.unwrap_or(1.0);
-                if grade_slider(ui, "Opacity", &mut opacity, 0.0..=1.0, "", cmds, clip_id) {
+                if grade_slider(ui, "Opacity", &mut opacity, 0.0..=1.0, "", cmds, clip_id, theme) {
                     params.lut_opacity = Some(opacity);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "lut_opacity".into(), value: opacity });
                 }
             }
             NodeKind::Blend | NodeKind::ApplyMatte => {
                 let mut mix = params.mix.unwrap_or(1.0);
-                if grade_slider(ui, "Mix", &mut mix, 0.0..=1.0, "", cmds, clip_id) {
+                if grade_slider(ui, "Mix", &mut mix, 0.0..=1.0, "", cmds, clip_id, theme) {
                     params.mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "mix".into(), value: mix });
                 }
             }
             NodeKind::Denoise => {
                 let mut luma = params.denoise_luma.unwrap_or(0.0);
-                if grade_slider(ui, "Luma Strength", &mut luma, 0.0..=1.0, "", cmds, clip_id) {
+                if grade_slider(ui, "Luma Strength", &mut luma, 0.0..=1.0, "", cmds, clip_id, theme) {
                     params.denoise_luma = Some(luma);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_luma".into(), value: luma });
                 }
                 let mut chroma = params.denoise_chroma.unwrap_or(0.0);
-                if grade_slider(ui, "Chroma Strength", &mut chroma, 0.0..=1.0, "", cmds, clip_id) {
+                if grade_slider(ui, "Chroma Strength", &mut chroma, 0.0..=1.0, "", cmds, clip_id, theme) {
                     params.denoise_chroma = Some(chroma);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_chroma".into(), value: chroma });
                 }
                 let mut radius = params.denoise_radius.unwrap_or(3) as f32;
-                if grade_slider(ui, "Radius", &mut radius, 1.0..=7.0, "px", cmds, clip_id) {
+                if grade_slider(ui, "Radius", &mut radius, 1.0..=7.0, "px", cmds, clip_id, theme) {
                     let r = radius.round() as u32;
                     params.denoise_radius = Some(r);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_radius".into(), value: r as f32 });
@@ -2361,16 +2361,16 @@ impl NodeInspectorPanel {
         // Crosshair lines
         painter.line_segment(
             [egui::pos2(center.x - radius, center.y), egui::pos2(center.x + radius, center.y)],
-            egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 15)),
+            egui::Stroke::new(0.5_f32, theme.overlay(15)),
         );
         painter.line_segment(
             [egui::pos2(center.x, center.y - radius), egui::pos2(center.x, center.y + radius)],
-            egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 15)),
+            egui::Stroke::new(0.5_f32, theme.overlay(15)),
         );
 
         // Inner reference circles at 33% and 66% radius
-        painter.circle_stroke(center, radius * 0.33, egui::Stroke::new(0.3_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 10)));
-        painter.circle_stroke(center, radius * 0.66, egui::Stroke::new(0.3_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 10)));
+        painter.circle_stroke(center, radius * 0.33, egui::Stroke::new(0.3_f32, theme.overlay(10)));
+        painter.circle_stroke(center, radius * 0.66, egui::Stroke::new(0.3_f32, theme.overlay(10)));
 
         let sector_labels = ["R", "O", "Y", "YG", "G", "CG", "C", "CB", "B", "BM", "M", "MR"];
         let neutral_r = radius * 0.7;
@@ -2389,7 +2389,7 @@ impl NodeInspectorPanel {
             let ly1 = center.y - line_angle.sin() * radius;
             painter.line_segment(
                 [egui::pos2(lx0, ly0), egui::pos2(lx1, ly1)],
-                egui::Stroke::new(0.3_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 12)),
+                egui::Stroke::new(0.3_f32, theme.overlay(12)),
             );
 
             // Subtle hue dot at center of each sector
@@ -2702,7 +2702,7 @@ fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTh
         egui::Align2::CENTER_CENTER,
         caret,
         egui::FontId::proportional(10.0),
-        egui::Color32::from_rgba_premultiplied(255, 255, 255, 100),
+        theme.overlay(100),
     );
 
     // Section title
@@ -2716,7 +2716,7 @@ fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTh
 
     // Enabled dot
     let dot_x = rect.max.x - PAD - 22.0;
-    let dot_color = if enabled { theme.text_accent } else { egui::Color32::from_rgba_premultiplied(255, 255, 255, 46) };
+    let dot_color = if enabled { theme.text_accent } else { theme.overlay(46) };
     ui.painter().circle_filled(egui::pos2(dot_x, cy), 3.0, dot_color);
 
     // Reset button
@@ -2726,7 +2726,7 @@ fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTh
     let reset_tint = if reset_resp.hovered() {
         theme.text_accent
     } else {
-        egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)
+        theme.overlay(100)
     };
     let icon_rect = egui::Rect::from_center_size(egui::pos2(icon_x, cy), egui::vec2(12.0, 12.0));
     Icon::ArrowCounterClockwise.image(12.0).tint(reset_tint).paint_at(ui, icon_rect);
@@ -2747,11 +2747,11 @@ fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTh
 }
 
 /// 0.5px divider line between sections
-fn section_divider(ui: &mut egui::Ui) {
+fn section_divider(ui: &mut egui::Ui, theme: &crate::theme::KlippTheme) {
     ui.add_space(4.0);
     let avail_w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(avail_w, 1.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 18));
+    ui.painter().rect_filled(rect, 0.0, theme.overlay(18));
     ui.add_space(4.0);
 }
 
@@ -2781,7 +2781,7 @@ fn inspector_row(
     let (row_rect, resp) = ui.allocate_exact_size(egui::vec2(avail_w, ROW_H), egui::Sense::hover());
 
     if resp.hovered() {
-        ui.painter().rect_filled(row_rect, 0.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 13));
+        ui.painter().rect_filled(row_rect, 0.0, theme.overlay(13));
     }
 
     let cy = row_rect.center().y;
@@ -2796,7 +2796,7 @@ fn inspector_row(
             egui::Align2::LEFT_CENTER,
             label,
             egui::FontId::proportional(11.0),
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 107),
+            theme.overlay(107),
         );
 
         // Slider track
@@ -2821,7 +2821,7 @@ fn inspector_row(
             painter.rect_filled(
                 egui::Rect::from_min_size(egui::pos2(unfill_x, track_y), egui::vec2(unfill_w, 3.0)),
                 1.5,
-                egui::Color32::from_rgba_premultiplied(255, 255, 255, 26),
+                theme.overlay(26),
             );
         }
 
@@ -2840,7 +2840,7 @@ fn inspector_row(
             egui::Align2::LEFT_CENTER,
             format!("{:.2}", *value),
             egui::FontId::proportional(11.0),
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 166),
+            theme.overlay(166),
         );
 
         // Suffix
@@ -2850,7 +2850,7 @@ fn inspector_row(
                 egui::Align2::LEFT_CENTER,
                 suffix,
                 egui::FontId::proportional(10.0),
-                egui::Color32::from_rgba_premultiplied(255, 255, 255, 107),
+                theme.overlay(107),
             );
         }
     }
@@ -2909,7 +2909,7 @@ fn gradient_slider_row(
     range: std::ops::RangeInclusive<f32>,
     color_left: egui::Color32,
     color_right: egui::Color32,
-    _theme: &KlippTheme,
+    theme: &KlippTheme,
     cmds: &mut Vec<AppCommand>,
     clip_id: ClipId,
 ) -> bool {
@@ -2922,7 +2922,7 @@ fn gradient_slider_row(
 
     let (row_rect, resp) = ui.allocate_exact_size(egui::vec2(avail_w, ROW_H), egui::Sense::hover());
     if resp.hovered() {
-        ui.painter().rect_filled(row_rect, 0.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 13));
+        ui.painter().rect_filled(row_rect, 0.0, theme.overlay(13));
     }
     let cy = row_rect.center().y;
     let slider_x = row_rect.min.x + PAD + label_w;
@@ -2932,7 +2932,7 @@ fn gradient_slider_row(
 
         painter.text(egui::pos2(row_rect.min.x + PAD, cy), egui::Align2::LEFT_CENTER,
             label, egui::FontId::proportional(11.0),
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 107));
+            theme.overlay(107));
 
         // Gradient track — draw pixel by pixel horizontally
         let track_h = 6.0;
@@ -2961,7 +2961,7 @@ fn gradient_slider_row(
         // Value
         painter.text(egui::pos2(slider_x + slider_w + 8.0, cy), egui::Align2::LEFT_CENTER,
             format!("{:.2}", *value), egui::FontId::proportional(11.0),
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 166));
+            theme.overlay(166));
     }
 
     let interact_rect = egui::Rect::from_min_size(
@@ -2988,7 +2988,7 @@ fn hue_slider_row(
     ui: &mut egui::Ui,
     label: &str,
     value: &mut f32,
-    _theme: &KlippTheme,
+    theme: &KlippTheme,
     cmds: &mut Vec<AppCommand>,
     clip_id: ClipId,
 ) -> bool {
@@ -3000,7 +3000,7 @@ fn hue_slider_row(
 
     let (row_rect, resp) = ui.allocate_exact_size(egui::vec2(avail_w, ROW_H), egui::Sense::hover());
     if resp.hovered() {
-        ui.painter().rect_filled(row_rect, 0.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 13));
+        ui.painter().rect_filled(row_rect, 0.0, theme.overlay(13));
     }
     let cy = row_rect.center().y;
     let slider_x = row_rect.min.x + PAD + label_w;
@@ -3010,7 +3010,7 @@ fn hue_slider_row(
 
         painter.text(egui::pos2(row_rect.min.x + PAD, cy), egui::Align2::LEFT_CENTER,
             label, egui::FontId::proportional(11.0),
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 107));
+            theme.overlay(107));
 
         // Rainbow spectrum track
         let track_h = 6.0;
@@ -3034,7 +3034,7 @@ fn hue_slider_row(
         // Value
         painter.text(egui::pos2(slider_x + slider_w + 8.0, cy), egui::Align2::LEFT_CENTER,
             format!("{:.2}", *value), egui::FontId::proportional(11.0),
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 166));
+            theme.overlay(166));
     }
 
     let interact_rect = egui::Rect::from_min_size(
@@ -3067,6 +3067,7 @@ fn grade_slider(
     suffix: &str,
     cmds: &mut Vec<AppCommand>,
     clip_id: ClipId,
+    theme: &crate::theme::KlippTheme,
 ) -> bool {
     let pad = 14.0;
     let w = (ui.available_width() - pad * 2.0).max(60.0);
@@ -3083,7 +3084,7 @@ fn grade_slider(
     ui.horizontal(|ui| {
         ui.add_space(pad);
         ui.label(egui::RichText::new(label).size(11.0).color(
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 107)));
+            theme.overlay(107)));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(pad);
             let resp = ui.add(

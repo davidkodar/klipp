@@ -208,6 +208,10 @@ impl ViewerPanel {
                 egui::Align2::LEFT_CENTER,
                 &tc_text,
                 egui::FontId::monospace(16.0),
+                // Text sits on top of a black-translucent perf
+                // overlay bar — stays light regardless of theme
+                // polarity (the bar is the contrast partner, not
+                // the panel underneath).
                 egui::Color32::from_rgba_premultiplied(255, 255, 255, 220),
             );
             let playback_text = match state.playback {

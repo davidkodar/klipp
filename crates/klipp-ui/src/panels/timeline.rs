@@ -3554,7 +3554,7 @@ impl TimelinePanel {
                 egui::vec2(9.0, 9.0),
             );
             crate::icons::Icon::Lock.image(9.0)
-                .tint(egui::Color32::from_rgba_premultiplied(255, 255, 255, 120))
+                .tint(theme().overlay(120))
                 .paint_at(ui, icon_rect);
         }
 
@@ -3904,7 +3904,7 @@ impl TimelinePanel {
                 let y1 = y1_raw.min(clip_rect.bottom());
                 painter.line_segment(
                     [egui::pos2(x0, y0), egui::pos2(x1, y1)],
-                    egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 30)),
+                    egui::Stroke::new(0.5_f32, theme().overlay(30)),
                 );
                 lx += step;
             }
@@ -10501,7 +10501,7 @@ impl TimelinePanel {
                 painter.rect_stroke(
                     clip_rect,
                     1.0,
-                    egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 25)),
+                    egui::Stroke::new(0.5_f32, theme().overlay(25)),
                 );
             }
         }
