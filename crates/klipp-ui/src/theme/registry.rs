@@ -35,6 +35,7 @@ use super::{KlippTheme, ThemeColors};
 /// "Dark" name without depending on the registry.
 pub const BUILTIN_DARK: &str = include_str!("builtin/dark.toml");
 pub const BUILTIN_LIGHT: &str = include_str!("builtin/light.toml");
+pub const BUILTIN_SOLARIZED_DARK: &str = include_str!("builtin/solarized_dark.toml");
 
 /// Default theme name used when [`crate::prefs::AppearancePrefs::theme_name`]
 /// references a theme that the registry doesn't know about (e.g. a
@@ -96,7 +97,7 @@ impl ThemeRegistry {
     }
 
     fn load_builtins(&mut self) {
-        for raw in [BUILTIN_DARK, BUILTIN_LIGHT] {
+        for raw in [BUILTIN_DARK, BUILTIN_LIGHT, BUILTIN_SOLARIZED_DARK] {
             match parse_theme_file(raw) {
                 Ok(file) => {
                     let theme: KlippTheme = file.colors.into();
