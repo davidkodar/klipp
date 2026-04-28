@@ -2174,6 +2174,7 @@ dependencies = [
  "klipp-color",
  "klipp-core",
  "klipp-testing",
+ "naga",
  "pollster 0.4.0",
  "serde",
  "tracing",

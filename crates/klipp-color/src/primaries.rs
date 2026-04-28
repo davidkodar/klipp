@@ -70,6 +70,21 @@ pub const PRIMARIES_ACES_AP1: Primaries = Primaries {
     white: Chromaticity { x: 0.32168,  y: 0.33767  }, // D60 (ACES white)
 };
 
+/// ACES AP0 primaries (ACES2065-1 archival interchange space).
+///
+/// AP0 is wider than AP1 — the triangle covers the full visible
+/// spectral locus. Same D60 white point as AP1. Used internally by
+/// the RRT (the reference rendering transform) for sweeteners that
+/// expect to operate on the un-clamped scene-referred signal.
+///
+/// Source: ACES Technical Bulletin TB-2014-004 §5 / SMPTE ST 2065-1.
+pub const PRIMARIES_ACES_AP0: Primaries = Primaries {
+    red:   Chromaticity { x: 0.7347,  y: 0.2653  },
+    green: Chromaticity { x: 0.0000,  y: 1.0000  },
+    blue:  Chromaticity { x: 0.0001,  y: -0.0770 },
+    white: Chromaticity { x: 0.32168, y: 0.33767 }, // D60
+};
+
 /// BT.709 / sRGB primaries — the working space Klipp's grade chain
 /// has run in through Phase D. White point is D65.
 ///
@@ -108,6 +123,49 @@ pub fn acescg_to_bt709() -> [[f32; 3]; 3] {
         [ 1.7050523622, -0.6217957415, -0.0832566207],
         [-0.1302600472,  1.1408029888, -0.0105430932],
         [-0.0239638781, -0.1289693959,  1.1529332720],
+    ]
+}
+
+/// Linear-light AP0 RGB → linear-light AP1 (ACEScg) RGB.
+///
+/// AP0 and AP1 share the D60 white point — no chromatic adaptation
+/// needed, the matrix is purely a primaries-basis change. Both AP0
+/// and AP1 are linear-light scene-referred spaces, so this is a
+/// neutral conversion (the ACES Reference Rendering Transform's first
+/// internal step does this to bring scene-linear ACES into AP1, where
+/// the per-channel tone curve is applied).
+///
+/// Source: AMPAS aces-dev `AP0_2_AP1_MAT` from
+/// `transforms/ctl/lib/ACESlib.Transform_Common.ctl`.
+#[inline]
+#[allow(clippy::excessive_precision)]
+pub fn ap0_to_ap1() -> [[f32; 3]; 3] {
+    [
+        [ 1.4514393161, -0.2365107469, -0.2149285693],
+        [-0.0765537734,  1.1762296998, -0.0996759264],
+        [ 0.0083161484, -0.0060324498,  0.9977163014],
+    ]
+}
+
+/// Linear-light AP1 (ACEScg) RGB → linear-light AP0 RGB.
+///
+/// The numerical f64 inverse of [`ap0_to_ap1`], rounded to 12
+/// decimals — same rationale as in [`bt709_to_acescg`]: the
+/// AMPAS-published `AP1_2_AP0_MAT` is rounded independently and is
+/// not an exact float inverse of its sibling. Numerical inverse keeps
+/// the `M_ap0→ap1 × M_ap1→ap0 ≈ I` round-trip tight at f32
+/// precision.
+///
+/// Used by the RRT's final stage to deliver OCES (AP0) output, and
+/// (looking ahead) by the ODT's first stage to consume that OCES
+/// signal back into AP1 for the per-channel display encode.
+#[inline]
+#[allow(clippy::excessive_precision)]
+pub fn ap1_to_ap0() -> [[f32; 3]; 3] {
+    [
+        [ 0.695452241383, 0.140678696485, 0.163869062202],
+        [ 0.044794563379, 0.859671118483, 0.095534318142],
+        [-0.005525882540, 0.004025210317, 1.001500672222],
     ]
 }
 
@@ -285,5 +343,82 @@ mod tests {
         assert!(approx_eq(PRIMARIES_ACES_AP1.white.y, 0.33767, 1e-5));
         assert!(approx_eq(PRIMARIES_BT709.white.x, 0.3127, 1e-5));
         assert!(approx_eq(PRIMARIES_BT709.white.y, 0.3290, 1e-5));
+        // AP0 shares D60 with AP1.
+        assert!(approx_eq(PRIMARIES_ACES_AP0.white.x, 0.32168, 1e-5));
+        assert!(approx_eq(PRIMARIES_ACES_AP0.white.y, 0.33767, 1e-5));
+    }
+
+    #[test]
+    fn ap0_ap1_round_trip_neutral_gray() {
+        let gray = [0.5, 0.5, 0.5];
+        let in_ap1 = matrix3_mul_vec(ap0_to_ap1(), gray);
+        let back = matrix3_mul_vec(ap1_to_ap0(), in_ap1);
+        assert!(
+            approx_eq_vec(back, gray, 1e-5),
+            "AP0/AP1 neutral round-trip failed: {gray:?} → {in_ap1:?} → {back:?}",
+        );
+    }
+
+    #[test]
+    fn ap0_ap1_round_trip_non_neutral() {
+        let colour = [0.7, 0.2, 0.1];
+        let in_ap1 = matrix3_mul_vec(ap0_to_ap1(), colour);
+        let back = matrix3_mul_vec(ap1_to_ap0(), in_ap1);
+        assert!(
+            approx_eq_vec(back, colour, 1e-5),
+            "AP0/AP1 non-neutral round-trip failed: {colour:?} → {in_ap1:?} → {back:?}",
+        );
+    }
+
+    #[test]
+    fn ap0_ap1_product_is_identity() {
+        let id = matrix3_mul(ap0_to_ap1(), ap1_to_ap0());
+        let expected = [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    approx_eq(id[i][j], expected[i][j], 5e-6),
+                    "M_ap0→ap1 × M_ap1→ap0 [{i}][{j}] = {} (expected {})",
+                    id[i][j], expected[i][j],
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ap0_ap1_white_point_preservation() {
+        // Same D60 white on both sides — equal-RGB input gives
+        // equal-RGB output (rows of either matrix sum to ~1).
+        for (label, m) in [("ap0_to_ap1", ap0_to_ap1()), ("ap1_to_ap0", ap1_to_ap0())] {
+            for (i, row) in m.iter().enumerate() {
+                let s: f32 = row.iter().sum();
+                assert!(approx_eq(s, 1.0, 1e-4),
+                    "{label} row {i} sums to {s}; expected 1.0 (D60→D60 preservation)");
+            }
+        }
+    }
+
+    #[test]
+    fn ap0_essentially_contains_ap1() {
+        // AP0's chromaticity triangle covers the visible spectral
+        // locus, so AP1 ⊂ AP0 *in chromaticity space*. In matrix
+        // form, the AP1→AP0 basis change can still produce slight
+        // (~0.5%) negative excursions on saturated primaries — the
+        // AP0 blue primary doesn't perfectly absorb AP1 red's
+        // direction. Test that any negative is small relative to the
+        // brightness of the colour.
+        let ap1_red = [1.0, 0.0, 0.0];
+        let ap0 = matrix3_mul_vec(ap1_to_ap0(), ap1_red);
+        for c in ap0 {
+            assert!(c >= -0.01,
+                "AP1 red mapped to AP0: any negative excursion should be tiny; got {ap0:?}");
+        }
+        // Bright channel (R) should stay clearly positive.
+        assert!(ap0[0] > 0.5,
+            "AP1 red's R channel should still dominate in AP0; got {ap0:?}");
     }
 }
