@@ -6,14 +6,16 @@ description = "ONNX Runtime backend for klipp-ml — BiRefNet, RF-DETR-Seg, futu
 
 [features]
 default = []
-# Real ort dependency lands behind this flag in a follow-up commit.
-# Today the crate compiles standalone and ships scaffolding only;
-# `cargo build` works without any extra flags.
-ort = []
+# Pulls in the real ONNX Runtime library — without this flag the
+# crate compiles as scaffolding only (preprocess + postprocess are
+# pure CPU and always available; `BiRefNetLite::generate` returns
+# MaskError::BackendInit). With the flag, ort 2.0.0-rc.12 is wired
+# in and `generate` runs real inference.
+ort = ["dep:ort"]
 # NVIDIA acceleration via ort's CUDA EP. Requires user-installed
 # CUDA 12.8+/cuDNN 9.19+ at runtime; the build itself just tells ort
 # to enable the EP.
-cuda = ["ort"]
+cuda = ["ort", "ort?/cuda"]
 
 [dependencies]
 klipp-ml    = { workspace = true }
@@ -21,3 +23,4 @@ klipp-color = { workspace = true }
 bitflags    = { workspace = true }
 thiserror   = { workspace = true }
 tracing     = { workspace = true }
+ort         = { workspace = true, optional = true }

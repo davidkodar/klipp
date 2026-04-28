@@ -30,5 +30,14 @@
 //! (per kalosm-style architecture).
 
 pub mod birefnet_lite;
+pub mod postprocess;
+pub mod preprocess;
 
 pub use birefnet_lite::{BiRefNetLite, BiRefNetLiteBuilder, BIREFNET_LITE_MODEL_ID};
+pub use postprocess::{
+    bilinear_resize_single_channel, postprocess, sigmoid,
+};
+pub use preprocess::{
+    bilinear_resize_rgba, preprocess, preprocess_to_size, PreprocessedTensor,
+    BIREFNET_INPUT_SIZE, IMAGENET_MEAN, IMAGENET_STD,
+};

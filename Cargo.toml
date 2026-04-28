@@ -121,6 +121,15 @@ ureq = { version = "2", features = ["tls"] }
 # (multiple narrow capabilities matched cleanly via |/&)
 bitflags = { version = "2", features = ["serde"] }
 
+# ONNX Runtime — pinned to 2.0.0-rc.12 (RC since 2024, production-stable).
+# Uses `load-dynamic`: the build never downloads anything; users point at
+# their existing libonnxruntime.so via `ORT_DYLIB_PATH=...`. Distros
+# package onnxruntime; Klipp's release builds ship the .so next to the
+# binary. `download-binaries` was the alternative but rc.12's build
+# script bit-rotted against newer ureq. Lives behind klipp-ml-ort/ort
+# feature flag — default Klipp build does not pull this in.
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-24"] }
+
 # Internal crates
 klipp-core    = { path = "crates/klipp-core" }
 klipp-project = { path = "crates/klipp-project" }
