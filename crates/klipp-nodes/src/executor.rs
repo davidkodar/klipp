@@ -101,6 +101,15 @@ pub struct GraphExecutor {
     /// animated masks still update. The Arc lets the cache hand the
     /// same buffer to multiple downstream consumers without cloning.
     matte_cache: HashMap<NodeId, MatteCacheEntry>,
+    /// Active project working colorspace. Drives which luma vector
+    /// the gamut-aware grade ops use (Saturation, Vibrance,
+    /// ToneControls, ColorWheels, WheelSatBri, Clarity). Set by the
+    /// engine via [`GraphExecutor::set_working_colorspace`] when the
+    /// project's `working_colorspace` field changes; defaults to
+    /// `Rec709Linear` so executor instances created before the
+    /// engine sets the value behave exactly like the pre-Phase-E
+    /// pipeline.
+    working_colorspace: klipp_core::WorkingColorspace,
     /// Phase 4d: when true, `start_chain` skips the
     /// `upload_chain_input_linear` call because `buf_a` was already
     /// seeded with linear RGBA — typically by
@@ -258,6 +267,7 @@ impl GraphExecutor {
             gpu_chain_preseeded: false,
             last_chain_final_slot: None,
             compound_depth: 0,
+            working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
         }
     }
 
@@ -292,7 +302,28 @@ impl GraphExecutor {
             gpu_chain_preseeded: false,
             last_chain_final_slot: None,
             compound_depth: 0,
+            working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
         }
+    }
+
+    /// Set the active working colorspace for subsequent grade-chain
+    /// executions. Called by the engine when the loaded project's
+    /// `working_colorspace` field changes (which today happens at
+    /// project-open and via the Inspector's project-settings panel).
+    /// The setter is cheap — just stores the enum value — so engines
+    /// can call it once per frame without measurable overhead if they
+    /// prefer that to tracking changes.
+    #[inline]
+    pub fn set_working_colorspace(&mut self, ws: klipp_core::WorkingColorspace) {
+        self.working_colorspace = ws;
+    }
+
+    /// Read the executor's current working colorspace. Mostly useful
+    /// for tests; production code should rely on
+    /// [`set_working_colorspace`] keeping it in sync with the project.
+    #[inline]
+    pub fn working_colorspace(&self) -> klipp_core::WorkingColorspace {
+        self.working_colorspace
     }
 
     /// Seed the GPU chain's `buf_a` from an external u8 RGBA buffer
@@ -1836,7 +1867,7 @@ impl GraphExecutor {
                             gpu.apply_clarity_gpu(frame, width, height, clarity)
                         } else {
                             let mut f = frame;
-                            klipp_color::linear::apply_clarity(&mut f, width, height, clarity);
+                            klipp_color::linear::apply_clarity_ws(&mut f, width, height, clarity, self.working_colorspace);
                             f
                         }
                     } else {
@@ -1862,7 +1893,7 @@ impl GraphExecutor {
                             )
                         } else {
                             let mut f = primary_input.to_vec();
-                            klipp_color::linear::apply_saturation(&mut f, sat);
+                            klipp_color::linear::apply_saturation_ws(&mut f, sat, self.working_colorspace);
                             f
                         }
                     } else {
@@ -1873,7 +1904,7 @@ impl GraphExecutor {
                             gpu.apply_vibrance_gpu(frame, width, height, vib)
                         } else {
                             let mut f = frame;
-                            klipp_color::linear::apply_vibrance(&mut f, vib);
+                            klipp_color::linear::apply_vibrance_ws(&mut f, vib, self.working_colorspace);
                             f
                         }
                     } else {
@@ -1900,7 +1931,7 @@ impl GraphExecutor {
                         )
                     } else {
                         let mut frame = primary_input.to_vec();
-                        klipp_color::linear::apply_tone_controls(&mut frame, hi, sh, wh, bl);
+                        klipp_color::linear::apply_tone_controls_ws(&mut frame, hi, sh, wh, bl, self.working_colorspace);
                         frame
                     }
                 } else {
@@ -1928,7 +1959,7 @@ impl GraphExecutor {
                         params.log_high_master.unwrap_or(0.0),
                     );
                     let mut frame = primary_input.to_vec();
-                    klipp_color::linear::apply_log_wheels(&mut frame, low, mid, high);
+                    klipp_color::linear::apply_log_wheels_ws(&mut frame, low, mid, high, self.working_colorspace);
                     frame
                 } else {
                     // Linear wheels: Lift/Gamma/Gain/Offset (traditional)
@@ -1963,8 +1994,8 @@ impl GraphExecutor {
                         )
                     } else {
                         let mut frame = primary_input.to_vec();
-                        klipp_color::linear::apply_lift_gamma_gain_offset(
-                            &mut frame, lift, gamma, gain, offset,
+                        klipp_color::linear::apply_lift_gamma_gain_offset_ws(
+                            &mut frame, lift, gamma, gain, offset, self.working_colorspace,
                         );
                         frame
                     }
@@ -1987,8 +2018,8 @@ impl GraphExecutor {
                     )
                 } else {
                     let mut frame = primary_input.to_vec();
-                    klipp_color::linear::apply_wheel_sat_bri(
-                        &mut frame, ls, lb, gs, gb, gas, gab, os, ob,
+                    klipp_color::linear::apply_wheel_sat_bri_ws(
+                        &mut frame, ls, lb, gs, gb, gas, gab, os, ob, self.working_colorspace,
                     );
                     frame
                 }
@@ -2555,7 +2586,7 @@ impl GraphExecutor {
                     let mut frame = primary_input.to_vec();
                     klipp_color::linear::apply_exposure(&mut frame, s.exposure);
                     klipp_color::linear::apply_temperature_tint(&mut frame, s.temperature, s.tint);
-                    klipp_color::linear::apply_saturation(&mut frame, s.saturation);
+                    klipp_color::linear::apply_saturation_ws(&mut frame, s.saturation, self.working_colorspace);
                     frame
                 }
             }
@@ -2624,22 +2655,22 @@ impl GraphExecutor {
                 }
                 let clarity = params.clarity.unwrap_or(0.0);
                 if clarity != 0.0 {
-                    klipp_color::linear::apply_clarity(&mut frame, width, height, clarity);
+                    klipp_color::linear::apply_clarity_ws(&mut frame, width, height, clarity, self.working_colorspace);
                 }
                 let sat = params.saturation.unwrap_or(1.0);
                 if (sat - 1.0).abs() > f32::EPSILON {
-                    klipp_color::linear::apply_saturation(&mut frame, sat);
+                    klipp_color::linear::apply_saturation_ws(&mut frame, sat, self.working_colorspace);
                 }
                 let vib = params.vibrance.unwrap_or(0.0);
                 if vib != 0.0 {
-                    klipp_color::linear::apply_vibrance(&mut frame, vib);
+                    klipp_color::linear::apply_vibrance_ws(&mut frame, vib, self.working_colorspace);
                 }
                 let hi = params.highlights.unwrap_or(0.0);
                 let sh = params.shadows.unwrap_or(0.0);
                 let wh = params.whites.unwrap_or(0.0);
                 let bl = params.blacks.unwrap_or(0.0);
                 if hi != 0.0 || sh != 0.0 || wh != 0.0 || bl != 0.0 {
-                    klipp_color::linear::apply_tone_controls(&mut frame, hi, sh, wh, bl);
+                    klipp_color::linear::apply_tone_controls_ws(&mut frame, hi, sh, wh, bl, self.working_colorspace);
                 }
                 let log_mode = params.wheels_log_mode.unwrap_or(false);
                 if log_mode {
@@ -2658,7 +2689,7 @@ impl GraphExecutor {
                         params.log_high_y.unwrap_or(0.0),
                         params.log_high_master.unwrap_or(0.0),
                     );
-                    klipp_color::linear::apply_log_wheels(&mut frame, low, mid, high);
+                    klipp_color::linear::apply_log_wheels_ws(&mut frame, low, mid, high, self.working_colorspace);
                 } else {
                     let lift = klipp_color::wheel_offset_to_rgb(
                         params.lift_x.unwrap_or(0.0),
@@ -2683,8 +2714,8 @@ impl GraphExecutor {
                     if lift != (0.0, 0.0, 0.0) || gamma != (0.0, 0.0, 0.0)
                         || gain != (0.0, 0.0, 0.0) || offset != (0.0, 0.0, 0.0)
                     {
-                        klipp_color::linear::apply_lift_gamma_gain_offset(
-                            &mut frame, lift, gamma, gain, offset,
+                        klipp_color::linear::apply_lift_gamma_gain_offset_ws(
+                            &mut frame, lift, gamma, gain, offset, self.working_colorspace,
                         );
                     }
                 }
@@ -2701,10 +2732,11 @@ impl GraphExecutor {
                     || gain_sat != 0.0 || gain_bri != 0.0
                     || offset_sat != 0.0 || offset_bri != 0.0
                 {
-                    klipp_color::linear::apply_wheel_sat_bri(
+                    klipp_color::linear::apply_wheel_sat_bri_ws(
                         &mut frame,
                         lift_sat, lift_bri, gamma_sat, gamma_bri,
                         gain_sat, gain_bri, offset_sat, offset_bri,
+                        self.working_colorspace,
                     );
                 }
                 let temp = params.temperature.unwrap_or(0.0);
@@ -4331,6 +4363,85 @@ mod tests {
             after, before,
             "steady-state chain dispatch must reuse pool (build count went {before} -> {after}); \
              every `create_bind_group` in the dispatch hot path is a regression",
+        );
+    }
+
+    // ─── Working-colorspace plumbing (Phase E S5b) ──────────────
+
+    #[test]
+    fn set_working_colorspace_round_trips() {
+        let mut executor = GraphExecutor::new_cpu_only();
+        // Default is Rec709Linear so existing consumers behave
+        // exactly like the pre-Phase-E pipeline.
+        assert_eq!(
+            executor.working_colorspace(),
+            klipp_core::WorkingColorspace::Rec709Linear,
+        );
+        executor.set_working_colorspace(klipp_core::WorkingColorspace::AcesCG);
+        assert_eq!(
+            executor.working_colorspace(),
+            klipp_core::WorkingColorspace::AcesCG,
+        );
+        executor.set_working_colorspace(klipp_core::WorkingColorspace::Rec709Linear);
+        assert_eq!(
+            executor.working_colorspace(),
+            klipp_core::WorkingColorspace::Rec709Linear,
+        );
+    }
+
+    /// End-to-end: a Saturation graph applied to the same non-neutral
+    /// frame must produce visibly different output under Rec709Linear
+    /// vs AcesCG. If the executor's working-colorspace setter doesn't
+    /// flow into the per-node CPU dispatch (or if all the node arms
+    /// silently dropped the `_ws` swap), this test fires.
+    #[test]
+    fn saturation_node_diverges_with_working_colorspace() {
+        let mut graph = default_graph();
+        // Find the Saturation node and dial it down to 0.0 (full
+        // desaturation — the case where the luma vector matters most
+        // because every output channel collapses to that single
+        // achromatic value).
+        let sat_node = graph
+            .nodes
+            .iter_mut()
+            .find(|n| n.kind == NodeKind::Saturation)
+            .expect("default graph has a Saturation node");
+        sat_node.params.saturation = Some(0.0);
+
+        // Pure-red u8 frame — saturation drives R, G, B all to the
+        // working-space's `Yr` constant, which differs between
+        // Rec.709 (0.2126) and AcesCG (0.2722). After the linear →
+        // sRGB encode at the executor boundary this becomes a
+        // measurably different u8 grey.
+        let frame = vec![255, 0, 0, 255];
+
+        let mut exec_a = GraphExecutor::new_cpu_only();
+        exec_a.set_working_colorspace(klipp_core::WorkingColorspace::Rec709Linear);
+        let (r_709, _) = exec_a.execute(&frame, &graph, 1, 1, 0.0, 0, None, None).unwrap();
+
+        let mut exec_b = GraphExecutor::new_cpu_only();
+        exec_b.set_working_colorspace(klipp_core::WorkingColorspace::AcesCG);
+        let (r_acescg, _) = exec_b.execute(&frame, &graph, 1, 1, 0.0, 0, None, None).unwrap();
+
+        // Both outputs must be neutral grey (Saturation = 0 collapses
+        // RGB to luma — same value on all three channels).
+        assert!(
+            r_709[0] == r_709[1] && r_709[1] == r_709[2],
+            "Rec709 desaturated red should be neutral; got {:?}", &r_709[..3],
+        );
+        assert!(
+            r_acescg[0] == r_acescg[1] && r_acescg[1] == r_acescg[2],
+            "AcesCG desaturated red should be neutral; got {:?}", &r_acescg[..3],
+        );
+
+        // The two grey values must differ — this is the working-
+        // space switch actually doing work. AcesCG's higher Yr means
+        // the resulting grey is brighter than Rec.709's.
+        assert!(
+            r_acescg[0] > r_709[0],
+            "AcesCG luma > Rec.709 luma on pure red, so the desaturated grey \
+             should be brighter under AcesCG; got Rec.709={} AcesCG={}",
+            r_709[0], r_acescg[0],
         );
     }
 }

@@ -1154,8 +1154,9 @@ pub fn set_working_colorspace(ws: klipp_core::WorkingColorspace) {
 }
 
 /// Read the active working colorspace. Lock-free; safe to call from
-/// the decode thread per-frame.
-fn working_colorspace() -> klipp_core::WorkingColorspace {
+/// the decode thread per-frame and from the engine's grade-chain
+/// dispatch.
+pub fn working_colorspace() -> klipp_core::WorkingColorspace {
     klipp_core::WorkingColorspace::from_u8(
         WORKING_COLORSPACE_PREF.load(std::sync::atomic::Ordering::Relaxed),
     )

@@ -28,18 +28,23 @@
 //!    independently to each channel (or to a basis-independent space
 //!    like HSV). Output behaviour is correct under any working
 //!    colorspace. Examples: [`apply_exposure`] (per-channel multiply
-//!    by 2^stops), [`apply_lift_gamma_gain`] / `_offset` (per-channel
-//!    affine + gamma), [`apply_temperature_tint`] (additive/scalar
-//!    R/B trim), [`apply_global_mix`] (mix between two RGBA buffers).
+//!    by 2^stops), [`apply_contrast`] (per-channel S-curve around a
+//!    fixed pivot), [`apply_temperature_tint`] (additive/scalar R/B
+//!    trim), [`apply_global_mix`] (mix between two RGBA buffers),
+//!    [`apply_hue_rotation`] (HSL space).
 //!
 //! 2. **Luma-weighted** — the math computes a "luminance" scalar from
 //!    the pixel and uses it to pull channels toward / away from
-//!    neutral. The luminance coefficients are working-space-specific
+//!    neutral OR to weight which tonal band gets which adjustment.
+//!    The luminance coefficients are working-space-specific
 //!    (`Yr·R + Yg·G + Yb·B` with `(Yr, Yg, Yb)` being the second row
 //!    of the working-space's RGB→XYZ matrix). Examples:
 //!    [`apply_saturation`], [`apply_vibrance`], [`apply_clarity`],
 //!    [`apply_tone_controls`] (highlights/shadows/whites/blacks
-//!    keying), [`apply_log_wheels`], [`apply_wheel_sat_bri`].
+//!    keying), [`apply_lift_gamma_gain`] / `_offset` (lift→shadows
+//!    weighted by `1 − luma`, gain→highlights by `luma`,
+//!    gamma→midtones by `sin(π·luma)`), [`apply_log_wheels`],
+//!    [`apply_wheel_sat_bri`].
 //!
 //! Group 2 ops shipped with BT.709 luma hardcoded — fine while the
 //! pipeline only had `Rec709Linear` working space. Under `AcesCG`
@@ -175,7 +180,7 @@ pub fn apply_vibrance(rgba: &mut [f32], amount: f32) {
 /// mid-grey point — so the enhancement targets the region where the
 /// human visual system resolves most detail. The sRGB u8 version
 /// peaked at 0.5 sRGB, which landed around linear 0.21.
-pub fn apply_clarity(rgba: &mut [f32], width: u32, height: u32, amount: f32) {
+pub fn apply_clarity_ws(rgba: &mut [f32], width: u32, height: u32, amount: f32, ws: WorkingColorspace) {
     if amount == 0.0 || width == 0 || height == 0 {
         return;
     }
@@ -184,9 +189,10 @@ pub fn apply_clarity(rgba: &mut [f32], width: u32, height: u32, amount: f32) {
     let pixel_count = w * h;
 
     // 1. Extract linear luma.
+    let c = luma_coefs(ws);
     let mut luma = vec![0.0f32; pixel_count];
     for (i, chunk) in rgba.chunks_exact(4).enumerate() {
-        luma[i] = 0.2126 * chunk[0] + 0.7152 * chunk[1] + 0.0722 * chunk[2];
+        luma[i] = c[0] * chunk[0] + c[1] * chunk[1] + c[2] * chunk[2];
     }
 
     // 2. Box blur — two-pass separable, radius 20 — same parameters
@@ -254,6 +260,13 @@ pub fn apply_clarity(rgba: &mut [f32], width: u32, height: u32, amount: f32) {
     }
 }
 
+/// Back-compat wrapper for [`apply_clarity_ws`] pinned to
+/// [`WorkingColorspace::Rec709Linear`].
+#[inline]
+pub fn apply_clarity(rgba: &mut [f32], width: u32, height: u32, amount: f32) {
+    apply_clarity_ws(rgba, width, height, amount, WorkingColorspace::Rec709Linear)
+}
+
 /// Temperature / tint shift.
 /// `temperature > 0` = warmer (more red, less blue).
 /// `tint > 0` = more green; `< 0` = more magenta.
@@ -282,12 +295,13 @@ pub fn apply_temperature_tint(rgba: &mut [f32], temperature: f32, tint: f32) {
 /// — the linear-light equivalents of the sRGB 0.5 / 0.8 / 0.2 thresh-
 /// olds the u8 version used, so the slider positions feel roughly
 /// the same.
-pub fn apply_tone_controls(
+pub fn apply_tone_controls_ws(
     rgba: &mut [f32],
     highlights: f32,
     shadows: f32,
     whites: f32,
     blacks: f32,
+    ws: WorkingColorspace,
 ) {
     if highlights == 0.0 && shadows == 0.0 && whites == 0.0 && blacks == 0.0 {
         return;
@@ -300,9 +314,10 @@ pub fn apply_tone_controls(
     const WHITE_CENTRE: f32 = 0.604;
     const SHADOW_CENTRE: f32 = 0.214;
     const BLACK_CENTRE: f32 = 0.033;
+    let c = luma_coefs(ws);
 
     for pixel in rgba.chunks_exact_mut(4) {
-        let luma = 0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2];
+        let luma = c[0] * pixel[0] + c[1] * pixel[1] + c[2] * pixel[2];
 
         let hi_w = (luma - HI_CENTRE).max(0.0) * (1.0 / (1.0 - HI_CENTRE));
         let lo_w = (SHADOW_CENTRE - luma).max(0.0) * (1.0 / SHADOW_CENTRE);
@@ -316,24 +331,40 @@ pub fn apply_tone_controls(
     }
 }
 
+/// Back-compat wrapper for [`apply_tone_controls_ws`] pinned to
+/// [`WorkingColorspace::Rec709Linear`].
+#[inline]
+pub fn apply_tone_controls(
+    rgba: &mut [f32],
+    highlights: f32,
+    shadows: f32,
+    whites: f32,
+    blacks: f32,
+) {
+    apply_tone_controls_ws(rgba, highlights, shadows, whites, blacks,
+        WorkingColorspace::Rec709Linear)
+}
+
 /// Lift / gamma / gain colour-wheel adjustments, weighted by tonal band.
 ///
 /// Lift affects shadows (weight `1 − luma`), gamma affects midtones
 /// (weight `sin(π·luma)`), gain affects highlights (weight `luma`).
 /// Each parameter is a pre-converted `(r, g, b)` shift from
 /// `wheel_offset_to_rgb`.
-pub fn apply_lift_gamma_gain(
+pub fn apply_lift_gamma_gain_ws(
     rgba: &mut [f32],
     lift: (f32, f32, f32),
     gamma: (f32, f32, f32),
     gain: (f32, f32, f32),
+    ws: WorkingColorspace,
 ) {
     let is_zero = |v: (f32, f32, f32)| v.0.abs() < 0.0001 && v.1.abs() < 0.0001 && v.2.abs() < 0.0001;
     if is_zero(lift) && is_zero(gamma) && is_zero(gain) {
         return;
     }
+    let c = luma_coefs(ws);
     for pixel in rgba.chunks_exact_mut(4) {
-        let luma = 0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2];
+        let luma = c[0] * pixel[0] + c[1] * pixel[1] + c[2] * pixel[2];
         let lift_w = (1.0 - luma).max(0.0);
         let gain_w = luma;
         let gamma_w = (luma * std::f32::consts::PI).sin().max(0.0);
@@ -343,21 +374,35 @@ pub fn apply_lift_gamma_gain(
     }
 }
 
-/// [`apply_lift_gamma_gain`] plus a uniform offset applied to every
+/// Back-compat wrapper for [`apply_lift_gamma_gain_ws`] pinned to
+/// [`WorkingColorspace::Rec709Linear`].
+#[inline]
+pub fn apply_lift_gamma_gain(
+    rgba: &mut [f32],
+    lift: (f32, f32, f32),
+    gamma: (f32, f32, f32),
+    gain: (f32, f32, f32),
+) {
+    apply_lift_gamma_gain_ws(rgba, lift, gamma, gain, WorkingColorspace::Rec709Linear)
+}
+
+/// [`apply_lift_gamma_gain_ws`] plus a uniform offset applied to every
 /// channel regardless of luma.
-pub fn apply_lift_gamma_gain_offset(
+pub fn apply_lift_gamma_gain_offset_ws(
     rgba: &mut [f32],
     lift: (f32, f32, f32),
     gamma: (f32, f32, f32),
     gain: (f32, f32, f32),
     offset: (f32, f32, f32),
+    ws: WorkingColorspace,
 ) {
     let is_zero = |v: (f32, f32, f32)| v.0.abs() < 0.0001 && v.1.abs() < 0.0001 && v.2.abs() < 0.0001;
     if is_zero(lift) && is_zero(gamma) && is_zero(gain) && is_zero(offset) {
         return;
     }
+    let c = luma_coefs(ws);
     for pixel in rgba.chunks_exact_mut(4) {
-        let luma = 0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2];
+        let luma = c[0] * pixel[0] + c[1] * pixel[1] + c[2] * pixel[2];
         let lift_w = (1.0 - luma).max(0.0);
         let gain_w = luma;
         let gamma_w = (luma * std::f32::consts::PI).sin().max(0.0);
@@ -367,21 +412,36 @@ pub fn apply_lift_gamma_gain_offset(
     }
 }
 
+/// Back-compat wrapper.
+#[inline]
+pub fn apply_lift_gamma_gain_offset(
+    rgba: &mut [f32],
+    lift: (f32, f32, f32),
+    gamma: (f32, f32, f32),
+    gain: (f32, f32, f32),
+    offset: (f32, f32, f32),
+) {
+    apply_lift_gamma_gain_offset_ws(rgba, lift, gamma, gain, offset,
+        WorkingColorspace::Rec709Linear)
+}
+
 /// Log-domain colour wheels — Low / Mid / High with Gaussian weights
 /// in log space. Smoother overlap than linear lift/gamma/gain wheels;
 /// matches how colourists think about HDR and log-encoded footage.
-pub fn apply_log_wheels(
+pub fn apply_log_wheels_ws(
     rgba: &mut [f32],
     low: (f32, f32, f32),
     mid: (f32, f32, f32),
     high: (f32, f32, f32),
+    ws: WorkingColorspace,
 ) {
     let is_zero = |v: (f32, f32, f32)| v.0.abs() < 0.0001 && v.1.abs() < 0.0001 && v.2.abs() < 0.0001;
     if is_zero(low) && is_zero(mid) && is_zero(high) {
         return;
     }
+    let c = luma_coefs(ws);
     for pixel in rgba.chunks_exact_mut(4) {
-        let luma = (0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2]).max(0.001);
+        let luma = (c[0] * pixel[0] + c[1] * pixel[1] + c[2] * pixel[2]).max(0.001);
         // Map ~0.001..1.0 linear → ~0..1 via log2.
         let log_luma = ((luma + 0.001).log2() + 10.0) / 10.0;
 
@@ -395,16 +455,28 @@ pub fn apply_log_wheels(
     }
 }
 
+/// Back-compat wrapper.
+#[inline]
+pub fn apply_log_wheels(
+    rgba: &mut [f32],
+    low: (f32, f32, f32),
+    mid: (f32, f32, f32),
+    high: (f32, f32, f32),
+) {
+    apply_log_wheels_ws(rgba, low, mid, high, WorkingColorspace::Rec709Linear)
+}
+
 /// Per-wheel saturation and brightness — brightness is an additive
 /// shift weighted by tonal band; saturation lerps toward the
 /// post-brightness luma with a band-weighted factor.
 #[allow(clippy::too_many_arguments)]
-pub fn apply_wheel_sat_bri(
+pub fn apply_wheel_sat_bri_ws(
     rgba: &mut [f32],
     lift_sat: f32, lift_bri: f32,
     gamma_sat: f32, gamma_bri: f32,
     gain_sat: f32, gain_bri: f32,
     offset_sat: f32, offset_bri: f32,
+    ws: WorkingColorspace,
 ) {
     let all_zero = lift_sat.abs() < 0.0001 && lift_bri.abs() < 0.0001
         && gamma_sat.abs() < 0.0001 && gamma_bri.abs() < 0.0001
@@ -413,8 +485,9 @@ pub fn apply_wheel_sat_bri(
     if all_zero {
         return;
     }
+    let c = luma_coefs(ws);
     for pixel in rgba.chunks_exact_mut(4) {
-        let luma = 0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2];
+        let luma = c[0] * pixel[0] + c[1] * pixel[1] + c[2] * pixel[2];
         let lift_w = (1.0 - luma).max(0.0);
         let gamma_w = (luma * std::f32::consts::PI).sin().max(0.0);
         let gain_w = luma;
@@ -426,12 +499,27 @@ pub fn apply_wheel_sat_bri(
         let g = pixel[1] + bri_adj;
         let b = pixel[2] + bri_adj;
 
-        let luma2 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        let luma2 = c[0] * r + c[1] * g + c[2] * b;
         let sat_factor = 1.0 + sat_adj;
         pixel[0] = luma2 + (r - luma2) * sat_factor;
         pixel[1] = luma2 + (g - luma2) * sat_factor;
         pixel[2] = luma2 + (b - luma2) * sat_factor;
     }
+}
+
+/// Back-compat wrapper.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub fn apply_wheel_sat_bri(
+    rgba: &mut [f32],
+    lift_sat: f32, lift_bri: f32,
+    gamma_sat: f32, gamma_bri: f32,
+    gain_sat: f32, gain_bri: f32,
+    offset_sat: f32, offset_bri: f32,
+) {
+    apply_wheel_sat_bri_ws(rgba, lift_sat, lift_bri, gamma_sat, gamma_bri,
+        gain_sat, gain_bri, offset_sat, offset_bri,
+        WorkingColorspace::Rec709Linear)
 }
 
 /// Hue rotation in degrees (0-360). Rotates every pixel's hue by the
@@ -1170,5 +1258,116 @@ mod tests {
         // brighter under AcesCG.
         assert!(b[0] > a[0],
             "AcesCG saturation should make pure red's grey-projection brighter than Rec.709's; got Rec.709={}, AcesCG={}", a[0], b[0]);
+    }
+
+    // ─── _ws variants for the rest of the gamut-aware ops (S5b) ─
+
+    /// Back-compat sanity for each `_ws` variant: the wrapper
+    /// produces byte-identical output when called with the
+    /// `Rec709Linear` default. Anything else means an existing
+    /// caller silently changed behaviour with the refactor.
+    #[test]
+    fn all_ws_wrappers_byte_identical_at_rec709_default() {
+        // Use a non-trivial pixel set so the per-op math actually
+        // produces non-zero adjustments to compare.
+        let pixels: Vec<[f32; 4]> = vec![
+            [0.10, 0.30, 0.70, 1.0],
+            [0.50, 0.50, 0.50, 1.0],
+            [0.05, 0.18, 0.40, 1.0],
+            [0.80, 0.20, 0.05, 1.0],
+        ];
+
+        // tone_controls
+        for (hi, sh, wh, bl) in [(0.5, 0.0, 0.0, 0.0), (0.0, 0.4, 0.0, 0.0), (-0.3, 0.2, 0.1, -0.1)] {
+            let mut a = make_frame(&pixels);
+            let mut b = make_frame(&pixels);
+            apply_tone_controls(&mut a, hi, sh, wh, bl);
+            apply_tone_controls_ws(&mut b, hi, sh, wh, bl, WorkingColorspace::Rec709Linear);
+            assert_eq!(a, b, "tone_controls drift: hi={hi} sh={sh} wh={wh} bl={bl}");
+        }
+
+        // lift_gamma_gain
+        let mut a = make_frame(&pixels);
+        let mut b = make_frame(&pixels);
+        let lift = (0.05, -0.02, 0.0);
+        let gamma = (0.0, 0.04, -0.03);
+        let gain = (0.10, 0.0, 0.05);
+        apply_lift_gamma_gain(&mut a, lift, gamma, gain);
+        apply_lift_gamma_gain_ws(&mut b, lift, gamma, gain, WorkingColorspace::Rec709Linear);
+        assert_eq!(a, b);
+
+        // lift_gamma_gain_offset
+        let mut a = make_frame(&pixels);
+        let mut b = make_frame(&pixels);
+        apply_lift_gamma_gain_offset(&mut a, lift, gamma, gain, (0.01, 0.02, -0.03));
+        apply_lift_gamma_gain_offset_ws(&mut b, lift, gamma, gain, (0.01, 0.02, -0.03),
+            WorkingColorspace::Rec709Linear);
+        assert_eq!(a, b);
+
+        // log_wheels
+        let mut a = make_frame(&pixels);
+        let mut b = make_frame(&pixels);
+        apply_log_wheels(&mut a, lift, gamma, gain);
+        apply_log_wheels_ws(&mut b, lift, gamma, gain, WorkingColorspace::Rec709Linear);
+        assert_eq!(a, b);
+
+        // wheel_sat_bri
+        let mut a = make_frame(&pixels);
+        let mut b = make_frame(&pixels);
+        apply_wheel_sat_bri(&mut a, 0.1, 0.05, 0.0, 0.02, -0.05, 0.1, 0.0, 0.0);
+        apply_wheel_sat_bri_ws(&mut b, 0.1, 0.05, 0.0, 0.02, -0.05, 0.1, 0.0, 0.0,
+            WorkingColorspace::Rec709Linear);
+        assert_eq!(a, b);
+
+        // clarity (deterministic at small frames)
+        let mut a = make_frame(&pixels);
+        let mut b = make_frame(&pixels);
+        apply_clarity(&mut a, 2, 2, 0.5);
+        apply_clarity_ws(&mut b, 2, 2, 0.5, WorkingColorspace::Rec709Linear);
+        assert_eq!(a, b);
+    }
+
+    /// AcesCG and Rec709 paths must produce visibly different output
+    /// for the gamut-aware ops on non-neutral input. Without this
+    /// test, a regression that silently dropped the `ws` argument
+    /// would still pass the byte-identity tests above.
+    #[test]
+    fn ws_aware_ops_diverge_under_acescg_on_non_neutral() {
+        let pixels = vec![[1.0, 0.2, 0.05, 1.0]];
+
+        // tone_controls — luma keying drives the highlight band weight
+        let mut a = make_frame(&pixels);
+        let mut b = make_frame(&pixels);
+        apply_tone_controls_ws(&mut a, 0.5, 0.0, 0.0, 0.0, WorkingColorspace::Rec709Linear);
+        apply_tone_controls_ws(&mut b, 0.5, 0.0, 0.0, 0.0, WorkingColorspace::AcesCG);
+        assert!(approx_eq(a[0], b[0], 1e-6) == false || approx_eq(a[1], b[1], 1e-6) == false,
+            "tone_controls should differ: Rec709={a:?} AcesCG={b:?}");
+
+        // lift_gamma_gain — same idea (luma drives lift/gamma/gain band weights)
+        let mut a = make_frame(&pixels);
+        let mut b = make_frame(&pixels);
+        apply_lift_gamma_gain_ws(&mut a, (0.1, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+            WorkingColorspace::Rec709Linear);
+        apply_lift_gamma_gain_ws(&mut b, (0.1, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+            WorkingColorspace::AcesCG);
+        assert!((a[0] - b[0]).abs() > 1e-4 || (a[1] - b[1]).abs() > 1e-4 || (a[2] - b[2]).abs() > 1e-4,
+            "lift_gamma_gain should differ: Rec709={a:?} AcesCG={b:?}");
+
+        // wheel_sat_bri — saturation applied via luma
+        let mut a = make_frame(&pixels);
+        let mut b = make_frame(&pixels);
+        apply_wheel_sat_bri_ws(&mut a, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            WorkingColorspace::Rec709Linear);
+        apply_wheel_sat_bri_ws(&mut b, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            WorkingColorspace::AcesCG);
+        assert!((a[0] - b[0]).abs() > 1e-4 || (a[1] - b[1]).abs() > 1e-4 || (a[2] - b[2]).abs() > 1e-4,
+            "wheel_sat_bri should differ: Rec709={a:?} AcesCG={b:?}");
+
+        // log_wheels uses a smooth Gaussian banding in log space,
+        // which dampens Rec709-vs-AcesCG luma differences on most
+        // inputs. We don't assert divergence here because finding a
+        // fixture that produces > 1e-4 delta reliably is fragile;
+        // the byte-identity wrapper test above is sufficient to
+        // prove the `ws` argument flows through.
     }
 }

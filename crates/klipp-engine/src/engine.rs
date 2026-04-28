@@ -5896,6 +5896,13 @@ impl PlaybackEngine {
         let frame_number = (clip_time_secs * self.playhead.rate as f64).max(0.0) as u64;
         let thumb_set = self.visible_node_thumbs.clone();
         self.ensure_gpu_effects();
+        // Mirror the project's active working colorspace into the
+        // executor so gamut-aware grade ops (Saturation, Vibrance,
+        // ToneControls, ColorWheels, etc.) use the right luma vector.
+        // Cheap setter; safe to call per-frame.
+        self.graph_executor.set_working_colorspace(
+            crate::video_decoder::working_colorspace(),
+        );
         match self.graph_executor.execute_linear_with_thumbs(
             &linear_in,
             &graph,
@@ -6168,6 +6175,9 @@ impl PlaybackEngine {
         let rgba = if !clip.node_graph.is_identity() {
             self.graph_executor.prepare_clip(&clip.node_graph);
             let frame_number = (clip_time_secs * self.fps.as_f64()).max(0.0) as u64;
+            self.graph_executor.set_working_colorspace(
+                crate::video_decoder::working_colorspace(),
+            );
             match self.graph_executor.execute_linear(
                 &linear_rgba, &clip.node_graph, width, height, clip_time_secs, frame_number, None, None,
             ) {
@@ -7361,6 +7371,9 @@ impl PlaybackEngine {
                     } else {
                         None
                     };
+                self.graph_executor.set_working_colorspace(
+                    crate::video_decoder::working_colorspace(),
+                );
                 match self.graph_executor.execute_linear_with_thumbs(
                     &rgba,
                     graph,
