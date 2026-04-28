@@ -223,6 +223,43 @@ pub fn matrix3_mul(lhs: [[f32; 3]; 3], rhs: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
     out
 }
 
+/// Linear-light AP1 (ACEScg) RGB → linear-light BT.2020 RGB.
+///
+/// White-point conversion D60 → D65 baked in via Bradford CAT.
+/// Used by the Rec.2100 PQ ODT to deliver wide-gamut HDR content
+/// in BT.2020 primaries.
+///
+/// Source: AMPAS aces-dev `AP1_2_REC2020_MAT` from
+/// `transforms/ctl/lib/ACESlib.Transform_Common.ctl`. AP1 and
+/// BT.2020 are close in chromaticity, so the matrix is close to
+/// identity (the diagonal is ~1 with small off-diagonals); a
+/// neutral input round-trips cleanly.
+#[inline]
+#[allow(clippy::excessive_precision)]
+pub fn acescg_to_bt2020() -> [[f32; 3]; 3] {
+    [
+        [ 1.040036, -0.001154, -0.038881],
+        [-0.011311,  1.005945,  0.005367],
+        [ 0.000291, -0.001263,  1.000972],
+    ]
+}
+
+/// Linear-light BT.2020 RGB → linear-light AP1 (ACEScg) RGB.
+///
+/// Numerical f64 inverse of [`acescg_to_bt2020`], rounded to 12
+/// decimals. Same construction as the BT.709 ↔ AP1 / AP0 ↔ AP1
+/// pairs — guarantees the matrix product hits identity to ~1e-16
+/// in f64 (and well within f32 noise after narrow).
+#[inline]
+#[allow(clippy::excessive_precision)]
+pub fn bt2020_to_acescg() -> [[f32; 3]; 3] {
+    [
+        [ 0.961507236379,  0.001149905973,  0.037341894990],
+        [ 0.010812753529,  0.994096373481, -0.004910131918],
+        [-0.000265883659,  0.001253990219,  0.999011892452],
+    ]
+}
+
 /// Pick the matrix that converts linear-light RGB from one working
 /// space to another.
 ///

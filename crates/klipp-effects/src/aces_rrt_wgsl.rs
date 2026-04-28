@@ -438,6 +438,89 @@ fn apply_odt_rec709_sdr(oces_in: vec3<f32>) -> vec3<f32> {
 }
 "#;
 
+/// WGSL fragment for the Rec.2100 PQ HDR ODT. Append after
+/// [`WGSL_RRT`] and [`WGSL_ODT_REC709_SDR`] so the shared helpers
+/// (`rrt_segmented_spline_c5_fwd`, `odt_segmented_spline_c9_fwd`,
+/// `RRT_AP1_RGB2Y`, `rrt_eval_spline_segment`, `rrt_ap0_to_ap1_mul`)
+/// come into scope.
+///
+/// Two entry points (one per HDR mastering display peak):
+///   * `apply_odt_rec2100_pq_1000_nit(oces) -> vec3<f32>` (HDR10
+///      delivery, 1000-nit reference monitor)
+///   * `apply_odt_rec2100_pq_4000_nit(oces) -> vec3<f32>` (4000-nit
+///      mastering)
+///
+/// Output is PQ-encoded BT.2020 RGB in `[0, 1]` ready for an HDR10
+/// container or a PQ-aware display. Same parity caveat as the Rust
+/// oracle: the SDR cinema C9 spline is reused with a post-spline
+/// linear scale to lift into HDR luminance — exact AMPAS HDR coefs
+/// land in the soak/Macbeth-chart milestone.
+pub const WGSL_ODT_REC2100_PQ: &str = r#"
+const ODT_PQ_PEAK_LUMINANCE: f32 = 10000.0;
+
+// AP1 (D60) → BT.2020 (D65), Bradford-adapted. Matches
+// `klipp_color::primaries::acescg_to_bt2020`.
+fn odt_acescg_to_bt2020_mul(rgb: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+         1.040036 * rgb.x - 0.001154 * rgb.y - 0.038881 * rgb.z,
+        -0.011311 * rgb.x + 1.005945 * rgb.y + 0.005367 * rgb.z,
+         0.000291 * rgb.x - 0.001263 * rgb.y + 1.000972 * rgb.z,
+    );
+}
+
+// PQ (SMPTE ST 2084) forward OETF — linear (normalised against the
+// 10000 cd/m² PQ peak) → encoded codepoint. Mirrors
+// `klipp_color::camera_log::linear_to_pq`.
+fn odt_linear_to_pq(l_norm: f32) -> f32 {
+    let m1: f32 = 0.15930176;
+    let m2: f32 = 78.84375;
+    let c1: f32 = 0.8359375;
+    let c2: f32 = 18.8515625;
+    let c3: f32 = 18.6875;
+    let yp = pow(max(l_norm, 0.0), m1);
+    return pow((c1 + c2 * yp) / (1.0 + c3 * yp), m2);
+}
+
+// Generic Rec.2100 PQ ODT body. The SDR cinema C9 spline produces
+// cinema-range luminance (peak ~48 cd/m²); the `peak_nits / 48`
+// scale lifts it into the HDR target's range.
+fn apply_odt_rec2100_pq_inner(oces_in: vec3<f32>, peak_nits: f32) -> vec3<f32> {
+    let rgb_pre = rrt_ap0_to_ap1_mul(oces_in);
+    let rgb_cinema = vec3<f32>(
+        odt_segmented_spline_c9_fwd(rgb_pre.x),
+        odt_segmented_spline_c9_fwd(rgb_pre.y),
+        odt_segmented_spline_c9_fwd(rgb_pre.z),
+    );
+    let scale = peak_nits / 48.0;
+    var rgb_hdr = rgb_cinema * scale;
+
+    // ODT saturation: rgb = sat·in + (1-sat)·Y·[1,1,1] using AP1 luma.
+    let one_minus_s = 1.0 - ODT_SAT_FACTOR;
+    let lum = dot(RRT_AP1_RGB2Y, rgb_hdr);
+    rgb_hdr = ODT_SAT_FACTOR * rgb_hdr + one_minus_s * vec3<f32>(lum, lum, lum);
+
+    // AP1 → BT.2020.
+    var bt2020 = odt_acescg_to_bt2020_mul(rgb_hdr);
+
+    // Clamp to display peak luminance and PQ-encode.
+    bt2020 = clamp(bt2020, vec3<f32>(0.0), vec3<f32>(peak_nits));
+    let inv_pq_peak = 1.0 / ODT_PQ_PEAK_LUMINANCE;
+    return vec3<f32>(
+        odt_linear_to_pq(bt2020.x * inv_pq_peak),
+        odt_linear_to_pq(bt2020.y * inv_pq_peak),
+        odt_linear_to_pq(bt2020.z * inv_pq_peak),
+    );
+}
+
+fn apply_odt_rec2100_pq_1000_nit(oces_in: vec3<f32>) -> vec3<f32> {
+    return apply_odt_rec2100_pq_inner(oces_in, 1000.0);
+}
+
+fn apply_odt_rec2100_pq_4000_nit(oces_in: vec3<f32>) -> vec3<f32> {
+    return apply_odt_rec2100_pq_inner(oces_in, 4000.0);
+}
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,6 +606,47 @@ mod tests {
         ] {
             assert!(WGSL_ODT_REC709_SDR.contains(needle),
                 "ODT WGSL missing or drifted constant: {needle}");
+        }
+    }
+
+    /// Naga-parse RRT + SDR ODT + PQ ODT concatenated. The PQ ODT
+    /// references helpers from both earlier fragments
+    /// (`rrt_segmented_spline_c5_fwd`, `odt_segmented_spline_c9_fwd`,
+    /// `RRT_AP1_RGB2Y`, `ODT_SAT_FACTOR`); parsing it on its own
+    /// would fail.
+    #[test]
+    fn wgsl_rrt_plus_odt_sdr_plus_odt_pq_parses_via_naga() {
+        let combined = format!("{}\n{}\n{}",
+            WGSL_RRT, WGSL_ODT_REC709_SDR, WGSL_ODT_REC2100_PQ);
+        if let Err(e) = naga::front::wgsl::parse_str(&combined) {
+            panic!("RRT+SDR+PQ WGSL failed to parse:\n{}", e.emit_to_string(&combined));
+        }
+    }
+
+    #[test]
+    fn wgsl_odt_pq_exposes_both_peak_variants() {
+        assert!(WGSL_ODT_REC2100_PQ.contains(
+            "fn apply_odt_rec2100_pq_1000_nit(oces_in: vec3<f32>) -> vec3<f32>"
+        ));
+        assert!(WGSL_ODT_REC2100_PQ.contains(
+            "fn apply_odt_rec2100_pq_4000_nit(oces_in: vec3<f32>) -> vec3<f32>"
+        ));
+    }
+
+    #[test]
+    fn wgsl_odt_pq_constants_match_rust_oracle() {
+        for needle in [
+            "ODT_PQ_PEAK_LUMINANCE: f32 = 10000.0",
+            // PQ ST 2084 constants — same values as
+            // `klipp_color::camera_log::linear_to_pq`.
+            "let m1: f32 = 0.15930176;",
+            "let m2: f32 = 78.84375;",
+            "let c1: f32 = 0.8359375;",
+            "let c2: f32 = 18.8515625;",
+            "let c3: f32 = 18.6875;",
+        ] {
+            assert!(WGSL_ODT_REC2100_PQ.contains(needle),
+                "PQ ODT WGSL missing or drifted constant: {needle}");
         }
     }
 }

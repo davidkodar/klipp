@@ -266,6 +266,27 @@ pub fn pq_to_linear(c: f32) -> f32 {
     (num / den).powf(1.0 / m1)
 }
 
+/// PQ (SMPTE ST 2084) forward OETF — linear light to PQ codepoint.
+///
+/// Input `l_norm` is luminance in `[0, 1]` where `1.0` corresponds
+/// to the PQ peak of 10000 cd/m² (so 1000 cd/m² → input 0.1).
+/// Output is the PQ-encoded codepoint in `[0, 1]`.
+///
+/// This is the inverse of [`pq_to_linear`]; round-tripping through
+/// both should be near-identity to f32 precision. ACES Output Device
+/// Transforms targeting Rec.2100 PQ deliveries use this as the final
+/// encoding step.
+#[inline]
+pub fn linear_to_pq(l_norm: f32) -> f32 {
+    let m1 = 0.159_301_76;
+    let m2 = 78.84375;
+    let c1 = 0.835_937_5;
+    let c2 = 18.851_562_5;
+    let c3 = 18.6875;
+    let yp = l_norm.max(0.0).powf(m1);
+    ((c1 + c2 * yp) / (1.0 + c3 * yp)).powf(m2)
+}
+
 /// HLG (ARIB STD-B67) inverse OETF.
 #[inline]
 pub fn hlg_to_linear(c: f32) -> f32 {

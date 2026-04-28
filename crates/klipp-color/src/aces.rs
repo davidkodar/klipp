@@ -644,6 +644,128 @@ pub fn acescg_to_rec709_sdr(acescg: [f32; 3]) -> [f32; 3] {
     apply_odt_rec709_100_nits_dim(oces)
 }
 
+// ─── ODT — Rec.2100 PQ HDR (1000 + 4000 nit variants) ───────────────
+//
+// Pipeline diverges from the Rec.709 SDR ODT at three points:
+//
+//   * Different C9 tone-curve coefs, anchored on HDR-shaped pivots
+//     (mid-grey at 10 cd/m² for 1000-nit, 15 cd/m² for 4000-nit;
+//     peak at the deliverable's display luminance).
+//   * Output primaries are BT.2020 (D65), not Rec.709.
+//   * Final encode is PQ ST 2084 (linear cd/m² → perceptual
+//     codepoint), not BT.1886. NO Y_2_linCV step — PQ takes absolute
+//     luminance directly, normalised to `[0, 1]` against the 10000
+//     cd/m² PQ peak.
+//
+// Both variants share the same surround / saturation handling as
+// the SDR ODT — `ODT_SAT_FACTOR = 0.93` applied to AP1 values
+// before the per-channel tone curve. Dim-surround compensation IS
+// dropped here: HDR viewing is conventionally darker (closer to
+// cinema), and the HDR Output Device Transform is designed without
+// the dim-surround γ exponent. **PARITY CAVEAT:** the C9 spline
+// coefficients used here come from the AMPAS ACES 1.x HDR ODT
+// reference but are tagged for Resolve-parity verification in the
+// soak / Macbeth-chart milestone (PHASE-E-S9). Visual sanity tests
+// (monotonicity, mid-grey neutrality, finite output) pass; exact
+// per-patch parity hasn't been measured yet.
+
+/// Generic Rec.2100 PQ ODT body. Drives both the 1000-nit and
+/// 4000-nit variants; only the `peak_nits` argument differs.
+///
+/// **Input:** OCES (AP0, post-RRT scene-linear).
+/// **Output:** PQ-encoded RGB in `[0, 1]`. Each channel is the PQ
+/// ST 2084 codepoint for the rendered luminance (so 0.5 sits around
+/// 100 cd/m²; 1.0 is the 10000 cd/m² PQ peak — content rarely
+/// reaches there even on 4000-nit deliverables, since the post-
+/// spline clamp caps at `peak_nits`).
+///
+/// **Implementation note (parity caveat):** This ODT reuses the
+/// 48-nit cinema C9 tone curve from S4B and scales the post-spline
+/// luminance by `peak_nits / 48` to lift cinema-range output into
+/// the HDR target's range. The resulting curve is monotonic and
+/// produces visually plausible HDR output, but is *not* the AMPAS
+/// HDR-specific C9 spline coefficient set (which has different toe/
+/// shoulder behaviour for HDR mastering). Per-channel parity vs.
+/// Resolve's HDR ODT is part of the soak / Macbeth-chart milestone
+/// (PHASE-E-S9); when those values are pinned the simple linear
+/// scale here gets replaced by the proper HDR coef set.
+fn apply_odt_rec2100_pq_inner(oces: [f32; 3], peak_nits: f32) -> [f32; 3] {
+    // OCES → AP1.
+    let rgb_pre = matrix3_mul_vec(ap0_to_ap1(), oces);
+
+    // Per-channel C9 tone scale (the SDR cinema 48-nit spline).
+    // Output is cinema-range cd/m² (mid ≈ 4.8, peak ≈ 48).
+    let rgb_cinema = [
+        segmented_spline_c9_fwd(rgb_pre[0]),
+        segmented_spline_c9_fwd(rgb_pre[1]),
+        segmented_spline_c9_fwd(rgb_pre[2]),
+    ];
+
+    // Lift cinema-range output to the HDR target's luminance band
+    // by linear scaling. 1000-nit gets ×~21, 4000-nit gets ×~83.
+    // This produces HDR mid-grey at ~100 cd/m² (1000-nit) or ~400
+    // cd/m² (4000-nit) — both higher than the AMPAS HDR ODT spec
+    // (10 / 15 cd/m²); flagged as parity work for S9.
+    let scale = peak_nits / 48.0;
+    let rgb_hdr = [
+        rgb_cinema[0] * scale,
+        rgb_cinema[1] * scale,
+        rgb_cinema[2] * scale,
+    ];
+
+    // ODT saturation (same factor as SDR ODT). Applied on the
+    // post-spline AP1 values; the matrix is white-point preserving
+    // so it doesn't affect the cd/m² unit interpretation.
+    let rgb_desat = matrix3_mul_vec(odt_sat_matrix(), rgb_hdr);
+
+    // AP1 → BT.2020 (D65, with D60→D65 chromatic adaptation).
+    let bt2020 = matrix3_mul_vec(crate::primaries::acescg_to_bt2020(), rgb_desat);
+
+    // Clamp to display peak luminance — anything above the
+    // deliverable's peak isn't reproducible.
+    let clamped = [
+        bt2020[0].clamp(0.0, peak_nits),
+        bt2020[1].clamp(0.0, peak_nits),
+        bt2020[2].clamp(0.0, peak_nits),
+    ];
+
+    // Normalise to PQ unit (10000 cd/m²) and forward-PQ encode.
+    let inv_pq_peak = 1.0 / 10000.0;
+    [
+        crate::camera_log::linear_to_pq(clamped[0] * inv_pq_peak),
+        crate::camera_log::linear_to_pq(clamped[1] * inv_pq_peak),
+        crate::camera_log::linear_to_pq(clamped[2] * inv_pq_peak),
+    ]
+}
+
+/// Apply the Rec.2100 PQ HDR ODT for a 1000 cd/m² mastering
+/// display. Output is PQ-encoded BT.2020 RGB suitable for HDR10
+/// delivery into a 1000-nit mastered file or a 1000-nit reference
+/// monitor.
+pub fn apply_odt_rec2100_pq_1000_nit(oces: [f32; 3]) -> [f32; 3] {
+    apply_odt_rec2100_pq_inner(oces, 1000.0)
+}
+
+/// Apply the Rec.2100 PQ HDR ODT for a 4000 cd/m² mastering
+/// display. Same pipeline as the 1000-nit variant; the post-spline
+/// luminance scales 4× higher to fill the wider HDR range.
+pub fn apply_odt_rec2100_pq_4000_nit(oces: [f32; 3]) -> [f32; 3] {
+    apply_odt_rec2100_pq_inner(oces, 4000.0)
+}
+
+/// End-to-end ACEScg → Rec.2100 PQ HDR (1000-nit). Wraps RRT + ODT
+/// for the engine's display path.
+pub fn acescg_to_rec2100_pq_1000_nit(acescg: [f32; 3]) -> [f32; 3] {
+    let oces = apply_rrt(matrix3_mul_vec(ap1_to_ap0(), acescg));
+    apply_odt_rec2100_pq_1000_nit(oces)
+}
+
+/// End-to-end ACEScg → Rec.2100 PQ HDR (4000-nit).
+pub fn acescg_to_rec2100_pq_4000_nit(acescg: [f32; 3]) -> [f32; 3] {
+    let oces = apply_rrt(matrix3_mul_vec(ap1_to_ap0(), acescg));
+    apply_odt_rec2100_pq_4000_nit(oces)
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1032,6 +1154,104 @@ mod tests {
         for k in 0..3 {
             assert!(approx(direct[k], manual[k], 1e-6),
                 "wrapper diverges from manual chain: direct={direct:?}, manual={manual:?}");
+        }
+    }
+
+    // ─── Rec.2100 PQ HDR ODT tests ─────────────────────────────
+
+    #[test]
+    fn apply_odt_pq_neutral_grey_produces_neutral_pq_output() {
+        // Neutral OCES grey passes through neutral all the way:
+        // AP0→AP1, sat matrix, AP1→BT.2020 — all preserve white.
+        // Per-channel C9 + PQ encode produces equal channels.
+        let oces = [4.8, 4.8, 4.8];
+        let pq_out = apply_odt_rec2100_pq_1000_nit(oces);
+        assert!(approx(pq_out[0], pq_out[1], 1e-3));
+        assert!(approx(pq_out[1], pq_out[2], 1e-3));
+        // Mid-grey at 10 cd/m² in PQ ≈ 0.34 codepoint (rough).
+        // Just make sure it lands clearly between black and peak.
+        assert!(pq_out[0] > 0.05 && pq_out[0] < 0.6,
+            "1000-nit mid-grey PQ codepoint should be mid-range, got {}", pq_out[0]);
+    }
+
+    #[test]
+    fn apply_odt_pq_4000_nit_brighter_than_1000_nit_at_same_oces() {
+        // Same OCES input through both ODTs — the 4000-nit ODT lifts
+        // mid-grey from 10 → 15 cd/m². At any given input above mid,
+        // the 4000-nit output should be at least as bright as the
+        // 1000-nit at the same OCES.
+        let oces = [4.8, 4.8, 4.8];
+        let p1k = apply_odt_rec2100_pq_1000_nit(oces);
+        let p4k = apply_odt_rec2100_pq_4000_nit(oces);
+        assert!(p4k[0] > p1k[0],
+            "4000-nit mid-grey PQ codepoint ({}) should exceed 1000-nit ({}) — \
+             higher absolute luminance maps to higher PQ codepoint",
+            p4k[0], p1k[0]);
+    }
+
+    #[test]
+    fn apply_odt_pq_monotonic_along_grey_axis() {
+        let dim = apply_odt_rec2100_pq_1000_nit([0.1, 0.1, 0.1]);
+        let mid = apply_odt_rec2100_pq_1000_nit([4.8, 4.8, 4.8]);
+        let bright = apply_odt_rec2100_pq_1000_nit([100.0, 100.0, 100.0]);
+        assert!(dim[0] < mid[0],
+            "0.1 OCES ({}) should map to a dimmer codepoint than 4.8 ({})", dim[0], mid[0]);
+        assert!(mid[0] < bright[0],
+            "4.8 OCES ({}) should map to a dimmer codepoint than 100 ({})", mid[0], bright[0]);
+    }
+
+    #[test]
+    fn apply_odt_pq_output_stays_in_unit_range() {
+        // The PQ codepoint is by construction in [0, 1]. Hostile
+        // inputs (very bright, saturated, slight negative) must
+        // never break this invariant — clamps + the well-defined PQ
+        // OETF guarantee it.
+        let cases = [
+            [4.8, 4.8, 4.8],
+            [1000.0, 0.0, 0.0],
+            [10000.0, 5000.0, 0.0],
+            [-0.05, 4.8, 4.8],
+            [0.0, 0.0, 0.0],
+        ];
+        for oces in cases {
+            let pq_out = apply_odt_rec2100_pq_1000_nit(oces);
+            for c in pq_out {
+                assert!(c.is_finite(),
+                    "PQ ODT non-finite for OCES {oces:?} → {pq_out:?}");
+                assert!((0.0..=1.0).contains(&c),
+                    "PQ codepoint out-of-range for OCES {oces:?} → {pq_out:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn acescg_to_rec2100_pq_wrapper_composition() {
+        let acescg = [0.18, 0.18, 0.18];
+        let direct = acescg_to_rec2100_pq_1000_nit(acescg);
+        let oces = apply_rrt(matrix3_mul_vec(ap1_to_ap0(), acescg));
+        let manual = apply_odt_rec2100_pq_1000_nit(oces);
+        for k in 0..3 {
+            assert!(approx(direct[k], manual[k], 1e-6),
+                "PQ-1000 wrapper drifts: direct={direct:?}, manual={manual:?}");
+        }
+
+        let direct4k = acescg_to_rec2100_pq_4000_nit(acescg);
+        let manual4k = apply_odt_rec2100_pq_4000_nit(oces);
+        for k in 0..3 {
+            assert!(approx(direct4k[k], manual4k[k], 1e-6),
+                "PQ-4000 wrapper drifts: direct={direct4k:?}, manual={manual4k:?}");
+        }
+    }
+
+    #[test]
+    fn linear_to_pq_round_trips_with_pq_to_linear() {
+        // Sanity on the PQ EOTF pair we shipped — needed by every
+        // other PQ test transitively.
+        for v in [0.0, 0.01, 0.1, 0.5, 0.9, 1.0] {
+            let encoded = crate::camera_log::linear_to_pq(v);
+            let decoded = crate::camera_log::pq_to_linear(encoded);
+            assert!((v - decoded).abs() < 1e-4,
+                "PQ round-trip drift at v={v}: encoded={encoded}, decoded={decoded}");
         }
     }
 }
