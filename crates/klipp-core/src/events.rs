@@ -911,6 +911,10 @@ pub enum AppCommand {
     /// Handled by flipping `AppState::show_cache_manager` to true after
     /// calling `refresh_cache_categories`.
     OpenCacheManager,
+    /// Open the AI Models management modal. Lists every model in the
+    /// manifest, install status, and per-model install / reinstall
+    /// actions. Handled by flipping `AppState::show_ai_models_dialog`.
+    OpenAiModelsDialog,
     BeginScrub,
     /// End timeline scrubbing — engine restores full-res decode.
     EndScrub,

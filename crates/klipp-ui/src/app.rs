@@ -15235,6 +15235,10 @@ impl KlippApp {
                 self.stop_recording();
                 true
             }
+            AppCommand::OpenAiModelsDialog => {
+                self.state.show_ai_models_dialog = true;
+                true
+            }
             AppCommand::ShowAiToolsPanel { task } => {
                 self.state.ai_tools_state.panel_visible = true;
                 self.state.ai_tools_state.active_task = Some(ai_tools_task_from_tag(*task));
@@ -23085,6 +23089,11 @@ impl KlippApp {
             );
             cmds.extend(dialog_cmds);
         }
+
+        // AI Models management modal — list, status badges, install /
+        // reinstall actions. Drives the existing model_download
+        // consent flow when the user picks Download.
+        crate::panels::ai_models::show_ai_models_dialog(ctx, &mut self.state, &self.theme);
 
         // 4c2. Consolidate Project dialog
         // Copies the project + all referenced media into a NEW self-contained
