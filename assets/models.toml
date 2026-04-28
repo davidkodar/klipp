@@ -1,0 +1,74 @@
+# Klipp ML model manifest — the trust root for every downloadable
+# model the app uses at runtime.
+#
+# Schema documented in crates/klipp-ml/src/manifest.rs. Every entry
+# below must specify:
+#   - id            stable identifier, code-facing
+#   - display_name  user-facing label (changeable without breaking)
+#   - size_bytes    expected file size, used for progress UI + DoS
+#                   guard (downloads exceeding by > 5% are rejected)
+#   - sha256        64 lowercase hex chars; the security boundary
+#   - license       SPDX identifier
+#   - attribution   credit shown in the consent dialog
+#   - sources       ordered list of HTTPS URLs; downloader tries each
+#                   in order, takes the first whose bytes match
+#                   the sha256
+#
+# The hashes below are PLACEHOLDERS. Klipp's release CI converts
+# Meta's PyTorch SAM2 checkpoints (from
+# https://dl.fbaipublicfiles.com/segment_anything_2/092824/) to ONNX,
+# computes the SHA-256 of the resulting bytes, fills in this file,
+# uploads the ONNX to a Klipp GitHub Release, and ships a Klipp
+# release using the populated manifest. Until that CI step runs the
+# entries here will fail validation if any code tries to use them
+# (size_bytes = 0). That's intentional — better than shipping a
+# manifest that points at unverified bytes.
+
+version = "1"
+
+[[model]]
+id = "sam2_1_hiera_tiny_onnx"
+display_name = "SAM2.1 Tiny (ONNX)"
+# TODO release-CI: fill size_bytes + sha256 once conversion runs.
+size_bytes = 0
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "Meta AI Research"
+sources = [
+    # TODO release-CI: replace placeholder with the real klipp-models
+    # GitHub Release asset URL once the converted ONNX is published.
+    { url = "https://github.com/davidkodar/klipp-models/releases/download/sam2.1-placeholder/sam2.1_hiera_tiny.onnx" },
+]
+
+[[model]]
+id = "sam2_1_hiera_small_onnx"
+display_name = "SAM2.1 Small (ONNX)"
+size_bytes = 0
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "Meta AI Research"
+sources = [
+    { url = "https://github.com/davidkodar/klipp-models/releases/download/sam2.1-placeholder/sam2.1_hiera_small.onnx" },
+]
+
+[[model]]
+id = "sam2_1_hiera_base_plus_onnx"
+display_name = "SAM2.1 Base+ (ONNX)"
+size_bytes = 0
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "Meta AI Research"
+sources = [
+    { url = "https://github.com/davidkodar/klipp-models/releases/download/sam2.1-placeholder/sam2.1_hiera_base_plus.onnx" },
+]
+
+[[model]]
+id = "sam2_1_hiera_large_onnx"
+display_name = "SAM2.1 Large (ONNX)"
+size_bytes = 0
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "Meta AI Research"
+sources = [
+    { url = "https://github.com/davidkodar/klipp-models/releases/download/sam2.1-placeholder/sam2.1_hiera_large.onnx" },
+]

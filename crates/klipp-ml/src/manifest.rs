@@ -1,0 +1,457 @@
+//! Model manifest — the trust root for every downloadable ML asset
+//! in Klipp.
+//!
+//! ## Sources
+//!
+//! - **Builtin** — `assets/models.toml` at the workspace root, baked
+//!   into the binary via `include_str!`. Code-reviewed in Git;
+//!   tampering requires repo write access.
+//! - **User override** — `~/.config/klipp/models.toml` (XDG). Optional.
+//!   Lets corporate / air-gap installs point at internal mirrors
+//!   *without dropping the SHA-256 check* — the user manifest still
+//!   carries hashes, and the downloader still rejects anything that
+//!   doesn't match.
+//!
+//! When both exist, the user manifest wins per-model: an entry with a
+//! given `id` in the user file replaces the builtin entry of the same
+//! `id`. Models present in builtin but not user are unchanged. Models
+//! present in user but not builtin are added.
+//!
+//! ## Schema versioning
+//!
+//! Every manifest carries `version = "1"`. Future schema changes bump
+//! the version + add migration code here. Loading a manifest with an
+//! unknown version is a hard error — better than silently
+//! misinterpreting fields.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+/// Current manifest schema version. Bumped when the on-disk format
+/// changes in a way that requires migration.
+pub const DEFAULT_MANIFEST_VERSION: &str = "1";
+
+/// Stable identifier for a model entry. Used by code to look up a
+/// specific model; user-facing label is `display_name`. Renaming
+/// `display_name` is fine; renaming `id` breaks every saved project
+/// that referenced it.
+pub type ModelId = String;
+
+/// One downloadable model.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelEntry {
+    /// Stable identifier, code-facing (e.g. `"sam2_1_tiny"`).
+    pub id: ModelId,
+    /// User-facing label (e.g. `"SAM2.1 Tiny"`).
+    pub display_name: String,
+    /// File size in bytes — surfaced in the consent dialog and used
+    /// as a sanity guard at HEAD-request time before committing to
+    /// the download.
+    pub size_bytes: u64,
+    /// SHA-256 of the file, lowercase hex (no `0x`, no whitespace).
+    /// THIS is the security boundary. The URL in `sources` is
+    /// authoritative only insofar as the bytes it serves match this.
+    pub sha256: String,
+    /// SPDX license identifier (e.g. `"Apache-2.0"`). Disclosed to
+    /// the user in the consent dialog.
+    pub license: String,
+    /// Attribution string (e.g. `"Meta AI Research"`). Disclosed to
+    /// the user in the consent dialog.
+    pub attribution: String,
+    /// Ordered list of download URLs. The downloader tries each in
+    /// order; first to succeed *and* match the SHA-256 wins. All
+    /// entries must be `https://`.
+    pub sources: Vec<Source>,
+}
+
+/// One download source. Wrapped in a struct (not a bare `String`) so
+/// future per-source metadata (auth headers, mirror priority hints,
+/// rate-limit notes) can land without breaking the schema.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Source {
+    pub url: String,
+}
+
+/// A parsed model manifest.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelManifest {
+    pub version: String,
+    #[serde(default, rename = "model")]
+    pub models: Vec<ModelEntry>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ManifestError {
+    #[error("failed to parse model manifest: {0}")]
+    Parse(#[from] toml::de::Error),
+    #[error("unsupported manifest version {0:?} (expected {expected:?})", expected = DEFAULT_MANIFEST_VERSION)]
+    UnsupportedVersion(String),
+    #[error("manifest validation failed: {0}")]
+    Invalid(String),
+    #[error("io error reading user manifest: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+impl ModelManifest {
+    /// Parse a manifest from a TOML string. Validates schema version
+    /// and per-entry invariants (non-empty id, https-only sources,
+    /// 64-char lowercase-hex SHA-256, etc.) before returning.
+    pub fn parse(toml_str: &str) -> Result<Self, ManifestError> {
+        let manifest: Self = toml::from_str(toml_str)?;
+        if manifest.version != DEFAULT_MANIFEST_VERSION {
+            return Err(ManifestError::UnsupportedVersion(manifest.version));
+        }
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    /// Run schema-level validation. Cheap, called from `parse`. Catches
+    /// the kinds of mistakes that would otherwise surface as a
+    /// confusing download failure later.
+    pub fn validate(&self) -> Result<(), ManifestError> {
+        let mut seen_ids = std::collections::HashSet::new();
+        for entry in &self.models {
+            if entry.id.is_empty() {
+                return Err(ManifestError::Invalid("model id is empty".into()));
+            }
+            if !seen_ids.insert(entry.id.clone()) {
+                return Err(ManifestError::Invalid(format!(
+                    "duplicate model id: {}",
+                    entry.id
+                )));
+            }
+            if entry.sources.is_empty() {
+                return Err(ManifestError::Invalid(format!(
+                    "model {} has no sources",
+                    entry.id
+                )));
+            }
+            for src in &entry.sources {
+                if !src.url.starts_with("https://") {
+                    return Err(ManifestError::Invalid(format!(
+                        "model {} source must be https://, got {:?}",
+                        entry.id, src.url,
+                    )));
+                }
+            }
+            if entry.sha256.len() != 64
+                || !entry.sha256.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            {
+                return Err(ManifestError::Invalid(format!(
+                    "model {} sha256 must be 64 lowercase hex chars, got {:?}",
+                    entry.id, entry.sha256,
+                )));
+            }
+            // `size_bytes == 0` is allowed as a placeholder marker
+            // (used by the unfilled-by-release-CI shipping manifest)
+            // — the downloader rejects 0 at pre-flight time so a
+            // user never actually fetches an unverified model. We
+            // don't reject it at parse time because that would
+            // break `cargo test` against the placeholder manifest
+            // before the release pipeline ever runs.
+            if entry.display_name.is_empty() {
+                return Err(ManifestError::Invalid(format!(
+                    "model {} display_name is empty",
+                    entry.id,
+                )));
+            }
+            if entry.license.is_empty() {
+                return Err(ManifestError::Invalid(format!(
+                    "model {} license is empty",
+                    entry.id,
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Look up a model by its stable id.
+    pub fn get(&self, id: &str) -> Option<&ModelEntry> {
+        self.models.iter().find(|m| m.id == id)
+    }
+
+    /// Merge a user-override manifest on top of this one. User entries
+    /// win per-id; user-only entries are appended; builtin-only
+    /// entries are unchanged. The user manifest is validated against
+    /// the same rules — wrong-version / wrong-shape user files fail
+    /// before the merge.
+    pub fn merged_with(mut self, user: ModelManifest) -> Self {
+        let mut by_id: BTreeMap<ModelId, ModelEntry> = self
+            .models
+            .into_iter()
+            .map(|m| (m.id.clone(), m))
+            .collect();
+        for entry in user.models {
+            by_id.insert(entry.id.clone(), entry);
+        }
+        self.models = by_id.into_values().collect();
+        self.models.sort_by(|a, b| a.id.cmp(&b.id));
+        self
+    }
+}
+
+/// Resolved path of the optional user-override manifest. `None` when
+/// the platform's config dir can't be determined (rare; happens on
+/// some headless CI environments).
+pub fn user_manifest_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|p| p.join("klipp").join("models.toml"))
+}
+
+/// Builtin manifest, baked into the binary at compile time. The
+/// `include_str!` is the trust root: changing the bytes here requires
+/// a Git PR, which is reviewed.
+pub const BUILTIN_MANIFEST: &str = include_str!("../../../assets/models.toml");
+
+/// Load the effective manifest: builtin merged with the user override
+/// at `~/.config/klipp/models.toml` if present. Returns the builtin
+/// alone when no user override exists. Errors propagate from either
+/// parser; the user file is never silently ignored on parse failure
+/// (a syntax mistake there should surface, not silently drop the
+/// overrides).
+pub fn load_effective() -> Result<ModelManifest, ManifestError> {
+    let builtin = ModelManifest::parse(BUILTIN_MANIFEST)?;
+    let Some(user_path) = user_manifest_path() else {
+        return Ok(builtin);
+    };
+    if !user_path.exists() {
+        return Ok(builtin);
+    }
+    let user_str = std::fs::read_to_string(&user_path)?;
+    let user = ModelManifest::parse(&user_str)?;
+    Ok(builtin.merged_with(user))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_manifest_str() -> &'static str {
+        r#"version = "1"
+
+[[model]]
+id = "sam2_1_tiny"
+display_name = "SAM2.1 Tiny"
+size_bytes = 162_435_072
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "Meta AI Research"
+sources = [
+    { url = "https://example.com/sam2.1_hiera_tiny.onnx" },
+]
+"#
+    }
+
+    #[test]
+    fn parses_valid_manifest() {
+        let m = ModelManifest::parse(valid_manifest_str()).expect("valid");
+        assert_eq!(m.version, "1");
+        assert_eq!(m.models.len(), 1);
+        assert_eq!(m.models[0].id, "sam2_1_tiny");
+    }
+
+    #[test]
+    fn rejects_unknown_version() {
+        let s = r#"version = "99"
+"#;
+        let err = ModelManifest::parse(s).expect_err("should fail");
+        match err {
+            ManifestError::UnsupportedVersion(v) => assert_eq!(v, "99"),
+            other => panic!("wrong error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_http_source() {
+        let s = r#"version = "1"
+
+[[model]]
+id = "x"
+display_name = "X"
+size_bytes = 1
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "x"
+sources = [
+    { url = "http://example.com/insecure" },
+]
+"#;
+        let err = ModelManifest::parse(s).expect_err("http should be rejected");
+        assert!(matches!(err, ManifestError::Invalid(_)),
+            "expected Invalid, got {err:?}");
+    }
+
+    #[test]
+    fn rejects_uppercase_hex_sha() {
+        let s = r#"version = "1"
+
+[[model]]
+id = "x"
+display_name = "X"
+size_bytes = 1
+sha256 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+license = "Apache-2.0"
+attribution = "x"
+sources = [
+    { url = "https://example.com/x" },
+]
+"#;
+        let err = ModelManifest::parse(s).expect_err("uppercase hex should be rejected");
+        assert!(matches!(err, ManifestError::Invalid(_)));
+    }
+
+    #[test]
+    fn rejects_short_sha() {
+        let s = r#"version = "1"
+
+[[model]]
+id = "x"
+display_name = "X"
+size_bytes = 1
+sha256 = "abc"
+license = "Apache-2.0"
+attribution = "x"
+sources = [
+    { url = "https://example.com/x" },
+]
+"#;
+        let err = ModelManifest::parse(s).expect_err("short sha should be rejected");
+        assert!(matches!(err, ManifestError::Invalid(_)));
+    }
+
+    #[test]
+    fn allows_zero_size_at_parse_time_as_placeholder_marker() {
+        // size_bytes = 0 is the "unfilled by release CI yet"
+        // placeholder used in the shipping manifest before release
+        // CI populates it. parse() must accept it; the downloader's
+        // pre-flight check rejects it at runtime so a user never
+        // actually downloads an unverified model.
+        let s = r#"version = "1"
+
+[[model]]
+id = "x"
+display_name = "X"
+size_bytes = 0
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "x"
+sources = [
+    { url = "https://example.com/x" },
+]
+"#;
+        let m = ModelManifest::parse(s).expect("placeholder size accepted at parse");
+        assert_eq!(m.models[0].size_bytes, 0);
+    }
+
+    #[test]
+    fn rejects_no_sources() {
+        let s = r#"version = "1"
+
+[[model]]
+id = "x"
+display_name = "X"
+size_bytes = 1
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "x"
+sources = []
+"#;
+        let err = ModelManifest::parse(s).expect_err("empty sources should be rejected");
+        assert!(matches!(err, ManifestError::Invalid(_)));
+    }
+
+    #[test]
+    fn rejects_duplicate_id() {
+        let s = r#"version = "1"
+
+[[model]]
+id = "x"
+display_name = "X"
+size_bytes = 1
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "x"
+sources = [{ url = "https://example.com/x" }]
+
+[[model]]
+id = "x"
+display_name = "X again"
+size_bytes = 2
+sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+license = "Apache-2.0"
+attribution = "x"
+sources = [{ url = "https://example.com/x2" }]
+"#;
+        let err = ModelManifest::parse(s).expect_err("duplicate id should be rejected");
+        assert!(matches!(err, ManifestError::Invalid(_)));
+    }
+
+    #[test]
+    fn user_override_wins_per_id() {
+        let builtin = ModelManifest::parse(valid_manifest_str()).unwrap();
+        let user = ModelManifest::parse(
+            r#"version = "1"
+
+[[model]]
+id = "sam2_1_tiny"
+display_name = "SAM2.1 Tiny (corp mirror)"
+size_bytes = 162_435_072
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "Meta AI Research"
+sources = [{ url = "https://internal-mirror.corp/sam2_1_tiny.onnx" }]
+"#,
+        )
+        .unwrap();
+        let merged = builtin.merged_with(user);
+        let entry = merged.get("sam2_1_tiny").expect("present");
+        assert_eq!(entry.display_name, "SAM2.1 Tiny (corp mirror)");
+        assert_eq!(entry.sources[0].url, "https://internal-mirror.corp/sam2_1_tiny.onnx");
+    }
+
+    #[test]
+    fn user_only_entry_appended() {
+        let builtin = ModelManifest::parse(valid_manifest_str()).unwrap();
+        let user = ModelManifest::parse(
+            r#"version = "1"
+
+[[model]]
+id = "experimental_model"
+display_name = "Experimental"
+size_bytes = 1024
+sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
+license = "Apache-2.0"
+attribution = "Lab"
+sources = [{ url = "https://lab.example.com/m.onnx" }]
+"#,
+        )
+        .unwrap();
+        let merged = builtin.merged_with(user);
+        assert!(merged.get("sam2_1_tiny").is_some(), "builtin preserved");
+        assert!(merged.get("experimental_model").is_some(), "user-only added");
+    }
+
+    #[test]
+    fn builtin_manifest_parses_and_validates() {
+        // The shipped manifest must parse cleanly. If a future
+        // edit to assets/models.toml introduces a typo or breaks a
+        // schema invariant, this test catches it before release.
+        let m = ModelManifest::parse(BUILTIN_MANIFEST)
+            .expect("builtin manifest must parse");
+        assert!(!m.models.is_empty(),
+            "builtin manifest should ship with at least one model entry");
+    }
+
+    #[test]
+    fn user_manifest_path_is_under_config_dir() {
+        // Don't require a config dir to exist (test sandboxes vary).
+        // Just verify the API gives back a path under whatever
+        // config dir does resolve.
+        if let Some(p) = user_manifest_path() {
+            let s = p.to_string_lossy();
+            assert!(s.ends_with("klipp/models.toml"),
+                "user manifest path should end with klipp/models.toml, got {s}");
+        }
+    }
+}
