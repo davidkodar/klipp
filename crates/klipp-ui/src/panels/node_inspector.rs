@@ -2037,6 +2037,24 @@ impl NodeInspectorPanel {
                     params.lut_opacity = Some(opacity);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "lut_opacity".into(), value: opacity });
                 }
+                // Colorspace tags. `.cube` and friends carry no
+                // standardised colorspace metadata, so the loader
+                // defaults to Rec.709 / sRGB on both sides; the user
+                // re-tags here when the LUT was authored against a
+                // different working space (e.g. an ACES-AP1-tagged
+                // LUT loaded into a Rec.709 project, or vice versa).
+                lut_colorspace_dropdown(
+                    ui, theme, "Input space",
+                    "lut_input_space",
+                    &mut params.lut_input_space,
+                    cmds, clip_id, node_id,
+                );
+                lut_colorspace_dropdown(
+                    ui, theme, "Output space",
+                    "lut_output_space",
+                    &mut params.lut_output_space,
+                    cmds, clip_id, node_id,
+                );
             }
             NodeKind::Blend | NodeKind::ApplyMatte => {
                 let mut mix = params.mix.unwrap_or(1.0);
@@ -3054,6 +3072,95 @@ fn hue_slider_row(
         cmds.push(AppCommand::EndNodeParamEdit { clip_id });
     }
     changed
+}
+
+/// Per-node colorspace dropdown for the Lut3D inspector. Renders a
+/// 4-option ComboBox (Use LUT default / Rec.709 linear / ACEScg /
+/// BT.2020) wired to a `Option<WorkingColorspace>` field on
+/// `NodeParams`. "Use LUT default" maps to `None` — the executor
+/// falls back to whatever tag the LUT carries internally (always
+/// `Rec709Linear` for parser-loaded `.cube` files until a tagged
+/// LUT format ships).
+///
+/// The `param_key` argument is passed through as the `SetNodeParam`
+/// command's parameter name so the existing
+/// `param_key → NodeParams field` dispatch in `klipp_nodes::params`
+/// handles persistence + history. WorkingColorspace is encoded as
+/// its `as_u8` tag, then dispatched as f32 — matches the pattern
+/// already used by `curves_preserve_luma` etc. that reuse the
+/// `f32 → bool` shape.
+fn lut_colorspace_dropdown(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    label: &str,
+    param_key: &str,
+    field: &mut Option<klipp_core::WorkingColorspace>,
+    cmds: &mut Vec<AppCommand>,
+    clip_id: ClipId,
+    node_id: NodeId,
+) {
+    use klipp_core::WorkingColorspace;
+    // Sentinel u8 = 255: "use LUT default". Anything in 0..=2 is a
+    // real working space tag; the dispatcher's defensive bounds
+    // check turns out-of-range values back into None.
+    const USE_LUT_DEFAULT: u8 = 255;
+    let label_text = match *field {
+        None => "Use LUT default",
+        Some(WorkingColorspace::Rec709Linear) => "Rec.709 / sRGB",
+        Some(WorkingColorspace::AcesCG) => "ACEScg",
+        Some(WorkingColorspace::Bt2020Linear) => "BT.2020",
+    };
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!("{label}:"))
+                .size(11.0)
+                .color(theme.text_dim),
+        );
+        let mut current_tag: u8 = field.map(|w| w.as_u8()).unwrap_or(USE_LUT_DEFAULT);
+        let prev_tag = current_tag;
+        egui::ComboBox::from_id_salt((param_key, node_id))
+            .width(150.0)
+            .selected_text(label_text)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut current_tag, USE_LUT_DEFAULT, "Use LUT default");
+                ui.selectable_value(
+                    &mut current_tag,
+                    WorkingColorspace::Rec709Linear.as_u8(),
+                    "Rec.709 / sRGB",
+                );
+                ui.selectable_value(
+                    &mut current_tag,
+                    WorkingColorspace::AcesCG.as_u8(),
+                    "ACEScg",
+                );
+                ui.selectable_value(
+                    &mut current_tag,
+                    WorkingColorspace::Bt2020Linear.as_u8(),
+                    "BT.2020",
+                );
+            });
+        if current_tag != prev_tag {
+            *field = if current_tag == USE_LUT_DEFAULT {
+                None
+            } else {
+                Some(WorkingColorspace::from_u8(current_tag))
+            };
+            // Encode for the dispatcher: 255 sentinel maps to None
+            // via the defensive bounds check (>= 256 OR == 255 both
+            // route through to `None`); 0/1/2 round-trip cleanly.
+            let value = if current_tag == USE_LUT_DEFAULT {
+                f32::INFINITY
+            } else {
+                current_tag as f32
+            };
+            cmds.push(AppCommand::SetNodeParam {
+                clip_id,
+                node_id,
+                param: param_key.into(),
+                value,
+            });
+        }
+    });
 }
 
 /// Legacy grade_slider for non-Adjustments tabs. Takes `cmds` + `clip_id` so

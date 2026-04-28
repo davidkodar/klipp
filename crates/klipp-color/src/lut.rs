@@ -571,6 +571,30 @@ pub fn apply_3d_lut_linear_ws(
     opacity: f32,
     working_space: WorkingColorspace,
 ) {
+    apply_3d_lut_linear_ws_with_overrides(
+        rgba_linear, lut, opacity, working_space,
+        lut.input_space, lut.output_space,
+    )
+}
+
+/// `apply_3d_lut_linear_ws` with explicit per-call overrides for the
+/// LUT's input and output colorspace tags. Used when the user has
+/// re-tagged a LUT via the Inspector dropdown — the underlying
+/// `LutData` (which may be `Arc`-cached and shared across clips)
+/// stays untouched, and the caller's override drives the bracketing
+/// matrices.
+///
+/// Pass `lut.input_space` / `lut.output_space` directly to recover
+/// the un-overridden behaviour.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_3d_lut_linear_ws_with_overrides(
+    rgba_linear: &mut [f32],
+    lut: &LutData,
+    opacity: f32,
+    working_space: WorkingColorspace,
+    input_space: WorkingColorspace,
+    output_space: WorkingColorspace,
+) {
     if opacity <= 0.0 {
         return;
     }
@@ -579,21 +603,18 @@ pub fn apply_3d_lut_linear_ws(
         return;
     }
     let n1 = (n - 1) as f32;
-    let pre = crate::primaries::working_space_conversion_matrix(working_space, lut.input_space);
-    let post = crate::primaries::working_space_conversion_matrix(lut.output_space, working_space);
+    let pre = crate::primaries::working_space_conversion_matrix(working_space, input_space);
+    let post = crate::primaries::working_space_conversion_matrix(output_space, working_space);
 
     for pixel in rgba_linear.chunks_exact_mut(4) {
         let original = [pixel[0], pixel[1], pixel[2]];
 
-        // 1. working_space → lut.input_space.
         let lut_in = if let Some(m) = pre {
             crate::primaries::matrix3_mul_vec(m, original)
         } else {
             original
         };
 
-        // 2. Trilinear LUT lookup (clamp domain to [0, 1] — out-of-
-        //    range linear values map to the LUT's edge entries).
         let r_idx = (lut_in[0] * n1).clamp(0.0, n1);
         let g_idx = (lut_in[1] * n1).clamp(0.0, n1);
         let b_idx = (lut_in[2] * n1).clamp(0.0, n1);
@@ -627,18 +648,15 @@ pub fn apply_3d_lut_linear_ws(
             *slot = c0 + (c1 - c0) * bf;
         }
 
-        // 3. lut.output_space → working_space.
         let post_rgb = if let Some(m) = post {
             crate::primaries::matrix3_mul_vec(m, lut_out)
         } else {
             lut_out
         };
 
-        // 4. Mix with original at the given opacity, in working space.
         pixel[0] = original[0] + (post_rgb[0] - original[0]) * opacity;
         pixel[1] = original[1] + (post_rgb[1] - original[1]) * opacity;
         pixel[2] = original[2] + (post_rgb[2] - original[2]) * opacity;
-        // Alpha untouched.
     }
 }
 
@@ -1229,5 +1247,88 @@ mod tests {
         let lut = LutData::identity(17);
         assert_eq!(lut.input_space, WorkingColorspace::Rec709Linear);
         assert_eq!(lut.output_space, WorkingColorspace::Rec709Linear);
+    }
+
+    /// Override mode: pass `lut.input_space` and `lut.output_space`
+    /// directly through the with-overrides API and verify the result
+    /// matches the no-overrides API exactly. Pins the wrapper /
+    /// underlying-impl equivalence.
+    #[test]
+    fn with_overrides_matches_default_when_passing_lut_tags() {
+        let lut = LutData::identity(33);
+        let mut a = vec![0.50, 0.50, 0.50, 1.0, 0.30, 0.20, 0.40, 1.0];
+        let mut b = a.clone();
+        apply_3d_lut_linear_ws(&mut a, &lut, 1.0, WorkingColorspace::AcesCG);
+        apply_3d_lut_linear_ws_with_overrides(
+            &mut b, &lut, 1.0,
+            WorkingColorspace::AcesCG,
+            lut.input_space, lut.output_space,
+        );
+        assert_eq!(a, b);
+    }
+
+    /// User re-tags an untagged Rec.709-default LUT as ACEScg-input
+    /// while the project working space is also ACEScg. Pre/post
+    /// brackets disappear (no conversion needed); output should be
+    /// the LUT applied directly. With an identity LUT this is
+    /// passthrough.
+    #[test]
+    fn override_input_to_match_working_space_skips_pre_bracket() {
+        let lut = LutData::identity(33);
+        let mut pixels: Vec<f32> = vec![0.50, 0.50, 0.50, 1.0, 0.30, 0.45, 0.55, 1.0];
+        let original = pixels.clone();
+        apply_3d_lut_linear_ws_with_overrides(
+            &mut pixels, &lut, 1.0,
+            WorkingColorspace::AcesCG,
+            // User says: this LUT is ACEScg-tagged. Working space
+            // is also ACEScg. → no conversion either side, identity
+            // LUT → passthrough.
+            WorkingColorspace::AcesCG,
+            WorkingColorspace::AcesCG,
+        );
+        for i in 0..pixels.len() {
+            assert!((pixels[i] - original[i]).abs() < 1e-3,
+                "passthrough drift at {i}: {} → {}", original[i], pixels[i]);
+        }
+    }
+
+    /// Override mode actually changes behaviour: tagging an identity
+    /// LUT as Rec.709-input under an AcesCG working space introduces
+    /// the AP1 → BT.709 → (identity) → BT.709 → AP1 round-trip.
+    /// Result should differ measurably from the no-conversion case
+    /// above on saturated inputs (where round-trip isn't perfectly
+    /// identity due to LUT clamping at [0, 1]).
+    #[test]
+    fn overrides_actually_drive_bracketing_choice() {
+        let lut = LutData::identity(33);
+        // Saturated red — clearly out of BT.709 gamut on the AP1
+        // side, so the AP1 → BT.709 conversion produces negative
+        // channels that the LUT clamps. Output diverges from the
+        // no-bracket path measurably.
+        let pixels_in: Vec<f32> = vec![0.7, 0.05, 0.0, 1.0];
+
+        let mut acescg_lut_path = pixels_in.clone();
+        apply_3d_lut_linear_ws_with_overrides(
+            &mut acescg_lut_path, &lut, 1.0,
+            WorkingColorspace::AcesCG,
+            WorkingColorspace::AcesCG,    // no pre/post conversion
+            WorkingColorspace::AcesCG,
+        );
+
+        let mut rec709_lut_path = pixels_in.clone();
+        apply_3d_lut_linear_ws_with_overrides(
+            &mut rec709_lut_path, &lut, 1.0,
+            WorkingColorspace::AcesCG,
+            WorkingColorspace::Rec709Linear,  // brackets in
+            WorkingColorspace::Rec709Linear,
+        );
+
+        // Expect divergence on at least one channel — the bracket
+        // does real work even on identity LUTs.
+        let diff = (acescg_lut_path[0] - rec709_lut_path[0]).abs()
+            + (acescg_lut_path[1] - rec709_lut_path[1]).abs()
+            + (acescg_lut_path[2] - rec709_lut_path[2]).abs();
+        assert!(diff > 0.01,
+            "override bracketing should produce visible divergence; got total RGB delta {diff}");
     }
 }

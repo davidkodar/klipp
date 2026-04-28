@@ -147,6 +147,17 @@ pub struct NodeParams {
     pub lut_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lut_opacity: Option<f32>,
+    /// Per-node override for the loaded LUT's `input_space` tag. The
+    /// `.cube` format doesn't carry colorspace metadata, so loaded
+    /// LUTs default to `Rec709Linear`; users override here when
+    /// they know the LUT was authored in a different basis. `None`
+    /// means "use the LUT's own default tag" (currently always
+    /// `Rec709Linear` for parser-loaded LUTs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lut_input_space: Option<klipp_core::WorkingColorspace>,
+    /// Per-node override for the LUT's `output_space` tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lut_output_space: Option<klipp_core::WorkingColorspace>,
 
     // FilmGrain
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -324,6 +335,8 @@ impl NodeParams {
             && self.masks.is_none()
             && self.lut_path.is_none()
             && z(&self.lut_opacity)
+            && self.lut_input_space.is_none()
+            && self.lut_output_space.is_none()
             && self.grain.is_none()
             && self.warper_params.is_none()
             && z(&self.denoise_luma)
@@ -388,6 +401,24 @@ impl NodeParams {
             "curves_preserve_luma" => self.curves_preserve_luma = Some(value > 0.5),
             "huesat_mix" => self.huesat_mix = n,
             "lut_opacity" => self.lut_opacity = n,
+            "lut_input_space" => {
+                // Encoded as the WorkingColorspace::as_u8 tag in
+                // f32. NaN/negative/very-large values fall back to
+                // `None` (use the LUT's own tag) — defensive against
+                // a corrupted dispatch from somewhere upstream.
+                self.lut_input_space = if value.is_finite() && value >= 0.0 && value < 256.0 {
+                    Some(klipp_core::WorkingColorspace::from_u8(value as u8))
+                } else {
+                    None
+                };
+            }
+            "lut_output_space" => {
+                self.lut_output_space = if value.is_finite() && value >= 0.0 && value < 256.0 {
+                    Some(klipp_core::WorkingColorspace::from_u8(value as u8))
+                } else {
+                    None
+                };
+            }
             "mix" => self.mix = n,
             p if p.starts_with("warper_hue_") => {
                 if let Ok(idx) = p["warper_hue_".len()..].parse::<usize>() {
@@ -552,5 +583,56 @@ impl NodeKeyframeTrack {
         } else {
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `set_param("lut_input_space", n)` decodes `n` as a u8 and
+    /// resolves it via `WorkingColorspace::from_u8`. In-range values
+    /// land on the right enum variant; out-of-range values (notably
+    /// `f32::INFINITY`, the inspector's "Use LUT default" sentinel)
+    /// map to `None`.
+    #[test]
+    fn lut_input_space_param_dispatch() {
+        let mut p = NodeParams::default();
+        p.apply_override("lut_input_space", 1.0);
+        assert_eq!(p.lut_input_space, Some(klipp_core::WorkingColorspace::AcesCG));
+        p.apply_override("lut_input_space", 0.0);
+        assert_eq!(p.lut_input_space, Some(klipp_core::WorkingColorspace::Rec709Linear));
+        p.apply_override("lut_input_space", 2.0);
+        assert_eq!(p.lut_input_space, Some(klipp_core::WorkingColorspace::Bt2020Linear));
+        // "Use LUT default" sentinel: f32::INFINITY → None.
+        p.apply_override("lut_input_space", f32::INFINITY);
+        assert_eq!(p.lut_input_space, None);
+        // Defensive: NaN → None.
+        p.apply_override("lut_input_space", f32::NAN);
+        assert_eq!(p.lut_input_space, None);
+        // Out-of-range positive → None.
+        p.apply_override("lut_input_space", 256.0);
+        assert_eq!(p.lut_input_space, None);
+    }
+
+    #[test]
+    fn lut_output_space_param_dispatch() {
+        let mut p = NodeParams::default();
+        p.apply_override("lut_output_space", 1.0);
+        assert_eq!(p.lut_output_space, Some(klipp_core::WorkingColorspace::AcesCG));
+        p.apply_override("lut_output_space", f32::INFINITY);
+        assert_eq!(p.lut_output_space, None);
+    }
+
+    /// Setting a LUT colorspace override flips the params out of the
+    /// "all-default / can-skip-history" state. Otherwise the
+    /// inspector dropdown wouldn't trigger a save.
+    #[test]
+    fn lut_colorspace_override_marks_params_non_empty() {
+        let mut p = NodeParams::default();
+        assert!(p.is_default());
+        p.lut_input_space = Some(klipp_core::WorkingColorspace::AcesCG);
+        assert!(!p.is_default(),
+            "an explicit LUT colorspace tag should mark the params as non-default");
     }
 }

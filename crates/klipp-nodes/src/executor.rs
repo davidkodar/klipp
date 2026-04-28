@@ -2531,16 +2531,31 @@ impl GraphExecutor {
                         .clone();
                     let opacity = params.lut_opacity.unwrap_or(1.0);
                     if let Some(gpu) = &mut self.gpu {
+                        // GPU LUT path is still working-space-naive
+                        // (the compute shader treats the LUT as
+                        // Rec.709-tagged on both sides). Honouring
+                        // the per-node colorspace tags on the GPU
+                        // path needs another shader-uniform shape
+                        // change tracked separately.
                         gpu.apply_3d_lut_gpu(
                             primary_input.to_vec(), width, height,
                             &lut.data, lut.size as u32, opacity,
                         )
                     } else {
-                        // CPU fallback: klipp_color::apply_3d_lut speaks u8.
-                        let primary_u8 = linear_rgba_to_u8(primary_input);
-                        let mut frame_u8 = primary_u8;
-                        klipp_color::apply_3d_lut(&mut frame_u8, &lut, opacity);
-                        u8_rgba_to_linear(&frame_u8)
+                        // CPU fallback: linear-light, working-space-
+                        // aware path. Per-node `lut_input_space` /
+                        // `lut_output_space` overrides win over the
+                        // loaded LUT's own tags (untagged .cube files
+                        // default to Rec709Linear at parse time; the
+                        // user re-tags via the Inspector).
+                        let in_space = params.lut_input_space.unwrap_or(lut.input_space);
+                        let out_space = params.lut_output_space.unwrap_or(lut.output_space);
+                        let mut frame = primary_input.to_vec();
+                        klipp_color::apply_3d_lut_linear_ws_with_overrides(
+                            &mut frame, &lut, opacity, self.working_colorspace,
+                            in_space, out_space,
+                        );
+                        frame
                     }
                 } else {
                     primary_input.to_vec()
