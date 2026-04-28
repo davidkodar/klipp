@@ -389,6 +389,16 @@ pub struct GpuEffectsPipeline {
     /// downstream-crate tests can observe it without coupling to this
     /// crate's test harness — an atomic counter is ~free in release.
     submit_count: Arc<std::sync::atomic::AtomicU64>,
+
+    /// Working-space luma coefficients pushed into every grade-shader
+    /// uniform (saturation, tone-controls keying, lift/gamma/gain
+    /// banding). Default `(0.2126, 0.7152, 0.0722)` keeps the pre-
+    /// Phase-E behaviour byte-identical for any caller that hasn't
+    /// installed a working-space-aware setter (notably the existing
+    /// integration tests). The engine flips this to AcesCG / etc. via
+    /// [`Self::set_luma_coefs`] when the project's working colorspace
+    /// changes.
+    luma_coefs: [f32; 3],
 }
 
 /// Maximum params size (padded to 256 bytes for alignment)
@@ -1103,7 +1113,27 @@ impl GpuEffectsPipeline {
             current_buf_size: 0,
             device_lost,
             submit_count: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            luma_coefs: [0.2126, 0.7152, 0.0722],
         })
+    }
+
+    /// Set the working-space luma coefficients used by subsequent
+    /// grade-shader dispatches. Called by the engine when the loaded
+    /// project's working colorspace changes; the values are the
+    /// second row of the working space's RGB → CIE XYZ matrix
+    /// (`(0.2126, 0.7152, 0.0722)` for Rec.709,
+    /// `(0.2722, 0.6741, 0.0537)` for AcesCG, etc.). Default is
+    /// Rec.709 so any caller that doesn't install one keeps the
+    /// pre-Phase-E behaviour byte-identical.
+    #[inline]
+    pub fn set_luma_coefs(&mut self, coefs: [f32; 3]) {
+        self.luma_coefs = coefs;
+    }
+
+    /// Read the active luma coefficients. Mostly useful for tests.
+    #[inline]
+    pub fn luma_coefs(&self) -> [f32; 3] {
+        self.luma_coefs
     }
 
     /// True once wgpu has reported a device-lost or uncaptured error.
@@ -1391,6 +1421,10 @@ impl GpuEffectsPipeline {
             hue,
             global_mix,
             _pad0: 0,
+            luma_yr: self.luma_coefs[0],
+            luma_yg: self.luma_coefs[1],
+            luma_yb: self.luma_coefs[2],
+            _pad1: 0,
         });
         self.dispatch(&self.color_grade_pipeline, buf_a, buf_b, workgroups);
 
@@ -3259,6 +3293,10 @@ impl GpuEffectsPipeline {
             gain_r: gain.0, gain_g: gain.1, gain_b: gain.2,
             offset_r: offset.0, offset_g: offset.1, offset_b: offset.2,
             hue, global_mix, _pad0: 0,
+            luma_yr: self.luma_coefs[0],
+            luma_yg: self.luma_coefs[1],
+            luma_yb: self.luma_coefs[2],
+            _pad1: 0,
         });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         // Disjoint-field borrow: read from chain_bg_3binding while
@@ -5217,8 +5255,17 @@ struct GpuColorGradeParams {
     hue: f32,
     global_mix: f32,
     _pad0: u32,
+    /// Working-space luma coefficients used by the saturation /
+    /// tone-controls / lift-gamma-gain stages of `SHADER_COLOR_GRADE`.
+    /// `(0.2126, 0.7152, 0.0722)` for Rec709Linear,
+    /// `(0.2722, 0.6741, 0.0537)` for AcesCG (AP1), etc. Populated by
+    /// the engine via `GpuEffectsPipeline::set_luma_coefs`.
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
+    _pad1: u32,
 }
-// 26 fields × 4 bytes = 104 bytes (well under 256-byte PARAMS_SIZE)
+// 30 fields × 4 bytes = 120 bytes (still under 256-byte PARAMS_SIZE)
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -7395,6 +7442,10 @@ struct Params {
     hue: f32,
     global_mix: f32,
     _pad0: u32,
+    luma_yr: f32,
+    luma_yg: f32,
+    luma_yb: f32,
+    _pad1: u32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -7420,8 +7471,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     b = b * exp_factor;
 
     // 2. Tone controls. Band centres in linear: highlights 0.214,
-    //    whites 0.604, shadows 0.214, blacks 0.033.
-    let luma1 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    //    whites 0.604, shadows 0.214, blacks 0.033. Luma uses the
+    //    project's working-space coefficients (BT.709 for Rec709Linear,
+    //    AP1 for AcesCG).
+    let luma1 = params.luma_yr * r + params.luma_yg * g + params.luma_yb * b;
     let hi_w = max(luma1 - 0.214, 0.0) * (1.0 / (1.0 - 0.214));
     let lo_w = max(0.214 - luma1, 0.0) * (1.0 / 0.214);
     let white_w = max(luma1 - 0.604, 0.0) * (1.0 / (1.0 - 0.604));
@@ -7431,8 +7484,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     g = g + tone_adj;
     b = b + tone_adj;
 
-    // 3. Lift/Gamma/Gain/Offset colour wheels.
-    let luma2 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    // 3. Lift/Gamma/Gain/Offset colour wheels — band weighting via
+    //    working-space luma.
+    let luma2 = params.luma_yr * r + params.luma_yg * g + params.luma_yb * b;
     let lift_w = max(1.0 - luma2, 0.0);
     let gain_w = max(luma2, 0.0);
     let gamma_w = max(sin(clamp(luma2, 0.0, 1.0) * 3.14159265), 0.0);
@@ -7446,8 +7500,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     g = (g - 0.18) * cs + 0.18;
     b = (b - 0.18) * cs + 0.18;
 
-    // 5. Saturation (BT.709 luma lerp).
-    let luma3 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    // 5. Saturation — working-space luma lerp.
+    let luma3 = params.luma_yr * r + params.luma_yg * g + params.luma_yb * b;
     r = luma3 + (r - luma3) * params.saturation;
     g = luma3 + (g - luma3) * params.saturation;
     b = luma3 + (b - luma3) * params.saturation;

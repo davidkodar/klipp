@@ -281,7 +281,14 @@ impl GraphExecutor {
         }
         self.gpu_init_attempted = true;
         self.gpu = GpuEffectsPipeline::new();
-        if self.gpu.is_none() {
+        if let Some(gpu) = self.gpu.as_mut() {
+            // Replay the active working colorspace's luma vector
+            // into the freshly-built pipeline. `set_working_colorspace`
+            // may have been called before this lazy init, in which
+            // case the pipeline's default `luma_coefs` would be Rec.709
+            // even though the project is on AcesCG.
+            gpu.set_luma_coefs(klipp_color::linear::luma_coefs(self.working_colorspace));
+        } else {
             tracing::info!(
                 "GraphExecutor: GPU unavailable, using CPU fallback for all nodes"
             );
@@ -310,12 +317,17 @@ impl GraphExecutor {
     /// executions. Called by the engine when the loaded project's
     /// `working_colorspace` field changes (which today happens at
     /// project-open and via the Inspector's project-settings panel).
-    /// The setter is cheap — just stores the enum value — so engines
-    /// can call it once per frame without measurable overhead if they
-    /// prefer that to tracking changes.
+    /// The setter is cheap — just stores the enum value and (when GPU
+    /// is up) pushes the matching luma vector into the GPU pipeline's
+    /// per-frame uniform — so engines can call it once per frame
+    /// without measurable overhead if they prefer that to tracking
+    /// changes.
     #[inline]
     pub fn set_working_colorspace(&mut self, ws: klipp_core::WorkingColorspace) {
         self.working_colorspace = ws;
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.set_luma_coefs(klipp_color::linear::luma_coefs(ws));
+        }
     }
 
     /// Read the executor's current working colorspace. Mostly useful
@@ -4443,5 +4455,70 @@ mod tests {
              should be brighter under AcesCG; got Rec.709={} AcesCG={}",
             r_709[0], r_acescg[0],
         );
+    }
+
+    /// `set_working_colorspace` must mirror the matching luma vector
+    /// into the GPU pipeline so the GPU shader's saturation /
+    /// tone-controls / lift-gamma-gain stages use the right luma.
+    /// Without this the executor's CPU and GPU paths would silently
+    /// disagree on what "luma" means under any non-Rec.709 working
+    /// space.
+    ///
+    /// Skipped (passes trivially) when no GPU is available.
+    #[test]
+    fn set_working_colorspace_propagates_luma_to_gpu() {
+        let mut executor = GraphExecutor::new();
+        // Force GPU init now so we can inspect the pipeline state.
+        executor.ensure_gpu();
+        let Some(gpu) = executor.gpu.as_ref() else {
+            eprintln!("skipping: no GPU pipeline available");
+            return;
+        };
+
+        // Default = Rec.709. Even on a fresh executor the GPU's
+        // luma_coefs default lines up with Rec.709 because both sides
+        // initialise to the same constants.
+        let default_coefs = gpu.luma_coefs();
+        assert!((default_coefs[0] - 0.2126).abs() < 1e-6);
+        assert!((default_coefs[1] - 0.7152).abs() < 1e-6);
+        assert!((default_coefs[2] - 0.0722).abs() < 1e-6);
+
+        // Flipping the executor to AcesCG must push the AP1 luma
+        // vector into the pipeline.
+        executor.set_working_colorspace(klipp_core::WorkingColorspace::AcesCG);
+        let coefs = executor.gpu.as_ref().unwrap().luma_coefs();
+        assert!((coefs[0] - 0.272_228_72).abs() < 1e-5,
+            "AcesCG Yr should hit the GPU; got {coefs:?}");
+        assert!((coefs[1] - 0.674_081_77).abs() < 1e-5);
+        assert!((coefs[2] - 0.053_689_52).abs() < 1e-5);
+
+        // And back.
+        executor.set_working_colorspace(klipp_core::WorkingColorspace::Rec709Linear);
+        let coefs = executor.gpu.as_ref().unwrap().luma_coefs();
+        assert!((coefs[0] - 0.2126).abs() < 1e-6);
+    }
+
+    /// Setter called BEFORE the GPU pipeline is built (the lazy
+    /// `ensure_gpu` happens later) — the pipeline must pick up the
+    /// active working space when it's finally created. This is the
+    /// realistic path: the engine sets `working_colorspace` on every
+    /// frame, but `ensure_gpu` only runs the first time a GPU node
+    /// arm is reached.
+    #[test]
+    fn ensure_gpu_picks_up_working_colorspace_set_earlier() {
+        let mut executor = GraphExecutor::new();
+        // No `ensure_gpu` yet.
+        assert!(executor.gpu.is_none());
+        executor.set_working_colorspace(klipp_core::WorkingColorspace::AcesCG);
+
+        // Now build the GPU lazily.
+        executor.ensure_gpu();
+        let Some(gpu) = executor.gpu.as_ref() else {
+            eprintln!("skipping: no GPU pipeline available");
+            return;
+        };
+        let coefs = gpu.luma_coefs();
+        assert!((coefs[0] - 0.272_228_72).abs() < 1e-5,
+            "lazy GPU init must replay the active working space's luma; got {coefs:?}");
     }
 }
