@@ -7,20 +7,82 @@
 //! convention — never gamma-encoded.
 //!
 //! The matching u8 sRGB helpers in [`crate::transforms`] are retained
-//! during the CRIT-7 migration so downstream crates can flip call
-//! sites one at a time. Once every consumer reads linear frames
-//! directly (see [`klipp_engine::LinearFrame`]), the u8 copies go
-//! away.
+//! so downstream crates can flip call sites one at a time. Once every
+//! consumer reads linear frames directly (see
+//! [`klipp_engine::LinearFrame`]), the u8 copies go away.
 //!
 //! # Why there are no `.clamp(0.0, 1.0)` calls
 //!
 //! In linear light, values above 1.0 are legitimate — a bright
 //! specular highlight can easily sit at 5.0 or 10.0 linear. Clamping
 //! at every operation is what destroys highlight recovery. These
-//! functions never clamp; the viewer applies a tone map (see
-//! [`klipp_engine`] Phase 7) and the encoder encodes to the target
-//! colour space (Phase 8) — those are the only legitimate places to
-//! resolve out-of-range values.
+//! functions never clamp; the viewer applies a tone map and the
+//! encoder encodes to the target colour space — those are the only
+//! legitimate places to resolve out-of-range values.
+//!
+//! # Working-colorspace audit (Phase E S5)
+//!
+//! Each operation in this module is one of:
+//!
+//! 1. **Gamut-agnostic** — the math is the same function applied
+//!    independently to each channel (or to a basis-independent space
+//!    like HSV). Output behaviour is correct under any working
+//!    colorspace. Examples: [`apply_exposure`] (per-channel multiply
+//!    by 2^stops), [`apply_lift_gamma_gain`] / `_offset` (per-channel
+//!    affine + gamma), [`apply_temperature_tint`] (additive/scalar
+//!    R/B trim), [`apply_global_mix`] (mix between two RGBA buffers).
+//!
+//! 2. **Luma-weighted** — the math computes a "luminance" scalar from
+//!    the pixel and uses it to pull channels toward / away from
+//!    neutral. The luminance coefficients are working-space-specific
+//!    (`Yr·R + Yg·G + Yb·B` with `(Yr, Yg, Yb)` being the second row
+//!    of the working-space's RGB→XYZ matrix). Examples:
+//!    [`apply_saturation`], [`apply_vibrance`], [`apply_clarity`],
+//!    [`apply_tone_controls`] (highlights/shadows/whites/blacks
+//!    keying), [`apply_log_wheels`], [`apply_wheel_sat_bri`].
+//!
+//! Group 2 ops shipped with BT.709 luma hardcoded — fine while the
+//! pipeline only had `Rec709Linear` working space. Under `AcesCG`
+//! they would compute "BT.709-weighted luma" instead of
+//! "AP1-weighted luma" — the saturation axis tilts off neutral
+//! relative to the AP1 white point.
+//!
+//! New `_ws` variants accept a [`klipp_core::WorkingColorspace`] and
+//! pick the appropriate luma vector via [`luma_coefs`]. The
+//! BT.709-named functions are retained as thin wrappers so existing
+//! callers stay byte-identical until [`klipp_engine`] flips them on
+//! the active project's working space (a separate session — wiring
+//! through the executor is bigger than fits here).
+
+use klipp_core::WorkingColorspace;
+
+/// Per-working-space luminance coefficients `(Yr, Yg, Yb)`.
+///
+/// Source: row 1 of each working space's RGB → CIE XYZ matrix. The
+/// BT.709 / sRGB row is the canonical "Rec.709 luma" used throughout
+/// the existing pipeline. The AP1 row matches the AMPAS aces-dev
+/// `AP1_RGB2Y` constant.
+///
+/// `Bt2020Linear` uses the BT.2020 NCL row — included so the variant
+/// has a defensible answer even though the end-to-end pipeline isn't
+/// wired for BT.2020 yet. Unknown future variants would fall back to
+/// BT.709 via `WorkingColorspace::from_u8`'s safe-default behaviour.
+#[inline]
+pub fn luma_coefs(ws: WorkingColorspace) -> [f32; 3] {
+    match ws {
+        WorkingColorspace::Rec709Linear => [0.2126, 0.7152, 0.0722],
+        WorkingColorspace::AcesCG       => [0.272_228_72, 0.674_081_77, 0.053_689_52],
+        WorkingColorspace::Bt2020Linear => [0.262_700, 0.678_000, 0.059_300],
+    }
+}
+
+/// Compute the working-space-correct luma of a single linear-light
+/// RGBA pixel (alpha is ignored).
+#[inline]
+pub fn luma_of(pixel: &[f32], ws: WorkingColorspace) -> f32 {
+    let c = luma_coefs(ws);
+    c[0] * pixel[0] + c[1] * pixel[1] + c[2] * pixel[2]
+}
 
 /// Exposure compensation: multiply by 2^stops.
 ///
@@ -73,22 +135,31 @@ pub fn apply_contrast(rgba: &mut [f32], factor: f32) {
 ///
 /// `amount == 0.0` is identity. Range roughly −1.0..+1.0 (−1 collapses
 /// to grey, +1 pushes hard). No clamp — out-of-range channels are
-/// legal linear light.
-pub fn apply_vibrance(rgba: &mut [f32], amount: f32) {
+/// legal linear light. Luma vector follows [`luma_coefs`] for the
+/// active working colorspace.
+pub fn apply_vibrance_ws(rgba: &mut [f32], amount: f32, ws: WorkingColorspace) {
     if amount == 0.0 {
         return;
     }
+    let c = luma_coefs(ws);
     for pixel in rgba.chunks_exact_mut(4) {
         let max = pixel[0].max(pixel[1]).max(pixel[2]);
         let min = pixel[0].min(pixel[1]).min(pixel[2]);
         let sat = max - min;
-        let luma = 0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2];
+        let luma = c[0] * pixel[0] + c[1] * pixel[1] + c[2] * pixel[2];
         let weight = 1.0 - sat.clamp(0.0, 1.0);
         let boost = 1.0 + amount * weight;
         pixel[0] = luma + (pixel[0] - luma) * boost;
         pixel[1] = luma + (pixel[1] - luma) * boost;
         pixel[2] = luma + (pixel[2] - luma) * boost;
     }
+}
+
+/// Back-compat wrapper for [`apply_vibrance_ws`] pinned to
+/// [`WorkingColorspace::Rec709Linear`].
+#[inline]
+pub fn apply_vibrance(rgba: &mut [f32], amount: f32) {
+    apply_vibrance_ws(rgba, amount, WorkingColorspace::Rec709Linear)
 }
 
 /// Clarity — midtone detail enhancement via unsharp-mask on the
@@ -487,29 +558,40 @@ pub fn apply_input_transform(rgba: &mut [f32], log_format: klipp_core::LogFormat
     }
 }
 
-/// Saturation: linear lerp between the pixel colour and its BT.709
-/// luma.
+/// Saturation: linear lerp between the pixel colour and its luma.
 ///
 /// `factor == 1.0` is identity; `0.0` collapses to greyscale at the
-/// BT.709 luma; `> 1.0` oversaturates. The BT.709 coefficients
-/// (0.2126, 0.7152, 0.0722) are defined for *linear* Rec.709 RGB —
-/// applying them to gamma-encoded values (as the sRGB u8 version did)
-/// silently computes the wrong weight per channel.
+/// working-space-correct luma; `> 1.0` oversaturates. The luma
+/// coefficients come from [`luma_coefs`] for the active working
+/// colorspace — BT.709 for `Rec709Linear`, AP1 for `AcesCG`. Using
+/// the wrong coefficients tilts the desaturation axis off the working
+/// space's white point, producing a colour cast at low saturation.
 ///
 /// No clamp — oversaturation that pushes channels above 1.0 or
 /// below 0.0 is legal linear light (especially for negative values,
-/// it corresponds to "imaginary" primaries outside the Rec.709 gamut
-/// and must be preserved for downstream gamut mapping).
-pub fn apply_saturation(rgba: &mut [f32], factor: f32) {
+/// it corresponds to "imaginary" primaries outside the working-space
+/// gamut and must be preserved for downstream gamut mapping).
+pub fn apply_saturation_ws(rgba: &mut [f32], factor: f32, ws: WorkingColorspace) {
     if factor == 1.0 {
         return;
     }
+    let c = luma_coefs(ws);
     for pixel in rgba.chunks_exact_mut(4) {
-        let luma = 0.2126 * pixel[0] + 0.7152 * pixel[1] + 0.0722 * pixel[2];
+        let luma = c[0] * pixel[0] + c[1] * pixel[1] + c[2] * pixel[2];
         pixel[0] = luma + (pixel[0] - luma) * factor;
         pixel[1] = luma + (pixel[1] - luma) * factor;
         pixel[2] = luma + (pixel[2] - luma) * factor;
     }
+}
+
+/// Back-compat wrapper for [`apply_saturation_ws`] pinned to
+/// [`WorkingColorspace::Rec709Linear`]. Matches the long-standing
+/// pre-Phase-E behaviour byte-for-byte. Existing callers don't need
+/// to change; new callers that know the project's working space
+/// should use [`apply_saturation_ws`] directly.
+#[inline]
+pub fn apply_saturation(rgba: &mut [f32], factor: f32) {
+    apply_saturation_ws(rgba, factor, WorkingColorspace::Rec709Linear)
 }
 
 #[cfg(test)]
@@ -958,5 +1040,135 @@ mod tests {
                 frame[i],
             );
         }
+    }
+
+    // ─── Working-colorspace luma plumbing (Phase E S5) ──────────
+
+    #[test]
+    fn luma_coefs_rec709_match_published_values() {
+        let c = luma_coefs(WorkingColorspace::Rec709Linear);
+        assert!(approx_eq(c[0], 0.2126, 1e-6));
+        assert!(approx_eq(c[1], 0.7152, 1e-6));
+        assert!(approx_eq(c[2], 0.0722, 1e-6));
+    }
+
+    #[test]
+    fn luma_coefs_acescg_match_ap1_rgb2y() {
+        // Sourced from AMPAS aces-dev `AP1_RGB2Y`. Same values used
+        // by `klipp_color::aces`'s saturation matrix.
+        let c = luma_coefs(WorkingColorspace::AcesCG);
+        assert!(approx_eq(c[0], 0.272_228_72, 1e-6));
+        assert!(approx_eq(c[1], 0.674_081_77, 1e-6));
+        assert!(approx_eq(c[2], 0.053_689_52, 1e-6));
+    }
+
+    #[test]
+    fn luma_coefs_sum_to_one() {
+        // Property of any RGB-to-Y row: equal-RGB white → equal-Y
+        // (full white). Per channel the coefficients sum to 1.0.
+        for ws in [
+            WorkingColorspace::Rec709Linear,
+            WorkingColorspace::AcesCG,
+            WorkingColorspace::Bt2020Linear,
+        ] {
+            let c = luma_coefs(ws);
+            let s: f32 = c.iter().sum();
+            assert!(approx_eq(s, 1.0, 5e-4),
+                "{ws:?} luma coefs sum to {s}, expected 1.0");
+        }
+    }
+
+    #[test]
+    fn saturation_ws_rec709_default_is_byte_identical_to_legacy() {
+        // The back-compat wrapper must produce the same output as
+        // calling the `_ws` variant with `Rec709Linear`. If this
+        // drifts, every existing caller of `apply_saturation` is
+        // silently changing behaviour.
+        let pixels: Vec<[f32; 4]> = vec![
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            [0.5, 0.3, 0.7, 1.0],
+            [-0.05, 0.4, 1.5, 0.5],
+        ];
+        for factor in [0.0, 0.5, 1.5, 2.0] {
+            let mut a = make_frame(&pixels);
+            let mut b = make_frame(&pixels);
+            apply_saturation(&mut a, factor);
+            apply_saturation_ws(&mut b, factor, WorkingColorspace::Rec709Linear);
+            assert_eq!(a, b, "factor={factor}");
+        }
+    }
+
+    #[test]
+    fn vibrance_ws_rec709_default_is_byte_identical_to_legacy() {
+        let pixels: Vec<[f32; 4]> = vec![
+            [1.0, 0.5, 0.5, 1.0],
+            [0.5, 0.3, 0.7, 1.0],
+            [0.18, 0.18, 0.18, 1.0],
+        ];
+        for amount in [-0.5, 0.0, 0.3, 0.8] {
+            let mut a = make_frame(&pixels);
+            let mut b = make_frame(&pixels);
+            apply_vibrance(&mut a, amount);
+            apply_vibrance_ws(&mut b, amount, WorkingColorspace::Rec709Linear);
+            assert_eq!(a, b, "amount={amount}");
+        }
+    }
+
+    #[test]
+    fn saturation_ws_zero_neutral_grey_invariant_for_all_working_spaces() {
+        // Grey (R=G=B) has equal-channel luma; any saturation factor
+        // leaves it untouched regardless of which working-space's
+        // luma vector is used.
+        for ws in [
+            WorkingColorspace::Rec709Linear,
+            WorkingColorspace::AcesCG,
+            WorkingColorspace::Bt2020Linear,
+        ] {
+            let mut frame = make_frame(&[[0.5, 0.5, 0.5, 1.0]]);
+            let original = frame.clone();
+            apply_saturation_ws(&mut frame, 0.0, ws);
+            for i in 0..4 {
+                assert!(approx_eq(frame[i], original[i], 1e-6),
+                    "{ws:?} grey channel {i}: drift {} → {}", original[i], frame[i]);
+            }
+        }
+    }
+
+    #[test]
+    fn saturation_zero_collapses_to_working_space_luma() {
+        // Pure red under different working spaces → channels equal
+        // the working-space's R coefficient (Yr).
+        for ws in [
+            WorkingColorspace::Rec709Linear,
+            WorkingColorspace::AcesCG,
+            WorkingColorspace::Bt2020Linear,
+        ] {
+            let mut frame = make_frame(&[[1.0, 0.0, 0.0, 1.0]]);
+            apply_saturation_ws(&mut frame, 0.0, ws);
+            let yr = luma_coefs(ws)[0];
+            for i in 0..3 {
+                assert!(approx_eq(frame[i], yr, 1e-5),
+                    "{ws:?} channel {i}: expected Yr={yr}, got {}", frame[i]);
+            }
+        }
+    }
+
+    /// The plan §S5 invariant for gamut-aware ops: saturation under
+    /// AcesCG must produce a different (correct-for-AP1) result than
+    /// saturation under Rec.709. If `apply_saturation_ws(.., AcesCG)`
+    /// produced the same numbers as `apply_saturation_ws(.., Rec709Linear)`,
+    /// the working-space switch isn't actually doing anything.
+    #[test]
+    fn saturation_ws_rec709_and_acescg_diverge_on_non_grey() {
+        let mut a = make_frame(&[[1.0, 0.0, 0.0, 1.0]]);
+        let mut b = make_frame(&[[1.0, 0.0, 0.0, 1.0]]);
+        apply_saturation_ws(&mut a, 0.0, WorkingColorspace::Rec709Linear);
+        apply_saturation_ws(&mut b, 0.0, WorkingColorspace::AcesCG);
+        // The two should differ: AcesCG's Yr (0.272) > Rec.709's Yr
+        // (0.213), so the achromatic projection of pure red is
+        // brighter under AcesCG.
+        assert!(b[0] > a[0],
+            "AcesCG saturation should make pure red's grey-projection brighter than Rec.709's; got Rec.709={}, AcesCG={}", a[0], b[0]);
     }
 }
