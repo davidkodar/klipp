@@ -27,7 +27,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use bitflags::bitflags;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Current manifest schema version. Bumped when the on-disk format
 /// changes in a way that requires migration.
@@ -38,6 +39,156 @@ pub const DEFAULT_MANIFEST_VERSION: &str = "1";
 /// `display_name` is fine; renaming `id` breaks every saved project
 /// that referenced it.
 pub type ModelId = String;
+
+/// What trait a model implements. Drives registry dispatch — a
+/// `MaskGenerator` entry registers into the mask-generator side of the
+/// registry, a `VideoTracker` into the tracker side, etc. The default
+/// (`MaskGenerator`) matches every existing v1-shape manifest entry,
+/// so back-compat is preserved when this field is absent.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelKind {
+    #[default]
+    MaskGenerator,
+    VideoTracker,
+    ObjectDetector,
+}
+
+/// Which backend crate runs the model. Lets the registry pick the
+/// right runtime at materialisation time without hard-coding model
+/// names. `Stub` is the back-compat default for the existing
+/// placeholder manifest — it routes to `StubMaskGenerator` so legacy
+/// entries keep working as the dev placeholder until release CI
+/// populates real bytes + flips them to a real runtime.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelRuntime {
+    /// `klipp-ml-candle` backend (pure-Rust, no FFI).
+    Candle,
+    /// `klipp-ml-ort` backend — wraps the ONNX Runtime C library via
+    /// the `ort` crate. Requires `unsafe` FFI; opt-in via Cargo
+    /// feature in later phases.
+    Ort,
+    /// `klipp-ml-tract` backend (Phase 2+, experimental).
+    Tract,
+    /// In-process stub used by `StubMaskGenerator` and tests. No
+    /// real inference, no network, no weights on disk.
+    #[default]
+    Stub,
+}
+
+impl ModelRuntime {
+    /// `true` for runtimes that wrap a C / C++ library via `unsafe`
+    /// FFI bindings. The validator emits a warn-level log when one
+    /// of these is reachable from the default build, so a user / CI
+    /// can audit which manifests force a non-default trust boundary.
+    pub fn requires_unsafe_ffi(self) -> bool {
+        matches!(self, Self::Ort)
+    }
+}
+
+bitflags! {
+    /// Which prompt categories a model accepts. Mirrors
+    /// `MaskCapabilities` from `mask_generator.rs` but lives at the
+    /// manifest layer so the UI can pre-load the right affordances
+    /// *before* the model has been materialised (the registry only
+    /// instantiates a model on first use; UI needs a capability hint
+    /// at picker-render time, before any inference has run).
+    ///
+    /// Keep flag names + values in sync with `MaskCapabilities` —
+    /// this is the on-disk hint, that is the runtime truth. A future
+    /// validation pass can cross-check the two once a model is
+    /// instantiated.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct PromptKinds: u32 {
+        const POINT       = 1 << 0;
+        const BOX         = 1 << 1;
+        const SCRIBBLE    = 1 << 2;
+        const TEXT        = 1 << 3;
+        const AUTO_DETECT = 1 << 4;
+        const TEMPORAL    = 1 << 5;
+    }
+}
+
+impl PromptKinds {
+    /// Render to the manifest string form: lowercase flag names
+    /// joined with ` | `. Empty bitset renders as `""`. We hand-roll
+    /// this rather than relying on bitflags' built-in serde feature
+    /// so the on-disk text matches the casing humans actually want
+    /// to read in `assets/models.toml` (`"point | box"`, not
+    /// `"POINT | BOX"`).
+    fn to_manifest_string(self) -> String {
+        if self.is_empty() {
+            return String::new();
+        }
+        let mut parts: Vec<&'static str> = Vec::with_capacity(6);
+        if self.contains(Self::POINT) {
+            parts.push("point");
+        }
+        if self.contains(Self::BOX) {
+            parts.push("box");
+        }
+        if self.contains(Self::SCRIBBLE) {
+            parts.push("scribble");
+        }
+        if self.contains(Self::TEXT) {
+            parts.push("text");
+        }
+        if self.contains(Self::AUTO_DETECT) {
+            parts.push("auto_detect");
+        }
+        if self.contains(Self::TEMPORAL) {
+            parts.push("temporal");
+        }
+        parts.join(" | ")
+    }
+
+    /// Parse the manifest string form back into a bitset. Whitespace
+    /// around tokens + the separator is forgiving; unknown tokens are
+    /// rejected with a parse error so a typo doesn't silently strip a
+    /// capability.
+    fn from_manifest_string(s: &str) -> Result<Self, String> {
+        let mut out = Self::empty();
+        for raw in s.split('|') {
+            let token = raw.trim();
+            if token.is_empty() {
+                continue;
+            }
+            let bit = match token {
+                "point" => Self::POINT,
+                "box" => Self::BOX,
+                "scribble" => Self::SCRIBBLE,
+                "text" => Self::TEXT,
+                "auto_detect" => Self::AUTO_DETECT,
+                "temporal" => Self::TEMPORAL,
+                other => {
+                    return Err(format!(
+                        "unknown prompt-kind {other:?} (valid: point | box | scribble | text | auto_detect | temporal)"
+                    ));
+                }
+            };
+            out |= bit;
+        }
+        Ok(out)
+    }
+}
+
+impl Serialize for PromptKinds {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(&self.to_manifest_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for PromptKinds {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(de)?;
+        Self::from_manifest_string(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+fn default_prompt_kinds() -> PromptKinds {
+    PromptKinds::empty()
+}
 
 /// One downloadable model.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -64,6 +215,23 @@ pub struct ModelEntry {
     /// order; first to succeed *and* match the SHA-256 wins. All
     /// entries must be `https://`.
     pub sources: Vec<Source>,
+    /// Which trait this entry implements. Defaults to
+    /// `MaskGenerator` so v1-shape manifests (without this field)
+    /// keep parsing — the existing SAM2 placeholders are all mask
+    /// generators.
+    #[serde(default)]
+    pub kind: ModelKind,
+    /// Which backend crate runs the model. Defaults to `Stub` so
+    /// v1-shape manifests route to `StubMaskGenerator` rather than
+    /// silently picking up a real (but unconfigured) runtime.
+    #[serde(default)]
+    pub runtime: ModelRuntime,
+    /// Capability hint: which prompt kinds the model accepts. Lets
+    /// the UI pre-load the right affordances before instantiation.
+    /// Defaults to empty — a v1-shape entry advertises no prompt
+    /// capabilities until its manifest is upgraded.
+    #[serde(default = "default_prompt_kinds")]
+    pub prompts: PromptKinds,
 }
 
 /// One download source. Wrapped in a struct (not a bare `String`) so
@@ -162,6 +330,17 @@ impl ModelManifest {
                     "model {} license is empty",
                     entry.id,
                 )));
+            }
+            if entry.runtime.requires_unsafe_ffi() {
+                // Informational only at this layer. Later phases gate
+                // FFI runtimes behind a Cargo feature; this log lets
+                // the user / CI see that the manifest assumes the
+                // opt-in build before the build itself fails.
+                tracing::warn!(
+                    model_id = %entry.id,
+                    runtime = ?entry.runtime,
+                    "model entry requires an unsafe-FFI runtime; ensure the corresponding backend feature is enabled at build time"
+                );
             }
         }
         Ok(())
@@ -453,5 +632,150 @@ sources = [{ url = "https://lab.example.com/m.onnx" }]
             assert!(s.ends_with("klipp/models.toml"),
                 "user manifest path should end with klipp/models.toml, got {s}");
         }
+    }
+
+    // ─── kind / runtime / prompts schema extensions ──────────────────
+
+    #[test]
+    fn v1_shape_manifest_applies_defaults_for_new_fields() {
+        // The original v1 manifest has no kind / runtime / prompts
+        // fields. They must be filled in with sensible defaults so
+        // shipping manifests keep parsing across schema upgrades.
+        let m = ModelManifest::parse(valid_manifest_str()).expect("v1 parses");
+        let entry = &m.models[0];
+        assert_eq!(entry.kind, ModelKind::MaskGenerator,
+            "default kind should be MaskGenerator");
+        assert_eq!(entry.runtime, ModelRuntime::Stub,
+            "default runtime should be Stub (back-compat for placeholder manifests)");
+        assert!(entry.prompts.is_empty(),
+            "default prompts should be empty (no advertised capabilities)");
+    }
+
+    #[test]
+    fn manifest_with_new_fields_round_trips() {
+        let src = r#"version = "1"
+
+[[model]]
+id = "sam2_1_tiny"
+display_name = "SAM2.1 Tiny"
+size_bytes = 1
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "Meta AI Research"
+sources = [{ url = "https://example.com/x.onnx" }]
+kind = "mask_generator"
+runtime = "ort"
+prompts = "point | box | scribble | temporal"
+"#;
+        let parsed = ModelManifest::parse(src).expect("parse with new fields");
+        let entry = &parsed.models[0];
+        assert_eq!(entry.kind, ModelKind::MaskGenerator);
+        assert_eq!(entry.runtime, ModelRuntime::Ort);
+        assert_eq!(
+            entry.prompts,
+            PromptKinds::POINT | PromptKinds::BOX | PromptKinds::SCRIBBLE | PromptKinds::TEMPORAL,
+        );
+
+        // Round-trip via serialize → parse and ensure equality.
+        let toml_out = toml::to_string(&parsed).expect("serialize");
+        let reparsed = ModelManifest::parse(&toml_out).expect("reparse");
+        assert_eq!(parsed, reparsed,
+            "manifest must round-trip through TOML serialise + parse");
+    }
+
+    #[test]
+    fn prompt_kinds_compose_with_or() {
+        let pk = PromptKinds::POINT | PromptKinds::BOX | PromptKinds::TEMPORAL;
+        assert!(pk.contains(PromptKinds::POINT));
+        assert!(pk.contains(PromptKinds::BOX));
+        assert!(pk.contains(PromptKinds::TEMPORAL));
+        assert!(!pk.contains(PromptKinds::TEXT));
+        assert!(!pk.contains(PromptKinds::AUTO_DETECT));
+        assert!(!pk.contains(PromptKinds::SCRIBBLE));
+    }
+
+    #[test]
+    fn prompt_kinds_serde_round_trip() {
+        // Container struct so we exercise the on-disk string form
+        // exactly as it'll appear inside `[[model]]`.
+        #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
+        struct Wrap {
+            prompts: PromptKinds,
+        }
+
+        let original = Wrap {
+            prompts: PromptKinds::POINT
+                | PromptKinds::BOX
+                | PromptKinds::SCRIBBLE
+                | PromptKinds::TEMPORAL,
+        };
+        let s = toml::to_string(&original).expect("serialize");
+        // Spot-check the on-disk form is the lowercase pipe-joined
+        // string the manifest format documents.
+        assert!(
+            s.contains("prompts = \"point | box | scribble | temporal\""),
+            "expected lowercase pipe-joined form in TOML, got: {s}"
+        );
+        let back: Wrap = toml::from_str(&s).expect("deserialize");
+        assert_eq!(original, back);
+
+        // Empty round-trips too.
+        let empty = Wrap { prompts: PromptKinds::empty() };
+        let s = toml::to_string(&empty).expect("serialize empty");
+        let back: Wrap = toml::from_str(&s).expect("deserialize empty");
+        assert_eq!(empty, back);
+
+        // Whitespace-tolerant on parse.
+        let parsed: Wrap =
+            toml::from_str("prompts = \"  point|box  |  temporal  \"").expect("forgiving parse");
+        assert_eq!(
+            parsed.prompts,
+            PromptKinds::POINT | PromptKinds::BOX | PromptKinds::TEMPORAL,
+        );
+    }
+
+    #[test]
+    fn prompt_kinds_rejects_unknown_token() {
+        // Container with serde — same shape as inside the manifest.
+        #[derive(Deserialize, Debug)]
+        #[allow(dead_code)]
+        struct Wrap {
+            prompts: PromptKinds,
+        }
+        let err = toml::from_str::<Wrap>("prompts = \"point | bogus\"").expect_err("unknown token");
+        let msg = err.to_string();
+        assert!(msg.contains("bogus"), "error should mention the offending token: {msg}");
+    }
+
+    #[test]
+    fn shipping_manifest_populates_new_fields_for_sam2_entries() {
+        // The shipped `assets/models.toml` is expected to advertise
+        // kind=mask_generator, runtime=ort, and the SAM-family
+        // prompt set on every SAM2 entry. Lock that in so a stray
+        // edit can't strip the metadata.
+        let m = ModelManifest::parse(BUILTIN_MANIFEST).expect("builtin parses");
+        assert!(!m.models.is_empty(), "builtin should have entries");
+
+        let expected_prompts =
+            PromptKinds::POINT | PromptKinds::BOX | PromptKinds::SCRIBBLE | PromptKinds::TEMPORAL;
+        for entry in &m.models {
+            if !entry.id.starts_with("sam2") {
+                continue;
+            }
+            assert_eq!(entry.kind, ModelKind::MaskGenerator,
+                "{} kind", entry.id);
+            assert_eq!(entry.runtime, ModelRuntime::Ort,
+                "{} runtime", entry.id);
+            assert_eq!(entry.prompts, expected_prompts,
+                "{} prompts", entry.id);
+        }
+    }
+
+    #[test]
+    fn ort_runtime_marked_as_unsafe_ffi() {
+        assert!(ModelRuntime::Ort.requires_unsafe_ffi());
+        assert!(!ModelRuntime::Candle.requires_unsafe_ffi());
+        assert!(!ModelRuntime::Tract.requires_unsafe_ffi());
+        assert!(!ModelRuntime::Stub.requires_unsafe_ffi());
     }
 }

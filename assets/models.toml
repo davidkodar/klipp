@@ -39,6 +39,9 @@ sources = [
     # GitHub Release asset URL once the converted ONNX is published.
     { url = "https://github.com/davidkodar/klipp-models/releases/download/sam2.1-placeholder/sam2.1_hiera_tiny.onnx" },
 ]
+kind = "mask_generator"
+runtime = "ort"
+prompts = "point | box | scribble | temporal"
 
 [[model]]
 id = "sam2_1_hiera_small_onnx"
@@ -50,6 +53,9 @@ attribution = "Meta AI Research"
 sources = [
     { url = "https://github.com/davidkodar/klipp-models/releases/download/sam2.1-placeholder/sam2.1_hiera_small.onnx" },
 ]
+kind = "mask_generator"
+runtime = "ort"
+prompts = "point | box | scribble | temporal"
 
 [[model]]
 id = "sam2_1_hiera_base_plus_onnx"
@@ -61,6 +67,9 @@ attribution = "Meta AI Research"
 sources = [
     { url = "https://github.com/davidkodar/klipp-models/releases/download/sam2.1-placeholder/sam2.1_hiera_base_plus.onnx" },
 ]
+kind = "mask_generator"
+runtime = "ort"
+prompts = "point | box | scribble | temporal"
 
 [[model]]
 id = "sam2_1_hiera_large_onnx"
@@ -72,3 +81,6 @@ attribution = "Meta AI Research"
 sources = [
     { url = "https://github.com/davidkodar/klipp-models/releases/download/sam2.1-placeholder/sam2.1_hiera_large.onnx" },
 ]
+kind = "mask_generator"
+runtime = "ort"
+prompts = "point | box | scribble | temporal"

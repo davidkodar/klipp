@@ -37,8 +37,8 @@ pub use download::{
     DownloadError, NoOpProgress, ProgressSink, download_to_cache, write_and_verify,
 };
 pub use manifest::{
-    DEFAULT_MANIFEST_VERSION, ManifestError, ModelEntry, ModelId, ModelManifest, Source,
-    load_effective, user_manifest_path,
+    DEFAULT_MANIFEST_VERSION, ManifestError, ModelEntry, ModelId, ModelKind, ModelManifest,
+    ModelRuntime, PromptKinds, Source, load_effective, user_manifest_path,
 };
 pub use mask_generator::{
     BBox, ClickPrompt, BoxPrompt, Detection, DevicePreference, InputFrame, MaskBuffer,

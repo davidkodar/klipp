@@ -311,6 +311,9 @@ mod tests {
             license: "Apache-2.0".into(),
             attribution: "test".into(),
             sources: sources.into_iter().map(|s| Source { url: s.into() }).collect(),
+            kind: crate::manifest::ModelKind::default(),
+            runtime: crate::manifest::ModelRuntime::default(),
+            prompts: crate::manifest::PromptKinds::empty(),
         }
     }
 

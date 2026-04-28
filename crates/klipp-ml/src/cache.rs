@@ -156,6 +156,9 @@ mod tests {
             license: "Apache-2.0".into(),
             attribution: "test".into(),
             sources: vec![Source { url: "https://example.com/test.bin".into() }],
+            kind: crate::manifest::ModelKind::default(),
+            runtime: crate::manifest::ModelRuntime::default(),
+            prompts: crate::manifest::PromptKinds::empty(),
         }
     }
 
