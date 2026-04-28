@@ -90,11 +90,12 @@ fn install_native_crash_handler() {
         }
     }
     unsafe {
-        libc::signal(libc::SIGSEGV, handler as libc::sighandler_t);
-        libc::signal(libc::SIGABRT, handler as libc::sighandler_t);
-        libc::signal(libc::SIGBUS,  handler as libc::sighandler_t);
-        libc::signal(libc::SIGILL,  handler as libc::sighandler_t);
-        libc::signal(libc::SIGFPE,  handler as libc::sighandler_t);
+        let h = handler as *const () as libc::sighandler_t;
+        libc::signal(libc::SIGSEGV, h);
+        libc::signal(libc::SIGABRT, h);
+        libc::signal(libc::SIGBUS,  h);
+        libc::signal(libc::SIGILL,  h);
+        libc::signal(libc::SIGFPE,  h);
     }
 }
 
