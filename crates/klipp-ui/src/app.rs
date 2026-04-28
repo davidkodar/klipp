@@ -15333,9 +15333,9 @@ impl KlippApp {
     /// Build an `OwnedMaskRequest` from the current viewer frame +
     /// captured prompts and hand it to a worker thread.
     ///
-    /// Today we ship a fixed-size zeroed buffer because the stub
-    /// generator only reads geometry; once a real model lands
-    /// (F-97-BIREFNET) this swaps to the engine's decoded RGBA frame.
+    /// Pulls the latest sRGB u8 RGBA bytes off the program
+    /// `FrameBuffer`, linearises into f32 RGBA, and ships ownership
+    /// across to the worker through an `Arc<Vec<f32>>`.
     fn dispatch_ai_inference(&mut self, ctx: &egui::Context) {
         let Some(model_id) = self.state.ai_tools_state.selected_model_id.clone() else {
             self.state.toast.show("AI Tools: pick a model first");
@@ -15345,10 +15345,38 @@ impl KlippApp {
             return;
         }
 
-        let (w, h) = (1024u32, 1024u32);
-        let pixels = std::sync::Arc::new(vec![0.0_f32; (w as usize) * (h as usize) * 4]);
-        let prompts = self.state.ai_tools_state.prompts.build();
+        let (w, h, pixels) = {
+            let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
+                self.state
+                    .toast
+                    .show("AI Tools: no frame loaded yet");
+                return;
+            }
+            let expected = (fb.width as usize) * (fb.height as usize) * 4;
+            if fb.data.len() < expected {
+                self.state
+                    .toast
+                    .show("AI Tools: frame buffer not ready");
+                return;
+            }
+            let mut linear = Vec::with_capacity(expected);
+            for chunk in fb.data[..expected].chunks_exact(4) {
+                linear.push(klipp_color::transfer::srgb_to_linear(
+                    chunk[0] as f32 / 255.0,
+                ));
+                linear.push(klipp_color::transfer::srgb_to_linear(
+                    chunk[1] as f32 / 255.0,
+                ));
+                linear.push(klipp_color::transfer::srgb_to_linear(
+                    chunk[2] as f32 / 255.0,
+                ));
+                linear.push(chunk[3] as f32 / 255.0);
+            }
+            (fb.width, fb.height, std::sync::Arc::new(linear))
+        };
 
+        let prompts = self.state.ai_tools_state.prompts.build();
         let req = crate::ai_tools::OwnedMaskRequest {
             frame_pixels: pixels,
             frame_width: w,
@@ -17613,6 +17641,21 @@ impl KlippApp {
             if kb.is_action_pressed("toggle_ai_tools_panel", i) {
                 self.state.ai_tools_state.panel_visible =
                     !self.state.ai_tools_state.panel_visible;
+                if self.state.ai_tools_state.panel_visible
+                    && self.state.ai_tools_state.active_task.is_none()
+                {
+                    // Default the panel to Isolate Object so the
+                    // open → click → Ctrl+Enter flow works without
+                    // requiring the user to pick a task button first.
+                    let default_task = crate::ai_tools::AiTask::IsolateObject;
+                    self.state.ai_tools_state.active_task = Some(default_task);
+                    self.state.ai_tools_state.selected_model_id = self
+                        .state
+                        .ai_tools_registry
+                        .models_for(default_task)
+                        .first()
+                        .map(|m| m.id.clone());
+                }
             }
         });
     }
