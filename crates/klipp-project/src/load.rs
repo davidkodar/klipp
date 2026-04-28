@@ -252,6 +252,10 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
         track_header_width: first.track_header_width,
         auto_generate_filmstrips: first.auto_generate_filmstrips,
         auto_generate_skim: first.auto_generate_skim,
+        // ProjectJson.working_colorspace is project-level (not per-
+        // sequence). Old project.json files lack the field; serde
+        // gave us Rec709Linear via #[serde(default)].
+        working_colorspace: project.working_colorspace,
     };
 
     info!("Project loaded from {:?} ({} sequence(s))", dir, sequences.len());

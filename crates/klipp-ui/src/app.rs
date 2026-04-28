@@ -16600,6 +16600,7 @@ impl KlippApp {
             track_header_width: self.state.track_header_width,
             auto_generate_filmstrips: self.state.project_auto_filmstrips,
             auto_generate_skim: self.state.project_auto_skim,
+            working_colorspace: self.state.project_working_colorspace,
         };
         let options = klipp_project::consolidate::ConsolidateOptions {
             dest_dir,
@@ -16700,6 +16701,7 @@ impl KlippApp {
             track_header_width: self.state.track_header_width,
             auto_generate_filmstrips: self.state.project_auto_filmstrips,
             auto_generate_skim: self.state.project_auto_skim,
+            working_colorspace: self.state.project_working_colorspace,
         };
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
         match klipp_project::save_project_with_color_and_backups(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x)) {
@@ -16839,6 +16841,17 @@ impl KlippApp {
                 // Restore per-project media generation overrides
                 self.state.project_auto_filmstrips = color_settings.auto_generate_filmstrips;
                 self.state.project_auto_skim = color_settings.auto_generate_skim;
+
+                // Restore the project's working colorspace and push it
+                // into the engine's atomic so the decoder + grade chain
+                // pick the right luma vector. Old project files that
+                // lack the field load as `Rec709Linear` via serde
+                // back-compat — byte-identical to the pre-Phase-E
+                // pipeline.
+                self.state.project_working_colorspace = color_settings.working_colorspace;
+                klipp_engine::video_decoder::set_working_colorspace(
+                    color_settings.working_colorspace,
+                );
 
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
@@ -19189,6 +19202,7 @@ impl eframe::App for KlippApp {
                     track_header_width: self.state.track_header_width,
                     auto_generate_filmstrips: self.state.project_auto_filmstrips,
                     auto_generate_skim: self.state.project_auto_skim,
+                    working_colorspace: self.state.project_working_colorspace,
                 };
                 let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
                 match klipp_project::save_project_with_color_and_backups(&autosave_path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x)) {

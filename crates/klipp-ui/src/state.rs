@@ -1082,6 +1082,14 @@ pub struct AppState {
     // Per-project media generation overrides (None = use global pref)
     pub project_auto_filmstrips: Option<bool>,
     pub project_auto_skim: Option<bool>,
+    /// Working colorspace the project's grade chain operates in.
+    /// Driven by the Project Info panel's dropdown; engine receives
+    /// the value via `klipp_engine::video_decoder::set_working_colorspace`
+    /// at project load and on every change. Defaults to
+    /// `Rec709Linear` so brand-new projects and back-compat loads
+    /// of pre-Phase-E project files behave exactly like they did
+    /// before.
+    pub project_working_colorspace: klipp_core::WorkingColorspace,
 
     // Media panel
     pub show_media_panel: bool,
@@ -2297,6 +2305,7 @@ impl Default for AppState {
             auto_create_tracks: true,
             project_auto_filmstrips: None,
             project_auto_skim: None,
+            project_working_colorspace: klipp_core::WorkingColorspace::default(),
             show_media_panel: false,
             show_remove_media_confirm: None,
             show_delete_unused_confirm: None,

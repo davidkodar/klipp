@@ -16,6 +16,10 @@ pub struct ColorSettings {
     pub auto_generate_filmstrips: Option<bool>,
     /// Per-project: generate skim transcodes on import. None = use global pref.
     pub auto_generate_skim: Option<bool>,
+    /// Working colorspace the grade chain operates in. Defaults to
+    /// `Rec709Linear` for back-compat (every existing project file
+    /// has no `working_colorspace` field; serde fills the default).
+    pub working_colorspace: klipp_core::WorkingColorspace,
 }
 
 impl Default for ColorSettings {
@@ -27,6 +31,7 @@ impl Default for ColorSettings {
             track_header_width: 160.0,
             auto_generate_filmstrips: None,
             auto_generate_skim: None,
+            working_colorspace: klipp_core::WorkingColorspace::default(),
         }
     }
 }
@@ -87,7 +92,7 @@ pub fn save_project_with_color_and_backups(
         notes: notes.to_string(),
         timeline_zoom,
         timeline_scroll_x,
-        working_colorspace: klipp_core::WorkingColorspace::default(),
+        working_colorspace: color.working_colorspace,
     };
 
     let project_json = serde_json::to_string_pretty(&project)

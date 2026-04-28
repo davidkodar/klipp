@@ -149,7 +149,72 @@ pub fn show_project_info(
                 state.project_auto_skim = new_skim;
                 state.dirty = true;
             }
+
+            // Working colorspace. The grade chain operates in this
+            // basis; decoded frames are converted to it; the display
+            // path (RRT + ODT) consumes it on the way out. Defaults
+            // to Rec.709 for back-compat with any project on disk.
+            // Switching it changes the look of the existing grade —
+            // there's no in-place migration in this dialog, just the
+            // setting.
+            let mut ws = state.project_working_colorspace;
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Working colorspace:")
+                        .size(11.0)
+                        .color(theme.text_dim),
+                );
+                egui::ComboBox::from_id_salt("proj_ws")
+                    .width(140.0)
+                    .selected_text(working_colorspace_label(ws))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut ws,
+                            klipp_core::WorkingColorspace::Rec709Linear,
+                            "Rec.709 / sRGB (linear)",
+                        );
+                        ui.selectable_value(
+                            &mut ws,
+                            klipp_core::WorkingColorspace::AcesCG,
+                            "ACEScg (AP1)",
+                        );
+                        ui.selectable_value(
+                            &mut ws,
+                            klipp_core::WorkingColorspace::Bt2020Linear,
+                            "BT.2020 (linear)",
+                        );
+                    });
+            });
+            if ws != state.project_working_colorspace {
+                state.project_working_colorspace = ws;
+                state.dirty = true;
+                // Push into the engine's atomic immediately — the
+                // decoder reads it lock-free per-frame, the executor
+                // mirrors it into the GPU pipeline's luma uniform.
+                // Without this push the change wouldn't take effect
+                // until the next project reload.
+                klipp_engine::video_decoder::set_working_colorspace(ws);
+            }
+            ui.label(
+                egui::RichText::new(
+                    "Switching working colorspace re-bases the entire grade \
+                     chain. Existing grades will look different — there's no \
+                     automatic migration here. Save your project before \
+                     toggling if you want to roll back.",
+                )
+                .size(10.0)
+                .italics()
+                .color(theme.text_dim),
+            );
         });
+}
+
+fn working_colorspace_label(ws: klipp_core::WorkingColorspace) -> &'static str {
+    match ws {
+        klipp_core::WorkingColorspace::Rec709Linear => "Rec.709 / sRGB (linear)",
+        klipp_core::WorkingColorspace::AcesCG => "ACEScg (AP1)",
+        klipp_core::WorkingColorspace::Bt2020Linear => "BT.2020 (linear)",
+    }
 }
 
 fn info_row(ui: &mut egui::Ui, theme: &KlippTheme, label: &str, value: &str) {
