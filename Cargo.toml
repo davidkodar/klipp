@@ -16,6 +16,7 @@ members = [
     "crates/klipp-render",
     "crates/klipp-export",
     "crates/klipp-ml",
+    "crates/klipp-ml-ort",
     "crates/klipp-ui",
     "crates/klipp-app",
     "crates/klipp-jobs",
@@ -137,6 +138,7 @@ klipp-title  = { path = "crates/klipp-title" }
 klipp-render  = { path = "crates/klipp-render" }
 klipp-export  = { path = "crates/klipp-export" }
 klipp-ml      = { path = "crates/klipp-ml" }
+klipp-ml-ort  = { path = "crates/klipp-ml-ort" }
 klipp-ui      = { path = "crates/klipp-ui" }
 klipp-testing = { path = "crates/klipp-testing" }
 

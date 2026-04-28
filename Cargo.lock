@@ -2275,6 +2275,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "klipp-ml-ort"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.11.0",
+ "klipp-color",
+ "klipp-ml",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "klipp-nodes"
 version = "0.1.0"
 dependencies = [

@@ -84,3 +84,28 @@ sources = [
 kind = "mask_generator"
 runtime = "ort"
 prompts = "point | box | scribble | temporal"
+
+# ── Remove Background ─────────────────────────────────────────────
+# BiRefNet_lite — Swin-Tiny backbone, MIT license, single-input
+# single-output mask. First user-facing AI feature for Klipp.
+# Upstream ONNX export at huggingface.co/onnx-community/BiRefNet_lite-ONNX.
+# size_bytes / sha256 will be filled once Klipp's release CI mirrors
+# the ONNX into the klipp-models GitHub Release with verified bytes.
+
+[[model]]
+id = "birefnet_lite_v1"
+display_name = "BiRefNet Lite"
+# TODO release-CI: fill size_bytes + sha256 once mirror runs.
+size_bytes = 0
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "MIT"
+attribution = "ZhengPeng7 / BiRefNet (huggingface.co/onnx-community/BiRefNet_lite-ONNX)"
+sources = [
+    # TODO release-CI: swap to klipp-models mirror once ONNX is verified.
+    { url = "https://github.com/davidkodar/klipp-models/releases/download/birefnet-placeholder/birefnet_lite_v1.onnx" },
+]
+kind = "mask_generator"
+runtime = "ort"
+# Background matting takes the whole frame as input — no prompt
+# affordances exposed.
+prompts = ""

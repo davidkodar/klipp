@@ -1,0 +1,23 @@
+[package]
+name = "klipp-ml-ort"
+version = "0.1.0"
+edition = "2021"
+description = "ONNX Runtime backend for klipp-ml — BiRefNet, RF-DETR-Seg, future SAM2 video"
+
+[features]
+default = []
+# Real ort dependency lands behind this flag in a follow-up commit.
+# Today the crate compiles standalone and ships scaffolding only;
+# `cargo build` works without any extra flags.
+ort = []
+# NVIDIA acceleration via ort's CUDA EP. Requires user-installed
+# CUDA 12.8+/cuDNN 9.19+ at runtime; the build itself just tells ort
+# to enable the EP.
+cuda = ["ort"]
+
+[dependencies]
+klipp-ml    = { workspace = true }
+klipp-color = { workspace = true }
+bitflags    = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
