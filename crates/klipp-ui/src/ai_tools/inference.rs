@@ -391,6 +391,11 @@ impl InferenceState {
         }
     }
 
+    /// `true` while a worker is in flight.
+    pub fn is_running(&self) -> bool {
+        matches!(self, Self::Running { .. })
+    }
+
     /// Currently-shown mask, if the state is `Done`. `None` for
     /// every other state. Convenience for the overlay renderer.
     pub fn current_mask(&self) -> Option<&MaskBuffer> {

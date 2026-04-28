@@ -1224,6 +1224,11 @@ pub struct AppState {
     /// `klipp-ml-candle`, `klipp-ml-ort`) add their models in later
     /// phases.
     pub ai_tools_registry: crate::ai_tools::AiToolsRegistry,
+    /// Worker-side registry handle. Cloned cheaply onto the inference
+    /// thread by [`crate::ai_tools::spawn_inference`]. Carries the
+    /// same set of registered models as `ai_tools_registry` (today
+    /// just the stub).
+    pub ml_registry: crate::ai_tools::RegistryHandle,
 
     /// Available system font families (populated at startup from font discovery)
     pub available_fonts: Vec<String>,
@@ -2382,6 +2387,21 @@ impl Default for AppState {
             model_download: crate::model_download::ModelDownloadState::default(),
             ai_tools_state: crate::ai_tools::AiToolsState::default(),
             ai_tools_registry: crate::ai_tools::AiToolsRegistry::with_stub_registered(),
+            ml_registry: {
+                let mut r = klipp_ml::ModelRegistry::new();
+                r.register(
+                    klipp_ml::ModelInfo {
+                        id: klipp_ml::STUB_GENERATOR_ID.into(),
+                        display_name: "Stub (placeholder)".into(),
+                        capabilities: klipp_ml::MaskCapabilities::POINT_PROMPT
+                            | klipp_ml::MaskCapabilities::BOX_PROMPT
+                            | klipp_ml::MaskCapabilities::SCRIBBLE
+                            | klipp_ml::MaskCapabilities::AUTO_DETECT,
+                    },
+                    Box::new(|| Ok(Box::new(klipp_ml::StubMaskGenerator::new()))),
+                );
+                crate::ai_tools::RegistryHandle::new(r)
+            },
             available_fonts: Vec::new(),
             pending_title_data: None,
             pending_title_preview_clip: None,

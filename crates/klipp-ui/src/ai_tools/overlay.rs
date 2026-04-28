@@ -34,17 +34,48 @@
 
 use klipp_ml::MaskBuffer;
 
+/// Build a `TextureHandle` for the supplied mask. Caller owns the
+/// returned handle and is responsible for dropping the previous one
+/// through `KlippApp::defer_drop_texture` — dropping a `TextureHandle`
+/// mid-`update()` panics wgpu on the next submit
+/// (see `feedback_defer_drop_texture`).
+///
+/// Returns `None` for empty / malformed masks so the caller can skip
+/// painting without holding a stale handle.
+pub fn build_mask_texture(
+    ctx: &egui::Context,
+    mask: &MaskBuffer,
+    color: egui::Color32,
+    texture_label: &str,
+) -> Option<egui::TextureHandle> {
+    if mask.width == 0 || mask.height == 0 {
+        return None;
+    }
+    let expected_len = (mask.width as usize) * (mask.height as usize);
+    if mask.alpha.len() != expected_len {
+        return None;
+    }
+    let image = colorize_mask(mask, color);
+    Some(ctx.load_texture(texture_label, image, egui::TextureOptions::LINEAR))
+}
+
+/// Paint an already-built overlay texture into `rect`. Pure draw
+/// command — no allocation, no upload, no handle drop.
+pub fn paint_mask_texture(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    texture: &egui::TextureHandle,
+) {
+    let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
+}
+
 /// Render a mask as a semi-transparent coloured overlay on the
-/// viewer image.
-///
-/// Performs one texture upload per call. Safe with empty masks
-/// (zero width or zero height) — they short-circuit before the
-/// upload, see the test below.
-///
-/// `texture_label` is purely for diagnostics: egui caches textures
-/// by `(label, version)`, so passing a stable label avoids
-/// re-allocating GPU memory for the typical case where the mask
-/// updates in place.
+/// viewer image. **Test/standalone path only** — performs an
+/// upload-then-drop in one call, which is fine outside an
+/// `eframe::App::update` body but unsafe inside it (see
+/// `build_mask_texture` + `paint_mask_texture` for the production
+/// split). Safe with empty masks — they short-circuit.
 pub fn render_mask_overlay(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -55,9 +86,6 @@ pub fn render_mask_overlay(
 }
 
 /// Variant of [`render_mask_overlay`] that exposes the texture label.
-/// The viewer panel may want to differentiate Source / Program viewers
-/// (so two viewers with two masks don't share the same egui texture
-/// slot).
 pub fn render_mask_overlay_with_label(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -65,23 +93,10 @@ pub fn render_mask_overlay_with_label(
     color: egui::Color32,
     texture_label: &str,
 ) {
-    if mask.width == 0 || mask.height == 0 {
+    let Some(texture) = build_mask_texture(painter.ctx(), mask, color, texture_label) else {
         return;
-    }
-    let expected_len = (mask.width as usize) * (mask.height as usize);
-    if mask.alpha.len() != expected_len {
-        // Defensive — a malformed buffer shouldn't crash the UI, just
-        // skip rendering. The model wrapper is supposed to construct
-        // masks correctly so this branch is unreachable in practice.
-        return;
-    }
-
-    let image = colorize_mask(mask, color);
-    let ctx = painter.ctx().clone();
-    let texture =
-        ctx.load_texture(texture_label, image, egui::TextureOptions::LINEAR);
-    let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-    painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
+    };
+    paint_mask_texture(painter, rect, &texture);
 }
 
 /// Build the `ColorImage` that backs the overlay texture. Public for

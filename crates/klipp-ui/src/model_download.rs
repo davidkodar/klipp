@@ -22,7 +22,7 @@
 //!   handoff signal; state machine returns to Idle on next call.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 

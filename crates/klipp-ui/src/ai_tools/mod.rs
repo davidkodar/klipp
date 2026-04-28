@@ -59,8 +59,8 @@ pub use inference::{
     OwnedMaskRequest, RegistryHandle,
 };
 pub use overlay::{
-    colorize_mask, render_mask_overlay, render_mask_overlay_with_label,
-    DEFAULT_MASK_OVERLAY_COLOR,
+    build_mask_texture, colorize_mask, paint_mask_texture, render_mask_overlay,
+    render_mask_overlay_with_label, DEFAULT_MASK_OVERLAY_COLOR,
 };
 pub use panel::AiToolsPanel;
 pub use prompt_input::{ClickButton, DragState, PromptCapture, PromptMode};
@@ -69,7 +69,6 @@ pub use registry::AiToolsRegistry;
 /// Top-level state for the AI Tools panel. Lives on `AppState`.
 /// All fields default to "panel closed, nothing running" so adding
 /// this to AppState is a no-op until the user actually opens it.
-#[derive(Default)]
 pub struct AiToolsState {
     /// Currently active task (one button highlighted). `None` means
     /// no task picked yet — the panel still renders, but no model
@@ -93,6 +92,37 @@ pub struct AiToolsState {
     /// Set to `true` by the panel's "Cancel" button. Drained by the
     /// app dispatcher, which calls [`InferenceState::cancel`].
     pub pending_cancel: bool,
+    /// User-prompt capture. The viewer mutates this on click / drag
+    /// when the panel is open and `active_task.is_some()`. Snapshotted
+    /// via [`PromptCapture::build`] when the dispatcher fires the
+    /// inference.
+    pub prompts: PromptCapture,
+    /// Tint applied to the mask overlay over the viewer. Defaults to
+    /// [`DEFAULT_MASK_OVERLAY_COLOR`] (orange, ~50% alpha).
+    pub mask_overlay_color: egui::Color32,
+    /// Cached overlay texture for the current `Done` mask. Owned here
+    /// rather than re-uploaded per frame because dropping a
+    /// `TextureHandle` mid-`update()` panics wgpu on the next submit
+    /// (see `feedback_defer_drop_texture`). The dispatcher (re)builds
+    /// it whenever inference completes and routes the old handle
+    /// through `KlippApp::defer_drop_texture` on replacement.
+    pub mask_overlay_texture: Option<egui::TextureHandle>,
+}
+
+impl Default for AiToolsState {
+    fn default() -> Self {
+        Self {
+            active_task: None,
+            selected_model_id: None,
+            panel_visible: false,
+            inference: InferenceState::default(),
+            pending_run: false,
+            pending_cancel: false,
+            prompts: PromptCapture::default(),
+            mask_overlay_color: DEFAULT_MASK_OVERLAY_COLOR,
+            mask_overlay_texture: None,
+        }
+    }
 }
 
 /// The four task buttons exposed by the panel. Order matters —

@@ -73,6 +73,12 @@ impl AiToolsPanel {
         ui.add_space(8.0);
         ui.separator();
 
+        // ── Prompt mode + summary ───────────────────────────────
+        prompt_section(ui, state);
+
+        ui.add_space(8.0);
+        ui.separator();
+
         // ── Run button ──────────────────────────────────────────
         run_section(ui, state, registry);
 
@@ -207,6 +213,38 @@ fn capability_labels(caps: MaskCapabilities) -> Vec<(MaskCapabilities, &'static 
         }
     }
     out
+}
+
+fn prompt_section(ui: &mut egui::Ui, state: &mut AiToolsState) {
+    use super::PromptMode;
+    ui.label("Prompt mode:");
+    ui.horizontal(|ui| {
+        for (mode, label) in [
+            (PromptMode::PointPrompt, "Point"),
+            (PromptMode::BoxPrompt, "Box"),
+            (PromptMode::Scribble, "Scribble"),
+        ] {
+            let active = state.prompts.mode == mode;
+            if ui
+                .add(egui::Button::new(label).selected(active))
+                .clicked()
+            {
+                state.prompts.set_mode(mode);
+            }
+        }
+    });
+
+    let prompts = &state.prompts;
+    ui.label(format!(
+        "Captured: {} click(s), {} box(es), {} scribble(s)",
+        prompts.clicks.len(),
+        prompts.boxes.len(),
+        prompts.finalized_scribbles.len(),
+    ));
+
+    if ui.button("Clear prompts").clicked() {
+        state.prompts.clear();
+    }
 }
 
 fn run_section(ui: &mut egui::Ui, state: &mut AiToolsState, registry: &AiToolsRegistry) {

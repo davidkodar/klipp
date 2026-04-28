@@ -15285,6 +15285,92 @@ impl KlippApp {
         }
     }
 
+    /// Drive the AI Tools dispatch state machine each frame.
+    ///
+    /// Drains `pending_run` / `pending_cancel`, polls the worker
+    /// channel, and triggers a repaint when the inference state
+    /// changes so the panel + viewer overlay refresh promptly.
+    fn tick_ai_tools(&mut self, ctx: &egui::Context) {
+        if self.state.ai_tools_state.pending_cancel {
+            self.state.ai_tools_state.inference.cancel();
+            self.state.ai_tools_state.pending_cancel = false;
+        }
+
+        if self.state.ai_tools_state.pending_run {
+            self.state.ai_tools_state.pending_run = false;
+            self.dispatch_ai_inference(ctx);
+        }
+
+        if self.state.ai_tools_state.inference.poll() {
+            self.refresh_ai_tools_overlay_texture(ctx);
+            ctx.request_repaint();
+        }
+    }
+
+    /// Rebuild the cached mask-overlay texture to match the current
+    /// inference state. Routes the previous handle through the
+    /// deferred-drop ring so wgpu doesn't see a destroyed texture
+    /// mid-frame.
+    fn refresh_ai_tools_overlay_texture(&mut self, ctx: &egui::Context) {
+        let new_tex = match self.state.ai_tools_state.inference.current_mask() {
+            Some(mask) => crate::ai_tools::build_mask_texture(
+                ctx,
+                mask,
+                self.state.ai_tools_state.mask_overlay_color,
+                "ai_tools_mask_overlay",
+            ),
+            None => None,
+        };
+        let old = std::mem::replace(
+            &mut self.state.ai_tools_state.mask_overlay_texture,
+            new_tex,
+        );
+        if let Some(h) = old {
+            self.defer_drop_texture(h);
+        }
+    }
+
+    /// Build an `OwnedMaskRequest` from the current viewer frame +
+    /// captured prompts and hand it to a worker thread.
+    ///
+    /// Today we ship a fixed-size zeroed buffer because the stub
+    /// generator only reads geometry; once a real model lands
+    /// (F-97-BIREFNET) this swaps to the engine's decoded RGBA frame.
+    fn dispatch_ai_inference(&mut self, ctx: &egui::Context) {
+        let Some(model_id) = self.state.ai_tools_state.selected_model_id.clone() else {
+            self.state.toast.show("AI Tools: pick a model first");
+            return;
+        };
+        if self.state.ai_tools_state.inference.is_running() {
+            return;
+        }
+
+        let (w, h) = (1024u32, 1024u32);
+        let pixels = std::sync::Arc::new(vec![0.0_f32; (w as usize) * (h as usize) * 4]);
+        let prompts = self.state.ai_tools_state.prompts.build();
+
+        let req = crate::ai_tools::OwnedMaskRequest {
+            frame_pixels: pixels,
+            frame_width: w,
+            frame_height: h,
+            prompts,
+            temporal: None,
+        };
+
+        let handle = crate::ai_tools::spawn_inference(
+            model_id.clone(),
+            req,
+            self.state.ml_registry.clone(),
+            ctx.clone(),
+        );
+        self.state.ai_tools_state.inference = crate::ai_tools::InferenceState::Running {
+            model_id,
+            frame_width: w,
+            frame_height: h,
+            handle,
+        };
+    }
+
     /// Begin capturing audio from the configured input device into a WAV file.
     /// Called from `AppCommand::StartRecording` handler; broken out so the
     /// error/early-return flow stays readable.
@@ -19177,6 +19263,11 @@ impl eframe::App for KlippApp {
         // working. The viewer render code picks up the new
         // `viewer.gpu_texture_id` when present.
         self.refresh_gpu_viewer_texture(frame);
+
+        // AI Tools dispatch tick — drains pending_run / pending_cancel
+        // and polls the worker channel.
+        self.tick_ai_tools(ctx);
+
         // Bump the foreground-activity signal whenever the user
         // *interacts* — clicks, keys, scrolls, drags. Plain pointer
         // motion intentionally does NOT count: a user reading the UI

@@ -242,6 +242,140 @@ impl ViewerPanel {
         cmds
     }
 
+    /// Capture clicks/drags onto the viewer image when the AI Tools
+    /// panel is open with an active task. Routes pointer events into
+    /// `state.ai_tools_state.prompts` in normalised image coords.
+    fn handle_ai_tools_capture(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        image_rect: egui::Rect,
+    ) {
+        if !state.ai_tools_state.panel_visible
+            || state.ai_tools_state.active_task.is_none()
+            || state.eyedropper_mode != crate::state::EyedropperMode::None
+        {
+            return;
+        }
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        let resp = ui.allocate_rect(image_rect, egui::Sense::click_and_drag());
+        let normalise = |p: egui::Pos2| -> (f32, f32) {
+            let nx = ((p.x - image_rect.min.x) / image_rect.width()).clamp(0.0, 1.0);
+            let ny = ((p.y - image_rect.min.y) / image_rect.height()).clamp(0.0, 1.0);
+            (nx, ny)
+        };
+
+        if resp.clicked() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let (nx, ny) = normalise(p);
+                state
+                    .ai_tools_state
+                    .prompts
+                    .record_click(nx, ny, crate::ai_tools::ClickButton::Left);
+            }
+        }
+        if resp.secondary_clicked() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let (nx, ny) = normalise(p);
+                state
+                    .ai_tools_state
+                    .prompts
+                    .record_click(nx, ny, crate::ai_tools::ClickButton::Right);
+            }
+        }
+        if resp.drag_started() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let (nx, ny) = normalise(p);
+                let button = if ui.input(|i| i.pointer.secondary_down()) {
+                    crate::ai_tools::ClickButton::Right
+                } else {
+                    crate::ai_tools::ClickButton::Left
+                };
+                state.ai_tools_state.prompts.start_drag(nx, ny, button);
+            }
+        } else if resp.dragged() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let (nx, ny) = normalise(p);
+                state.ai_tools_state.prompts.extend_drag(nx, ny);
+            }
+        }
+        if resp.drag_stopped() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let (nx, ny) = normalise(p);
+                state.ai_tools_state.prompts.end_drag(nx, ny);
+            }
+        }
+    }
+
+    /// Paint the AI Tools mask overlay + prompt markers onto the
+    /// viewer when the panel is open and there's something to show.
+    /// No-op when the panel is closed.
+    fn draw_ai_tools_overlay(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        image_rect: egui::Rect,
+    ) {
+        if !state.ai_tools_state.panel_visible {
+            return;
+        }
+
+        let painter = ui.painter_at(image_rect);
+
+        if let Some(tex) = &state.ai_tools_state.mask_overlay_texture {
+            crate::ai_tools::paint_mask_texture(&painter, image_rect, tex);
+        }
+
+        // Click / drag markers — small dots for clicks, rectangle for
+        // boxes, polyline for scribbles. Visualises what the model is
+        // about to receive so the user can preview their prompt set.
+        let to_screen = |x: f32, y: f32| -> egui::Pos2 {
+            egui::pos2(
+                image_rect.min.x + x * image_rect.width(),
+                image_rect.min.y + y * image_rect.height(),
+            )
+        };
+        for click in &state.ai_tools_state.prompts.clicks {
+            let color = if click.positive {
+                egui::Color32::from_rgb(80, 220, 100)
+            } else {
+                egui::Color32::from_rgb(220, 80, 80)
+            };
+            painter.circle_filled(to_screen(click.x, click.y), 5.0, color);
+            painter.circle_stroke(
+                to_screen(click.x, click.y),
+                5.0,
+                egui::Stroke::new(1.5, egui::Color32::WHITE),
+            );
+        }
+        for b in &state.ai_tools_state.prompts.boxes {
+            let r = egui::Rect::from_two_pos(to_screen(b.x1, b.y1), to_screen(b.x2, b.y2));
+            painter.rect_stroke(
+                r,
+                0.0,
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(80, 200, 240)),
+            );
+        }
+        for s in &state.ai_tools_state.prompts.finalized_scribbles {
+            if s.points.len() < 2 {
+                continue;
+            }
+            let stroke = egui::Stroke::new(
+                2.0,
+                if s.positive {
+                    egui::Color32::from_rgb(80, 220, 100)
+                } else {
+                    egui::Color32::from_rgb(220, 80, 80)
+                },
+            );
+            for window in s.points.windows(2) {
+                let a = to_screen(window[0].0, window[0].1);
+                let b = to_screen(window[1].0, window[1].1);
+                painter.line_segment([a, b], stroke);
+            }
+        }
+    }
+
     fn handle_eyedropper_click(
         &mut self,
         ui: &mut egui::Ui,
@@ -1196,6 +1330,8 @@ impl ViewerPanel {
         self.draw_letterbox(ui, viewer_rect, lb_h);
 
         self.handle_eyedropper_click(ui, state, image_rect, cmds);
+        self.handle_ai_tools_capture(ui, state, image_rect);
+        self.draw_ai_tools_overlay(ui, state, image_rect);
 
         // ── Interactive mask handles on viewer ──
         // Draw and interact with masks from the selected node in the clip's node graph.
