@@ -3,6 +3,17 @@ name = "klipp-ui"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+# Pulls in the ort-backed BiRefNet implementation. With this on,
+# the AI Tools panel auto-registers BiRefNet for Remove Background.
+# Requires libonnxruntime.so on the user's machine + ORT_DYLIB_PATH
+# pointing at it (see klipp-ml-ort docs).
+ai-ort = ["dep:klipp-ml-ort", "klipp-ml-ort/ort"]
+# NVIDIA acceleration via ort's CUDA execution provider. Implies
+# ai-ort. Requires CUDA 12.8+/cuDNN 9.19+ on the user's machine.
+ai-ort-cuda = ["ai-ort", "klipp-ml-ort/cuda"]
+
 [dependencies]
 klipp-color = { workspace = true }
 klipp-core = { workspace = true }
@@ -17,6 +28,7 @@ klipp-audio = { workspace = true }
 klipp-plugin = { workspace = true }
 klipp-export = { workspace = true }
 klipp-ml = { workspace = true }
+klipp-ml-ort = { workspace = true, optional = true }
 klipp-title = { workspace = true }
 klipp-project = { workspace = true }
 egui = { workspace = true }

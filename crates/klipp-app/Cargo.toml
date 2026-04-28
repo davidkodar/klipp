@@ -3,6 +3,13 @@ name = "klipp-app"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+# Forwards to klipp-ui. Build with `cargo build --features ai-ort`
+# (CPU-only ORT) or `--features ai-ort-cuda` (NVIDIA acceleration).
+ai-ort = ["klipp-ui/ai-ort"]
+ai-ort-cuda = ["klipp-ui/ai-ort-cuda"]
+
 [dependencies]
 klipp-core = { workspace = true }
 klipp-ui = { workspace = true }

@@ -291,6 +291,86 @@ pub enum ColorTab {
     Warper,
 }
 
+/// Build the AI Tools `RegistryHandle` for `AppState::ml_registry`.
+///
+/// Always registers the stub generator. Under `--features ai-ort` the
+/// registry also gets `BiRefNetLite` for Remove Background, with its
+/// weights path resolved through the manifest + XDG model cache. The
+/// factory closure is lazy: the user can switch to BiRefNet in the
+/// panel without paying any session-init cost until they hit Run.
+fn build_ml_registry() -> crate::ai_tools::RegistryHandle {
+    let mut r = klipp_ml::ModelRegistry::new();
+    r.register(
+        klipp_ml::ModelInfo {
+            id: klipp_ml::STUB_GENERATOR_ID.into(),
+            display_name: "Stub (placeholder)".into(),
+            capabilities: klipp_ml::MaskCapabilities::POINT_PROMPT
+                | klipp_ml::MaskCapabilities::BOX_PROMPT
+                | klipp_ml::MaskCapabilities::SCRIBBLE
+                | klipp_ml::MaskCapabilities::AUTO_DETECT,
+        },
+        Box::new(|| Ok(Box::new(klipp_ml::StubMaskGenerator::new()))),
+    );
+
+    #[cfg(feature = "ai-ort")]
+    register_birefnet(&mut r);
+
+    crate::ai_tools::RegistryHandle::new(r)
+}
+
+#[cfg(feature = "ai-ort")]
+fn register_birefnet(r: &mut klipp_ml::ModelRegistry) {
+    use klipp_ml_ort::{BiRefNetLiteBuilder, BIREFNET_LITE_MODEL_ID};
+
+    // Resolve the weights path through the manifest + cache. If
+    // anything fails (no manifest entry, no XDG dir), skip the
+    // registration — the panel just won't show BiRefNet rather
+    // than crashing the app.
+    let manifest = match klipp_ml::manifest::load_effective() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(target: "klipp_ui", "ai-ort: skipping BiRefNet (manifest load failed: {e})");
+            return;
+        }
+    };
+    let entry = match manifest.get(BIREFNET_LITE_MODEL_ID) {
+        Some(e) => e.clone(),
+        None => {
+            tracing::warn!(
+                target: "klipp_ui",
+                "ai-ort: skipping BiRefNet (no manifest entry for {})",
+                BIREFNET_LITE_MODEL_ID
+            );
+            return;
+        }
+    };
+    let cache = match klipp_ml::ModelCache::open() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(target: "klipp_ui", "ai-ort: skipping BiRefNet (cache open failed: {e})");
+            return;
+        }
+    };
+    let weights_path = cache.path_for(&entry);
+
+    r.register(
+        klipp_ml::ModelInfo {
+            id: BIREFNET_LITE_MODEL_ID.into(),
+            display_name: "BiRefNet Lite".into(),
+            // Background matting is auto-detect only — no clicks /
+            // boxes / scribbles. The panel's task→capability filter
+            // will surface this for Remove Background only.
+            capabilities: klipp_ml::MaskCapabilities::AUTO_DETECT,
+        },
+        Box::new(move || {
+            BiRefNetLiteBuilder::new()
+                .weights(weights_path.clone())
+                .build()
+                .map(|g| Box::new(g) as Box<dyn klipp_ml::MaskGenerator>)
+        }),
+    );
+}
+
 pub struct AppState {
     pub playback: PlaybackState,
     pub playhead: Timecode,
@@ -2387,21 +2467,7 @@ impl Default for AppState {
             model_download: crate::model_download::ModelDownloadState::default(),
             ai_tools_state: crate::ai_tools::AiToolsState::default(),
             ai_tools_registry: crate::ai_tools::AiToolsRegistry::with_stub_registered(),
-            ml_registry: {
-                let mut r = klipp_ml::ModelRegistry::new();
-                r.register(
-                    klipp_ml::ModelInfo {
-                        id: klipp_ml::STUB_GENERATOR_ID.into(),
-                        display_name: "Stub (placeholder)".into(),
-                        capabilities: klipp_ml::MaskCapabilities::POINT_PROMPT
-                            | klipp_ml::MaskCapabilities::BOX_PROMPT
-                            | klipp_ml::MaskCapabilities::SCRIBBLE
-                            | klipp_ml::MaskCapabilities::AUTO_DETECT,
-                    },
-                    Box::new(|| Ok(Box::new(klipp_ml::StubMaskGenerator::new()))),
-                );
-                crate::ai_tools::RegistryHandle::new(r)
-            },
+            ml_registry: build_ml_registry(),
             available_fonts: Vec::new(),
             pending_title_data: None,
             pending_title_preview_clip: None,
