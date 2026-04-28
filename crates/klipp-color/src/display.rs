@@ -219,6 +219,70 @@ pub fn display_transform(linear_rgba: &[f32], tone_map_op: ToneMapOp) -> Vec<u8>
     out
 }
 
+/// Working-space-aware display transform.
+///
+/// Dispatches based on `working_space`:
+///
+/// * [`klipp_core::WorkingColorspace::Rec709Linear`] — the legacy
+///   path. Per-pixel: the user-selected tone-map operator
+///   ([`ToneMapOp::Hable`] / `Reinhard` / `AcesFitted` / `None`) →
+///   sRGB EOTF inverse → quantise to u8. Identical to
+///   [`display_transform`] (the latter is now a thin wrapper around
+///   `display_transform_ws(.., Rec709Linear)`).
+///
+/// * [`klipp_core::WorkingColorspace::AcesCG`] — full ACES display
+///   pipeline. Per-pixel:
+///   `acescg_to_rec709_sdr` (RRT → Rec.709 ODT → BT.1886 inverse)
+///   → quantise to u8. The user-selected `tone_map_op` is ignored
+///   here because the ACES Output Device Transform IS the tone
+///   curve in this configuration; honouring `tone_map_op` on top
+///   would compose two opinionated curves and produce a muddy look.
+///
+/// * [`klipp_core::WorkingColorspace::Bt2020Linear`] — stub aliased
+///   to the `Rec709Linear` path until the BT.2020 pipeline lands
+///   end-to-end. Matches the decoder/grade-chain stubbing from
+///   earlier sessions; documented so the divergence is loud rather
+///   than silent.
+///
+/// All branches preserve alpha as a linear value (never gamma-
+/// encoded; clamped + quantised only).
+pub fn display_transform_ws(
+    linear_rgba: &[f32],
+    tone_map_op: ToneMapOp,
+    working_space: klipp_core::WorkingColorspace,
+) -> Vec<u8> {
+    use klipp_core::WorkingColorspace;
+    use rayon::prelude::*;
+    assert!(
+        linear_rgba.len() % 4 == 0,
+        "display_transform_ws requires RGBA-packed input",
+    );
+    if matches!(working_space, WorkingColorspace::Rec709Linear | WorkingColorspace::Bt2020Linear) {
+        // Bt2020Linear is stubbed as Rec709Linear today (matches the
+        // decoder/grade-chain stubs). When BT.2020 PQ/HLG ODTs land
+        // (PHASE-E-S4C), this branch will need its own pipeline.
+        return display_transform(linear_rgba, tone_map_op);
+    }
+    // AcesCG: ACES Output Device Transform path.
+    let mut out = vec![0u8; linear_rgba.len()];
+    out.par_chunks_exact_mut(4)
+        .zip(linear_rgba.par_chunks_exact(4))
+        .for_each(|(dst, chunk)| {
+            // `acescg_to_rec709_sdr` chains AP1→AP0, RRT, Rec.709 ODT,
+            // and BT.1886 inverse — output is `[0, 1]` display-encoded
+            // Rec.709. Quantise to u8 here at the same precision as
+            // the legacy path.
+            let acescg = [chunk[0], chunk[1], chunk[2]];
+            let encoded = crate::aces::acescg_to_rec709_sdr(acescg);
+            dst[0] = (encoded[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            dst[1] = (encoded[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            dst[2] = (encoded[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            dst[3] = (chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        });
+    let _ = tone_map_op; // Intentionally unused in the ACES path.
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,5 +586,83 @@ mod tests {
             out[0] > out[1] && out[1] > out[2],
             "ACES ate the hue: {out:?}",
         );
+    }
+
+    // ─── display_transform_ws ──────────────────────────────────
+
+    #[test]
+    fn ws_aware_rec709_path_matches_legacy_display_transform() {
+        // The Rec709Linear branch of `display_transform_ws` must
+        // produce byte-identical output to the legacy
+        // `display_transform`. If this drifts, every existing
+        // viewer call site silently changes behaviour the moment
+        // it's switched to the `_ws` form.
+        let pix = vec![
+            0.18, 0.5, 0.9, 1.0,
+            0.05, 0.3, 0.7, 0.5,
+            1.5, 0.0, -0.05, 1.0,   // out-of-range channels
+        ];
+        for op in [ToneMapOp::None, ToneMapOp::Hable, ToneMapOp::Reinhard, ToneMapOp::Aces] {
+            let legacy = display_transform(&pix, op);
+            let ws = display_transform_ws(&pix, op, klipp_core::WorkingColorspace::Rec709Linear);
+            assert_eq!(legacy, ws, "Rec709Linear path drifted from legacy at op={op:?}");
+        }
+    }
+
+    #[test]
+    fn ws_aware_bt2020_path_aliases_rec709_for_now() {
+        // Bt2020Linear is a stub — same output as Rec.709 until the
+        // proper BT.2020 PQ/HLG ODTs ship. Document that intent so
+        // a future "this is wrong" claim has a known baseline.
+        let pix = vec![0.18, 0.5, 0.9, 1.0];
+        let rec709 = display_transform_ws(&pix, ToneMapOp::Hable,
+            klipp_core::WorkingColorspace::Rec709Linear);
+        let bt2020 = display_transform_ws(&pix, ToneMapOp::Hable,
+            klipp_core::WorkingColorspace::Bt2020Linear);
+        assert_eq!(rec709, bt2020);
+    }
+
+    #[test]
+    fn ws_aware_acescg_path_produces_neutral_grey_on_neutral_input() {
+        // Mid-grey AP1 (0.18, 0.18, 0.18) → through full RRT+ODT
+        // → display-encoded Rec.709 sRGB. Each channel must be
+        // equal (neutral preservation through ACES) and clearly in
+        // the mid range — not crushed black, not blown white.
+        let pix = vec![0.18, 0.18, 0.18, 1.0];
+        let out = display_transform_ws(&pix, ToneMapOp::None,
+            klipp_core::WorkingColorspace::AcesCG);
+        // Equal channels (within u8 quantisation noise).
+        assert!((out[0] as i32 - out[1] as i32).abs() <= 1,
+            "AcesCG mid-grey lost neutrality: {:?}", &out[..3]);
+        assert!((out[1] as i32 - out[2] as i32).abs() <= 1);
+        // Mid range — between 50 and 180 covers the perceptual
+        // mid-grey territory after the BT.1886 encode.
+        assert!(out[0] > 50 && out[0] < 180,
+            "AcesCG 0.18 mid-grey should produce a visible mid-grey, got {:?}", &out[..3]);
+    }
+
+    #[test]
+    fn ws_aware_acescg_clips_out_of_gamut_red_to_display_max() {
+        // Saturated AP1 red (1, 0, 0) goes through RRT → ODT →
+        // BT.1886. The Rec.709 SDR ODT clamps to display gamut, so
+        // R should saturate near 255 while G/B sit near 0.
+        let pix = vec![1.0, 0.0, 0.0, 1.0];
+        let out = display_transform_ws(&pix, ToneMapOp::None,
+            klipp_core::WorkingColorspace::AcesCG);
+        assert!(out[0] > 200,
+            "saturated AcesCG red R channel should be near display max, got {}", out[0]);
+        assert!(out[3] == 255);
+    }
+
+    #[test]
+    fn ws_aware_acescg_alpha_is_quantised_not_gamma_encoded() {
+        // Per sRGB convention, alpha never gets gamma-encoded —
+        // just clamped + quantised. The AcesCG path should mirror
+        // the Rec.709 path on this.
+        let pix = vec![0.5, 0.5, 0.5, 0.5];
+        let out = display_transform_ws(&pix, ToneMapOp::None,
+            klipp_core::WorkingColorspace::AcesCG);
+        // 0.5 * 255 + 0.5 = 128 (rounding).
+        assert!(out[3] == 128 || out[3] == 127);
     }
 }

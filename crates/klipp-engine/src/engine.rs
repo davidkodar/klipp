@@ -2482,7 +2482,7 @@ impl PlaybackEngine {
                 // boundary.
                 let linear = u8_rgba_to_linear(&rgba);
                 let final_linear = self.post_process_rgba(linear, res.width, res.height);
-                let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+                let final_rgba = self.display_encode(&final_linear);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, res.width, res.height);
                 drop(fb);
@@ -3366,7 +3366,7 @@ impl PlaybackEngine {
                 // title/generator viewer boundary.
                 let linear = u8_rgba_to_linear(&rgba);
                 let final_linear = self.post_process_rgba(linear, w, h);
-                let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+                let final_rgba = self.display_encode(&final_linear);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, w, h);
                 drop(fb);
@@ -3799,10 +3799,7 @@ impl PlaybackEngine {
         // sRGB-encodes the result. For `ToneMapOp::None` + SDR content
         // this is bit-identical to the old linear_rgba_to_u8 path.
         let t_display = std::time::Instant::now();
-        let final_rgba = klipp_color::display::display_transform(
-            &accumulated_linear,
-            self.tone_map_op,
-        );
+        let final_rgba = self.display_encode(&accumulated_linear);
         let display_us = t_display.elapsed().as_micros();
         // Return the linear scratch to the pool for the next frame.
         self.composite_scratch_linear = accumulated_linear;
@@ -4875,7 +4872,7 @@ impl PlaybackEngine {
             // Title renderer emits u8; bridge at this viewer boundary.
             let linear = u8_rgba_to_linear(&rgba);
             let final_linear = self.post_process_rgba(linear, res.width, res.height);
-            let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+            let final_rgba = self.display_encode(&final_linear);
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame(final_rgba, res.width, res.height);
             drop(fb);
@@ -5046,7 +5043,7 @@ impl PlaybackEngine {
                 let rgba = self.title_renderer.render_with_gpu(td_for_render, res.width, res.height, gpu);
                 let linear = u8_rgba_to_linear(&rgba);
                 let final_linear = self.post_process_rgba(linear, res.width, res.height);
-                let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+                let final_rgba = self.display_encode(&final_linear);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, res.width, res.height);
                 drop(fb);
@@ -5085,7 +5082,7 @@ impl PlaybackEngine {
                     );
                     let linear = u8_rgba_to_linear(&rgba);
                     let final_linear = self.post_process_rgba(linear, res2.width, res2.height);
-                    let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+                    let final_rgba = self.display_encode(&final_linear);
                     let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                     fb.write_frame(final_rgba, res2.width, res2.height);
                     drop(fb);
@@ -5288,7 +5285,7 @@ impl PlaybackEngine {
             self.playhead = RationalTime { value: target_frame, rate: self.playhead.rate };
             let linear = u8_rgba_to_linear(&rgba);
             let final_linear = self.post_process_rgba(linear, w, h);
-            let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+            let final_rgba = self.display_encode(&final_linear);
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame(final_rgba, w, h);
             drop(fb);
@@ -5333,7 +5330,7 @@ impl PlaybackEngine {
                 let final_linear = self.post_process_rgba_with_gpu_source(
                     frame.data, w, h, gpu_source.as_ref(),
                 );
-                let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+                let final_rgba = self.display_encode(&final_linear);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, w, h);
                 drop(fb);
@@ -5395,7 +5392,7 @@ impl PlaybackEngine {
                     let final_linear = self.post_process_rgba_with_gpu_source(
                         frame.data, w, h, gpu_source.as_ref(),
                     );
-                    let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+                    let final_rgba = self.display_encode(&final_linear);
                     let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                     fb.write_frame(final_rgba, w, h);
                     drop(fb);
@@ -5481,7 +5478,7 @@ impl PlaybackEngine {
                         let final_linear = self.post_process_rgba_with_gpu_source(
                             frame.data, w, h, gpu_source.as_ref(),
                         );
-                        let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+                        let final_rgba = self.display_encode(&final_linear);
                         let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                         fb.write_frame(final_rgba, w, h);
                         drop(fb);
@@ -5777,7 +5774,7 @@ impl PlaybackEngine {
                 let final_linear = self.post_process_rgba_with_gpu_source(
                     frame.data, w, h, gpu_source.as_ref(),
                 );
-                let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+                let final_rgba = self.display_encode(&final_linear);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, w, h);
                 drop(fb);
@@ -5820,7 +5817,7 @@ impl PlaybackEngine {
         let final_linear = self.post_process_rgba_with_gpu_source(
             frame.data, w, h, gpu_source.as_ref(),
         );
-        let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+        let final_rgba = self.display_encode(&final_linear);
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame(final_rgba, w, h);
@@ -6382,6 +6379,25 @@ impl PlaybackEngine {
         self.post_process_rgba(linear_rgba, width, height)
     }
 
+    /// Working-space-aware viewer display encode. Used at every site
+    /// where a linear-light frame leaves the engine for the framebuffer
+    /// — the single dispatch point that picks between the legacy
+    /// Rec.709 tone-map path and the ACES RRT+ODT path based on the
+    /// project's active working colorspace.
+    ///
+    /// Reads `WORKING_COLORSPACE_PREF` lock-free per-call; cheap.
+    /// Without this helper the engine would have ~14 viewer-encode
+    /// call sites to thread the working-space argument through; this
+    /// keeps every site at a single-line `self.display_encode(&linear)`
+    /// invocation.
+    fn display_encode(&self, linear: &[f32]) -> Vec<u8> {
+        klipp_color::display::display_transform_ws(
+            linear,
+            self.tone_map_op,
+            crate::video_decoder::working_colorspace(),
+        )
+    }
+
     fn post_process_rgba(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
         mark_stage(EngineStage::PostProcessEntry);
         let t_wrap_start = std::time::Instant::now();
@@ -6809,11 +6825,11 @@ impl PlaybackEngine {
                 let linear_out = composite_layers_linear(&layers, w, h);
                 // Display boundary — same tone-map path as the main
                 // playback compositor.
-                klipp_color::display::display_transform(&linear_out, self.tone_map_op)
+                self.display_encode(&linear_out)
             } else {
                 // No overlays — the single-layer graded frame IS the
-                // output; display_transform at the viewer seam.
-                klipp_color::display::display_transform(&graded_linear, self.tone_map_op)
+                // output; display_encode at the viewer seam.
+                self.display_encode(&graded_linear)
             };
 
             // Render GPU scope texture from the graded frame. Modes
