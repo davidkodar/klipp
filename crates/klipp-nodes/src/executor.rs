@@ -483,8 +483,50 @@ impl GraphExecutor {
     /// `node_outputs` — those nodes get no thumbnail. Only nodes
     /// whose output landed CPU-side (chain endpoints, matte
     /// producers, composite nodes) yield a thumb. Acceptable for v1.
+    ///
+    /// Honours `graph.working_space_override` by swapping the
+    /// executor's active working colorspace (and matching GPU luma
+    /// uniform) for the duration of this call. Restored on every exit
+    /// path — including the matte-preview short-circuit and the
+    /// `NoOutputConnection` error — so a subsequent grade chain reads
+    /// the project-level value untouched. Recursive Compound calls
+    /// re-enter this function with the inner sub-graph's own override
+    /// (or `None`) and nest cleanly because each level saves the
+    /// outer-level value, swaps, runs, restores.
     #[allow(clippy::too_many_arguments)]
     pub fn execute_linear_with_thumbs(
+        &mut self,
+        source_frame: &[f32],
+        graph: &NodeGraph,
+        width: u32,
+        height: u32,
+        clip_time_secs: f64,
+        frame_number: u64,
+        matte_tap: Option<NodeId>,
+        matte_preview_node: Option<NodeId>,
+        visible_nodes: Option<&std::collections::HashSet<NodeId>>,
+    ) -> Result<(Vec<f32>, Option<Vec<f32>>, std::collections::HashMap<NodeId, Vec<u8>>), ExecutorError> {
+        let saved_ws = self.working_colorspace;
+        let needs_swap = graph
+            .working_space_override
+            .map(|ws| ws != saved_ws)
+            .unwrap_or(false);
+        if needs_swap {
+            // unwrap is safe — needs_swap is true only when override is Some.
+            self.set_working_colorspace(graph.working_space_override.unwrap());
+        }
+        let result = self.execute_linear_with_thumbs_inner(
+            source_frame, graph, width, height, clip_time_secs, frame_number,
+            matte_tap, matte_preview_node, visible_nodes,
+        );
+        if needs_swap {
+            self.set_working_colorspace(saved_ws);
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_linear_with_thumbs_inner(
         &mut self,
         source_frame: &[f32],
         graph: &NodeGraph,
@@ -2828,6 +2870,30 @@ impl GraphExecutor {
             | NodeKind::Output
             | NodeKind::Unknown => primary_input.to_vec(),
 
+            // PrimariesMatrix applies a fixed 3×3 working-space
+            // conversion in linear-light RGB. Both `primaries_from`
+            // and `primaries_to` must be set; any other state
+            // (one missing, or a same-from-same-to pair, or an
+            // unsupported pair like BT.2020 stubs) falls through to
+            // a passthrough — that's also the default-params state
+            // the migration uses to mark wrappers as inert when it
+            // strips them.
+            NodeKind::PrimariesMatrix => {
+                match (params.primaries_from, params.primaries_to) {
+                    (Some(from), Some(to)) => {
+                        match klipp_color::primaries::working_space_conversion_matrix(from, to) {
+                            Some(m) => {
+                                let mut frame = primary_input.to_vec();
+                                klipp_color::linear::apply_primaries_matrix(&mut frame, m);
+                                frame
+                            }
+                            None => primary_input.to_vec(),
+                        }
+                    }
+                    _ => primary_input.to_vec(),
+                }
+            }
+
             // Compound holds a nested NodeGraph in
             // `params.compound_subgraph`. Recursive sub-graph
             // execution runs the packed nodes on the incoming
@@ -3511,6 +3577,7 @@ mod tests {
             edges: vec![],
             output_node_id: out_id,
             node_positions: Default::default(),
+            working_space_override: None,
         };
         let order = graph.topo_sort().unwrap();
         let src_idx = order.iter().position(|id| *id == src_id).unwrap();
@@ -3551,6 +3618,7 @@ mod tests {
             edges: vec![],
             output_node_id: out_id,
             node_positions: Default::default(),
+            working_space_override: None,
         };
         let mut executor = GraphExecutor::new_cpu_only();
         let frame = vec![100, 100, 100, 255];
@@ -3608,6 +3676,7 @@ mod tests {
             ],
             output_node_id: output_id,
             node_positions: Default::default(),
+            working_space_override: None,
         };
 
         let mut executor = GraphExecutor::new_cpu_only();
@@ -3879,6 +3948,7 @@ mod tests {
             ],
             output_node_id: output_id,
             node_positions: Default::default(),
+            working_space_override: None,
         };
 
         let mut executor = GraphExecutor::new_cpu_only();
@@ -3921,6 +3991,7 @@ mod tests {
             ],
             output_node_id: output_id,
             node_positions: Default::default(),
+            working_space_override: None,
         };
 
         let mut executor = GraphExecutor::new_cpu_only();
@@ -3961,6 +4032,7 @@ mod tests {
             ],
             output_node_id: output_id,
             node_positions: Default::default(),
+            working_space_override: None,
         };
 
         let mut executor = GraphExecutor::new_cpu_only();
@@ -4535,5 +4607,393 @@ mod tests {
         let coefs = gpu.luma_coefs();
         assert!((coefs[0] - 0.272_228_72).abs() < 1e-5,
             "lazy GPU init must replay the active working space's luma; got {coefs:?}");
+    }
+
+    // ─── PrimariesMatrix node + per-chain override ─────────────────
+
+    /// Helper: build Source → PrimariesMatrix(from, to) → Output and
+    /// run a single linear-RGBA pixel through it.
+    fn run_primaries_matrix(
+        from: Option<klipp_core::WorkingColorspace>,
+        to: Option<klipp_core::WorkingColorspace>,
+        input: [f32; 4],
+    ) -> [f32; 4] {
+        let src = NodeId::new_v4();
+        let pm = NodeId::new_v4();
+        let out = NodeId::new_v4();
+        let mut params = NodeParams::default();
+        params.primaries_from = from;
+        params.primaries_to = to;
+        let graph = NodeGraph {
+            nodes: vec![
+                crate::graph::Node {
+                    id: src, kind: NodeKind::Source, label: "S".into(),
+                    enabled: true, params: Default::default(), keyframes: Default::default(),
+                    output_link: None, input_links: Vec::new(),
+                },
+                crate::graph::Node {
+                    id: pm, kind: NodeKind::PrimariesMatrix, label: "PM".into(),
+                    enabled: true, params, keyframes: Default::default(),
+                    output_link: None, input_links: Vec::new(),
+                },
+                crate::graph::Node {
+                    id: out, kind: NodeKind::Output, label: "O".into(),
+                    enabled: true, params: Default::default(), keyframes: Default::default(),
+                    output_link: None, input_links: Vec::new(),
+                },
+            ],
+            edges: vec![
+                crate::graph::Edge { from_node: src, from_port: 0, to_node: pm, to_port: 0 },
+                crate::graph::Edge { from_node: pm, from_port: 0, to_node: out, to_port: 0 },
+            ],
+            output_node_id: out,
+            node_positions: Default::default(),
+            working_space_override: None,
+        };
+        let mut exec = GraphExecutor::new_cpu_only();
+        let frame: Vec<f32> = input.to_vec();
+        let (result, _) = exec.execute_linear(&frame, &graph, 1, 1, 0.0, 0, None, None).unwrap();
+        [result[0], result[1], result[2], result[3]]
+    }
+
+    #[test]
+    fn primaries_matrix_node_passthrough_when_unset() {
+        // Both tags `None` → identity passthrough.
+        let pixel = [0.4, 0.5, 0.6, 1.0];
+        let out = run_primaries_matrix(None, None, pixel);
+        for (a, b) in out.iter().zip(pixel.iter()) {
+            assert!((a - b).abs() < 1e-6, "expected passthrough, got {out:?}");
+        }
+    }
+
+    #[test]
+    fn primaries_matrix_node_passthrough_when_same_from_and_to() {
+        // from == to → matrix lookup returns None → passthrough.
+        let pixel = [0.4, 0.5, 0.6, 1.0];
+        let out = run_primaries_matrix(
+            Some(klipp_core::WorkingColorspace::Rec709Linear),
+            Some(klipp_core::WorkingColorspace::Rec709Linear),
+            pixel,
+        );
+        for (a, b) in out.iter().zip(pixel.iter()) {
+            assert!((a - b).abs() < 1e-6, "expected passthrough, got {out:?}");
+        }
+    }
+
+    #[test]
+    fn primaries_matrix_node_matches_klipp_color_oracle() {
+        // PM(BT.709 → ACEScg) on a non-neutral pixel must match
+        // applying the bt709_to_acescg matrix directly (the executor
+        // is a thin wrapper, but pinning prevents future drift).
+        let pixel = [0.7, 0.2, 0.1, 1.0];
+        let executor_out = run_primaries_matrix(
+            Some(klipp_core::WorkingColorspace::Rec709Linear),
+            Some(klipp_core::WorkingColorspace::AcesCG),
+            pixel,
+        );
+        let mut expected = pixel.to_vec();
+        klipp_color::linear::apply_primaries_matrix(
+            &mut expected,
+            klipp_color::primaries::bt709_to_acescg(),
+        );
+        for i in 0..4 {
+            assert!(
+                (executor_out[i] - expected[i]).abs() < 1e-5,
+                "channel {i}: executor={} expected={}",
+                executor_out[i], expected[i],
+            );
+        }
+    }
+
+    #[test]
+    fn primaries_matrix_node_round_trip_under_one_lsb() {
+        // PM(709→AP1) → PM(AP1→709) on a non-neutral pixel must
+        // round-trip exactly (within float precision). This is the
+        // load-bearing invariant for the migration: the head + tail
+        // wrappers need to be inverses or grades drift.
+        let pm1 = NodeId::new_v4();
+        let pm2 = NodeId::new_v4();
+        let src = NodeId::new_v4();
+        let out = NodeId::new_v4();
+        let mut p1 = NodeParams::default();
+        p1.primaries_from = Some(klipp_core::WorkingColorspace::Rec709Linear);
+        p1.primaries_to = Some(klipp_core::WorkingColorspace::AcesCG);
+        let mut p2 = NodeParams::default();
+        p2.primaries_from = Some(klipp_core::WorkingColorspace::AcesCG);
+        p2.primaries_to = Some(klipp_core::WorkingColorspace::Rec709Linear);
+        let graph = NodeGraph {
+            nodes: vec![
+                crate::graph::Node {
+                    id: src, kind: NodeKind::Source, label: "S".into(),
+                    enabled: true, params: Default::default(), keyframes: Default::default(),
+                    output_link: None, input_links: Vec::new(),
+                },
+                crate::graph::Node {
+                    id: pm1, kind: NodeKind::PrimariesMatrix, label: "PM1".into(),
+                    enabled: true, params: p1, keyframes: Default::default(),
+                    output_link: None, input_links: Vec::new(),
+                },
+                crate::graph::Node {
+                    id: pm2, kind: NodeKind::PrimariesMatrix, label: "PM2".into(),
+                    enabled: true, params: p2, keyframes: Default::default(),
+                    output_link: None, input_links: Vec::new(),
+                },
+                crate::graph::Node {
+                    id: out, kind: NodeKind::Output, label: "O".into(),
+                    enabled: true, params: Default::default(), keyframes: Default::default(),
+                    output_link: None, input_links: Vec::new(),
+                },
+            ],
+            edges: vec![
+                crate::graph::Edge { from_node: src, from_port: 0, to_node: pm1, to_port: 0 },
+                crate::graph::Edge { from_node: pm1, from_port: 0, to_node: pm2, to_port: 0 },
+                crate::graph::Edge { from_node: pm2, from_port: 0, to_node: out, to_port: 0 },
+            ],
+            output_node_id: out,
+            node_positions: Default::default(),
+            working_space_override: None,
+        };
+        let mut exec = GraphExecutor::new_cpu_only();
+        let original: Vec<f32> = vec![0.7, 0.2, 0.1, 1.0];
+        let (result, _) = exec.execute_linear(&original, &graph, 1, 1, 0.0, 0, None, None).unwrap();
+        for i in 0..4 {
+            assert!(
+                (result[i] - original[i]).abs() < 1e-5,
+                "round-trip drift channel {i}: {} vs {}",
+                result[i], original[i],
+            );
+        }
+    }
+
+    #[test]
+    fn working_space_override_swaps_in_and_restores() {
+        // Before the call the executor sits at AcesCG. The graph's
+        // override pins it to Rec709Linear. After the call the
+        // executor must be back at AcesCG — this proves restoration
+        // even on the success path. Without restore, subsequent
+        // chains on the same executor would silently use the wrong
+        // luma vector.
+        let src = NodeId::new_v4();
+        let out = NodeId::new_v4();
+        let graph = NodeGraph {
+            nodes: vec![
+                crate::graph::Node {
+                    id: src, kind: NodeKind::Source, label: "S".into(),
+                    enabled: true, params: Default::default(), keyframes: Default::default(),
+                    output_link: None, input_links: Vec::new(),
+                },
+                crate::graph::Node {
+                    id: out, kind: NodeKind::Output, label: "O".into(),
+                    enabled: true, params: Default::default(), keyframes: Default::default(),
+                    output_link: None, input_links: Vec::new(),
+                },
+            ],
+            edges: vec![
+                crate::graph::Edge { from_node: src, from_port: 0, to_node: out, to_port: 0 },
+            ],
+            output_node_id: out,
+            node_positions: Default::default(),
+            working_space_override: Some(klipp_core::WorkingColorspace::Rec709Linear),
+        };
+        let mut exec = GraphExecutor::new_cpu_only();
+        exec.set_working_colorspace(klipp_core::WorkingColorspace::AcesCG);
+        let frame: Vec<f32> = vec![0.4, 0.5, 0.6, 1.0];
+        let _ = exec.execute_linear(&frame, &graph, 1, 1, 0.0, 0, None, None).unwrap();
+        assert_eq!(
+            exec.working_colorspace(),
+            klipp_core::WorkingColorspace::AcesCG,
+            "executor's working colorspace must be restored after chain runs",
+        );
+    }
+
+    #[test]
+    fn working_space_override_takes_effect_for_saturation_during_execute() {
+        // A Saturation node luma-keyed by AP1 produces a different
+        // result than one keyed by Rec.709 on a non-neutral pixel.
+        // With the same project-level ws (AcesCG) and the same
+        // non-trivial saturation, an override pinning the chain back
+        // to Rec.709 must visibly change the output. This proves the
+        // override actually flows through to the gamut-aware op.
+        let src = NodeId::new_v4();
+        let sat = NodeId::new_v4();
+        let out = NodeId::new_v4();
+        let make_graph = |override_ws: Option<klipp_core::WorkingColorspace>| {
+            let mut sat_params = NodeParams::default();
+            sat_params.saturation = Some(0.3); // strong desat — luma vector matters
+            NodeGraph {
+                nodes: vec![
+                    crate::graph::Node {
+                        id: src, kind: NodeKind::Source, label: "S".into(),
+                        enabled: true, params: Default::default(), keyframes: Default::default(),
+                        output_link: None, input_links: Vec::new(),
+                    },
+                    crate::graph::Node {
+                        id: sat, kind: NodeKind::Saturation, label: "Sat".into(),
+                        enabled: true, params: sat_params, keyframes: Default::default(),
+                        output_link: None, input_links: Vec::new(),
+                    },
+                    crate::graph::Node {
+                        id: out, kind: NodeKind::Output, label: "O".into(),
+                        enabled: true, params: Default::default(), keyframes: Default::default(),
+                        output_link: None, input_links: Vec::new(),
+                    },
+                ],
+                edges: vec![
+                    crate::graph::Edge { from_node: src, from_port: 0, to_node: sat, to_port: 0 },
+                    crate::graph::Edge { from_node: sat, from_port: 0, to_node: out, to_port: 0 },
+                ],
+                output_node_id: out,
+                node_positions: Default::default(),
+                working_space_override: override_ws,
+            }
+        };
+        let mut exec = GraphExecutor::new_cpu_only();
+        exec.set_working_colorspace(klipp_core::WorkingColorspace::AcesCG);
+
+        let pixel: Vec<f32> = vec![0.7, 0.2, 0.1, 1.0];
+        let no_override = make_graph(None);
+        let (r_no, _) = exec.execute_linear(&pixel, &no_override, 1, 1, 0.0, 0, None, None).unwrap();
+
+        // Reset to AcesCG (the override path restores, but the
+        // previous .execute_linear on no_override left it at AcesCG;
+        // explicit reset is defensive in case future changes shift
+        // that contract).
+        exec.set_working_colorspace(klipp_core::WorkingColorspace::AcesCG);
+
+        let with_override = make_graph(Some(klipp_core::WorkingColorspace::Rec709Linear));
+        let (r_yes, _) = exec.execute_linear(&pixel, &with_override, 1, 1, 0.0, 0, None, None).unwrap();
+
+        let max_delta = (0..3)
+            .map(|i| (r_no[i] - r_yes[i]).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_delta > 1e-3,
+            "override must visibly change saturation output: max delta {max_delta}",
+        );
+    }
+
+    #[test]
+    fn migration_wrapper_round_trip_preserves_grade() {
+        // The whole point of S7b: a Rec.709 grade chain wrapped
+        // ACEScg→Rec709Linear at the head and Rec709Linear→ACEScg at
+        // the tail, with the chain pinned to Rec.709 luma via the
+        // override, must reproduce the SAME pixels the unwrapped
+        // chain would on the same input — within float precision.
+        let saturation = 0.5_f32;
+        // Unwrapped Rec.709 chain.
+        let plain_graph = {
+            let src = NodeId::new_v4();
+            let sat = NodeId::new_v4();
+            let out = NodeId::new_v4();
+            let mut sp = NodeParams::default();
+            sp.saturation = Some(saturation);
+            NodeGraph {
+                nodes: vec![
+                    crate::graph::Node { id: src, kind: NodeKind::Source, label: "S".into(),
+                        enabled: true, params: Default::default(), keyframes: Default::default(),
+                        output_link: None, input_links: Vec::new() },
+                    crate::graph::Node { id: sat, kind: NodeKind::Saturation, label: "Sat".into(),
+                        enabled: true, params: sp, keyframes: Default::default(),
+                        output_link: None, input_links: Vec::new() },
+                    crate::graph::Node { id: out, kind: NodeKind::Output, label: "O".into(),
+                        enabled: true, params: Default::default(), keyframes: Default::default(),
+                        output_link: None, input_links: Vec::new() },
+                ],
+                edges: vec![
+                    crate::graph::Edge { from_node: src, from_port: 0, to_node: sat, to_port: 0 },
+                    crate::graph::Edge { from_node: sat, from_port: 0, to_node: out, to_port: 0 },
+                ],
+                output_node_id: out,
+                node_positions: Default::default(),
+                working_space_override: None,
+            }
+        };
+        // Wrapped: AcesCG project, but the saturation chain stays
+        // Rec.709-luma-correct because the override + matrix wrappers
+        // bring its inputs into Rec.709 space.
+        let wrapped_graph = {
+            let src = NodeId::new_v4();
+            let pre = NodeId::new_v4();
+            let sat = NodeId::new_v4();
+            let post = NodeId::new_v4();
+            let out = NodeId::new_v4();
+            let mut sp = NodeParams::default();
+            sp.saturation = Some(saturation);
+            let mut pre_params = NodeParams::default();
+            pre_params.primaries_from = Some(klipp_core::WorkingColorspace::AcesCG);
+            pre_params.primaries_to = Some(klipp_core::WorkingColorspace::Rec709Linear);
+            let mut post_params = NodeParams::default();
+            post_params.primaries_from = Some(klipp_core::WorkingColorspace::Rec709Linear);
+            post_params.primaries_to = Some(klipp_core::WorkingColorspace::AcesCG);
+            NodeGraph {
+                nodes: vec![
+                    crate::graph::Node { id: src, kind: NodeKind::Source, label: "S".into(),
+                        enabled: true, params: Default::default(), keyframes: Default::default(),
+                        output_link: None, input_links: Vec::new() },
+                    crate::graph::Node { id: pre, kind: NodeKind::PrimariesMatrix, label: "Head".into(),
+                        enabled: true, params: pre_params, keyframes: Default::default(),
+                        output_link: None, input_links: Vec::new() },
+                    crate::graph::Node { id: sat, kind: NodeKind::Saturation, label: "Sat".into(),
+                        enabled: true, params: sp, keyframes: Default::default(),
+                        output_link: None, input_links: Vec::new() },
+                    crate::graph::Node { id: post, kind: NodeKind::PrimariesMatrix, label: "Tail".into(),
+                        enabled: true, params: post_params, keyframes: Default::default(),
+                        output_link: None, input_links: Vec::new() },
+                    crate::graph::Node { id: out, kind: NodeKind::Output, label: "O".into(),
+                        enabled: true, params: Default::default(), keyframes: Default::default(),
+                        output_link: None, input_links: Vec::new() },
+                ],
+                edges: vec![
+                    crate::graph::Edge { from_node: src, from_port: 0, to_node: pre, to_port: 0 },
+                    crate::graph::Edge { from_node: pre, from_port: 0, to_node: sat, to_port: 0 },
+                    crate::graph::Edge { from_node: sat, from_port: 0, to_node: post, to_port: 0 },
+                    crate::graph::Edge { from_node: post, from_port: 0, to_node: out, to_port: 0 },
+                ],
+                output_node_id: out,
+                node_positions: Default::default(),
+                working_space_override: Some(klipp_core::WorkingColorspace::Rec709Linear),
+            }
+        };
+
+        // Plain chain runs at the project's pre-switch ws (Rec.709).
+        let mut exec_plain = GraphExecutor::new_cpu_only();
+        exec_plain.set_working_colorspace(klipp_core::WorkingColorspace::Rec709Linear);
+        let pixel_rec709: Vec<f32> = vec![0.7, 0.2, 0.1, 1.0];
+        let (r_plain, _) = exec_plain
+            .execute_linear(&pixel_rec709, &plain_graph, 1, 1, 0.0, 0, None, None)
+            .unwrap();
+
+        // Wrapped chain runs at the post-switch project ws (AcesCG).
+        // The frame fed in is the SAME source pixel converted to
+        // ACEScg — that's what the engine would feed after the
+        // project-wide ws change since IDTs target the project space.
+        let mut pixel_acescg = pixel_rec709.clone();
+        klipp_color::linear::apply_primaries_matrix(
+            &mut pixel_acescg,
+            klipp_color::primaries::bt709_to_acescg(),
+        );
+        let mut exec_wrapped = GraphExecutor::new_cpu_only();
+        exec_wrapped.set_working_colorspace(klipp_core::WorkingColorspace::AcesCG);
+        let (r_wrapped_acescg, _) = exec_wrapped
+            .execute_linear(&pixel_acescg, &wrapped_graph, 1, 1, 0.0, 0, None, None)
+            .unwrap();
+
+        // Convert the wrapped output back to Rec.709 to compare with
+        // the plain output (which is in Rec.709 by construction).
+        let mut r_wrapped_rec709 = r_wrapped_acescg.clone();
+        klipp_color::linear::apply_primaries_matrix(
+            &mut r_wrapped_rec709,
+            klipp_color::primaries::acescg_to_bt709(),
+        );
+
+        for i in 0..4 {
+            assert!(
+                (r_plain[i] - r_wrapped_rec709[i]).abs() < 1e-4,
+                "channel {i}: plain={} wrapped={} delta={}",
+                r_plain[i],
+                r_wrapped_rec709[i],
+                (r_plain[i] - r_wrapped_rec709[i]).abs(),
+            );
+        }
     }
 }

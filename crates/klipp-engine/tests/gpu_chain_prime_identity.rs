@@ -63,7 +63,7 @@ fn color_balance_graph() -> NodeGraph {
     for (i, n) in nodes.iter().enumerate() {
         positions.insert(n.id, NodePos { x: (i as f32) * 180.0, y: 0.0 });
     }
-    NodeGraph { nodes, edges, output_node_id: output, node_positions: positions }
+    NodeGraph { nodes, edges, output_node_id: output, node_positions: positions, working_space_override: None }
 }
 
 fn pattern_u8(width: u32, height: u32) -> Vec<u8> {

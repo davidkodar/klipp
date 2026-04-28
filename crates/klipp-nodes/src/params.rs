@@ -159,6 +159,16 @@ pub struct NodeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lut_output_space: Option<klipp_core::WorkingColorspace>,
 
+    // PrimariesMatrix — source / destination working-space tags.
+    // The executor derives the 3×3 matrix from the pair via
+    // `klipp_color::primaries::working_space_conversion_matrix`.
+    // Both `None` = passthrough (used for freshly-added unset nodes
+    // and for migrated projects that no longer need the wrappers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primaries_from: Option<klipp_core::WorkingColorspace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primaries_to: Option<klipp_core::WorkingColorspace>,
+
     // FilmGrain
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grain: Option<FilmGrainSettings>,
@@ -337,6 +347,8 @@ impl NodeParams {
             && z(&self.lut_opacity)
             && self.lut_input_space.is_none()
             && self.lut_output_space.is_none()
+            && self.primaries_from.is_none()
+            && self.primaries_to.is_none()
             && self.grain.is_none()
             && self.warper_params.is_none()
             && z(&self.denoise_luma)
@@ -414,6 +426,24 @@ impl NodeParams {
             }
             "lut_output_space" => {
                 self.lut_output_space = if value.is_finite() && value >= 0.0 && value < 256.0 {
+                    Some(klipp_core::WorkingColorspace::from_u8(value as u8))
+                } else {
+                    None
+                };
+            }
+            "primaries_from" => {
+                // Encoded as the WorkingColorspace::as_u8 tag in
+                // f32. Out-of-range / non-finite → None (= the node
+                // becomes a passthrough). Mirrors lut_input_space
+                // dispatch.
+                self.primaries_from = if value.is_finite() && value >= 0.0 && value < 256.0 {
+                    Some(klipp_core::WorkingColorspace::from_u8(value as u8))
+                } else {
+                    None
+                };
+            }
+            "primaries_to" => {
+                self.primaries_to = if value.is_finite() && value >= 0.0 && value < 256.0 {
                     Some(klipp_core::WorkingColorspace::from_u8(value as u8))
                 } else {
                     None

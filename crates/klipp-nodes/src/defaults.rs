@@ -36,6 +36,7 @@ pub fn default_graph() -> NodeGraph {
         edges,
         output_node_id: output_id,
         node_positions,
+        working_space_override: None,
     }
 }
 
@@ -124,6 +125,7 @@ pub fn default_full_chain_graph() -> NodeGraph {
         edges,
         output_node_id: output_id,
         node_positions,
+        working_space_override: None,
     }
 }
 

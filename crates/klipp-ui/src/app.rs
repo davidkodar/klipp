@@ -9747,6 +9747,7 @@ impl KlippApp {
                 edges: Vec::with_capacity(internal_edges.len() + 2),
                 output_node_id: sub_output_id,
                 node_positions: std::collections::HashMap::new(),
+                working_space_override: None,
             };
             subgraph.nodes.push(Node {
                 id: sub_source_id,
@@ -9886,6 +9887,7 @@ impl KlippApp {
                 edges: new_edges,
                 output_node_id: old_graph.output_node_id,
                 node_positions: new_positions,
+                working_space_override: old_graph.working_space_override,
             };
 
             if new_graph.topo_sort().is_err() {
@@ -10087,6 +10089,7 @@ impl KlippApp {
                 edges: new_edges,
                 output_node_id: parent.output_node_id,
                 node_positions: new_positions,
+                working_space_override: parent.working_space_override,
             };
             if new_parent.topo_sort().is_err() {
                 self.state.toast.show("Ungroup: parent would cycle — aborted");

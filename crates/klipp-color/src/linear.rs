@@ -598,6 +598,31 @@ pub fn apply_global_mix(graded: &mut [f32], original: &[f32], mix: f32) {
     }
 }
 
+/// Apply a 3×3 linear-light primaries-conversion matrix to every
+/// pixel in `rgba` in place. Alpha is left untouched.
+///
+/// The matrix is applied as `(r', g', b') = M · (r, g, b)`, i.e. the
+/// rows of `M` are the new-basis primaries expressed in the old basis.
+/// Pair with [`crate::primaries::working_space_conversion_matrix`] to
+/// convert between working spaces; pass any other 3×3 directly when
+/// implementing custom IDTs / gamut shapers.
+///
+/// No clamp: matrix conversions can legally push channels negative
+/// (out-of-gamut towards spectral primaries) or above 1.0 (specular
+/// highlights). Resolving those is the display / encode pipeline's
+/// job, not this function's.
+#[inline]
+pub fn apply_primaries_matrix(rgba: &mut [f32], m: [[f32; 3]; 3]) {
+    for pixel in rgba.chunks_exact_mut(4) {
+        let r = pixel[0];
+        let g = pixel[1];
+        let b = pixel[2];
+        pixel[0] = m[0][0] * r + m[0][1] * g + m[0][2] * b;
+        pixel[1] = m[1][0] * r + m[1][1] * g + m[1][2] * b;
+        pixel[2] = m[2][0] * r + m[2][1] * g + m[2][2] * b;
+    }
+}
+
 /// Input device transform — convert camera log encoding to linear.
 ///
 /// Unlike the u8 version, this stays in linear after decode — the
@@ -1369,5 +1394,60 @@ mod tests {
         // fixture that produces > 1e-4 delta reliably is fragile;
         // the byte-identity wrapper test above is sufficient to
         // prove the `ws` argument flows through.
+    }
+
+    // ─── apply_primaries_matrix ───────────────────────────────────
+
+    #[test]
+    fn primaries_matrix_identity_leaves_frame_byte_identical() {
+        let mut frame = make_frame(&[[0.1, 0.4, 0.9, 1.0], [0.7, 0.2, 0.5, 0.3]]);
+        let original = frame.clone();
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        apply_primaries_matrix(&mut frame, identity);
+        assert_eq!(frame, original);
+    }
+
+    #[test]
+    fn primaries_matrix_alpha_is_preserved() {
+        let mut frame = make_frame(&[[0.5, 0.5, 0.5, 0.42]]);
+        let m = crate::primaries::bt709_to_acescg();
+        apply_primaries_matrix(&mut frame, m);
+        assert_eq!(frame[3], 0.42);
+    }
+
+    #[test]
+    fn primaries_matrix_round_trip_within_one_part_in_a_million() {
+        // Apply BT.709→ACEScg then ACEScg→BT.709 — output must match
+        // input within float precision. This is the load-bearing
+        // invariant for the migration: chain-head + chain-tail
+        // wrappers must be exact mutual inverses or grades drift.
+        let original_pixels: Vec<[f32; 4]> = vec![
+            [0.18, 0.18, 0.18, 1.0],
+            [0.7, 0.2, 0.1, 1.0],
+            [0.05, 0.5, 0.95, 0.5],
+            [1.2, 0.0, 0.0, 1.0], // out-of-gamut highlight
+        ];
+        let mut frame = make_frame(&original_pixels);
+        let original = frame.clone();
+        apply_primaries_matrix(&mut frame, crate::primaries::bt709_to_acescg());
+        apply_primaries_matrix(&mut frame, crate::primaries::acescg_to_bt709());
+        for (i, (a, b)) in frame.iter().zip(original.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-5,
+                "round-trip drift at index {i}: got {a}, expected {b}",
+            );
+        }
+    }
+
+    #[test]
+    fn primaries_matrix_neutral_grey_stays_neutral_under_acescg_to_bt709() {
+        // Neutral grey passing through any standards-compliant
+        // primaries matrix must remain neutral (R == G == B). This
+        // catches transposed-matrix bugs that the round-trip test
+        // can mask when the diagonal dominates.
+        let mut frame = make_frame(&[[0.5, 0.5, 0.5, 1.0]]);
+        apply_primaries_matrix(&mut frame, crate::primaries::acescg_to_bt709());
+        assert!((frame[0] - frame[1]).abs() < 1e-5);
+        assert!((frame[1] - frame[2]).abs() < 1e-5);
     }
 }

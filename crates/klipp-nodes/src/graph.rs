@@ -19,6 +19,25 @@ pub struct NodeGraph {
     /// UI layout positions for the node editor.
     #[serde(default)]
     pub node_positions: HashMap<NodeId, NodePos>,
+    /// Optional per-graph working-colorspace pin. When set, the
+    /// executor uses this instead of the project-level working
+    /// colorspace for every `_ws` luma-weighted op inside the chain
+    /// (Saturation, Vibrance, Tone Controls, Color Wheels,
+    /// Wheel Sat/Bri, Clarity, Log Wheels, LUT3D bracket).
+    ///
+    /// The migration flow (Project Info → Convert grades) sets this
+    /// to the project's *previous* working colorspace and wraps the
+    /// chain with a `PrimariesMatrix` head + tail. The result: an
+    /// existing Rec.709-tuned grade keeps its luma weighting and
+    /// still reads the same pixels even though the surrounding
+    /// project is now ACEScg. Without this override the luma vector
+    /// would silently switch to AP1's row and the grade would shift.
+    ///
+    /// `None` (the default and the case for fresh projects) means
+    /// "fall back to whatever the project is on" — exactly the
+    /// pre-Phase-E-S7b behaviour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_space_override: Option<klipp_core::WorkingColorspace>,
 }
 
 impl Default for NodeGraph {
@@ -397,6 +416,152 @@ impl NodeGraph {
         wired.chain(wireless)
     }
 
+    /// Wrap the existing chain with primaries-conversion nodes so it
+    /// keeps producing the SAME pixels after the project's working
+    /// colorspace flips from `old` to `new`. Returns `true` when the
+    /// graph was actually rewritten, `false` when nothing changed
+    /// (already migrated, identical from/to, or unsupported pair).
+    ///
+    /// What gets inserted:
+    ///
+    /// ```text
+    /// Source → ... → Output
+    /// ```
+    ///
+    /// becomes
+    ///
+    /// ```text
+    /// Source → PM(new→old) → ... → PM(old→new) → Output
+    /// ```
+    ///
+    /// and `working_space_override` is pinned to `old` so every
+    /// luma-keyed op inside the chain still uses the basis the grade
+    /// was tuned against.
+    ///
+    /// Idempotent: running it twice on the same graph is a no-op
+    /// because the `working_space_override.is_some()` gate trips on
+    /// the second call.
+    pub fn migrate_working_space(
+        &mut self,
+        old: klipp_core::WorkingColorspace,
+        new: klipp_core::WorkingColorspace,
+    ) -> bool {
+        if old == new {
+            return false;
+        }
+        // Unsupported pair (e.g. BT.2020 ↔ AcesCG before the BT.2020
+        // basis lands as a first-class working space). The matrix
+        // helper returns None for these, and a passthrough node would
+        // silently corrupt the look — better to skip migration and
+        // let the caller surface a "look will shift" warning.
+        if klipp_color::primaries::working_space_conversion_matrix(old, new).is_none() {
+            return false;
+        }
+        if klipp_color::primaries::working_space_conversion_matrix(new, old).is_none() {
+            return false;
+        }
+        if self.working_space_override.is_some() {
+            return false;
+        }
+
+        let output_id = self.output_node_id;
+        let Some(source_id) = self
+            .nodes
+            .iter()
+            .find(|n| n.kind == crate::kinds::NodeKind::Source)
+            .map(|n| n.id)
+        else {
+            return false;
+        };
+
+        // Head wrapper: PM(new → old). Sits between Source and the
+        // current chain heads. New project ws flows in (the IDT now
+        // delivers `new`), wrapper converts it back to the basis the
+        // chain was tuned against.
+        let head_id = NodeId::new_v4();
+        let mut head_params = NodeParams::default();
+        head_params.primaries_from = Some(new);
+        head_params.primaries_to = Some(old);
+        self.nodes.push(Node {
+            id: head_id,
+            kind: crate::kinds::NodeKind::PrimariesMatrix,
+            label: "Migration: input".into(),
+            enabled: true,
+            params: head_params,
+            keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        });
+        for edge in &mut self.edges {
+            if edge.from_node == source_id {
+                edge.from_node = head_id;
+            }
+        }
+        self.edges.push(Edge {
+            from_node: source_id,
+            from_port: 0,
+            to_node: head_id,
+            to_port: 0,
+        });
+
+        // Tail wrapper: PM(old → new). Sits between the current chain
+        // tails and Output. Brings the graded pixels back into the
+        // new project ws so anything downstream (Output, exporters,
+        // viewer ODT) sees pixels in the correct basis.
+        let tail_id = NodeId::new_v4();
+        let mut tail_params = NodeParams::default();
+        tail_params.primaries_from = Some(old);
+        tail_params.primaries_to = Some(new);
+        self.nodes.push(Node {
+            id: tail_id,
+            kind: crate::kinds::NodeKind::PrimariesMatrix,
+            label: "Migration: output".into(),
+            enabled: true,
+            params: tail_params,
+            keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        });
+        for edge in &mut self.edges {
+            if edge.to_node == output_id {
+                edge.to_node = tail_id;
+            }
+        }
+        self.edges.push(Edge {
+            from_node: tail_id,
+            from_port: 0,
+            to_node: output_id,
+            to_port: 0,
+        });
+
+        self.working_space_override = Some(old);
+
+        // Best-effort layout: place head 110 px right of Source, tail
+        // 110 px left of Output. Doesn't bother nudging downstream
+        // nodes because the editor's auto-layout pass will tidy the
+        // graph on next open.
+        if let Some(src_pos) = self.node_positions.get(&source_id).copied() {
+            self.node_positions.insert(
+                head_id,
+                NodePos {
+                    x: src_pos.x + 110.0,
+                    y: src_pos.y,
+                },
+            );
+        }
+        if let Some(out_pos) = self.node_positions.get(&output_id).copied() {
+            self.node_positions.insert(
+                tail_id,
+                NodePos {
+                    x: out_pos.x - 110.0,
+                    y: out_pos.y,
+                },
+            );
+        }
+
+        true
+    }
+
     /// Regenerate all NodeIds and update edge/position references.
     /// Used when pasting a copied graph onto a different clip.
     pub fn remap_ids(&self) -> NodeGraph {
@@ -420,5 +585,89 @@ impl NodeGraph {
             .map(|(old_id, pos)| (id_map[old_id], pos.clone()))
             .collect();
         new_graph
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::defaults::default_graph;
+    use crate::kinds::NodeKind;
+    use klipp_core::WorkingColorspace;
+
+    fn count_kind(g: &NodeGraph, kind: NodeKind) -> usize {
+        g.nodes.iter().filter(|n| n.kind == kind).count()
+    }
+
+    #[test]
+    fn migrate_no_op_when_old_equals_new() {
+        let mut g = default_graph();
+        let nodes_before = g.nodes.len();
+        let edges_before = g.edges.len();
+        let did = g.migrate_working_space(WorkingColorspace::Rec709Linear, WorkingColorspace::Rec709Linear);
+        assert!(!did);
+        assert_eq!(g.nodes.len(), nodes_before);
+        assert_eq!(g.edges.len(), edges_before);
+        assert!(g.working_space_override.is_none());
+    }
+
+    #[test]
+    fn migrate_rec709_to_acescg_inserts_two_primaries_matrix_nodes() {
+        let mut g = default_graph();
+        let nodes_before = g.nodes.len();
+        let did = g.migrate_working_space(WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG);
+        assert!(did);
+        assert_eq!(count_kind(&g, NodeKind::PrimariesMatrix), 2);
+        assert_eq!(g.nodes.len(), nodes_before + 2);
+        assert_eq!(g.working_space_override, Some(WorkingColorspace::Rec709Linear));
+        assert!(g.topo_sort().is_ok(), "migrated graph must remain acyclic");
+    }
+
+    #[test]
+    fn migrate_is_idempotent() {
+        let mut g = default_graph();
+        let _ = g.migrate_working_space(WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG);
+        let nodes_after_first = g.nodes.len();
+        let did_again = g.migrate_working_space(WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG);
+        assert!(!did_again, "second migrate must be a no-op");
+        assert_eq!(g.nodes.len(), nodes_after_first);
+    }
+
+    #[test]
+    fn migrate_returns_false_for_unsupported_bt2020_pair() {
+        // BT.2020 is a stub today — working_space_conversion_matrix
+        // returns None for any pair touching it. Migration must
+        // refuse rather than insert passthrough nodes.
+        let mut g = default_graph();
+        let did = g.migrate_working_space(WorkingColorspace::Rec709Linear, WorkingColorspace::Bt2020Linear);
+        assert!(!did);
+        assert_eq!(count_kind(&g, NodeKind::PrimariesMatrix), 0);
+        assert!(g.working_space_override.is_none());
+    }
+
+    #[test]
+    fn migrate_routes_source_through_head_pm_and_output_after_tail_pm() {
+        let mut g = default_graph();
+        let source_id = g.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
+        let output_id = g.output_node_id;
+        let _ = g.migrate_working_space(WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG);
+        // Source's only outgoing edge must land on a PrimariesMatrix.
+        let head_targets: Vec<_> = g.edges.iter()
+            .filter(|e| e.from_node == source_id)
+            .map(|e| e.to_node).collect();
+        assert_eq!(head_targets.len(), 1);
+        let head_node = g.nodes.iter().find(|n| n.id == head_targets[0]).unwrap();
+        assert_eq!(head_node.kind, NodeKind::PrimariesMatrix);
+        assert_eq!(head_node.params.primaries_from, Some(WorkingColorspace::AcesCG));
+        assert_eq!(head_node.params.primaries_to, Some(WorkingColorspace::Rec709Linear));
+        // Output's only incoming edge must come from a PrimariesMatrix.
+        let tail_sources: Vec<_> = g.edges.iter()
+            .filter(|e| e.to_node == output_id)
+            .map(|e| e.from_node).collect();
+        assert_eq!(tail_sources.len(), 1);
+        let tail_node = g.nodes.iter().find(|n| n.id == tail_sources[0]).unwrap();
+        assert_eq!(tail_node.kind, NodeKind::PrimariesMatrix);
+        assert_eq!(tail_node.params.primaries_from, Some(WorkingColorspace::Rec709Linear));
+        assert_eq!(tail_node.params.primaries_to, Some(WorkingColorspace::AcesCG));
     }
 }

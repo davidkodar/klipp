@@ -198,14 +198,54 @@ pub fn show_project_info(
             ui.label(
                 egui::RichText::new(
                     "Switching working colorspace re-bases the entire grade \
-                     chain. Existing grades will look different — there's no \
-                     automatic migration here. Save your project before \
-                     toggling if you want to roll back.",
+                     chain. The dropdown above does a naked switch — existing \
+                     grades will look different. Use the button below to \
+                     instead wrap each clip's chain with primaries-conversion \
+                     nodes so the look is preserved across the switch.",
                 )
                 .size(10.0)
                 .italics()
                 .color(theme.text_dim),
             );
+
+            // Pick the most likely migration target — the "other" of
+            // the two supported working spaces (Rec.709 ↔ ACEScg).
+            // BT.2020 is a stub today; users on it have no migration
+            // path until that primaries pair lands as a first-class
+            // working space, so we hide the button for them rather
+            // than offering an action that would silently no-op.
+            let migration_target = match state.project_working_colorspace {
+                klipp_core::WorkingColorspace::Rec709Linear => Some(klipp_core::WorkingColorspace::AcesCG),
+                klipp_core::WorkingColorspace::AcesCG => Some(klipp_core::WorkingColorspace::Rec709Linear),
+                klipp_core::WorkingColorspace::Bt2020Linear => None,
+            };
+            if let Some(target) = migration_target {
+                let from = state.project_working_colorspace;
+                let label = format!(
+                    "Convert grades to {} (preserve look)",
+                    working_colorspace_label(target),
+                );
+                if ui.button(label).clicked() {
+                    let mut migrated = 0usize;
+                    for sequence in &mut state.sequences {
+                        for track in &mut sequence.tracks {
+                            for clip in &mut track.clips {
+                                if clip.node_graph.migrate_working_space(from, target) {
+                                    migrated += 1;
+                                }
+                            }
+                        }
+                    }
+                    state.project_working_colorspace = target;
+                    state.dirty = true;
+                    klipp_engine::video_decoder::set_working_colorspace(target);
+                    state.toast.show(format!(
+                        "Migrated {migrated} clip{} to {}",
+                        if migrated == 1 { "" } else { "s" },
+                        working_colorspace_label(target),
+                    ));
+                }
+            }
         });
 }
 

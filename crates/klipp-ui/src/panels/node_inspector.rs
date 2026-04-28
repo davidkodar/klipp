@@ -2113,6 +2113,33 @@ impl NodeInspectorPanel {
             | NodeKind::Unknown => {
                 ui.label(egui::RichText::new("No parameters").color(theme.text_dim));
             }
+            NodeKind::PrimariesMatrix => {
+                ui.label(
+                    egui::RichText::new(
+                        "Linear-light 3×3 primaries conversion. Set by the project's \
+                         working-colorspace migration; safe to leave alone unless you're \
+                         hand-building a custom IDT."
+                    )
+                    .color(theme.text_dim)
+                    .small(),
+                );
+                let label_for = |ws: Option<klipp_core::WorkingColorspace>| -> &'static str {
+                    match ws {
+                        None => "(unset — passthrough)",
+                        Some(klipp_core::WorkingColorspace::Rec709Linear) => "Rec.709 / sRGB linear",
+                        Some(klipp_core::WorkingColorspace::AcesCG) => "ACEScg (AP1)",
+                        Some(klipp_core::WorkingColorspace::Bt2020Linear) => "BT.2020 linear",
+                    }
+                };
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("From:").color(theme.text_dim).small());
+                    ui.label(label_for(params.primaries_from));
+                });
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("To:").color(theme.text_dim).small());
+                    ui.label(label_for(params.primaries_to));
+                });
+            }
             NodeKind::Compound => {
                 // Compound nodes hold a sub-graph; the parameters
                 // panel is intentionally minimal — editing the sub-

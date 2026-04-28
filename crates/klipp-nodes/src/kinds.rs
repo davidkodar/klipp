@@ -107,6 +107,23 @@ pub enum NodeKind {
     /// enable per-channel grading.
     RGBCombiner,
 
+    /// Primaries-conversion matrix. 1 input, 1 output. Applies a
+    /// fixed 3×3 matrix per pixel in linear-light RGB to move between
+    /// working-space bases (e.g. BT.709 ↔ ACEScg AP1). The matrix is
+    /// derived from `params.primaries_from` / `primaries_to` via
+    /// [`klipp_color::primaries::working_space_conversion_matrix`]; if
+    /// either tag is `None` or the pair has no matrix (same source +
+    /// dest, or unsupported pairs like BT.2020 stubs), the node acts
+    /// as a passthrough.
+    ///
+    /// Used by the project-wide working-colorspace migration: when
+    /// converting an existing Rec.709 project to ACEScg, two
+    /// `PrimariesMatrix` wrappers get inserted around each clip's
+    /// grade chain (head: AcesCG → Rec709Linear, tail: Rec709Linear →
+    /// AcesCG) so the sandwiched grade keeps producing the same
+    /// pixels it did before the switch.
+    PrimariesMatrix,
+
     /// Mask cutout — 2 inputs (source image, matte). Output is
     /// `source.rgb * matte.r` so the image shows only where the
     /// matte is non-zero and goes to black outside. Alpha
@@ -284,6 +301,7 @@ impl NodeKind {
             NodeKind::RGBSplitter => "RGB Splitter",
             NodeKind::RGBCombiner => "RGB Combiner",
             NodeKind::MaskCutout => "Mask Cutout",
+            NodeKind::PrimariesMatrix => "Primaries Matrix",
             NodeKind::Unknown => "Unknown",
         }
     }
