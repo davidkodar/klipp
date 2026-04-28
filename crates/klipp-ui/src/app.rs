@@ -19574,54 +19574,31 @@ impl eframe::App for KlippApp {
             self.state.show_project_notes = open;
         }
 
-        // Command palette (Ctrl+K)
+        // Command palette (Ctrl+K). Entry list comes from
+        // `crate::command_palette::build` so adding a new entry is a
+        // single edit (and the `palette_anchors_present` test there
+        // catches accidental removals).
         if self.state.show_command_palette {
-            // Build command list
-            let commands: Vec<(&str, &str, Option<AppCommand>)> = vec![
-                ("Save Project", "Ctrl+S", Some(AppCommand::SaveProject)),
-                ("Open Project...", "Ctrl+O", None), // requires dialog
-                ("Import Media...", "Ctrl+I", None),
-                ("Export...", "Ctrl+E", None),
-                ("Undo", "Ctrl+Z", Some(AppCommand::Undo)),
-                ("Redo", "Ctrl+Y", Some(AppCommand::Redo)),
-                ("Split at Playhead", "Ctrl+B", None), // complex
-                ("Duplicate Clip", "Ctrl+D", self.state.selected_clip.map(|id| AppCommand::DuplicateClip { clip_id: id })),
-                ("Select All", "Ctrl+A", Some(AppCommand::SelectAllClips)),
-                ("Deselect All", "Ctrl+Shift+A", Some(AppCommand::SelectClip(None))),
-                ("Select Forward", "", Some(AppCommand::SelectClipsForward)),
-                ("Select Backward", "", Some(AppCommand::SelectClipsBackward)),
-                ("Next Edit Point", "\u{2193}", Some(AppCommand::NextEditPoint)),
-                ("Previous Edit Point", "\u{2191}", Some(AppCommand::PrevEditPoint)),
-                ("Fit Timeline to Window", "", Some(AppCommand::FitTimelineToWindow)),
-                ("Toggle Loop Playback", "Ctrl+L", Some(AppCommand::ToggleLoopPlayback)),
-                ("Frame Grab (Save PNG)", "", Some(AppCommand::FrameGrab)),
-                ("Add Marker", "M", Some(AppCommand::AddMarker { position: self.state.playhead, label: String::new(), color: klipp_core::MarkerColor::Blue })),
-                ("Add Adjustment Layer", "", Some(AppCommand::CreateAdjustmentLayer)),
-                ("Create Multicam Clip", "", Some(AppCommand::CreateMulticamClip)),
-                ("Toggle Snap", "N", Some(AppCommand::SetSnapEnabled(!self.state.snap_enabled))),
-                ("Toggle Performance Overlay", "P", None),
-                ("Preferences...", "Ctrl+,", None),
-                ("Export FCPXML...", "", None),
-                ("Export EDL...", "", None),
-                ("Import Subtitles...", "", None),
-                ("Export Subtitles...", "", None),
-            ];
-
+            use crate::command_palette::{build as build_palette, dispatch_dialog, PaletteAction};
+            let entries = build_palette(&self.state);
             let query = self.state.command_palette_query.to_lowercase();
-            let filtered: Vec<_> = commands.iter()
-                .filter(|(label, shortcut, _)| {
+            let filtered_idx: Vec<usize> = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| {
                     query.is_empty()
-                        || label.to_lowercase().contains(&query)
-                        || shortcut.to_lowercase().contains(&query)
+                        || e.label.to_lowercase().contains(&query)
+                        || e.shortcut.to_lowercase().contains(&query)
                 })
+                .map(|(i, _)| i)
                 .collect();
 
             let max_visible = 12;
             let sel = &mut self.state.command_palette_selected;
-            if *sel >= filtered.len() { *sel = 0; }
+            if *sel >= filtered_idx.len() { *sel = 0; }
 
             let mut close = false;
-            let mut execute: Option<AppCommand> = None;
+            let mut activate_idx: Option<usize> = None;
 
             egui::Area::new(egui::Id::new("command_palette"))
                 .fixed_pos(egui::pos2(
@@ -19638,7 +19615,6 @@ impl eframe::App for KlippApp {
                         .show(ui, |ui| {
                             ui.set_min_width(400.0);
 
-                            // Search input
                             let resp = ui.add(
                                 egui::TextEdit::singleline(&mut self.state.command_palette_query)
                                     .hint_text("Type a command...")
@@ -19647,66 +19623,62 @@ impl eframe::App for KlippApp {
                             );
                             resp.request_focus();
 
-                            // Handle keyboard navigation
                             let input = ui.input(|i| (
                                 i.key_pressed(egui::Key::ArrowDown),
                                 i.key_pressed(egui::Key::ArrowUp),
                                 i.key_pressed(egui::Key::Enter),
                                 i.key_pressed(egui::Key::Escape),
                             ));
-                            if input.0 && *sel + 1 < filtered.len() { *sel += 1; }
+                            if input.0 && *sel + 1 < filtered_idx.len() { *sel += 1; }
                             if input.1 && *sel > 0 { *sel -= 1; }
                             if input.3 { close = true; }
                             if input.2 {
-                                if let Some((_, _, cmd)) = filtered.get(*sel) {
-                                    execute = cmd.clone();
+                                if let Some(&entry_idx) = filtered_idx.get(*sel) {
+                                    activate_idx = Some(entry_idx);
                                 }
                                 close = true;
                             }
 
                             ui.add_space(4.0);
 
-                            // Results list
-                            for (i, (label, shortcut, cmd)) in filtered.iter().take(max_visible).enumerate() {
-                                let is_selected = i == *sel;
+                            for (vis_i, &entry_idx) in filtered_idx.iter().take(max_visible).enumerate() {
+                                let entry = &entries[entry_idx];
+                                let is_selected = vis_i == *sel;
                                 let bg = if is_selected {
                                     self.theme.bg_hover
                                 } else {
                                     egui::Color32::TRANSPARENT
                                 };
-                                let text_color = if cmd.is_some() {
+                                let text_color = if entry.enabled {
                                     self.theme.text_primary
                                 } else {
                                     self.theme.text_dim
                                 };
-
-                                {
-                                    let (r, _) = ui.allocate_exact_size(egui::vec2(400.0, 22.0), egui::Sense::click());
-                                    ui.painter().rect_filled(r, 4.0, bg);
+                                let (r, _) = ui.allocate_exact_size(egui::vec2(400.0, 22.0), egui::Sense::click());
+                                ui.painter().rect_filled(r, 4.0, bg);
+                                ui.painter().text(
+                                    egui::pos2(r.left() + 8.0, r.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    entry.label,
+                                    egui::FontId::proportional(12.0),
+                                    text_color,
+                                );
+                                if !entry.shortcut.is_empty() {
                                     ui.painter().text(
-                                        egui::pos2(r.left() + 8.0, r.center().y),
-                                        egui::Align2::LEFT_CENTER,
-                                        label,
-                                        egui::FontId::proportional(12.0),
-                                        text_color,
+                                        egui::pos2(r.right() - 8.0, r.center().y),
+                                        egui::Align2::RIGHT_CENTER,
+                                        entry.shortcut,
+                                        egui::FontId::monospace(10.0),
+                                        self.theme.text_dim,
                                     );
-                                    if !shortcut.is_empty() {
-                                        ui.painter().text(
-                                            egui::pos2(r.right() - 8.0, r.center().y),
-                                            egui::Align2::RIGHT_CENTER,
-                                            shortcut,
-                                            egui::FontId::monospace(10.0),
-                                            self.theme.text_dim,
-                                        );
-                                    }
-                                    if ui.rect_contains_pointer(r) && ui.input(|i| i.pointer.primary_clicked()) {
-                                        execute = cmd.clone();
-                                        close = true;
-                                    }
+                                }
+                                if ui.rect_contains_pointer(r) && ui.input(|i| i.pointer.primary_clicked()) {
+                                    activate_idx = Some(entry_idx);
+                                    close = true;
                                 }
                             }
 
-                            if filtered.is_empty() {
+                            if filtered_idx.is_empty() {
                                 ui.colored_label(
                                     self.theme.text_dim,
                                     "No matching commands",
@@ -19718,8 +19690,24 @@ impl eframe::App for KlippApp {
             if close {
                 self.state.show_command_palette = false;
             }
-            if let Some(cmd) = execute {
-                all_cmds.push(cmd);
+            if let Some(idx) = activate_idx {
+                let entry = &entries[idx];
+                if entry.enabled {
+                    match &entry.action {
+                        PaletteAction::Cmd(cmd) => all_cmds.push(cmd.clone()),
+                        PaletteAction::ToggleState(f) | PaletteAction::SetState(f) => {
+                            f(&mut self.state);
+                        }
+                        PaletteAction::OpenDialog(kind) => {
+                            if let Some(cmd) = dispatch_dialog(*kind) {
+                                all_cmds.push(cmd);
+                            }
+                        }
+                        PaletteAction::Custom(f) => {
+                            f(&mut self.state, &mut all_cmds);
+                        }
+                    }
+                }
             }
         }
 
