@@ -120,7 +120,9 @@ impl KeyBindings {
         bind(&mut b, "delete_clip", vec![KeyCombo::new("Delete"), KeyCombo::new("Backspace")]);
         bind(&mut b, "lift_clip", vec![KeyCombo::shift("Delete"), KeyCombo::shift("Backspace")]);
         bind(&mut b, "split_at_playhead", vec![KeyCombo::ctrl("B")]);
-        bind(&mut b, "freeze_frame", vec![KeyCombo::shift("F")]);
+        // Freeze Frame moved off Shift+F so the NLE-standard
+        // Match Frame Reverse can claim it.
+        bind(&mut b, "freeze_frame", vec![KeyCombo::alt("H")]);
         bind(&mut b, "group_clips", vec![KeyCombo::ctrl("G")]);
         bind(&mut b, "ungroup_clips", vec![KeyCombo::ctrl_shift("G")]);
 
@@ -166,7 +168,9 @@ impl KeyBindings {
         bind(&mut b, "toggle_loop", vec![KeyCombo::ctrl("L")]);
 
         // Viewer
-        bind(&mut b, "toggle_fullscreen", vec![KeyCombo::new("F")]);
+        // Fullscreen toggle moved off F (which is the NLE-standard
+        // Match Frame shortcut) onto F11 (the OS convention).
+        bind(&mut b, "toggle_fullscreen", vec![KeyCombo::new("F11")]);
         bind(&mut b, "toggle_before_after", vec![KeyCombo::new("B")]);
         bind(&mut b, "toggle_color_panel", vec![KeyCombo::new("C")]);
         bind(&mut b, "toggle_scopes", vec![KeyCombo::new("V")]);
@@ -188,6 +192,13 @@ impl KeyBindings {
         bind(&mut b, "zoom_to_selection", vec![KeyCombo::shift("Z")]);
         bind(&mut b, "zoom_in", vec![KeyCombo::new("=")]);
         bind(&mut b, "zoom_out", vec![KeyCombo::new("-")]);
+
+        // Match Frame — NLE staple. F finds the source frame
+        // corresponding to the program playhead and loads it in the
+        // source viewer; Shift+F walks the timeline forward to the
+        // next occurrence of the source viewer's current frame.
+        bind(&mut b, "match_frame_program_to_source", vec![KeyCombo::new("F")]);
+        bind(&mut b, "match_frame_source_to_program", vec![KeyCombo::shift("F")]);
 
         // Markers & Keyframes
         bind(&mut b, "add_marker", vec![KeyCombo::new("M")]);

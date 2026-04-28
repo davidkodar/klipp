@@ -4193,6 +4193,14 @@ impl KlippApp {
                     ));
                     return true;
                 }
+                AppCommand::MatchFrameProgramToSource => {
+                    self.run_match_frame_program_to_source();
+                    return true;
+                }
+                AppCommand::MatchFrameSourceToProgram => {
+                    self.run_match_frame_source_to_program();
+                    return true;
+                }
                 AppCommand::SetSourceInPoint(tc) => {
                     if let Some(mid) = self.state.source_media_id {
                         if let Some(item) = self.state.media_pool.get_mut(&mid) {
@@ -4715,6 +4723,95 @@ impl KlippApp {
     /// overrides `duration` to the zone length, and points the subclip at
     /// the same file with its own `default_source_in/out`. Pushes a
     /// `CreateSubclip` undo entry.
+    /// Match Frame: program → source. Find the topmost video clip
+    /// under the program playhead, load its media into the source
+    /// viewer, and seek the source playhead to the source-time
+    /// corresponding to the current program frame. Honours speed
+    /// ramps + `clip.source_in`. No-op (with toast) when no media
+    /// clip sits under the playhead.
+    fn run_match_frame_program_to_source(&mut self) {
+        let playhead = self.state.playhead;
+        let seq = self.state.sequence();
+        let fps = seq.fps.rate() as f64;
+        // Walk video tracks in REVERSE so a topmost clip wins over
+        // any clip beneath it, mirroring the engine's seek_in_sequence
+        // convention. Skip non-media clips (titles, generators) since
+        // there's nothing to load into the source viewer for those.
+        let hit = seq
+            .tracks
+            .iter()
+            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .rev()
+            .find_map(|track| {
+                track.clip_at_timecode(playhead).and_then(|(_, clip)| {
+                    let mid = clip.media_id()?;
+                    let src = clip.source_time_for_sequence_time(playhead, fps)?;
+                    Some((mid, src))
+                })
+            });
+        let Some((media_id, source_time)) = hit else {
+            self.state.toast.show("Match Frame: no media clip at playhead");
+            return;
+        };
+        // Load the media into the source viewer if it isn't already
+        // bound; LoadSourceMedia is idempotent w.r.t. seeking — it
+        // resets source_playhead to zero — so we always follow it
+        // with an explicit SeekSource.
+        if self.state.source_media_id != Some(media_id) {
+            let _ = self.cmd_tx.send(AppCommand::LoadSourceMedia { media_id });
+        }
+        let _ = self.cmd_tx.send(AppCommand::SeekSource(source_time));
+    }
+
+    /// Match Frame: source → program. Walk every clip in the active
+    /// sequence; for each one whose media matches the loaded source
+    /// media AND whose source range contains the source playhead,
+    /// compute the corresponding sequence time. Sort the matches and
+    /// jump the program playhead to the first one strictly past the
+    /// current playhead — wrapping to the earliest match if none.
+    /// Pressing Shift+F repeatedly cycles through every place the
+    /// source frame appears on the timeline. No-op (with toast) when
+    /// no source media is loaded or no clip uses it at the loaded
+    /// source-time.
+    fn run_match_frame_source_to_program(&mut self) {
+        let Some(media_id) = self.state.source_media_id else {
+            self.state.toast.show("Match Frame: no source media loaded");
+            return;
+        };
+        let source_time = self.state.source_playhead;
+        let current_program_playhead = self.state.playhead;
+        let seq = self.state.sequence();
+        let fps = seq.fps.rate() as f64;
+        let mut hits: Vec<Timecode> = seq
+            .tracks
+            .iter()
+            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .flat_map(|track| {
+                track.clips.iter().filter_map(|clip| {
+                    if clip.media_id() != Some(media_id) {
+                        return None;
+                    }
+                    clip.sequence_time_for_source_time(source_time, fps)
+                })
+            })
+            .collect();
+        if hits.is_empty() {
+            self.state.toast.show("Match Frame: source frame not on timeline");
+            return;
+        }
+        hits.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        // Pick the first hit strictly past the current playhead; if
+        // none, wrap to the earliest. That gives a clean cycle: every
+        // press lands on a different occurrence and eventually returns
+        // to the first.
+        let target = hits
+            .iter()
+            .find(|t| **t > current_program_playhead)
+            .copied()
+            .unwrap_or_else(|| hits[0]);
+        let _ = self.cmd_tx.send(AppCommand::SeekTo(target));
+    }
+
     fn create_subclip_from_zone(&mut self, source_media_id: klipp_core::MediaId, name: Option<String>) {
         // Clone the parent so we can release the immutable borrow before mutating.
         let parent = match self.state.media_pool.get(&source_media_id).cloned() {
@@ -17476,6 +17573,14 @@ impl KlippApp {
             // Ctrl+Alt+B — Extract frame and import into the media bin.
             if kb.is_action_pressed("extract_frame_to_bin", i) {
                 cmds.push(AppCommand::ExtractFrameToBin);
+            }
+            // F — Match Frame (program → source).
+            if kb.is_action_pressed("match_frame_program_to_source", i) {
+                cmds.push(AppCommand::MatchFrameProgramToSource);
+            }
+            // Shift+F — Match Frame (source → program), cycle to next.
+            if kb.is_action_pressed("match_frame_source_to_program", i) {
+                cmds.push(AppCommand::MatchFrameSourceToProgram);
             }
             // Shift+S — Toggle audio scrubbing. Flips the preference and
             // immediately notifies the engine so the next scrub respects it.

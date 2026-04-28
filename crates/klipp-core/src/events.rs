@@ -815,6 +815,25 @@ pub enum AppCommand {
     /// Updates `source_playhead` and triggers a frame re-decode at that
     /// position so the source viewer's display follows the scrub.
     SeekSource(RationalTime),
+
+    /// Match Frame — program → source. Find the topmost video clip
+    /// under the program playhead, load its media into the source
+    /// viewer, and seek the source playhead to the source-time
+    /// corresponding to the current program frame. NLE staple bound
+    /// to the `F` shortcut. Honours speed-ramped clips and
+    /// `clip.source_in`. No-op (toast) when no media clip sits under
+    /// the program playhead.
+    MatchFrameProgramToSource,
+
+    /// Reverse Match Frame — source → program. Given the source
+    /// viewer's currently-loaded media + playhead, find the next
+    /// occurrence on the timeline (first occurrence whose timeline_in
+    /// is strictly past the program playhead, wrapping to the
+    /// earliest occurrence if none). Bound to `Shift+F`. Lets the
+    /// user repeat-press to cycle through every place a source frame
+    /// appears in the edit. No-op (toast) when the source media
+    /// isn't on the timeline at the loaded source-time.
+    MatchFrameSourceToProgram,
     /// Create a subclip from the source media's current IN/OUT zone. The new
     /// MediaItem inherits codec/fps/resolution from the parent, reuses the
     /// parent's path, and carries its own default_source_in/out matching the
