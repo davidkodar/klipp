@@ -531,6 +531,23 @@ impl ToolbarPanel {
                 ui.close_menu();
             }
             ui.separator();
+            // Match Frame — finds the source frame for the program
+            // playhead and loads it in the source viewer; the reverse
+            // walks the timeline forward to the next occurrence of
+            // the source viewer's current frame. Both honour speed
+            // ramps + clip.source_in.
+            if ui.add(egui::Button::new("Match Frame").shortcut_text("F")).clicked() {
+                cmds.push(AppCommand::MatchFrameProgramToSource);
+                ui.close_menu();
+            }
+            let has_source = state.source_media_id.is_some();
+            if ui.add_enabled(has_source,
+                egui::Button::new("Match Frame Reverse").shortcut_text("Shift+F"),
+            ).clicked() {
+                cmds.push(AppCommand::MatchFrameSourceToProgram);
+                ui.close_menu();
+            }
+            ui.separator();
             if ui.add(egui::Button::new("Split at Playhead").shortcut_text("S")).clicked() {
                 let ph = state.playhead;
                 for (ti, t) in state.sequence().tracks.iter().enumerate() {

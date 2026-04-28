@@ -6017,6 +6017,10 @@ impl TimelinePanel {
                             cmds.push(AppCommand::OpenInExternalApp { media_id: mid });
                             ui.close_menu();
                         }
+                        if ui.add(egui::Button::new("Match Frame").shortcut_text("F")).clicked() {
+                            cmds.push(AppCommand::MatchFrameProgramToSource);
+                            ui.close_menu();
+                        }
                     }
                 }
 
