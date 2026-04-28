@@ -766,6 +766,82 @@ pub fn acescg_to_rec2100_pq_4000_nit(acescg: [f32; 3]) -> [f32; 3] {
     apply_odt_rec2100_pq_4000_nit(oces)
 }
 
+// ─── ODT — DCI-P3 D65 cinema (48 nit) ───────────────────────────────
+//
+// Standard small-screen digital-cinema deliverable. Same overall
+// shape as the SDR Rec.709 ODT shipped earlier — the 48-nit
+// cinema target IS where the C9 spline naturally lands, no HDR
+// scaling needed — but with two differences:
+//
+//   * Output primaries are DCI-P3 D65 (not Rec.709). This is the
+//     SMPTE EG 432-1 "Display P3" gamut with the cinema's D65
+//     white, not DCI's native theatrical-white DCI-P3.
+//   * Display OETF is pure gamma 2.6 (the DCI cinema gamma), not
+//     BT.1886. We reuse `bt1886_inverse` with γ = 2.6 and
+//     L_W = 1, L_B = 0; that formula collapses to `pow(L, 1/γ)`
+//     when L_B = 0, which IS the DCI gamma encode.
+//
+// Dim-surround compensation is also dropped: cinema viewing is by
+// convention dark, not dim.
+
+const DCI_DISP_GAMMA: f32 = 2.6;
+
+/// Apply the DCI-P3 D65 cinema (48-nit) Output Device Transform.
+///
+/// **Input:** OCES (AP0, post-RRT scene-linear).
+/// **Output:** DCI gamma-2.6-encoded P3-D65 RGB in `[0, 1]`. Ready
+/// to quantise to 12-bit DCDM (the canonical cinema deliverable
+/// format) or any P3-D65-tagged container.
+pub fn apply_odt_dcip3_d65_48_nits(oces: [f32; 3]) -> [f32; 3] {
+    // OCES → AP1.
+    let rgb_pre = matrix3_mul_vec(ap0_to_ap1(), oces);
+
+    // Per-channel C9 tone scale → cinema-range cd/m² (mid 4.8,
+    // peak 48 — the 48-nit cinema deliverable's natural range).
+    let rgb_post = [
+        segmented_spline_c9_fwd(rgb_pre[0]),
+        segmented_spline_c9_fwd(rgb_pre[1]),
+        segmented_spline_c9_fwd(rgb_pre[2]),
+    ];
+
+    // Display Y → linear CV (cinema 0.02 → 48).
+    let lin_cv = [
+        y_to_lin_cv(rgb_post[0], CINEMA_WHITE, CINEMA_BLACK),
+        y_to_lin_cv(rgb_post[1], CINEMA_WHITE, CINEMA_BLACK),
+        y_to_lin_cv(rgb_post[2], CINEMA_WHITE, CINEMA_BLACK),
+    ];
+
+    // ODT saturation (same factor as SDR / HDR ODTs).
+    let lin_cv_desat = matrix3_mul_vec(odt_sat_matrix(), lin_cv);
+
+    // AP1 → DCI-P3 D65 (with D60→D65 chromatic adaptation).
+    let p3d65_lin = matrix3_mul_vec(crate::primaries::acescg_to_p3d65(), lin_cv_desat);
+
+    // Clamp to display gamut. Cinema viewing skips the dim-surround
+    // gamma adjustment that the Rec.709 SDR ODT applies — the
+    // viewing environment is dark, not dim.
+    let clamped = [
+        p3d65_lin[0].clamp(0.0, 1.0),
+        p3d65_lin[1].clamp(0.0, 1.0),
+        p3d65_lin[2].clamp(0.0, 1.0),
+    ];
+
+    // DCI gamma 2.6 inverse OETF: `pow(L, 1/2.6)`. The shared
+    // `bt1886_inverse` reduces to exactly this at L_W=1, L_B=0.
+    [
+        bt1886_inverse(clamped[0], DCI_DISP_GAMMA, 1.0, 0.0),
+        bt1886_inverse(clamped[1], DCI_DISP_GAMMA, 1.0, 0.0),
+        bt1886_inverse(clamped[2], DCI_DISP_GAMMA, 1.0, 0.0),
+    ]
+}
+
+/// End-to-end ACEScg → DCI-P3 D65 cinema. Wraps RRT + ODT for the
+/// engine's display path.
+pub fn acescg_to_dcip3_d65_48nit(acescg: [f32; 3]) -> [f32; 3] {
+    let oces = apply_rrt(matrix3_mul_vec(ap1_to_ap0(), acescg));
+    apply_odt_dcip3_d65_48_nits(oces)
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1253,5 +1329,102 @@ mod tests {
             assert!((v - decoded).abs() < 1e-4,
                 "PQ round-trip drift at v={v}: encoded={encoded}, decoded={decoded}");
         }
+    }
+
+    // ─── DCI-P3 D65 cinema ODT tests ───────────────────────────
+
+    #[test]
+    fn apply_odt_dcip3_neutral_grey_18_yields_visible_grey() {
+        let oces = apply_rrt([0.18, 0.18, 0.18]);
+        let display = apply_odt_dcip3_d65_48_nits(oces);
+        // Equal channels — neutrality preserved through AP1 → P3-D65
+        // and the per-channel γ encode.
+        assert!(approx(display[0], display[1], 1e-3));
+        assert!(approx(display[1], display[2], 1e-3));
+        // Mid range. DCI γ 2.6 is steeper than BT.1886 γ 2.4, so the
+        // mid-grey codepoint sits a touch lower than the SDR Rec.709
+        // ODT's; still clearly visible mid-grey territory.
+        assert!(display[0] > 0.15 && display[0] < 0.65,
+            "DCI-P3 0.18 mid-grey should be visibly mid-range, got {display:?}");
+    }
+
+    #[test]
+    fn apply_odt_dcip3_black_clamps_near_zero() {
+        let oces = apply_rrt([0.0, 0.0, 0.0]);
+        let display = apply_odt_dcip3_d65_48_nits(oces);
+        for c in display {
+            assert!(c >= 0.0 && c < 0.05,
+                "scene black → DCI-P3 should be near display black, got {display:?}");
+        }
+    }
+
+    #[test]
+    fn apply_odt_dcip3_bright_white_clamps_at_one() {
+        let oces = apply_rrt([18.0, 18.0, 18.0]);
+        let display = apply_odt_dcip3_d65_48_nits(oces);
+        for c in display {
+            assert!(c > 0.95,
+                "very bright scene → DCI-P3 should hit display white, got {display:?}");
+        }
+    }
+
+    #[test]
+    fn apply_odt_dcip3_monotonic_along_grey_axis() {
+        let dim = apply_odt_dcip3_d65_48_nits(apply_rrt([0.05, 0.05, 0.05]));
+        let mid = apply_odt_dcip3_d65_48_nits(apply_rrt([0.18, 0.18, 0.18]));
+        let bright = apply_odt_dcip3_d65_48_nits(apply_rrt([1.0, 1.0, 1.0]));
+        assert!(dim[0] < mid[0]);
+        assert!(mid[0] < bright[0]);
+    }
+
+    #[test]
+    fn apply_odt_dcip3_output_stays_in_unit_range() {
+        let cases = [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [10.0, 10.0, 10.0],
+            [-0.05, 0.5, 0.5],
+            [0.0, 0.0, 0.0],
+        ];
+        for input in cases {
+            let oces = apply_rrt(input);
+            let display = apply_odt_dcip3_d65_48_nits(oces);
+            for c in display {
+                assert!(c.is_finite() && (0.0..=1.0).contains(&c),
+                    "DCI-P3 ODT out-of-range for input {input:?} → {display:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn acescg_to_dcip3_wrapper_composition() {
+        let acescg = [0.18, 0.18, 0.18];
+        let direct = acescg_to_dcip3_d65_48nit(acescg);
+        let oces = apply_rrt(matrix3_mul_vec(ap1_to_ap0(), acescg));
+        let manual = apply_odt_dcip3_d65_48_nits(oces);
+        for k in 0..3 {
+            assert!(approx(direct[k], manual[k], 1e-6),
+                "DCI-P3 wrapper drifts: direct={direct:?}, manual={manual:?}");
+        }
+    }
+
+    /// DCI-P3 D65 vs Rec.709 ODTs on saturated AP1 red — both
+    /// produce DIFFERENT outputs (would be a regression if they
+    /// matched), but exact "which one looks more saturated" depends
+    /// on the saturation-matrix + gamut-clamp interaction; that
+    /// comparison belongs in S9 colorimetric parity, not here.
+    #[test]
+    fn apply_odt_dcip3_diverges_from_rec709_on_saturated_input() {
+        let oces = apply_rrt([1.0, 0.0, 0.0]);
+        let p3 = apply_odt_dcip3_d65_48_nits(oces);
+        let r709 = apply_odt_rec709_100_nits_dim(oces);
+        // Channel-wise difference must be measurable — different
+        // primaries + different OETF γ guarantee divergence on any
+        // non-grey input.
+        let drift = (p3[0] - r709[0]).abs() + (p3[1] - r709[1]).abs() + (p3[2] - r709[2]).abs();
+        assert!(drift > 0.05,
+            "DCI-P3 and Rec.709 ODTs should diverge on saturated red; \
+             P3={p3:?} Rec709={r709:?} (total drift {drift})");
     }
 }

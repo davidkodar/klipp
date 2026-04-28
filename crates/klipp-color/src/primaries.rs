@@ -260,6 +260,43 @@ pub fn bt2020_to_acescg() -> [[f32; 3]; 3] {
     ]
 }
 
+/// Linear-light AP1 (ACEScg) RGB → linear-light DCI-P3 D65 RGB.
+///
+/// White-point conversion D60 → D65 baked in via Bradford CAT.
+/// Used by the DCI-P3 D65 cinema ODT — the standard small-screen
+/// digital cinema deliverable for projects mastered on a
+/// professional reference display.
+///
+/// Source: derived from the standard AP1 + DCI-P3 D65 chromaticities
+/// (P3-D65 primaries from SMPTE EG 432-1 with the cinema's D65 white,
+/// not DCI's native theatrical white) using the Bradford
+/// chromatic-adaptation transform — the same construction AMPAS
+/// uses for its `AP1_2_P3D65_PRI_MAT` published value.
+#[inline]
+#[allow(clippy::excessive_precision)]
+pub fn acescg_to_p3d65() -> [[f32; 3]; 3] {
+    [
+        [ 1.379214128253, -0.308864144674, -0.070349983580],
+        [-0.069334858381,  1.082296746002, -0.012961887621],
+        [-0.002159009514, -0.045459324837,  1.047618334351],
+    ]
+}
+
+/// Linear-light DCI-P3 D65 RGB → linear-light AP1 (ACEScg) RGB.
+///
+/// Numerical f64 inverse of [`acescg_to_p3d65`], rounded to 12
+/// decimals — same construction as the BT.709 / BT.2020 / AP0 ↔ AP1
+/// pairs.
+#[inline]
+#[allow(clippy::excessive_precision)]
+pub fn p3d65_to_acescg() -> [[f32; 3]; 3] {
+    [
+        [ 0.735797914029, 0.212166485293, 0.052035600678],
+        [ 0.047179884977, 0.938045700922, 0.014774414102],
+        [ 0.003563664639, 0.041141885625, 0.955294449736],
+    ]
+}
+
 /// Pick the matrix that converts linear-light RGB from one working
 /// space to another.
 ///

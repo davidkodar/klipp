@@ -521,6 +521,60 @@ fn apply_odt_rec2100_pq_4000_nit(oces_in: vec3<f32>) -> vec3<f32> {
 }
 "#;
 
+/// WGSL fragment for the DCI-P3 D65 cinema (48-nit) ODT. Append
+/// after [`WGSL_RRT`] and [`WGSL_ODT_REC709_SDR`] (the SDR fragment
+/// is what ships `odt_segmented_spline_c9_fwd`, `odt_y_to_lin_cv`
+/// and the cinema constants we reuse here).
+///
+/// Entry point: `apply_odt_dcip3_d65_48_nits(oces_in: vec3<f32>) ->
+/// vec3<f32>`. Output is DCI-γ-2.6-encoded P3-D65 RGB in `[0, 1]`.
+pub const WGSL_ODT_DCIP3_D65: &str = r#"
+const ODT_DCI_DISP_GAMMA: f32 = 2.6;
+
+// AP1 (D60) → DCI-P3 D65, Bradford-adapted. Matches
+// `klipp_color::primaries::acescg_to_p3d65`.
+fn odt_acescg_to_p3d65_mul(rgb: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+         1.379214128253 * rgb.x - 0.308864144674 * rgb.y - 0.070349983580 * rgb.z,
+        -0.069334858381 * rgb.x + 1.082296746002 * rgb.y - 0.012961887621 * rgb.z,
+        -0.002159009514 * rgb.x - 0.045459324837 * rgb.y + 1.047618334351 * rgb.z,
+    );
+}
+
+// DCI gamma 2.6 inverse OETF. Same shape as `odt_bt1886_inverse`
+// from the SDR fragment but with γ = 2.6, L_W = 1, L_B = 0;
+// reduces to `pow(L, 1/2.6)`.
+fn odt_dci_gamma_inverse(l: f32) -> f32 {
+    return pow(max(l, 0.0), 1.0 / ODT_DCI_DISP_GAMMA);
+}
+
+fn apply_odt_dcip3_d65_48_nits(oces_in: vec3<f32>) -> vec3<f32> {
+    var rgb_pre = rrt_ap0_to_ap1_mul(oces_in);
+    let rgb_post = vec3<f32>(
+        odt_segmented_spline_c9_fwd(rgb_pre.x),
+        odt_segmented_spline_c9_fwd(rgb_pre.y),
+        odt_segmented_spline_c9_fwd(rgb_pre.z),
+    );
+    var lin_cv = vec3<f32>(
+        odt_y_to_lin_cv(rgb_post.x, ODT_CINEMA_WHITE, ODT_CINEMA_BLACK),
+        odt_y_to_lin_cv(rgb_post.y, ODT_CINEMA_WHITE, ODT_CINEMA_BLACK),
+        odt_y_to_lin_cv(rgb_post.z, ODT_CINEMA_WHITE, ODT_CINEMA_BLACK),
+    );
+    // ODT saturation: lin_cv = sat·in + (1-sat)·Y·[1,1,1] using AP1 luma.
+    let one_minus_s = 1.0 - ODT_SAT_FACTOR;
+    let lum = dot(RRT_AP1_RGB2Y, lin_cv);
+    lin_cv = ODT_SAT_FACTOR * lin_cv + one_minus_s * vec3<f32>(lum, lum, lum);
+    var p3d65_lin = odt_acescg_to_p3d65_mul(lin_cv);
+    // No dim-surround compensation — cinema viewing is dark, not dim.
+    p3d65_lin = clamp(p3d65_lin, vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec3<f32>(
+        odt_dci_gamma_inverse(p3d65_lin.x),
+        odt_dci_gamma_inverse(p3d65_lin.y),
+        odt_dci_gamma_inverse(p3d65_lin.z),
+    );
+}
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -648,5 +702,48 @@ mod tests {
             assert!(WGSL_ODT_REC2100_PQ.contains(needle),
                 "PQ ODT WGSL missing or drifted constant: {needle}");
         }
+    }
+
+    /// Parse RRT + SDR ODT + DCI-P3 ODT concatenated. The DCI-P3
+    /// fragment depends on the SDR fragment for the C9 spline,
+    /// `Y_to_lin_cv`, and the cinema constants — naga-validating
+    /// it without the prerequisites would fail.
+    #[test]
+    fn wgsl_rrt_plus_odt_sdr_plus_odt_dcip3_parses_via_naga() {
+        let combined = format!("{}\n{}\n{}",
+            WGSL_RRT, WGSL_ODT_REC709_SDR, WGSL_ODT_DCIP3_D65);
+        if let Err(e) = naga::front::wgsl::parse_str(&combined) {
+            panic!("RRT+SDR+DCI-P3 WGSL failed to parse:\n{}", e.emit_to_string(&combined));
+        }
+    }
+
+    /// Belt-and-braces: validate the FULL display-target inventory
+    /// concatenated. RRT + SDR Rec.709 + HDR PQ + DCI-P3. If a
+    /// future ODT introduces a name collision or symbol clash, this
+    /// test fires before any integration test runs.
+    #[test]
+    fn wgsl_full_aces_pipeline_parses_via_naga() {
+        let combined = format!("{}\n{}\n{}\n{}",
+            WGSL_RRT, WGSL_ODT_REC709_SDR, WGSL_ODT_REC2100_PQ, WGSL_ODT_DCIP3_D65);
+        if let Err(e) = naga::front::wgsl::parse_str(&combined) {
+            panic!("Full ACES pipeline WGSL failed to parse:\n{}", e.emit_to_string(&combined));
+        }
+    }
+
+    #[test]
+    fn wgsl_odt_dcip3_exposes_entry_point() {
+        assert!(WGSL_ODT_DCIP3_D65.contains(
+            "fn apply_odt_dcip3_d65_48_nits(oces_in: vec3<f32>) -> vec3<f32>"
+        ));
+    }
+
+    #[test]
+    fn wgsl_odt_dcip3_constants_match_rust_oracle() {
+        assert!(WGSL_ODT_DCIP3_D65.contains("ODT_DCI_DISP_GAMMA: f32 = 2.6"),
+            "DCI-P3 WGSL must pin the DCI cinema gamma");
+        // First row of `acescg_to_p3d65` — pinned to catch a future
+        // matrix tweak in klipp-color drifting against the WGSL.
+        assert!(WGSL_ODT_DCIP3_D65.contains("1.379214128253"),
+            "DCI-P3 WGSL acescg_to_p3d65 first-row coefficient drifted");
     }
 }
