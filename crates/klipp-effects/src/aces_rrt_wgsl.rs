@@ -1,4 +1,4 @@
-//! WGSL port of the ACES Reference Rendering Transform (RRT).
+//! WGSL port of the ACES RRT and the SDR Rec.709 ODT.
 //!
 //! Mirrors `klipp_color::aces` line-for-line — the Rust side is the
 //! authoritative CPU oracle, this is its GPU twin. Bug-fixes in
@@ -6,18 +6,23 @@
 //! test will run the same input through both paths and assert ≤ 1
 //! LSB at 8-bit display encode.
 //!
-//! Source: AMPAS aces-dev `transforms/ctl/rrt/RRT.ctl` (BSD 3-Clause).
+//! Source: AMPAS aces-dev `transforms/ctl/rrt/RRT.ctl` and
+//! `transforms/ctl/odt/sdr/ODT.Academy.Rec709_100nits_dim.ctl`
+//! (BSD 3-Clause).
 //!
 //! # How to use
 //!
-//! Concatenate [`WGSL_RRT`] into a shader source string after the
-//! decoder's `WGSL_PRELUDE` + `WGSL_HELPERS` and before the body that
-//! calls `apply_rrt(...)`. The function takes scene-linear AP0 RGB
-//! and returns post-tonemap AP0 (OCES). The display path is
-//! ACEScg (AP1) → AP1→AP0 matrix → `apply_rrt` → AP0→AP1 → ODT.
-//! The two basis-conversion matrix multiplies fold into the ODT's
-//! first stage when wired up; for now this fragment is exercised only
-//! by the parity test.
+//! Concatenate [`WGSL_RRT`] then [`WGSL_ODT_REC709_SDR`] into a
+//! shader source string after the decoder's `WGSL_PRELUDE` +
+//! `WGSL_HELPERS` and before the body that invokes the entry points.
+//!
+//! Function signatures:
+//!   * `apply_rrt(aces_in: vec3<f32>) -> vec3<f32>` — AP0 → OCES
+//!   * `apply_odt_rec709_sdr(oces_in: vec3<f32>) -> vec3<f32>` —
+//!      OCES (AP0) → display-encoded Rec.709 RGB in `[0, 1]`
+//!
+//! Display path: `ACEScg → AP1→AP0 → apply_rrt → apply_odt_rec709_sdr
+//! → display-encoded RGB`.
 
 /// WGSL fragment containing all RRT helpers and the top-level
 /// `apply_rrt(aces: vec3<f32>) -> vec3<f32>`. Constants and matrices
@@ -250,6 +255,189 @@ fn apply_rrt(aces_in: vec3<f32>) -> vec3<f32> {
 }
 "#;
 
+/// WGSL fragment for the SDR Rec.709 100-nit-dim ODT. Append after
+/// [`WGSL_RRT`] so the shared helpers (`rrt_eval_spline_segment`,
+/// `RRT_HALF_MIN`, `RRT_AP1_RGB2Y`) and AP0/AP1 matrices come into
+/// scope before this fragment uses them.
+///
+/// Function: `apply_odt_rec709_sdr(oces_in: vec3<f32>) -> vec3<f32>`.
+/// Input is OCES (AP0); output is display-encoded Rec.709 RGB in
+/// `[0, 1]`, ready to quantise to 8/10-bit.
+pub const WGSL_ODT_REC709_SDR: &str = r#"
+// ─── ODT constants ───────────────────────────────────────────────
+const ODT_SAT_FACTOR: f32 = 0.93;
+const ODT_DIM_SURROUND_GAMMA: f32 = 0.9811;
+const ODT_CINEMA_WHITE: f32 = 48.0;
+const ODT_CINEMA_BLACK: f32 = 0.02;
+const ODT_SDR_DISP_GAMMA: f32 = 2.4;
+
+// ─── C9 spline coefficients (ODT_48nits) ─────────────────────────
+// Same shape as the RRT's C5 spline but with 10 coefs per side and
+// a `(N_KNOTS - 1) = 7` multiplier. j∈[0,7] → cf[j..j+3] indexes
+// up to slot 9, the last valid entry.
+
+fn odt_c9_low_coef(idx: i32) -> f32 {
+    if idx == 0 { return -1.6989700043; }
+    if idx == 1 { return -1.6989700043; }
+    if idx == 2 { return -1.4779; }
+    if idx == 3 { return -1.2291; }
+    if idx == 4 { return -0.8648; }
+    if idx == 5 { return -0.448; }
+    if idx == 6 { return 0.00518; }
+    if idx == 7 { return 0.4511080334; }
+    if idx == 8 { return 0.9113744414; }
+    return 0.9113744414;
+}
+
+fn odt_c9_high_coef(idx: i32) -> f32 {
+    if idx == 0 { return 0.5154386965; }
+    if idx == 1 { return 0.8470437783; }
+    if idx == 2 { return 1.1358; }
+    if idx == 3 { return 1.3802; }
+    if idx == 4 { return 1.5197; }
+    if idx == 5 { return 1.5985; }
+    if idx == 6 { return 1.6467; }
+    if idx == 7 { return 1.6746091357; }
+    if idx == 8 { return 1.687873339; }
+    return 1.687873339;
+}
+
+fn odt_c9_min_x() -> f32 {
+    return rrt_segmented_spline_c5_fwd(0.18 * pow(2.0, -6.5));
+}
+fn odt_c9_mid_x() -> f32 { return rrt_segmented_spline_c5_fwd(0.18); }
+fn odt_c9_max_x() -> f32 {
+    return rrt_segmented_spline_c5_fwd(0.18 * pow(2.0, 6.5));
+}
+
+fn odt_segmented_spline_c9_fwd(x: f32) -> f32 {
+    let logx = log(max(x, RRT_HALF_MIN)) / log(10.0);
+    let log_min = log(odt_c9_min_x()) / log(10.0);
+    let log_mid = log(odt_c9_mid_x()) / log(10.0);
+    let log_max = log(odt_c9_max_x()) / log(10.0);
+    var logy: f32;
+    if logx <= log_min {
+        logy = log(0.02) / log(10.0);
+    } else if logx > log_min && logx < log_mid {
+        let knot_coord = 7.0 * (logx - log_min) / (log_mid - log_min);
+        let j = min(i32(floor(knot_coord)), 7);
+        let t = knot_coord - f32(j);
+        let cf = vec3<f32>(odt_c9_low_coef(j), odt_c9_low_coef(j + 1), odt_c9_low_coef(j + 2));
+        logy = rrt_eval_spline_segment(cf, vec3<f32>(t * t, t, 1.0));
+    } else if logx >= log_mid && logx < log_max {
+        let knot_coord = 7.0 * (logx - log_mid) / (log_max - log_mid);
+        let j = min(i32(floor(knot_coord)), 7);
+        let t = knot_coord - f32(j);
+        let cf = vec3<f32>(odt_c9_high_coef(j), odt_c9_high_coef(j + 1), odt_c9_high_coef(j + 2));
+        logy = rrt_eval_spline_segment(cf, vec3<f32>(t * t, t, 1.0));
+    } else {
+        logy = log(48.0) / log(10.0);
+    }
+    return pow(10.0, logy);
+}
+
+// ─── Display primaries / OETF helpers ────────────────────────────
+
+// AP1 (D60) → Rec.709 (D65), Bradford-adapted. Same matrix as
+// `klipp_color::primaries::acescg_to_bt709` (numerical-inverse pair).
+fn odt_acescg_to_rec709_mul(rgb: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+         1.7050523622 * rgb.x - 0.6217957415 * rgb.y - 0.0832566207 * rgb.z,
+        -0.1302600472 * rgb.x + 1.1408029888 * rgb.y - 0.0105430932 * rgb.z,
+        -0.0239638781 * rgb.x - 0.1289693959 * rgb.y + 1.1529332720 * rgb.z,
+    );
+}
+
+// Rec.709 D65 → CIE XYZ (D65). Standard.
+fn odt_rec709_to_xyz_mul(rgb: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+        0.4123907993 * rgb.x + 0.3575843394 * rgb.y + 0.1804807884 * rgb.z,
+        0.2126390059 * rgb.x + 0.7151686788 * rgb.y + 0.0721923154 * rgb.z,
+        0.0193308187 * rgb.x + 0.1191947798 * rgb.y + 0.9505321522 * rgb.z,
+    );
+}
+
+// CIE XYZ (D65) → Rec.709 D65. Standard.
+fn odt_xyz_to_rec709_mul(xyz: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(
+         3.2409699419 * xyz.x - 1.5373831776 * xyz.y - 0.4986107603 * xyz.z,
+        -0.9692436363 * xyz.x + 1.8759675015 * xyz.y + 0.0415550574 * xyz.z,
+         0.0556300797 * xyz.x - 0.2039769589 * xyz.y + 1.0569715142 * xyz.z,
+    );
+}
+
+fn odt_dark_surround_to_dim_surround(rec709_lin: vec3<f32>) -> vec3<f32> {
+    let xyz = odt_rec709_to_xyz_mul(rec709_lin);
+    let sum = xyz.x + xyz.y + xyz.z;
+    if sum < 1e-12 { return rec709_lin; }
+    let x_chrom = xyz.x / sum;
+    let y_chrom = xyz.y / sum;
+    let big_y = pow(max(xyz.y, 0.0), ODT_DIM_SURROUND_GAMMA);
+    var xyz_back: vec3<f32>;
+    if y_chrom < 1e-12 {
+        xyz_back = vec3<f32>(0.0, big_y, 0.0);
+    } else {
+        let inv_y = 1.0 / y_chrom;
+        xyz_back = vec3<f32>(x_chrom * big_y * inv_y, big_y, (1.0 - x_chrom - y_chrom) * big_y * inv_y);
+    }
+    return odt_xyz_to_rec709_mul(xyz_back);
+}
+
+fn odt_y_to_lin_cv(y: f32, y_max: f32, y_min: f32) -> f32 {
+    return (y - y_min) / (y_max - y_min);
+}
+
+// BT.1886 inverse with L_W=1, L_B=0 (the Rec.709 SDR ODT shape).
+// Reduces to pow(L, 1/γ).
+fn odt_bt1886_inverse(l: f32) -> f32 {
+    return pow(max(l, 0.0), 1.0 / ODT_SDR_DISP_GAMMA);
+}
+
+// AP0 → AP1 with the existing `rrt_ap0_to_ap1_mul` from WGSL_RRT.
+
+// ─── apply_odt_rec709_sdr ────────────────────────────────────────
+
+fn apply_odt_rec709_sdr(oces_in: vec3<f32>) -> vec3<f32> {
+    // OCES → AP1 rendering space.
+    var rgb_pre = rrt_ap0_to_ap1_mul(oces_in);
+
+    // Per-channel C9 tone scale.
+    let rgb_post = vec3<f32>(
+        odt_segmented_spline_c9_fwd(rgb_pre.x),
+        odt_segmented_spline_c9_fwd(rgb_pre.y),
+        odt_segmented_spline_c9_fwd(rgb_pre.z),
+    );
+
+    // Display Y → linear CV.
+    var lin_cv = vec3<f32>(
+        odt_y_to_lin_cv(rgb_post.x, ODT_CINEMA_WHITE, ODT_CINEMA_BLACK),
+        odt_y_to_lin_cv(rgb_post.y, ODT_CINEMA_WHITE, ODT_CINEMA_BLACK),
+        odt_y_to_lin_cv(rgb_post.z, ODT_CINEMA_WHITE, ODT_CINEMA_BLACK),
+    );
+
+    // ODT saturation: lin_cv = sat·in + (1-sat)·Y·[1,1,1] using AP1 luma.
+    let one_minus_s = 1.0 - ODT_SAT_FACTOR;
+    let lum = dot(RRT_AP1_RGB2Y, lin_cv);
+    lin_cv = ODT_SAT_FACTOR * lin_cv + one_minus_s * vec3<f32>(lum, lum, lum);
+
+    // AP1 → Rec.709 D65 (with D60→D65 chromatic adaptation baked in).
+    var rec709_lin = odt_acescg_to_rec709_mul(lin_cv);
+
+    // Dim-surround compensation.
+    rec709_lin = odt_dark_surround_to_dim_surround(rec709_lin);
+
+    // Clamp to display gamut.
+    rec709_lin = clamp(rec709_lin, vec3<f32>(0.0), vec3<f32>(1.0));
+
+    // BT.1886 inverse — display-linear → encoded.
+    return vec3<f32>(
+        odt_bt1886_inverse(rec709_lin.x),
+        odt_bt1886_inverse(rec709_lin.y),
+        odt_bt1886_inverse(rec709_lin.z),
+    );
+}
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,8 +471,9 @@ mod tests {
 
     /// Pin the constant values that mirror the Rust side so a future
     /// Rust-side tweak (e.g. a refined `RRT_SAT_FACTOR`) doesn't
-    /// drift the WGSL silently. Mismatch here means the parity test
-    /// in S4B will fail downstream — fail at unit-test scope first.
+    /// drift the WGSL silently. Mismatch here means the per-target
+    /// parity work in later sessions will fail downstream — fail at
+    /// unit-test scope first.
     #[test]
     fn wgsl_rrt_constants_match_rust_oracle() {
         for needle in [
@@ -297,6 +486,43 @@ mod tests {
             "RRT_SPLINE_MID_Y: f32 = 4.8",
         ] {
             assert!(WGSL_RRT.contains(needle), "missing or drifted constant: {needle}");
+        }
+    }
+
+    /// Naga-parse the RRT + ODT fragments concatenated as the engine
+    /// will use them. The ODT references helpers and constants from
+    /// the RRT block (`RRT_HALF_MIN`, `RRT_AP1_RGB2Y`,
+    /// `rrt_eval_spline_segment`, `rrt_segmented_spline_c5_fwd`,
+    /// `rrt_ap0_to_ap1_mul`), so parsing them in isolation would
+    /// fail — this test is the one that actually validates the
+    /// shipping shader.
+    #[test]
+    fn wgsl_rrt_plus_odt_parses_via_naga() {
+        let combined = format!("{}\n{}", WGSL_RRT, WGSL_ODT_REC709_SDR);
+        let result = naga::front::wgsl::parse_str(&combined);
+        if let Err(e) = result {
+            panic!("RRT+ODT WGSL failed to parse:\n{}", e.emit_to_string(&combined));
+        }
+    }
+
+    #[test]
+    fn wgsl_odt_exposes_apply_odt_rec709_sdr_entry_point() {
+        assert!(WGSL_ODT_REC709_SDR.contains(
+            "fn apply_odt_rec709_sdr(oces_in: vec3<f32>) -> vec3<f32>"
+        ));
+    }
+
+    #[test]
+    fn wgsl_odt_constants_match_rust_oracle() {
+        for needle in [
+            "ODT_SAT_FACTOR: f32 = 0.93",
+            "ODT_DIM_SURROUND_GAMMA: f32 = 0.9811",
+            "ODT_CINEMA_WHITE: f32 = 48.0",
+            "ODT_CINEMA_BLACK: f32 = 0.02",
+            "ODT_SDR_DISP_GAMMA: f32 = 2.4",
+        ] {
+            assert!(WGSL_ODT_REC709_SDR.contains(needle),
+                "ODT WGSL missing or drifted constant: {needle}");
         }
     }
 }
