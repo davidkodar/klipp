@@ -25,9 +25,15 @@
 //! all pure-Rust + safe-API. Internal `unsafe` inside those crates is
 //! audited upstream.
 
+pub mod cache;
+pub mod download;
 pub mod manifest;
 
+pub use cache::{CacheError, CachedStatus, ModelCache, sha256_of_file};
+pub use download::{
+    DownloadError, NoOpProgress, ProgressSink, download_to_cache, write_and_verify,
+};
 pub use manifest::{
     DEFAULT_MANIFEST_VERSION, ManifestError, ModelEntry, ModelId, ModelManifest, Source,
-    user_manifest_path,
+    load_effective, user_manifest_path,
 };
