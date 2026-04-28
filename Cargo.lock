@@ -2436,6 +2436,7 @@ dependencies = [
  "klipp-export",
  "klipp-jobs",
  "klipp-media",
+ "klipp-ml",
  "klipp-nodes",
  "klipp-plugin",
  "klipp-project",

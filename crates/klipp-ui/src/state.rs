@@ -1210,6 +1210,11 @@ pub struct AppState {
     pub command_palette_query: String,
     pub command_palette_selected: usize,
 
+    /// Active model-download state machine. Drives the consent
+    /// dialog + progress dialog rendered each frame in app.rs.
+    /// Default `Idle` paints nothing.
+    pub model_download: crate::model_download::ModelDownloadState,
+
     /// Available system font families (populated at startup from font discovery)
     pub available_fonts: Vec<String>,
 
@@ -2364,6 +2369,7 @@ impl Default for AppState {
             show_command_palette: false,
             command_palette_query: String::new(),
             command_palette_selected: 0,
+            model_download: crate::model_download::ModelDownloadState::default(),
             available_fonts: Vec::new(),
             pending_title_data: None,
             pending_title_preview_clip: None,

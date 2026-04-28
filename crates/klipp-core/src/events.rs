@@ -825,6 +825,14 @@ pub enum AppCommand {
     /// the program playhead.
     MatchFrameProgramToSource,
 
+    /// Open the consent dialog for the model identified by its
+    /// stable id in `assets/models.toml`. The handler checks the
+    /// local cache first — already-cached models surface a toast
+    /// instead of a dialog. The dialog lets the user confirm before
+    /// any network call; on confirm the download runs on a worker
+    /// thread with progress + cancel UI.
+    OpenModelDownloadDialog { model_id: String },
+
     /// Reverse Match Frame — source → program. Given the source
     /// viewer's currently-loaded media + playhead, find the next
     /// occurrence on the timeline (first occurrence whose timeline_in

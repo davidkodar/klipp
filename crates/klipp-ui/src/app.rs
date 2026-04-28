@@ -4201,6 +4201,10 @@ impl KlippApp {
                     self.run_match_frame_source_to_program();
                     return true;
                 }
+                AppCommand::OpenModelDownloadDialog { model_id } => {
+                    self.request_model_download(model_id);
+                    return true;
+                }
                 AppCommand::SetSourceInPoint(tc) => {
                     if let Some(mid) = self.state.source_media_id {
                         if let Some(item) = self.state.media_pool.get_mut(&mid) {
@@ -4810,6 +4814,223 @@ impl KlippApp {
             .copied()
             .unwrap_or_else(|| hits[0]);
         let _ = self.cmd_tx.send(AppCommand::SeekTo(target));
+    }
+
+    /// Open the consent dialog for a model identified by its stable
+    /// id in the manifest. No network call yet; the user confirms in
+    /// the dialog before any download starts. Surfaces a toast if
+    /// the manifest doesn't contain the id (typo / version drift).
+    pub fn request_model_download(&mut self, model_id: &str) {
+        // Re-check cache first — if the model is already verified
+        // locally there's nothing to download. Surfaces a toast so
+        // the user gets feedback rather than silence.
+        let manifest = match klipp_ml::load_effective() {
+            Ok(m) => m,
+            Err(e) => {
+                self.state.toast.show(format!("Manifest error: {e}"));
+                return;
+            }
+        };
+        let Some(entry) = manifest.get(model_id) else {
+            self.state.toast.show(format!("Unknown model id: {model_id}"));
+            return;
+        };
+        if let Ok(cache) = klipp_ml::ModelCache::open() {
+            if let Ok(klipp_ml::CachedStatus::Verified) = cache.is_cached(entry) {
+                self.state.toast.show(
+                    format!("'{}' is already downloaded.", entry.display_name),
+                );
+                return;
+            }
+        }
+        self.state.model_download = crate::model_download::ModelDownloadState::Consenting {
+            entry: entry.clone(),
+        };
+    }
+
+    /// Render whichever model-download dialog matches the current
+    /// state. Drains worker events first so progress updates land
+    /// the same frame they arrive.
+    fn render_model_download_dialogs(
+        &mut self,
+        ctx: &egui::Context,
+        _all_cmds: &mut Vec<AppCommand>,
+    ) {
+        use crate::model_download::{
+            fmt_bytes, fmt_rate, poll_download, shorten_hash, spawn_download,
+            ModelDownloadState,
+        };
+
+        // Drain worker events first; transitions take effect this frame.
+        poll_download(&mut self.state.model_download);
+
+        // Snapshot the current variant so we can drop the borrow on
+        // self.state.model_download before mutating it inside the
+        // dialog closures.
+        let current = std::mem::take(&mut self.state.model_download);
+        match current {
+            ModelDownloadState::Idle => {
+                // Nothing to render. Restore so we don't re-init.
+                self.state.model_download = ModelDownloadState::Idle;
+            }
+            ModelDownloadState::Consenting { entry } => {
+                let mut next = ModelDownloadState::Consenting { entry: entry.clone() };
+                let mut close_kind: Option<&'static str> = None;
+                egui::Window::new("Download AI Model")
+                    .collapsible(false)
+                    .resizable(false)
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.set_min_width(420.0);
+                        ui.heading(&entry.display_name);
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "Klipp uses a local AI model to generate object \
+                                 masks. Once downloaded the file stays on your \
+                                 machine and Klipp never re-contacts the network \
+                                 to use it.",
+                            ).small(),
+                        );
+                        ui.add_space(8.0);
+                        egui::Grid::new("model_consent_grid")
+                            .num_columns(2)
+                            .spacing([16.0, 4.0])
+                            .show(ui, |ui| {
+                                ui.label("Size:");
+                                ui.label(fmt_bytes(entry.size_bytes));
+                                ui.end_row();
+                                ui.label("Source:");
+                                ui.label(
+                                    entry.sources.first()
+                                        .map(|s| s.url.as_str())
+                                        .unwrap_or("(none)"),
+                                );
+                                ui.end_row();
+                                ui.label("SHA-256:");
+                                ui.label(
+                                    egui::RichText::new(shorten_hash(&entry.sha256))
+                                        .monospace()
+                                        .small(),
+                                ).on_hover_text(&entry.sha256);
+                                ui.end_row();
+                                ui.label("License:");
+                                ui.label(&entry.license);
+                                ui.end_row();
+                                ui.label("Attribution:");
+                                ui.label(&entry.attribution);
+                                ui.end_row();
+                            });
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "Air-gapped install: drop the file directly into \
+                                 ~/.local/share/klipp/models/ with the SHA-256 \
+                                 above and Klipp will skip the download.",
+                            ).small().italics(),
+                        );
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Cancel").clicked() {
+                                close_kind = Some("cancel");
+                            }
+                            if ui.button(format!("Download ({})", fmt_bytes(entry.size_bytes))).clicked() {
+                                close_kind = Some("start");
+                            }
+                        });
+                    });
+                match close_kind {
+                    Some("cancel") => {
+                        next = ModelDownloadState::Idle;
+                    }
+                    Some("start") => {
+                        let handle = spawn_download(entry.clone(), ctx.clone());
+                        next = ModelDownloadState::Downloading {
+                            entry: entry.clone(),
+                            total: entry.size_bytes,
+                            downloaded: 0,
+                            started_at: std::time::Instant::now(),
+                            handle,
+                        };
+                    }
+                    _ => {}
+                }
+                self.state.model_download = next;
+            }
+            ModelDownloadState::Downloading {
+                entry, total, downloaded, started_at, handle,
+            } => {
+                let elapsed = started_at.elapsed().as_secs_f64().max(0.001);
+                let rate = downloaded as f64 / elapsed;
+                let mut cancelled = false;
+                egui::Window::new("Downloading AI Model")
+                    .collapsible(false)
+                    .resizable(false)
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.set_min_width(380.0);
+                        ui.label(&entry.display_name);
+                        ui.add_space(4.0);
+                        let frac = if total > 0 {
+                            (downloaded as f32 / total as f32).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        ui.add(egui::ProgressBar::new(frac).show_percentage());
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{} / {}",
+                                fmt_bytes(downloaded), fmt_bytes(total)));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(fmt_rate(rate));
+                                },
+                            );
+                        });
+                        ui.add_space(8.0);
+                        if ui.button("Cancel Download").clicked() {
+                            cancelled = true;
+                        }
+                    });
+                if cancelled {
+                    handle.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                self.state.model_download = ModelDownloadState::Downloading {
+                    entry, total, downloaded, started_at, handle,
+                };
+            }
+            ModelDownloadState::Failed { entry_label, error } => {
+                let mut next = ModelDownloadState::Failed {
+                    entry_label: entry_label.clone(),
+                    error: error.clone(),
+                };
+                egui::Window::new("Download Failed")
+                    .collapsible(false)
+                    .resizable(false)
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.set_min_width(380.0);
+                        ui.heading(&entry_label);
+                        ui.add_space(4.0);
+                        ui.label(&error);
+                        ui.add_space(8.0);
+                        if ui.button("Dismiss").clicked() {
+                            next = ModelDownloadState::Idle;
+                        }
+                    });
+                self.state.model_download = next;
+            }
+            ModelDownloadState::Completed { entry_label, path } => {
+                self.state.toast.show(format!(
+                    "Downloaded {entry_label} ({})", path.display(),
+                ));
+                self.state.model_download = ModelDownloadState::Idle;
+            }
+        }
     }
 
     fn create_subclip_from_zone(&mut self, source_media_id: klipp_core::MediaId, name: Option<String>) {
@@ -19659,7 +19880,7 @@ impl eframe::App for KlippApp {
                                 ui.painter().text(
                                     egui::pos2(r.left() + 8.0, r.center().y),
                                     egui::Align2::LEFT_CENTER,
-                                    entry.label,
+                                    entry.label.as_ref(),
                                     egui::FontId::proportional(12.0),
                                     text_color,
                                 );
@@ -19667,7 +19888,7 @@ impl eframe::App for KlippApp {
                                     ui.painter().text(
                                         egui::pos2(r.right() - 8.0, r.center().y),
                                         egui::Align2::RIGHT_CENTER,
-                                        entry.shortcut,
+                                        entry.shortcut.as_ref(),
                                         egui::FontId::monospace(10.0),
                                         self.theme.text_dim,
                                     );
@@ -19710,6 +19931,12 @@ impl eframe::App for KlippApp {
                 }
             }
         }
+
+        // Model-download dialogs (consent + progress + error). Drives
+        // the F-97 SAM2 download flow. The state machine lives on
+        // AppState.model_download; transitions are handled here per
+        // frame.
+        self.render_model_download_dialogs(ctx, &mut all_cmds);
 
         // History panel
         if self.state.show_history_panel {

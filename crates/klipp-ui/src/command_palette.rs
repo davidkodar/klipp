@@ -22,6 +22,8 @@
 //!   the resulting AppCommand on success. Avoids the legacy
 //!   "palette item is `None` and silently does nothing" trap.
 
+use std::borrow::Cow;
+
 use klipp_core::AppCommand;
 
 use crate::state::AppState;
@@ -71,8 +73,12 @@ pub enum DialogKind {
 }
 
 pub struct PaletteEntry {
-    pub label: &'static str,
-    pub shortcut: &'static str,
+    /// Cow lets static literals (the bulk of entries) cost zero
+    /// allocation while still permitting dynamic labels — e.g. the
+    /// per-model "Download AI Model: SAM2.1 Tiny" entries that are
+    /// generated from the manifest at build time.
+    pub label: Cow<'static, str>,
+    pub shortcut: Cow<'static, str>,
     pub action: PaletteAction,
     /// When false the entry renders dimmed and ignores activation.
     /// Computed at build time from `AppState` — context-dependent
@@ -95,120 +101,120 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
     let has_out = state.sequence().out_point.is_some();
 
     // ── File ────────────────────────────────────────────────
-    e.push(PaletteEntry { label: "New Project", shortcut: "Ctrl+N",
+    e.push(PaletteEntry { label: Cow::Borrowed("New Project"), shortcut: Cow::Borrowed("Ctrl+N"),
         action: PaletteAction::Cmd(AppCommand::NewProject), enabled: true });
-    e.push(PaletteEntry { label: "Open Project…", shortcut: "Ctrl+O",
+    e.push(PaletteEntry { label: Cow::Borrowed("Open Project…"), shortcut: Cow::Borrowed("Ctrl+O"),
         action: PaletteAction::OpenDialog(DialogKind::OpenProject), enabled: true });
-    e.push(PaletteEntry { label: "Save Project", shortcut: "Ctrl+S",
+    e.push(PaletteEntry { label: Cow::Borrowed("Save Project"), shortcut: Cow::Borrowed("Ctrl+S"),
         action: PaletteAction::Cmd(AppCommand::SaveProject), enabled: true });
-    e.push(PaletteEntry { label: "Save Project As…", shortcut: "Ctrl+Shift+S",
+    e.push(PaletteEntry { label: Cow::Borrowed("Save Project As…"), shortcut: Cow::Borrowed("Ctrl+Shift+S"),
         action: PaletteAction::OpenDialog(DialogKind::SaveProjectAs), enabled: true });
-    e.push(PaletteEntry { label: "Close Project", shortcut: "Ctrl+W",
+    e.push(PaletteEntry { label: Cow::Borrowed("Close Project"), shortcut: Cow::Borrowed("Ctrl+W"),
         action: PaletteAction::Cmd(AppCommand::CloseProject), enabled: true });
-    e.push(PaletteEntry { label: "Project Properties…", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Project Properties…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::SetState(|s| s.show_project_info = true), enabled: true });
-    e.push(PaletteEntry { label: "Import Media…", shortcut: "Ctrl+I",
+    e.push(PaletteEntry { label: Cow::Borrowed("Import Media…"), shortcut: Cow::Borrowed("Ctrl+I"),
         action: PaletteAction::OpenDialog(DialogKind::ImportMedia), enabled: true });
-    e.push(PaletteEntry { label: "Import Subtitles…", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Import Subtitles…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::OpenDialog(DialogKind::ImportSubtitles), enabled: true });
-    e.push(PaletteEntry { label: "Import FCPXML…", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Import FCPXML…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::OpenDialog(DialogKind::ImportFcpxml), enabled: true });
-    e.push(PaletteEntry { label: "Import Kdenlive Project…", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Import Kdenlive Project…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::OpenDialog(DialogKind::ImportKdenlive), enabled: true });
-    e.push(PaletteEntry { label: "Import OpenTimelineIO (.otio)…", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Import OpenTimelineIO (.otio)…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::OpenDialog(DialogKind::ImportOtio), enabled: true });
-    e.push(PaletteEntry { label: "Export…", shortcut: "Ctrl+E",
+    e.push(PaletteEntry { label: Cow::Borrowed("Export…"), shortcut: Cow::Borrowed("Ctrl+E"),
         action: PaletteAction::Cmd(AppCommand::ShowExportDialog), enabled: true });
-    e.push(PaletteEntry { label: "Export Subtitles…", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Export Subtitles…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::OpenDialog(DialogKind::ExportSubtitles), enabled: true });
-    e.push(PaletteEntry { label: "Export FCPXML…", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Export FCPXML…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::OpenDialog(DialogKind::ExportFcpxml), enabled: true });
-    e.push(PaletteEntry { label: "Export EDL…", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Export EDL…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::OpenDialog(DialogKind::ExportEdl), enabled: true });
-    e.push(PaletteEntry { label: "Export Kdenlive Project…", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Export Kdenlive Project…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::OpenDialog(DialogKind::ExportKdenlive), enabled: true });
-    e.push(PaletteEntry { label: "Render Queue", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Render Queue"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Cmd(AppCommand::ShowRenderQueue), enabled: true });
-    e.push(PaletteEntry { label: "Relink Media…", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Relink Media…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Cmd(AppCommand::ShowRelinkDialog), enabled: true });
-    e.push(PaletteEntry { label: "Preferences…", shortcut: "Ctrl+,",
+    e.push(PaletteEntry { label: Cow::Borrowed("Preferences…"), shortcut: Cow::Borrowed("Ctrl+,"),
         action: PaletteAction::Cmd(AppCommand::ShowPreferences), enabled: true });
-    e.push(PaletteEntry { label: "Quit", shortcut: "Ctrl+Q",
+    e.push(PaletteEntry { label: Cow::Borrowed("Quit"), shortcut: Cow::Borrowed("Ctrl+Q"),
         action: PaletteAction::Cmd(AppCommand::Quit), enabled: true });
 
     // ── Edit ────────────────────────────────────────────────
-    e.push(PaletteEntry { label: "Undo", shortcut: "Ctrl+Z",
+    e.push(PaletteEntry { label: Cow::Borrowed("Undo"), shortcut: Cow::Borrowed("Ctrl+Z"),
         action: PaletteAction::Cmd(AppCommand::Undo), enabled: can_undo });
-    e.push(PaletteEntry { label: "Redo", shortcut: "Ctrl+Shift+Z",
+    e.push(PaletteEntry { label: Cow::Borrowed("Redo"), shortcut: Cow::Borrowed("Ctrl+Shift+Z"),
         action: PaletteAction::Cmd(AppCommand::Redo), enabled: can_redo });
     if let Some(cid) = state.selected_clip {
-        e.push(PaletteEntry { label: "Cut Clip", shortcut: "Ctrl+X",
+        e.push(PaletteEntry { label: Cow::Borrowed("Cut Clip"), shortcut: Cow::Borrowed("Ctrl+X"),
             action: PaletteAction::Cmd(AppCommand::CutClip { clip_id: cid }), enabled: true });
-        e.push(PaletteEntry { label: "Copy Clip", shortcut: "Ctrl+C",
+        e.push(PaletteEntry { label: Cow::Borrowed("Copy Clip"), shortcut: Cow::Borrowed("Ctrl+C"),
             action: PaletteAction::Cmd(AppCommand::CopyClip { clip_id: cid }), enabled: true });
-        e.push(PaletteEntry { label: "Duplicate Clip", shortcut: "Ctrl+D",
+        e.push(PaletteEntry { label: Cow::Borrowed("Duplicate Clip"), shortcut: Cow::Borrowed("Ctrl+D"),
             action: PaletteAction::Cmd(AppCommand::DuplicateClip { clip_id: cid }), enabled: true });
-        e.push(PaletteEntry { label: "Copy Attributes", shortcut: "Ctrl+Shift+C",
+        e.push(PaletteEntry { label: Cow::Borrowed("Copy Attributes"), shortcut: Cow::Borrowed("Ctrl+Shift+C"),
             action: PaletteAction::Cmd(AppCommand::CopyAttributes { clip_id: cid }), enabled: true });
-        e.push(PaletteEntry { label: "Delete Clip", shortcut: "Del",
+        e.push(PaletteEntry { label: Cow::Borrowed("Delete Clip"), shortcut: Cow::Borrowed("Del"),
             action: PaletteAction::Cmd(AppCommand::RemoveClip { clip_id: cid }), enabled: true });
     } else {
-        e.push(PaletteEntry { label: "Cut Clip", shortcut: "Ctrl+X",
+        e.push(PaletteEntry { label: Cow::Borrowed("Cut Clip"), shortcut: Cow::Borrowed("Ctrl+X"),
             action: PaletteAction::Cmd(AppCommand::Undo), enabled: false }); // dummy cmd, gated off
-        e.push(PaletteEntry { label: "Copy Clip", shortcut: "Ctrl+C",
+        e.push(PaletteEntry { label: Cow::Borrowed("Copy Clip"), shortcut: Cow::Borrowed("Ctrl+C"),
             action: PaletteAction::Cmd(AppCommand::Undo), enabled: false });
-        e.push(PaletteEntry { label: "Duplicate Clip", shortcut: "Ctrl+D",
+        e.push(PaletteEntry { label: Cow::Borrowed("Duplicate Clip"), shortcut: Cow::Borrowed("Ctrl+D"),
             action: PaletteAction::Cmd(AppCommand::Undo), enabled: false });
-        e.push(PaletteEntry { label: "Delete Clip", shortcut: "Del",
+        e.push(PaletteEntry { label: Cow::Borrowed("Delete Clip"), shortcut: Cow::Borrowed("Del"),
             action: PaletteAction::Cmd(AppCommand::Undo), enabled: false });
     }
-    e.push(PaletteEntry { label: "Paste", shortcut: "Ctrl+V",
+    e.push(PaletteEntry { label: Cow::Borrowed("Paste"), shortcut: Cow::Borrowed("Ctrl+V"),
         action: PaletteAction::Cmd(AppCommand::PasteClip), enabled: has_clipboard });
     // Paste Attributes opens the attribute-picker dialog rather
     // than dispatching a one-shot AppCommand — the inline state
     // flag matches what the menu bar entry does.
-    e.push(PaletteEntry { label: "Paste Attributes…", shortcut: "Ctrl+Shift+V",
+    e.push(PaletteEntry { label: Cow::Borrowed("Paste Attributes…"), shortcut: Cow::Borrowed("Ctrl+Shift+V"),
         action: PaletteAction::SetState(|s| s.show_paste_attributes_dialog = true),
         enabled: has_attr_clipboard && has_clip });
-    e.push(PaletteEntry { label: "Select All", shortcut: "Ctrl+A",
+    e.push(PaletteEntry { label: Cow::Borrowed("Select All"), shortcut: Cow::Borrowed("Ctrl+A"),
         action: PaletteAction::Cmd(AppCommand::SelectAllClips), enabled: true });
-    e.push(PaletteEntry { label: "Select Forward", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Select Forward"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Cmd(AppCommand::SelectClipsForward), enabled: true });
-    e.push(PaletteEntry { label: "Select Backward", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Select Backward"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Cmd(AppCommand::SelectClipsBackward), enabled: true });
-    e.push(PaletteEntry { label: "Deselect All", shortcut: "Ctrl+Shift+A",
+    e.push(PaletteEntry { label: Cow::Borrowed("Deselect All"), shortcut: Cow::Borrowed("Ctrl+Shift+A"),
         action: PaletteAction::Cmd(AppCommand::SelectClip(None)), enabled: true });
     if !state.selected_clips.is_empty() {
         let cids: Vec<_> = state.selected_clips.iter().copied().collect();
-        e.push(PaletteEntry { label: "Group Clips", shortcut: "Ctrl+G",
+        e.push(PaletteEntry { label: Cow::Borrowed("Group Clips"), shortcut: Cow::Borrowed("Ctrl+G"),
             action: PaletteAction::Cmd(AppCommand::GroupClips { clip_ids: cids }),
             enabled: state.selected_clips.len() >= 2 });
     } else {
-        e.push(PaletteEntry { label: "Group Clips", shortcut: "Ctrl+G",
+        e.push(PaletteEntry { label: Cow::Borrowed("Group Clips"), shortcut: Cow::Borrowed("Ctrl+G"),
             action: PaletteAction::Cmd(AppCommand::Undo), enabled: false });
     }
     if let Some(cid) = state.selected_clip {
-        e.push(PaletteEntry { label: "Ungroup Clip", shortcut: "Ctrl+Shift+G",
+        e.push(PaletteEntry { label: Cow::Borrowed("Ungroup Clip"), shortcut: Cow::Borrowed("Ctrl+Shift+G"),
             action: PaletteAction::Cmd(AppCommand::UngroupClip { clip_id: cid }),
             enabled: true });
     } else {
-        e.push(PaletteEntry { label: "Ungroup Clip", shortcut: "Ctrl+Shift+G",
+        e.push(PaletteEntry { label: Cow::Borrowed("Ungroup Clip"), shortcut: Cow::Borrowed("Ctrl+Shift+G"),
             action: PaletteAction::Cmd(AppCommand::Undo), enabled: false });
     }
 
     // ── Timeline editing ────────────────────────────────────
-    e.push(PaletteEntry { label: "Insert Edit", shortcut: "W",
+    e.push(PaletteEntry { label: Cow::Borrowed("Insert Edit"), shortcut: Cow::Borrowed("W"),
         action: PaletteAction::Cmd(AppCommand::InsertEdit), enabled: has_source });
-    e.push(PaletteEntry { label: "Overwrite Edit", shortcut: "D",
+    e.push(PaletteEntry { label: Cow::Borrowed("Overwrite Edit"), shortcut: Cow::Borrowed("D"),
         action: PaletteAction::Cmd(AppCommand::OverwriteEdit), enabled: has_source });
-    e.push(PaletteEntry { label: "Lift Edit", shortcut: ";",
+    e.push(PaletteEntry { label: Cow::Borrowed("Lift Edit"), shortcut: Cow::Borrowed(";"),
         action: PaletteAction::Cmd(AppCommand::LiftEdit), enabled: has_in && has_out });
-    e.push(PaletteEntry { label: "Extract Edit", shortcut: "'",
+    e.push(PaletteEntry { label: Cow::Borrowed("Extract Edit"), shortcut: Cow::Borrowed("'"),
         action: PaletteAction::Cmd(AppCommand::ExtractEdit), enabled: has_in && has_out });
     // Split at Playhead walks every track + clip under the playhead
     // and pushes one BladeClip per hit; this matches the toolbar's
     // Clip → Split at Playhead seam exactly.
-    e.push(PaletteEntry { label: "Split at Playhead", shortcut: "S",
+    e.push(PaletteEntry { label: Cow::Borrowed("Split at Playhead"), shortcut: Cow::Borrowed("S"),
         action: PaletteAction::Custom(|state, cmds| {
             let ph = state.playhead;
             for (ti, t) in state.sequence().tracks.iter().enumerate() {
@@ -220,93 +226,117 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
             }
         }),
         enabled: true });
-    e.push(PaletteEntry { label: "Add Adjustment Layer", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Add Adjustment Layer"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Cmd(AppCommand::CreateAdjustmentLayer), enabled: true });
-    e.push(PaletteEntry { label: "Create Multicam Clip", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Create Multicam Clip"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Cmd(AppCommand::CreateMulticamClip), enabled: true });
-    e.push(PaletteEntry { label: "Add Video Track", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Add Video Track"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Cmd(AppCommand::AddVideoTrack), enabled: true });
-    e.push(PaletteEntry { label: "Add Audio Track", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Add Audio Track"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::Cmd(AppCommand::AddAudioTrack), enabled: true });
 
     // ── Mark / Navigation ───────────────────────────────────
-    e.push(PaletteEntry { label: "Add Marker", shortcut: "M",
+    e.push(PaletteEntry { label: Cow::Borrowed("Add Marker"), shortcut: Cow::Borrowed("M"),
         action: PaletteAction::Cmd(AppCommand::AddMarker {
             position: state.playhead, label: String::new(),
             color: klipp_core::MarkerColor::Blue }), enabled: true });
-    e.push(PaletteEntry { label: "Set In Point", shortcut: "I",
+    e.push(PaletteEntry { label: Cow::Borrowed("Set In Point"), shortcut: Cow::Borrowed("I"),
         action: PaletteAction::Cmd(AppCommand::SetSequenceInPoint(state.playhead)), enabled: true });
-    e.push(PaletteEntry { label: "Set Out Point", shortcut: "O",
+    e.push(PaletteEntry { label: Cow::Borrowed("Set Out Point"), shortcut: Cow::Borrowed("O"),
         action: PaletteAction::Cmd(AppCommand::SetSequenceOutPoint(state.playhead)), enabled: true });
-    e.push(PaletteEntry { label: "Clear In Point", shortcut: "Alt+I",
+    e.push(PaletteEntry { label: Cow::Borrowed("Clear In Point"), shortcut: Cow::Borrowed("Alt+I"),
         action: PaletteAction::Cmd(AppCommand::ClearSequenceInPoint), enabled: has_in });
-    e.push(PaletteEntry { label: "Clear Out Point", shortcut: "Alt+O",
+    e.push(PaletteEntry { label: Cow::Borrowed("Clear Out Point"), shortcut: Cow::Borrowed("Alt+O"),
         action: PaletteAction::Cmd(AppCommand::ClearSequenceOutPoint), enabled: has_out });
-    e.push(PaletteEntry { label: "Go to Start", shortcut: "Home",
+    e.push(PaletteEntry { label: Cow::Borrowed("Go to Start"), shortcut: Cow::Borrowed("Home"),
         action: PaletteAction::Cmd(AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate()))), enabled: true });
-    e.push(PaletteEntry { label: "Go to End", shortcut: "End",
+    e.push(PaletteEntry { label: Cow::Borrowed("Go to End"), shortcut: Cow::Borrowed("End"),
         action: PaletteAction::Cmd(AppCommand::SeekTo(state.sequence_duration())), enabled: true });
-    e.push(PaletteEntry { label: "Next Edit Point", shortcut: "↓",
+    e.push(PaletteEntry { label: Cow::Borrowed("Next Edit Point"), shortcut: Cow::Borrowed("↓"),
         action: PaletteAction::Cmd(AppCommand::NextEditPoint), enabled: true });
-    e.push(PaletteEntry { label: "Previous Edit Point", shortcut: "↑",
+    e.push(PaletteEntry { label: Cow::Borrowed("Previous Edit Point"), shortcut: Cow::Borrowed("↑"),
         action: PaletteAction::Cmd(AppCommand::PrevEditPoint), enabled: true });
 
     // ── Match Frame ─────────────────────────────────────────
-    e.push(PaletteEntry { label: "Match Frame", shortcut: "F",
+    e.push(PaletteEntry { label: Cow::Borrowed("Match Frame"), shortcut: Cow::Borrowed("F"),
         action: PaletteAction::Cmd(AppCommand::MatchFrameProgramToSource), enabled: true });
-    e.push(PaletteEntry { label: "Match Frame Reverse", shortcut: "Shift+F",
+    e.push(PaletteEntry { label: Cow::Borrowed("Match Frame Reverse"), shortcut: Cow::Borrowed("Shift+F"),
         action: PaletteAction::Cmd(AppCommand::MatchFrameSourceToProgram), enabled: has_source });
 
     // ── View / Workspace ────────────────────────────────────
-    e.push(PaletteEntry { label: "Fit Timeline to Window", shortcut: "Shift+Z",
+    e.push(PaletteEntry { label: Cow::Borrowed("Fit Timeline to Window"), shortcut: Cow::Borrowed("Shift+Z"),
         action: PaletteAction::Cmd(AppCommand::FitTimelineToWindow), enabled: true });
-    e.push(PaletteEntry { label: "Toggle Loop Playback", shortcut: "Ctrl+L",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Loop Playback"), shortcut: Cow::Borrowed("Ctrl+L"),
         action: PaletteAction::Cmd(AppCommand::ToggleLoopPlayback), enabled: true });
-    e.push(PaletteEntry { label: "Toggle Snap", shortcut: "N",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Snap"), shortcut: Cow::Borrowed("N"),
         action: PaletteAction::ToggleState(|s| s.snap_enabled = !s.snap_enabled), enabled: true });
-    e.push(PaletteEntry { label: "Toggle Skimming", shortcut: "S",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Skimming"), shortcut: Cow::Borrowed("S"),
         action: PaletteAction::ToggleState(|s| s.skimming_enabled = !s.skimming_enabled), enabled: true });
-    e.push(PaletteEntry { label: "Toggle Color Panel", shortcut: "C",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Color Panel"), shortcut: Cow::Borrowed("C"),
         action: PaletteAction::Cmd(AppCommand::ToggleColorPanel), enabled: true });
-    e.push(PaletteEntry { label: "Toggle Scopes", shortcut: "V",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Scopes"), shortcut: Cow::Borrowed("V"),
         action: PaletteAction::ToggleState(|s| s.show_scopes = !s.show_scopes), enabled: true });
-    e.push(PaletteEntry { label: "Toggle Inspector Panel", shortcut: "Ctrl+Shift+I",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Inspector Panel"), shortcut: Cow::Borrowed("Ctrl+Shift+I"),
         action: PaletteAction::ToggleState(|s| s.show_inspector_panel = !s.show_inspector_panel), enabled: true });
-    e.push(PaletteEntry { label: "Toggle Effects Browser", shortcut: "Ctrl+Shift+E",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Effects Browser"), shortcut: Cow::Borrowed("Ctrl+Shift+E"),
         action: PaletteAction::ToggleState(|s| s.show_browser_panel = !s.show_browser_panel), enabled: true });
-    e.push(PaletteEntry { label: "Toggle Audio Mixer", shortcut: "Ctrl+Shift+M",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Audio Mixer"), shortcut: Cow::Borrowed("Ctrl+Shift+M"),
         action: PaletteAction::ToggleState(|s| s.show_audio_mixer = !s.show_audio_mixer), enabled: true });
-    e.push(PaletteEntry { label: "Toggle Curve Editor", shortcut: "Shift+K",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Curve Editor"), shortcut: Cow::Borrowed("Shift+K"),
         action: PaletteAction::ToggleState(|s| s.show_curve_editor = !s.show_curve_editor), enabled: true });
-    e.push(PaletteEntry { label: "Toggle Markers Panel", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Markers Panel"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::ToggleState(|s| s.show_markers_panel = !s.show_markers_panel), enabled: true });
-    e.push(PaletteEntry { label: "Toggle History Panel", shortcut: "",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle History Panel"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::ToggleState(|s| s.show_history_panel = !s.show_history_panel), enabled: true });
-    e.push(PaletteEntry { label: "Toggle Subtitle Editor", shortcut: "Ctrl+Shift+T",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Subtitle Editor"), shortcut: Cow::Borrowed("Ctrl+Shift+T"),
         action: PaletteAction::ToggleState(|s| s.show_subtitle_editor = !s.show_subtitle_editor), enabled: true });
-    e.push(PaletteEntry { label: "Toggle Performance Overlay", shortcut: "P",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Performance Overlay"), shortcut: Cow::Borrowed("P"),
         action: PaletteAction::ToggleState(|s| s.show_perf_overlay = !s.show_perf_overlay), enabled: true });
-    e.push(PaletteEntry { label: "Toggle Zebras", shortcut: "Z",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Zebras"), shortcut: Cow::Borrowed("Z"),
         action: PaletteAction::ToggleState(|s| s.viewer_overlays.zebras = !s.viewer_overlays.zebras),
         enabled: true });
-    e.push(PaletteEntry { label: "Toggle False Color", shortcut: "Alt+F",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle False Color"), shortcut: Cow::Borrowed("Alt+F"),
         action: PaletteAction::ToggleState(|s| s.viewer_overlays.false_color = !s.viewer_overlays.false_color),
         enabled: true });
-    e.push(PaletteEntry { label: "Toggle Focus Peaking", shortcut: "Ctrl+P",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Focus Peaking"), shortcut: Cow::Borrowed("Ctrl+P"),
         action: PaletteAction::ToggleState(|s| s.viewer_overlays.focus_peaking = !s.viewer_overlays.focus_peaking),
         enabled: true });
-    e.push(PaletteEntry { label: "Toggle Safe Areas", shortcut: "Alt+S",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Safe Areas"), shortcut: Cow::Borrowed("Alt+S"),
         action: PaletteAction::ToggleState(|s| s.viewer_overlays.safe_areas = !s.viewer_overlays.safe_areas),
         enabled: true });
-    e.push(PaletteEntry { label: "Toggle Grid Overlay", shortcut: "Alt+G",
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Grid Overlay"), shortcut: Cow::Borrowed("Alt+G"),
         action: PaletteAction::ToggleState(|s| s.viewer_overlays.grid = !s.viewer_overlays.grid),
         enabled: true });
 
     // ── Capture ─────────────────────────────────────────────
-    e.push(PaletteEntry { label: "Frame Grab (Save PNG)", shortcut: "Ctrl+Alt+S",
+    e.push(PaletteEntry { label: Cow::Borrowed("Frame Grab (Save PNG)"), shortcut: Cow::Borrowed("Ctrl+Alt+S"),
         action: PaletteAction::Cmd(AppCommand::FrameGrab), enabled: true });
-    e.push(PaletteEntry { label: "Extract Frame to Bin", shortcut: "Ctrl+Alt+B",
+    e.push(PaletteEntry { label: Cow::Borrowed("Extract Frame to Bin"), shortcut: Cow::Borrowed("Ctrl+Alt+B"),
         action: PaletteAction::Cmd(AppCommand::ExtractFrameToBin), enabled: true });
+
+    // ── AI Models ───────────────────────────────────────────
+    // Per-model "Download …" entries auto-derived from the active
+    // manifest. Adding a model entry to assets/models.toml makes a
+    // new palette entry appear automatically — no code change here.
+    // Manifest load failures here are silently ignored (the rest
+    // of the palette still renders); the manifest is parse-checked
+    // by klipp-ml's own tests, so failure means a build-time bug.
+    if let Ok(manifest) = klipp_ml::load_effective() {
+        for model in &manifest.models {
+            // Static lifetime conversion for label/shortcut — we
+            // leak the strings since the palette is rebuilt every
+            // open and these entries are bounded by manifest length.
+            // Cheap; manifest typically has < 10 models.
+            e.push(PaletteEntry {
+                label: Cow::Owned(format!("Download AI Model: {}", model.display_name)),
+                shortcut: Cow::Borrowed(""),
+                action: PaletteAction::Cmd(AppCommand::OpenModelDownloadDialog {
+                    model_id: model.id.clone(),
+                }),
+                enabled: true,
+            });
+        }
+    }
 
     e
 }
@@ -421,7 +451,7 @@ mod tests {
     fn palette_anchors_present() {
         let state = AppState::default();
         let entries = build(&state);
-        let labels: Vec<&str> = entries.iter().map(|e| e.label).collect();
+        let labels: Vec<&str> = entries.iter().map(|e| e.label.as_ref()).collect();
         for anchor in ANCHOR_LABELS {
             let found = labels.iter().any(|l| l.contains(anchor));
             assert!(
@@ -458,7 +488,7 @@ mod tests {
         let entries = build(&state);
         let mut seen = std::collections::HashSet::new();
         for e in &entries {
-            assert!(seen.insert(e.label),
+            assert!(seen.insert(e.label.as_ref().to_string()),
                 "duplicate palette label: {:?}", e.label);
         }
     }

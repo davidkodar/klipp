@@ -16,6 +16,7 @@ klipp-validation = { workspace = true }
 klipp-audio = { workspace = true }
 klipp-plugin = { workspace = true }
 klipp-export = { workspace = true }
+klipp-ml = { workspace = true }
 klipp-title = { workspace = true }
 klipp-project = { workspace = true }
 egui = { workspace = true }
