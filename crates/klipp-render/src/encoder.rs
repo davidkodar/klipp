@@ -66,6 +66,17 @@ pub struct Encoder {
     /// [`ExportSettings::tone_map_op`] at `open()` time and then
     /// treated as immutable for the rest of the encode.
     tone_map_op: klipp_color::display::ToneMapOp,
+    /// Delivery-target Output Display Transform. Drives the
+    /// linear → display-encoded u8 step inside
+    /// [`Encoder::encode_linear_frame`]. Defaults to
+    /// [`OdtChoice::MatchViewer`] which mirrors the viewer's pixels
+    /// pixel-for-pixel under the project's working colorspace.
+    odt: klipp_core::OdtChoice,
+    /// Project working colorspace, captured at `open()` time. Used
+    /// alongside `odt` to dispatch the linear → display step. Read
+    /// from the engine's atomic at export start so the export pixels
+    /// match what the user sees in the viewer.
+    working_colorspace: klipp_core::WorkingColorspace,
 }
 
 /// Pick the best available video encoder for the given codec.
@@ -722,6 +733,14 @@ impl Encoder {
             hdr_mode: settings.hdr_mode,
             light_stats: LightLevelStats::new(),
             tone_map_op: settings.tone_map_op,
+            odt: settings.odt,
+            // Captured from the snapshot at open() — the export-job
+            // dispatch is responsible for populating
+            // `snapshot.working_colorspace` from the project at the
+            // moment the export starts. Pinning it here means a
+            // mid-export flip of the project setting can't make
+            // pixels diverge across frames.
+            working_colorspace: snapshot.working_colorspace,
         })
     }
 
@@ -769,15 +788,24 @@ impl Encoder {
         height: u32,
     ) -> Result<(), RenderError> {
         // Accumulate light-level statistics from the linear master
-        // before we quantise to sRGB — once we've clipped at 1.0 we
-        // can no longer recover the HDR peak. Cheap enough to run
+        // before we quantise to display u8 — once we've clipped at 1.0
+        // we can no longer recover the HDR peak. Cheap enough to run
         // unconditionally; `LightLevelStats` fits in three f64s.
         self.light_stats.update(linear_rgba);
-        let srgb = klipp_color::display::display_transform(
+        // Route through the delivery-target Output Display Transform.
+        // For `OdtChoice::MatchViewer` this dispatches based on the
+        // project working colorspace and matches the viewer's pixels
+        // pixel-for-pixel; explicit ODTs (Rec.709 SDR / Rec.2100 PQ /
+        // DCI-P3) walk the linear master into AcesCG first when the
+        // project's working space is BT.709-linear so the ODT chain
+        // sees the right basis.
+        let display_u8 = klipp_color::display::display_transform_for_export(
             linear_rgba,
             self.tone_map_op,
+            self.working_colorspace,
+            self.odt,
         );
-        self.encode_video_frame(&srgb, width, height)
+        self.encode_video_frame(&display_u8, width, height)
     }
 
     /// Encode one RGBA video frame.
@@ -1279,7 +1307,8 @@ mod tests {
             audio_codec: ExportAudioCodec::Aac,
             audio_bitrate_kbps: Some(128), video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
             burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, embed_chapters: false,
-            bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable }
+            bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable,
+            odt: klipp_core::OdtChoice::MatchViewer }
     }
 
     fn make_snapshot() -> SequenceSnapshot {
@@ -1296,6 +1325,7 @@ mod tests {
             audio_tracks: vec![],
             global_lut_path: None,
             subtitle_tracks: vec![], chapters: vec![],
+            working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
         }
     }
 
@@ -1440,6 +1470,7 @@ mod tests {
             global_lut_path: None,
             subtitle_tracks: vec![],
             chapters: vec![],
+            working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
         };
 
         let mut enc = Encoder::open(&path, &settings, &snapshot).unwrap();

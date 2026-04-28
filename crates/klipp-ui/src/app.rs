@@ -113,6 +113,10 @@ struct ExportDialogState {
     /// Display-boundary tone-map operator picked by the user.
     /// Default Hable matches prior behaviour.
     tone_map_op: klipp_core::ToneMapOp,
+    /// Output Display Transform — picks the delivery-target colour
+    /// space of the rendered file. Default `MatchViewer` mirrors what
+    /// the user has been seeing while editing.
+    odt: klipp_core::OdtChoice,
 }
 
 impl Default for ExportDialogState {
@@ -147,6 +151,7 @@ impl Default for ExportDialogState {
             bit_depth: 0,
             hdr_mode: klipp_core::HdrMode::Sdr,
             tone_map_op: klipp_core::ToneMapOp::Hable,
+            odt: klipp_core::OdtChoice::MatchViewer,
         }
     }
 }
@@ -13911,6 +13916,12 @@ impl KlippApp {
                         snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
                     }
                 }
+                // Pin the project working colorspace into the
+                // snapshot so the encoder's display transform reads
+                // the same value the user has been editing under.
+                if let Ok(ref mut snap) = snapshot {
+                    snap.sequence_snapshot.working_colorspace = self.state.project_working_colorspace;
+                }
                 let label = settings.output_path.file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| "Render".into());
@@ -13947,6 +13958,9 @@ impl KlippApp {
                         let seq = &self.state.sequences[self.state.active_sequence_idx];
                         snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
                     }
+                }
+                if let Ok(ref mut snap) = snapshot {
+                    snap.sequence_snapshot.working_colorspace = self.state.project_working_colorspace;
                 }
                 let label = settings.output_path.file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -14737,6 +14751,10 @@ impl KlippApp {
                 }
             };
             snap.sequence_snapshot.export_range = Some((*start_frame, *end_frame));
+            // Pin the project working colorspace so per-segment
+            // exports route through the same display transform as
+            // the rest of the pipeline.
+            snap.sequence_snapshot.working_colorspace = self.state.project_working_colorspace;
 
             let display_label = format!(
                 "{} [{}/{}]",
@@ -18546,6 +18564,7 @@ fn build_export_settings(dialog: &ExportDialogState) -> ExportSettings {
         bit_depth: dialog.bit_depth,
         hdr_mode: dialog.hdr_mode,
         tone_map_op: dialog.tone_map_op,
+        odt: dialog.odt,
     }
 }
 
@@ -21533,6 +21552,44 @@ impl KlippApp {
                             });
                         ui.end_row();
 
+                        // Output Display Transform — picks the
+                        // delivery-target colour space the rendered
+                        // file lands in. Default `MatchViewer` gives
+                        // back-compat: same pixels the user has been
+                        // seeing while editing. The HDR + DCI cinema
+                        // entries assume an AcesCG-basis grade chain
+                        // (or a Rec.709 project, which the encoder
+                        // walks into AcesCG before applying the ODT).
+                        ui.label("Output transform:");
+                        egui::ComboBox::from_id_salt("export_odt")
+                            .selected_text(self.export_dialog.odt.label())
+                            .show_ui(ui, |ui| {
+                                for choice in klipp_core::OdtChoice::ALL {
+                                    ui.selectable_value(
+                                        &mut self.export_dialog.odt,
+                                        choice,
+                                        choice.label(),
+                                    );
+                                }
+                            });
+                        ui.end_row();
+
+                        // Plain-language hint so the default isn't
+                        // surprising. Only show under MatchViewer —
+                        // the explicit ODTs are self-explanatory by
+                        // their menu labels.
+                        if self.export_dialog.odt == klipp_core::OdtChoice::MatchViewer {
+                            ui.label("");
+                            ui.add(egui::Label::new(
+                                egui::RichText::new(
+                                    "Match Viewer = same colour space your monitor's been showing you while editing.",
+                                )
+                                .small()
+                                .italics(),
+                            ).wrap());
+                            ui.end_row();
+                        }
+
                         // Rate control mode
                         if self.export_dialog.video_codec.uses_crf() {
                             ui.label("Rate control:");
@@ -21819,6 +21876,9 @@ impl KlippApp {
                                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                                 snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
                             }
+                        }
+                        if let Ok(ref mut snap) = snapshot {
+                            snap.sequence_snapshot.working_colorspace = self.state.project_working_colorspace;
                         }
                         let label = path.file_name()
                             .map(|n| n.to_string_lossy().to_string())
@@ -26472,6 +26532,7 @@ mod render_script_tests {
             bit_depth: 0,
             hdr_mode: klipp_core::HdrMode::Sdr,
             tone_map_op: klipp_core::ToneMapOp::Hable,
+            odt: klipp_core::OdtChoice::MatchViewer,
         };
         let script = generate_render_script(&seq, &media_pool, &settings, "/tmp/out.mp4");
         assert!(script.starts_with("#!/usr/bin/env bash\n"), "missing shebang: {script}");

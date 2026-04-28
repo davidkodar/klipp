@@ -43,6 +43,13 @@ pub struct SequenceSnapshot {
     /// already shifted into export-range-relative coordinates when a
     /// zone export is active, and markers outside the range are dropped.
     pub chapters: Vec<klipp_core::ChapterSnapshot>,
+    /// Project working colorspace at the moment of snapshot. Read
+    /// alongside `ExportSettings.odt` by the encoder's display
+    /// transform to dispatch the right linear → display path.
+    /// Defaults to [`Rec709Linear`] for back-compat with snapshot
+    /// constructors that pre-date the field.
+    #[doc(hidden)]
+    pub working_colorspace: klipp_core::WorkingColorspace,
 }
 
 #[derive(Clone)]
@@ -325,6 +332,12 @@ impl SequenceSnapshot {
             global_lut_path,
             subtitle_tracks,
             chapters,
+            // Default; the caller layer (klipp-app's export-job
+            // dispatch) overrides this to match the project's active
+            // working colorspace before kicking the job. Doing it
+            // there keeps the snapshot construction free of any
+            // dependency on the engine's atomic.
+            working_colorspace: klipp_core::WorkingColorspace::default(),
         })
     }
 
@@ -860,7 +873,8 @@ mod tests {
             audio_codec: ExportAudioCodec::Aac,
             audio_bitrate_kbps: Some(192), video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
             burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, embed_chapters: false,
-            bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable }
+            bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable,
+            odt: klipp_core::OdtChoice::MatchViewer }
     }
 
     #[test]

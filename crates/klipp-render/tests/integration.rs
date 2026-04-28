@@ -26,7 +26,8 @@ fn make_export_settings(path: &std::path::Path) -> ExportSettings {
         audio_codec: ExportAudioCodec::Copy, // Skip audio for speed
         audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
         burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, embed_chapters: false,
-        bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable }
+        bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable,
+        odt: klipp_core::OdtChoice::MatchViewer }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -48,7 +49,7 @@ fn snapshot_to_pipeline_roundtrip() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![],
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
 
     let mut pipeline = RenderPipeline::default_stages(None);
@@ -85,7 +86,7 @@ fn compositor_with_gap_produces_none() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![],
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
 
     let mut compositor = FrameCompositor::new();
@@ -121,7 +122,7 @@ fn export_job_empty_sequence() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![],
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -172,7 +173,7 @@ fn export_job_cancellation_immediate() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![],
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
 
     let cancel = Arc::new(AtomicBool::new(true)); // Cancel before start
@@ -214,7 +215,7 @@ fn export_job_cancellation_midway() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![],
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -284,7 +285,7 @@ fn export_job_progress_advances() {
         video_tracks: vec![],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![],
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -379,7 +380,7 @@ fn export_real_media_h264() {
             }],
         }],
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![],
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -483,7 +484,7 @@ fn export_real_media_with_color_grade() {
         }],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![],
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -581,7 +582,7 @@ fn export_with_title_and_gap() {
         }],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![],
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -673,7 +674,7 @@ fn export_with_keyframed_opacity() {
         }],
         audio_tracks: vec![],
         global_lut_path: None,
-        subtitle_tracks: vec![], chapters: vec![],
+        subtitle_tracks: vec![], chapters: vec![], working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -766,6 +767,7 @@ fn export_mp4_with_embedded_subtitle_stream() {
             ],
         }],
         chapters: Vec::new(),
+        working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -858,6 +860,7 @@ fn export_without_embed_has_no_subtitle_stream() {
             }],
         }],
         chapters: Vec::new(),
+        working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
     };
 
     let cancel = Arc::new(AtomicBool::new(false));

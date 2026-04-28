@@ -409,6 +409,7 @@ mod tests {
             audio_tracks,
             global_lut_path: None,
             subtitle_tracks: vec![], chapters: vec![],
+            working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
         }
     }
 

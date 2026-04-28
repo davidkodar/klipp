@@ -621,6 +621,7 @@ mod tests {
             audio_tracks: vec![],
             global_lut_path: None,
             subtitle_tracks: vec![], chapters: vec![],
+            working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
         }
     }
 
@@ -649,6 +650,7 @@ mod tests {
             burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, embed_chapters: false,
             bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr,
             tone_map_op: klipp_core::ToneMapOp::Hable,
+            odt: klipp_core::OdtChoice::MatchViewer,
         };
         p.begin_export(&settings);
         p.begin_clip(&ClipContext {

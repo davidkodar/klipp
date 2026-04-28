@@ -2326,6 +2326,7 @@ dependencies = [
  "klipp-timeline",
  "klipp-title",
  "klipp-transitions",
+ "serde_json",
  "serial_test",
  "thiserror 1.0.69",
  "tracing",

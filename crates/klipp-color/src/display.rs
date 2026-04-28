@@ -40,6 +40,11 @@ use crate::transfer::linear_to_srgb;
 /// path alive rather than cascading a rename through every call site.
 pub use klipp_core::ToneMapOp;
 
+/// Re-export of [`klipp_core::OdtChoice`]. Same crate-layering rationale
+/// as [`ToneMapOp`] — the enum lives in `klipp-core` so the runtime
+/// export type can carry it without depending on `klipp-color`.
+pub use klipp_core::OdtChoice;
+
 /// Iterate every operator in menu order. Useful for UI pickers and
 /// round-trip tests without hard-coding variant lists.
 pub const TONE_MAP_OPS_ALL: [ToneMapOp; 4] = [
@@ -280,6 +285,125 @@ pub fn display_transform_ws(
             dst[3] = (chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
         });
     let _ = tone_map_op; // Intentionally unused in the ACES path.
+    out
+}
+
+/// Export-side display transform.
+///
+/// Same shape as [`display_transform_ws`] but takes a delivery-target
+/// [`OdtChoice`] so the rendered file can land in any of the
+/// supported display colour spaces (Rec.709 SDR, Rec.2100 PQ at 1000
+/// or 4000 nit, DCI-P3 D65 cinema, or the legacy sRGB-only path).
+/// All branches read interleaved linear-light f32 RGBA and emit
+/// interleaved display-encoded u8 RGBA.
+///
+/// # Dispatch
+///
+/// * [`OdtChoice::MatchViewer`] — defers to [`display_transform_ws`],
+///   so the export pixels match the viewer pixel-for-pixel under the
+///   same project working colorspace + tone-map operator.
+/// * [`OdtChoice::Rec709Sdr`] — explicit Rec.709 SDR cinema (RRT +
+///   Rec.709 ODT + BT.1886 inverse), regardless of working space.
+///   When `working_space` is [`Rec709Linear`], the input is converted
+///   to AcesCG (BT.709 → AP1 in linear) before the ODT — the ODT
+///   chain assumes AcesCG-basis input. This is documented loud rather
+///   than silent.
+/// * [`OdtChoice::Rec2100Pq1000`] / [`OdtChoice::Rec2100Pq4000`] —
+///   HDR10 PQ at 1000 / 4000 nit peak luminance with BT.2020
+///   primaries. Same BT.709 → AP1 conversion when the project
+///   working space is Rec.709-linear.
+/// * [`OdtChoice::DciP3D65_48`] — DCI-P3 D65 theatrical at 48 nit.
+///   Same conversion rule.
+/// * [`OdtChoice::Srgb`] — legacy sRGB-only path, identical to
+///   [`display_transform`]. No RRT/ODT, no working-space awareness;
+///   byte-identical to every export written before delivery-target
+///   ODTs landed.
+/// * [`OdtChoice::Unknown`] — forwards-compat sentinel; treated as
+///   `MatchViewer` so older builds opening a project with a newer
+///   ODT stay safe.
+///
+/// `tone_map_op` is honoured only on the legacy paths
+/// (`MatchViewer + Rec709Linear` / `Srgb`); the ACES-derived ODTs
+/// supply their own tone curves and ignore the user's `tone_map_op`
+/// to avoid composing two opinionated curves into a muddy look.
+pub fn display_transform_for_export(
+    linear_rgba: &[f32],
+    tone_map_op: ToneMapOp,
+    working_space: klipp_core::WorkingColorspace,
+    odt: OdtChoice,
+) -> Vec<u8> {
+    use klipp_core::WorkingColorspace;
+    use rayon::prelude::*;
+    assert!(
+        linear_rgba.len() % 4 == 0,
+        "display_transform_for_export requires RGBA-packed input",
+    );
+
+    // MatchViewer + Srgb: dispatch directly so the legacy path stays
+    // byte-identical to today's output. Unknown variant aliases
+    // MatchViewer for forwards-compat.
+    match odt {
+        OdtChoice::MatchViewer | OdtChoice::Unknown => {
+            return display_transform_ws(linear_rgba, tone_map_op, working_space);
+        }
+        OdtChoice::Srgb => {
+            // Legacy non-ACES path. No RRT/ODT, no working-space
+            // awareness — the user explicitly opted out of the new
+            // pipeline. Byte-identical to pre-Phase-E exports.
+            return display_transform(linear_rgba, tone_map_op);
+        }
+        _ => {}
+    }
+
+    // The remaining variants are all AcesCG-basis ODTs. If the
+    // project's working space is BT.709-linear we have to walk the
+    // input into AP1 first; otherwise the ODT sees Rec.709-basis
+    // values and produces a wrong, hue-shifted look.
+    //
+    // BT.2020-linear projects fall through unconverted — there's no
+    // BT.2020 → AP1 matrix wired here yet. The viewer aliases BT.2020
+    // to Rec.709 today (display_transform_ws stub), so this matches
+    // that intent until a proper BT.2020 IDT lands.
+    let needs_709_to_ap1 = matches!(working_space, WorkingColorspace::Rec709Linear);
+    let m_709_to_ap1 = if needs_709_to_ap1 {
+        Some(crate::primaries::bt709_to_acescg())
+    } else {
+        None
+    };
+
+    let mut out = vec![0u8; linear_rgba.len()];
+    out.par_chunks_exact_mut(4)
+        .zip(linear_rgba.par_chunks_exact(4))
+        .for_each(|(dst, chunk)| {
+            // Walk into AP1 if the project ws isn't already there.
+            let ap1 = if let Some(m) = m_709_to_ap1 {
+                crate::primaries::matrix3_mul_vec(m, [chunk[0], chunk[1], chunk[2]])
+            } else {
+                [chunk[0], chunk[1], chunk[2]]
+            };
+
+            let encoded = match odt {
+                OdtChoice::Rec709Sdr => crate::aces::acescg_to_rec709_sdr(ap1),
+                OdtChoice::Rec2100Pq1000 => {
+                    crate::aces::acescg_to_rec2100_pq_1000_nit(ap1)
+                }
+                OdtChoice::Rec2100Pq4000 => {
+                    crate::aces::acescg_to_rec2100_pq_4000_nit(ap1)
+                }
+                OdtChoice::DciP3D65_48 => crate::aces::acescg_to_dcip3_d65_48nit(ap1),
+                // The MatchViewer / Srgb / Unknown branches were
+                // handled above; this match arm is unreachable, but
+                // a Rust match must be total.
+                OdtChoice::MatchViewer | OdtChoice::Srgb | OdtChoice::Unknown => ap1,
+            };
+
+            dst[0] = (encoded[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            dst[1] = (encoded[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            dst[2] = (encoded[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            dst[3] = (chunk[3].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        });
+
+    let _ = tone_map_op; // Intentionally unused on the ODT branches.
     out
 }
 
@@ -664,5 +788,293 @@ mod tests {
             klipp_core::WorkingColorspace::AcesCG);
         // 0.5 * 255 + 0.5 = 128 (rounding).
         assert!(out[3] == 128 || out[3] == 127);
+    }
+
+    // ─── display_transform_for_export ─────────────────────────────────
+    //
+    // The export pipeline's seam: linear-light frame → display-encoded
+    // u8. Tests live here so the CPU oracle stays beside the viewer's
+    // path; that lets parity drift be caught before any GPU work.
+
+    /// A 4×4 RGBA test frame covering the corner cases that matter:
+    /// mid-grey, saturated red (out-of-gamut for some ODT primaries),
+    /// near-black, and near-white. Returned as interleaved f32 RGBA
+    /// linear-light.
+    fn small_linear_test_frame() -> Vec<f32> {
+        let mut out = Vec::with_capacity(4 * 4 * 4);
+        // Mid-grey (4 px).
+        for _ in 0..4 { out.extend_from_slice(&[0.18, 0.18, 0.18, 1.0]); }
+        // Saturated red — exercises gamut mapping.
+        for _ in 0..4 { out.extend_from_slice(&[1.0, 0.0, 0.0, 1.0]); }
+        // Near-black.
+        for _ in 0..4 { out.extend_from_slice(&[0.005, 0.005, 0.005, 1.0]); }
+        // Near-white (slight overshoot — realistic linear master).
+        for _ in 0..4 { out.extend_from_slice(&[0.95, 0.97, 0.99, 1.0]); }
+        out
+    }
+
+    #[test]
+    fn export_match_viewer_at_acescg_is_byte_identical_to_viewer() {
+        // The whole point of `MatchViewer`: the rendered file is
+        // pixel-for-pixel what the user has been seeing in the
+        // viewer. Anything else here is a viewer-vs-export drift bug.
+        let frame = small_linear_test_frame();
+        let viewer = display_transform_ws(
+            &frame,
+            ToneMapOp::Hable,
+            klipp_core::WorkingColorspace::AcesCG,
+        );
+        let export = display_transform_for_export(
+            &frame,
+            ToneMapOp::Hable,
+            klipp_core::WorkingColorspace::AcesCG,
+            OdtChoice::MatchViewer,
+        );
+        assert_eq!(
+            viewer, export,
+            "MatchViewer + AcesCG diverged from the viewer's display path",
+        );
+    }
+
+    #[test]
+    fn export_match_viewer_at_rec709_matches_viewer_across_tone_map_ops() {
+        // Under Rec.709 working space, the viewer's path is the
+        // legacy `display_transform`; `MatchViewer` must collapse to
+        // the same pixels for every tone-map operator the dialog
+        // exposes. Pinned per-op so an accidental tone-map split
+        // (e.g. the AcesCG branch grabbing the Rec.709 path) shows
+        // here.
+        let frame = small_linear_test_frame();
+        for op in TONE_MAP_OPS_ALL {
+            let viewer = display_transform_ws(
+                &frame,
+                op,
+                klipp_core::WorkingColorspace::Rec709Linear,
+            );
+            let export = display_transform_for_export(
+                &frame,
+                op,
+                klipp_core::WorkingColorspace::Rec709Linear,
+                OdtChoice::MatchViewer,
+            );
+            assert_eq!(
+                viewer, export,
+                "MatchViewer + Rec709 + {op:?} diverged from the viewer",
+            );
+        }
+    }
+
+    #[test]
+    fn export_match_viewer_at_bt2020_aliases_rec709_stub() {
+        // BT.2020 is currently stubbed to the Rec.709 path in the
+        // viewer (display_transform_ws). The export must alias the
+        // same stub so a BT.2020 user gets matching pixels rather
+        // than a silent wrong-gamut export.
+        let frame = small_linear_test_frame();
+        let viewer = display_transform_ws(
+            &frame,
+            ToneMapOp::Hable,
+            klipp_core::WorkingColorspace::Bt2020Linear,
+        );
+        let export = display_transform_for_export(
+            &frame,
+            ToneMapOp::Hable,
+            klipp_core::WorkingColorspace::Bt2020Linear,
+            OdtChoice::MatchViewer,
+        );
+        assert_eq!(viewer, export);
+    }
+
+    #[test]
+    fn export_rec709_sdr_at_acescg_matches_match_viewer() {
+        // Under AcesCG, an explicit `Rec709Sdr` must produce the same
+        // pixels as `MatchViewer` — the viewer's AcesCG path IS the
+        // Rec.709 SDR ODT. Drift here means one of the two paths
+        // grew an extra step the other didn't.
+        let frame = small_linear_test_frame();
+        let mv = display_transform_for_export(
+            &frame,
+            ToneMapOp::None,
+            klipp_core::WorkingColorspace::AcesCG,
+            OdtChoice::MatchViewer,
+        );
+        let explicit = display_transform_for_export(
+            &frame,
+            ToneMapOp::None,
+            klipp_core::WorkingColorspace::AcesCG,
+            OdtChoice::Rec709Sdr,
+        );
+        assert_eq!(
+            mv, explicit,
+            "Rec709Sdr + AcesCG should equal MatchViewer + AcesCG",
+        );
+    }
+
+    #[test]
+    fn export_srgb_legacy_path_matches_pre_phase_e_export() {
+        // `OdtChoice::Srgb` is the safety net for users who want the
+        // old, pre-ACES export. Must be byte-identical to the
+        // legacy `display_transform` regardless of the project's
+        // working space — by definition the legacy path doesn't
+        // care about working space.
+        let frame = small_linear_test_frame();
+        let legacy = display_transform(&frame, ToneMapOp::Hable);
+        for ws in [
+            klipp_core::WorkingColorspace::Rec709Linear,
+            klipp_core::WorkingColorspace::AcesCG,
+            klipp_core::WorkingColorspace::Bt2020Linear,
+        ] {
+            let export = display_transform_for_export(
+                &frame,
+                ToneMapOp::Hable,
+                ws,
+                OdtChoice::Srgb,
+            );
+            assert_eq!(
+                legacy, export,
+                "Srgb-mode export drifted from legacy display_transform under ws={ws:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn export_unknown_odt_aliases_match_viewer() {
+        // The serde sentinel arm: a future-version project file
+        // smuggled in an ODT we don't know about. The runtime
+        // dispatch treats Unknown as MatchViewer so the user still
+        // gets the safe viewer-matching pixels.
+        let frame = small_linear_test_frame();
+        let mv = display_transform_for_export(
+            &frame,
+            ToneMapOp::Hable,
+            klipp_core::WorkingColorspace::AcesCG,
+            OdtChoice::MatchViewer,
+        );
+        let unknown = display_transform_for_export(
+            &frame,
+            ToneMapOp::Hable,
+            klipp_core::WorkingColorspace::AcesCG,
+            OdtChoice::Unknown,
+        );
+        assert_eq!(mv, unknown);
+    }
+
+    #[test]
+    fn export_hdr_pq_1000_differs_measurably_from_sdr_rec709() {
+        // The PQ ODT must produce different pixels from the SDR
+        // Rec.709 ODT — anything else means the dispatch slot is
+        // grabbing the wrong curve. We don't pin absolute Resolve
+        // parity here (that's the soak's job); just that the two
+        // paths diverge clearly. The mid-grey patch is the cleanest
+        // signal: 0.18 linear becomes ~118/255 in SDR, but a
+        // significantly different code value through PQ.
+        let frame = small_linear_test_frame();
+        let sdr = display_transform_for_export(
+            &frame,
+            ToneMapOp::None,
+            klipp_core::WorkingColorspace::AcesCG,
+            OdtChoice::Rec709Sdr,
+        );
+        let pq = display_transform_for_export(
+            &frame,
+            ToneMapOp::None,
+            klipp_core::WorkingColorspace::AcesCG,
+            OdtChoice::Rec2100Pq1000,
+        );
+        // Compare luma on the mid-grey patch (first 4 px).
+        let sdr_y = sdr[0] as i32 + sdr[1] as i32 + sdr[2] as i32;
+        let pq_y = pq[0] as i32 + pq[1] as i32 + pq[2] as i32;
+        let drift = (sdr_y - pq_y).abs();
+        assert!(
+            drift > 8,
+            "PQ-1000 mid-grey too close to SDR ({sdr_y} vs {pq_y}, Δ={drift}) — \
+             dispatch likely picked the wrong ODT",
+        );
+    }
+
+    #[test]
+    fn export_hdr_pq_4000_differs_from_pq_1000() {
+        // Different peak-luminance scaling must yield different
+        // pixels — same dispatch family, different ODT instance.
+        let frame = small_linear_test_frame();
+        let pq1k = display_transform_for_export(
+            &frame,
+            ToneMapOp::None,
+            klipp_core::WorkingColorspace::AcesCG,
+            OdtChoice::Rec2100Pq1000,
+        );
+        let pq4k = display_transform_for_export(
+            &frame,
+            ToneMapOp::None,
+            klipp_core::WorkingColorspace::AcesCG,
+            OdtChoice::Rec2100Pq4000,
+        );
+        // Compare on the saturated-red patch (px index 4..8).
+        let red_idx = 4 * 4; // start of the second 4-px block
+        let drift = (pq1k[red_idx] as i32 - pq4k[red_idx] as i32).abs();
+        assert!(
+            drift > 0,
+            "PQ-1000 and PQ-4000 produced identical red — peak scaling lost",
+        );
+    }
+
+    #[test]
+    fn export_dci_p3_differs_from_rec709_sdr() {
+        // Same shape: different ODT variant must produce different
+        // pixels. The DCI cinema curve has different highlight roll-
+        // off + DCI gamma 2.6 inverse, so even on neutral grey the
+        // output should diverge from the SDR Rec.709 path.
+        let frame = small_linear_test_frame();
+        let sdr = display_transform_for_export(
+            &frame,
+            ToneMapOp::None,
+            klipp_core::WorkingColorspace::AcesCG,
+            OdtChoice::Rec709Sdr,
+        );
+        let dcip3 = display_transform_for_export(
+            &frame,
+            ToneMapOp::None,
+            klipp_core::WorkingColorspace::AcesCG,
+            OdtChoice::DciP3D65_48,
+        );
+        // Mid-grey patch.
+        let drift = (sdr[0] as i32 - dcip3[0] as i32).abs()
+            + (sdr[1] as i32 - dcip3[1] as i32).abs()
+            + (sdr[2] as i32 - dcip3[2] as i32).abs();
+        assert!(
+            drift > 4,
+            "DCI-P3 D65 collapsed to the same pixels as Rec.709 SDR — wrong ODT slot",
+        );
+    }
+
+    #[test]
+    fn export_explicit_pq_under_rec709_project_walks_through_ap1() {
+        // The cross-working-space contract: a Rec.709-linear project
+        // with an explicit ODT (PQ here) MUST get its linear master
+        // walked into AP1 first. Without that step the PQ ODT sees
+        // Rec.709-basis values and produces a wrong, hue-shifted
+        // image. Pin via a single linear-red pixel — under AP1
+        // basis the output should diverge from the same input
+        // treated as already-AP1.
+        let pix_rec709 = vec![1.0_f32, 0.0, 0.0, 1.0];
+        let from_709 = display_transform_for_export(
+            &pix_rec709,
+            ToneMapOp::None,
+            klipp_core::WorkingColorspace::Rec709Linear,
+            OdtChoice::Rec2100Pq1000,
+        );
+        let from_acescg = display_transform_for_export(
+            &pix_rec709,
+            ToneMapOp::None,
+            klipp_core::WorkingColorspace::AcesCG,
+            OdtChoice::Rec2100Pq1000,
+        );
+        // The two paths see the same numbers but the BT.709→AP1
+        // matrix scrambles them — outputs must differ.
+        assert_ne!(
+            from_709, from_acescg,
+            "Rec.709 project with PQ ODT didn't apply the AP1 matrix step — \
+             the ODT is being fed the wrong basis",
+        );
     }
 }

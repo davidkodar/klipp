@@ -52,7 +52,7 @@ pub mod working_colorspace;
 pub use color_grade::{ColorMatchSettings, ColorWarperParams, CurveSet, FilmGrainSettings, HueSatCurves, LayerMixerInput, Mask, MaskKeyframes, MaskShape, MaskStack, QualifierSettings};
 pub use colorspace::{ColorMatrix, ColorPrimaries, ColorRange, ColorTransfer, SourceColorspace};
 pub use keyframe::{Interpolation, Keyframe};
-pub use events::{AppCommand, AppEvent, AudioParam, ChapterSnapshot, EncoderPreset, ExportAudioCodec, ExportFormat, ExportSettings, ExportVideoCodec, HdrMode, MarkerColor, MediaLoadedPayload, ParamChange, RateControl, ToneMapOp, Tool, TrackTarget, VideoParam, ViewerMode};
+pub use events::{AppCommand, AppEvent, AudioParam, ChapterSnapshot, EncoderPreset, ExportAudioCodec, ExportFormat, ExportSettings, ExportVideoCodec, HdrMode, MarkerColor, MediaLoadedPayload, OdtChoice, ParamChange, RateControl, ToneMapOp, Tool, TrackTarget, VideoParam, ViewerMode};
 pub use export_preset::{ExportPreset, ExportPresetSettings, PresetId, ProxyResolution, builtin_presets};
 pub use id::{BinId, ClipId, GroupId, MarkerId, MediaId, SequenceId, TrackId, TransitionId};
 pub use time::{Fps, RationalTime, TimeRange, Timecode};

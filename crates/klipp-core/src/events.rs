@@ -59,7 +59,131 @@ pub enum ToneMapOp {
     Aces,
 }
 
-#[derive(Debug, Clone)]
+/// Delivery-target Output Display Transform for the export pipeline.
+///
+/// Picks which display-encoded colour space the rendered file lands
+/// in. Lives in `klipp-core` next to [`ExportSettings`] so the
+/// runtime export type can carry it without pulling in `klipp-color`;
+/// the actual ODT curves live in [`klipp_color::aces`] and the
+/// dispatch in [`klipp_color::display::display_transform_for_export`].
+///
+/// # When each variant is right
+///
+/// * [`Self::MatchViewer`] — default. Mirrors the viewer's display
+///   path so the exported file matches what the user has been seeing
+///   while editing. With a Rec.709 working space this is byte-
+///   identical to every export produced before this setting existed
+///   (sRGB encode of the linear master). With ACEScg it routes
+///   through the Rec.709 SDR ODT (RRT + ODT + BT.1886 inverse) — same
+///   pipeline the viewer runs.
+/// * [`Self::Rec709Sdr`] — explicit Rec.709 SDR cinema (RRT + Rec.709
+///   ODT). Picks the same curve as `MatchViewer` under ACEScg, but
+///   forces it on regardless of the project's working space (a
+///   Rec.709-linear project still gets the cinema look).
+/// * [`Self::Rec2100Pq1000`] / [`Self::Rec2100Pq4000`] — HDR10 PQ
+///   (SMPTE ST 2084) at 1000 / 4000 nit peak luminance, BT.2020
+///   primaries. Pick the one that matches the calibrated peak of the
+///   target display.
+/// * [`Self::DciP3D65_48`] — DCI-P3 D65 cinema, 48 cd/m² peak. The
+///   theatrical-projection target.
+/// * [`Self::Srgb`] — legacy sRGB encode with no ACES RRT/ODT. The
+///   pre-Phase-E export path, kept addressable for users who don't
+///   want any opinionated tone mapping. Byte-identical to the export
+///   pipeline as it shipped before delivery-target ODTs landed.
+///
+/// # Wire stability
+///
+/// `as_u8` / `from_u8` pin the wire tags so a future enum reorder
+/// can't silently change the meaning of an already-stored value.
+/// Unknown tags fall back to [`Self::MatchViewer`] so a corrupted or
+/// future-version setting never produces a wider-gamut surprise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum OdtChoice {
+    /// Mirror the viewer's display path. Default — matches what the
+    /// user has been seeing while editing.
+    #[default]
+    MatchViewer,
+    /// Rec.709 SDR cinema — RRT + Rec.709 ODT + BT.1886 inverse.
+    /// Explicit form of the viewer's path under an ACEScg project.
+    Rec709Sdr,
+    /// Rec.2100 PQ at 1000 cd/m² peak. HDR10 deliverable.
+    Rec2100Pq1000,
+    /// Rec.2100 PQ at 4000 cd/m² peak. HDR10 deliverable for high-
+    /// nit reference monitors.
+    Rec2100Pq4000,
+    /// DCI-P3 D65 at 48 cd/m² peak. Theatrical cinema deliverable.
+    DciP3D65_48,
+    /// Legacy sRGB encode — no ACES RRT/ODT, just sRGB inverse EOTF
+    /// on the linear master. The pre-delivery-target export path.
+    Srgb,
+    /// Forwards-compat sentinel: any future tag we don't recognise
+    /// deserialises here. Treated by the dispatch as MatchViewer so
+    /// older builds opening a project with a newer ODT stay safe.
+    #[serde(other)]
+    Unknown,
+}
+
+impl OdtChoice {
+    /// Wire-stable u8 tag — used by FFI / atomic packers that need a
+    /// fixed-width representation. Discriminants are pinned so a
+    /// future enum reorder can't silently change the meaning of a
+    /// stored value.
+    #[inline]
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            OdtChoice::MatchViewer => 0,
+            OdtChoice::Rec709Sdr => 1,
+            OdtChoice::Rec2100Pq1000 => 2,
+            OdtChoice::Rec2100Pq4000 => 3,
+            OdtChoice::DciP3D65_48 => 4,
+            OdtChoice::Srgb => 5,
+            OdtChoice::Unknown => 255,
+        }
+    }
+
+    /// Inverse of [`Self::as_u8`]. Unknown tags fall back to
+    /// [`Self::MatchViewer`] — the safe default that mirrors viewer
+    /// behaviour, so a corrupted atomic / FFI integer never produces
+    /// a delivery-target surprise.
+    #[inline]
+    pub const fn from_u8(tag: u8) -> Self {
+        match tag {
+            1 => OdtChoice::Rec709Sdr,
+            2 => OdtChoice::Rec2100Pq1000,
+            3 => OdtChoice::Rec2100Pq4000,
+            4 => OdtChoice::DciP3D65_48,
+            5 => OdtChoice::Srgb,
+            _ => OdtChoice::MatchViewer,
+        }
+    }
+
+    /// Iteration order for menus (matches the discriminant order of
+    /// the supported variants — `Unknown` is excluded; it's a serde
+    /// sentinel, not a user choice).
+    pub const ALL: [OdtChoice; 6] = [
+        OdtChoice::MatchViewer,
+        OdtChoice::Rec709Sdr,
+        OdtChoice::Rec2100Pq1000,
+        OdtChoice::Rec2100Pq4000,
+        OdtChoice::DciP3D65_48,
+        OdtChoice::Srgb,
+    ];
+
+    /// Human-readable label for menus.
+    pub const fn label(self) -> &'static str {
+        match self {
+            OdtChoice::MatchViewer => "Match Viewer",
+            OdtChoice::Rec709Sdr => "Rec.709 SDR",
+            OdtChoice::Rec2100Pq1000 => "Rec.2100 PQ (1000 nit)",
+            OdtChoice::Rec2100Pq4000 => "Rec.2100 PQ (4000 nit)",
+            OdtChoice::DciP3D65_48 => "DCI-P3 D65 (48 nit)",
+            OdtChoice::Srgb => "sRGB (legacy)",
+            OdtChoice::Unknown => "Unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportSettings {
     pub output_path: PathBuf,
     pub format: ExportFormat,
@@ -96,6 +220,14 @@ pub struct ExportSettings {
     /// setting existed. ACES is the alternative for users who want
     /// hue-preserving highlight roll-off.
     pub tone_map_op: ToneMapOp,
+    /// Output Display Transform — picks the delivery-target colour
+    /// space the rendered file lands in. Defaults to
+    /// [`OdtChoice::MatchViewer`] so existing projects without the
+    /// field deserialise to the same pixels they'd render in the
+    /// viewer. `#[serde(default)]` keeps pre-S8 settings files
+    /// loadable.
+    #[serde(default)]
+    pub odt: OdtChoice,
 }
 
 impl Default for ExportSettings {
@@ -119,6 +251,7 @@ impl Default for ExportSettings {
             bit_depth: 0,
             hdr_mode: HdrMode::default(),
             tone_map_op: ToneMapOp::default(),
+            odt: OdtChoice::default(),
         }
     }
 }
@@ -1712,4 +1845,85 @@ pub struct ParamChange {
     pub node_id: uuid::Uuid,
     pub param: String,
     pub value: f32,
+}
+
+#[cfg(test)]
+mod odt_choice_tests {
+    use super::*;
+
+    #[test]
+    fn default_is_match_viewer() {
+        // Default must match the viewer's display path so projects
+        // produced before delivery-target ODTs landed render exactly
+        // the same pixels they did before. Pinned here and in the
+        // ExportSettings default below.
+        assert_eq!(OdtChoice::default(), OdtChoice::MatchViewer);
+    }
+
+    #[test]
+    fn variants_distinct() {
+        // Cheap guard against an accidental enum dedupe via macro.
+        for (i, a) in OdtChoice::ALL.iter().enumerate() {
+            for b in &OdtChoice::ALL[i + 1..] {
+                assert_ne!(a, b, "duplicate variants in OdtChoice::ALL");
+            }
+        }
+    }
+
+    #[test]
+    fn u8_round_trip_for_all_supported_variants() {
+        // Every variant the menu exposes must survive the u8 wire
+        // round-trip. Unknown is the serde sentinel, exercised
+        // separately below.
+        for choice in OdtChoice::ALL {
+            assert_eq!(OdtChoice::from_u8(choice.as_u8()), choice);
+        }
+    }
+
+    #[test]
+    fn u8_tags_are_stable() {
+        // Pin the wire tags. Reordering the enum or inserting a new
+        // variant must not silently change these — atomic stores and
+        // FFI consumers depend on them.
+        assert_eq!(OdtChoice::MatchViewer.as_u8(), 0);
+        assert_eq!(OdtChoice::Rec709Sdr.as_u8(), 1);
+        assert_eq!(OdtChoice::Rec2100Pq1000.as_u8(), 2);
+        assert_eq!(OdtChoice::Rec2100Pq4000.as_u8(), 3);
+        assert_eq!(OdtChoice::DciP3D65_48.as_u8(), 4);
+        assert_eq!(OdtChoice::Srgb.as_u8(), 5);
+        assert_eq!(OdtChoice::Unknown.as_u8(), 255);
+    }
+
+    #[test]
+    fn unknown_u8_falls_back_to_match_viewer() {
+        // A corrupted atomic / FFI integer must default to the safe
+        // viewer path — never produce a delivery-target surprise.
+        for tag in [6u8, 7, 42, 100, 200, 254] {
+            assert_eq!(OdtChoice::from_u8(tag), OdtChoice::MatchViewer);
+        }
+    }
+
+    #[test]
+    fn export_settings_default_carries_match_viewer() {
+        // Pin the back-compat contract: every project that goes
+        // through `ExportSettings::default()` (the entry point for
+        // every export-dialog open + every legacy site that builds
+        // a settings struct) starts with `odt = MatchViewer`. If
+        // this default ever shifts, an existing user's export
+        // pixels silently change at the next build.
+        let s = ExportSettings::default();
+        assert_eq!(s.odt, OdtChoice::MatchViewer);
+    }
+
+    #[test]
+    fn label_covers_every_variant_including_sentinel() {
+        // The menu only iterates `ALL`, but the Inspector / debug
+        // logs may print `Unknown` if a future-version project
+        // file is opened. Catch the missing-arm case here so we
+        // don't hit a `match` panic at runtime.
+        for choice in OdtChoice::ALL {
+            assert!(!choice.label().is_empty());
+        }
+        assert_eq!(OdtChoice::Unknown.label(), "Unknown");
+    }
 }
