@@ -275,6 +275,9 @@ mod tests {
             license: "Apache-2.0".into(),
             attribution: "x".into(),
             sources: vec![Source { url: "https://example.com/x".into() }],
+            kind: klipp_ml::ModelKind::default(),
+            runtime: klipp_ml::ModelRuntime::default(),
+            prompts: klipp_ml::PromptKinds::empty(),
         }
     }
 

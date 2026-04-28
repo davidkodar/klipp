@@ -1215,6 +1215,16 @@ pub struct AppState {
     /// Default `Idle` paints nothing.
     pub model_download: crate::model_download::ModelDownloadState,
 
+    /// AI Tools panel state — task selection, last mask, panel
+    /// visibility. Default closes the panel; flipping
+    /// `panel_visible` opens it. Wired through the registry below.
+    pub ai_tools_state: crate::ai_tools::AiToolsState,
+    /// Registry of `MaskGenerator` impls. Built once at app start
+    /// with the stub generator pre-registered; backend crates (e.g.
+    /// `klipp-ml-candle`, `klipp-ml-ort`) add their models in later
+    /// phases.
+    pub ai_tools_registry: crate::ai_tools::AiToolsRegistry,
+
     /// Available system font families (populated at startup from font discovery)
     pub available_fonts: Vec<String>,
 
@@ -2370,6 +2380,8 @@ impl Default for AppState {
             command_palette_query: String::new(),
             command_palette_selected: 0,
             model_download: crate::model_download::ModelDownloadState::default(),
+            ai_tools_state: crate::ai_tools::AiToolsState::default(),
+            ai_tools_registry: crate::ai_tools::AiToolsRegistry::with_stub_registered(),
             available_fonts: Vec::new(),
             pending_title_data: None,
             pending_title_preview_clip: None,

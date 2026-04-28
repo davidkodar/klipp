@@ -47,6 +47,7 @@
 pub mod app;
 pub mod audio_sync;
 pub mod browser;
+pub mod ai_tools;
 pub mod cache_manager;
 pub mod command_palette;
 pub mod drag_drop;

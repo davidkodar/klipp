@@ -21,10 +21,23 @@
 //!   (rfd file picker) that the palette itself triggers + dispatches
 //!   the resulting AppCommand on success. Avoids the legacy
 //!   "palette item is `None` and silently does nothing" trap.
+//!
+//! ## AppState assumptions (integrate-time)
+//!
+//! The AI Tools palette entries assume the following `AppState`
+//! shape — added in a follow-up integration commit, not in this file:
+//!
+//! - `state.ai_tools_state.panel_visible: bool` — toggled by the
+//!   `Toggle AI Tools Panel` entry.
+//!
+//! Until that field exists the `ToggleState` closure here will fail
+//! to compile, which is the desired tripwire — the integration PR
+//! must wire the state field at the same time it lands the panel UI.
 
 use std::borrow::Cow;
 
 use klipp_core::AppCommand;
+use klipp_core::events::AiToolsTaskTag;
 
 use crate::state::AppState;
 
@@ -338,6 +351,73 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         }
     }
 
+    // ── AI Tools — task launchers ──────────────────────────
+    // Each task launcher pushes `ShowAiToolsPanel { task }` so the
+    // panel opens (or switches focus) on the right task. Track Object
+    // is intentionally disabled — the tracker model lands later in the
+    // roadmap and we want the discoverability surface in place now,
+    // greyed, rather than appearing in v2 with no warning.
+    e.push(PaletteEntry {
+        label: Cow::Borrowed("AI: Remove Background"),
+        shortcut: Cow::Borrowed("Shift+B"),
+        action: PaletteAction::Cmd(AppCommand::ShowAiToolsPanel {
+            task: AiToolsTaskTag::RemoveBackground,
+        }),
+        enabled: true,
+    });
+    e.push(PaletteEntry {
+        label: Cow::Borrowed("AI: Isolate Object"),
+        shortcut: Cow::Borrowed("Shift+J"),
+        action: PaletteAction::Cmd(AppCommand::ShowAiToolsPanel {
+            task: AiToolsTaskTag::IsolateObject,
+        }),
+        enabled: true,
+    });
+    e.push(PaletteEntry {
+        label: Cow::Borrowed("AI: Detect Objects"),
+        shortcut: Cow::Borrowed("Shift+D"),
+        action: PaletteAction::Cmd(AppCommand::ShowAiToolsPanel {
+            task: AiToolsTaskTag::DetectObjects,
+        }),
+        enabled: true,
+    });
+    e.push(PaletteEntry {
+        label: Cow::Borrowed("AI: Track Object"),
+        shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Cmd(AppCommand::ShowAiToolsPanel {
+            task: AiToolsTaskTag::TrackObject,
+        }),
+        // Greyed until the tracker model lands. The entry is here on
+        // purpose — discoverability beats a silent gap.
+        enabled: false,
+    });
+    e.push(PaletteEntry {
+        label: Cow::Borrowed("AI: Run Inference (Active Task)"),
+        shortcut: Cow::Borrowed("Ctrl+Enter"),
+        action: PaletteAction::Cmd(AppCommand::RunAiToolsInference),
+        // Always-enabled for now; gating on "is there an active task?"
+        // can be added once the AI Tools state field lands and the
+        // palette can read it.
+        enabled: true,
+    });
+    e.push(PaletteEntry {
+        label: Cow::Borrowed("AI: Cancel Inference"),
+        shortcut: Cow::Borrowed("Ctrl+."),
+        action: PaletteAction::Cmd(AppCommand::CancelAiToolsInference),
+        enabled: true,
+    });
+    e.push(PaletteEntry {
+        label: Cow::Borrowed("Toggle AI Tools Panel"),
+        shortcut: Cow::Borrowed("Alt+A"),
+        // Assumes `AppState::ai_tools_state.panel_visible: bool` —
+        // see the module doc-comment. Integrate-time tripwire: this
+        // file won't compile until the field lands.
+        action: PaletteAction::ToggleState(|s| {
+            s.ai_tools_state.panel_visible = !s.ai_tools_state.panel_visible
+        }),
+        enabled: true,
+    });
+
     e
 }
 
@@ -445,6 +525,9 @@ mod tests {
         "Import Media",
         "Preferences",
         "Quit",
+        "AI: Remove Background",
+        "AI: Run Inference",
+        "Toggle AI Tools Panel",
     ];
 
     #[test]

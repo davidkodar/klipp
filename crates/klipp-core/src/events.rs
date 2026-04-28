@@ -498,6 +498,25 @@ impl RateControl {
     }
 }
 
+/// Identifies which AI Tools task a palette/keybinding action targets.
+/// Lives in `klipp-core` because [`AppCommand`] does — `klipp-core` is
+/// not allowed to depend on `klipp-ml`, so we mirror the task discriminator
+/// here as a plain enum and let the consumer (`klipp-ui` / `klipp-ml`)
+/// resolve it back to the manifest task type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiToolsTaskTag {
+    /// Background removal (alpha matte). Maps to SAM2 / RMBG-class
+    /// models in the manifest.
+    RemoveBackground,
+    /// Mask the user-selected object using a click/box prompt.
+    IsolateObject,
+    /// Run a one-shot detector and surface bounding boxes / labels.
+    DetectObjects,
+    /// Track a chosen object across the clip's frame range.
+    TrackObject,
+}
+
 #[derive(Debug, Clone)]
 pub enum AppCommand {
     // Transport
@@ -832,6 +851,25 @@ pub enum AppCommand {
     /// any network call; on confirm the download runs on a worker
     /// thread with progress + cancel UI.
     OpenModelDownloadDialog { model_id: String },
+
+    /// Open the AI Tools panel pre-selected on the given task. If the
+    /// panel is already open, this just switches the active task.
+    /// Surfaces the model picker + run/cancel controls.
+    ShowAiToolsPanel { task: AiToolsTaskTag },
+    /// Run the active AI Tools task on the current frame using the
+    /// currently-selected model. No-op (toast) when no task is active
+    /// or no model is selected.
+    RunAiToolsInference,
+    /// Cancel an in-progress AI Tools inference. Idempotent — no-op
+    /// when nothing is running.
+    CancelAiToolsInference,
+    /// Set the active AI Tools task without forcing the panel open.
+    /// The panel still updates its UI to reflect the new task.
+    SetAiToolsTask(AiToolsTaskTag),
+    /// Pick a specific model (by its `assets/models.toml` id) for the
+    /// currently active task. The handler validates the model is
+    /// compatible with the active task type before applying.
+    SelectAiToolsModel { model_id: String },
 
     /// Reverse Match Frame — source → program. Given the source
     /// viewer's currently-loaded media + playhead, find the next

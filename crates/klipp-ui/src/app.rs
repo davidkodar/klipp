@@ -15235,6 +15235,52 @@ impl KlippApp {
                 self.stop_recording();
                 true
             }
+            AppCommand::ShowAiToolsPanel { task } => {
+                self.state.ai_tools_state.panel_visible = true;
+                self.state.ai_tools_state.active_task = Some(ai_tools_task_from_tag(*task));
+                let task_local = ai_tools_task_from_tag(*task);
+                self.state.ai_tools_state.selected_model_id = self
+                    .state
+                    .ai_tools_registry
+                    .models_for(task_local)
+                    .first()
+                    .map(|m| m.id.clone());
+                true
+            }
+            AppCommand::SetAiToolsTask(tag) => {
+                let task_local = ai_tools_task_from_tag(*tag);
+                self.state.ai_tools_state.active_task = Some(task_local);
+                self.state.ai_tools_state.selected_model_id = self
+                    .state
+                    .ai_tools_registry
+                    .models_for(task_local)
+                    .first()
+                    .map(|m| m.id.clone());
+                true
+            }
+            AppCommand::SelectAiToolsModel { model_id } => {
+                if self
+                    .state
+                    .ai_tools_registry
+                    .info(model_id)
+                    .is_some()
+                {
+                    self.state.ai_tools_state.selected_model_id = Some(model_id.clone());
+                }
+                true
+            }
+            AppCommand::RunAiToolsInference => {
+                // Frame-grab + worker dispatch land in a follow-up; for
+                // now we only mark the panel intent so the dispatcher
+                // sees consistent state.
+                self.state.ai_tools_state.pending_run = true;
+                true
+            }
+            AppCommand::CancelAiToolsInference => {
+                self.state.ai_tools_state.inference.cancel();
+                self.state.ai_tools_state.pending_cancel = false;
+                true
+            }
             _ => false,
         }
     }
@@ -17450,7 +17496,39 @@ impl KlippApp {
         self.shortcuts_multicam_and_io(ctx, text_editing, &mut cmds);
         self.shortcuts_edit_nav(ctx, &mut cmds);
         self.shortcuts_keyframe_and_zoom(ctx, &mut cmds);
+        self.shortcuts_ai_tools(ctx, &mut cmds);
         cmds
+    }
+
+    fn shortcuts_ai_tools(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        let kb = self.key_bindings.clone();
+        ctx.input(|i| {
+            if kb.is_action_pressed("ai_remove_background", i) {
+                cmds.push(AppCommand::ShowAiToolsPanel {
+                    task: klipp_core::events::AiToolsTaskTag::RemoveBackground,
+                });
+            }
+            if kb.is_action_pressed("ai_isolate_object", i) {
+                cmds.push(AppCommand::ShowAiToolsPanel {
+                    task: klipp_core::events::AiToolsTaskTag::IsolateObject,
+                });
+            }
+            if kb.is_action_pressed("ai_detect_objects", i) {
+                cmds.push(AppCommand::ShowAiToolsPanel {
+                    task: klipp_core::events::AiToolsTaskTag::DetectObjects,
+                });
+            }
+            if kb.is_action_pressed("ai_run_inference", i) {
+                cmds.push(AppCommand::RunAiToolsInference);
+            }
+            if kb.is_action_pressed("ai_cancel_inference", i) {
+                cmds.push(AppCommand::CancelAiToolsInference);
+            }
+            if kb.is_action_pressed("toggle_ai_tools_panel", i) {
+                self.state.ai_tools_state.panel_visible =
+                    !self.state.ai_tools_state.panel_visible;
+            }
+        });
     }
 
     fn shortcuts_ctrl_global(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
@@ -22745,6 +22823,20 @@ impl KlippApp {
         // 4c. Render queue window
         self.show_render_queue_window(ctx);
 
+        // 4c0. AI Tools side panel — only mounted when toggled on.
+        if self.state.ai_tools_state.panel_visible {
+            egui::SidePanel::right("ai_tools_side")
+                .resizable(true)
+                .default_width(280.0)
+                .show(ctx, |ui| {
+                    crate::ai_tools::AiToolsPanel::show(
+                        ui,
+                        &mut self.state.ai_tools_state,
+                        &self.state.ai_tools_registry,
+                    );
+                });
+        }
+
         // 4c1. New Project dialog
         if self.state.show_new_project_dialog {
             if let Some(cmd) = self.new_project_dialog.show(
@@ -25874,6 +25966,16 @@ fn generate_youtube_chapters(entries: &[(f64, String)]) -> String {
 
 /// Render marker positions as a DVDStyler / dvdauthor chapter list.
 /// The format is one `HH:MM:SS.mmm` timecode per line — labels are ignored
+fn ai_tools_task_from_tag(tag: klipp_core::events::AiToolsTaskTag) -> crate::ai_tools::AiTask {
+    use klipp_core::events::AiToolsTaskTag;
+    match tag {
+        AiToolsTaskTag::RemoveBackground => crate::ai_tools::AiTask::RemoveBackground,
+        AiToolsTaskTag::IsolateObject => crate::ai_tools::AiTask::IsolateObject,
+        AiToolsTaskTag::DetectObjects => crate::ai_tools::AiTask::DetectObjects,
+        AiToolsTaskTag::TrackObject => crate::ai_tools::AiTask::TrackObject,
+    }
+}
+
 /// by the DVD tooling, so we drop them. DVDStyler expects the very first
 /// chapter at `00:00:00.000`; if the earliest marker isn't within 0.1s of
 /// zero (or there are no markers), a leading `00:00:00.000` line is
