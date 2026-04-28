@@ -1619,6 +1619,49 @@ impl ViewerPanel {
             cmds.push(AppCommand::SetMasterMute(!old));
         }
 
+        // Match Frame — appears on both viewers in the same slot;
+        // direction is determined by which viewer hosts the button
+        // (Resolve / Premiere convention). The Program viewer's
+        // button finds the source frame for the current program
+        // playhead and loads it in the source viewer. The Source
+        // viewer's button jumps the program playhead to the next
+        // timeline occurrence of the source frame.
+        let mf_x = mute_x - 26.0;
+        let (mf_cmd, mf_enabled, mf_tooltip) = match viewer_kind {
+            ViewerMode::Program => (
+                AppCommand::MatchFrameProgramToSource,
+                true, // playhead-resolution happens at handler time; toast on miss
+                "Match Frame — load source for program frame (F)",
+            ),
+            ViewerMode::Source => (
+                AppCommand::MatchFrameSourceToProgram,
+                state.source_media_id.is_some(),
+                "Match Frame — jump timeline to source frame (Shift+F)",
+            ),
+        };
+        let mf_rect = egui::Rect::from_center_size(
+            egui::pos2(mf_x, cy),
+            egui::vec2(20.0, 20.0),
+        );
+        let mf_resp = ui.allocate_rect(
+            mf_rect,
+            if mf_enabled { egui::Sense::click() } else { egui::Sense::hover() },
+        );
+        let mf_color = if !mf_enabled {
+            theme.text_dim
+        } else if mf_resp.hovered() {
+            theme.accent
+        } else {
+            theme.text_secondary
+        };
+        let mf_icon_rect = egui::Rect::from_center_size(mf_rect.center(), egui::vec2(14.0, 14.0));
+        Icon::FrameCorners.image(14.0).tint(mf_color).paint_at(ui, mf_icon_rect);
+        let mf_clicked = mf_resp.clicked();
+        mf_resp.on_hover_text(mf_tooltip);
+        if mf_clicked && mf_enabled {
+            cmds.push(mf_cmd);
+        }
+
         // Transform-controls toggle and camera/extract-frame button are
         // Program-only — they operate on the timeline output (transform
         // handles + frame capture). On the Source side they'd both be
@@ -1640,7 +1683,7 @@ impl ViewerPanel {
                         .find(|c| c.id == cid)
                 })
                 .is_some_and(|c| !matches!(c.kind, klipp_timeline::ClipKind::Gap));
-            let xform_x = mute_x - 26.0;
+            let xform_x = mf_x - 26.0;
             let xform_rect = egui::Rect::from_center_size(
                 egui::pos2(xform_x, cy),
                 egui::vec2(20.0, 20.0),
