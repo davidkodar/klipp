@@ -223,6 +223,38 @@ pub fn matrix3_mul(lhs: [[f32; 3]; 3], rhs: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
     out
 }
 
+/// Pick the matrix that converts linear-light RGB from one working
+/// space to another.
+///
+/// Returns `None` when source and destination are the same — callers
+/// can short-circuit the matmul for the identity case. For mismatched
+/// pairs the returned matrix is the standard CAT-included basis change.
+///
+/// Currently only `Rec709Linear ↔ AcesCG` is handled with a real
+/// matrix; conversions involving `Bt2020Linear` fall back to identity
+/// because the BT.2020 end-to-end pipeline isn't wired yet (the
+/// CPU/GPU decoders treat it as a stub aliased to BT.709). When
+/// BT.2020 lands as a first-class working space, extend this match
+/// rather than scattering matrix-pair logic across consumers.
+pub fn working_space_conversion_matrix(
+    from: klipp_core::WorkingColorspace,
+    to: klipp_core::WorkingColorspace,
+) -> Option<[[f32; 3]; 3]> {
+    use klipp_core::WorkingColorspace::*;
+    if from == to {
+        return None;
+    }
+    Some(match (from, to) {
+        (Rec709Linear, AcesCG) => bt709_to_acescg(),
+        (AcesCG, Rec709Linear) => acescg_to_bt709(),
+        // BT.2020 stub: route through Rec.709 (= identity for now,
+        // since the decoder treats Bt2020Linear as Rec709Linear's
+        // alias). Document the limitation rather than silently
+        // returning a wrong matrix.
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -380,6 +380,8 @@ mod tests {
         let lut = LutData {
             size: 2,
             data: vec![0.0; 2 * 2 * 2 * 3],
+            input_space: klipp_core::WorkingColorspace::Rec709Linear,
+            output_space: klipp_core::WorkingColorspace::Rec709Linear,
         };
         pipeline.global_lut = Some(lut);
         pipeline.global_lut_opacity = 1.0;
@@ -399,6 +401,8 @@ mod tests {
         let lut = LutData {
             size: 2,
             data: vec![0.0; 2 * 2 * 2 * 3],
+            input_space: klipp_core::WorkingColorspace::Rec709Linear,
+            output_space: klipp_core::WorkingColorspace::Rec709Linear,
         };
         pipeline.global_lut = Some(lut);
         pipeline.global_lut_opacity = 0.5;
