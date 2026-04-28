@@ -116,6 +116,10 @@ hex = "0.4"
 # (reqwest pulls async + extra deps; ureq is lighter for foreground DLs)
 ureq = { version = "2", features = ["tls"] }
 
+# Bit-flag capability sets for klipp-ml's MaskGenerator trait
+# (multiple narrow capabilities matched cleanly via |/&)
+bitflags = { version = "2", features = ["serde"] }
+
 # Internal crates
 klipp-core    = { path = "crates/klipp-core" }
 klipp-project = { path = "crates/klipp-project" }

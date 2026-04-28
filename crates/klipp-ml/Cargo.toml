@@ -12,6 +12,7 @@ ureq        = { workspace = true }
 thiserror   = { workspace = true }
 tracing     = { workspace = true }
 dirs        = { workspace = true }
+bitflags    = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
