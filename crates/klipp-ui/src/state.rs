@@ -291,13 +291,27 @@ pub enum ColorTab {
     Warper,
 }
 
-/// Build the AI Tools `RegistryHandle` for `AppState::ml_registry`.
-///
-/// Always registers the stub generator. Under `--features ai-ort` the
-/// registry also gets `BiRefNetLite` for Remove Background, with its
-/// weights path resolved through the manifest + XDG model cache. The
-/// factory closure is lazy: the user can switch to BiRefNet in the
-/// panel without paying any session-init cost until they hit Run.
+/// Register every real model — the ones gated by feature flags.
+/// Called twice: once for the panel-facing `AiToolsRegistry` and
+/// once for the worker-facing `RegistryHandle`. They live as
+/// independent `ModelRegistry` instances (the panel's wraps
+/// directly, the worker's is `Arc<ModelRegistry>`), so the
+/// registration list has to be applied to both. Refactoring to a
+/// single shared registry is filed as a follow-up.
+#[allow(unused_variables)]
+fn register_real_models(r: &mut klipp_ml::ModelRegistry) {
+    #[cfg(feature = "ai-ort")]
+    register_birefnet(r);
+
+    #[cfg(feature = "ai-candle")]
+    register_mobile_sam(r);
+}
+
+/// Build the worker-side `RegistryHandle` for `AppState::ml_registry`.
+/// Always registers the stub. Under `--features ai-ort` /
+/// `--features ai-candle` the registry also gets BiRefNet /
+/// MobileSAM with weight paths resolved through the manifest + XDG
+/// model cache. The factory closures are lazy.
 fn build_ml_registry() -> crate::ai_tools::RegistryHandle {
     let mut r = klipp_ml::ModelRegistry::new();
     r.register(
@@ -312,13 +326,20 @@ fn build_ml_registry() -> crate::ai_tools::RegistryHandle {
         Box::new(|| Ok(Box::new(klipp_ml::StubMaskGenerator::new()))),
     );
 
-    #[cfg(feature = "ai-ort")]
-    register_birefnet(&mut r);
-
-    #[cfg(feature = "ai-candle")]
-    register_mobile_sam(&mut r);
+    register_real_models(&mut r);
 
     crate::ai_tools::RegistryHandle::new(r)
+}
+
+/// Build the panel-side `AiToolsRegistry`. Stub auto-registered by
+/// `with_stub_registered`; real models layered on top via
+/// `register_real_models`. Mirror of `build_ml_registry` so the
+/// panel dropdown lists the same models the worker can actually
+/// dispatch.
+fn build_ai_tools_registry() -> crate::ai_tools::AiToolsRegistry {
+    let mut r = crate::ai_tools::AiToolsRegistry::with_stub_registered();
+    register_real_models(r.inner_mut());
+    r
 }
 
 #[cfg(feature = "ai-candle")]
@@ -2527,7 +2548,7 @@ impl Default for AppState {
             command_palette_selected: 0,
             model_download: crate::model_download::ModelDownloadState::default(),
             ai_tools_state: crate::ai_tools::AiToolsState::default(),
-            ai_tools_registry: crate::ai_tools::AiToolsRegistry::with_stub_registered(),
+            ai_tools_registry: build_ai_tools_registry(),
             ml_registry: build_ml_registry(),
             available_fonts: Vec::new(),
             pending_title_data: None,

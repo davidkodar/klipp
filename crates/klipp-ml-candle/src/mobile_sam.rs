@@ -361,13 +361,22 @@ impl MobileSam {
         // Upsample the 256² low-res mask to 1024², then narrow to
         // the unpadded resized rect (matches `Sam::forward`'s
         // post-processing).
+        //
+        // candle's upsample_nearest2d / interpolate2d expects a 4D
+        // (N, C, H, W) tensor. best_mask is 2D (H, W), so we
+        // unsqueeze TWICE to add the N + C dims, then unwrap them
+        // both after upsampling.
         let high_res = best_mask
             .unsqueeze(0)
-            .map_err(|e| MaskError::Inference(format!("unsqueeze: {e}")))?
+            .map_err(|e| MaskError::Inference(format!("unsqueeze N: {e}")))?
+            .unsqueeze(0)
+            .map_err(|e| MaskError::Inference(format!("unsqueeze C: {e}")))?
             .upsample_nearest2d(SAM_INPUT_SIZE as usize, SAM_INPUT_SIZE as usize)
             .map_err(|e| MaskError::Inference(format!("upsample: {e}")))?
             .get(0)
-            .map_err(|e| MaskError::Inference(format!("hires get: {e}")))?
+            .map_err(|e| MaskError::Inference(format!("hires N: {e}")))?
+            .get(0)
+            .map_err(|e| MaskError::Inference(format!("hires C: {e}")))?
             .narrow(0, 0, resized_h)
             .map_err(|e| MaskError::Inference(format!("narrow h: {e}")))?
             .narrow(1, 0, resized_w)

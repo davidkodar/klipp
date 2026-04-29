@@ -19313,6 +19313,13 @@ impl KlippApp {
         self.state.render_queue.kill_active();
     }
 
+    /// Free GPU resources we registered with eframe-wgpu's renderer
+    /// while we still have `frame: &mut eframe::Frame` access. Kept
+    /// around — currently unused because the SHUTDOWN-SEGV
+    /// workaround (`std::process::exit(0)`) bypasses the eframe
+    /// close path entirely. When `BUG-SHUTDOWN-SEGV` gets a real
+    /// fix this becomes the canonical pre-close hook.
+    #[allow(dead_code)]
     fn pre_close_gpu_cleanup(&mut self, frame: &mut eframe::Frame) {
         tracing::info!("pre_close_gpu_cleanup: freeing GPU-side resources");
         let t0 = std::time::Instant::now();

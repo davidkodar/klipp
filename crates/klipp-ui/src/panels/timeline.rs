@@ -3007,7 +3007,16 @@ impl TimelinePanel {
     fn draw_connection_lines(&self, state: &AppState, painter: &egui::Painter, content_rect: egui::Rect) {
         let tt = theme();
         let cc = tt.text_dim;
-        let connection_color = egui::Color32::from_rgba_premultiplied(cc.r() * 60 / 255, cc.g() * 60 / 255, cc.b() * 60 / 255, 60);
+        // u8 * 60 overflows for any channel value ≥ 5; cast to u16
+        // first so the intermediate stays in range, then back to u8
+        // after the divide. Same intent: pre-multiplied alpha at
+        // ~23.5% intensity.
+        let connection_color = egui::Color32::from_rgba_premultiplied(
+            (cc.r() as u16 * 60 / 255) as u8,
+            (cc.g() as u16 * 60 / 255) as u8,
+            (cc.b() as u16 * 60 / 255) as u8,
+            60,
+        );
         let connection_stroke = egui::Stroke::new(1.0_f32, connection_color);
         // Collect linked pairs to avoid double-drawing (only draw from video -> audio)
         let mut drawn_pairs = std::collections::HashSet::new();
