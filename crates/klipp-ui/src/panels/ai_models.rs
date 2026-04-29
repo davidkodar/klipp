@@ -33,6 +33,7 @@
 //! consent dialog takes over from there.
 
 use std::collections::HashMap;
+use std::time::{Duration, SystemTime};
 
 use klipp_ml::manifest::ModelEntry;
 use klipp_ml::ModelCache;
@@ -41,6 +42,12 @@ use crate::ai_tools::{format_relative, ModelTelemetry};
 use crate::model_download::ModelDownloadState;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
+
+/// Threshold for "Uninstall unused". A model whose last successful
+/// run was more than this long ago counts as stale. 30 days mirrors
+/// what the F-97-MODEL-MANAGER spec calls out and is long enough to
+/// avoid false positives across a normal vacation.
+const STALE_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Per-row cached status. Decoupled from
 /// `klipp_ml::cache::CachedStatus` so the dialog can carry a
@@ -90,6 +97,23 @@ impl ModelInstallStatus {
             Self::Unknown(_) => theme.text_dim,
         }
     }
+}
+
+/// `true` when the entry's telemetry says the model has been used
+/// at least once AND the last use was more than [`STALE_AGE`] ago.
+/// Models that have never been used are intentionally not counted —
+/// the user might have just installed them.
+fn is_stale(entry: &ModelEntry, telemetry: &HashMap<String, ModelTelemetry>) -> bool {
+    let Some(t) = telemetry.get(&entry.id) else {
+        return false;
+    };
+    if !t.has_runs() {
+        return false;
+    }
+    let now = SystemTime::now();
+    now.duration_since(t.last_used)
+        .map(|elapsed| elapsed > STALE_AGE)
+        .unwrap_or(false)
 }
 
 /// Compute install status for a single entry by hitting the
@@ -260,6 +284,18 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                     .count(),
                 None => 0,
             };
+            let stale_count = match cache.as_ref() {
+                Some(c) => manifest
+                    .models
+                    .iter()
+                    .filter(|e| {
+                        e.size_bytes > 0
+                            && c.path_for(e).metadata().is_ok()
+                            && is_stale(e, &state.ai_tools_state.model_telemetry)
+                    })
+                    .count(),
+                None => 0,
+            };
             ui.horizontal(|ui| {
                 if ui.button("Open cache folder").clicked() {
                     if let Some(c) = cache.as_ref() {
@@ -289,6 +325,22 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                 {
                     state.show_ai_models_bulk_uninstall_confirm = true;
                 }
+                if ui
+                    .add_enabled(stale_count > 0, egui::Button::new("Uninstall unused"))
+                    .on_hover_text(
+                        "Delete models you haven't used in 30+ days. \
+                         Telemetry is what makes this meaningful — \
+                         freshly installed models that haven't been \
+                         run yet are skipped.",
+                    )
+                    .on_disabled_hover_text(
+                        "No installed models are stale yet (used in \
+                         the last 30 days, or never used).",
+                    )
+                    .clicked()
+                {
+                    state.show_ai_models_stale_uninstall_confirm = true;
+                }
                 ui.label(
                     egui::RichText::new(format!(
                         "Cache: {}",
@@ -312,6 +364,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
     // are microsecond-fast, no need for a worker thread.
     show_uninstall_confirm(ctx, state, theme, &cache);
     show_bulk_uninstall_confirm(ctx, state, theme, &manifest, &cache);
+    show_stale_uninstall_confirm(ctx, state, theme, &manifest, &cache);
 }
 
 /// Render the "Delete <model>?" modal when state has a pending entry.
@@ -584,6 +637,153 @@ fn show_bulk_uninstall_confirm(
     if do_uninstall_all {
         execute_bulk_uninstall(state, &installed, c);
         state.show_ai_models_bulk_uninstall_confirm = false;
+    }
+}
+
+/// "Uninstall unused" confirmation modal. Same shape as the bulk
+/// modal but pre-filtered to entries flagged by [`is_stale`]; each
+/// row carries the relative-time label so the user sees why a
+/// given model is on the list.
+fn show_stale_uninstall_confirm(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    theme: &KlippTheme,
+    manifest: &klipp_ml::manifest::ModelManifest,
+    cache: &Option<ModelCache>,
+) {
+    if !state.show_ai_models_stale_uninstall_confirm {
+        return;
+    }
+    let Some(c) = cache.as_ref() else {
+        state.show_ai_models_stale_uninstall_confirm = false;
+        state.toast.show("Uninstall unused failed: cache unavailable");
+        return;
+    };
+
+    // Collect (entry, size, last_used) tuples for every stale
+    // installed model. Recomputed each frame the modal is open.
+    let stale: Vec<(klipp_ml::manifest::ModelEntry, u64, SystemTime)> = manifest
+        .models
+        .iter()
+        .filter(|e| e.size_bytes > 0 && is_stale(e, &state.ai_tools_state.model_telemetry))
+        .filter_map(|e| {
+            let size = c.path_for(e).metadata().ok()?.len();
+            let last_used = state
+                .ai_tools_state
+                .model_telemetry
+                .get(&e.id)
+                .map(|t| t.last_used)?;
+            Some((e.clone(), size, last_used))
+        })
+        .collect();
+    let total: u64 = stale.iter().map(|(_, s, _)| *s).sum();
+
+    if stale.is_empty() {
+        // The user might have just used a model — drop the modal
+        // silently rather than showing an empty list.
+        state.show_ai_models_stale_uninstall_confirm = false;
+        return;
+    }
+
+    let screen_rect = ctx.screen_rect();
+
+    egui::Area::new(egui::Id::new("ai_model_stale_uninstall_scrim"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen_rect.min)
+        .show(ctx, |ui| {
+            let resp = ui.allocate_rect(screen_rect, egui::Sense::click_and_drag());
+            ui.painter().rect_filled(
+                screen_rect,
+                0.0,
+                egui::Color32::from_black_alpha(160),
+            );
+            if resp.clicked() {
+                state.show_ai_models_stale_uninstall_confirm = false;
+            }
+        });
+
+    let mut close_modal = false;
+    let mut do_uninstall = false;
+
+    egui::Window::new("Uninstall unused AI models")
+        .collapsible(false)
+        .resizable(false)
+        .fixed_size([460.0, 320.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "Delete {} stale model(s)?",
+                    stale.len(),
+                ))
+                .strong(),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "Models last used more than 30 days ago. Frees {} \
+                     on disk; manifest entries stay visible so you \
+                     can re-download any of them.",
+                    format_bytes(total),
+                ))
+                .small()
+                .color(theme.text_secondary),
+            );
+            ui.add_space(8.0);
+            egui::ScrollArea::vertical()
+                .max_height(160.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for (entry, size, last_used) in &stale {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "• {} ({}) — last used {}",
+                                entry.display_name,
+                                format_bytes(*size),
+                                format_relative(*last_used),
+                            ))
+                            .small(),
+                        );
+                    }
+                });
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    close_modal = true;
+                }
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if ui
+                            .add(egui::Button::new(
+                                egui::RichText::new("Uninstall unused")
+                                    .color(theme.marker_error),
+                            ))
+                            .clicked()
+                        {
+                            do_uninstall = true;
+                        }
+                    },
+                );
+            });
+        });
+
+    if close_modal {
+        state.show_ai_models_stale_uninstall_confirm = false;
+    }
+    if do_uninstall {
+        // Strip the last_used field — execute_bulk_uninstall takes
+        // (ModelEntry, u64) tuples. Reuses the same loop body so
+        // file delete + clear_instance + summary toast all match the
+        // "Uninstall all" path.
+        let trimmed: Vec<(klipp_ml::manifest::ModelEntry, u64)> = stale
+            .into_iter()
+            .map(|(e, s, _)| (e, s))
+            .collect();
+        execute_bulk_uninstall(state, &trimmed, c);
+        state.show_ai_models_stale_uninstall_confirm = false;
     }
 }
 
@@ -923,5 +1123,65 @@ mod tests {
             ModelInstallStatus::Unknown("io error".into()).label(),
             "Unknown"
         );
+    }
+
+    fn make_entry(id: &str) -> ModelEntry {
+        ModelEntry {
+            id: id.into(),
+            display_name: id.into(),
+            size_bytes: 100,
+            sha256: "0".repeat(64),
+            license: "Apache-2.0".into(),
+            attribution: "test".into(),
+            sources: vec![],
+            kind: klipp_ml::manifest::ModelKind::MaskGenerator,
+            runtime: klipp_ml::manifest::ModelRuntime::default(),
+            prompts: klipp_ml::manifest::PromptKinds::default(),
+        }
+    }
+
+    #[test]
+    fn is_stale_false_when_no_telemetry() {
+        let entry = make_entry("never_used");
+        let telemetry = HashMap::new();
+        assert!(!is_stale(&entry, &telemetry));
+    }
+
+    #[test]
+    fn is_stale_false_when_total_runs_zero() {
+        // Edge: entry exists in the map but with default values
+        // (e.g. the user just installed; we created the entry but
+        // never ran inference). Skip — they probably don't want it
+        // uninstalled five seconds after downloading.
+        let entry = make_entry("never_run");
+        let mut telemetry = HashMap::new();
+        telemetry.insert(entry.id.clone(), ModelTelemetry::default());
+        assert!(!is_stale(&entry, &telemetry));
+    }
+
+    #[test]
+    fn is_stale_false_for_recent_use() {
+        // Telemetry says "ran just now". Definitely not stale.
+        let entry = make_entry("fresh");
+        let mut t = ModelTelemetry::default();
+        t.record_run(120);
+        let mut telemetry = HashMap::new();
+        telemetry.insert(entry.id.clone(), t);
+        assert!(!is_stale(&entry, &telemetry));
+    }
+
+    #[test]
+    fn is_stale_true_when_last_used_old_enough() {
+        // Synthesise a telemetry entry whose last_used is 31 days
+        // ago. STALE_AGE is 30 days, so this should clear the cut.
+        let entry = make_entry("ancient");
+        let t = ModelTelemetry {
+            last_used: SystemTime::now() - Duration::from_secs(31 * 86_400),
+            recent_inference_ms: vec![100u64].into(),
+            total_runs: 1,
+        };
+        let mut telemetry = HashMap::new();
+        telemetry.insert(entry.id.clone(), t);
+        assert!(is_stale(&entry, &telemetry));
     }
 }

@@ -1337,6 +1337,11 @@ pub struct AppState {
     /// renders a modal listing every installed model + total size
     /// freed, and on confirm loops through them all.
     pub show_ai_models_bulk_uninstall_confirm: bool,
+    /// Stale-uninstall confirmation. `true` when the user clicked
+    /// "Uninstall unused" — same shape as the bulk modal but
+    /// pre-filtered to models that have been used at least once
+    /// AND whose last_used is more than `STALE_DAYS` ago.
+    pub show_ai_models_stale_uninstall_confirm: bool,
     /// Export offline warning: list of (filename, timecode_string) for offline clips
     pub export_offline_warning: Option<(Vec<(String, String)>, Box<klipp_core::ExportSettings>)>,
 
@@ -2579,6 +2584,7 @@ impl Default for AppState {
             show_delete_unused_confirm: None,
             show_ai_model_uninstall_confirm: None,
             show_ai_models_bulk_uninstall_confirm: false,
+            show_ai_models_stale_uninstall_confirm: false,
             export_offline_warning: None,
             media_usage_cache: std::collections::HashMap::new(),
             media_usage_cache_dirty: true,
