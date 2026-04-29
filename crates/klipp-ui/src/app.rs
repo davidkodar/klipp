@@ -15373,6 +15373,14 @@ impl KlippApp {
             self.refresh_ai_tools_overlay_texture(ctx);
             ctx.request_repaint();
         }
+
+        // Drive the custom-URL paste state machine. Worker thread
+        // delivers progress + completion events; transitioning to
+        // Confirming repaints so the modal flips into the SHA/size
+        // confirmation view.
+        if self.state.custom_model_add.poll() {
+            ctx.request_repaint();
+        }
     }
 
     /// Rebuild the cached mask-overlay texture to match the current

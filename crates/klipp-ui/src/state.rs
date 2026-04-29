@@ -515,6 +515,119 @@ fn register_birefnet(r: &mut klipp_ml::ModelRegistry) {
     );
 }
 
+/// Register a single user-added custom model against the shared
+/// registry. Called during startup for every `CustomModelEntry`
+/// loaded from `~/.config/klipp/ai_tools.toml`, and again from the
+/// paste-URL UI when the user confirms a freshly-downloaded file.
+///
+/// Adapter routing: `CustomAdapter` carries the user's pick from
+/// the modal — Klipp can't infer the architecture from a raw ONNX
+/// without loading it, so the user tells us which builder to use.
+/// Capability flags mirror the canonical entry for that adapter.
+///
+/// Feature-gated: an adapter whose feature is off this build still
+/// registers its `ModelInfo` (so the dialog shows the entry) but
+/// the factory closure returns a `BackendInit` error explaining
+/// the missing flag. Same UX shape the built-in feature-gated
+/// entries already produce.
+pub fn register_custom_model(
+    r: &mut klipp_ml::ModelRegistry,
+    entry: &crate::ai_tools::persistence::CustomModelEntry,
+) {
+    use crate::ai_tools::persistence::CustomAdapter;
+
+    let cache = match klipp_ml::ModelCache::open() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                target: "klipp_ui",
+                "custom model: skipping {} (cache open failed: {e})",
+                entry.id
+            );
+            return;
+        }
+    };
+    let weights_path = cache.path_for_id(&entry.id);
+    let id = entry.id.clone();
+    let display_name = entry.display_name.clone();
+    let adapter = entry.adapter;
+
+    let capabilities = match adapter {
+        CustomAdapter::BiRefNet => klipp_ml::MaskCapabilities::AUTO_DETECT,
+        CustomAdapter::MobileSam => {
+            klipp_ml::MaskCapabilities::POINT_PROMPT
+                | klipp_ml::MaskCapabilities::BOX_PROMPT
+                | klipp_ml::MaskCapabilities::SCRIBBLE
+                | klipp_ml::MaskCapabilities::AUTO_DETECT
+        }
+        CustomAdapter::RfDetrSeg => klipp_ml::MaskCapabilities::AUTO_DETECT,
+    };
+
+    let factory: klipp_ml::MaskGeneratorFactory = match adapter {
+        #[cfg(feature = "ai-ort")]
+        CustomAdapter::BiRefNet => {
+            let path = weights_path.clone();
+            Box::new(move || {
+                klipp_ml_ort::BiRefNetLiteBuilder::new()
+                    .weights(path.clone())
+                    .build()
+                    .map(|g| Box::new(g) as Box<dyn klipp_ml::MaskGenerator>)
+            })
+        }
+        #[cfg(not(feature = "ai-ort"))]
+        CustomAdapter::BiRefNet => Box::new(|| {
+            Err(klipp_ml::MaskError::BackendInit(
+                "Custom BiRefNet model requires --features ai-ort".into(),
+            ))
+        }),
+        #[cfg(feature = "ai-candle")]
+        CustomAdapter::MobileSam => {
+            let path = weights_path.clone();
+            Box::new(move || {
+                klipp_ml_candle::MobileSamBuilder::new()
+                    .weights(path.clone())
+                    .build()
+                    .map(|g| Box::new(g) as Box<dyn klipp_ml::MaskGenerator>)
+            })
+        }
+        #[cfg(not(feature = "ai-candle"))]
+        CustomAdapter::MobileSam => Box::new(|| {
+            Err(klipp_ml::MaskError::BackendInit(
+                "Custom MobileSAM model requires --features ai-candle".into(),
+            ))
+        }),
+        #[cfg(feature = "ai-ort")]
+        CustomAdapter::RfDetrSeg => {
+            let path = weights_path.clone();
+            let model_id: &'static str = Box::leak(id.clone().into_boxed_str());
+            let display: &'static str =
+                Box::leak(display_name.clone().into_boxed_str());
+            Box::new(move || {
+                klipp_ml_ort::RfDetrSegBuilder::new()
+                    .weights(path.clone())
+                    .model_id(model_id, display)
+                    .build()
+                    .map(|g| Box::new(g) as Box<dyn klipp_ml::MaskGenerator>)
+            })
+        }
+        #[cfg(not(feature = "ai-ort"))]
+        CustomAdapter::RfDetrSeg => Box::new(|| {
+            Err(klipp_ml::MaskError::BackendInit(
+                "Custom RF-DETR-Seg model requires --features ai-ort".into(),
+            ))
+        }),
+    };
+
+    r.register(
+        klipp_ml::ModelInfo {
+            id,
+            display_name,
+            capabilities,
+        },
+        factory,
+    );
+}
+
 pub struct AppState {
     pub playback: PlaybackState,
     pub playhead: Timecode,
@@ -1342,6 +1455,13 @@ pub struct AppState {
     /// pre-filtered to models that have been used at least once
     /// AND whose last_used is more than `STALE_DAYS` ago.
     pub show_ai_models_stale_uninstall_confirm: bool,
+    /// "Add custom model" flow state. `Idle` when the modal isn't
+    /// open; transitions to `Form` when the user clicks Add custom
+    /// model…, then `Downloading` while the worker fetches, then
+    /// `Confirming` once the download completes (showing computed
+    /// SHA + size for the user to confirm), then back to `Idle`
+    /// after register + persist or after a cancel.
+    pub custom_model_add: crate::ai_tools::custom_install::CustomInstallState,
     /// Export offline warning: list of (filename, timecode_string) for offline clips
     pub export_offline_warning: Option<(Vec<(String, String)>, Box<klipp_core::ExportSettings>)>,
 
@@ -2585,6 +2705,7 @@ impl Default for AppState {
             show_ai_model_uninstall_confirm: None,
             show_ai_models_bulk_uninstall_confirm: false,
             show_ai_models_stale_uninstall_confirm: false,
+            custom_model_add: crate::ai_tools::custom_install::CustomInstallState::Idle,
             export_offline_warning: None,
             media_usage_cache: std::collections::HashMap::new(),
             media_usage_cache_dirty: true,
@@ -2644,14 +2765,23 @@ impl Default for AppState {
             ai_tools_state: {
                 // Persistent state lives in ~/.config/klipp/ai_tools.toml:
                 // last_picked default model per task + per-model
-                // telemetry (last_used + rolling inference-ms +
-                // total_runs). Both load here so picks pre-select
-                // and "Last used: 2m ago" stays meaningful across
-                // restarts.
+                // telemetry + user-added custom models. All three
+                // load here. Custom models are also registered
+                // against the shared registry below so they show up
+                // in the panel dropdown + the AI Models dialog.
                 let mut s = crate::ai_tools::AiToolsState::default();
                 let loaded = crate::ai_tools::persistence::load().into_state_data();
                 s.last_picked_model_per_task = loaded.last_picked_model_per_task;
                 s.model_telemetry = loaded.model_telemetry;
+                s.custom_models = loaded.custom_models;
+                {
+                    let reg = shared_registry.write();
+                    if let Ok(mut r) = reg {
+                        for entry in &s.custom_models {
+                            register_custom_model(&mut r, entry);
+                        }
+                    }
+                }
                 s
             },
             // Both views observe the same `Arc<RwLock<ModelRegistry>>`

@@ -85,7 +85,16 @@ impl ModelCache {
 
     /// Path where a verified-and-loadable file for this entry lives.
     pub fn path_for(&self, entry: &ModelEntry) -> PathBuf {
-        self.root.join(format!("{}{FINAL_SUFFIX}", entry.id))
+        self.path_for_id(&entry.id)
+    }
+
+    /// Same path resolution as [`Self::path_for`] but keyed only on
+    /// the stable id string. Used by the custom-URL paste flow,
+    /// where there's no `ModelEntry` (the file is described by a
+    /// user-side `CustomModelEntry` instead) but the on-disk
+    /// naming convention is the same.
+    pub fn path_for_id(&self, id: &str) -> PathBuf {
+        self.root.join(format!("{}{FINAL_SUFFIX}", id))
     }
 
     /// Path where an in-progress download writes. Atomically renamed

@@ -48,6 +48,7 @@
 //! the current viewer frame + `prompt_input::PromptCapture::build()`,
 //! and calls [`spawn_inference`].
 
+pub mod custom_install;
 pub mod inference;
 pub mod overlay;
 pub mod panel;
@@ -130,6 +131,12 @@ pub struct AiToolsState {
     /// model when no entry is stored. Ephemeral — resets on app
     /// restart.
     pub last_picked_model_per_task: std::collections::HashMap<AiTask, String>,
+    /// User-added custom models. Each was pasted as a URL, downloaded,
+    /// hashed + size-checked, then confirmed by the user. Persisted
+    /// to ~/.config/klipp/ai_tools.toml under [[custom_model]] so the
+    /// next launch can re-register them without re-downloading. The
+    /// shared registry holds the matching factory closures.
+    pub custom_models: Vec<persistence::CustomModelEntry>,
 }
 
 impl Default for AiToolsState {
@@ -147,6 +154,7 @@ impl Default for AiToolsState {
             model_telemetry: std::collections::HashMap::new(),
             model_tunables: std::collections::HashMap::new(),
             last_picked_model_per_task: std::collections::HashMap::new(),
+            custom_models: Vec::new(),
         }
     }
 }

@@ -58,6 +58,55 @@ pub struct AiToolsConfig {
     /// they're just not visible in the AI Models dialog.
     #[serde(default)]
     pub telemetry: HashMap<String, TelemetryWire>,
+    /// User-added custom models — files Klipp didn't ship by
+    /// default that the user pasted a URL for. Each entry carries
+    /// enough metadata that startup can re-register the file
+    /// against the matching MaskGenerator adapter without going
+    /// back to the network.
+    #[serde(default, rename = "custom_model")]
+    pub custom_models: Vec<CustomModelEntry>,
+}
+
+/// Adapter that backs a custom model. The user picks one in the
+/// paste-URL modal — Klipp can't infer the architecture from a raw
+/// ONNX without loading it, and the load itself is the expensive
+/// step we want to defer to first inference. Today three options
+/// matching the three real backends in the workspace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CustomAdapter {
+    BiRefNet,
+    MobileSam,
+    RfDetrSeg,
+}
+
+impl CustomAdapter {
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::BiRefNet => "BiRefNet (matting)",
+            Self::MobileSam => "MobileSAM (point/box prompts)",
+            Self::RfDetrSeg => "RF-DETR-Seg (auto-detect)",
+        }
+    }
+
+    pub const ALL: &'static [CustomAdapter] = &[
+        CustomAdapter::BiRefNet,
+        CustomAdapter::MobileSam,
+        CustomAdapter::RfDetrSeg,
+    ];
+}
+
+/// One user-supplied model. `id` must be unique across both built-
+/// in and custom entries; the paste-URL flow rejects collisions
+/// before persisting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomModelEntry {
+    pub id: String,
+    pub display_name: String,
+    pub url: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub adapter: CustomAdapter,
 }
 
 /// On-disk representation of [`ModelTelemetry`]. Mirrors the in-
@@ -106,12 +155,13 @@ impl TelemetryWire {
 }
 
 /// In-memory shape returned by [`AiToolsConfig::into_state_data`].
-/// Both halves of the persisted state in one struct so callers
-/// don't have to thread two return values through.
+/// Three concerns the file persists, all in one struct so callers
+/// don't have to thread separate return values through.
 #[derive(Debug, Default)]
 pub struct LoadedAiToolsState {
     pub last_picked_model_per_task: HashMap<AiTask, String>,
     pub model_telemetry: HashMap<String, ModelTelemetry>,
+    pub custom_models: Vec<CustomModelEntry>,
 }
 
 impl AiToolsConfig {
@@ -130,9 +180,11 @@ impl AiToolsConfig {
             .iter()
             .map(|(id, t)| (id.clone(), TelemetryWire::from_telemetry(t)))
             .collect();
+        let custom_models = state.custom_models.clone();
         Self {
             last_picked,
             telemetry,
+            custom_models,
         }
     }
 
@@ -156,6 +208,7 @@ impl AiToolsConfig {
         LoadedAiToolsState {
             last_picked_model_per_task,
             model_telemetry,
+            custom_models: self.custom_models,
         }
     }
 }

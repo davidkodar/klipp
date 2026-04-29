@@ -341,6 +341,26 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                 {
                     state.show_ai_models_stale_uninstall_confirm = true;
                 }
+                if ui
+                    .button("Add custom model…")
+                    .on_hover_text(
+                        "Paste a URL to an ONNX or safetensors file \
+                         and add it as a custom model. You'll be \
+                         asked to pick which adapter (BiRefNet / \
+                         MobileSAM / RF-DETR-Seg) backs it.",
+                    )
+                    .clicked()
+                {
+                    if matches!(
+                        state.custom_model_add,
+                        crate::ai_tools::custom_install::CustomInstallState::Idle
+                    ) {
+                        state.custom_model_add =
+                            crate::ai_tools::custom_install::CustomInstallState::Form(
+                                Default::default(),
+                            );
+                    }
+                }
                 ui.label(
                     egui::RichText::new(format!(
                         "Cache: {}",
@@ -365,6 +385,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
     show_uninstall_confirm(ctx, state, theme, &cache);
     show_bulk_uninstall_confirm(ctx, state, theme, &manifest, &cache);
     show_stale_uninstall_confirm(ctx, state, theme, &manifest, &cache);
+    show_custom_install(ctx, state, theme, &manifest, &cache);
 }
 
 /// Render the "Delete <model>?" modal when state has a pending entry.
@@ -835,6 +856,428 @@ fn execute_bulk_uninstall(
             errors.join("; "),
         ));
     }
+}
+
+/// Custom-URL paste flow modal. Renders one of three views based
+/// on the current [`CustomInstallState`]:
+///
+/// * **Form** — URL + adapter + display name + id. "Download"
+///   validates + spawns the worker thread; "Cancel" returns to Idle.
+/// * **Downloading** — progress bar + Cancel button.
+/// * **Confirming** — shows computed SHA + size; "Register" does
+///   register + persist + toast, "Cancel" deletes the just-downloaded
+///   file.
+fn show_custom_install(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    theme: &KlippTheme,
+    manifest: &klipp_ml::manifest::ModelManifest,
+    cache: &Option<ModelCache>,
+) {
+    use crate::ai_tools::custom_install::{
+        finalize_entry, validate_form, CustomInstallState, CUSTOM_DOWNLOAD_MAX_BYTES,
+    };
+    use crate::ai_tools::persistence::CustomAdapter;
+
+    if matches!(state.custom_model_add, CustomInstallState::Idle) {
+        return;
+    }
+
+    let screen_rect = ctx.screen_rect();
+
+    // Modal scrim — same darken treatment the other AI Models
+    // modals use.
+    egui::Area::new(egui::Id::new("ai_custom_install_scrim"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen_rect.min)
+        .show(ctx, |ui| {
+            // Don't dismiss on scrim click during Downloading —
+            // the user might bump it accidentally and orphan the
+            // worker thread. Form / Confirming let scrim close.
+            let resp = ui.allocate_rect(screen_rect, egui::Sense::click_and_drag());
+            ui.painter().rect_filled(
+                screen_rect,
+                0.0,
+                egui::Color32::from_black_alpha(160),
+            );
+            let cancel_via_scrim = resp.clicked();
+            if cancel_via_scrim {
+                match &state.custom_model_add {
+                    CustomInstallState::Form(_) | CustomInstallState::Confirming { .. } => {
+                        state.custom_model_add = CustomInstallState::Idle;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+    egui::Window::new("Add custom AI model")
+        .collapsible(false)
+        .resizable(false)
+        .fixed_size([520.0, 360.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            match &mut state.custom_model_add {
+                CustomInstallState::Idle => {}
+                CustomInstallState::Form(form) => {
+                    ui.label(
+                        egui::RichText::new(
+                            "Paste a URL to an ONNX (or safetensors) file. Klipp \
+                             will download it, compute its SHA-256, and ask you \
+                             to confirm before adding it as a custom model.",
+                        )
+                        .small()
+                        .color(theme.text_secondary),
+                    );
+                    ui.add_space(10.0);
+
+                    ui.label("URL");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut form.url)
+                            .hint_text("https://...")
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.add_space(8.0);
+
+                    ui.label("Adapter");
+                    let current_label = form
+                        .adapter
+                        .map(|a| a.display_name())
+                        .unwrap_or("(pick one)");
+                    egui::ComboBox::from_id_salt("ai_custom_adapter")
+                        .selected_text(current_label)
+                        .show_ui(ui, |ui| {
+                            for a in CustomAdapter::ALL {
+                                if ui
+                                    .selectable_label(form.adapter == Some(*a), a.display_name())
+                                    .clicked()
+                                {
+                                    form.adapter = Some(*a);
+                                }
+                            }
+                        });
+                    ui.label(
+                        egui::RichText::new(
+                            "Pick the architecture this file matches. Klipp \
+                             can't infer it without loading the model.",
+                        )
+                        .small()
+                        .color(theme.text_dim),
+                    );
+                    ui.add_space(8.0);
+
+                    ui.label("Display name");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut form.display_name)
+                            .hint_text("e.g. My Custom RF-DETR")
+                            .desired_width(f32::INFINITY),
+                    );
+                    ui.add_space(8.0);
+
+                    ui.label("Stable id (used internally; alphanumeric / _ / -)");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut form.id)
+                            .hint_text("e.g. my_custom_rfdetr_v1")
+                            .desired_width(f32::INFINITY),
+                    );
+
+                    if let Some(err) = &form.error {
+                        ui.add_space(8.0);
+                        ui.colored_label(theme.marker_error, err);
+                    }
+
+                    ui.add_space(14.0);
+                    let mut close_to_idle = false;
+                    let mut start_download = false;
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            close_to_idle = true;
+                        }
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui.button("Download").clicked() {
+                                    start_download = true;
+                                }
+                            },
+                        );
+                    });
+
+                    if close_to_idle {
+                        state.custom_model_add = CustomInstallState::Idle;
+                    } else if start_download {
+                        // Build the existing-id list once so the form
+                        // validation can reject collisions.
+                        let mut existing_ids: Vec<String> = manifest
+                            .models
+                            .iter()
+                            .map(|e| e.id.clone())
+                            .collect();
+                        for c in &state.ai_tools_state.custom_models {
+                            existing_ids.push(c.id.clone());
+                        }
+                        match validate_form(form, &existing_ids) {
+                            Err(reason) => {
+                                form.error = Some(reason);
+                            }
+                            Ok(()) => {
+                                let Some(c) = cache.as_ref() else {
+                                    form.error =
+                                        Some("Cache directory unavailable".into());
+                                    return;
+                                };
+                                let form_clone = form.clone();
+                                let target_partial =
+                                    c.root().join(format!("{}.bin.partial", form.id));
+                                let target_final = c.path_for_id(&form.id);
+                                let handle = spawn_custom_download(
+                                    form.url.clone(),
+                                    target_partial,
+                                    target_final,
+                                    ctx.clone(),
+                                );
+                                state.custom_model_add =
+                                    CustomInstallState::Downloading {
+                                        form: form_clone,
+                                        handle,
+                                        downloaded: 0,
+                                        total: 0,
+                                    };
+                            }
+                        }
+                    }
+                }
+                CustomInstallState::Downloading {
+                    form,
+                    handle,
+                    downloaded,
+                    total,
+                } => {
+                    ui.label(
+                        egui::RichText::new(format!("Downloading {}…", form.display_name))
+                            .strong(),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(&form.url)
+                            .small()
+                            .color(theme.text_secondary),
+                    );
+                    ui.add_space(12.0);
+                    let bar = if *total > 0 {
+                        egui::ProgressBar::new((*downloaded as f32) / (*total as f32))
+                            .text(format!(
+                                "{} / {}",
+                                format_bytes(*downloaded),
+                                format_bytes(*total)
+                            ))
+                    } else {
+                        // Server didn't give Content-Length up front.
+                        // Show indeterminate animation instead.
+                        egui::ProgressBar::new(0.0)
+                            .text(format!("{} downloaded", format_bytes(*downloaded)))
+                            .animate(true)
+                    };
+                    ui.add(bar.desired_width(f32::INFINITY));
+
+                    ui.add_space(14.0);
+                    if ui.button("Cancel download").clicked() {
+                        handle
+                            .cancel
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        // Don't drop the state yet — let poll() see
+                        // the cancellation come back through the
+                        // channel and transition to Form with an
+                        // error message.
+                    }
+                }
+                CustomInstallState::Confirming {
+                    form,
+                    sha256,
+                    size_bytes,
+                } => {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Download complete — confirm {}?",
+                            form.display_name,
+                        ))
+                        .strong(),
+                    );
+                    ui.add_space(10.0);
+                    egui::Frame::group(ui.style())
+                        .inner_margin(egui::Margin::same(8.0))
+                        .show(ui, |ui| {
+                            ui.label(format!("Adapter: {}",
+                                form.adapter
+                                    .map(|a| a.display_name())
+                                    .unwrap_or("?")));
+                            ui.label(format!("Size: {}", format_bytes(*size_bytes)));
+                            ui.label(format!("SHA-256: {sha256}"));
+                            ui.label(format!("URL: {}", form.url));
+                        });
+                    ui.add_space(10.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Klipp doesn't validate that the file actually matches \
+                             the adapter you picked — that check happens the first \
+                             time you run inference. If the file is the wrong \
+                             architecture, the run will fail with a clean error.",
+                        )
+                        .small()
+                        .color(theme.text_dim),
+                    );
+
+                    ui.add_space(14.0);
+                    let mut do_register = false;
+                    let mut do_cancel = false;
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            do_cancel = true;
+                        }
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui
+                                    .add(egui::Button::new(
+                                        egui::RichText::new("Register").color(
+                                            theme.marker_success,
+                                        ),
+                                    ))
+                                    .clicked()
+                                {
+                                    do_register = true;
+                                }
+                            },
+                        );
+                    });
+
+                    if do_cancel {
+                        // Delete the just-downloaded file — the user
+                        // bailed out, no point keeping bytes around.
+                        if let Some(c) = cache.as_ref() {
+                            let _ = std::fs::remove_file(c.path_for_id(&form.id));
+                        }
+                        state.custom_model_add = CustomInstallState::Idle;
+                    } else if do_register {
+                        let entry = match finalize_entry(
+                            form,
+                            sha256.clone(),
+                            *size_bytes,
+                        ) {
+                            Some(e) => e,
+                            None => {
+                                state
+                                    .toast
+                                    .show("Custom install failed: form lost adapter");
+                                state.custom_model_add = CustomInstallState::Idle;
+                                return;
+                            }
+                        };
+                        // Register against the shared registry.
+                        let registry = state.ai_tools_registry.shared();
+                        if let Ok(mut r) = registry.write() {
+                            crate::state::register_custom_model(&mut r, &entry);
+                        }
+                        // Append to AppState + persist the full
+                        // updated state to disk.
+                        state
+                            .ai_tools_state
+                            .custom_models
+                            .push(entry.clone());
+                        crate::ai_tools::persistence::save(
+                            &crate::ai_tools::persistence::AiToolsConfig::from_state(
+                                &state.ai_tools_state,
+                            ),
+                        );
+                        state.toast.show(format!(
+                            "Added custom model {} (registered + persisted)",
+                            entry.display_name,
+                        ));
+                        state.custom_model_add = CustomInstallState::Idle;
+                    }
+                    let _ = CUSTOM_DOWNLOAD_MAX_BYTES; // re-export marker
+                }
+            }
+        });
+}
+
+/// Spawn the URL fetch on a worker thread. Streams progress events
+/// through a crossbeam channel; the UI thread polls them via
+/// `CustomInstallState::poll`.
+fn spawn_custom_download(
+    url: String,
+    target_partial: std::path::PathBuf,
+    target_final: std::path::PathBuf,
+    ctx: egui::Context,
+) -> crate::ai_tools::custom_install::CustomDownloadHandle {
+    use crate::ai_tools::custom_install::{
+        CustomDownloadEvent, CustomDownloadHandle, CustomDownloadResult,
+        CUSTOM_DOWNLOAD_MAX_BYTES,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let (tx, rx) = crossbeam_channel::unbounded::<CustomDownloadEvent>();
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let cancel_for_worker = cancel.clone();
+    let ctx_for_worker = ctx.clone();
+
+    std::thread::Builder::new()
+        .name("klipp-ai-custom-download".into())
+        .spawn(move || {
+            // Adapter that translates the klipp_ml ProgressSink into
+            // crossbeam events the UI side can drain.
+            struct ChannelProgress {
+                tx: crossbeam_channel::Sender<CustomDownloadEvent>,
+                ctx: egui::Context,
+                total: u64,
+                downloaded: u64,
+            }
+            impl klipp_ml::ProgressSink for ChannelProgress {
+                fn started(&mut self, total_bytes: u64) {
+                    self.total = total_bytes;
+                }
+                fn advance(&mut self, bytes_delta: u64) {
+                    self.downloaded = self.downloaded.saturating_add(bytes_delta);
+                    let _ = self.tx.send(CustomDownloadEvent::Progress {
+                        downloaded: self.downloaded,
+                        total: self.total,
+                    });
+                    self.ctx.request_repaint();
+                }
+                fn finished(&mut self) {}
+            }
+
+            let mut prog = ChannelProgress {
+                tx: tx.clone(),
+                ctx: ctx_for_worker.clone(),
+                total: 0,
+                downloaded: 0,
+            };
+
+            let result = klipp_ml::download_url_uncertified(
+                &url,
+                &target_partial,
+                &target_final,
+                &mut prog,
+                &cancel_for_worker,
+                CUSTOM_DOWNLOAD_MAX_BYTES,
+            );
+            let payload = match result {
+                Ok((sha256, size_bytes)) => CustomDownloadResult::Ok {
+                    sha256,
+                    size_bytes,
+                },
+                Err(e) => CustomDownloadResult::Err(format!("{e}")),
+            };
+            let _ = tx.send(CustomDownloadEvent::Completed(payload));
+            ctx_for_worker.request_repaint();
+            // Avoid unused warning when cancel races early.
+            let _ = cancel_for_worker.load(Ordering::Relaxed);
+        })
+        .expect("spawn klipp-ai-custom-download thread");
+
+    CustomDownloadHandle { recv: rx, cancel }
 }
 
 /// Re-hash the model's cache file on disk and compare against the

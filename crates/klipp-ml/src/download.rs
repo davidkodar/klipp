@@ -190,6 +190,65 @@ pub fn write_and_verify<R: Read>(
     Ok(())
 }
 
+/// Stream bytes from `reader` to `target_partial`, hashing on the
+/// fly, with NO expected size or hash. Used by the custom-URL paste
+/// flow where neither value is known up front — the user gets the
+/// computed values back and confirms before Klipp registers the
+/// file as a custom model. The renamed-on-success behaviour matches
+/// [`write_and_verify`].
+///
+/// `max_bytes_cap` is a defensive bound: if the URL serves an
+/// arbitrarily long stream, we abort once the response crosses
+/// this. Caller picks something generous (a few GB) — the goal is
+/// to catch hostile servers, not legitimate large models.
+///
+/// On success, returns `(actual_sha256_hex_lowercase, total_bytes)`.
+/// On any failure: leaves `target_partial` in place for inspection.
+pub fn write_and_compute<R: Read>(
+    reader: &mut R,
+    target_partial: &Path,
+    target_final: &Path,
+    progress: &mut dyn ProgressSink,
+    cancel: &AtomicBool,
+    max_bytes_cap: u64,
+) -> Result<(String, u64), DownloadError> {
+    progress.started(0);
+
+    let mut file = std::fs::File::create(target_partial)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; STREAM_CHUNK_BYTES];
+    let mut total: u64 = 0;
+
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(DownloadError::Cancelled);
+        }
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        total = total.saturating_add(n as u64);
+        if total > max_bytes_cap {
+            return Err(DownloadError::SizeMismatch {
+                expected: max_bytes_cap,
+                actual: total,
+                tolerance: 0.0,
+            });
+        }
+        hasher.update(&buf[..n]);
+        file.write_all(&buf[..n])?;
+        progress.advance(n as u64);
+    }
+
+    file.sync_all()?;
+    drop(file);
+
+    let actual_hash = hex::encode(hasher.finalize());
+    std::fs::rename(target_partial, target_final)?;
+    progress.finished();
+    Ok((actual_hash, total))
+}
+
 /// Try each source in `entry.sources` until one produces bytes that
 /// pass [`write_and_verify`]. Returns the resolved path on success.
 ///
@@ -281,6 +340,43 @@ pub fn download_to_cache(
     Err(DownloadError::AllSourcesFailed {
         count: entry.sources.len(),
         last: last_err.unwrap_or_else(|| "no error captured".into()),
+    })
+}
+
+/// Fetch a single URL into the cache directly, without an existing
+/// manifest entry. Computes SHA + size on the fly via
+/// [`write_and_compute`] and returns them plus the resolved path so
+/// the caller can show a confirmation dialog before registering the
+/// file as a custom model.
+///
+/// `target_partial` and `target_final` are caller-supplied so the
+/// custom-URL flow can place files under a `custom/` subdirectory
+/// of the cache without needing a `ModelEntry`. `max_bytes_cap`
+/// guards against hostile servers; pick something generous (a few
+/// GB) — the goal is "no infinite stream", not enforcement of any
+/// real expected size.
+pub fn download_url_uncertified(
+    url: &str,
+    target_partial: &Path,
+    target_final: &Path,
+    progress: &mut dyn ProgressSink,
+    cancel: &AtomicBool,
+    max_bytes_cap: u64,
+) -> Result<(String, u64), DownloadError> {
+    let resp = ureq::get(url)
+        .call()
+        .map_err(|e| DownloadError::Http(format!("GET {url}: {e}")))?;
+    let mut reader = resp.into_reader();
+    write_and_compute(
+        &mut reader,
+        target_partial,
+        target_final,
+        progress,
+        cancel,
+        max_bytes_cap,
+    )
+    .inspect_err(|_| {
+        let _ = std::fs::remove_file(target_partial);
     })
 }
 
@@ -608,5 +704,82 @@ mod tests {
             .expect_err("should fail when all sources fail");
         assert!(matches!(err, DownloadError::AllSourcesFailed { count: 2, .. }),
             "expected AllSourcesFailed with count=2, got {err:?}");
+    }
+
+    // ─── write_and_compute (custom URL paste) tests ──────────────
+
+    #[test]
+    fn compute_writes_renames_and_returns_sha_and_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = b"some custom-model bytes a user pasted";
+        let expected_hash = sha256_hex(bytes);
+        let partial = dir.path().join("c.partial");
+        let final_ = dir.path().join("c.bin");
+        let mut reader = Cursor::new(bytes.to_vec());
+        let mut prog = CountingProgress::default();
+        let cancel = AtomicBool::new(false);
+
+        let (hash, size) = write_and_compute(
+            &mut reader,
+            &partial,
+            &final_,
+            &mut prog,
+            &cancel,
+            10_000_000,
+        )
+        .expect("ok");
+
+        assert_eq!(hash, expected_hash);
+        assert_eq!(size, bytes.len() as u64);
+        assert!(final_.exists());
+        assert!(!partial.exists());
+        assert_eq!(std::fs::read(&final_).unwrap(), bytes);
+        assert!(prog.finished);
+    }
+
+    #[test]
+    fn compute_aborts_when_stream_exceeds_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        // 1 KB of input, cap of 100 bytes — should bail.
+        let bytes = vec![0u8; 1024];
+        let partial = dir.path().join("c.partial");
+        let final_ = dir.path().join("c.bin");
+        let mut reader = Cursor::new(bytes);
+        let mut prog = CountingProgress::default();
+        let cancel = AtomicBool::new(false);
+
+        let err = write_and_compute(
+            &mut reader,
+            &partial,
+            &final_,
+            &mut prog,
+            &cancel,
+            100,
+        )
+        .expect_err("must reject oversize input");
+        assert!(matches!(err, DownloadError::SizeMismatch { .. }));
+        assert!(!final_.exists(), "rename must not happen on failure");
+    }
+
+    #[test]
+    fn compute_honors_cancellation_between_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = vec![0u8; 4 * 1024 * 1024]; // 4 MB, multiple chunks
+        let partial = dir.path().join("c.partial");
+        let final_ = dir.path().join("c.bin");
+        let mut reader = Cursor::new(bytes);
+        let mut prog = CountingProgress::default();
+        let cancel = Arc::new(AtomicBool::new(true)); // already cancelled
+
+        let err = write_and_compute(
+            &mut reader,
+            &partial,
+            &final_,
+            &mut prog,
+            &cancel,
+            100_000_000,
+        )
+        .expect_err("cancelled before any chunk read");
+        assert!(matches!(err, DownloadError::Cancelled));
     }
 }
