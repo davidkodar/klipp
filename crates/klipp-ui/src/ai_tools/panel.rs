@@ -181,15 +181,14 @@ fn model_section(
                         state
                             .last_picked_model_per_task
                             .insert(task, m.id.clone());
-                        // Persist to ~/.config/klipp/ai_tools.toml
-                        // so the pick survives the next launch.
-                        // Save failures are logged + swallowed —
-                        // the in-memory state still works for the
+                        // Persist the full AI Tools state (picks +
+                        // telemetry) to ~/.config/klipp/ai_tools.toml
+                        // so the pick survives the next launch. Save
+                        // failures are logged + swallowed — the
+                        // in-memory state still works for the
                         // current session.
                         super::persistence::save(
-                            &super::persistence::AiToolsConfig::from_map(
-                                &state.last_picked_model_per_task,
-                            ),
+                            &super::persistence::AiToolsConfig::from_state(state),
                         );
                     }
                 }

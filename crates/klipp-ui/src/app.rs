@@ -15359,6 +15359,16 @@ impl KlippApp {
                     .entry(id)
                     .or_default()
                     .record_run(ms);
+                // Persist updated telemetry. The file is small
+                // (well under 1 KB even with full telemetry across
+                // every model) and inference itself takes hundreds
+                // of ms, so the per-write cost is invisible. Save
+                // failures are logged + swallowed.
+                crate::ai_tools::persistence::save(
+                    &crate::ai_tools::persistence::AiToolsConfig::from_state(
+                        &self.state.ai_tools_state,
+                    ),
+                );
             }
             self.refresh_ai_tools_overlay_texture(ctx);
             ctx.request_repaint();

@@ -2636,13 +2636,16 @@ impl Default for AppState {
             command_palette_selected: 0,
             model_download: crate::model_download::ModelDownloadState::default(),
             ai_tools_state: {
-                // Persistent per-task default model picks live in
-                // ~/.config/klipp/ai_tools.toml. Loading here means
-                // a user who picked RF-DETR-Seg (Medium) for Detect
-                // Objects last session sees it pre-selected today.
+                // Persistent state lives in ~/.config/klipp/ai_tools.toml:
+                // last_picked default model per task + per-model
+                // telemetry (last_used + rolling inference-ms +
+                // total_runs). Both load here so picks pre-select
+                // and "Last used: 2m ago" stays meaningful across
+                // restarts.
                 let mut s = crate::ai_tools::AiToolsState::default();
-                s.last_picked_model_per_task =
-                    crate::ai_tools::persistence::load().into_map();
+                let loaded = crate::ai_tools::persistence::load().into_state_data();
+                s.last_picked_model_per_task = loaded.last_picked_model_per_task;
+                s.model_telemetry = loaded.model_telemetry;
                 s
             },
             // Both views observe the same `Arc<RwLock<ModelRegistry>>`

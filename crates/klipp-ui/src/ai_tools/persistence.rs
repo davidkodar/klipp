@@ -28,12 +28,13 @@
 //! the persistence — the in-memory state still works for the
 //! current session.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 
-use super::AiTask;
+use super::{AiTask, ModelTelemetry};
 
 /// Wire-format struct. Field names are intentionally the
 /// lowercase-snake-case spelling of `AiTask` variants so the file
@@ -44,32 +45,118 @@ use super::AiTask;
 pub struct AiToolsConfig {
     /// Per-task default model id. Key is the snake_case task name
     /// (`detect_objects`, `remove_background`, etc.). Unknown task
-    /// names round-trip through `Unknown` keys that are silently
-    /// dropped on load.
+    /// names are silently dropped on load — older Klipp builds
+    /// shouldn't crash because a newer build wrote a task name they
+    /// don't recognise yet.
     #[serde(default)]
     pub last_picked: HashMap<String, String>,
+    /// Per-model usage telemetry. Key is the stable model id
+    /// (`rf_detr_seg_medium_v1`, etc.). `last_used` is stored as
+    /// Unix epoch seconds rather than RFC 3339 so the wire format
+    /// has no transitive date-time crate dependency. Entries for
+    /// models that are no longer registered round-trip cleanly —
+    /// they're just not visible in the AI Models dialog.
+    #[serde(default)]
+    pub telemetry: HashMap<String, TelemetryWire>,
+}
+
+/// On-disk representation of [`ModelTelemetry`]. Mirrors the in-
+/// memory shape but with `last_used_unix: u64` instead of
+/// `SystemTime`. `recent_inference_ms` is a `Vec<u64>` because TOML
+/// can't serialize `VecDeque` directly; conversion is one-line.
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct TelemetryWire {
+    /// Unix epoch seconds. Zero means "never used" (matches the
+    /// in-memory default of `SystemTime::UNIX_EPOCH`).
+    #[serde(default)]
+    pub last_used_unix: u64,
+    /// Last 10 inference times in ms, oldest first.
+    #[serde(default)]
+    pub recent_inference_ms: Vec<u64>,
+    /// Total successful runs across all sessions.
+    #[serde(default)]
+    pub total_runs: u64,
+}
+
+impl TelemetryWire {
+    fn from_telemetry(t: &ModelTelemetry) -> Self {
+        Self {
+            last_used_unix: t
+                .last_used
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            recent_inference_ms: t.recent_inference_ms.iter().copied().collect(),
+            total_runs: t.total_runs,
+        }
+    }
+
+    fn into_telemetry(self) -> ModelTelemetry {
+        let last_used = if self.last_used_unix == 0 {
+            UNIX_EPOCH
+        } else {
+            UNIX_EPOCH + std::time::Duration::from_secs(self.last_used_unix)
+        };
+        ModelTelemetry {
+            last_used,
+            recent_inference_ms: VecDeque::from(self.recent_inference_ms),
+            total_runs: self.total_runs,
+        }
+    }
+}
+
+/// In-memory shape returned by [`AiToolsConfig::into_state_data`].
+/// Both halves of the persisted state in one struct so callers
+/// don't have to thread two return values through.
+#[derive(Debug, Default)]
+pub struct LoadedAiToolsState {
+    pub last_picked_model_per_task: HashMap<AiTask, String>,
+    pub model_telemetry: HashMap<String, ModelTelemetry>,
 }
 
 impl AiToolsConfig {
-    /// Materialise from an in-memory `HashMap<AiTask, String>`.
-    /// Used by the dropdown handler before [`Self::save`].
-    pub fn from_map(picks: &HashMap<AiTask, String>) -> Self {
-        let last_picked = picks
+    /// Materialise from in-memory `AiToolsState`. The dropdown
+    /// handler + the inference-completion hook both call this
+    /// before [`save`] so disk reflects current state every time
+    /// the user touches anything that's persisted.
+    pub fn from_state(state: &super::AiToolsState) -> Self {
+        let last_picked = state
+            .last_picked_model_per_task
             .iter()
             .map(|(task, id)| (task_to_key(*task).to_string(), id.clone()))
             .collect();
-        Self { last_picked }
+        let telemetry = state
+            .model_telemetry
+            .iter()
+            .map(|(id, t)| (id.clone(), TelemetryWire::from_telemetry(t)))
+            .collect();
+        Self {
+            last_picked,
+            telemetry,
+        }
     }
 
-    /// Turn the wire-format back into `HashMap<AiTask, String>` for
-    /// the panel to consume. Unknown task keys are silently
-    /// dropped — older Klipp builds shouldn't crash because a newer
-    /// build wrote a task name they don't recognise yet.
-    pub fn into_map(self) -> HashMap<AiTask, String> {
-        self.last_picked
+    /// Decode the wire format into the two HashMaps that
+    /// `AiToolsState` carries. Unknown task keys are silently
+    /// dropped (forward-compat). Unknown model ids in the telemetry
+    /// section round-trip cleanly — they sit in the map without a
+    /// corresponding registered model and remain invisible until /
+    /// unless that model id is registered in a later session.
+    pub fn into_state_data(self) -> LoadedAiToolsState {
+        let last_picked_model_per_task = self
+            .last_picked
             .into_iter()
             .filter_map(|(k, v)| key_to_task(&k).map(|t| (t, v)))
-            .collect()
+            .collect();
+        let model_telemetry = self
+            .telemetry
+            .into_iter()
+            .map(|(id, w)| (id, w.into_telemetry()))
+            .collect();
+        LoadedAiToolsState {
+            last_picked_model_per_task,
+            model_telemetry,
+        }
     }
 }
 
@@ -182,6 +269,7 @@ fn key_to_task(key: &str) -> Option<AiTask> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai_tools::AiToolsState;
 
     #[test]
     fn task_key_round_trips() {
@@ -196,23 +284,26 @@ mod tests {
     }
 
     #[test]
-    fn from_map_into_map_preserves_picks() {
-        let mut picks = HashMap::new();
-        picks.insert(
+    fn from_state_into_state_data_preserves_picks() {
+        let mut state = AiToolsState::default();
+        state.last_picked_model_per_task.insert(
             AiTask::DetectObjects,
             "rf_detr_seg_medium_v1".to_string(),
         );
-        picks.insert(
+        state.last_picked_model_per_task.insert(
             AiTask::RemoveBackground,
             "birefnet_lite_v1".to_string(),
         );
-        let cfg = AiToolsConfig::from_map(&picks);
-        let restored = cfg.into_map();
-        assert_eq!(restored, picks);
+        let cfg = AiToolsConfig::from_state(&state);
+        let loaded = cfg.into_state_data();
+        assert_eq!(
+            loaded.last_picked_model_per_task,
+            state.last_picked_model_per_task
+        );
     }
 
     #[test]
-    fn into_map_drops_unknown_keys() {
+    fn into_state_data_drops_unknown_task_keys() {
         // Future Klipp adds a new task → older Klipp shouldn't
         // crash on the unknown key, just ignore it.
         let mut cfg = AiToolsConfig::default();
@@ -220,42 +311,132 @@ mod tests {
             .insert("invent_a_new_task".into(), "some_model".into());
         cfg.last_picked
             .insert("detect_objects".into(), "rf_detr_seg_medium_v1".into());
-        let map = cfg.into_map();
-        assert_eq!(map.len(), 1);
+        let loaded = cfg.into_state_data();
+        assert_eq!(loaded.last_picked_model_per_task.len(), 1);
         assert_eq!(
-            map.get(&AiTask::DetectObjects).map(String::as_str),
+            loaded
+                .last_picked_model_per_task
+                .get(&AiTask::DetectObjects)
+                .map(String::as_str),
             Some("rf_detr_seg_medium_v1")
         );
     }
 
     #[test]
-    fn default_config_has_empty_picks() {
+    fn default_config_has_empty_state() {
         let cfg = AiToolsConfig::default();
-        assert!(cfg.last_picked.is_empty());
-        let map = cfg.into_map();
-        assert!(map.is_empty());
+        let loaded = cfg.into_state_data();
+        assert!(loaded.last_picked_model_per_task.is_empty());
+        assert!(loaded.model_telemetry.is_empty());
     }
 
     #[test]
-    fn missing_last_picked_section_parses_as_empty() {
-        // Parsing an empty TOML body should yield default — the
-        // load path relies on this when the file exists but is
-        // truncated / mid-write.
+    fn missing_sections_parse_as_empty() {
         let cfg: AiToolsConfig = toml::from_str("").expect("empty body parses");
         assert!(cfg.last_picked.is_empty());
+        assert!(cfg.telemetry.is_empty());
     }
 
     #[test]
-    fn round_trip_through_toml_string() {
-        let mut picks = HashMap::new();
-        picks.insert(
+    fn round_trip_through_toml_string_preserves_picks() {
+        let mut state = AiToolsState::default();
+        state.last_picked_model_per_task.insert(
             AiTask::IsolateObject,
             "mobile_sam_v1".to_string(),
         );
-        let cfg = AiToolsConfig::from_map(&picks);
+        let cfg = AiToolsConfig::from_state(&state);
         let body = toml::to_string_pretty(&cfg).expect("serialize");
         let parsed: AiToolsConfig = toml::from_str(&body).expect("deserialize");
-        let restored = parsed.into_map();
-        assert_eq!(restored, picks);
+        let loaded = parsed.into_state_data();
+        assert_eq!(
+            loaded.last_picked_model_per_task,
+            state.last_picked_model_per_task
+        );
+    }
+
+    #[test]
+    fn telemetry_round_trips_through_wire_format() {
+        // Construct telemetry with concrete values, push it through
+        // from_state → TOML → into_state_data, verify identity.
+        let mut state = AiToolsState::default();
+        let mut t = ModelTelemetry::default();
+        t.record_run(142);
+        t.record_run(148);
+        t.record_run(139);
+        // Snapshot the bits the wire format actually carries —
+        // last_used SystemTime is preserved at 1-second resolution.
+        let original_total = t.total_runs;
+        let original_recent: Vec<u64> = t.recent_inference_ms.iter().copied().collect();
+        let original_last_used_secs = t
+            .last_used
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        state.model_telemetry.insert("test_model_v1".into(), t);
+
+        let cfg = AiToolsConfig::from_state(&state);
+        let body = toml::to_string_pretty(&cfg).expect("serialize");
+        let parsed: AiToolsConfig = toml::from_str(&body).expect("deserialize");
+        let loaded = parsed.into_state_data();
+
+        let restored = loaded
+            .model_telemetry
+            .get("test_model_v1")
+            .expect("model present");
+        assert_eq!(restored.total_runs, original_total);
+        let restored_recent: Vec<u64> =
+            restored.recent_inference_ms.iter().copied().collect();
+        assert_eq!(restored_recent, original_recent);
+        let restored_secs = restored
+            .last_used
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        assert_eq!(restored_secs, original_last_used_secs);
+    }
+
+    #[test]
+    fn telemetry_for_unregistered_id_round_trips_silently() {
+        // A model id that's no longer registered (e.g. because the
+        // user disabled a feature flag in this build) should still
+        // round-trip through TOML — the entry just sits in the map
+        // and isn't visible until that id is registered again.
+        let mut cfg = AiToolsConfig::default();
+        cfg.telemetry.insert(
+            "phantom_model_v9".into(),
+            TelemetryWire {
+                last_used_unix: 1_700_000_000,
+                recent_inference_ms: vec![100, 200],
+                total_runs: 5,
+            },
+        );
+        let body = toml::to_string_pretty(&cfg).expect("serialize");
+        let parsed: AiToolsConfig = toml::from_str(&body).expect("deserialize");
+        let loaded = parsed.into_state_data();
+        let t = loaded
+            .model_telemetry
+            .get("phantom_model_v9")
+            .expect("phantom entry preserved");
+        assert_eq!(t.total_runs, 5);
+    }
+
+    #[test]
+    fn never_used_telemetry_loads_as_unix_epoch() {
+        // last_used_unix=0 is the on-disk encoding for "never run".
+        // The in-memory shape uses SystemTime::UNIX_EPOCH for the
+        // same meaning; ModelTelemetry::has_runs() returns false
+        // because total_runs is also 0 in that case.
+        let mut cfg = AiToolsConfig::default();
+        cfg.telemetry.insert(
+            "fresh_install".into(),
+            TelemetryWire::default(),
+        );
+        let loaded = cfg.into_state_data();
+        let t = loaded
+            .model_telemetry
+            .get("fresh_install")
+            .expect("entry present");
+        assert!(!t.has_runs());
+        assert_eq!(t.last_used, UNIX_EPOCH);
     }
 }
