@@ -122,6 +122,13 @@ pub struct AiToolsState {
     /// takes effect on the next click of "Run on current frame"
     /// without rebuilding the cached generator instance. Ephemeral.
     pub model_tunables: std::collections::HashMap<String, klipp_ml::MaskTunables>,
+    /// Last model the user picked for each task. Restored when the
+    /// user switches back to that task, so an explicit "RF-DETR-Seg
+    /// (Medium)" choice on Detect Objects survives a round-trip
+    /// through Remove Background. Falls back to the first capable
+    /// model when no entry is stored. Ephemeral — resets on app
+    /// restart.
+    pub last_picked_model_per_task: std::collections::HashMap<AiTask, String>,
 }
 
 impl Default for AiToolsState {
@@ -138,6 +145,7 @@ impl Default for AiToolsState {
             mask_overlay_texture: None,
             model_telemetry: std::collections::HashMap::new(),
             model_tunables: std::collections::HashMap::new(),
+            last_picked_model_per_task: std::collections::HashMap::new(),
         }
     }
 }

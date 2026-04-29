@@ -121,16 +121,28 @@ fn task_button(
     }
 
     if response.clicked() {
-        // Default the model dropdown to the first capable model
-        // when switching tasks. Users can change it via the
-        // dropdown afterwards.
-        let first = registry
-            .models_for(task)
-            .first()
-            .map(|m| m.id.clone());
+        let capable = registry.models_for(task);
         state.active_task = Some(task);
-        state.selected_model_id = first;
+        state.selected_model_id = pick_default_model_for_task(task, state, &capable);
     }
+}
+
+/// Decide which model id should pre-populate the dropdown when the
+/// user (re)opens a task. Restores the last explicit pick if it's
+/// still capable for the task; otherwise falls back to the first
+/// capable model. Pure data logic — kept out of `task_button` so
+/// the unit tests below can drive it without an egui Ui.
+fn pick_default_model_for_task(
+    task: AiTask,
+    state: &AiToolsState,
+    capable: &[klipp_ml::ModelInfo],
+) -> Option<String> {
+    let restored = state
+        .last_picked_model_per_task
+        .get(&task)
+        .filter(|id| capable.iter().any(|m| m.id == **id))
+        .cloned();
+    restored.or_else(|| capable.first().map(|m| m.id.clone()))
 }
 
 fn model_section(
@@ -161,6 +173,14 @@ fn model_section(
                         .clicked()
                     {
                         state.selected_model_id = Some(m.id.clone());
+                        // Remember the explicit pick under the
+                        // current task so the next switch back to
+                        // this task restores it. Keyed by `task`
+                        // (the function-local arg), which is the
+                        // same as state.active_task here.
+                        state
+                            .last_picked_model_per_task
+                            .insert(task, m.id.clone());
                     }
                 }
             });
@@ -446,5 +466,88 @@ fn preview_section(ui: &mut egui::Ui, state: &AiToolsState) {
             ui.label("Mask preview:");
             ui.label(egui::RichText::new("(none yet)").weak());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use klipp_ml::{MaskCapabilities, ModelInfo};
+
+    fn fake_capable() -> Vec<ModelInfo> {
+        vec![
+            ModelInfo {
+                id: "rf_detr_seg_v1".into(),
+                display_name: "RF-DETR-Seg (Preview)".into(),
+                capabilities: MaskCapabilities::AUTO_DETECT,
+            },
+            ModelInfo {
+                id: "rf_detr_seg_medium_v1".into(),
+                display_name: "RF-DETR-Seg (Medium)".into(),
+                capabilities: MaskCapabilities::AUTO_DETECT,
+            },
+        ]
+    }
+
+    #[test]
+    fn pick_default_falls_back_to_first_when_no_history() {
+        let state = AiToolsState::default();
+        let capable = fake_capable();
+        let pick = pick_default_model_for_task(AiTask::DetectObjects, &state, &capable);
+        assert_eq!(pick.as_deref(), Some("rf_detr_seg_v1"));
+    }
+
+    #[test]
+    fn pick_default_restores_remembered_choice() {
+        let mut state = AiToolsState::default();
+        state.last_picked_model_per_task.insert(
+            AiTask::DetectObjects,
+            "rf_detr_seg_medium_v1".into(),
+        );
+        let capable = fake_capable();
+        let pick = pick_default_model_for_task(AiTask::DetectObjects, &state, &capable);
+        assert_eq!(pick.as_deref(), Some("rf_detr_seg_medium_v1"));
+    }
+
+    #[test]
+    fn pick_default_drops_stale_remembered_choice() {
+        // User had picked a model that's since been unregistered
+        // (manifest churn, feature flag rebuild). The restoration
+        // logic should fall back to the first capable model rather
+        // than offering the stale id.
+        let mut state = AiToolsState::default();
+        state.last_picked_model_per_task.insert(
+            AiTask::DetectObjects,
+            "rf_detr_seg_xlarge_v9_doesnt_exist".into(),
+        );
+        let capable = fake_capable();
+        let pick = pick_default_model_for_task(AiTask::DetectObjects, &state, &capable);
+        assert_eq!(pick.as_deref(), Some("rf_detr_seg_v1"));
+    }
+
+    #[test]
+    fn pick_default_returns_none_when_no_models_capable() {
+        let state = AiToolsState::default();
+        let capable: Vec<ModelInfo> = vec![];
+        let pick = pick_default_model_for_task(AiTask::DetectObjects, &state, &capable);
+        assert!(pick.is_none());
+    }
+
+    #[test]
+    fn per_task_history_is_independent() {
+        // Picks for one task don't leak into another.
+        let mut state = AiToolsState::default();
+        state.last_picked_model_per_task.insert(
+            AiTask::DetectObjects,
+            "rf_detr_seg_medium_v1".into(),
+        );
+        let capable = fake_capable();
+        let pick_other =
+            pick_default_model_for_task(AiTask::RemoveBackground, &state, &capable);
+        assert_eq!(
+            pick_other.as_deref(),
+            Some("rf_detr_seg_v1"),
+            "RemoveBackground should fall back to first, not pick up DetectObjects' history",
+        );
     }
 }
