@@ -73,6 +73,15 @@ pub const RF_DETR_INPUT_SIZE: u32 = 432;
 /// differ. If a fail-shape mismatch happens it'll be on this dim.
 pub const RF_DETR_PROTOTYPE_COUNT: usize = 32;
 
+/// Default overlap threshold for non-maximum-suppression. Compared
+/// against `max(IoU, IoMin)` where `IoMin = intersection /
+/// min(area_a, area_b)`. The IoMin term catches the "small box
+/// fully inside a larger same-class box" case that pure IoU misses
+/// — common with noisy detectors that emit nested duplicates.
+/// 0.5 is the COCO-standard IoU cut; the IoMin term makes this
+/// effectively stricter for nested cases.
+pub const RF_DETR_DEFAULT_NMS_IOU_THRESHOLD: f32 = 0.5;
+
 /// Builder for RF-DETR-Seg.
 pub struct RfDetrSegBuilder {
     weights_path: Option<PathBuf>,
@@ -81,6 +90,11 @@ pub struct RfDetrSegBuilder {
     /// builder + (future) panel UI let users dial it down for
     /// recall-heavy use cases (small objects in cluttered scenes).
     score_threshold: f32,
+    /// IoU threshold for class-aware non-maximum-suppression. Two
+    /// same-class detections with IoU > this value get collapsed to
+    /// the higher-confidence one. Set to 1.0+ to disable NMS
+    /// entirely (useful for debugging the raw model output).
+    nms_iou_threshold: f32,
 }
 
 impl RfDetrSegBuilder {
@@ -89,6 +103,7 @@ impl RfDetrSegBuilder {
             weights_path: None,
             device: DevicePreference::GpuPreferCpu,
             score_threshold: 0.5,
+            nms_iou_threshold: RF_DETR_DEFAULT_NMS_IOU_THRESHOLD,
         }
     }
 
@@ -111,11 +126,20 @@ impl RfDetrSegBuilder {
         self
     }
 
+    /// IoU threshold for class-aware non-maximum-suppression. Pass
+    /// 1.0+ to disable NMS entirely (raw model output, useful for
+    /// debugging duplicate-detection patterns).
+    pub fn nms_iou_threshold(mut self, t: f32) -> Self {
+        self.nms_iou_threshold = t.clamp(0.0, f32::INFINITY);
+        self
+    }
+
     pub fn build(self) -> Result<RfDetrSeg, MaskError> {
         Ok(RfDetrSeg {
             weights_path: self.weights_path,
             device: self.device,
             score_threshold: self.score_threshold,
+            nms_iou_threshold: self.nms_iou_threshold,
             #[cfg(feature = "ort")]
             session: None,
         })
@@ -131,10 +155,12 @@ impl Default for RfDetrSegBuilder {
 pub struct RfDetrSeg {
     weights_path: Option<PathBuf>,
     device: DevicePreference,
-    #[allow(dead_code)] // used by the ort-feature inference path (next commit)
+    #[allow(dead_code)] // used by the ort-feature inference path
     score_threshold: f32,
+    #[allow(dead_code)] // used by the ort-feature inference path
+    nms_iou_threshold: f32,
     #[cfg(feature = "ort")]
-    #[allow(dead_code)] // populated by the inference path (next commit)
+    #[allow(dead_code)] // populated by the inference path
     session: Option<ort::session::Session>,
 }
 
@@ -381,18 +407,140 @@ impl RfDetrSeg {
             });
         }
 
-        // Sort by confidence descending so the panel's
-        // `first_candidate` lookup picks the strongest detection.
+        // Sort by confidence descending so NMS keeps the highest-
+        // confidence one out of every overlapping cluster, and the
+        // panel's `first_candidate` lookup picks the strongest
+        // detection.
         candidates.sort_by(|a, b| {
             b.confidence
                 .partial_cmp(&a.confidence)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
+        // Class-aware NMS to collapse same-class overlapping
+        // detections. RF-DETR-Seg-Preview tends to emit several
+        // near-duplicate boxes per object cluster (e.g. 9 "bicycle"
+        // boxes around one bicycle); NMS collapses those to one.
+        // Different classes are kept even when they overlap — a
+        // genuine "person on bicycle" should produce both
+        // detections.
+        if self.nms_iou_threshold < 1.0 {
+            non_max_suppress_class_aware(&mut candidates, self.nms_iou_threshold);
+        }
+
         Ok(MaskResponse {
             candidates,
             inference_ms: started.elapsed().as_millis() as u64,
         })
+    }
+}
+
+/// Class-aware NMS — assumes `candidates` is sorted by confidence
+/// descending. For each candidate, drop any later same-class
+/// candidate whose bbox IoU with the current one exceeds
+/// `iou_threshold`. O(N²) but N is bounded by `MAX_CANDIDATES = 64`
+/// so the constant is tiny.
+#[cfg(feature = "ort")]
+fn non_max_suppress_class_aware(
+    candidates: &mut Vec<MaskCandidate>,
+    iou_threshold: f32,
+) {
+    let n = candidates.len();
+    if n < 2 {
+        return;
+    }
+    let mut keep = vec![true; n];
+    for i in 0..n {
+        if !keep[i] {
+            continue;
+        }
+        let bi = match candidates[i].bbox {
+            Some(b) => b,
+            None => continue,
+        };
+        let class_i = candidates[i].label.as_deref().unwrap_or("");
+        for j in (i + 1)..n {
+            if !keep[j] {
+                continue;
+            }
+            // Class-aware: only suppress same-class overlaps.
+            // Overlapping different-class detections (a person
+            // standing on a bicycle) are both kept.
+            if candidates[j].label.as_deref().unwrap_or("") != class_i {
+                continue;
+            }
+            let bj = match candidates[j].bbox {
+                Some(b) => b,
+                None => continue,
+            };
+            // Use max(IoU, IoMin) so the same threshold catches
+            // both overlapping-similar-size cases (high IoU) AND
+            // nested cases (small box inside larger same-class
+            // box, high IoMin but low IoU).
+            let overlap = bbox_iou(&bi, &bj).max(bbox_iomin(&bi, &bj));
+            if overlap > iou_threshold {
+                keep[j] = false;
+            }
+        }
+    }
+    let mut idx = 0;
+    candidates.retain(|_| {
+        let k = keep[idx];
+        idx += 1;
+        k
+    });
+}
+
+/// Intersection-over-minimum: `intersection / min(area_a, area_b)`.
+/// Catches the "small box fully inside larger same-class box" case
+/// that pure IoU misses (since IoU's union dominates with the
+/// larger box's area, masking high containment).
+#[cfg(feature = "ort")]
+fn bbox_iomin(a: &BBox, b: &BBox) -> f32 {
+    let ax2 = a.x + a.w;
+    let ay2 = a.y + a.h;
+    let bx2 = b.x + b.w;
+    let by2 = b.y + b.h;
+    let ix1 = a.x.max(b.x);
+    let iy1 = a.y.max(b.y);
+    let ix2 = ax2.min(bx2);
+    let iy2 = ay2.min(by2);
+    let iw = (ix2 - ix1).max(0.0);
+    let ih = (iy2 - iy1).max(0.0);
+    let inter = iw * ih;
+    let area_a = a.w * a.h;
+    let area_b = b.w * b.h;
+    let min_area = area_a.min(area_b);
+    if min_area <= 0.0 {
+        0.0
+    } else {
+        (inter / min_area).clamp(0.0, 1.0)
+    }
+}
+
+/// IoU of two BBoxes in (x, y, w, h) form. Returns 0 for
+/// non-overlapping or zero-area boxes — the caller's `>`
+/// comparison treats those as "don't suppress" which is correct.
+#[cfg(feature = "ort")]
+fn bbox_iou(a: &BBox, b: &BBox) -> f32 {
+    let ax2 = a.x + a.w;
+    let ay2 = a.y + a.h;
+    let bx2 = b.x + b.w;
+    let by2 = b.y + b.h;
+    let ix1 = a.x.max(b.x);
+    let iy1 = a.y.max(b.y);
+    let ix2 = ax2.min(bx2);
+    let iy2 = ay2.min(by2);
+    let iw = (ix2 - ix1).max(0.0);
+    let ih = (iy2 - iy1).max(0.0);
+    let inter = iw * ih;
+    let area_a = a.w * a.h;
+    let area_b = b.w * b.h;
+    let union = area_a + area_b - inter;
+    if union <= 0.0 {
+        0.0
+    } else {
+        (inter / union).clamp(0.0, 1.0)
     }
 }
 
@@ -763,5 +911,194 @@ mod tests {
     fn id_and_display_name_are_distinct() {
         let g = RfDetrSegBuilder::new().build().expect("build");
         assert_ne!(g.id(), g.display_name());
+    }
+
+    // ── IoU + NMS unit tests (feature-gated because the impls live
+    //    under cfg(feature = "ort")) ─────────────────────────────
+
+    #[test]
+    #[cfg(feature = "ort")]
+    fn iou_zero_for_disjoint_boxes() {
+        use klipp_ml::BBox;
+        let a = BBox { x: 0.0, y: 0.0, w: 0.1, h: 0.1 };
+        let b = BBox { x: 0.5, y: 0.5, w: 0.1, h: 0.1 };
+        assert_eq!(bbox_iou(&a, &b), 0.0);
+    }
+
+    #[test]
+    #[cfg(feature = "ort")]
+    fn iou_one_for_identical_boxes() {
+        use klipp_ml::BBox;
+        let a = BBox { x: 0.2, y: 0.3, w: 0.4, h: 0.5 };
+        assert!((bbox_iou(&a, &a) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    #[cfg(feature = "ort")]
+    fn iou_half_for_half_overlap() {
+        // Two unit squares offset by half — overlap area = 0.5,
+        // union = 1.5, IoU = 0.5/1.5 = 1/3.
+        use klipp_ml::BBox;
+        let a = BBox { x: 0.0, y: 0.0, w: 1.0, h: 1.0 };
+        let b = BBox { x: 0.5, y: 0.0, w: 1.0, h: 1.0 };
+        assert!((bbox_iou(&a, &b) - 1.0 / 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    #[cfg(feature = "ort")]
+    fn iou_zero_for_zero_area_box() {
+        use klipp_ml::BBox;
+        let a = BBox { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
+        let b = BBox { x: 0.0, y: 0.0, w: 0.5, h: 0.5 };
+        assert_eq!(bbox_iou(&a, &b), 0.0);
+    }
+
+    #[test]
+    #[cfg(feature = "ort")]
+    fn nms_collapses_overlapping_same_class() {
+        use klipp_ml::{BBox, MaskBuffer, MaskCandidate};
+        // Three near-identical "bicycle" boxes — keep the highest
+        // confidence one, drop the other two.
+        let mk = |conf: f32| MaskCandidate {
+            mask: MaskBuffer { width: 1, height: 1, alpha: vec![0u8] },
+            confidence: conf,
+            bbox: Some(BBox { x: 0.1, y: 0.1, w: 0.3, h: 0.3 }),
+            label: Some("bicycle".into()),
+        };
+        let mut candidates = vec![mk(0.99), mk(0.92), mk(0.85)];
+        non_max_suppress_class_aware(&mut candidates, 0.5);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].confidence, 0.99);
+    }
+
+    #[test]
+    #[cfg(feature = "ort")]
+    fn nms_keeps_overlapping_different_classes() {
+        use klipp_ml::{BBox, MaskBuffer, MaskCandidate};
+        // A "person" and a "bicycle" boxes overlap — both kept
+        // (a person on a bike).
+        let person = MaskCandidate {
+            mask: MaskBuffer { width: 1, height: 1, alpha: vec![0u8] },
+            confidence: 0.95,
+            bbox: Some(BBox { x: 0.1, y: 0.1, w: 0.5, h: 0.5 }),
+            label: Some("person".into()),
+        };
+        let bicycle = MaskCandidate {
+            mask: MaskBuffer { width: 1, height: 1, alpha: vec![0u8] },
+            confidence: 0.90,
+            bbox: Some(BBox { x: 0.1, y: 0.1, w: 0.5, h: 0.5 }),
+            label: Some("bicycle".into()),
+        };
+        let mut candidates = vec![person, bicycle];
+        non_max_suppress_class_aware(&mut candidates, 0.5);
+        assert_eq!(candidates.len(), 2);
+    }
+
+    #[test]
+    #[cfg(feature = "ort")]
+    fn nms_keeps_distant_same_class() {
+        use klipp_ml::{BBox, MaskBuffer, MaskCandidate};
+        // Two non-overlapping "person" boxes — both kept
+        // (e.g. two people in the frame).
+        let mk = |x: f32, conf: f32| MaskCandidate {
+            mask: MaskBuffer { width: 1, height: 1, alpha: vec![0u8] },
+            confidence: conf,
+            bbox: Some(BBox { x, y: 0.1, w: 0.2, h: 0.5 }),
+            label: Some("person".into()),
+        };
+        let mut candidates = vec![mk(0.05, 0.92), mk(0.7, 0.88)];
+        non_max_suppress_class_aware(&mut candidates, 0.5);
+        assert_eq!(candidates.len(), 2);
+    }
+
+    #[test]
+    #[cfg(feature = "ort")]
+    fn nms_no_op_below_two_candidates() {
+        use klipp_ml::{BBox, MaskBuffer, MaskCandidate};
+        let mut candidates = vec![MaskCandidate {
+            mask: MaskBuffer { width: 1, height: 1, alpha: vec![0u8] },
+            confidence: 0.5,
+            bbox: Some(BBox { x: 0.0, y: 0.0, w: 0.1, h: 0.1 }),
+            label: Some("car".into()),
+        }];
+        non_max_suppress_class_aware(&mut candidates, 0.5);
+        assert_eq!(candidates.len(), 1);
+
+        let mut empty = Vec::<MaskCandidate>::new();
+        non_max_suppress_class_aware(&mut empty, 0.5);
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    #[cfg(feature = "ort")]
+    fn iomin_one_for_fully_contained_box() {
+        // Small box fully inside a larger one — IoMin = 1.0
+        // (full containment of the smaller), even though IoU
+        // would be tiny.
+        use klipp_ml::BBox;
+        let big = BBox { x: 0.0, y: 0.0, w: 1.0, h: 1.0 };
+        let small = BBox { x: 0.4, y: 0.4, w: 0.1, h: 0.1 };
+        assert!((bbox_iomin(&big, &small) - 1.0).abs() < 1e-5);
+        // IoU on the same pair would be tiny — sanity check the
+        // distinction.
+        assert!(bbox_iou(&big, &small) < 0.05);
+    }
+
+    #[test]
+    #[cfg(feature = "ort")]
+    fn iomin_zero_for_disjoint_boxes() {
+        use klipp_ml::BBox;
+        let a = BBox { x: 0.0, y: 0.0, w: 0.1, h: 0.1 };
+        let b = BBox { x: 0.5, y: 0.5, w: 0.1, h: 0.1 };
+        assert_eq!(bbox_iomin(&a, &b), 0.0);
+    }
+
+    #[test]
+    #[cfg(feature = "ort")]
+    fn nms_collapses_nested_same_class_box() {
+        // Big "bicycle" + small "bicycle" inside it — the small one
+        // pure-IoU passes (0.04) but IoMin catches it (1.0).
+        // Higher-confidence (big) survives.
+        use klipp_ml::{BBox, MaskBuffer, MaskCandidate};
+        let big = MaskCandidate {
+            mask: MaskBuffer { width: 1, height: 1, alpha: vec![0u8] },
+            confidence: 0.99,
+            bbox: Some(BBox { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }),
+            label: Some("bicycle".into()),
+        };
+        let small = MaskCandidate {
+            mask: MaskBuffer { width: 1, height: 1, alpha: vec![0u8] },
+            confidence: 0.55,
+            bbox: Some(BBox { x: 0.4, y: 0.4, w: 0.1, h: 0.1 }),
+            label: Some("bicycle".into()),
+        };
+        let mut candidates = vec![big, small];
+        non_max_suppress_class_aware(&mut candidates, 0.5);
+        assert_eq!(candidates.len(), 1);
+        assert!((candidates[0].confidence - 0.99).abs() < 1e-5);
+    }
+
+    #[test]
+    fn builder_nms_threshold_clamps_above_zero() {
+        // Negative thresholds clamp to 0; large thresholds (>= 1.0)
+        // are intentionally allowed since they disable NMS.
+        assert_eq!(
+            RfDetrSegBuilder::new()
+                .nms_iou_threshold(-0.5)
+                .nms_iou_threshold,
+            0.0,
+        );
+        assert!(
+            RfDetrSegBuilder::new()
+                .nms_iou_threshold(2.0)
+                .nms_iou_threshold
+                >= 1.0,
+        );
+        assert_eq!(
+            RfDetrSegBuilder::new()
+                .nms_iou_threshold(0.7)
+                .nms_iou_threshold,
+            0.7,
+        );
     }
 }
