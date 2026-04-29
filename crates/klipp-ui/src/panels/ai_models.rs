@@ -247,11 +247,47 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
 
             ui.add_space(6.0);
             ui.separator();
+            // Count installed entries once for the bulk-action button
+            // gating. Cheap stat — already done above for the cache
+            // size readout, but we need the entry list (not just the
+            // total) for "Uninstall all" / "Verify all".
+            let installed_count = match cache.as_ref() {
+                Some(c) => manifest
+                    .models
+                    .iter()
+                    .filter(|e| e.size_bytes > 0
+                        && c.path_for(e).metadata().is_ok())
+                    .count(),
+                None => 0,
+            };
             ui.horizontal(|ui| {
                 if ui.button("Open cache folder").clicked() {
                     if let Some(c) = cache.as_ref() {
                         let _ = open_in_file_browser(c.root());
                     }
+                }
+                if ui
+                    .add_enabled(installed_count > 0, egui::Button::new("Verify all"))
+                    .on_hover_text(
+                        "Re-hash every installed model and toast a \
+                         summary of matches vs mismatches.",
+                    )
+                    .on_disabled_hover_text("No models installed")
+                    .clicked()
+                {
+                    verify_all(&manifest, cache.as_ref(), &mut state.toast);
+                }
+                if ui
+                    .add_enabled(installed_count > 0, egui::Button::new("Uninstall all"))
+                    .on_hover_text(
+                        "Delete every installed model from the cache. \
+                         Manifest entries stay visible so you can \
+                         re-download any of them.",
+                    )
+                    .on_disabled_hover_text("No models installed")
+                    .clicked()
+                {
+                    state.show_ai_models_bulk_uninstall_confirm = true;
                 }
                 ui.label(
                     egui::RichText::new(format!(
@@ -275,6 +311,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
     // so it stacks on top. Synchronous: file delete + clear_instance
     // are microsecond-fast, no need for a worker thread.
     show_uninstall_confirm(ctx, state, theme, &cache);
+    show_bulk_uninstall_confirm(ctx, state, theme, &manifest, &cache);
 }
 
 /// Render the "Delete <model>?" modal when state has a pending entry.
@@ -363,6 +400,240 @@ fn show_uninstall_confirm(
     if do_uninstall {
         execute_uninstall(state, &entry, cache);
         state.show_ai_model_uninstall_confirm = None;
+    }
+}
+
+/// Bulk verify: re-hash every installed model and toast a summary.
+/// Synchronous on the UI thread; with today's cache (~600 MB across
+/// 4 models) the hash sweep finishes in ~2-3 seconds. If the cache
+/// grows past a couple of gigabytes, hoist this to a worker thread
+/// alongside `verify_now`.
+fn verify_all(
+    manifest: &klipp_ml::manifest::ModelManifest,
+    cache: Option<&ModelCache>,
+    toast: &mut crate::widgets::toast::ToastState,
+) {
+    let Some(cache) = cache else {
+        toast.show("Verify all failed: cache unavailable");
+        return;
+    };
+    let mut matched = 0u32;
+    let mut mismatched_names: Vec<String> = Vec::new();
+    let mut errors = 0u32;
+    for entry in &manifest.models {
+        if entry.size_bytes == 0 {
+            continue; // placeholder manifest entry, nothing to hash
+        }
+        let path = cache.path_for(entry);
+        if !path.exists() {
+            continue; // not installed, skip silently
+        }
+        match klipp_ml::cache::sha256_of_file(&path) {
+            Ok(actual) => {
+                if actual.eq_ignore_ascii_case(&entry.sha256) {
+                    matched += 1;
+                } else {
+                    mismatched_names.push(entry.display_name.clone());
+                }
+            }
+            Err(_) => errors += 1,
+        }
+    }
+    if mismatched_names.is_empty() && errors == 0 {
+        toast.show(format!("Verified ✓ {matched} model(s)"));
+    } else if errors == 0 {
+        toast.show(format!(
+            "{} verified, {} mismatch(es): {}",
+            matched,
+            mismatched_names.len(),
+            mismatched_names.join(", "),
+        ));
+    } else {
+        toast.show(format!(
+            "{matched} verified, {} mismatch(es), {errors} error(s)",
+            mismatched_names.len(),
+        ));
+    }
+}
+
+/// Bulk-uninstall confirmation modal. Lists every installed model
+/// + the total disk space freed; on confirm, loops file delete +
+/// clear_instance for each.
+fn show_bulk_uninstall_confirm(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    theme: &KlippTheme,
+    manifest: &klipp_ml::manifest::ModelManifest,
+    cache: &Option<ModelCache>,
+) {
+    if !state.show_ai_models_bulk_uninstall_confirm {
+        return;
+    }
+    let Some(c) = cache.as_ref() else {
+        // Cache unavailable — clear the flag and toast so the user
+        // isn't stuck on a non-functional modal.
+        state.show_ai_models_bulk_uninstall_confirm = false;
+        state.toast.show("Uninstall all failed: cache unavailable");
+        return;
+    };
+
+    // Collect installed entries + their sizes once. Recomputed each
+    // frame the modal is open — cheap (stat-only) and the list can
+    // change between frames if the user runs Uninstall on a single
+    // row while the bulk confirm is open.
+    let installed: Vec<(klipp_ml::manifest::ModelEntry, u64)> = manifest
+        .models
+        .iter()
+        .filter(|e| e.size_bytes > 0)
+        .filter_map(|e| c.path_for(e).metadata().ok().map(|m| (e.clone(), m.len())))
+        .collect();
+    let total: u64 = installed.iter().map(|(_, s)| *s).sum();
+
+    if installed.is_empty() {
+        // Nothing left to uninstall — close the modal silently.
+        state.show_ai_models_bulk_uninstall_confirm = false;
+        return;
+    }
+
+    let screen_rect = ctx.screen_rect();
+
+    egui::Area::new(egui::Id::new("ai_model_bulk_uninstall_scrim"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen_rect.min)
+        .show(ctx, |ui| {
+            let resp = ui.allocate_rect(screen_rect, egui::Sense::click_and_drag());
+            ui.painter().rect_filled(
+                screen_rect,
+                0.0,
+                egui::Color32::from_black_alpha(160),
+            );
+            if resp.clicked() {
+                state.show_ai_models_bulk_uninstall_confirm = false;
+            }
+        });
+
+    let mut close_modal = false;
+    let mut do_uninstall_all = false;
+
+    egui::Window::new("Uninstall all AI models")
+        .collapsible(false)
+        .resizable(false)
+        .fixed_size([460.0, 320.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "Delete {} installed model(s)?",
+                    installed.len(),
+                ))
+                .strong(),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "Frees {} on disk. Manifest entries stay visible \
+                     so you can re-download any of these later.",
+                    format_bytes(total),
+                ))
+                .small()
+                .color(theme.text_secondary),
+            );
+            ui.add_space(8.0);
+            egui::ScrollArea::vertical()
+                .max_height(160.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for (entry, size) in &installed {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "• {} ({})",
+                                entry.display_name,
+                                format_bytes(*size),
+                            ))
+                            .small(),
+                        );
+                    }
+                });
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    close_modal = true;
+                }
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if ui
+                            .add(egui::Button::new(
+                                egui::RichText::new("Uninstall all")
+                                    .color(theme.marker_error),
+                            ))
+                            .clicked()
+                        {
+                            do_uninstall_all = true;
+                        }
+                    },
+                );
+            });
+        });
+
+    if close_modal {
+        state.show_ai_models_bulk_uninstall_confirm = false;
+    }
+    if do_uninstall_all {
+        execute_bulk_uninstall(state, &installed, c);
+        state.show_ai_models_bulk_uninstall_confirm = false;
+    }
+}
+
+/// Loop body for "Uninstall all". For each installed entry: drop
+/// the cached generator + remove the cache file. Single summary
+/// toast at the end so the user gets one message, not N.
+fn execute_bulk_uninstall(
+    state: &mut AppState,
+    installed: &[(klipp_ml::manifest::ModelEntry, u64)],
+    cache: &ModelCache,
+) {
+    let registry = state.ai_tools_registry.shared();
+    let mut deleted = 0u32;
+    let mut errors: Vec<String> = Vec::new();
+    let mut freed: u64 = 0;
+    for (entry, size) in installed {
+        // Drop the cached generator before the file delete so the
+        // next dispatch rebuilds rather than reusing a stale Box.
+        if let Ok(g) = registry.read() {
+            let _ = g.clear_instance(&entry.id);
+        }
+        let path = cache.path_for(entry);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                deleted += 1;
+                freed += *size;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Already gone — count as "deleted" since the user's
+                // intent (file should not exist) is satisfied.
+                deleted += 1;
+            }
+            Err(e) => {
+                errors.push(format!("{}: {}", entry.display_name, e));
+            }
+        }
+    }
+    if errors.is_empty() {
+        state.toast.show(format!(
+            "Uninstalled {} model(s), freed {}",
+            deleted,
+            format_bytes(freed),
+        ));
+    } else {
+        state.toast.show(format!(
+            "Uninstalled {} of {}, errors: {}",
+            deleted,
+            installed.len(),
+            errors.join("; "),
+        ));
     }
 }
 

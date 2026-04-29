@@ -1332,6 +1332,11 @@ pub struct AppState {
     /// the cache + drop the cached generator instance through the
     /// shared registry's `clear_instance`.
     pub show_ai_model_uninstall_confirm: Option<klipp_ml::manifest::ModelEntry>,
+    /// Bulk-uninstall confirmation. `true` when the user clicked
+    /// "Uninstall all" in the AI Models dialog footer; the dialog
+    /// renders a modal listing every installed model + total size
+    /// freed, and on confirm loops through them all.
+    pub show_ai_models_bulk_uninstall_confirm: bool,
     /// Export offline warning: list of (filename, timecode_string) for offline clips
     pub export_offline_warning: Option<(Vec<(String, String)>, Box<klipp_core::ExportSettings>)>,
 
@@ -2573,6 +2578,7 @@ impl Default for AppState {
             show_remove_media_confirm: None,
             show_delete_unused_confirm: None,
             show_ai_model_uninstall_confirm: None,
+            show_ai_models_bulk_uninstall_confirm: false,
             export_offline_warning: None,
             media_usage_cache: std::collections::HashMap::new(),
             media_usage_cache_dirty: true,
