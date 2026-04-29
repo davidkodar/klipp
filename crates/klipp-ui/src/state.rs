@@ -1470,6 +1470,10 @@ pub struct AppState {
     /// `ai_tools_state.custom_models` + persist.
     pub show_ai_custom_uninstall_confirm:
         Option<crate::ai_tools::persistence::CustomModelEntry>,
+    /// AI Models dialog filter / sort state. Persists across renders
+    /// so the dialog remembers the user's selection while it's open.
+    /// Resets on app launch — re-opening starts unfiltered.
+    pub ai_models_dialog: crate::panels::ai_models::AiModelsDialogState,
     /// Export offline warning: list of (filename, timecode_string) for offline clips
     pub export_offline_warning: Option<(Vec<(String, String)>, Box<klipp_core::ExportSettings>)>,
 
@@ -2715,6 +2719,7 @@ impl Default for AppState {
             show_ai_models_stale_uninstall_confirm: false,
             custom_model_add: crate::ai_tools::custom_install::CustomInstallState::Idle,
             show_ai_custom_uninstall_confirm: None,
+            ai_models_dialog: crate::panels::ai_models::AiModelsDialogState::default(),
             export_offline_warning: None,
             media_usage_cache: std::collections::HashMap::new(),
             media_usage_cache_dirty: true,

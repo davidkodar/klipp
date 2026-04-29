@@ -38,10 +38,60 @@ use std::time::{Duration, SystemTime};
 use klipp_ml::manifest::ModelEntry;
 use klipp_ml::ModelCache;
 
-use crate::ai_tools::{format_relative, ModelTelemetry};
+use crate::ai_tools::registry::required_capability;
+use crate::ai_tools::{format_relative, AiTask, ModelTelemetry};
 use crate::model_download::ModelDownloadState;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
+
+/// Sort criterion the user picks via the dropdown above the model
+/// list. All sort orders are stable — entries that compare equal
+/// keep their manifest order so the layout doesn't jitter as the
+/// user toggles between criteria.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModelSort {
+    #[default]
+    DisplayName,
+    SizeBytes,
+    LastUsed,
+    License,
+}
+
+impl ModelSort {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DisplayName => "Display name (A→Z)",
+            Self::SizeBytes => "Size (small → large)",
+            Self::LastUsed => "Last used (recent first)",
+            Self::License => "License (A→Z)",
+        }
+    }
+
+    pub const ALL: &'static [ModelSort] = &[
+        ModelSort::DisplayName,
+        ModelSort::SizeBytes,
+        ModelSort::LastUsed,
+        ModelSort::License,
+    ];
+}
+
+/// Per-frame UI state for the AI Models dialog. Carried on AppState
+/// because the dialog needs to remember the user's filter + sort
+/// across renders. Resets on each app launch (intentional — fresh
+/// dialog should be unfiltered).
+#[derive(Debug, Clone, Default)]
+pub struct AiModelsDialogState {
+    /// Task filter. `None` = show every task. `Some(t)` = show only
+    /// models whose capabilities are a superset of the task's
+    /// required capability.
+    pub filter_task: Option<AiTask>,
+    /// When `true`, hide entries whose status isn't `Present` —
+    /// useful for "show me Remove Background models I haven't yet
+    /// installed" once you flip the task filter.
+    pub installed_only: bool,
+    /// Sort criterion applied before rendering rows.
+    pub sort: ModelSort,
+}
 
 /// Threshold for "Uninstall unused". A model whose last successful
 /// run was more than this long ago counts as stale. 30 days mirrors
@@ -95,6 +145,166 @@ impl ModelInstallStatus {
             Self::Mismatch => theme.marker_warning,
             Self::Pending => theme.marker_info,
             Self::Unknown(_) => theme.text_dim,
+        }
+    }
+}
+
+/// Apply the dialog's filter (task + installed-only) + sort to the
+/// manifest entries. Returns owned references; the underlying
+/// `ModelManifest` outlives this call so the borrow stays valid.
+fn filter_and_sort<'m>(
+    manifest: &'m klipp_ml::manifest::ModelManifest,
+    cache: Option<&ModelCache>,
+    state: &AiModelsDialogState,
+    telemetry: &HashMap<String, ModelTelemetry>,
+) -> Vec<&'m ModelEntry> {
+    let mut out: Vec<&ModelEntry> = manifest
+        .models
+        .iter()
+        .filter(|e| match_task_filter(prompt_kinds_to_capabilities(e.prompts), state))
+        .filter(|e| match_installed_filter(*e, cache, state))
+        .collect();
+    sort_entries(&mut out, state.sort, telemetry, |e| e.size_bytes, |e| e.license.as_str(), |e| e.display_name.as_str(), |e| &e.id);
+    out
+}
+
+/// Same shape but for custom entries. Custom models are always
+/// "installed" by definition (the user explicitly added them); the
+/// installed-only filter is a no-op for this section.
+fn filter_and_sort_custom(
+    custom: &[crate::ai_tools::persistence::CustomModelEntry],
+    _cache: Option<&ModelCache>,
+    state: &AiModelsDialogState,
+    telemetry: &HashMap<String, ModelTelemetry>,
+) -> Vec<crate::ai_tools::persistence::CustomModelEntry> {
+    use crate::ai_tools::persistence::CustomAdapter;
+    let mut out: Vec<crate::ai_tools::persistence::CustomModelEntry> = custom
+        .iter()
+        .filter(|e| {
+            let caps = match e.adapter {
+                CustomAdapter::BiRefNet => klipp_ml::MaskCapabilities::AUTO_DETECT,
+                CustomAdapter::MobileSam => {
+                    klipp_ml::MaskCapabilities::POINT_PROMPT
+                        | klipp_ml::MaskCapabilities::BOX_PROMPT
+                        | klipp_ml::MaskCapabilities::SCRIBBLE
+                        | klipp_ml::MaskCapabilities::AUTO_DETECT
+                }
+                CustomAdapter::RfDetrSeg => klipp_ml::MaskCapabilities::AUTO_DETECT,
+            };
+            match_task_filter(caps, state)
+        })
+        .cloned()
+        .collect();
+    // Sort using the closures' shape from the manifest path so the
+    // ordering criteria match across both sections.
+    let sort = state.sort;
+    out.sort_by(|a, b| compare_for_sort(
+        sort, telemetry,
+        a.size_bytes, b.size_bytes,
+        a.id.as_str(), b.id.as_str(),
+        "", "", // custom entries have no license string today
+        a.display_name.as_str(), b.display_name.as_str(),
+    ));
+    out
+}
+
+/// Map the manifest's `PromptKinds` bitset onto the runtime
+/// `MaskCapabilities` bitset for filtering purposes. Both bitsets
+/// share the same flag layout (`1<<0` through `1<<5`), so a
+/// truncating bit-cast is the right primitive — it guards against
+/// future flags appearing in one bitset before the other lands.
+fn prompt_kinds_to_capabilities(
+    p: klipp_ml::manifest::PromptKinds,
+) -> klipp_ml::MaskCapabilities {
+    klipp_ml::MaskCapabilities::from_bits_truncate(p.bits())
+}
+
+/// Whether `caps` satisfies the dialog's task filter. `None` filter
+/// passes everything; `Some(t)` requires the entry to be a superset
+/// of that task's required capability.
+fn match_task_filter(
+    caps: klipp_ml::MaskCapabilities,
+    state: &AiModelsDialogState,
+) -> bool {
+    match state.filter_task {
+        None => true,
+        Some(t) => caps.contains(required_capability(t)),
+    }
+}
+
+/// Whether the entry passes the installed-only checkbox. Off ⇒
+/// pass. On ⇒ require the cache file to exist.
+fn match_installed_filter(
+    entry: &ModelEntry,
+    cache: Option<&ModelCache>,
+    state: &AiModelsDialogState,
+) -> bool {
+    if !state.installed_only {
+        return true;
+    }
+    match cache {
+        Some(c) => c.path_for(entry).exists(),
+        None => false,
+    }
+}
+
+/// Stable in-place sort over manifest entries. Stability matters —
+/// equal-keyed entries keep their manifest order so toggling sort
+/// doesn't visibly jitter neighbours.
+fn sort_entries<E>(
+    out: &mut Vec<&E>,
+    sort: ModelSort,
+    telemetry: &HashMap<String, ModelTelemetry>,
+    size_of: impl Fn(&E) -> u64,
+    license_of: impl Fn(&E) -> &str,
+    display_of: impl Fn(&E) -> &str,
+    id_of: impl Fn(&E) -> &str,
+) {
+    out.sort_by(|a, b| {
+        compare_for_sort(
+            sort,
+            telemetry,
+            size_of(a),
+            size_of(b),
+            id_of(a),
+            id_of(b),
+            license_of(a),
+            license_of(b),
+            display_of(a),
+            display_of(b),
+        )
+    });
+}
+
+/// Comparator shared by the manifest path and the custom path.
+/// Pulled into a free function so both can call it with their own
+/// field accessors.
+#[allow(clippy::too_many_arguments)]
+fn compare_for_sort(
+    sort: ModelSort,
+    telemetry: &HashMap<String, ModelTelemetry>,
+    size_a: u64, size_b: u64,
+    id_a: &str, id_b: &str,
+    license_a: &str, license_b: &str,
+    display_a: &str, display_b: &str,
+) -> std::cmp::Ordering {
+    match sort {
+        ModelSort::DisplayName => display_a.cmp(display_b),
+        ModelSort::SizeBytes => size_a.cmp(&size_b),
+        ModelSort::License => license_a.cmp(license_b),
+        ModelSort::LastUsed => {
+            // Most-recently-used first (descending). Models with
+            // no telemetry sort to the bottom — UNIX_EPOCH is
+            // older than any real run.
+            let last_a = telemetry
+                .get(id_a)
+                .map(|t| t.last_used)
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let last_b = telemetry
+                .get(id_b)
+                .map(|t| t.last_used)
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            last_b.cmp(&last_a)
         }
     }
 }
@@ -225,22 +435,106 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                 .color(theme.text_secondary),
             );
             ui.add_space(6.0);
+
+            // ── Filter + sort toolbar ────────────────────────────
+            // Sits between the description and the model list so
+            // the user can narrow the list before scanning it. All
+            // controls mutate `state.ai_models_dialog` directly;
+            // the iteration below reads them.
+            ui.horizontal(|ui| {
+                ui.label("Filter:");
+                let task_label = match state.ai_models_dialog.filter_task {
+                    None => "All tasks",
+                    Some(AiTask::RemoveBackground) => "Remove Background",
+                    Some(AiTask::IsolateObject) => "Isolate Object",
+                    Some(AiTask::DetectObjects) => "Detect Objects",
+                    Some(AiTask::TrackObject) => "Track Object",
+                };
+                egui::ComboBox::from_id_salt("ai_models_filter_task")
+                    .selected_text(task_label)
+                    .width(160.0)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(
+                                state.ai_models_dialog.filter_task.is_none(),
+                                "All tasks",
+                            )
+                            .clicked()
+                        {
+                            state.ai_models_dialog.filter_task = None;
+                        }
+                        for task in AiTask::ALL {
+                            let is_selected =
+                                state.ai_models_dialog.filter_task == Some(*task);
+                            if ui
+                                .selectable_label(is_selected, task.display_label())
+                                .clicked()
+                            {
+                                state.ai_models_dialog.filter_task = Some(*task);
+                            }
+                        }
+                    });
+                ui.checkbox(
+                    &mut state.ai_models_dialog.installed_only,
+                    "Installed only",
+                );
+                ui.separator();
+                ui.label("Sort:");
+                egui::ComboBox::from_id_salt("ai_models_sort")
+                    .selected_text(state.ai_models_dialog.sort.label())
+                    .width(200.0)
+                    .show_ui(ui, |ui| {
+                        for s in ModelSort::ALL {
+                            let is_selected = state.ai_models_dialog.sort == *s;
+                            if ui.selectable_label(is_selected, s.label()).clicked() {
+                                state.ai_models_dialog.sort = *s;
+                            }
+                        }
+                    });
+            });
+            ui.add_space(4.0);
             ui.separator();
 
+            // Build the filtered + sorted list of manifest entries
+            // once before render so the comparator runs once per
+            // frame, not per row. Telemetry lookups in the LastUsed
+            // comparator stay clean of borrow-checker drama.
+            let visible_entries: Vec<&ModelEntry> = filter_and_sort(
+                &manifest,
+                cache.as_ref(),
+                &state.ai_models_dialog,
+                &state.ai_tools_state.model_telemetry,
+            );
+            // Custom models go through the same filter so the task
+            // dropdown and Installed-only checkbox affect both
+            // sections. The sort applies independently within each.
+            let visible_custom: Vec<crate::ai_tools::persistence::CustomModelEntry> =
+                filter_and_sort_custom(
+                    &state.ai_tools_state.custom_models,
+                    cache.as_ref(),
+                    &state.ai_models_dialog,
+                    &state.ai_tools_state.model_telemetry,
+                );
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .max_height(scroll_max_h)
                 .show(ui, |ui| {
-                    if manifest.models.is_empty() {
+                    if visible_entries.is_empty() && visible_custom.is_empty() {
                         ui.add_space(20.0);
                         ui.vertical_centered(|ui| {
                             ui.label(
-                                egui::RichText::new("No models declared in manifest.")
-                                    .color(theme.text_dim),
+                                egui::RichText::new(
+                                    if manifest.models.is_empty() {
+                                        "No models declared in manifest."
+                                    } else {
+                                        "No models match the current filter."
+                                    },
+                                )
+                                .color(theme.text_dim),
                             );
                         });
                     }
-                    for entry in &manifest.models {
+                    for &entry in &visible_entries {
                         let status = if entry.size_bytes == 0 {
                             // Placeholder entry — the release-CI
                             // mirror hasn't filled in size + sha256
@@ -272,10 +566,10 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                     // Rendered as a distinct section after the
                     // manifest entries so users can see at a glance
                     // which models were pasted vs. which Klipp
-                    // ships. Empty state: no header, nothing
-                    // rendered — the AI Models dialog stays clean
-                    // for users who haven't added anything custom.
-                    if !state.ai_tools_state.custom_models.is_empty() {
+                    // ships. Hidden when the filter excludes every
+                    // custom entry — including when the user picks
+                    // a task that no custom model qualifies for.
+                    if !visible_custom.is_empty() {
                         ui.add_space(8.0);
                         ui.label(
                             egui::RichText::new("Custom models")
@@ -284,11 +578,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                         );
                         ui.add_space(2.0);
                         ui.separator();
-                        // Clone before iter so we can mutate
-                        // pending_custom_uninstall + telemetry inside
-                        // the loop without aliasing state.
-                        let entries = state.ai_tools_state.custom_models.clone();
-                        for entry in &entries {
+                        for entry in &visible_custom {
                             render_custom_row(
                                 ui,
                                 entry,
@@ -334,6 +624,23 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                 if ui.button("Open cache folder").clicked() {
                     if let Some(c) = cache.as_ref() {
                         let _ = open_in_file_browser(c.root());
+                    }
+                }
+                if ui
+                    .button("Edit user override…")
+                    .on_hover_text(
+                        "Opens ~/.config/klipp/models.toml in your \
+                         default editor — for air-gapped installs, \
+                         private mirrors, or hand-tuning bundled \
+                         entries. Created from a comment template \
+                         if it doesn't exist yet.",
+                    )
+                    .clicked()
+                {
+                    if let Err(e) = open_user_override(&mut state.toast) {
+                        state
+                            .toast
+                            .show(format!("Couldn't open user override: {e}"));
                     }
                 }
                 if ui
@@ -1844,6 +2151,90 @@ fn open_in_file_browser(path: &std::path::Path) -> std::io::Result<()> {
         .spawn()
         .map(|_| ())
 }
+
+/// Open `~/.config/klipp/models.toml` in the user's default editor.
+/// Creates the file from a comment template if it doesn't exist
+/// yet — without that, xdg-open would either error or open a
+/// blank file with no schema hints.
+///
+/// Used by air-gapped / private-mirror installs that hand-edit
+/// the user override file. The file's merge semantics are already
+/// handled by `klipp_ml::manifest::load_effective`; this just
+/// gives users a UI affordance to find + edit it.
+fn open_user_override(
+    toast: &mut crate::widgets::toast::ToastState,
+) -> std::io::Result<()> {
+    let Some(path) = klipp_ml::manifest::user_manifest_path() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "config dir unavailable",
+        ));
+    };
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, USER_OVERRIDE_TEMPLATE)?;
+        toast.show(format!(
+            "Created {} from template — opening editor",
+            path.display()
+        ));
+    }
+    open_in_file_browser(&path)
+}
+
+/// Comment template seeded into `~/.config/klipp/models.toml`
+/// when the user opens it for the first time. Documents the
+/// schema + the merge behaviour so an editor session has the
+/// context it needs without external docs.
+const USER_OVERRIDE_TEMPLATE: &str = "\
+# Klipp AI model user override manifest.
+#
+# Entries here override (and extend) the bundled manifest at
+# klipp/assets/models.toml. Use this file for:
+#
+#   - Air-gapped installs (point sources at a private mirror)
+#   - Local development (real size_bytes + sha256 for entries
+#     whose bundled values are still placeholders)
+#   - Hand-tuning a bundled entry (e.g. swap to a self-hosted
+#     URL while keeping the same id + sha256)
+#
+# Schema: https://github.com/davidkodar/klipp/blob/main/crates/klipp-ml/src/manifest.rs
+#
+# Each entry needs:
+#   - id            stable identifier matching the bundled entry
+#                   you want to override (or a new id for an
+#                   extension entry).
+#   - display_name  user-facing label.
+#   - size_bytes    expected file size (bytes).
+#   - sha256        64 lowercase hex chars; the security boundary.
+#   - license       SPDX identifier.
+#   - attribution   credit shown in the consent dialog.
+#   - sources       ordered list of HTTPS URLs.
+#   - kind          mask_generator / video_tracker / object_detector.
+#   - runtime       ort / candle.
+#   - prompts       \"point | box | scribble | auto_detect | temporal\"
+#                   (any combination separated by `|`).
+
+version = \"1\"
+
+# Example: override the bundled BiRefNet entry to point at a
+# self-hosted mirror while keeping the published sha256.
+#
+# [[model]]
+# id = \"birefnet_lite_v1\"
+# display_name = \"BiRefNet Lite (private mirror)\"
+# size_bytes = 224005088
+# sha256 = \"5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333\"
+# license = \"MIT\"
+# attribution = \"ZhengPeng7 / BiRefNet\"
+# sources = [
+#     { url = \"https://my-private-mirror.example.com/birefnet_lite_v1.onnx\" },
+# ]
+# kind = \"mask_generator\"
+# runtime = \"ort\"
+# prompts = \"\"
+";
 
 /// Format a byte count as a human-readable string (B / KB / MB / GB).
 /// Mirrors what the consent dialog already shows.
