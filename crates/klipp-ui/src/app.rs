@@ -15345,6 +15345,21 @@ impl KlippApp {
         }
 
         if self.state.ai_tools_state.inference.poll() {
+            // Record telemetry on the Idle → Done transition. poll()
+            // returns true on every state change (Done / Failed /
+            // Disconnected) but we only want successful runs.
+            if let crate::ai_tools::InferenceState::Done { model_id, response } =
+                &self.state.ai_tools_state.inference
+            {
+                let id = model_id.clone();
+                let ms = response.inference_ms;
+                self.state
+                    .ai_tools_state
+                    .model_telemetry
+                    .entry(id)
+                    .or_default()
+                    .record_run(ms);
+            }
             self.refresh_ai_tools_overlay_texture(ctx);
             ctx.request_repaint();
         }

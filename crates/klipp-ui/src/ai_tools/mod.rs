@@ -53,6 +53,7 @@ pub mod overlay;
 pub mod panel;
 pub mod prompt_input;
 pub mod registry;
+pub mod telemetry;
 
 pub use inference::{
     first_candidate, run_inference_blocking, spawn_inference, InferenceEvent, InferenceHandle,
@@ -66,6 +67,7 @@ pub use overlay::{
 pub use panel::AiToolsPanel;
 pub use prompt_input::{ClickButton, DragState, PromptCapture, PromptMode};
 pub use registry::AiToolsRegistry;
+pub use telemetry::{format_relative, ModelTelemetry};
 
 /// Top-level state for the AI Tools panel. Lives on `AppState`.
 /// All fields default to "panel closed, nothing running" so adding
@@ -108,6 +110,11 @@ pub struct AiToolsState {
     /// it whenever inference completes and routes the old handle
     /// through `KlippApp::defer_drop_texture` on replacement.
     pub mask_overlay_texture: Option<egui::TextureHandle>,
+    /// Per-model usage stats — populated each time the dispatcher
+    /// observes an `InferenceState::Idle → Done` transition. Read by
+    /// the AI Models dialog to surface "Last used: 2m ago • avg
+    /// 142ms". Ephemeral: resets on app restart.
+    pub model_telemetry: std::collections::HashMap<String, ModelTelemetry>,
 }
 
 impl Default for AiToolsState {
@@ -122,6 +129,7 @@ impl Default for AiToolsState {
             prompts: PromptCapture::default(),
             mask_overlay_color: DEFAULT_MASK_OVERLAY_COLOR,
             mask_overlay_texture: None,
+            model_telemetry: std::collections::HashMap::new(),
         }
     }
 }

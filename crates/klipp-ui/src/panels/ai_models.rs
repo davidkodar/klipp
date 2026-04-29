@@ -32,9 +32,12 @@
 //! `state.model_download` to `Consenting { entry }` and the existing
 //! consent dialog takes over from there.
 
+use std::collections::HashMap;
+
 use klipp_ml::manifest::ModelEntry;
 use klipp_ml::ModelCache;
 
+use crate::ai_tools::{format_relative, ModelTelemetry};
 use crate::model_download::ModelDownloadState;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -133,6 +136,19 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
 
     let cache = ModelCache::open().ok();
 
+    // Total disk usage across every installed manifest entry. Computed
+    // here (cheap stat per file) rather than re-walked every frame —
+    // close + reopen of the dialog gets a fresh number.
+    let total_cache_bytes: u64 = match cache.as_ref() {
+        Some(c) => manifest
+            .models
+            .iter()
+            .filter_map(|e| std::fs::metadata(c.path_for(e)).ok())
+            .map(|m| m.len())
+            .sum(),
+        None => 0,
+    };
+
     let mut open = state.show_ai_models_dialog;
     let mut close_requested = false;
 
@@ -215,7 +231,14 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                                 ),
                             }
                         };
-                        render_row(ui, entry, &status, theme, &mut state.model_download);
+                        render_row(
+                            ui,
+                            entry,
+                            &status,
+                            theme,
+                            &mut state.model_download,
+                            &state.ai_tools_state.model_telemetry,
+                        );
                         ui.separator();
                     }
                 });
@@ -228,6 +251,14 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                         let _ = open_in_file_browser(c.root());
                     }
                 }
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Cache: {}",
+                        format_bytes(total_cache_bytes),
+                    ))
+                    .small()
+                    .color(theme.text_secondary),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Close").clicked() {
                         close_requested = true;
@@ -245,6 +276,7 @@ fn render_row(
     status: &ModelInstallStatus,
     theme: &KlippTheme,
     download: &mut ModelDownloadState,
+    telemetry: &HashMap<String, ModelTelemetry>,
 ) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
@@ -265,6 +297,27 @@ fn render_row(
                     .small()
                     .color(theme.text_dim),
             );
+            // Telemetry line — appears only if the model has been
+            // run at least once this session. Surfaces "Last used:
+            // 2m ago • avg 142ms" so users can compare runtime
+            // across the variants they've tried.
+            if let Some(t) = telemetry.get(&entry.id) {
+                if t.has_runs() {
+                    let avg = t
+                        .avg_inference_ms()
+                        .map(|ms| format!("avg {:.0}ms", ms))
+                        .unwrap_or_else(|| "—".into());
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Last used: {} • {}",
+                            format_relative(t.last_used),
+                            avg,
+                        ))
+                        .small()
+                        .color(theme.text_dim),
+                    );
+                }
+            }
         });
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
