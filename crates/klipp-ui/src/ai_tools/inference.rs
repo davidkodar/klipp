@@ -126,6 +126,10 @@ pub struct OwnedMaskRequest {
     pub frame_height: u32,
     pub prompts: MaskPrompts,
     pub temporal: Option<TemporalHint>,
+    /// Per-call overrides on top of the generator's construction
+    /// defaults — e.g. RF-DETR's score / NMS thresholds the user has
+    /// tuned via panel sliders. Empty by default.
+    pub tunables: klipp_ml::MaskTunables,
 }
 
 impl OwnedMaskRequest {
@@ -141,6 +145,7 @@ impl OwnedMaskRequest {
             },
             prompts: self.prompts.clone(),
             temporal: self.temporal.clone(),
+            tunables: self.tunables.clone(),
         }
     }
 
@@ -153,6 +158,7 @@ impl OwnedMaskRequest {
             frame_height: height,
             prompts: MaskPrompts::default(),
             temporal: None,
+            tunables: klipp_ml::MaskTunables::default(),
         }
     }
 }
@@ -479,6 +485,7 @@ mod tests {
                 ..Default::default()
             },
             temporal: None,
+            tunables: klipp_ml::MaskTunables::default(),
         };
         let view = owned.as_borrowed();
         assert_eq!(view.frame.width, 8);
@@ -514,6 +521,7 @@ mod tests {
                 ..Default::default()
             },
             temporal: None,
+            tunables: klipp_ml::MaskTunables::default(),
         };
 
         let event = run_inference_blocking(STUB_GENERATOR_ID, &req, &registry);
@@ -567,6 +575,7 @@ mod tests {
                 ..Default::default()
             },
             temporal: None,
+            tunables: klipp_ml::MaskTunables::default(),
         };
 
         let ctx = egui::Context::default();

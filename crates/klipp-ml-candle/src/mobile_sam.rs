@@ -559,7 +559,7 @@ fn sample_frame_hash(linear_rgba: &[f32], width: usize, height: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use klipp_ml::{InputFrame, MaskPrompts};
+    use klipp_ml::{InputFrame, MaskPrompts, MaskTunables};
 
     fn dummy_request<'a>(pixels: &'a [f32]) -> MaskRequest<'a> {
         MaskRequest {
@@ -570,6 +570,7 @@ mod tests {
             },
             prompts: MaskPrompts::default(),
             temporal: None,
+            tunables: MaskTunables::default(),
         }
     }
 
@@ -643,6 +644,7 @@ mod tests {
             },
             prompts: MaskPrompts::default(),
             temporal: None,
+            tunables: MaskTunables::default(),
         };
         let mut g = MobileSamBuilder::new()
             .weights(PathBuf::from("/tmp/dummy"))
@@ -665,6 +667,7 @@ mod tests {
             },
             prompts: MaskPrompts::default(),
             temporal: None,
+            tunables: MaskTunables::default(),
         };
         let mut g = MobileSamBuilder::new()
             .weights(PathBuf::from("/tmp/dummy"))

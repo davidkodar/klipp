@@ -15429,6 +15429,17 @@ impl KlippApp {
         };
 
         let prompts = self.state.ai_tools_state.prompts.build();
+        // Per-model overrides (RF-DETR's score / NMS thresholds when
+        // the user has nudged the panel sliders). Empty default for
+        // models that don't expose any knobs — generators ignore
+        // unrecognised fields.
+        let tunables = self
+            .state
+            .ai_tools_state
+            .model_tunables
+            .get(&model_id)
+            .cloned()
+            .unwrap_or_default();
         let model_id_for_state = model_id.clone();
         let registry = self.state.ml_registry.clone();
         let ctx_for_worker = ctx.clone();
@@ -15463,6 +15474,7 @@ impl KlippApp {
                         frame_height: h,
                         prompts,
                         temporal: None,
+                        tunables,
                     };
                     // Run inference inline on this same prep thread —
                     // we already paid for the thread spawn, so a

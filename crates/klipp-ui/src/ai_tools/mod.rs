@@ -115,6 +115,13 @@ pub struct AiToolsState {
     /// the AI Models dialog to surface "Last used: 2m ago • avg
     /// 142ms". Ephemeral: resets on app restart.
     pub model_telemetry: std::collections::HashMap<String, ModelTelemetry>,
+    /// Per-model tuning knobs (RF-DETR's score / NMS thresholds, etc.)
+    /// that the user has set via the panel sliders. Keyed by stable
+    /// model id; the dispatcher hands the matching entry into
+    /// [`OwnedMaskRequest::tunables`] each run, so changing a slider
+    /// takes effect on the next click of "Run on current frame"
+    /// without rebuilding the cached generator instance. Ephemeral.
+    pub model_tunables: std::collections::HashMap<String, klipp_ml::MaskTunables>,
 }
 
 impl Default for AiToolsState {
@@ -130,6 +137,7 @@ impl Default for AiToolsState {
             mask_overlay_color: DEFAULT_MASK_OVERLAY_COLOR,
             mask_overlay_texture: None,
             model_telemetry: std::collections::HashMap::new(),
+            model_tunables: std::collections::HashMap::new(),
         }
     }
 }

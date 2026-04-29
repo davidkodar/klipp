@@ -272,6 +272,21 @@ impl RfDetrSeg {
             .clone()
             .ok_or_else(|| MaskError::BackendInit("weights path missing".into()))?;
 
+        // Per-call override fallback to construction defaults. UI
+        // sliders write into req.tunables; the builder values stay as
+        // the floor when no override is set. Both are clamped on
+        // intake so a malformed value can't propagate further.
+        let score_threshold = req
+            .tunables
+            .score_threshold
+            .map(|t| t.clamp(0.0, 1.0))
+            .unwrap_or(self.score_threshold);
+        let nms_iou_threshold = req
+            .tunables
+            .nms_iou_threshold
+            .map(|t| t.clamp(0.0, f32::INFINITY))
+            .unwrap_or(self.nms_iou_threshold);
+
         if self.session.is_none() {
             self.session = Some(build_session(&weights, self.device)?);
         }
@@ -391,7 +406,7 @@ impl RfDetrSeg {
                 continue;
             }
             let score = softmax_at(class_slice, class_id);
-            if score < self.score_threshold {
+            if score < score_threshold {
                 continue;
             }
             if candidates.len() >= MAX_CANDIDATES {
@@ -458,8 +473,8 @@ impl RfDetrSeg {
         // Different classes are kept even when they overlap — a
         // genuine "person on bicycle" should produce both
         // detections.
-        if self.nms_iou_threshold < 1.0 {
-            non_max_suppress_class_aware(&mut candidates, self.nms_iou_threshold);
+        if nms_iou_threshold < 1.0 {
+            non_max_suppress_class_aware(&mut candidates, nms_iou_threshold);
         }
 
         Ok(MaskResponse {
@@ -773,7 +788,7 @@ pub fn coco_label(class_id: usize) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use klipp_ml::{InputFrame, MaskPrompts};
+    use klipp_ml::{InputFrame, MaskPrompts, MaskTunables};
 
     fn dummy_request<'a>(pixels: &'a [f32]) -> MaskRequest<'a> {
         MaskRequest {
@@ -784,6 +799,7 @@ mod tests {
             },
             prompts: MaskPrompts::default(),
             temporal: None,
+            tunables: MaskTunables::default(),
         }
     }
 
@@ -905,6 +921,7 @@ mod tests {
             },
             prompts: MaskPrompts::default(),
             temporal: None,
+            tunables: MaskTunables::default(),
         };
         let mut g = RfDetrSegBuilder::new()
             .weights(PathBuf::from("/tmp/dummy"))

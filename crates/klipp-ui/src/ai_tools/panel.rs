@@ -73,6 +73,12 @@ impl AiToolsPanel {
         ui.add_space(8.0);
         ui.separator();
 
+        // ── Per-model tunables ──────────────────────────────────
+        tunables_section(ui, state);
+
+        ui.add_space(8.0);
+        ui.separator();
+
         // ── Prompt mode + summary ───────────────────────────────
         prompt_section(ui, state);
 
@@ -213,6 +219,75 @@ fn capability_labels(caps: MaskCapabilities) -> Vec<(MaskCapabilities, &'static 
         }
     }
     out
+}
+
+/// Per-model tuning knobs. Today only RF-DETR-Seg variants expose
+/// any: a confidence cut + an NMS overlap threshold. Both clamp to
+/// safe ranges on read inside the generator, so the slider can't
+/// produce a degenerate request. Other models render nothing.
+fn tunables_section(ui: &mut egui::Ui, state: &mut AiToolsState) {
+    let Some(model_id) = state.selected_model_id.clone() else {
+        return;
+    };
+    if !is_rf_detr(&model_id) {
+        return;
+    }
+
+    let entry = state
+        .model_tunables
+        .entry(model_id.clone())
+        .or_default();
+
+    // Convert from Option<f32> → f32 with the same defaults the
+    // builder uses, so the slider always shows a concrete value.
+    // 0.5 / 0.5 are the construction defaults from
+    // `RfDetrSegBuilder::new()`.
+    let mut score = entry.score_threshold.unwrap_or(0.5);
+    let mut nms = entry.nms_iou_threshold.unwrap_or(0.5);
+
+    ui.label(egui::RichText::new("Detection knobs").small().strong());
+    ui.horizontal(|ui| {
+        ui.label("Score:");
+        if ui
+            .add(egui::Slider::new(&mut score, 0.0..=1.0).fixed_decimals(2))
+            .on_hover_text(
+                "Minimum confidence for emitting a detection. Lower \
+                 surfaces more candidates (including noisier ones).",
+            )
+            .changed()
+        {
+            entry.score_threshold = Some(score);
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("NMS:");
+        if ui
+            .add(egui::Slider::new(&mut nms, 0.0..=1.05).fixed_decimals(2))
+            .on_hover_text(
+                "IoU + IoMin threshold above which two same-class \
+                 detections collapse to one. Set to 1.05 to disable \
+                 NMS entirely (raw model output).",
+            )
+            .changed()
+        {
+            entry.nms_iou_threshold = Some(nms);
+        }
+    });
+
+    if ui
+        .small_button("Reset to defaults")
+        .on_hover_text("Restore the model's built-in score + NMS values")
+        .clicked()
+    {
+        entry.score_threshold = None;
+        entry.nms_iou_threshold = None;
+    }
+}
+
+/// Recognise RF-DETR-Seg variants by stable id prefix. The only
+/// models today that expose tuning knobs through the panel sliders.
+fn is_rf_detr(model_id: &str) -> bool {
+    model_id.starts_with("rf_detr_seg_")
 }
 
 fn prompt_section(ui: &mut egui::Ui, state: &mut AiToolsState) {

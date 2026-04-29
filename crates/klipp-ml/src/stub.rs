@@ -181,7 +181,7 @@ impl MaskGenerator for StubMaskGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mask_generator::{ClickPrompt, InputFrame, MaskPrompts};
+    use crate::mask_generator::{ClickPrompt, InputFrame, MaskPrompts, MaskTunables};
 
     fn dummy_frame(w: u32, h: u32) -> Vec<f32> {
         vec![0.0; (w as usize) * (h as usize) * 4]
@@ -203,6 +203,7 @@ mod tests {
                 ..Default::default()
             },
             temporal: None,
+            tunables: MaskTunables::default(),
         }
     }
 
@@ -237,6 +238,7 @@ mod tests {
                 },
                 prompts: MaskPrompts::default(),
                 temporal: None,
+                tunables: MaskTunables::default(),
             })
             .expect("auto-detect should succeed");
         let mask = &resp.candidates[0].mask;
@@ -272,6 +274,7 @@ mod tests {
                 },
                 prompts: MaskPrompts::default(),
                 temporal: None,
+                tunables: MaskTunables::default(),
             })
             .expect_err("zero-size frame should error");
         assert!(matches!(err, MaskError::ShapeMismatch { .. }));

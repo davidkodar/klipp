@@ -178,6 +178,23 @@ pub struct TemporalHint {
     pub frame_index: Option<u64>,
 }
 
+/// Per-call tuning knobs that override generator defaults. Every
+/// field is `Option`: `None` means "use whatever the generator was
+/// configured with at construction." Generators that don't recognise
+/// a knob silently ignore it. The UI carries a per-model map and
+/// hands the matching entry to the dispatcher each frame, so the
+/// user's slider setting takes effect on the next run without
+/// rebuilding the cached generator instance.
+#[derive(Debug, Clone, Default)]
+pub struct MaskTunables {
+    /// Detection-confidence cut for instance-segmentation models
+    /// (RF-DETR-Seg, YOLO-Seg). `[0.0, 1.0]` clamped on read.
+    pub score_threshold: Option<f32>,
+    /// IoU threshold for class-aware non-maximum-suppression in
+    /// detection models. Set to `>= 1.0` to disable NMS entirely.
+    pub nms_iou_threshold: Option<f32>,
+}
+
 /// One request to a `MaskGenerator`. Borrowing the input frame keeps
 /// the call zero-copy from Klipp's existing `LinearFrame` (no extra
 /// allocations on the per-frame path).
@@ -186,6 +203,9 @@ pub struct MaskRequest<'a> {
     pub frame: InputFrame<'a>,
     pub prompts: MaskPrompts,
     pub temporal: Option<TemporalHint>,
+    /// Per-call overrides on top of the generator's construction
+    /// defaults. See [`MaskTunables`].
+    pub tunables: MaskTunables,
 }
 
 /// One mask candidate. SAM returns up to 3 (the "small / medium /
