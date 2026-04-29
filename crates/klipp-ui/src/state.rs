@@ -1462,6 +1462,14 @@ pub struct AppState {
     /// SHA + size for the user to confirm), then back to `Idle`
     /// after register + persist or after a cancel.
     pub custom_model_add: crate::ai_tools::custom_install::CustomInstallState,
+    /// Uninstall confirmation for a user-added custom model. Same
+    /// shape as `show_ai_model_uninstall_confirm` but keyed on the
+    /// `CustomModelEntry` instead of a manifest `ModelEntry` —
+    /// the two flow through different removal paths because the
+    /// custom side also has to drop the entry from
+    /// `ai_tools_state.custom_models` + persist.
+    pub show_ai_custom_uninstall_confirm:
+        Option<crate::ai_tools::persistence::CustomModelEntry>,
     /// Export offline warning: list of (filename, timecode_string) for offline clips
     pub export_offline_warning: Option<(Vec<(String, String)>, Box<klipp_core::ExportSettings>)>,
 
@@ -2706,6 +2714,7 @@ impl Default for AppState {
             show_ai_models_bulk_uninstall_confirm: false,
             show_ai_models_stale_uninstall_confirm: false,
             custom_model_add: crate::ai_tools::custom_install::CustomInstallState::Idle,
+            show_ai_custom_uninstall_confirm: None,
             export_offline_warning: None,
             media_usage_cache: std::collections::HashMap::new(),
             media_usage_cache_dirty: true,

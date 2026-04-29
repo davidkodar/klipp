@@ -267,6 +267,40 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                         );
                         ui.separator();
                     }
+
+                    // ── User-added custom models ────────────────────
+                    // Rendered as a distinct section after the
+                    // manifest entries so users can see at a glance
+                    // which models were pasted vs. which Klipp
+                    // ships. Empty state: no header, nothing
+                    // rendered — the AI Models dialog stays clean
+                    // for users who haven't added anything custom.
+                    if !state.ai_tools_state.custom_models.is_empty() {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("Custom models")
+                                .strong()
+                                .color(theme.text_secondary),
+                        );
+                        ui.add_space(2.0);
+                        ui.separator();
+                        // Clone before iter so we can mutate
+                        // pending_custom_uninstall + telemetry inside
+                        // the loop without aliasing state.
+                        let entries = state.ai_tools_state.custom_models.clone();
+                        for entry in &entries {
+                            render_custom_row(
+                                ui,
+                                entry,
+                                theme,
+                                &state.ai_tools_state.model_telemetry,
+                                &mut state.show_ai_custom_uninstall_confirm,
+                                &mut state.toast,
+                                cache.as_ref(),
+                            );
+                            ui.separator();
+                        }
+                    }
                 });
 
             ui.add_space(6.0);
@@ -386,6 +420,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
     show_bulk_uninstall_confirm(ctx, state, theme, &manifest, &cache);
     show_stale_uninstall_confirm(ctx, state, theme, &manifest, &cache);
     show_custom_install(ctx, state, theme, &manifest, &cache);
+    show_custom_uninstall_confirm(ctx, state, theme, &cache);
 }
 
 /// Render the "Delete <model>?" modal when state has a pending entry.
@@ -855,6 +890,253 @@ fn execute_bulk_uninstall(
             installed.len(),
             errors.join("; "),
         ));
+    }
+}
+
+/// One row in the "Custom models" section. Distinct from
+/// `render_row` because the data shape (CustomModelEntry) and the
+/// available actions are different — only Uninstall, no Reinstall
+/// (we don't have the manifest's expected SHA to compare against,
+/// the user is the trust root for these).
+fn render_custom_row(
+    ui: &mut egui::Ui,
+    entry: &crate::ai_tools::persistence::CustomModelEntry,
+    theme: &KlippTheme,
+    telemetry: &HashMap<String, ModelTelemetry>,
+    pending_uninstall: &mut Option<crate::ai_tools::persistence::CustomModelEntry>,
+    _toast: &mut crate::widgets::toast::ToastState,
+    cache: Option<&ModelCache>,
+) {
+    let on_disk = cache
+        .map(|c| c.path_for_id(&entry.id).exists())
+        .unwrap_or(false);
+    let badge_label = if on_disk { "Custom" } else { "Custom (file missing)" };
+    let badge_color = if on_disk {
+        theme.marker_info
+    } else {
+        theme.marker_warning
+    };
+
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.set_max_width(380.0);
+            ui.label(egui::RichText::new(&entry.display_name).strong());
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} • {}",
+                    entry.adapter.display_name(),
+                    format_bytes(entry.size_bytes),
+                ))
+                .small()
+                .color(theme.text_secondary),
+            );
+            ui.label(
+                egui::RichText::new(&entry.url)
+                    .small()
+                    .color(theme.text_dim),
+            );
+            // Telemetry line — same shape as render_row's. Custom
+            // entries get the rolling avg too because the registry
+            // dispatch path doesn't know one model from another.
+            if let Some(t) = telemetry.get(&entry.id) {
+                if t.has_runs() {
+                    let avg = t
+                        .avg_inference_ms()
+                        .map(|ms| format!("avg {:.0}ms", ms))
+                        .unwrap_or_else(|| "—".into());
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Last used: {} • {}",
+                            crate::ai_tools::format_relative(t.last_used),
+                            avg,
+                        ))
+                        .small()
+                        .color(theme.text_dim),
+                    );
+                }
+            }
+        });
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .button("Uninstall")
+                .on_hover_text(
+                    "Delete the cached file + drop the in-memory \
+                     generator + remove the entry from \
+                     ~/.config/klipp/ai_tools.toml.",
+                )
+                .clicked()
+            {
+                *pending_uninstall = Some(entry.clone());
+            }
+            ui.add_space(8.0);
+            let badge = egui::Frame::none()
+                .fill(badge_color.gamma_multiply(0.18))
+                .stroke(egui::Stroke::new(1.0, badge_color))
+                .rounding(3.0)
+                .inner_margin(egui::Margin::symmetric(6.0, 2.0));
+            badge.show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(badge_label)
+                        .small()
+                        .color(badge_color),
+                );
+            });
+        });
+    });
+}
+
+/// Confirmation modal for "Uninstall this custom model". Three-line
+/// difference from `show_uninstall_confirm`: keyed on
+/// `CustomModelEntry`, removes the entry from
+/// `ai_tools_state.custom_models`, and persists the updated state
+/// to disk so the next launch doesn't re-register the deleted
+/// model.
+fn show_custom_uninstall_confirm(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    theme: &KlippTheme,
+    cache: &Option<ModelCache>,
+) {
+    let Some(entry) = state.show_ai_custom_uninstall_confirm.clone() else {
+        return;
+    };
+
+    let screen_rect = ctx.screen_rect();
+
+    egui::Area::new(egui::Id::new("ai_custom_uninstall_scrim"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen_rect.min)
+        .show(ctx, |ui| {
+            let resp = ui.allocate_rect(screen_rect, egui::Sense::click_and_drag());
+            ui.painter().rect_filled(
+                screen_rect,
+                0.0,
+                egui::Color32::from_black_alpha(160),
+            );
+            if resp.clicked() {
+                state.show_ai_custom_uninstall_confirm = None;
+            }
+        });
+
+    let mut close_modal = false;
+    let mut do_uninstall = false;
+
+    egui::Window::new("Uninstall custom AI model")
+        .collapsible(false)
+        .resizable(false)
+        .fixed_size([460.0, 200.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(format!("Delete {}?", entry.display_name)).strong());
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "Frees {} on disk and removes the entry from \
+                     ~/.config/klipp/ai_tools.toml. The next launch \
+                     won't try to register this model again.",
+                    format_bytes(entry.size_bytes),
+                ))
+                .small()
+                .color(theme.text_secondary),
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    close_modal = true;
+                }
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if ui
+                            .add(egui::Button::new(
+                                egui::RichText::new("Uninstall")
+                                    .color(theme.marker_error),
+                            ))
+                            .clicked()
+                        {
+                            do_uninstall = true;
+                        }
+                    },
+                );
+            });
+        });
+
+    if close_modal {
+        state.show_ai_custom_uninstall_confirm = None;
+    }
+    if do_uninstall {
+        execute_custom_uninstall(state, &entry, cache);
+        state.show_ai_custom_uninstall_confirm = None;
+    }
+}
+
+/// Single-row uninstall body for a custom model. Differs from
+/// `execute_uninstall` (which keys on `ModelEntry`) in that it
+/// also drops the entry from `ai_tools_state.custom_models` and
+/// persists the updated config so the next launch doesn't try to
+/// re-register.
+fn execute_custom_uninstall(
+    state: &mut AppState,
+    entry: &crate::ai_tools::persistence::CustomModelEntry,
+    cache: &Option<ModelCache>,
+) {
+    let Some(c) = cache.as_ref() else {
+        state.toast.show("Uninstall failed: cache unavailable");
+        return;
+    };
+    let path = c.path_for_id(&entry.id);
+
+    // Drop the cached generator so a future re-add (under the same
+    // id) doesn't reuse a stale Box pointing at the deleted file.
+    let registry = state.ai_tools_registry.shared();
+    if let Ok(g) = registry.read() {
+        let _ = g.clear_instance(&entry.id);
+    }
+    // Drop the registration itself so the entry stops appearing in
+    // the panel dropdown immediately. Done under a write lock — no
+    // public unregister method on ModelRegistry today, so we pull
+    // it out by writing through the shared Arc directly... actually
+    // ModelRegistry has no remove API. Skip for v1; the in-memory
+    // registration goes away on next launch when load_persistent
+    // skips this id. The factory closure still exists but a future
+    // dispatch would fail at the file-load step (file is gone), so
+    // the user sees "the model failed: ..." rather than silently
+    // running a deleted model.
+    // TODO: add ModelRegistry::unregister so the panel dropdown
+    // reflects the uninstall immediately rather than at next launch.
+
+    let removed_from_disk = match std::fs::remove_file(&path) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(e) => {
+            state.toast.show(format!(
+                "Uninstall failed: {} ({e})",
+                entry.display_name,
+            ));
+            return;
+        }
+    };
+
+    // Drop from ai_tools_state.custom_models (in-memory state).
+    state
+        .ai_tools_state
+        .custom_models
+        .retain(|c| c.id != entry.id);
+
+    // Persist updated state (without the now-removed custom entry).
+    crate::ai_tools::persistence::save(
+        &crate::ai_tools::persistence::AiToolsConfig::from_state(
+            &state.ai_tools_state,
+        ),
+    );
+
+    if removed_from_disk {
+        state
+            .toast
+            .show(format!("Uninstalled {}", entry.display_name));
     }
 }
 
