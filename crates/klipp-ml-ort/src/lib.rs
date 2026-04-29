@@ -37,7 +37,8 @@ pub mod rf_detr_seg;
 pub use birefnet_lite::{BiRefNetLite, BiRefNetLiteBuilder, BIREFNET_LITE_MODEL_ID};
 pub use rf_detr_seg::{
     coco_label, RfDetrSeg, RfDetrSegBuilder, COCO_LABELS, RF_DETR_INPUT_SIZE,
-    RF_DETR_PROTOTYPE_COUNT, RF_DETR_SEG_MODEL_ID,
+    RF_DETR_PROTOTYPE_COUNT, RF_DETR_SEG_DISPLAY_NAME, RF_DETR_SEG_MEDIUM_DISPLAY_NAME,
+    RF_DETR_SEG_MEDIUM_MODEL_ID, RF_DETR_SEG_MODEL_ID,
 };
 pub use postprocess::{
     bilinear_resize_single_channel, postprocess, sigmoid,

@@ -117,11 +117,17 @@ prompts = "point | box | scribble"
 # ── Detect Objects (multi-class instance segmentation) ───────────
 # RF-DETR-Seg — transformer-based detector with per-instance masks.
 # Apache-2.0 (code + checkpoints). Strict alternative to Ultralytics
-# YOLO whose AGPL would force Klipp to AGPL too. COCO-80 trained.
+# YOLO whose AGPL would force Klipp to AGPL too. COCO-91 trained.
+#
+# Two-tier lineup so users can pick speed vs accuracy:
+#   - rf_detr_seg_v1: nano/preview tier (~134 MB, fast, noisier
+#     classifier — confidently wrong on out-of-distribution scenes)
+#   - rf_detr_seg_medium_v1: medium tier (~140 MB, similar speed,
+#     genuinely accurate)
 
 [[model]]
 id = "rf_detr_seg_v1"
-display_name = "RF-DETR-Seg"
+display_name = "RF-DETR-Seg (Preview)"
 # TODO release-CI: fill size_bytes + sha256 once Klipp's mirror runs.
 size_bytes = 0
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -135,6 +141,25 @@ kind = "mask_generator"
 runtime = "ort"
 # Auto-detect — no user prompts. Each detection produces a
 # MaskCandidate with bbox + class label + per-instance mask.
+prompts = ""
+
+[[model]]
+id = "rf_detr_seg_medium_v1"
+display_name = "RF-DETR-Seg (Medium)"
+# TODO release-CI: fill size_bytes + sha256 once Klipp's mirror runs.
+# Local builds get real values via the user-override manifest.
+size_bytes = 0
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "Roboflow / RF-DETR Medium (github.com/roboflow/rf-detr)"
+sources = [
+    # ONNX exported locally from the rfdetr Python package's
+    # RFDETRSegMedium class. Klipp's release-CI mirror (klipp-models
+    # GitHub Release) is the eventual destination.
+    { url = "https://github.com/davidkodar/klipp-models/releases/download/rf-detr-seg-medium-placeholder/rf_detr_seg_medium_v1.onnx" },
+]
+kind = "mask_generator"
+runtime = "ort"
 prompts = ""
 
 [[model]]

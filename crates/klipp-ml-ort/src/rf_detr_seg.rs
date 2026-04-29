@@ -56,11 +56,22 @@ use klipp_ml::{BBox, MaskBuffer, MaskCandidate};
 #[cfg(feature = "ort")]
 use crate::preprocess::bilinear_resize_rgba;
 
-/// Stable id used in `assets/models.toml` and the registry.
+/// Stable id used in `assets/models.toml` and the registry — preview tier
+/// (RFDETRSegPreview, ~134 MB ONNX, fast but noisier classifier).
 pub const RF_DETR_SEG_MODEL_ID: &str = "rf_detr_seg_v1";
 
-/// User-facing display name.
-pub const RF_DETR_SEG_DISPLAY_NAME: &str = "RF-DETR-Seg";
+/// User-facing display name for the preview tier.
+pub const RF_DETR_SEG_DISPLAY_NAME: &str = "RF-DETR-Seg (Preview)";
+
+/// Stable id for the medium tier (RFDETRSegMedium, ~140 MB ONNX,
+/// genuinely accurate). Same architecture + 3-output layout as the
+/// preview — only the weights differ — so a single `RfDetrSeg`
+/// implementation backs both, parameterised by `weights_path` +
+/// reported id/display_name.
+pub const RF_DETR_SEG_MEDIUM_MODEL_ID: &str = "rf_detr_seg_medium_v1";
+
+/// User-facing display name for the medium tier.
+pub const RF_DETR_SEG_MEDIUM_DISPLAY_NAME: &str = "RF-DETR-Seg (Medium)";
 
 /// Model input resolution. RF-DETR variants ship at multiple sizes
 /// (432, 560, 640, 800); the v1 we target is the 432² base. If a
@@ -95,6 +106,12 @@ pub struct RfDetrSegBuilder {
     /// the higher-confidence one. Set to 1.0+ to disable NMS
     /// entirely (useful for debugging the raw model output).
     nms_iou_threshold: f32,
+    /// Stable model id reported by `MaskGenerator::id`. Defaults to
+    /// the preview tier; set via `model_id` to register the medium
+    /// (or future large/x-large) tier without forking the impl.
+    model_id: &'static str,
+    /// User-facing display name reported by `MaskGenerator::display_name`.
+    display_name: &'static str,
 }
 
 impl RfDetrSegBuilder {
@@ -104,6 +121,8 @@ impl RfDetrSegBuilder {
             device: DevicePreference::GpuPreferCpu,
             score_threshold: 0.5,
             nms_iou_threshold: RF_DETR_DEFAULT_NMS_IOU_THRESHOLD,
+            model_id: RF_DETR_SEG_MODEL_ID,
+            display_name: RF_DETR_SEG_DISPLAY_NAME,
         }
     }
 
@@ -114,6 +133,17 @@ impl RfDetrSegBuilder {
 
     pub fn device(mut self, device: DevicePreference) -> Self {
         self.device = device;
+        self
+    }
+
+    /// Override the reported model id + display name. Used to
+    /// register a different tier (e.g. medium) without duplicating
+    /// the impl — the architecture and 3-output decode are identical
+    /// across RF-DETR-Seg variants, only the weights and naming
+    /// differ.
+    pub fn model_id(mut self, id: &'static str, display_name: &'static str) -> Self {
+        self.model_id = id;
+        self.display_name = display_name;
         self
     }
 
@@ -140,6 +170,8 @@ impl RfDetrSegBuilder {
             device: self.device,
             score_threshold: self.score_threshold,
             nms_iou_threshold: self.nms_iou_threshold,
+            model_id: self.model_id,
+            display_name: self.display_name,
             #[cfg(feature = "ort")]
             session: None,
         })
@@ -159,6 +191,8 @@ pub struct RfDetrSeg {
     score_threshold: f32,
     #[allow(dead_code)] // used by the ort-feature inference path
     nms_iou_threshold: f32,
+    model_id: &'static str,
+    display_name: &'static str,
     #[cfg(feature = "ort")]
     #[allow(dead_code)] // populated by the inference path
     session: Option<ort::session::Session>,
@@ -166,11 +200,11 @@ pub struct RfDetrSeg {
 
 impl MaskGenerator for RfDetrSeg {
     fn id(&self) -> &str {
-        RF_DETR_SEG_MODEL_ID
+        self.model_id
     }
 
     fn display_name(&self) -> &str {
-        RF_DETR_SEG_DISPLAY_NAME
+        self.display_name
     }
 
     fn capabilities(&self) -> MaskCapabilities {

@@ -304,6 +304,7 @@ fn register_real_models(r: &mut klipp_ml::ModelRegistry) {
     {
         register_birefnet(r);
         register_rf_detr_seg(r);
+        register_rf_detr_seg_medium(r);
     }
 
     #[cfg(feature = "ai-candle")]
@@ -398,22 +399,48 @@ fn register_mobile_sam(r: &mut klipp_ml::ModelRegistry) {
 
 #[cfg(feature = "ai-ort")]
 fn register_rf_detr_seg(r: &mut klipp_ml::ModelRegistry) {
-    use klipp_ml_ort::{RfDetrSegBuilder, RF_DETR_SEG_MODEL_ID};
+    use klipp_ml_ort::{RF_DETR_SEG_DISPLAY_NAME, RF_DETR_SEG_MODEL_ID};
+    register_rf_detr_seg_variant(r, RF_DETR_SEG_MODEL_ID, RF_DETR_SEG_DISPLAY_NAME);
+}
+
+#[cfg(feature = "ai-ort")]
+fn register_rf_detr_seg_medium(r: &mut klipp_ml::ModelRegistry) {
+    use klipp_ml_ort::{RF_DETR_SEG_MEDIUM_DISPLAY_NAME, RF_DETR_SEG_MEDIUM_MODEL_ID};
+    register_rf_detr_seg_variant(
+        r,
+        RF_DETR_SEG_MEDIUM_MODEL_ID,
+        RF_DETR_SEG_MEDIUM_DISPLAY_NAME,
+    );
+}
+
+/// Shared registration for every RF-DETR-Seg tier (preview, medium,
+/// future large/x-large). The architecture and 3-output decode are
+/// identical — only the manifest entry + weight path + reported
+/// id/display_name differ.
+#[cfg(feature = "ai-ort")]
+fn register_rf_detr_seg_variant(
+    r: &mut klipp_ml::ModelRegistry,
+    model_id: &'static str,
+    display_name: &'static str,
+) {
+    use klipp_ml_ort::RfDetrSegBuilder;
 
     let manifest = match klipp_ml::manifest::load_effective() {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!(target: "klipp_ui", "ai-ort: skipping RF-DETR-Seg (manifest load failed: {e})");
+            tracing::warn!(
+                target: "klipp_ui",
+                "ai-ort: skipping {model_id} (manifest load failed: {e})"
+            );
             return;
         }
     };
-    let entry = match manifest.get(RF_DETR_SEG_MODEL_ID) {
+    let entry = match manifest.get(model_id) {
         Some(e) => e.clone(),
         None => {
             tracing::warn!(
                 target: "klipp_ui",
-                "ai-ort: skipping RF-DETR-Seg (no manifest entry for {})",
-                RF_DETR_SEG_MODEL_ID
+                "ai-ort: skipping {model_id} (no manifest entry)"
             );
             return;
         }
@@ -421,7 +448,10 @@ fn register_rf_detr_seg(r: &mut klipp_ml::ModelRegistry) {
     let cache = match klipp_ml::ModelCache::open() {
         Ok(c) => c,
         Err(e) => {
-            tracing::warn!(target: "klipp_ui", "ai-ort: skipping RF-DETR-Seg (cache open failed: {e})");
+            tracing::warn!(
+                target: "klipp_ui",
+                "ai-ort: skipping {model_id} (cache open failed: {e})"
+            );
             return;
         }
     };
@@ -429,17 +459,17 @@ fn register_rf_detr_seg(r: &mut klipp_ml::ModelRegistry) {
 
     r.register(
         klipp_ml::ModelInfo {
-            id: RF_DETR_SEG_MODEL_ID.into(),
-            display_name: "RF-DETR-Seg".into(),
+            id: model_id.into(),
+            display_name: display_name.into(),
             // Auto-detect only — RF-DETR consumes no user prompts.
             // Each detection becomes a MaskCandidate; the panel
-            // picks the first one today, full multi-detection
-            // visualisation is a follow-up.
+            // renders bbox + class label per candidate.
             capabilities: klipp_ml::MaskCapabilities::AUTO_DETECT,
         },
         Box::new(move || {
             RfDetrSegBuilder::new()
                 .weights(weights_path.clone())
+                .model_id(model_id, display_name)
                 .build()
                 .map(|g| Box::new(g) as Box<dyn klipp_ml::MaskGenerator>)
         }),
