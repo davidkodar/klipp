@@ -292,12 +292,9 @@ pub enum ColorTab {
 }
 
 /// Register every real model — the ones gated by feature flags.
-/// Called twice: once for the panel-facing `AiToolsRegistry` and
-/// once for the worker-facing `RegistryHandle`. They live as
-/// independent `ModelRegistry` instances (the panel's wraps
-/// directly, the worker's is `Arc<ModelRegistry>`), so the
-/// registration list has to be applied to both. Refactoring to a
-/// single shared registry is filed as a follow-up.
+/// Called once on the shared registry; the panel-side
+/// `AiToolsRegistry` and the worker-side `RegistryHandle` both
+/// observe the same set.
 #[allow(unused_variables)]
 fn register_real_models(r: &mut klipp_ml::ModelRegistry) {
     #[cfg(feature = "ai-ort")]
@@ -311,12 +308,12 @@ fn register_real_models(r: &mut klipp_ml::ModelRegistry) {
     register_mobile_sam(r);
 }
 
-/// Build the worker-side `RegistryHandle` for `AppState::ml_registry`.
-/// Always registers the stub. Under `--features ai-ort` /
-/// `--features ai-candle` the registry also gets BiRefNet /
-/// MobileSAM with weight paths resolved through the manifest + XDG
-/// model cache. The factory closures are lazy.
-fn build_ml_registry() -> crate::ai_tools::RegistryHandle {
+/// Build the single shared `Arc<RwLock<ModelRegistry>>` that backs
+/// both the panel-side `AiToolsRegistry` and the worker-side
+/// `RegistryHandle`. Stub registered first so prompt-bearing tasks
+/// always have a fallback; real backends layer on top under their
+/// feature flags.
+fn build_shared_registry() -> std::sync::Arc<std::sync::RwLock<klipp_ml::ModelRegistry>> {
     let mut r = klipp_ml::ModelRegistry::new();
     r.register(
         klipp_ml::ModelInfo {
@@ -332,18 +329,7 @@ fn build_ml_registry() -> crate::ai_tools::RegistryHandle {
 
     register_real_models(&mut r);
 
-    crate::ai_tools::RegistryHandle::new(r)
-}
-
-/// Build the panel-side `AiToolsRegistry`. Stub auto-registered by
-/// `with_stub_registered`; real models layered on top via
-/// `register_real_models`. Mirror of `build_ml_registry` so the
-/// panel dropdown lists the same models the worker can actually
-/// dispatch.
-fn build_ai_tools_registry() -> crate::ai_tools::AiToolsRegistry {
-    let mut r = crate::ai_tools::AiToolsRegistry::with_stub_registered();
-    register_real_models(r.inner_mut());
-    r
+    std::sync::Arc::new(std::sync::RwLock::new(r))
 }
 
 #[cfg(feature = "ai-candle")]
@@ -2251,6 +2237,11 @@ pub enum UnsavedAction {
 
 impl Default for AppState {
     fn default() -> Self {
+        // Build the shared registry once and share it between the
+        // panel view + worker handle. See `build_shared_registry`
+        // for what gets registered (stub + every backend gated by
+        // its feature flag).
+        let shared_registry = build_shared_registry();
         Self {
             playback: PlaybackState::Idle,
             playhead: Timecode { value: 0, rate: 24 },
@@ -2631,8 +2622,14 @@ impl Default for AppState {
             command_palette_selected: 0,
             model_download: crate::model_download::ModelDownloadState::default(),
             ai_tools_state: crate::ai_tools::AiToolsState::default(),
-            ai_tools_registry: build_ai_tools_registry(),
-            ml_registry: build_ml_registry(),
+            // Both views observe the same `Arc<RwLock<ModelRegistry>>`
+            // — runtime install / uninstall through either side
+            // reflects on the other. Tested by
+            // registry::tests::from_shared_views_see_each_others_writes.
+            ai_tools_registry: crate::ai_tools::AiToolsRegistry::from_shared(
+                std::sync::Arc::clone(&shared_registry),
+            ),
+            ml_registry: crate::ai_tools::RegistryHandle::from_shared(shared_registry),
             available_fonts: Vec::new(),
             pending_title_data: None,
             pending_title_preview_clip: None,

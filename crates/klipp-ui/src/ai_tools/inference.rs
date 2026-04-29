@@ -58,7 +58,7 @@
 //! `Arc<ModelRegistry>` into every caller.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crossbeam_channel::{Receiver, Sender};
 
@@ -77,36 +77,58 @@ use klipp_ml::{
 /// handle without touching every caller.
 #[derive(Clone)]
 pub struct RegistryHandle {
-    inner: Arc<ModelRegistry>,
+    inner: Arc<RwLock<ModelRegistry>>,
 }
 
 impl RegistryHandle {
-    /// Wrap an existing registry. Caller usually builds + registers
-    /// once at app startup, then clones this handle into AppState.
+    /// Wrap a fresh registry. Convenience for tests; the production
+    /// path uses [`Self::from_shared`] so the worker and the panel
+    /// view the same Arc.
     pub fn new(registry: ModelRegistry) -> Self {
         Self {
-            inner: Arc::new(registry),
+            inner: Arc::new(RwLock::new(registry)),
         }
     }
 
-    /// Wrap an already-Arc'd registry — useful when the registry is
-    /// shared with another subsystem (e.g. command-palette autocomplete
-    /// listing registered models).
-    pub fn from_arc(arc: Arc<ModelRegistry>) -> Self {
+    /// Wrap an already-shared registry. Used by the AppState builder
+    /// so this handle and the panel-side `AiToolsRegistry` mutate +
+    /// observe the same underlying registry — runtime install /
+    /// uninstall lands once and reflects on both sides.
+    pub fn from_shared(arc: Arc<RwLock<ModelRegistry>>) -> Self {
         Self { inner: arc }
     }
 
-    /// Borrow the inner registry. Used by the worker to look up the
-    /// model by id without taking an additional clone of the Arc.
-    pub fn registry(&self) -> &ModelRegistry {
-        &self.inner
+    /// Clone the shared Arc — backend crates use this to register
+    /// their own model factories at startup, and future install /
+    /// uninstall flows mutate through it.
+    pub fn shared(&self) -> Arc<RwLock<ModelRegistry>> {
+        Arc::clone(&self.inner)
+    }
+
+    /// Run a closure against the inner [`ModelRegistry`] under a
+    /// read lock. The worker calls this to materialise a generator
+    /// and run inference; the read guard is held for the duration
+    /// of the closure, so concurrent inferences against different
+    /// models stay parallel (the per-entry mutex is what
+    /// short-circuits same-model contention).
+    pub fn with_read<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&ModelRegistry) -> R,
+    {
+        let g = self.inner.read().expect("registry poisoned");
+        f(&g)
     }
 }
 
 impl std::fmt::Debug for RegistryHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let count = self
+            .inner
+            .read()
+            .map(|g| g.iter_info().count())
+            .unwrap_or(0);
         f.debug_struct("RegistryHandle")
-            .field("models", &self.inner.iter_info().count())
+            .field("models", &count)
             .finish()
     }
 }
@@ -284,20 +306,27 @@ pub fn run_inference_blocking(
     request: &OwnedMaskRequest,
     registry: &RegistryHandle,
 ) -> InferenceEvent {
-    let Some(get_or_create) = registry.registry().get_or_create(model_id) else {
-        return InferenceEvent::Failed(format!(
-            "no model registered under id '{model_id}'"
-        ));
-    };
-    let mut guard = match get_or_create {
-        Ok(g) => g,
-        Err(e) => return InferenceEvent::Failed(format_mask_error(&e)),
-    };
-    let req = request.as_borrowed();
-    match guard.as_mut().generate(req) {
-        Ok(resp) => InferenceEvent::Completed(resp),
-        Err(e) => InferenceEvent::Failed(format_mask_error(&e)),
-    }
+    // Hold the registry's read guard for the duration of the
+    // inference. The MaskGeneratorGuard returned by get_or_create
+    // borrows from inside the registry, so dropping the read guard
+    // mid-call would invalidate it. RwLock readers are concurrent,
+    // so other models can run in parallel against the same handle.
+    registry.with_read(|r| {
+        let Some(get_or_create) = r.get_or_create(model_id) else {
+            return InferenceEvent::Failed(format!(
+                "no model registered under id '{model_id}'"
+            ));
+        };
+        let mut guard = match get_or_create {
+            Ok(g) => g,
+            Err(e) => return InferenceEvent::Failed(format_mask_error(&e)),
+        };
+        let req = request.as_borrowed();
+        match guard.as_mut().generate(req) {
+            Ok(resp) => InferenceEvent::Completed(resp),
+            Err(e) => InferenceEvent::Failed(format_mask_error(&e)),
+        }
+    })
 }
 
 /// User-facing rendering of a [`MaskError`]. Errors that already carry
@@ -757,8 +786,8 @@ mod tests {
     fn registry_handle_clone_is_cheap_and_observable() {
         let h = registry_with_stub();
         let h2 = h.clone();
-        assert!(h.registry().info(STUB_GENERATOR_ID).is_some());
-        assert!(h2.registry().info(STUB_GENERATOR_ID).is_some());
+        assert!(h.with_read(|r| r.info(STUB_GENERATOR_ID).is_some()));
+        assert!(h2.with_read(|r| r.info(STUB_GENERATOR_ID).is_some()));
     }
 
     #[test]

@@ -301,7 +301,6 @@ mod tests {
         let cap = klipp_ml::StubMaskGenerator::new();
         let info = AiToolsRegistry::with_stub_registered()
             .info(klipp_ml::STUB_GENERATOR_ID)
-            .cloned()
             .expect("stub registered");
         assert!(info.capabilities.contains(MaskCapabilities::POINT_PROMPT));
         assert!(info.capabilities.contains(MaskCapabilities::AUTO_DETECT));

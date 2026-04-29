@@ -172,7 +172,7 @@ fn model_section(
         .as_ref()
         .and_then(|id| registry.info(id))
     {
-        info_card(ui, info, task);
+        info_card(ui, &info, task);
     } else {
         ui.label("(no model selected)");
     }

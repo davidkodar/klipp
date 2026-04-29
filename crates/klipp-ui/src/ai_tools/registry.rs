@@ -7,20 +7,22 @@
 //! panel thinks in tasks ("Remove Background", "Isolate Object") and
 //! each task maps to a *required-capability mask*. This wrapper:
 //!
-//! 1. Owns a `ModelRegistry`,
-//! 2. Registers the `StubMaskGenerator` at startup so the panel has
-//!    something concrete to render against,
-//! 3. Translates `AiTask` → `MaskCapabilities` so the panel doesn't
+//! 1. Holds a shared `Arc<RwLock<ModelRegistry>>` (same Arc the
+//!    worker-side [`super::inference::RegistryHandle`] points at, so
+//!    runtime install / uninstall / variant-switch reflects on both
+//!    sides immediately),
+//! 2. Translates `AiTask` → `MaskCapabilities` so the panel doesn't
 //!    have to know that mapping,
-//! 4. Forwards inference dispatch to `ModelRegistry::get_or_create`.
+//! 3. Returns owned `ModelInfo` from lookups so call sites don't fight
+//!    the read-guard's lifetime.
 //!
 //! Real backend crates (`klipp-ml-candle`, `klipp-ml-ort`, future
-//! tract / burn) call `inner_mut().register(...)` to advertise their
-//! own models — same path as the stub.
+//! tract / burn) take a `&mut ModelRegistry` write-lock and
+//! `register(...)` against it — same path the stub takes at startup.
 
-use klipp_ml::{
-    MaskCapabilities, MaskError, MaskGeneratorGuard, ModelInfo, ModelRegistry, StubMaskGenerator,
-};
+use std::sync::{Arc, RwLock};
+
+use klipp_ml::{MaskCapabilities, ModelInfo, ModelRegistry, StubMaskGenerator};
 
 use super::AiTask;
 
@@ -45,21 +47,32 @@ pub fn required_capability(task: AiTask) -> MaskCapabilities {
     }
 }
 
-/// Wrapper around `klipp_ml::ModelRegistry` with task-oriented
-/// helpers and the stub auto-registered at construction.
+/// Panel-facing view over the shared registry. Cheap to clone (just
+/// bumps the Arc) so AppState can pass it through to render code by
+/// value. Mutations go through the Arc directly via [`Self::shared`].
+#[derive(Clone)]
 pub struct AiToolsRegistry {
-    inner: ModelRegistry,
+    inner: Arc<RwLock<ModelRegistry>>,
 }
 
 impl AiToolsRegistry {
-    /// Build a fresh registry with the stub generator registered as
-    /// the default fallback for every prompt-bearing task. Tests and
-    /// app startup both call this; backend crates layer their real
-    /// model registrations on top.
-    pub fn with_stub_registered() -> Self {
-        let mut inner = ModelRegistry::new();
-        register_stub(&mut inner);
+    /// Wrap an already-shared registry. Used by `state::build_*`
+    /// helpers so the panel and the worker point at the same Arc.
+    pub fn from_shared(inner: Arc<RwLock<ModelRegistry>>) -> Self {
         Self { inner }
+    }
+
+    /// Build a fresh standalone registry with the stub generator
+    /// registered. Convenience constructor for tests + early app
+    /// startup; the production path constructs the shared Arc once
+    /// in `state::build_shared_registry` and hands views to both
+    /// sides.
+    pub fn with_stub_registered() -> Self {
+        let mut r = ModelRegistry::new();
+        register_stub(&mut r);
+        Self {
+            inner: Arc::new(RwLock::new(r)),
+        }
     }
 
     /// Build an empty registry with no models — used in tests that
@@ -67,53 +80,52 @@ impl AiToolsRegistry {
     /// auto-satisfying the capability filter.
     pub fn empty() -> Self {
         Self {
-            inner: ModelRegistry::new(),
+            inner: Arc::new(RwLock::new(ModelRegistry::new())),
         }
     }
 
-    /// Borrow the underlying registry for read-only operations
-    /// (info lookups, listing). Backend crates that want to
-    /// register their own models go through [`Self::inner_mut`].
-    pub fn inner(&self) -> &ModelRegistry {
-        &self.inner
-    }
-
-    /// Borrow the underlying registry mutably so backend crates can
-    /// add their model factories. Kept on the wrapper so the UI
-    /// layer doesn't have to expose the raw `ModelRegistry` field.
-    pub fn inner_mut(&mut self) -> &mut ModelRegistry {
-        &mut self.inner
+    /// Clone the shared Arc — backend crates use this to register
+    /// their own model factories (write-lock + `register`) and
+    /// future install/uninstall flows mutate through it.
+    pub fn shared(&self) -> Arc<RwLock<ModelRegistry>> {
+        Arc::clone(&self.inner)
     }
 
     /// Models suitable for the given task — i.e. those whose
     /// capability bitset is a superset of [`required_capability`].
-    /// The panel uses this to populate per-task model dropdowns.
-    pub fn models_for(&self, task: AiTask) -> Vec<&ModelInfo> {
-        self.inner.list_capable(required_capability(task))
+    /// Returns owned [`ModelInfo`] copies so callers don't carry
+    /// the read guard around.
+    pub fn models_for(&self, task: AiTask) -> Vec<ModelInfo> {
+        let g = self.inner.read().expect("registry poisoned");
+        g.list_capable(required_capability(task))
+            .into_iter()
+            .cloned()
+            .collect()
     }
 
     /// Look up a model by its registered id, regardless of task.
     /// Used to render the "currently selected" model name.
-    pub fn info(&self, id: &str) -> Option<&ModelInfo> {
-        self.inner.info(id)
+    pub fn info(&self, id: &str) -> Option<ModelInfo> {
+        let g = self.inner.read().expect("registry poisoned");
+        g.info(id).cloned()
     }
 
     /// `true` when at least one model is registered for the task.
     /// The panel greys out task buttons that return `false` and
     /// surfaces a "no model installed" tooltip instead.
     pub fn has_model_for(&self, task: AiTask) -> bool {
-        !self.models_for(task).is_empty()
+        let g = self.inner.read().expect("registry poisoned");
+        g.list_capable(required_capability(task))
+            .into_iter()
+            .next()
+            .is_some()
     }
 
-    /// Materialise the model with `id` for inference dispatch.
-    /// Wraps `ModelRegistry::get_or_create`; the returned guard
-    /// holds the model's mutex while the caller runs `generate`.
-    /// Returns `None` when no model is registered under that id.
-    pub fn get_or_create(
-        &self,
-        id: &str,
-    ) -> Option<Result<MaskGeneratorGuard<'_>, MaskError>> {
-        self.inner.get_or_create(id)
+    /// `true` when an entry with this id exists. Cheap presence
+    /// check that avoids cloning the [`ModelInfo`].
+    pub fn has_id(&self, id: &str) -> bool {
+        let g = self.inner.read().expect("registry poisoned");
+        g.info(id).is_some()
     }
 }
 
@@ -128,7 +140,7 @@ impl Default for AiToolsRegistry {
 /// also mount it on a registry they constructed by hand.
 pub fn register_stub(registry: &mut ModelRegistry) {
     let stub = StubMaskGenerator::new();
-    let info = ModelInfo {
+    let info = klipp_ml::ModelInfo {
         id: stub.id_static().into(),
         display_name: "Stub (placeholder)".into(),
         capabilities: stub.advertised_capabilities(),
@@ -219,17 +231,36 @@ mod tests {
     }
 
     #[test]
-    fn get_or_create_returns_stub_when_registered() {
+    fn has_id_returns_true_for_registered_stub() {
         let r = AiToolsRegistry::with_stub_registered();
-        let guard = r.get_or_create(klipp_ml::STUB_GENERATOR_ID);
-        assert!(guard.is_some(), "stub must resolve through the wrapper");
-        let result = guard.unwrap();
-        assert!(result.is_ok(), "stub factory must not fail");
+        assert!(r.has_id(klipp_ml::STUB_GENERATOR_ID));
     }
 
     #[test]
-    fn get_or_create_unknown_id_returns_none() {
+    fn has_id_returns_false_for_unknown() {
         let r = AiToolsRegistry::with_stub_registered();
-        assert!(r.get_or_create("does-not-exist").is_none());
+        assert!(!r.has_id("does-not-exist"));
+    }
+
+    #[test]
+    fn from_shared_views_see_each_others_writes() {
+        // The whole point of the refactor: a write through one view
+        // becomes visible through another that shares the same Arc.
+        let arc = Arc::new(RwLock::new(ModelRegistry::new()));
+        let a = AiToolsRegistry::from_shared(Arc::clone(&arc));
+        let b = AiToolsRegistry::from_shared(arc);
+
+        assert!(!a.has_id(klipp_ml::STUB_GENERATOR_ID));
+        assert!(!b.has_id(klipp_ml::STUB_GENERATOR_ID));
+
+        // Mutate through view `a`'s shared Arc; observe through `b`.
+        {
+            let shared = a.shared();
+            let mut g = shared.write().expect("registry poisoned");
+            register_stub(&mut g);
+        }
+
+        assert!(a.has_id(klipp_ml::STUB_GENERATOR_ID));
+        assert!(b.has_id(klipp_ml::STUB_GENERATOR_ID));
     }
 }
