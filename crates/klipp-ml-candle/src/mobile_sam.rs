@@ -264,6 +264,16 @@ impl MobileSam {
             || session.cached_frame_hash != frame_hash
             || session.cached_resized_dims != (resized_h, resized_w);
 
+        tracing::info!(
+            target: "klipp_ml_candle",
+            "MobileSAM dispatch: frame_hash={:#x} prev={:#x} dims={:?} prev_dims={:?} cache_hit={}",
+            frame_hash,
+            session.cached_frame_hash,
+            (resized_h, resized_w),
+            session.cached_resized_dims,
+            !need_new_embedding,
+        );
+
         let embedding = if need_new_embedding {
             // Build the (3, H, W) f32 tensor in 0..255 sRGB-encoded
             // values — what candle's `Sam::preprocess` expects.

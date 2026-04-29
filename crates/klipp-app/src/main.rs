@@ -150,6 +150,7 @@ fn main() -> Result<()> {
                      klipp_color=debug,\
                      klipp_timeline=debug,klipp_jobs=debug,klipp_title=debug,\
                      klipp_nodes=debug,\
+                     klipp_ml=debug,klipp_ml_candle=debug,klipp_ml_ort=debug,\
                      wgpu=warn,naga=warn",
                 )
             }),

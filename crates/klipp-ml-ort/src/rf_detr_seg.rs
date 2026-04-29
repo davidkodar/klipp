@@ -261,69 +261,76 @@ impl RfDetrSeg {
             .run(ort::inputs![input_tensor])
             .map_err(|e| MaskError::Inference(format!("ort run: {e}")))?;
 
-        // ── Decode the 5 outputs ──
-        // Output names vary across RF-DETR re-exports. We probe a
-        // few common name variants per output, falling back to
-        // positional indexing.
-        let (boxes_shape, boxes) = extract_named_or_indexed::<f32>(
+        // ── Decode the 3 outputs ──
+        // RF-DETR-Seg-Preview's actual ONNX export (verified via
+        // probe_outputs example):
+        //   dets: (1, 200, 4) f32 — bbox cxcywh, normalised [0, 1]
+        //   labels: (1, 200, 91) f32 — class logits for COCO-91
+        //     (DETR convention; class 90 is the "no object" slot)
+        //   <auto-named>: (1, 200, 108, 108) f32 — per-detection
+        //     mask logits, already assembled (no prototype combo)
+        // Output #2 has an auto-generated numeric name from the
+        // exporter; we fall back to positional indexing for it.
+        let (dets_shape, dets) = extract_named_or_indexed::<f32>(
             &outputs,
-            &["boxes", "pred_boxes", "dets"],
+            &["dets", "boxes", "pred_boxes"],
             0,
         )?;
-        let (_scores_shape, scores) = extract_named_or_indexed::<f32>(
+        let (labels_shape, labels_logits) = extract_named_or_indexed::<f32>(
             &outputs,
-            &["scores", "pred_scores", "confs"],
+            &["labels", "pred_logits", "scores"],
             1,
         )?;
-        // Labels can be int64 or int32 depending on export.
-        let labels_i64 =
-            extract_named_or_indexed::<i64>(&outputs, &["labels", "pred_labels", "class_ids"], 2)
-                .ok()
-                .map(|(_, v)| v);
-        let labels_i32 = if labels_i64.is_none() {
-            extract_named_or_indexed::<i32>(&outputs, &["labels", "pred_labels", "class_ids"], 2)
-                .ok()
-                .map(|(_, v)| v)
-        } else {
-            None
-        };
-        let (_mask_coeffs_shape, mask_coeffs) = extract_named_or_indexed::<f32>(
+        let (masks_shape, mask_logits) = extract_named_or_indexed::<f32>(
             &outputs,
-            &["mask_coefficients", "mask_coeffs", "masks"],
-            3,
-        )?;
-        let (proto_shape, prototypes) = extract_named_or_indexed::<f32>(
-            &outputs,
-            &["mask_prototypes", "prototypes", "proto"],
-            4,
+            &["masks", "mask_logits", "pred_masks"],
+            2,
         )?;
 
-        // Shapes:
-        //   boxes: (1, N, 4)
-        //   scores: (1, N)
-        //   labels: (1, N)
-        //   mask_coeffs: (1, N, K) where K = RF_DETR_PROTOTYPE_COUNT
-        //   prototypes: (1, K, H, W)
-        let n_dets = num_detections(&boxes_shape)?;
-        let (proto_k, proto_h, proto_w) = prototype_dims(&proto_shape)?;
-        if proto_k != RF_DETR_PROTOTYPE_COUNT {
-            return Err(MaskError::Inference(format!(
-                "unexpected prototype count {proto_k}, expected {}",
-                RF_DETR_PROTOTYPE_COUNT
-            )));
-        }
+        let n_dets = match dets_shape.as_slice() {
+            [1, n, 4] | [n, 4] => *n as usize,
+            other => {
+                return Err(MaskError::Inference(format!(
+                    "dets shape {other:?} (expected (1, N, 4))"
+                )));
+            }
+        };
+        let n_classes = match labels_shape.as_slice() {
+            [1, _n, c] | [_n, c] => *c as usize,
+            other => {
+                return Err(MaskError::Inference(format!(
+                    "labels shape {other:?} (expected (1, N, C))"
+                )));
+            }
+        };
+        let (mask_h, mask_w) = match masks_shape.as_slice() {
+            [1, _n, h, w] | [_n, h, w] => (*h as usize, *w as usize),
+            other => {
+                return Err(MaskError::Inference(format!(
+                    "masks shape {other:?} (expected (1, N, H, W))"
+                )));
+            }
+        };
+        let mask_pixels = mask_h * mask_w;
+
+        // Last-class is the DETR "no_object" slot. We skip
+        // detections whose argmax lands there.
+        let no_object_class = n_classes.saturating_sub(1);
 
         // Filter candidates by score; convert each surviving
-        // detection into a MaskCandidate. Limit to a sensible cap
-        // so a low score_threshold doesn't drown the panel in
-        // hundreds of candidates.
+        // detection into a MaskCandidate. Cap so a low threshold
+        // doesn't drown the panel.
         const MAX_CANDIDATES: usize = 64;
         let mut candidates = Vec::new();
         for n in 0..n_dets {
-            let score = scores
-                .get(n)
-                .copied()
-                .ok_or_else(|| MaskError::Inference("scores OOB".into()))?;
+            // argmax + softmax over this detection's class logits
+            let class_off = n * n_classes;
+            let class_slice = &labels_logits[class_off..class_off + n_classes];
+            let (class_id, _) = argmax(class_slice);
+            if class_id == no_object_class {
+                continue;
+            }
+            let score = softmax_at(class_slice, class_id);
             if score < self.score_threshold {
                 continue;
             }
@@ -331,56 +338,39 @@ impl RfDetrSeg {
                 break;
             }
 
-            // Bounding box. Coordinates are normalised [0, 1] in
-            // most exports — if a future variant emits absolute
-            // pixel coords we'll trip a clamp here and need to
-            // detect from the `proto_w` / `model_size` ratio.
-            // Output is xyxy → convert to BBox's (x, y, w, h).
+            // RF-DETR's bboxes are cxcywh in normalised coords.
+            // Convert to BBox's (x, y, w, h) which is (top-left,
+            // size). Defensive clamp so out-of-frame predictions
+            // don't trip downstream resize asserts.
             let bx_off = n * 4;
-            let x0 = boxes[bx_off].clamp(0.0, 1.0);
-            let y0 = boxes[bx_off + 1].clamp(0.0, 1.0);
-            let x1 = boxes[bx_off + 2].clamp(0.0, 1.0);
-            let y1 = boxes[bx_off + 3].clamp(0.0, 1.0);
-            // Skip degenerate bboxes — zero-area detections are
-            // either pad slots in the output or model artifacts.
-            if x1 <= x0 || y1 <= y0 {
+            let cx = dets[bx_off].clamp(0.0, 1.0);
+            let cy = dets[bx_off + 1].clamp(0.0, 1.0);
+            let bw = dets[bx_off + 2].clamp(0.0, 1.0);
+            let bh = dets[bx_off + 3].clamp(0.0, 1.0);
+            if bw <= 0.0 || bh <= 0.0 {
                 continue;
             }
+            let x0 = (cx - bw * 0.5).clamp(0.0, 1.0);
+            let y0 = (cy - bh * 0.5).clamp(0.0, 1.0);
             let bbox = BBox {
                 x: x0,
                 y: y0,
-                w: x1 - x0,
-                h: y1 - y0,
+                w: (bw).min(1.0 - x0),
+                h: (bh).min(1.0 - y0),
             };
 
-            let class_id = labels_i64
-                .as_ref()
-                .map(|l| l.get(n).copied().unwrap_or(-1) as i32)
-                .or_else(|| {
-                    labels_i32
-                        .as_ref()
-                        .map(|l| l.get(n).copied().unwrap_or(-1))
-                })
-                .unwrap_or(-1);
-            let label_str = if class_id >= 0 {
-                Some(coco_label(class_id as usize).to_string())
-            } else {
-                None
-            };
+            let label_str = Some(coco_label(class_id).to_string());
 
-            // Per-detection mask: linear combination of K
-            // prototypes weighted by this detection's K coefficients,
-            // then sigmoid, then crop to the bbox.
-            let coeff_off = n * RF_DETR_PROTOTYPE_COUNT;
-            let coeffs = &mask_coeffs[coeff_off..coeff_off + RF_DETR_PROTOTYPE_COUNT];
-            let mask = assemble_detection_mask(
-                coeffs,
-                &prototypes,
-                proto_h,
-                proto_w,
-                &bbox,
-                src_w,
-                src_h,
+            // Per-detection mask is already assembled; just sigmoid
+            // + bilinear-resample the (mask_h × mask_w) logit map
+            // to the source resolution. Bbox is just metadata for
+            // the panel — the mask itself spans the whole image
+            // (RF-DETR-Seg's masks naturally fade to zero outside
+            // the detection's spatial extent).
+            let mask_off = n * mask_pixels;
+            let det_logits = &mask_logits[mask_off..mask_off + mask_pixels];
+            let mask = resample_detection_mask(
+                det_logits, mask_h, mask_w, src_w, src_h,
             );
 
             candidates.push(MaskCandidate {
@@ -480,112 +470,47 @@ fn extract_named_or_indexed<T: ort::value::PrimitiveTensorElementType + Copy>(
     Ok((shape.iter().copied().collect(), data.to_vec()))
 }
 
-/// `boxes_shape` is `(1, N, 4)`. Returns N. Defensive: returns 0 on
-/// any unexpected shape, which makes the detection loop produce no
-/// candidates rather than panic.
-#[cfg(feature = "ort")]
-fn num_detections(shape: &[i64]) -> Result<usize, MaskError> {
-    match shape {
-        [1, n, 4] => Ok(*n as usize),
-        [n, 4] => Ok(*n as usize),
-        other => Err(MaskError::Inference(format!(
-            "boxes shape {other:?} (expected (1, N, 4))"
-        ))),
-    }
-}
-
-/// `proto_shape` is `(1, K, H, W)`. Returns (K, H, W).
-#[cfg(feature = "ort")]
-fn prototype_dims(shape: &[i64]) -> Result<(usize, usize, usize), MaskError> {
-    match shape {
-        [1, k, h, w] | [k, h, w] => Ok((*k as usize, *h as usize, *w as usize)),
-        other => Err(MaskError::Inference(format!(
-            "prototype shape {other:?} (expected (1, K, H, W))"
-        ))),
-    }
-}
-
-/// Assemble a single detection's mask from its K coefficients and
-/// the K shared prototypes.
+/// Bilinear-resample a per-detection logit mask from its native
+/// `(mask_h × mask_w)` resolution to the source frame's resolution,
+/// applying sigmoid per pixel + threshold to u8 alpha.
 ///
-/// Algorithm: for each output pixel (y, x) at proto resolution,
-/// compute `sigmoid(sum_k(coeff_k * proto_kij))`. Crop the
-/// resulting `proto_h × proto_w` map to the detection's bbox
-/// (in normalised image coords), then resample to the source
-/// frame's resolution. Threshold at sigmoid > 0.5 → u8 alpha.
-///
-/// Implementation runs the linear combination in CPU f32 — the
-/// proto map is small (typically 108×108 for RF-DETR-Seg) so
-/// 32 muls × 108² = ~370k FLOPs per detection. Well under 1 ms
-/// per detection on any modern CPU.
+/// RF-DETR-Seg's masks are already image-aligned — they cover the
+/// whole frame and naturally fade to zero outside the detection's
+/// spatial extent. We don't bbox-crop here because the model
+/// already does that implicitly via training.
 #[cfg(feature = "ort")]
-fn assemble_detection_mask(
-    coeffs: &[f32],
-    prototypes: &[f32],
-    proto_h: usize,
-    proto_w: usize,
-    bbox: &BBox,
+fn resample_detection_mask(
+    logits: &[f32],
+    mask_h: usize,
+    mask_w: usize,
     src_w: usize,
     src_h: usize,
 ) -> MaskBuffer {
-    let proto_pixels = proto_h * proto_w;
-    let mut proto_mask = vec![0.0_f32; proto_pixels];
-
-    // Linear combination: proto_mask[i] = sum_k(coeffs[k] * prototypes[k, i]).
-    for k in 0..RF_DETR_PROTOTYPE_COUNT {
-        let coeff = coeffs[k];
-        if coeff == 0.0 {
-            continue;
-        }
-        let proto_off = k * proto_pixels;
-        for i in 0..proto_pixels {
-            proto_mask[i] += coeff * prototypes[proto_off + i];
-        }
-    }
-
-    // Sigmoid + bbox crop. The proto map covers the entire image;
-    // a detection's mask is its slice of that map within the bbox
-    // (everything outside the bbox is forced to 0 to avoid
-    // mask-leak across detections).
-    let bx0 = (bbox.x * proto_w as f32) as usize;
-    let by0 = (bbox.y * proto_h as f32) as usize;
-    let bx1 = (((bbox.x + bbox.w) * proto_w as f32) as usize).min(proto_w);
-    let by1 = (((bbox.y + bbox.h) * proto_h as f32) as usize).min(proto_h);
-
-    let mut cropped = vec![0.0_f32; proto_pixels];
-    for y in by0..by1 {
-        for x in bx0..bx1 {
-            let idx = y * proto_w + x;
-            cropped[idx] = sigmoid(proto_mask[idx]);
-        }
-    }
-
-    // Bilinear-resample to source resolution. Hand-written so we
-    // don't pull in a full image crate just for resize.
     let mut alpha = vec![0u8; src_w * src_h];
-    let scale_x = (proto_w as f32) / (src_w as f32);
-    let scale_y = (proto_h as f32) / (src_h as f32);
+    let scale_x = (mask_w as f32) / (src_w as f32);
+    let scale_y = (mask_h as f32) / (src_h as f32);
 
     for dy in 0..src_h {
         let sy = ((dy as f32) + 0.5) * scale_y - 0.5;
-        let sy0 = sy.floor().max(0.0).min((proto_h - 1) as f32) as usize;
-        let sy1 = (sy0 + 1).min(proto_h - 1);
+        let sy0 = sy.floor().max(0.0).min((mask_h - 1) as f32) as usize;
+        let sy1 = (sy0 + 1).min(mask_h - 1);
         let fy = (sy - sy0 as f32).clamp(0.0, 1.0);
 
         for dx in 0..src_w {
             let sx = ((dx as f32) + 0.5) * scale_x - 0.5;
-            let sx0 = sx.floor().max(0.0).min((proto_w - 1) as f32) as usize;
-            let sx1 = (sx0 + 1).min(proto_w - 1);
+            let sx0 = sx.floor().max(0.0).min((mask_w - 1) as f32) as usize;
+            let sx1 = (sx0 + 1).min(mask_w - 1);
             let fx = (sx - sx0 as f32).clamp(0.0, 1.0);
 
-            let p00 = cropped[sy0 * proto_w + sx0];
-            let p01 = cropped[sy0 * proto_w + sx1];
-            let p10 = cropped[sy1 * proto_w + sx0];
-            let p11 = cropped[sy1 * proto_w + sx1];
+            let p00 = logits[sy0 * mask_w + sx0];
+            let p01 = logits[sy0 * mask_w + sx1];
+            let p10 = logits[sy1 * mask_w + sx0];
+            let p11 = logits[sy1 * mask_w + sx1];
             let top = p00 * (1.0 - fx) + p01 * fx;
             let bot = p10 * (1.0 - fx) + p11 * fx;
-            let v = (top * (1.0 - fy) + bot * fy).clamp(0.0, 1.0);
-            alpha[dy * src_w + dx] = (v * 255.0).round() as u8;
+            let logit = top * (1.0 - fy) + bot * fy;
+            let prob = sigmoid(logit);
+            alpha[dy * src_w + dx] = (prob.clamp(0.0, 1.0) * 255.0).round() as u8;
         }
     }
 
@@ -593,6 +518,39 @@ fn assemble_detection_mask(
         width: src_w as u32,
         height: src_h as u32,
         alpha,
+    }
+}
+
+/// Pick the index of the largest element in `slice`. Used to find
+/// the predicted class for a detection.
+#[cfg(feature = "ort")]
+fn argmax(slice: &[f32]) -> (usize, f32) {
+    slice
+        .iter()
+        .enumerate()
+        .fold((0usize, f32::NEG_INFINITY), |(best_i, best_v), (i, &v)| {
+            if v > best_v {
+                (i, v)
+            } else {
+                (best_i, best_v)
+            }
+        })
+}
+
+/// Numerically stable softmax of a single class probability.
+/// Subtract the max-logit before exponentiating so large logits
+/// don't overflow.
+#[cfg(feature = "ort")]
+fn softmax_at(slice: &[f32], idx: usize) -> f32 {
+    let max_logit = slice
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max);
+    let denom: f32 = slice.iter().map(|&v| (v - max_logit).exp()).sum();
+    if denom > 0.0 {
+        (slice[idx] - max_logit).exp() / denom
+    } else {
+        0.0
     }
 }
 
