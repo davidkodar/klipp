@@ -239,6 +239,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                             &mut state.model_download,
                             &state.ai_tools_state.model_telemetry,
                             &mut state.show_ai_model_uninstall_confirm,
+                            &mut state.toast,
                         );
                         ui.separator();
                     }
@@ -365,6 +366,42 @@ fn show_uninstall_confirm(
     }
 }
 
+/// Re-hash the model's cache file on disk and compare against the
+/// manifest's expected SHA-256. Toast surfaces the result to the
+/// user.
+///
+/// Synchronous: runs on the UI thread. SHA-256 throughput is
+/// hundreds of MB/s on modern x86_64 (sha2 crate uses CPU sha
+/// extensions when available), so even the biggest cached model
+/// today (BiRefNet at ~224 MB) finishes in under a second. If the
+/// cache grows past the gigabyte range, hoist this onto a worker
+/// thread with a Verifying… spinner.
+fn verify_now(entry: &ModelEntry, toast: &mut crate::widgets::toast::ToastState) {
+    let cache = match ModelCache::open() {
+        Ok(c) => c,
+        Err(e) => {
+            toast.show(format!("Verify failed: cache open ({e})"));
+            return;
+        }
+    };
+    let path = cache.path_for(entry);
+    let actual = match klipp_ml::cache::sha256_of_file(&path) {
+        Ok(h) => h,
+        Err(e) => {
+            toast.show(format!("Verify failed: hash ({e})"));
+            return;
+        }
+    };
+    if actual.eq_ignore_ascii_case(&entry.sha256) {
+        toast.show(format!("Verified ✓ {}", entry.display_name));
+    } else {
+        toast.show(format!(
+            "SHA mismatch on {}: file is corrupted or out of date",
+            entry.display_name,
+        ));
+    }
+}
+
 /// Delete the cached weights file + drop the registry's in-memory
 /// generator. Toast surfaces success / failure to the user.
 fn execute_uninstall(
@@ -417,6 +454,7 @@ fn render_row(
     download: &mut ModelDownloadState,
     telemetry: &HashMap<String, ModelTelemetry>,
     pending_uninstall: &mut Option<ModelEntry>,
+    toast: &mut crate::widgets::toast::ToastState,
 ) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
@@ -498,11 +536,10 @@ fn render_row(
                     }
                 }
                 ModelInstallStatus::Present { .. } => {
-                    // Right-to-left layout — Uninstall renders LEFT
-                    // of Reinstall in source order, RIGHT of it on
-                    // screen. We want Reinstall on the right edge
-                    // (primary "do something" action) and Uninstall
-                    // tucked left of it.
+                    // Right-to-left layout — buttons render LEFT to
+                    // RIGHT in source order on screen, in reverse.
+                    // We want Reinstall on the right edge (primary
+                    // action), Uninstall middle, Verify left.
                     if ui
                         .button("Reinstall")
                         .on_hover_text("Re-download and verify the file")
@@ -522,6 +559,16 @@ fn render_row(
                         .clicked()
                     {
                         *pending_uninstall = Some(entry.clone());
+                    }
+                    if ui
+                        .button("Verify")
+                        .on_hover_text(
+                            "Re-hash the file on disk and confirm \
+                             it matches the manifest's SHA-256.",
+                        )
+                        .clicked()
+                    {
+                        verify_now(entry, toast);
                     }
                 }
             }
