@@ -384,7 +384,12 @@ pub fn download_url_uncertified(
 /// `None` on any failure (network, non-2xx, missing header). Callers
 /// treat None as "couldn't pre-flight, proceed cautiously" rather
 /// than as a fatal error.
-fn head_content_length(url: &str) -> Option<u64> {
+///
+/// Public so the custom-URL paste flow can sniff the size before
+/// streaming the body — fast-fails an oversized download without
+/// committing to even one byte of the actual file, and lets the UI
+/// show a determinate progress bar from the first chunk.
+pub fn head_content_length(url: &str) -> Option<u64> {
     match ureq::head(url).call() {
         Ok(resp) => resp.header("Content-Length").and_then(|s| s.parse().ok()),
         Err(_) => None,

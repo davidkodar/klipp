@@ -34,8 +34,8 @@ pub mod stub;
 
 pub use cache::{CacheError, CachedStatus, ModelCache, sha256_of_file};
 pub use download::{
-    download_to_cache, download_url_uncertified, write_and_compute, write_and_verify,
-    DownloadError, NoOpProgress, ProgressSink,
+    download_to_cache, download_url_uncertified, head_content_length, write_and_compute,
+    write_and_verify, DownloadError, NoOpProgress, ProgressSink,
 };
 pub use manifest::{
     DEFAULT_MANIFEST_VERSION, ManifestError, ModelEntry, ModelId, ModelKind, ModelManifest,

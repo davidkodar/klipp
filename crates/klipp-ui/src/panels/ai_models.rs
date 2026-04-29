@@ -1089,24 +1089,18 @@ fn execute_custom_uninstall(
     };
     let path = c.path_for_id(&entry.id);
 
-    // Drop the cached generator so a future re-add (under the same
-    // id) doesn't reuse a stale Box pointing at the deleted file.
+    // Drop the entry entirely so the panel dropdown stops listing
+    // it immediately. unregister cleans up both the factory and
+    // the cached Box (Entry's Mutex<Option<Box>> goes out of scope
+    // on entries.remove). For built-in manifest entries this
+    // would be wrong — we want them to stay registered after
+    // single-row Uninstall so the dialog can offer Download again
+    // — but custom entries are user-owned and should fully exit
+    // the app's view.
     let registry = state.ai_tools_registry.shared();
-    if let Ok(g) = registry.read() {
-        let _ = g.clear_instance(&entry.id);
+    if let Ok(mut g) = registry.write() {
+        g.unregister(&entry.id);
     }
-    // Drop the registration itself so the entry stops appearing in
-    // the panel dropdown immediately. Done under a write lock — no
-    // public unregister method on ModelRegistry today, so we pull
-    // it out by writing through the shared Arc directly... actually
-    // ModelRegistry has no remove API. Skip for v1; the in-memory
-    // registration goes away on next launch when load_persistent
-    // skips this id. The factory closure still exists but a future
-    // dispatch would fail at the file-load step (file is gone), so
-    // the user sees "the model failed: ..." rather than silently
-    // running a deleted model.
-    // TODO: add ModelRegistry::unregister so the panel dropdown
-    // reflects the uninstall immediately rather than at next launch.
 
     let removed_from_disk = match std::fs::remove_file(&path) {
         Ok(()) => true,
@@ -1507,6 +1501,45 @@ fn spawn_custom_download(
     std::thread::Builder::new()
         .name("klipp-ai-custom-download".into())
         .spawn(move || {
+            // HEAD pre-flight — best-effort. Single round-trip
+            // (~100ms for a healthy server) gives us two wins:
+            //   1. Progress bar renders determinate from the first
+            //      body chunk instead of indeterminate.
+            //   2. Fast-fail on over-cap files before any body
+            //      bytes flow — saves the user's time + bandwidth
+            //      when a URL is wrong.
+            // HEAD failures don't abort — some servers reject HEAD
+            // outright. Fall through to the GET; the streaming
+            // size guard inside write_and_compute still bails on
+            // cap.
+            let head_total: u64 = if cancel_for_worker.load(Ordering::Relaxed) {
+                0
+            } else {
+                match klipp_ml::head_content_length(&url) {
+                    Some(content_length) => {
+                        if content_length > CUSTOM_DOWNLOAD_MAX_BYTES {
+                            let payload = CustomDownloadResult::Err(format!(
+                                "Server reports {} byte(s); Klipp's per-download \
+                                 cap is {} byte(s)",
+                                content_length, CUSTOM_DOWNLOAD_MAX_BYTES,
+                            ));
+                            let _ = tx.send(CustomDownloadEvent::Completed(payload));
+                            ctx_for_worker.request_repaint();
+                            return;
+                        }
+                        // Hint the total to the UI before any body
+                        // chunks flow. `downloaded: 0` stays put;
+                        // streaming updates it from there.
+                        let _ = tx.send(CustomDownloadEvent::Progress {
+                            downloaded: 0,
+                            total: content_length,
+                        });
+                        content_length
+                    }
+                    None => 0,
+                }
+            };
+
             // Adapter that translates the klipp_ml ProgressSink into
             // crossbeam events the UI side can drain.
             struct ChannelProgress {
@@ -1517,7 +1550,11 @@ fn spawn_custom_download(
             }
             impl klipp_ml::ProgressSink for ChannelProgress {
                 fn started(&mut self, total_bytes: u64) {
-                    self.total = total_bytes;
+                    // write_and_compute calls started(0) — preserve
+                    // any HEAD-derived total instead of zeroing it.
+                    if total_bytes > 0 {
+                        self.total = total_bytes;
+                    }
                 }
                 fn advance(&mut self, bytes_delta: u64) {
                     self.downloaded = self.downloaded.saturating_add(bytes_delta);
@@ -1533,7 +1570,7 @@ fn spawn_custom_download(
             let mut prog = ChannelProgress {
                 tx: tx.clone(),
                 ctx: ctx_for_worker.clone(),
-                total: 0,
+                total: head_total,
                 downloaded: 0,
             };
 

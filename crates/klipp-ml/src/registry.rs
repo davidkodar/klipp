@@ -119,6 +119,24 @@ impl ModelRegistry {
             .collect()
     }
 
+    /// Drop an entry entirely — `info`, factory closure, and any
+    /// materialised generator instance all go away. Used by the
+    /// custom-model uninstall flow so the panel dropdown reflects
+    /// the removal immediately rather than carrying a stale
+    /// registration that would only fail on next dispatch (clean
+    /// `BackendInit` error, but still surfaces the model in the
+    /// picker which is confusing).
+    ///
+    /// Built-in entries from the manifest stay registered across
+    /// per-row Uninstall — only the file is removed in that path,
+    /// keeping the entry visible so the dialog can offer Download
+    /// again. `clear_instance` is the right primitive there.
+    ///
+    /// Returns `true` when the entry existed and was removed.
+    pub fn unregister(&mut self, id: &str) -> bool {
+        self.entries.remove(id).is_some()
+    }
+
     /// Drop the cached generator for `id`. The next
     /// [`get_or_create`](Self::get_or_create) call will rebuild from
     /// the factory closure. Used by uninstall flows so a freshly
@@ -370,6 +388,25 @@ mod tests {
     fn clear_instance_returns_false_for_unknown_id() {
         let r = ModelRegistry::new();
         assert!(!r.clear_instance("never-registered"));
+    }
+
+    #[test]
+    fn unregister_drops_entry_entirely() {
+        // Custom-model uninstall: after unregister, the id is gone
+        // from info() and from get_or_create(). Distinct from
+        // clear_instance, which leaves the entry registered and
+        // just drops the materialised Box.
+        let mut r = build_registry_with_one_model();
+        assert!(r.info("counter").is_some());
+        assert!(r.unregister("counter"));
+        assert!(r.info("counter").is_none());
+        assert!(r.get_or_create("counter").is_none());
+    }
+
+    #[test]
+    fn unregister_returns_false_for_unknown_id() {
+        let mut r = ModelRegistry::new();
+        assert!(!r.unregister("never-registered"));
     }
 
     #[test]
