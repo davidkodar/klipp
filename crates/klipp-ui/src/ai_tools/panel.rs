@@ -303,23 +303,72 @@ fn disabled_run_reason(state: &AiToolsState) -> &'static str {
 }
 
 fn preview_section(ui: &mut egui::Ui, state: &AiToolsState) {
-    ui.label("Mask preview:");
     match &state.inference {
         InferenceState::Done { response, .. } => {
-            if let Some(c) = response.candidates.first() {
-                ui.label(format!(
-                    "Confidence: {:.2}    Inference: {} ms    Mask: {}×{}",
-                    c.confidence, response.inference_ms, c.mask.width, c.mask.height,
-                ));
-                if let Some(label) = &c.label {
-                    ui.label(format!("Label: {}", label));
-                }
-                ui.label(egui::RichText::new("(viewer overlay shows the mask)").weak());
-            } else {
+            if response.candidates.is_empty() {
+                ui.label("Mask preview:");
                 ui.label(egui::RichText::new("(empty response)").weak());
+                return;
             }
+
+            // Header: total count + first-mask resolution + total
+            // inference time. Single-candidate output (BiRefNet,
+            // MobileSAM) reads naturally because the count is 1.
+            let first = &response.candidates[0];
+            ui.label(format!(
+                "{} detection{} • {} ms • {}×{}",
+                response.candidates.len(),
+                if response.candidates.len() == 1 { "" } else { "s" },
+                response.inference_ms,
+                first.mask.width,
+                first.mask.height,
+            ));
+
+            // Per-candidate row: a colored chip matching the bbox /
+            // mask tint in the viewer, plus label + confidence.
+            // Capped at 16 rows so a busy frame doesn't blow the
+            // panel's height — the viewer overlay still draws all
+            // of them.
+            const MAX_ROWS: usize = 16;
+            egui::ScrollArea::vertical()
+                .max_height(220.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    for (idx, c) in response.candidates.iter().take(MAX_ROWS).enumerate() {
+                        ui.horizontal(|ui| {
+                            // Color chip — keep it small + square so the
+                            // row stays readable.
+                            let chip_size = egui::vec2(12.0, 12.0);
+                            let (chip_rect, _) = ui.allocate_exact_size(
+                                chip_size,
+                                egui::Sense::hover(),
+                            );
+                            ui.painter().rect_filled(
+                                chip_rect,
+                                2.0,
+                                crate::ai_tools::detection_color(idx),
+                            );
+                            let label = c.label.as_deref().unwrap_or("?");
+                            ui.label(format!(
+                                "{} — {:.0}%",
+                                label,
+                                c.confidence * 100.0,
+                            ));
+                        });
+                    }
+                    if response.candidates.len() > MAX_ROWS {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "(+{} more — viewer shows all)",
+                                response.candidates.len() - MAX_ROWS,
+                            ))
+                            .weak(),
+                        );
+                    }
+                });
         }
         _ => {
+            ui.label("Mask preview:");
             ui.label(egui::RichText::new("(none yet)").weak());
         }
     }

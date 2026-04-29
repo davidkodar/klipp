@@ -15355,14 +15355,20 @@ impl KlippApp {
     /// deferred-drop ring so wgpu doesn't see a destroyed texture
     /// mid-frame.
     fn refresh_ai_tools_overlay_texture(&mut self, ctx: &egui::Context) {
-        let new_tex = match self.state.ai_tools_state.inference.current_mask() {
-            Some(mask) => crate::ai_tools::build_mask_texture(
+        // Use the multi-detection compositor so RF-DETR-Seg's many
+        // candidates render in distinct palette colors. Falls back
+        // to the single-color path automatically when there's only
+        // one candidate (BiRefNet, MobileSAM single-click).
+        let candidates = self.state.ai_tools_state.inference.candidates();
+        let new_tex = if candidates.is_empty() {
+            None
+        } else {
+            crate::ai_tools::build_multi_detection_texture(
                 ctx,
-                mask,
+                candidates,
                 self.state.ai_tools_state.mask_overlay_color,
                 "ai_tools_mask_overlay",
-            ),
-            None => None,
+            )
         };
         let old = std::mem::replace(
             &mut self.state.ai_tools_state.mask_overlay_texture,

@@ -59,8 +59,9 @@ pub use inference::{
     InferenceState, OwnedMaskRequest, RegistryHandle,
 };
 pub use overlay::{
-    build_mask_texture, colorize_mask, paint_mask_texture, render_mask_overlay,
-    render_mask_overlay_with_label, DEFAULT_MASK_OVERLAY_COLOR,
+    build_mask_texture, build_multi_detection_texture, colorize_mask, detection_color,
+    paint_mask_texture, render_mask_overlay, render_mask_overlay_with_label,
+    DEFAULT_MASK_OVERLAY_COLOR, DETECTION_PALETTE,
 };
 pub use panel::AiToolsPanel;
 pub use prompt_input::{ClickButton, DragState, PromptCapture, PromptMode};

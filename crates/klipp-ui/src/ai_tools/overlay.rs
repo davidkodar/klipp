@@ -32,7 +32,30 @@
 //! the resample on draw, which is exactly what we want — mask + frame
 //! line up because they share the unit-square UV layout.
 
-use klipp_ml::MaskBuffer;
+use klipp_ml::{MaskBuffer, MaskCandidate};
+
+/// Distinct hues for multi-detection rendering. Cycled by
+/// candidate index so RF-DETR-style multi-object outputs paint with
+/// different colors per detection rather than blurring into one
+/// orange blob. Picked for high contrast between adjacent palette
+/// entries — helps the eye separate overlapping detections.
+pub const DETECTION_PALETTE: &[egui::Color32] = &[
+    egui::Color32::from_rgba_premultiplied(255, 140, 0, 128), // orange (default)
+    egui::Color32::from_rgba_premultiplied(80, 200, 240, 128), // cyan
+    egui::Color32::from_rgba_premultiplied(220, 80, 220, 128), // magenta
+    egui::Color32::from_rgba_premultiplied(80, 220, 100, 128), // green
+    egui::Color32::from_rgba_premultiplied(255, 220, 60, 128), // yellow
+    egui::Color32::from_rgba_premultiplied(220, 80, 80, 128),  // red
+    egui::Color32::from_rgba_premultiplied(120, 100, 240, 128), // indigo
+    egui::Color32::from_rgba_premultiplied(255, 180, 200, 128), // pink
+];
+
+/// Pick the palette color for a detection by index. Wraps modulo
+/// the palette size so indices beyond the palette length still
+/// produce a sensible color.
+pub fn detection_color(index: usize) -> egui::Color32 {
+    DETECTION_PALETTE[index % DETECTION_PALETTE.len()]
+}
 
 /// Build a `TextureHandle` for the supplied mask. Caller owns the
 /// returned handle and is responsible for dropping the previous one
@@ -97,6 +120,92 @@ pub fn render_mask_overlay_with_label(
         return;
     };
     paint_mask_texture(painter, rect, &texture);
+}
+
+/// Build a `TextureHandle` for the multi-detection overlay
+/// (RF-DETR-Seg's many candidates). Each pixel takes the color of
+/// the candidate with the highest alpha at that location, modulated
+/// by that alpha. Per-candidate colors come from
+/// [`DETECTION_PALETTE`].
+///
+/// Falls back to a single-color overlay when only one candidate
+/// is present (matches the previous behaviour for BiRefNet /
+/// MobileSAM outputs). Returns `None` for an empty `candidates`
+/// slice or shape-mismatched masks.
+pub fn build_multi_detection_texture(
+    ctx: &egui::Context,
+    candidates: &[MaskCandidate],
+    fallback_color: egui::Color32,
+    texture_label: &str,
+) -> Option<egui::TextureHandle> {
+    let first = candidates.first()?;
+    if first.mask.width == 0 || first.mask.height == 0 {
+        return None;
+    }
+    let w = first.mask.width as usize;
+    let h = first.mask.height as usize;
+    let pixel_count = w * h;
+    if first.mask.alpha.len() != pixel_count {
+        return None;
+    }
+
+    let image = if candidates.len() == 1 {
+        // Single-detection path — same look as the legacy single-
+        // candidate overlay, just routed through this entry point.
+        colorize_mask(&first.mask, fallback_color)
+    } else {
+        composite_multi_detection(candidates, w, h)
+    };
+    Some(ctx.load_texture(texture_label, image, egui::TextureOptions::LINEAR))
+}
+
+/// CPU compositor: for each pixel, find the candidate with the
+/// highest mask alpha at that pixel and tint with that candidate's
+/// palette color. O(N × pixels) where N = number of candidates.
+/// At 1080p × 64 candidates that's ~130 M cmps — fits in a frame
+/// budget on any modern CPU.
+fn composite_multi_detection(
+    candidates: &[MaskCandidate],
+    w: usize,
+    h: usize,
+) -> egui::ColorImage {
+    let pixel_count = w * h;
+    let mut pixels = vec![egui::Color32::TRANSPARENT; pixel_count];
+
+    for (idx, cand) in candidates.iter().enumerate() {
+        if cand.mask.width as usize != w
+            || cand.mask.height as usize != h
+            || cand.mask.alpha.len() != pixel_count
+        {
+            continue;
+        }
+        let color = detection_color(idx);
+        let cr = color.r() as u32;
+        let cg = color.g() as u32;
+        let cb = color.b() as u32;
+        let ca = color.a() as u32;
+
+        for i in 0..pixel_count {
+            let m = cand.mask.alpha[i] as u32;
+            if m == 0 {
+                continue;
+            }
+            let combined_a = (ca * m) / 255;
+            // Keep the highest-alpha winner per pixel — this
+            // separates overlapping detections visually rather than
+            // blending them into mud.
+            if (combined_a as u8) > pixels[i].a() {
+                let r = (cr * combined_a) / 255;
+                let g = (cg * combined_a) / 255;
+                let b = (cb * combined_a) / 255;
+                pixels[i] = egui::Color32::from_rgba_premultiplied(
+                    r as u8, g as u8, b as u8, combined_a as u8,
+                );
+            }
+        }
+    }
+
+    egui::ColorImage { size: [w, h], pixels }
 }
 
 /// Build the `ColorImage` that backs the overlay texture. Public for

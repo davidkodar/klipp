@@ -405,6 +405,18 @@ impl InferenceState {
         }
     }
 
+    /// All mask candidates from the most recent successful run.
+    /// `&[]` for every state other than `Done`. Used by the
+    /// multi-detection overlay compositor + the panel's per-detection
+    /// list — RF-DETR-Seg can return up to 64 candidates each with
+    /// its own bbox + class label.
+    pub fn candidates(&self) -> &[MaskCandidate] {
+        match self {
+            Self::Done { response, .. } => &response.candidates,
+            _ => &[],
+        }
+    }
+
     /// Cancel an in-flight inference. No-op outside `Running`.
     pub fn cancel(&mut self) {
         if let Self::Running { handle, .. } = self {

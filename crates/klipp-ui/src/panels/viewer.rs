@@ -5,6 +5,25 @@ use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, Fps, RationalTime, ViewerMode};
 use klipp_engine::PlaybackState;
 
+/// Drop the alpha so the input color renders as a solid outline /
+/// label-badge fill. AI Tools' detection palette colors are
+/// pre-multiplied at ~50% alpha to look right as mask tints; the
+/// bbox outline + label badge want the same hue at full alpha so
+/// they read crisply against the viewer.
+fn opaque_for_outline(c: egui::Color32) -> egui::Color32 {
+    if c.a() == 0 {
+        return c;
+    }
+    // Reverse the pre-multiply: divide each RGB channel by the
+    // existing alpha (so we recover the un-premultiplied color),
+    // then re-emit at alpha=255.
+    let inv_a = 255.0 / (c.a() as f32);
+    let r = ((c.r() as f32) * inv_a).round().clamp(0.0, 255.0) as u8;
+    let g = ((c.g() as f32) * inv_a).round().clamp(0.0, 255.0) as u8;
+    let b = ((c.b() as f32) * inv_a).round().clamp(0.0, 255.0) as u8;
+    egui::Color32::from_rgb(r, g, b)
+}
+
 /// Per-frame state computed once at the top of `show_program_viewer`.
 /// Passed by reference to extracted helper functions. All fields are `Copy`.
 #[derive(Debug, Clone, Copy)]
@@ -324,6 +343,56 @@ impl ViewerPanel {
 
         if let Some(tex) = &state.ai_tools_state.mask_overlay_texture {
             crate::ai_tools::paint_mask_texture(&painter, image_rect, tex);
+        }
+
+        // Per-candidate bbox + class label badge. RF-DETR-Seg
+        // emits up to 64 candidates each with bbox + label +
+        // confidence; we draw all of them so the user sees
+        // multi-object detections rather than just the
+        // highest-confidence one. BiRefNet / MobileSAM still
+        // produce a single candidate with `bbox = None` so the
+        // bbox-drawing branch falls through cleanly for them.
+        let candidates = state.ai_tools_state.inference.candidates();
+        for (idx, cand) in candidates.iter().enumerate() {
+            let Some(bbox) = cand.bbox else {
+                continue;
+            };
+            let bbox_color = crate::ai_tools::detection_color(idx);
+            let stroke = egui::Stroke::new(2.0, opaque_for_outline(bbox_color));
+            let bx0 = image_rect.min.x + bbox.x * image_rect.width();
+            let by0 = image_rect.min.y + bbox.y * image_rect.height();
+            let bx1 = bx0 + bbox.w * image_rect.width();
+            let by1 = by0 + bbox.h * image_rect.height();
+            let rect = egui::Rect::from_min_max(
+                egui::pos2(bx0, by0),
+                egui::pos2(bx1, by1),
+            );
+            painter.rect_stroke(rect, 2.0, stroke);
+
+            // Label badge — class name + confidence at the top-left
+            // of the bbox. White text on the bbox color so it stays
+            // readable on any background.
+            let label_text = format!(
+                "{} {:.0}%",
+                cand.label.as_deref().unwrap_or("?"),
+                cand.confidence * 100.0,
+            );
+            let font_id = egui::FontId::proportional(11.0);
+            let galley = painter.layout_no_wrap(
+                label_text,
+                font_id,
+                egui::Color32::WHITE,
+            );
+            let badge_rect = egui::Rect::from_min_size(
+                egui::pos2(bx0, by0 - galley.rect.height() - 4.0),
+                egui::vec2(galley.rect.width() + 8.0, galley.rect.height() + 4.0),
+            );
+            painter.rect_filled(badge_rect, 2.0, opaque_for_outline(bbox_color));
+            painter.galley(
+                badge_rect.min + egui::vec2(4.0, 2.0),
+                galley,
+                egui::Color32::WHITE,
+            );
         }
 
         // Click / drag markers — small dots for clicks, rectangle for
