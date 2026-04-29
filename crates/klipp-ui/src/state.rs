@@ -301,7 +301,10 @@ pub enum ColorTab {
 #[allow(unused_variables)]
 fn register_real_models(r: &mut klipp_ml::ModelRegistry) {
     #[cfg(feature = "ai-ort")]
-    register_birefnet(r);
+    {
+        register_birefnet(r);
+        register_rf_detr_seg(r);
+    }
 
     #[cfg(feature = "ai-candle")]
     register_mobile_sam(r);
@@ -386,6 +389,56 @@ fn register_mobile_sam(r: &mut klipp_ml::ModelRegistry) {
         },
         Box::new(move || {
             MobileSamBuilder::new()
+                .weights(weights_path.clone())
+                .build()
+                .map(|g| Box::new(g) as Box<dyn klipp_ml::MaskGenerator>)
+        }),
+    );
+}
+
+#[cfg(feature = "ai-ort")]
+fn register_rf_detr_seg(r: &mut klipp_ml::ModelRegistry) {
+    use klipp_ml_ort::{RfDetrSegBuilder, RF_DETR_SEG_MODEL_ID};
+
+    let manifest = match klipp_ml::manifest::load_effective() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(target: "klipp_ui", "ai-ort: skipping RF-DETR-Seg (manifest load failed: {e})");
+            return;
+        }
+    };
+    let entry = match manifest.get(RF_DETR_SEG_MODEL_ID) {
+        Some(e) => e.clone(),
+        None => {
+            tracing::warn!(
+                target: "klipp_ui",
+                "ai-ort: skipping RF-DETR-Seg (no manifest entry for {})",
+                RF_DETR_SEG_MODEL_ID
+            );
+            return;
+        }
+    };
+    let cache = match klipp_ml::ModelCache::open() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(target: "klipp_ui", "ai-ort: skipping RF-DETR-Seg (cache open failed: {e})");
+            return;
+        }
+    };
+    let weights_path = cache.path_for(&entry);
+
+    r.register(
+        klipp_ml::ModelInfo {
+            id: RF_DETR_SEG_MODEL_ID.into(),
+            display_name: "RF-DETR-Seg".into(),
+            // Auto-detect only — RF-DETR consumes no user prompts.
+            // Each detection becomes a MaskCandidate; the panel
+            // picks the first one today, full multi-detection
+            // visualisation is a follow-up.
+            capabilities: klipp_ml::MaskCapabilities::AUTO_DETECT,
+        },
+        Box::new(move || {
+            RfDetrSegBuilder::new()
                 .weights(weights_path.clone())
                 .build()
                 .map(|g| Box::new(g) as Box<dyn klipp_ml::MaskGenerator>)
