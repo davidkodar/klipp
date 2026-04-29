@@ -13,14 +13,33 @@
 //!
 //! ## Build matrix
 //!
-//! Today the crate ships scaffolding with no `ort` dependency — the
-//! actual inference path lands behind the `ort` feature flag in a
-//! follow-up commit, after the prebuilt-binary distribution story is
-//! worked out (pyke `download-binaries` for dev, `load-dynamic` for
-//! shipped releases). With no flag the crate compiles and registers
-//! its models, but `MaskGenerator::generate` returns
-//! `MaskError::BackendInit` so callers see an actionable error
-//! instead of a silent failure.
+//! Without the `ort` feature: scaffolding only. `MaskGenerator::generate`
+//! returns `MaskError::BackendInit("...rebuild with --features ai-ort")`
+//! so callers see an actionable error instead of a silent failure.
+//!
+//! With `--features ort`: links ort 2.0.0-rc.12 via load-dynamic.
+//! Caller sets `ORT_DYLIB_PATH` to point at a libonnxruntime.so
+//! they've installed locally (release tarball at
+//! github.com/microsoft/onnxruntime/releases). Two flavors:
+//!
+//! * **CPU build** — `onnxruntime-linux-x64-1.X.Y.tgz`. Default
+//!   path; no GPU acceleration but no env deps either.
+//! * **GPU build** — `onnxruntime-linux-x64-gpu-1.X.Y.tgz`. ~150 MB
+//!   download. Includes the CUDA EP. Runtime needs CUDA + cuDNN
+//!   libs on the user's `LD_LIBRARY_PATH` (CUDA 12.8+/cuDNN 9.19+
+//!   verified with 1.24.4).
+//!
+//! With `--features cuda` (= `--features ai-ort-cuda` from
+//! klipp-ui): registers `CUDAExecutionProvider` against the session
+//! builder. Without a GPU build of libonnxruntime.so to back it,
+//! the EP registration logs a warning and ort falls through to the
+//! CPU EP — non-fatal, just no acceleration. Build itself doesn't
+//! need nvcc (load-dynamic).
+//!
+//! AMD (ROCm via MIGraphX EP) and Intel (OpenVINO EP) need
+//! Klipp-shipped libonnxruntime.so built from source against those
+//! providers — pyke's CDN doesn't ship them. Tracked as
+//! F-97-AMD-ROCM and F-97-INTEL-OPENVINO.
 //!
 //! ## Public surface
 //!

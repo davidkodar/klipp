@@ -704,8 +704,9 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                 }
                 ui.label(
                     egui::RichText::new(format!(
-                        "Cache: {}",
+                        "Cache: {}  •  {}",
                         format_bytes(total_cache_bytes),
+                        gpu_status_label(),
                     ))
                     .small()
                     .color(theme.text_secondary),
@@ -2145,6 +2146,35 @@ fn kind_label(kind: klipp_ml::manifest::ModelKind) -> &'static str {
 /// Open `path` in the user's default file browser. Best-effort —
 /// failures fall through silently because there's nothing useful
 /// the dialog can do about it.
+/// Compile-time-aware GPU acceleration status. Reflected in the AI
+/// Models dialog footer so the user can tell at a glance which
+/// vendors the running build can actually use. Multi-vendor support
+/// is the project memory rule (see project_linux_only_gpu_diversity);
+/// AMD + Intel are tracked separately.
+fn gpu_status_label() -> String {
+    let mut active: Vec<&'static str> = Vec::new();
+    if cfg!(feature = "ai-ort-cuda") {
+        active.push("ort+CUDA");
+    }
+    if cfg!(feature = "ai-candle-cuda") {
+        active.push("candle+CUDA");
+    }
+    if active.is_empty() {
+        "GPU: CPU-only build".into()
+    } else {
+        format!(
+            "GPU: NVIDIA via {}{}",
+            active.join(" + "),
+            // Reminder for users that the runtime ALSO needs a GPU
+            // build of libonnxruntime.so / libcudart for ort to
+            // actually offload work — the feature flag enables the
+            // EP registration but the dlopened library has the
+            // final say.
+            "  (runtime needs GPU libs)"
+        )
+    }
+}
+
 fn open_in_file_browser(path: &std::path::Path) -> std::io::Result<()> {
     std::process::Command::new("xdg-open")
         .arg(path)
