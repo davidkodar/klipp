@@ -51,6 +51,7 @@
 pub mod inference;
 pub mod overlay;
 pub mod panel;
+pub mod persistence;
 pub mod prompt_input;
 pub mod registry;
 pub mod telemetry;

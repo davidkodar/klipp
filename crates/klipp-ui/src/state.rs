@@ -2629,7 +2629,16 @@ impl Default for AppState {
             command_palette_query: String::new(),
             command_palette_selected: 0,
             model_download: crate::model_download::ModelDownloadState::default(),
-            ai_tools_state: crate::ai_tools::AiToolsState::default(),
+            ai_tools_state: {
+                // Persistent per-task default model picks live in
+                // ~/.config/klipp/ai_tools.toml. Loading here means
+                // a user who picked RF-DETR-Seg (Medium) for Detect
+                // Objects last session sees it pre-selected today.
+                let mut s = crate::ai_tools::AiToolsState::default();
+                s.last_picked_model_per_task =
+                    crate::ai_tools::persistence::load().into_map();
+                s
+            },
             // Both views observe the same `Arc<RwLock<ModelRegistry>>`
             // — runtime install / uninstall through either side
             // reflects on the other. Tested by
