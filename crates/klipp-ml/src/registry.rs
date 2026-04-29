@@ -119,6 +119,23 @@ impl ModelRegistry {
             .collect()
     }
 
+    /// Drop the cached generator for `id`. The next
+    /// [`get_or_create`](Self::get_or_create) call will rebuild from
+    /// the factory closure. Used by uninstall flows so a freshly
+    /// re-downloaded weights file isn't shadowed by an in-memory
+    /// generator that's still pointing at a now-deleted path.
+    /// Returns `true` if an entry exists under that id, `false`
+    /// otherwise. The factory closure stays registered — only the
+    /// materialised instance is cleared.
+    pub fn clear_instance(&self, id: &str) -> bool {
+        let Some(entry) = self.entries.get(id) else {
+            return false;
+        };
+        let mut slot = entry.instance.lock().expect("mutex poisoned");
+        *slot = None;
+        true
+    }
+
     /// Materialise (or reuse) the model for `id`. Calls the factory
     /// on first request, caches the resulting Box, returns a guard
     /// that the caller can call `generate` through.
@@ -304,6 +321,55 @@ mod tests {
             let _g = r.get_or_create("lazy").unwrap().unwrap();
         }
         assert_eq!(factory_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn clear_instance_forces_factory_to_rebuild() {
+        // Uninstall flow: drop the cached generator so the next
+        // dispatch rebuilds (catching e.g. a freshly re-downloaded
+        // weights file or surfacing a clean BackendInit error if
+        // the user has just deleted the cache file).
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let factory_calls = std::sync::Arc::new(AtomicU64::new(0));
+        let counter_clone = factory_calls.clone();
+
+        let mut r = ModelRegistry::new();
+        r.register(
+            ModelInfo {
+                id: "rebuildable".into(),
+                display_name: "Rebuildable".into(),
+                capabilities: MaskCapabilities::empty(),
+            },
+            Box::new(move || {
+                counter_clone.fetch_add(1, Ordering::SeqCst);
+                Ok(Box::new(CountingGenerator {
+                    id: "rebuildable".into(),
+                    calls: AtomicU64::new(0),
+                }))
+            }),
+        );
+
+        // Materialise once.
+        {
+            let _g = r.get_or_create("rebuildable").unwrap().unwrap();
+        }
+        assert_eq!(factory_calls.load(Ordering::SeqCst), 1);
+
+        // Clear the cached instance — entry stays registered.
+        assert!(r.clear_instance("rebuildable"));
+        assert!(r.info("rebuildable").is_some());
+
+        // Next get_or_create rebuilds → factory ran a second time.
+        {
+            let _g = r.get_or_create("rebuildable").unwrap().unwrap();
+        }
+        assert_eq!(factory_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn clear_instance_returns_false_for_unknown_id() {
+        let r = ModelRegistry::new();
+        assert!(!r.clear_instance("never-registered"));
     }
 
     #[test]

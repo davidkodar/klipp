@@ -1325,6 +1325,13 @@ pub struct AppState {
     pub show_remove_media_confirm: Option<MediaId>,
     /// Delete unused media confirmation: (count, total_bytes)
     pub show_delete_unused_confirm: Option<(usize, u64)>,
+    /// AI Model uninstall confirmation. `Some` when the user has
+    /// clicked Uninstall on a row in the AI Models dialog and we're
+    /// awaiting confirmation. The dialog renders a modal asking
+    /// "Delete <X>? Frees N MB"; on confirm we remove the file from
+    /// the cache + drop the cached generator instance through the
+    /// shared registry's `clear_instance`.
+    pub show_ai_model_uninstall_confirm: Option<klipp_ml::manifest::ModelEntry>,
     /// Export offline warning: list of (filename, timecode_string) for offline clips
     pub export_offline_warning: Option<(Vec<(String, String)>, Box<klipp_core::ExportSettings>)>,
 
@@ -2565,6 +2572,7 @@ impl Default for AppState {
             show_media_panel: false,
             show_remove_media_confirm: None,
             show_delete_unused_confirm: None,
+            show_ai_model_uninstall_confirm: None,
             export_offline_warning: None,
             media_usage_cache: std::collections::HashMap::new(),
             media_usage_cache_dirty: true,
