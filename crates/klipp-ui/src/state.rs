@@ -315,7 +315,61 @@ fn build_ml_registry() -> crate::ai_tools::RegistryHandle {
     #[cfg(feature = "ai-ort")]
     register_birefnet(&mut r);
 
+    #[cfg(feature = "ai-candle")]
+    register_mobile_sam(&mut r);
+
     crate::ai_tools::RegistryHandle::new(r)
+}
+
+#[cfg(feature = "ai-candle")]
+fn register_mobile_sam(r: &mut klipp_ml::ModelRegistry) {
+    use klipp_ml_candle::{MobileSamBuilder, MOBILE_SAM_MODEL_ID};
+
+    let manifest = match klipp_ml::manifest::load_effective() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(target: "klipp_ui", "ai-candle: skipping MobileSAM (manifest load failed: {e})");
+            return;
+        }
+    };
+    let entry = match manifest.get(MOBILE_SAM_MODEL_ID) {
+        Some(e) => e.clone(),
+        None => {
+            tracing::warn!(
+                target: "klipp_ui",
+                "ai-candle: skipping MobileSAM (no manifest entry for {})",
+                MOBILE_SAM_MODEL_ID
+            );
+            return;
+        }
+    };
+    let cache = match klipp_ml::ModelCache::open() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(target: "klipp_ui", "ai-candle: skipping MobileSAM (cache open failed: {e})");
+            return;
+        }
+    };
+    let weights_path = cache.path_for(&entry);
+
+    r.register(
+        klipp_ml::ModelInfo {
+            id: MOBILE_SAM_MODEL_ID.into(),
+            display_name: "MobileSAM".into(),
+            // SAM-family capability set: clicks, boxes, scribbles,
+            // and "no prompts = everything mask" auto-detect mode.
+            capabilities: klipp_ml::MaskCapabilities::POINT_PROMPT
+                | klipp_ml::MaskCapabilities::BOX_PROMPT
+                | klipp_ml::MaskCapabilities::SCRIBBLE
+                | klipp_ml::MaskCapabilities::AUTO_DETECT,
+        },
+        Box::new(move || {
+            MobileSamBuilder::new()
+                .weights(weights_path.clone())
+                .build()
+                .map(|g| Box::new(g) as Box<dyn klipp_ml::MaskGenerator>)
+        }),
+    );
 }
 
 #[cfg(feature = "ai-ort")]
@@ -480,6 +534,9 @@ pub struct AppState {
     /// state only — lives on AppState rather than locally so the selection
     /// survives re-opens of the dialog within the same session.
     pub preset_manager_selected: Option<String>,
+
+    /// Whether the AI Models management dialog is visible.
+    pub show_ai_models_dialog: bool,
 
     // Cache manager dialog (#78)
     /// Whether the Cache Manager modal is visible.
@@ -2071,6 +2128,9 @@ impl AppState {
             || self.show_about_dialog
             || self.show_autosave_recovery
             || self.show_render_queue
+            || self.show_ai_models_dialog
+            || self.show_cache_manager
+            || self.show_command_palette
             || self.quick_look_path.is_some()
     }
 }
@@ -2134,6 +2194,7 @@ impl Default for AppState {
             jog_wheel_state: crate::widgets::jog_wheel::JogWheelState::new(),
             show_preset_manager: false,
             preset_manager_selected: None,
+            show_ai_models_dialog: false,
             show_cache_manager: false,
             cache_categories: Vec::new(),
             show_clip_properties: false,

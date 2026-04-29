@@ -349,10 +349,12 @@ fn main() -> Result<()> {
                     last_ui = current_ui;
                     last_ui_change = std::time::Instant::now();
                 } else if last_ui_change.elapsed() >= std::time::Duration::from_millis(2000) {
+                    let ui_stage_id = klipp_engine::UI_STAGE.load(Ordering::Acquire);
                     tracing::error!(
-                        "UI_WATCHDOG STALLED {}ms at tick={} — UI thread (update) is not running",
+                        "UI_WATCHDOG STALLED {}ms at tick={} stage={} — UI thread (update) is not running",
                         last_ui_change.elapsed().as_millis(),
                         last_ui,
+                        klipp_engine::ui_stage::name(ui_stage_id),
                     );
                     ui_alerted = true;
                 }

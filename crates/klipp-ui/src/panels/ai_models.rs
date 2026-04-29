@@ -136,10 +136,42 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
     let mut open = state.show_ai_models_dialog;
     let mut close_requested = false;
 
+    // Cap the window at 80% of the screen height so a long manifest
+    // can't grow the dialog past the bottom edge — the ScrollArea
+    // below absorbs the overflow instead. Width fixed for stable
+    // row layout.
+    let screen_rect = ctx.screen_rect();
+    let max_h = (screen_rect.height() * 0.8).clamp(360.0, 720.0);
+    let scroll_max_h = max_h - 110.0; // header + footer + padding
+
+    // Modal scrim — full-screen Area that absorbs every pointer + key
+    // event so the timeline / viewer / browser underneath can't be
+    // skimmed, scrubbed, or selected while the dialog is up. The
+    // Window below shows on a higher Order so it still receives input.
+    egui::Area::new(egui::Id::new("ai_models_scrim"))
+        .order(egui::Order::Middle)
+        .fixed_pos(screen_rect.min)
+        .show(ctx, |ui| {
+            let resp = ui.allocate_rect(screen_rect, egui::Sense::click_and_drag());
+            // Translucent darken so the user's eye reads "this layer
+            // is inactive". Theme-agnostic black at low alpha works on
+            // both polarities.
+            ui.painter().rect_filled(
+                screen_rect,
+                0.0,
+                egui::Color32::from_black_alpha(140),
+            );
+            // Click on the scrim outside the dialog dismisses it —
+            // matches the file-picker / context-menu convention.
+            if resp.clicked() {
+                close_requested = true;
+            }
+        });
+
     egui::Window::new("AI Models")
         .collapsible(false)
-        .resizable(true)
-        .default_size([620.0, 480.0])
+        .resizable(false)
+        .fixed_size([620.0, max_h])
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .open(&mut open)
         .show(ctx, |ui| {
@@ -157,6 +189,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
+                .max_height(scroll_max_h)
                 .show(ui, |ui| {
                     if manifest.models.is_empty() {
                         ui.add_space(20.0);

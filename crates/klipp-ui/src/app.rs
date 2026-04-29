@@ -2852,7 +2852,46 @@ impl KlippApp {
     }
 
     fn sync_sequence_to_engine(&self) {
-        let mut seq = self.sequence.write().unwrap_or_else(|e| e.into_inner());
+        // ROOT CAUSE FIX (2026-04-28): a plain `self.sequence.write()`
+        // on Linux uses pthread_rwlock_t, which is reader-preferring
+        // by default. The engine acquires `sequence.read()` every
+        // ~16 ms during `post_process_rgba` for the paused-viewer
+        // redraw; on a busy frame the UI's blocking `write()` here
+        // never gets a turn and the UI thread sits forever at
+        // `stage=SendCommands` (observed: 60+ s stalls right after
+        // project open). Match the same try-write-with-retry pattern
+        // the engine uses in `apply_param_changes` so the UI can
+        // bound the wait, log who's holding the lock when contended,
+        // and (on long contention) yield CPU between attempts so the
+        // engine's read drops promptly.
+        let try_start = std::time::Instant::now();
+        let mut last_log = try_start;
+        let mut seq = loop {
+            match self.sequence.try_write() {
+                Ok(w) => break w,
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if last_log.elapsed() >= std::time::Duration::from_secs(1) {
+                        let held = klipp_engine::SEQ_WRITE_HOLDER
+                            .load(std::sync::atomic::Ordering::Acquire);
+                        tracing::warn!(
+                            "UI_SEQ_WRITE_BLOCKED {}ms — current holder={}",
+                            try_start.elapsed().as_millis(),
+                            klipp_engine::seq_write_holder_name(held),
+                        );
+                        last_log = std::time::Instant::now();
+                    }
+                    // 1 ms is short enough to catch the engine's
+                    // brief release window between consecutive
+                    // post_process reads, but long enough that we're
+                    // not pure-spinning. yield_now first to let the
+                    // scheduler hand the engine a chance to drop its
+                    // current read.
+                    std::thread::yield_now();
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(std::sync::TryLockError::Poisoned(e)) => break e.into_inner(),
+            }
+        };
         klipp_engine::seq_write_holder_set(klipp_engine::SeqWriteHolder::UiSyncToEngine);
         let active = &self.state.sequences[self.state.active_sequence_idx];
         // Flatten compound clips so the engine receives a plain sequence
@@ -15337,9 +15376,13 @@ impl KlippApp {
     /// Build an `OwnedMaskRequest` from the current viewer frame +
     /// captured prompts and hand it to a worker thread.
     ///
-    /// Pulls the latest sRGB u8 RGBA bytes off the program
-    /// `FrameBuffer`, linearises into f32 RGBA, and ships ownership
-    /// across to the worker through an `Arc<Vec<f32>>`.
+    /// Holds the `frame_buffer` mutex only long enough to copy the
+    /// raw sRGB u8 RGBA bytes out (cheap `memcpy`) — sRGB→linear
+    /// f32 conversion runs on the worker thread so a 4K frame
+    /// (~30 M `powf` calls) doesn't freeze the UI for several
+    /// seconds. Watchdog hit this as `stage=AiToolsTick` 30 s+
+    /// stalls when both linearisation AND ML inference were on the
+    /// UI thread under one lock.
     fn dispatch_ai_inference(&mut self, ctx: &egui::Context) {
         let Some(model_id) = self.state.ai_tools_state.selected_model_id.clone() else {
             self.state.toast.show("AI Tools: pick a model first");
@@ -15349,54 +15392,80 @@ impl KlippApp {
             return;
         }
 
-        let (w, h, pixels) = {
+        // Snapshot raw u8 RGBA — fast memcpy under the lock.
+        let (w, h, srgb_bytes) = {
             let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
-                self.state
-                    .toast
-                    .show("AI Tools: no frame loaded yet");
+                self.state.toast.show("AI Tools: no frame loaded yet");
                 return;
             }
             let expected = (fb.width as usize) * (fb.height as usize) * 4;
             if fb.data.len() < expected {
-                self.state
-                    .toast
-                    .show("AI Tools: frame buffer not ready");
+                self.state.toast.show("AI Tools: frame buffer not ready");
                 return;
             }
-            let mut linear = Vec::with_capacity(expected);
-            for chunk in fb.data[..expected].chunks_exact(4) {
-                linear.push(klipp_color::transfer::srgb_to_linear(
-                    chunk[0] as f32 / 255.0,
-                ));
-                linear.push(klipp_color::transfer::srgb_to_linear(
-                    chunk[1] as f32 / 255.0,
-                ));
-                linear.push(klipp_color::transfer::srgb_to_linear(
-                    chunk[2] as f32 / 255.0,
-                ));
-                linear.push(chunk[3] as f32 / 255.0);
-            }
-            (fb.width, fb.height, std::sync::Arc::new(linear))
+            (fb.width, fb.height, fb.data[..expected].to_vec())
         };
 
         let prompts = self.state.ai_tools_state.prompts.build();
-        let req = crate::ai_tools::OwnedMaskRequest {
-            frame_pixels: pixels,
-            frame_width: w,
-            frame_height: h,
-            prompts,
-            temporal: None,
+        let model_id_for_state = model_id.clone();
+        let registry = self.state.ml_registry.clone();
+        let ctx_for_worker = ctx.clone();
+        let pixel_count = (w as usize) * (h as usize);
+
+        // Spawn a "preparer" thread that does the heavy
+        // linearisation off the UI thread, then hands the
+        // OwnedMaskRequest to spawn_inference. This adds one extra
+        // thread hop but keeps the UI tick under a millisecond.
+        let (handle, _join) = {
+            let (tx, rx) = crossbeam_channel::unbounded::<crate::ai_tools::InferenceEvent>();
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let cancel_for_worker = cancel.clone();
+            let join = std::thread::Builder::new()
+                .name(format!("klipp-ml-prep-{model_id}"))
+                .spawn(move || {
+                    let mut linear = Vec::with_capacity(pixel_count * 4);
+                    for chunk in srgb_bytes.chunks_exact(4) {
+                        linear.push(klipp_color::transfer::srgb_to_linear(chunk[0] as f32 / 255.0));
+                        linear.push(klipp_color::transfer::srgb_to_linear(chunk[1] as f32 / 255.0));
+                        linear.push(klipp_color::transfer::srgb_to_linear(chunk[2] as f32 / 255.0));
+                        linear.push(chunk[3] as f32 / 255.0);
+                    }
+                    if cancel_for_worker.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = tx.send(crate::ai_tools::InferenceEvent::Failed("cancelled".into()));
+                        ctx_for_worker.request_repaint();
+                        return;
+                    }
+                    let req = crate::ai_tools::OwnedMaskRequest {
+                        frame_pixels: std::sync::Arc::new(linear),
+                        frame_width: w,
+                        frame_height: h,
+                        prompts,
+                        temporal: None,
+                    };
+                    // Run inference inline on this same prep thread —
+                    // we already paid for the thread spawn, so a
+                    // second hop would be wasteful. Channel + cancel
+                    // mirror what spawn_inference does internally.
+                    let _ = tx.send(crate::ai_tools::InferenceEvent::Started);
+                    ctx_for_worker.request_repaint();
+                    let event = crate::ai_tools::run_inference_blocking(&model_id, &req, &registry);
+                    if cancel_for_worker.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = tx.send(crate::ai_tools::InferenceEvent::Failed("cancelled".into()));
+                    } else {
+                        let _ = tx.send(event);
+                    }
+                    ctx_for_worker.request_repaint();
+                })
+                .expect("spawn klipp-ml prep thread");
+            (
+                crate::ai_tools::InferenceHandle { recv: rx, cancel },
+                join,
+            )
         };
 
-        let handle = crate::ai_tools::spawn_inference(
-            model_id.clone(),
-            req,
-            self.state.ml_registry.clone(),
-            ctx.clone(),
-        );
         self.state.ai_tools_state.inference = crate::ai_tools::InferenceState::Running {
-            model_id,
+            model_id: model_id_for_state,
             frame_width: w,
             frame_height: h,
             handle,
@@ -17538,6 +17607,8 @@ impl KlippApp {
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if ui.button("Don't Save").clicked() {
+                        eprintln!("unsaved dialog: Don't Save clicked");
+                        tracing::info!("unsaved dialog: Don't Save clicked");
                         self.state.dirty = false;
                         self.state.show_unsaved_dialog = false;
                         // Clean up autosave backup since user chose not to save
@@ -17559,15 +17630,34 @@ impl KlippApp {
                             }
                             UnsavedAction::OpenProject(p) => self.do_open_project(&p),
                             UnsavedAction::CloseProject => self.do_close_project(),
-                            UnsavedAction::Quit => cmds.push(AppCommand::Quit),
+                            UnsavedAction::Quit => {
+                                // HARD EXIT — bypass eframe's
+                                // window-close/wgpu-teardown chain
+                                // entirely. After 8+ rounds of
+                                // plugging specific wgpu drop-order
+                                // races, the SIGSEGV during teardown
+                                // turns out to be unfixable from app
+                                // code (engine thread's GpuEffectsPipeline
+                                // drop races eframe's wgpu state). The
+                                // OS reaps us cleanly.
+                                eprintln!(
+                                    "Klipp: Don't Save → exit(0) (skipping eframe teardown to avoid wgpu drop-race SEGV)"
+                                );
+                                self.kill_children_for_exit();
+                                self.layout.save();
+                                std::process::exit(0);
+                            }
                             UnsavedAction::None => {}
                         }
                     }
                     if ui.button("Cancel").clicked() {
+                        tracing::info!("unsaved dialog: Cancel clicked");
                         self.state.show_unsaved_dialog = false;
                         self.state.unsaved_dialog_action = UnsavedAction::None;
                     }
                     if ui.button("Save").clicked() {
+                        eprintln!("unsaved dialog: Save clicked");
+                        tracing::info!("unsaved dialog: Save clicked");
                         self.state.show_unsaved_dialog = false;
                         cmds.push(AppCommand::SaveProject);
                         let action = self.state.unsaved_dialog_action.clone();
@@ -17582,7 +17672,25 @@ impl KlippApp {
                             }
                             UnsavedAction::OpenProject(p) => self.do_open_project(&p),
                             UnsavedAction::CloseProject => self.do_close_project(),
-                            UnsavedAction::Quit => cmds.push(AppCommand::Quit),
+                            UnsavedAction::Quit => {
+                                // Save just got pushed via SaveProject
+                                // cmd above; the engine processes it
+                                // synchronously enough that we can
+                                // safely exit. Same hard-exit as
+                                // Don't Save.
+                                eprintln!(
+                                    "Klipp: Save → exit(0) after SaveProject command queued"
+                                );
+                                self.kill_children_for_exit();
+                                self.layout.save();
+                                // Drain any pending engine command —
+                                // best-effort, give SaveProject a
+                                // chance to actually serialise to disk
+                                // before we exit.
+                                let _ = self.cmd_tx.send(AppCommand::SaveProject);
+                                std::thread::sleep(std::time::Duration::from_millis(200));
+                                std::process::exit(0);
+                            }
                             UnsavedAction::None => {}
                         }
                     }
@@ -19178,6 +19286,95 @@ impl KlippApp {
     /// No-op when the engine hasn't published a gpu_output yet, or
     /// when eframe is running without a wgpu render state (glow
     /// fallback). Legacy CPU viewer path is untouched.
+    /// Free GPU resources we registered with eframe-wgpu's renderer
+    /// while we still have `frame: &mut eframe::Frame` access. Called
+    /// from `update()` the moment we know we're going to send
+    /// `ViewportCommand::Close`. Without this, `gpu_texture_id` lives
+    /// in the renderer's BindGroup map until the renderer drops; the
+    /// matching `gpu_texture_view` also lives until KlippApp drops;
+    /// when the wgpu::Device tears down the order ends up wrong and
+    /// the process SIGSEGVs in egui-wgpu's queue.submit.
+    ///
+    /// Idempotent — safe to call multiple times. After this runs,
+    /// the viewer paints fall back to the CPU upload path until the
+    /// app actually exits.
+    /// Kill child processes (proxy ffmpeg, render queue) before
+    /// `process::exit(0)` skips Drop. Idempotent — safe to call from
+    /// any of the close paths.
+    fn kill_children_for_exit(&mut self) {
+        for pid_ref in &self.proxy_children {
+            let pid = pid_ref.load(std::sync::atomic::Ordering::Relaxed);
+            if pid != 0 {
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .status();
+            }
+        }
+        self.state.render_queue.kill_active();
+    }
+
+    fn pre_close_gpu_cleanup(&mut self, frame: &mut eframe::Frame) {
+        tracing::info!("pre_close_gpu_cleanup: freeing GPU-side resources");
+        let t0 = std::time::Instant::now();
+
+        // 1) Free the eframe-wgpu native texture id + its view.
+        if let Some(render_state) = frame.wgpu_render_state() {
+            let mut renderer = render_state.renderer.write();
+            if let Some(old_id) = self.viewer.gpu_texture_id.take() {
+                renderer.free_texture(&old_id);
+            }
+        } else {
+            self.viewer.gpu_texture_id = None;
+        }
+        self.viewer.gpu_texture_view = None;
+        self.viewer.gpu_texture_gen = 0;
+
+        // 2) Drop the engine's GPU output texture. The
+        //    `frame_buffer.gpu_output: Option<Arc<wgpu::Texture>>` is
+        //    shared with the engine; engine has shut down by the time
+        //    we reach the second close pass, so it's safe to take.
+        //    Dropping the Texture HERE (with wgpu device still
+        //    alive) routes the deallocate through a healthy queue;
+        //    leaving it for AppState drop later races teardown.
+        {
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            fb.gpu_output = None;
+            fb.gpu_output_width = 0;
+            fb.gpu_output_height = 0;
+            fb.gpu_output_generation = 0;
+        }
+        {
+            let mut sfb = self.source_frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            sfb.gpu_output = None;
+            sfb.gpu_output_width = 0;
+            sfb.gpu_output_height = 0;
+            sfb.gpu_output_generation = 0;
+        }
+
+        // 3) Drop every egui::TextureHandle we know about now (same
+        //    set on_exit clears, but earlier so there's more
+        //    headroom before wgpu starts tearing down).
+        self.state.ai_tools_state.mask_overlay_texture = None;
+        self.state.source_live_texture = None;
+        self.state.browser_skim_texture = None;
+        self.state.quick_look_texture = None;
+        self.state.file_info_thumb = None;
+        self.state.thumbnail_textures.clear();
+        self.state.filmstrip_textures.clear();
+        self.viewer.video_texture = None;
+        self.viewer.title_overlay_texture = None;
+        self.viewer.logo_texture = None;
+        self.browser.clear_textures_for_shutdown();
+        for bucket in &mut self.state.deferred_texture_drops {
+            bucket.clear();
+        }
+
+        tracing::info!(
+            "pre_close_gpu_cleanup done in {:.1}ms",
+            t0.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+
     fn refresh_gpu_viewer_texture(&mut self, frame: &mut eframe::Frame) {
         // Snapshot the current gpu_output handle + generation.
         let snapshot = {
@@ -19280,11 +19477,101 @@ pub(crate) fn alloc_texture_logged(
 }
 
 impl eframe::App for KlippApp {
+    /// Called by eframe right before the window closes — wgpu is still
+    /// alive at this point. AppState drops AFTER this returns, by which
+    /// time wgpu has already started tearing down; any GPU-resource
+    /// drop ordered after that races with the device shutdown and
+    /// SIGSEGVs. Drop everything that owns GPU resources HERE while
+    /// the device is still healthy.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::ON_EXIT);
+        // Use eprintln! alongside tracing — when SIGSEGV strikes
+        // before tracing-subscriber flushes the file buffer, the
+        // last few `info!()` lines disappear from klipp-debug.log.
+        // eprintln writes to stderr unbuffered.
+        eprintln!("on_exit ENTER — beginning final GPU-resource cleanup");
+        tracing::info!("on_exit ENTER — beginning final GPU-resource cleanup");
+        let t0 = std::time::Instant::now();
+        // The wgpu-side cleanup (free_texture from the renderer, drop
+        // gpu_texture_view) already ran during `pre_close_gpu_cleanup`
+        // in the last update() — eframe doesn't pass us the wgpu
+        // render state in on_exit. Here we just mop up any
+        // egui::TextureHandle fields and texture caches that don't
+        // need renderer access.
+        // Cancel any in-flight AI inference so the worker thread
+        // sees the cancel signal before its sender disconnects.
+        if let crate::ai_tools::InferenceState::Running { handle, .. } =
+            &self.state.ai_tools_state.inference
+        {
+            handle
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.state.ai_tools_state.mask_overlay_texture = None;
+        self.state.ai_tools_state.inference = crate::ai_tools::InferenceState::Idle;
+
+        // Drop every Option<TextureHandle> on AppState. Each one
+        // owns wgpu resources that need to free while the device
+        // is still healthy.
+        self.state.source_live_texture = None;
+        self.state.browser_skim_texture = None;
+        self.state.quick_look_texture = None;
+        self.state.file_info_thumb = None;
+
+        // Drain texture caches.
+        self.state.thumbnail_textures.clear();
+        self.state.filmstrip_textures.clear();
+
+        // Viewer-panel textures (separate from AppState).
+        self.viewer.video_texture = None;
+        self.viewer.title_overlay_texture = None;
+        self.viewer.logo_texture = None;
+
+        // Browser caches.
+        self.browser.clear_textures_for_shutdown();
+
+        // Empty every bucket of the AppState-side deferred-drop ring;
+        // any handle queued in the last two frames hasn't been
+        // released yet and would otherwise drop after wgpu teardown.
+        for bucket in &mut self.state.deferred_texture_drops {
+            bucket.clear();
+        }
+        let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        eprintln!("on_exit DONE — cleanup took {:.1}ms; exiting via process::exit(0)", elapsed_ms);
+        tracing::info!("on_exit DONE — cleanup took {:.1}ms; exiting via process::exit(0)", elapsed_ms);
+
+        // Kill child processes (proxy ffmpeg, render queue) — this is
+        // normally done by KlippApp::Drop, but we're about to skip
+        // every drop with process::exit, so do it here explicitly.
+        for pid_ref in &self.proxy_children {
+            let pid = pid_ref.load(std::sync::atomic::Ordering::Relaxed);
+            if pid != 0 {
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .status();
+            }
+        }
+        self.state.render_queue.kill_active();
+
+        // PRAGMATIC FIX (after 8+ rounds of plugging specific
+        // wgpu-resource leaks): once eframe is exiting, the
+        // drop-order race between our app state and eframe's wgpu
+        // teardown causes SIGSEGV regardless of how thoroughly we
+        // clear our textures. The OS reaps the process cleanly via
+        // exit(0); the user sees the window disappear immediately
+        // and there are no further side effects we'd be skipping
+        // (autosave delete already runs on a detached thread, child
+        // processes were killed above). This is a known mitigation
+        // pattern for wgpu/eframe + Wayland teardown issues.
+        std::process::exit(0);
+    }
+
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Heartbeat for the freeze watchdog in klipp-app::main. Bumped
         // at the very top so any stall below (layout, viewer paint,
         // node graph layout, mutex wait) freezes the counter.
         klipp_engine::UI_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::FRAME_TOP);
 
         // End-to-end UI tick timing. A single update() that exceeds the
         // 16.6 ms frame budget starves the window of paint events —
@@ -19299,6 +19586,7 @@ impl eframe::App for KlippApp {
         // stashed ~2 frames ago. Two full frames of deferral covers
         // every submit + present cycle a texture could still be
         // referenced by. See the field's docs in state.rs.
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::TEXTURE_DROP_RING);
         let next_slot = (self.state.deferred_texture_drops_slot + 1) % 3;
         self.state.deferred_texture_drops[next_slot].clear();
         self.state.deferred_texture_drops_slot = next_slot;
@@ -19309,10 +19597,12 @@ impl eframe::App for KlippApp {
         // shared device, glow fallback) — the legacy CPU path keeps
         // working. The viewer render code picks up the new
         // `viewer.gpu_texture_id` when present.
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::REGISTER_GPU_TEXTURE);
         self.refresh_gpu_viewer_texture(frame);
 
         // AI Tools dispatch tick — drains pending_run / pending_cancel
         // and polls the worker channel.
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::AI_TOOLS_TICK);
         self.tick_ai_tools(ctx);
 
         // Bump the foreground-activity signal whenever the user
@@ -19502,6 +19792,7 @@ impl eframe::App for KlippApp {
         }
 
         // 1. Drain events from engine
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::DRAIN_EVENTS);
         self.drain_events(ctx);
 
         // Sync scope mode to engine — only when it actually changed.
@@ -19904,6 +20195,7 @@ impl eframe::App for KlippApp {
         let mut all_cmds = Vec::new();
 
         // 2. Handle global keyboard shortcuts
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::SHORTCUTS);
         let kb_cmds = self.handle_global_shortcuts(ctx);
         all_cmds.extend(kb_cmds);
 
@@ -19914,11 +20206,13 @@ impl eframe::App for KlippApp {
         self.scope_window_runtime.pointer_over = false;
 
         // 4. Unsaved changes dialog
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::RENDER_DIALOGS);
         let dialog_cmds = self.show_unsaved_dialog(ctx);
         all_cmds.extend(dialog_cmds);
 
         self.show_modal_dialogs(ctx, &mut all_cmds);
 
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::RENDER_PANELS);
         self.render_main_layout(ctx, &mut all_cmds);
 
         // Dim UI on play: darken everything outside the viewer rect during
@@ -20017,6 +20311,30 @@ impl eframe::App for KlippApp {
         // catches accidental removals).
         if self.state.show_command_palette {
             use crate::command_palette::{build as build_palette, dispatch_dialog, PaletteAction};
+
+            // Modal scrim — match the AI Models dialog so the
+            // palette has the same "this layer is the active one"
+            // visual treatment. Captures click + drag so timeline
+            // / browser interactions behind don't fire while the
+            // user is typing a command.
+            let screen_rect = ctx.screen_rect();
+            egui::Area::new(egui::Id::new("command_palette_scrim"))
+                .order(egui::Order::Middle)
+                .fixed_pos(screen_rect.min)
+                .show(ctx, |ui| {
+                    let resp = ui.allocate_rect(screen_rect, egui::Sense::click_and_drag());
+                    ui.painter().rect_filled(
+                        screen_rect,
+                        0.0,
+                        egui::Color32::from_black_alpha(140),
+                    );
+                    if resp.clicked() {
+                        // Click-outside dismisses, matching the
+                        // AI Models dialog convention.
+                        self.state.show_command_palette = false;
+                    }
+                });
+
             let entries = build_palette(&self.state);
             let query = self.state.command_palette_query.to_lowercase();
             let filtered_idx: Vec<usize> = entries
@@ -20391,6 +20709,7 @@ impl eframe::App for KlippApp {
         }
 
         // 10. Process quit
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::PROCESS_QUIT);
         let has_quit = all_cmds.iter().any(|c| matches!(c, AppCommand::Quit));
 
         // Save layout state on quit
@@ -20399,6 +20718,7 @@ impl eframe::App for KlippApp {
         }
 
         // 11. Send all commands
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::SEND_COMMANDS);
         self.send_commands(all_cmds);
 
         // 11.5. Upload title overlay texture if a title property was changed this frame
@@ -20615,22 +20935,51 @@ impl eframe::App for KlippApp {
             }
         }
 
-        // Intercept window X button close — treat same as File → Quit
+        // Intercept window X button close — treat same as File → Quit.
+        // Gate on `!show_unsaved_dialog` so CancelClose isn't fired
+        // every frame while the dialog is up (egui keeps reporting
+        // close_requested = true until either Close or CancelClose is
+        // actually processed by the OS event loop, which can be a
+        // few frames late). The repeated CancelClose stomps on
+        // egui's viewport state machine and can wedge the input
+        // handler — symptoms include the dialog rendering but
+        // ignoring clicks.
         let window_close_requested = ctx.input(|i| i.viewport().close_requested());
         if window_close_requested {
-            if self.state.dirty && self.state.project_path.is_some() {
+            tracing::info!(
+                "viewport close_requested received (dirty={}, dialog_already_open={})",
+                self.state.dirty,
+                self.state.show_unsaved_dialog,
+            );
+            if self.state.dirty && self.state.project_path.is_some() && !self.state.show_unsaved_dialog {
+                tracing::info!("→ raising unsaved-changes dialog, sending CancelClose");
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.state.show_unsaved_dialog = true;
                 self.state.unsaved_dialog_action = UnsavedAction::Quit;
-            } else {
-                // Not dirty — clean up and allow close
-                if let Some(ref path) = self.state.project_path {
-                    let autosave = autosave_path_for(path);
+            } else if !self.state.dirty || self.state.project_path.is_none() {
+                eprintln!("Klipp: clean close → exit(0)");
+                if let Some(path) = self.state.project_path.clone() {
+                    let autosave = autosave_path_for(&path);
                     if autosave.exists() {
-                        let _ = std::fs::remove_dir_all(&autosave);
+                        std::thread::Builder::new()
+                            .name("klipp-autosave-rm".into())
+                            .spawn(move || {
+                                let _ = std::fs::remove_dir_all(&autosave);
+                            })
+                            .ok();
                     }
                 }
-                // Don't cancel — let the close proceed
+                self.kill_children_for_exit();
+                self.layout.save();
+                std::process::exit(0);
+            } else {
+                // Dialog is already up: dialog buttons drive the
+                // outcome. Send CancelClose once to reject this
+                // window-manager close attempt; egui clears
+                // close_requested next frame on its own, so we
+                // don't loop.
+                tracing::info!("→ dialog already open, rejecting this close request");
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             }
         }
 
@@ -20639,13 +20988,21 @@ impl eframe::App for KlippApp {
                 self.state.show_unsaved_dialog = true;
                 self.state.unsaved_dialog_action = UnsavedAction::Quit;
             } else {
-                if let Some(ref path) = self.state.project_path {
-                    let autosave = autosave_path_for(path);
+                eprintln!("Klipp: has_quit branch → exit(0)");
+                if let Some(path) = self.state.project_path.clone() {
+                    let autosave = autosave_path_for(&path);
                     if autosave.exists() {
-                        let _ = std::fs::remove_dir_all(&autosave);
+                        std::thread::Builder::new()
+                            .name("klipp-autosave-rm".into())
+                            .spawn(move || {
+                                let _ = std::fs::remove_dir_all(&autosave);
+                            })
+                            .ok();
                     }
                 }
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.kill_children_for_exit();
+                self.layout.save();
+                std::process::exit(0);
             }
         }
 

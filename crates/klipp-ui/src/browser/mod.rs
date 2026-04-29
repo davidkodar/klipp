@@ -824,6 +824,19 @@ impl Default for BrowserPanel {
 }
 
 impl BrowserPanel {
+    /// Drop every cached texture this panel owns. Call from
+    /// `eframe::App::on_exit` while wgpu is still alive — the
+    /// browser holds large thumbnail / filmstrip / deferred-drop
+    /// caches that would otherwise drop AFTER wgpu teardown and
+    /// race the device shutdown into a SIGSEGV.
+    pub fn clear_textures_for_shutdown(&mut self) {
+        self.file_thumb_textures.clear();
+        self.file_filmstrip_textures.clear();
+        for bucket in &mut self.deferred_texture_drops {
+            bucket.clear();
+        }
+    }
+
     /// Stash a `TextureHandle` so its underlying wgpu::Texture is
     /// held across the current frame's submit+present cycle.
     /// Matching helper for `AppState::defer_drop_texture` — egui-wgpu

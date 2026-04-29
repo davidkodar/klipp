@@ -390,6 +390,68 @@ fn mark_stage(s: EngineStage) {
     ENGINE_STAGE.store(s as u64, Ordering::Relaxed);
 }
 
+/// UI-thread waypoint counter. Same shape as `ENGINE_STAGE` — the
+/// watchdog reads this without locking and prints the matching name
+/// when `UI_WATCHDOG STALLED` trips, narrowing a UI hang from "the
+/// whole update loop" to a specific section. Set via
+/// [`ui_stage::mark`]; resolve to a name via [`ui_stage::name`].
+pub static UI_STAGE: AtomicU64 = AtomicU64::new(0);
+
+pub mod ui_stage {
+    use super::{Ordering, UI_STAGE};
+
+    // Stage IDs. Keep stable; the watchdog formats them by id name.
+    // Add new stages at the end so existing log greps don't shift.
+    pub const IDLE: u64 = 0;
+    pub const FRAME_TOP: u64 = 1;
+    pub const TEXTURE_DROP_RING: u64 = 2;
+    pub const REGISTER_GPU_TEXTURE: u64 = 3;
+    pub const AI_TOOLS_TICK: u64 = 4;
+    pub const DRAIN_EVENTS: u64 = 5;
+    pub const COMPUTE_LAYOUT: u64 = 6;
+    pub const RENDER_PANELS: u64 = 7;
+    pub const RENDER_VIEWER: u64 = 8;
+    pub const RENDER_TIMELINE: u64 = 9;
+    pub const RENDER_BROWSER: u64 = 10;
+    pub const RENDER_INSPECTOR: u64 = 11;
+    pub const RENDER_DIALOGS: u64 = 12;
+    pub const SHORTCUTS: u64 = 13;
+    pub const PROCESS_QUIT: u64 = 14;
+    pub const SEND_COMMANDS: u64 = 15;
+    pub const AUTOSAVE_CLEANUP: u64 = 16;
+    pub const VIEWPORT_CLOSE: u64 = 17;
+    pub const ON_EXIT: u64 = 18;
+
+    pub fn mark(s: u64) {
+        UI_STAGE.store(s, Ordering::Relaxed);
+    }
+
+    pub fn name(v: u64) -> &'static str {
+        match v {
+            0 => "Idle",
+            1 => "FrameTop",
+            2 => "TextureDropRing",
+            3 => "RegisterGpuTexture",
+            4 => "AiToolsTick",
+            5 => "DrainEvents",
+            6 => "ComputeLayout",
+            7 => "RenderPanels",
+            8 => "RenderViewer",
+            9 => "RenderTimeline",
+            10 => "RenderBrowser",
+            11 => "RenderInspector",
+            12 => "RenderDialogs",
+            13 => "Shortcuts",
+            14 => "ProcessQuit",
+            15 => "SendCommands",
+            16 => "AutosaveCleanup",
+            17 => "ViewportClose",
+            18 => "OnExit",
+            _ => "Unknown",
+        }
+    }
+}
+
 /// Read process RSS in MB from `/proc/self/statm` (Linux). Returns 0
 /// on non-Linux or if the proc file can't be read. Cheap enough
 /// (single file read, tens of microseconds) to call every 10 s.

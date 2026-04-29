@@ -1,0 +1,31 @@
+[package]
+name = "klipp-ml-candle"
+version = "0.1.0"
+edition = "2021"
+description = "Candle (pure-Rust) backend for klipp-ml — MobileSAM, SAM v1, future SAM-family models"
+
+[features]
+default = []
+# Pulls in the real candle dependency (candle-core + candle-nn +
+# candle-transformers). Without this flag the crate compiles as
+# scaffolding only and `MobileSam::generate` returns
+# MaskError::BackendInit. Build Klipp with `--features ai-candle`
+# to enable.
+candle = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers"]
+# NVIDIA acceleration — candle picks CUDA when available; this flag
+# forwards to candle-core's cuda feature so the runtime tries CUDA
+# first and falls back to CPU.
+cuda = ["candle", "candle-core?/cuda", "candle-nn?/cuda"]
+
+[dependencies]
+klipp-ml    = { workspace = true }
+klipp-color = { workspace = true }
+bitflags    = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+
+# Real ML deps — only present with the `candle` feature. Pinned to a
+# specific minor so the API doesn't shift under us between releases.
+candle-core = { version = "0.8", optional = true, default-features = false }
+candle-nn = { version = "0.8", optional = true, default-features = false }
+candle-transformers = { version = "0.8", optional = true, default-features = false }

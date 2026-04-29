@@ -92,6 +92,28 @@ prompts = "point | box | scribble | temporal"
 # size_bytes / sha256 will be filled once Klipp's release CI mirrors
 # the ONNX into the klipp-models GitHub Release with verified bytes.
 
+# ── Isolate Object (click-to-mask) ────────────────────────────────
+# MobileSAM — TinyViT image encoder + SAM prompt encoder + mask
+# decoder. Apache-2.0 license. ~40 MB. Pure-Rust through candle.
+
+[[model]]
+id = "mobile_sam_v1"
+display_name = "MobileSAM"
+# TODO release-CI: fill size_bytes + sha256 once mirror runs.
+size_bytes = 0
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "ChaoningZhang / MobileSAM (github.com/ChaoningZhang/MobileSAM)"
+sources = [
+    # TODO release-CI: swap to klipp-models mirror once safetensors is verified.
+    { url = "https://github.com/davidkodar/klipp-models/releases/download/mobile-sam-placeholder/mobile_sam_v1.safetensors" },
+]
+kind = "mask_generator"
+runtime = "candle"
+# SAM family supports point clicks, box prompts, scribble, and
+# auto-detect (everything mask).
+prompts = "point | box | scribble"
+
 [[model]]
 id = "birefnet_lite_v1"
 display_name = "BiRefNet Lite"

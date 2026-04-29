@@ -273,7 +273,7 @@ fn run_inference(
 /// Pure-blocking helper: looks up the model, runs `generate`,
 /// returns the resulting event. No threading, no channels. Tests
 /// drive this directly to avoid spawning real threads.
-fn run_inference_blocking(
+pub fn run_inference_blocking(
     model_id: &str,
     request: &OwnedMaskRequest,
     registry: &RegistryHandle,

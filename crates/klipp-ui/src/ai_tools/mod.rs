@@ -55,8 +55,8 @@ pub mod prompt_input;
 pub mod registry;
 
 pub use inference::{
-    first_candidate, spawn_inference, InferenceEvent, InferenceHandle, InferenceState,
-    OwnedMaskRequest, RegistryHandle,
+    first_candidate, run_inference_blocking, spawn_inference, InferenceEvent, InferenceHandle,
+    InferenceState, OwnedMaskRequest, RegistryHandle,
 };
 pub use overlay::{
     build_mask_texture, colorize_mask, paint_mask_texture, render_mask_overlay,

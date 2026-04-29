@@ -9,6 +9,11 @@ default = []
 # (CPU-only ORT) or `--features ai-ort-cuda` (NVIDIA acceleration).
 ai-ort = ["klipp-ui/ai-ort"]
 ai-ort-cuda = ["klipp-ui/ai-ort-cuda"]
+# Pure-Rust ML backend via candle. Ships MobileSAM for Isolate
+# Object (click-to-mask). Build with `--features ai-candle` or
+# `--features ai-candle-cuda` for NVIDIA acceleration.
+ai-candle = ["klipp-ui/ai-candle"]
+ai-candle-cuda = ["klipp-ui/ai-candle-cuda"]
 
 [dependencies]
 klipp-core = { workspace = true }
