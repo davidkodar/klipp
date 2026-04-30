@@ -237,9 +237,17 @@ fn task_grid(
     registry: &AiToolsRegistry,
     theme: &KlippTheme,
 ) {
+    // Compute tile width from the parent's CURRENT available
+    // space, leave room for the grid's spacing AND a small safety
+    // margin so the row never asks for more than the parent has
+    // (otherwise the SidePanel resizer reads "content needs N+x"
+    // and grows by x each frame). No `.max()` floor — we let
+    // tiles shrink with the panel rather than forcing an
+    // overflow.
     let avail = ui.available_width();
     let gap = 8.0;
-    let tile_w = ((avail - gap) / 2.0).max(120.0);
+    let safety = 4.0;
+    let tile_w = ((avail - gap - safety) / 2.0).max(80.0);
     let tile_h = 92.0;
 
     egui::Grid::new("ai_tools_task_grid")
@@ -756,8 +764,12 @@ fn run_section(
         && !matches!(state.inference, InferenceState::Running { .. });
 
     ui.horizontal(|ui| {
+        // Same anti-feedback safety margin as the task grid: leave
+        // headroom in the button width so the panel resizer
+        // doesn't read "content wants exactly avail+epsilon" and
+        // grow on the next frame.
         let avail = ui.available_width();
-        let button_w = avail - 36.0 - 4.0;
+        let button_w = (avail - 36.0 - 12.0).max(120.0);
         let resp = ui.add_sized(
             [button_w, 36.0],
             egui::Button::new(
@@ -885,16 +897,17 @@ fn output_section(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippThem
 }
 
 fn empty_output_placeholder(ui: &mut egui::Ui, theme: &KlippTheme) {
-    let avail = ui.available_width();
-    let h = 160.0;
+    // The Frame fills its parent's available width naturally —
+    // we deliberately do NOT set_min_width here. Reading
+    // ui.available_width() and re-asserting it as a min creates a
+    // 1-pixel-per-frame growth loop with the SidePanel's resize
+    // logic.
     egui::Frame::none()
         .fill(theme.bg_raised.gamma_multiply(0.6))
         .rounding(6.0)
+        .inner_margin(egui::Margin::symmetric(8.0, 36.0))
         .show(ui, |ui| {
-            ui.set_min_width(avail);
-            ui.set_min_height(h);
             ui.vertical_centered(|ui| {
-                ui.add_space(40.0);
                 ui.add(Icon::Info.image(28.0).tint(theme.text_dim));
                 ui.add_space(8.0);
                 ui.label(
@@ -1058,11 +1071,16 @@ fn advanced_section(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippTh
             );
             ui.add_space(6.0);
 
-            // Output format — dropdown.
+            // Output format — dropdown. Width is FIXED rather
+            // than `ui.available_width()` because the latter
+            // creates a width-growth loop with the SidePanel
+            // resizer (combo asks for available, available grows,
+            // combo asks for more, …). 200px fits the longest
+            // label cleanly.
             ui.label(egui::RichText::new("Output").small());
             egui::ComboBox::from_id_salt("ai_tools_output_format")
                 .selected_text(state.advanced_settings.output_format.label())
-                .width(ui.available_width())
+                .width(200.0)
                 .show_ui(ui, |ui| {
                     for f in OutputFormat::ALL {
                         let is_selected = state.advanced_settings.output_format == *f;
