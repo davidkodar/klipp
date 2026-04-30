@@ -49,7 +49,7 @@ use crate::theme::KlippTheme;
 
 use super::registry::AiToolsRegistry;
 use super::{
-    AiScope, AiTask, AiToolsState, InferenceState, OutputFormat, PromptMode,
+    AiScope, AiTask, AiToolsState, DisplayMode, InferenceState, OutputFormat, PromptMode,
 };
 
 /// Stateless renderer for the AI Tools panel. Holds nothing —
@@ -259,14 +259,18 @@ fn task_grid(
     let gap = 8.0;
     let safety = 4.0;
     let tile_w = ((avail - gap - safety) / 2.0).max(80.0);
-    let tile_h = 92.0;
+    // Compressed mode = inference is running. Tiles shrink and
+    // drop their description line so the panel can dedicate more
+    // vertical real estate to the progress + output sections.
+    let compressed = matches!(state.inference, InferenceState::Running { .. });
+    let tile_h = if compressed { 56.0 } else { 92.0 };
 
     egui::Grid::new("ai_tools_task_grid")
         .num_columns(2)
         .spacing([gap, gap])
         .show(ui, |ui| {
             for (i, task) in AiTask::ALL.iter().enumerate() {
-                task_tile(ui, *task, tile_w, tile_h, state, registry, theme);
+                task_tile(ui, *task, tile_w, tile_h, compressed, state, registry, theme);
                 if i % 2 == 1 {
                     ui.end_row();
                 }
@@ -282,6 +286,7 @@ fn task_tile(
     task: AiTask,
     w: f32,
     h: f32,
+    compressed: bool,
     state: &mut AiToolsState,
     registry: &AiToolsRegistry,
     theme: &KlippTheme,
@@ -366,11 +371,18 @@ fn task_tile(
             .size(13.0)
             .color(title_color),
     );
-    text_ui.label(
-        egui::RichText::new(task.short_description())
-            .small()
-            .color(theme.text_secondary),
-    );
+    // Drop the description line when the panel is in its
+    // compressed (running) mode — the tiles still tell the user
+    // which task is selected, but the prose subtitle is what
+    // makes idle-mode discoverable. Once running the user has
+    // clearly committed to a task already.
+    if !compressed {
+        text_ui.label(
+            egui::RichText::new(task.short_description())
+                .small()
+                .color(theme.text_secondary),
+        );
+    }
 
     // Click → activate the task. Auto-pick the user's last
     // explicit choice for this task if they have one (via
@@ -453,20 +465,31 @@ fn model_card(
         .as_ref()
         .and_then(|id| registry.info(id));
 
+    let running = matches!(state.inference, InferenceState::Running { .. });
+
     egui::Frame::none()
         .fill(theme.bg_raised.gamma_multiply(0.6))
         .rounding(6.0)
         .inner_margin(egui::Margin::symmetric(10.0, 8.0))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                // Status dot — green when a model is selected and
-                // its registry entry resolves; dim otherwise.
-                let dot_color = if info.is_some() {
-                    theme.marker_success
+                // Status indicator — spinning glyph during
+                // inference, static dot otherwise. Hue follows
+                // theme so cream/light themes stay legible.
+                if running {
+                    ui.add(
+                        Icon::Spinner
+                            .image(10.0)
+                            .tint(theme.marker_warning),
+                    );
                 } else {
-                    theme.text_dim
-                };
-                paint_status_dot(ui, dot_color, 8.0);
+                    let dot_color = if info.is_some() {
+                        theme.marker_success
+                    } else {
+                        theme.text_dim
+                    };
+                    paint_status_dot(ui, dot_color, 8.0);
+                }
 
                 ui.add_space(6.0);
                 ui.vertical(|ui| {
@@ -476,8 +499,13 @@ fn model_card(
                                 .strong()
                                 .size(13.0),
                         );
+                        let subline = if running {
+                            format!("Inferring on {}", inference_device_label())
+                        } else {
+                            model_subline(&info, state.active_task)
+                        };
                         ui.label(
-                            egui::RichText::new(model_subline(&info, state.active_task))
+                            egui::RichText::new(subline)
                                 .small()
                                 .color(theme.text_secondary),
                         );
@@ -545,6 +573,19 @@ fn model_subline(info: &ModelInfo, _task: Option<AiTask>) -> String {
 
     let kind_label = capability_kind_label(info.capabilities);
     format!("{kind_label} · {size_str} · Ready")
+}
+
+/// Compile-time device label for the model card's "Inferring on
+/// {device}" sub-line. Mirrors the AI Models dialog's footer
+/// status — feature flag is the source of truth for whether GPU
+/// acceleration is wired (runtime libonnxruntime is a separate
+/// concern surfaced in the dialog's hover tooltip).
+fn inference_device_label() -> &'static str {
+    if cfg!(feature = "ai-ort-cuda") || cfg!(feature = "ai-candle-cuda") {
+        "GPU (NVIDIA)"
+    } else {
+        "CPU"
+    }
 }
 
 /// Inline label for a model's coarse kind, derived from the
@@ -640,6 +681,32 @@ fn prompts_section(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippThe
         );
     });
 
+    // Keep / exclude breakdown — only renders when the user has
+    // captured at least one positive or negative click. Lets
+    // SAM-style click flows show "+ N keep / - N exclude" as a
+    // running tally without forcing a Generate to find out.
+    let keep_count = state.prompts.clicks.iter().filter(|c| c.positive).count();
+    let exclude_count = state.prompts.clicks.iter().filter(|c| !c.positive).count();
+    if keep_count > 0 || exclude_count > 0 {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if keep_count > 0 {
+                tag_chip(
+                    ui,
+                    theme.marker_success,
+                    &format!("+ {keep_count} keep"),
+                );
+            }
+            if exclude_count > 0 {
+                tag_chip(
+                    ui,
+                    theme.marker_warning,
+                    &format!("- {exclude_count} exclude"),
+                );
+            }
+        });
+    }
+
     ui.add_space(4.0);
 
     // Help text below the chips. Wording shifts with the active
@@ -698,6 +765,26 @@ fn prompt_tab(
     if resp.clicked() {
         state.prompts.set_mode(mode);
     }
+}
+
+/// Pill-shaped tag with a translucent fill in `accent` and a
+/// matching outline. Used for the "+ N keep" / "- N exclude"
+/// breakdown under the prompt counter chips. Same visual
+/// language we use elsewhere for accent badges.
+fn tag_chip(ui: &mut egui::Ui, accent: egui::Color32, label: &str) {
+    egui::Frame::none()
+        .fill(accent.gamma_multiply(0.18))
+        .stroke(egui::Stroke::new(1.0, accent))
+        .rounding(10.0)
+        .inner_margin(egui::Margin::symmetric(8.0, 1.5))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(label)
+                    .small()
+                    .strong()
+                    .color(accent),
+            );
+        });
 }
 
 fn counter_chip(
@@ -766,13 +853,18 @@ fn run_section(
     registry: &AiToolsRegistry,
     theme: &KlippTheme,
 ) {
+    let running = matches!(state.inference, InferenceState::Running { .. });
+    if running {
+        running_progress_section(ui, state, theme);
+        return;
+    }
+
     let can_run = state.active_task.is_some()
         && state
             .selected_model_id
             .as_ref()
             .map(|id| registry.has_id(id))
-            .unwrap_or(false)
-        && !matches!(state.inference, InferenceState::Running { .. });
+            .unwrap_or(false);
 
     ui.horizontal(|ui| {
         // Same anti-feedback safety margin as the task grid: leave
@@ -824,6 +916,112 @@ fn run_section(
         for sc in &[AiScope::CurrentFrame, AiScope::Selection, AiScope::FullClip] {
             scope_chip(ui, *sc, state, theme);
         }
+    });
+}
+
+/// Render the progress bar + elapsed/ETA + Cancel link that
+/// replaces the Generate Mask button while inference is running.
+///
+/// Percentage is FAKE for v1: we don't have streaming progress
+/// from the generator yet, so we interpolate elapsed/avg_ms
+/// from telemetry and cap at 95% until Done lands. Real streaming
+/// can swap the percentage source without changing the UI.
+fn running_progress_section(
+    ui: &mut egui::Ui,
+    state: &mut AiToolsState,
+    theme: &KlippTheme,
+) {
+    let model_id = match &state.inference {
+        InferenceState::Running { model_id, .. } => model_id.clone(),
+        _ => return,
+    };
+
+    // Estimate the run's expected duration from the model's
+    // rolling telemetry average. Falls back to 1500ms when we
+    // have no history (a generous "feels like ~a couple seconds"
+    // ballpark). Fake-progress capped at 95% so the bar can't
+    // sit at 100% before the actual Done event lands.
+    let avg_ms = state
+        .model_telemetry
+        .get(&model_id)
+        .and_then(|t| t.avg_inference_ms())
+        .unwrap_or(1500.0);
+    let elapsed_ms = state
+        .inference_start_time
+        .map(|t| t.elapsed().as_millis() as f64)
+        .unwrap_or(0.0);
+    let pct = (elapsed_ms / avg_ms.max(1.0)).clamp(0.0, 0.95);
+    let pct_label = format!("{:.0}%", pct * 100.0);
+
+    // Big progress bar — matches the Generate Mask button's
+    // 36px height so the section's vertical rhythm doesn't jump.
+    let avail = ui.available_width();
+    let bar_w = (avail - 12.0).max(120.0);
+    let bar_h = 36.0;
+    egui::Frame::none()
+        .fill(theme.bg_raised)
+        .stroke(egui::Stroke::new(1.0, theme.marker_warning))
+        .rounding(4.0)
+        .inner_margin(egui::Margin::same(0.0))
+        .show(ui, |ui| {
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(bar_w, bar_h),
+                egui::Sense::hover(),
+            );
+            // Filled portion of the bar.
+            let mut fill_rect = rect;
+            fill_rect.set_width(rect.width() * pct as f32);
+            ui.painter()
+                .rect_filled(fill_rect, 4.0, theme.marker_warning.gamma_multiply(0.5));
+            // Label centered on the bar; percentage right-aligned.
+            ui.painter().text(
+                rect.left_center() + egui::vec2(12.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                "⟳ Generating mask…",
+                egui::FontId::proportional(13.0),
+                theme.text_primary,
+            );
+            ui.painter().text(
+                rect.right_center() - egui::vec2(12.0, 0.0),
+                egui::Align2::RIGHT_CENTER,
+                &pct_label,
+                egui::FontId::proportional(13.0),
+                theme.text_primary,
+            );
+        });
+
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let remaining_ms = (avg_ms - elapsed_ms).max(0.0);
+        let remaining_text = if remaining_ms < 1000.0 {
+            "~1s remaining".to_string()
+        } else {
+            format!("~{:.0}s remaining", remaining_ms / 1000.0)
+        };
+        ui.label(
+            egui::RichText::new(format!("Frame 1 of 1 · {remaining_text}"))
+                .small()
+                .color(theme.text_secondary),
+        );
+        ui.with_layout(
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("Cancel")
+                                .small()
+                                .strong()
+                                .color(theme.marker_warning),
+                        )
+                        .frame(false),
+                    )
+                    .clicked()
+                {
+                    state.pending_cancel = true;
+                }
+            },
+        );
     });
 }
 
@@ -884,26 +1082,179 @@ fn disabled_run_reason(state: &AiToolsState, registry: &AiToolsRegistry) -> &'st
 // ============================================================
 
 fn output_section(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippTheme) {
-    ui.label(
-        egui::RichText::new("OUTPUT")
-            .small()
-            .strong()
-            .color(theme.text_secondary),
-    );
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("OUTPUT")
+                .small()
+                .strong()
+                .color(theme.text_secondary),
+        );
+        // "Live preview" pill on the right edge while running,
+        // matching the screenshot.
+        if matches!(state.inference, InferenceState::Running { .. }) {
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    ui.label(
+                        egui::RichText::new("Live preview")
+                            .small()
+                            .color(theme.text_dim),
+                    );
+                },
+            );
+        }
+    });
     ui.add_space(4.0);
 
-    // Until commits 2 + 3 land the Running and Complete states,
-    // we just render the empty placeholder for any non-Done state.
-    // The Done case still uses the existing single-mask preview
-    // path so nothing regresses for users who already had a
-    // working AI Tools workflow.
     match &state.inference {
+        InferenceState::Running { .. } => {
+            running_output_overlay(ui, state, theme);
+            ui.add_space(6.0);
+            display_mode_tabs(ui, state, theme, /*has_mask=*/ false);
+        }
         InferenceState::Done { response, .. } if !response.candidates.is_empty() => {
             done_preview_v1(ui, state, theme);
         }
         _ => {
             empty_output_placeholder(ui, theme);
         }
+    }
+}
+
+/// Static visualization of the user's captured prompts during
+/// inference. We don't have streaming preview so the body of the
+/// "preview" is drawn entirely from prompt data — point markers,
+/// box outlines, scribble polylines — overlaid on a placeholder
+/// frame rect. Once streaming partial masks lands, this renderer
+/// keeps drawing the prompts and a streamed mask layer slots
+/// underneath them.
+fn running_output_overlay(
+    ui: &mut egui::Ui,
+    state: &AiToolsState,
+    theme: &KlippTheme,
+) {
+    let avail = ui.available_width();
+    let h = (avail * 9.0 / 16.0).clamp(120.0, 220.0);
+    egui::Frame::none()
+        .fill(theme.bg_raised.gamma_multiply(0.4))
+        .rounding(6.0)
+        .inner_margin(egui::Margin::same(0.0))
+        .show(ui, |ui| {
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(avail - 4.0, h),
+                egui::Sense::hover(),
+            );
+            let painter = ui.painter_at(rect);
+            // Draw boxes (dashed warning outline).
+            for b in &state.prompts.boxes {
+                let r = egui::Rect::from_min_max(
+                    rect.min
+                        + egui::vec2(b.x1 * rect.width(), b.y1 * rect.height()),
+                    rect.min
+                        + egui::vec2(b.x2 * rect.width(), b.y2 * rect.height()),
+                );
+                painter.rect_stroke(r, 0.0, egui::Stroke::new(1.5, theme.marker_warning));
+            }
+            // Draw point markers — green for keep, warning-red
+            // for exclude. Cosmetically matches the keep/exclude
+            // tag chips above the run section.
+            for p in &state.prompts.clicks {
+                let pos = rect.min
+                    + egui::vec2(p.x * rect.width(), p.y * rect.height());
+                let color = if p.positive {
+                    theme.marker_success
+                } else {
+                    theme.marker_error
+                };
+                painter.circle_filled(pos, 6.0, color.gamma_multiply(0.85));
+                painter.circle_stroke(
+                    pos,
+                    6.0,
+                    egui::Stroke::new(1.5, egui::Color32::WHITE),
+                );
+            }
+            // Faint hint text when there are no prompts (e.g.
+            // auto-detect tasks). Centred so the area doesn't
+            // look broken.
+            if state.prompts.is_empty() {
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Auto-detecting…",
+                    egui::FontId::proportional(13.0),
+                    theme.text_dim,
+                );
+            }
+        });
+}
+
+/// Three-tab bar under the OUTPUT preview: Overlay / Mask only /
+/// Cutout. When `has_mask` is false (running state, or before
+/// the user has run anything), Mask only and Cutout are disabled
+/// with "Mask not yet generated" tooltips. Forward-compatible
+/// with the streaming-live-preview work — same UI, different
+/// mask source.
+fn display_mode_tabs(
+    ui: &mut egui::Ui,
+    state: &mut AiToolsState,
+    theme: &KlippTheme,
+    has_mask: bool,
+) {
+    ui.horizontal(|ui| {
+        let avail = ui.available_width();
+        let tab_w = (avail - 8.0) / 3.0;
+        for mode in DisplayMode::ALL {
+            display_mode_tab(ui, *mode, tab_w, state, theme, has_mask);
+        }
+    });
+}
+
+fn display_mode_tab(
+    ui: &mut egui::Ui,
+    mode: DisplayMode,
+    width: f32,
+    state: &mut AiToolsState,
+    theme: &KlippTheme,
+    has_mask: bool,
+) {
+    // Overlay is always available (even with no mask, "overlay"
+    // means "prompts on the source frame" which IS our running
+    // visualization). MaskOnly / Cutout require a finished mask.
+    let enabled = has_mask || matches!(mode, DisplayMode::Overlay);
+    let active = state.display_mode == mode;
+    let color = if !enabled {
+        theme.text_dim
+    } else if active {
+        theme.marker_warning
+    } else {
+        theme.text_secondary
+    };
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(width, 26.0),
+        if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
+    if active {
+        ui.painter().rect_filled(rect, 3.0, theme.bg_raised);
+    } else if enabled && resp.hovered() {
+        ui.painter()
+            .rect_filled(rect, 3.0, theme.bg_raised.gamma_multiply(0.5));
+    }
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        mode.label(),
+        egui::FontId::proportional(11.5),
+        color,
+    );
+    if enabled && resp.clicked() {
+        state.display_mode = mode;
+    }
+    if !enabled {
+        resp.on_hover_text("Mask not yet generated — run inference first");
     }
 }
 

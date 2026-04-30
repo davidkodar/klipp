@@ -153,6 +153,18 @@ pub struct AiToolsState {
     /// applied to the final mask; `output_format` controls how the
     /// mask leaves the panel toward Apply-to-clip.
     pub advanced_settings: AdvancedSettings,
+    /// Which preview the OUTPUT section renders when an inference
+    /// is `Done`. The running state shows a static prompt overlay
+    /// regardless; this only matters once a mask exists. Forward-
+    /// compatible with the eventual streaming-live-preview work
+    /// (the same enum + tabs UI consumes streamed partial masks).
+    pub display_mode: DisplayMode,
+    /// Wall-clock the dispatcher set when the most recent
+    /// inference left Idle. Read by the running progress bar to
+    /// derive a fake percentage (elapsed / telemetry-avg_ms),
+    /// capped at 95% until Done lands. Cleared when inference
+    /// returns to Idle.
+    pub inference_start_time: Option<std::time::Instant>,
 }
 
 /// Where the next inference run should target. Visible UI for all
@@ -257,8 +269,44 @@ impl Default for AiToolsState {
             scope: AiScope::default(),
             advanced_open: false,
             advanced_settings: AdvancedSettings::default(),
+            display_mode: DisplayMode::default(),
+            inference_start_time: None,
         }
     }
+}
+
+/// How the OUTPUT section presents a finished mask. Side-by-side
+/// (the canonical fourth choice across DaVinci's Magic Mask /
+/// Premiere's Auto Reframe) is intentionally deferred — the
+/// preview-area split it requires lands cleanly later if we want
+/// it. Three modes cover the common workflows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DisplayMode {
+    /// Mask tinted onto the source frame — debugging "is the
+    /// mask correct?" view.
+    #[default]
+    Overlay,
+    /// Mask alone as grayscale alpha — "what exactly is in the
+    /// alpha channel?"
+    MaskOnly,
+    /// Source frame with mask alpha applied + checker bg —
+    /// "what does delivery look like?"
+    Cutout,
+}
+
+impl DisplayMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Overlay => "Overlay",
+            Self::MaskOnly => "Mask only",
+            Self::Cutout => "Cutout",
+        }
+    }
+    pub const ALL: &'static [DisplayMode] = &[
+        DisplayMode::Overlay,
+        DisplayMode::MaskOnly,
+        DisplayMode::Cutout,
+    ];
 }
 
 /// The four task buttons exposed by the panel. Order matters —

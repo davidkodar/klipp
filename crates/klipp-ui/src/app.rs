@@ -15345,6 +15345,10 @@ impl KlippApp {
         }
 
         if self.state.ai_tools_state.inference.poll() {
+            // Inference left Running — clear the start-time stamp
+            // so the panel's progress bar stops ticking. Done's
+            // own duration comes from response.inference_ms.
+            self.state.ai_tools_state.inference_start_time = None;
             // Record telemetry on the Idle → Done transition. poll()
             // returns true on every state change (Done / Failed /
             // Disconnected) but we only want successful runs.
@@ -15521,6 +15525,11 @@ impl KlippApp {
             frame_height: h,
             handle,
         };
+        // Stamp the start time so the panel's progress bar can
+        // derive a fake percentage from elapsed-vs-telemetry-avg.
+        // Cleared in the poll path when inference resolves.
+        self.state.ai_tools_state.inference_start_time =
+            Some(std::time::Instant::now());
     }
 
     /// Begin capturing audio from the configured input device into a WAV file.
