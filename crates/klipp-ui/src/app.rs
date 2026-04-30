@@ -23378,10 +23378,18 @@ impl KlippApp {
 
         // 4c0. AI Tools side panel — only mounted when toggled on.
         if self.state.ai_tools_state.panel_visible {
+            // egui's SidePanel default `width_range.max` is
+            // `f32::INFINITY`, which means any single-frame
+            // content overflow becomes the new stored width on
+            // the following frame (PanelState stores
+            // inner_response.response.rect). Setting an explicit
+            // max_width hard-caps the panel via clamp_to_range
+            // regardless of what content reports.
             egui::SidePanel::right("ai_tools_side")
                 .resizable(true)
                 .default_width(340.0)
                 .min_width(300.0)
+                .max_width(500.0)
                 .show(ctx, |ui| {
                     crate::ai_tools::AiToolsPanel::show(
                         ui,
