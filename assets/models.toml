@@ -14,15 +14,18 @@
 #                   in order, takes the first whose bytes match
 #                   the sha256
 #
-# The hashes below are PLACEHOLDERS. Klipp's release CI converts
-# Meta's PyTorch SAM2 checkpoints (from
-# https://dl.fbaipublicfiles.com/segment_anything_2/092824/) to ONNX,
-# computes the SHA-256 of the resulting bytes, fills in this file,
-# uploads the ONNX to a Klipp GitHub Release, and ships a Klipp
-# release using the populated manifest. Until that CI step runs the
-# entries here will fail validation if any code tries to use them
-# (size_bytes = 0). That's intentional — better than shipping a
-# manifest that points at unverified bytes.
+# Hosting posture: Klipp points the bundled URLs at upstream
+# distributions (HuggingFace, etc.) — same pattern Kdenlive uses for
+# its Vosk + SAM2 model lineup. We don't redistribute weights
+# ourselves. Trade-off: upstream URLs can move/break, in which case
+# we update this manifest and ship a Klipp patch release. SHA-256
+# verification means we'll know immediately if upstream replaces a
+# file with bytes we didn't bless.
+#
+# Entries with `size_bytes = 0` are placeholders — model exists in
+# concept but no public download URL is ready yet. The AI Models
+# dialog renders these as "Pending release" so users see the roadmap
+# without being able to install them.
 
 version = "1"
 
@@ -88,9 +91,22 @@ prompts = "point | box | scribble | temporal"
 # ── Remove Background ─────────────────────────────────────────────
 # BiRefNet_lite — Swin-Tiny backbone, MIT license, single-input
 # single-output mask. First user-facing AI feature for Klipp.
-# Upstream ONNX export at huggingface.co/onnx-community/BiRefNet_lite-ONNX.
-# size_bytes / sha256 will be filled once Klipp's release CI mirrors
-# the ONNX into the klipp-models GitHub Release with verified bytes.
+# Bundled URL points at HuggingFace's onnx-community mirror; bytes
+# verified via SHA-256.
+
+[[model]]
+id = "birefnet_lite_v1"
+display_name = "BiRefNet Lite"
+size_bytes = 224005088
+sha256 = "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333"
+license = "MIT"
+attribution = "ZhengPeng7 / BiRefNet (huggingface.co/onnx-community/BiRefNet_lite-ONNX)"
+sources = [
+    { url = "https://huggingface.co/onnx-community/BiRefNet_lite-ONNX/resolve/main/onnx/model.onnx" },
+]
+kind = "mask_generator"
+runtime = "ort"
+prompts = ""
 
 # ── Isolate Object (click-to-mask) ────────────────────────────────
 # MobileSAM — TinyViT image encoder + SAM prompt encoder + mask
@@ -99,14 +115,12 @@ prompts = "point | box | scribble | temporal"
 [[model]]
 id = "mobile_sam_v1"
 display_name = "MobileSAM"
-# TODO release-CI: fill size_bytes + sha256 once mirror runs.
-size_bytes = 0
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+size_bytes = 40613024
+sha256 = "5ad43a841b57cc798e2837e251c15aa9f602868a1780d195459383d117784cf7"
 license = "Apache-2.0"
-attribution = "ChaoningZhang / MobileSAM (github.com/ChaoningZhang/MobileSAM)"
+attribution = "ChaoningZhang / MobileSAM (mirrored via lmz/candle-sam on HuggingFace)"
 sources = [
-    # TODO release-CI: swap to klipp-models mirror once safetensors is verified.
-    { url = "https://github.com/davidkodar/klipp-models/releases/download/mobile-sam-placeholder/mobile_sam_v1.safetensors" },
+    { url = "https://huggingface.co/lmz/candle-sam/resolve/main/mobile_sam-tiny-vitt.safetensors" },
 ]
 kind = "mask_generator"
 runtime = "candle"
@@ -128,14 +142,12 @@ prompts = "point | box | scribble"
 [[model]]
 id = "rf_detr_seg_v1"
 display_name = "RF-DETR-Seg (Preview)"
-# TODO release-CI: fill size_bytes + sha256 once Klipp's mirror runs.
-size_bytes = 0
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+size_bytes = 134443363
+sha256 = "42e3571cf64d70df6f6acf3c5dcf0fc4ecbf8bab46d819ca8e4e94d4cee4de9b"
 license = "Apache-2.0"
-attribution = "Roboflow / RF-DETR (github.com/roboflow/rf-detr)"
+attribution = "Roboflow / RF-DETR (mirrored via bukuroo/RF-DETR-Seg-ONNX on HuggingFace)"
 sources = [
-    # TODO release-CI: swap to klipp-models mirror once ONNX is verified.
-    { url = "https://github.com/davidkodar/klipp-models/releases/download/rf-detr-seg-placeholder/rf_detr_seg_v1.onnx" },
+    { url = "https://huggingface.co/bukuroo/RF-DETR-Seg-ONNX/resolve/main/rf-detr-seg-preview.onnx" },
 ]
 kind = "mask_generator"
 runtime = "ort"
@@ -143,39 +155,24 @@ runtime = "ort"
 # MaskCandidate with bbox + class label + per-instance mask.
 prompts = ""
 
+# Medium tier — same architecture as Preview, different weights.
+# Stays as a Pending placeholder in the bundled manifest because no
+# public ONNX export exists yet; the Medium ONNX has to be locally
+# exported via Roboflow's `rfdetr.RFDETRSegMedium.export()`. Power
+# users pin a real entry via their `~/.config/klipp/models.toml`
+# override (see crates/klipp-ml/src/manifest.rs::load_effective).
+# Drop this entry if/when upstream publishes a public ONNX mirror.
 [[model]]
 id = "rf_detr_seg_medium_v1"
 display_name = "RF-DETR-Seg (Medium)"
-# TODO release-CI: fill size_bytes + sha256 once Klipp's mirror runs.
-# Local builds get real values via the user-override manifest.
 size_bytes = 0
 sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 license = "Apache-2.0"
-attribution = "Roboflow / RF-DETR Medium (github.com/roboflow/rf-detr)"
+attribution = "Roboflow / RF-DETR Medium (no public ONNX yet — local export only)"
 sources = [
-    # ONNX exported locally from the rfdetr Python package's
-    # RFDETRSegMedium class. Klipp's release-CI mirror (klipp-models
-    # GitHub Release) is the eventual destination.
     { url = "https://github.com/davidkodar/klipp-models/releases/download/rf-detr-seg-medium-placeholder/rf_detr_seg_medium_v1.onnx" },
 ]
 kind = "mask_generator"
 runtime = "ort"
 prompts = ""
 
-[[model]]
-id = "birefnet_lite_v1"
-display_name = "BiRefNet Lite"
-# TODO release-CI: fill size_bytes + sha256 once mirror runs.
-size_bytes = 0
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-license = "MIT"
-attribution = "ZhengPeng7 / BiRefNet (huggingface.co/onnx-community/BiRefNet_lite-ONNX)"
-sources = [
-    # TODO release-CI: swap to klipp-models mirror once ONNX is verified.
-    { url = "https://github.com/davidkodar/klipp-models/releases/download/birefnet-placeholder/birefnet_lite_v1.onnx" },
-]
-kind = "mask_generator"
-runtime = "ort"
-# Background matting takes the whole frame as input — no prompt
-# affordances exposed.
-prompts = ""
