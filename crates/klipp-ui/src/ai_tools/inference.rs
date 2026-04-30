@@ -115,7 +115,7 @@ impl RegistryHandle {
     where
         F: FnOnce(&ModelRegistry) -> R,
     {
-        let g = self.inner.read().expect("registry poisoned");
+        let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
         f(&g)
     }
 }

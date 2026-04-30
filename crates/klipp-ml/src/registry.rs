@@ -149,7 +149,7 @@ impl ModelRegistry {
         let Some(entry) = self.entries.get(id) else {
             return false;
         };
-        let mut slot = entry.instance.lock().expect("mutex poisoned");
+        let mut slot = entry.instance.lock().unwrap_or_else(|p| p.into_inner());
         *slot = None;
         true
     }
@@ -162,7 +162,7 @@ impl ModelRegistry {
     /// callers surface a "no model registered" toast in that case.
     pub fn get_or_create(&self, id: &str) -> Option<Result<MaskGeneratorGuard<'_>, MaskError>> {
         let entry = self.entries.get(id)?;
-        let mut slot = entry.instance.lock().expect("mutex poisoned");
+        let mut slot = entry.instance.lock().unwrap_or_else(|p| p.into_inner());
         if slot.is_none() {
             match (entry.factory)() {
                 Ok(model) => *slot = Some(model),

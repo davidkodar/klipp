@@ -96,7 +96,7 @@ impl AiToolsRegistry {
     /// Returns owned [`ModelInfo`] copies so callers don't carry
     /// the read guard around.
     pub fn models_for(&self, task: AiTask) -> Vec<ModelInfo> {
-        let g = self.inner.read().expect("registry poisoned");
+        let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
         g.list_capable(required_capability(task))
             .into_iter()
             .cloned()
@@ -106,7 +106,7 @@ impl AiToolsRegistry {
     /// Look up a model by its registered id, regardless of task.
     /// Used to render the "currently selected" model name.
     pub fn info(&self, id: &str) -> Option<ModelInfo> {
-        let g = self.inner.read().expect("registry poisoned");
+        let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
         g.info(id).cloned()
     }
 
@@ -114,7 +114,7 @@ impl AiToolsRegistry {
     /// The panel greys out task buttons that return `false` and
     /// surfaces a "no model installed" tooltip instead.
     pub fn has_model_for(&self, task: AiTask) -> bool {
-        let g = self.inner.read().expect("registry poisoned");
+        let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
         g.list_capable(required_capability(task))
             .into_iter()
             .next()
@@ -124,7 +124,7 @@ impl AiToolsRegistry {
     /// `true` when an entry with this id exists. Cheap presence
     /// check that avoids cloning the [`ModelInfo`].
     pub fn has_id(&self, id: &str) -> bool {
-        let g = self.inner.read().expect("registry poisoned");
+        let g = self.inner.read().unwrap_or_else(|p| p.into_inner());
         g.info(id).is_some()
     }
 }
@@ -256,7 +256,7 @@ mod tests {
         // Mutate through view `a`'s shared Arc; observe through `b`.
         {
             let shared = a.shared();
-            let mut g = shared.write().expect("registry poisoned");
+            let mut g = shared.write().unwrap_or_else(|p| p.into_inner());
             register_stub(&mut g);
         }
 

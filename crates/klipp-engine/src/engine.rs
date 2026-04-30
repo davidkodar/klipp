@@ -8013,7 +8013,7 @@ impl PlaybackEngine {
     fn path_for_media(&self, media_id: MediaId) -> Option<PathBuf> {
         self.media_pool
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(&media_id)
             .map(|item| {
                 // 1. Proxy files (explicit user choice, highest priority)
