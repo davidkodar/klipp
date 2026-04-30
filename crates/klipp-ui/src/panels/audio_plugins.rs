@@ -371,6 +371,12 @@ fn render_plugin_row(
         .inner_margin(egui::Margin::symmetric(8.0, 6.0))
         .outer_margin(egui::Margin::symmetric(0.0, 1.0))
         .show(ui, |ui| {
+            // The Enable/Disable button sits inside the header's
+            // right-to-left section. Capturing its rect lets us skip
+            // the row-level "click to expand" toggle when the click
+            // landed on the button — without that, clicking Disable
+            // would also expand/collapse the row.
+            let mut button_rect: Option<egui::Rect> = None;
             // ── Header row (always visible) ─────────────────────────
             let header_resp = ui.horizontal(|ui| {
                 let chev = if is_expanded { "\u{25BC}" } else { "\u{25B6}" };
@@ -414,6 +420,32 @@ fn render_plugin_row(
                     );
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let (btn_label, hover) = if is_disabled {
+                        (
+                            "Enable",
+                            "Re-enable this plugin so it appears in the Audio FX browser \
+                             and the inspector's \"+ Add Effect\" picker.",
+                        )
+                    } else {
+                        (
+                            "Disable",
+                            "Hide this plugin from the Audio FX browser and the inspector's \
+                             \"+ Add Effect\" picker. Existing clips that already use it keep \
+                             working.",
+                        )
+                    };
+                    let btn = ui.add(
+                        egui::Button::new(egui::RichText::new(btn_label).size(10.0))
+                            .min_size(egui::vec2(60.0, 0.0)),
+                    );
+                    let btn = btn.on_hover_text(hover);
+                    button_rect = Some(btn.rect);
+                    if btn.clicked() {
+                        cmds.push(AppCommand::ToggleAudioPluginDisabled {
+                            unique_id: plugin.unique_id,
+                        });
+                    }
+                    ui.add_space(8.0);
                     ui.label(
                         egui::RichText::new(format!(
                             "{} | {} ports",
@@ -425,55 +457,47 @@ fn render_plugin_row(
                 });
             });
 
-            // Make the entire header row clickable to toggle expansion.
-            // Easier than a chevron-only hit target and matches DAW
-            // plugin-browser conventions.
+            // Make the rest of the header row clickable to toggle
+            // expansion. We register a single Sense::click over the
+            // whole row, then suppress the toggle when the click
+            // pointer landed inside the Enable/Disable button's rect
+            // (the button has already consumed its own click via
+            // `btn.clicked()` above, so without this guard we'd
+            // double-handle the click and bounce the expansion state
+            // every time the user toggled enabled).
             let click_resp = ui.interact(
                 header_resp.response.rect,
                 expand_key.with("click"),
                 egui::Sense::click(),
             );
             if click_resp.clicked() {
-                ui.ctx()
-                    .data_mut(|d| d.insert_temp(expand_key, !is_expanded));
+                let on_button = click_resp
+                    .interact_pointer_pos()
+                    .zip(button_rect)
+                    .map(|(p, r)| r.contains(p))
+                    .unwrap_or(false);
+                if !on_button {
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(expand_key, !is_expanded));
+                }
             }
 
             // ── Expanded body ───────────────────────────────────────
+            // Enable/Disable lives on the header row now (no need to
+            // expand to disable). The expanded body is purely
+            // informational: identity, file metadata, control list.
             if is_expanded {
                 ui.add_space(6.0);
                 ui.separator();
                 ui.add_space(6.0);
                 render_plugin_details(ui, theme, plugin);
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    let (label, hover) = if is_disabled {
-                        (
-                            "Enable",
-                            "Re-enable this plugin so it appears in the Audio FX browser \
-                             and the inspector's \"+ Add Effect\" picker.",
-                        )
-                    } else {
-                        (
-                            "Disable",
-                            "Hide this plugin from the Audio FX browser and the \
-                             inspector's \"+ Add Effect\" picker. Existing clips that \
-                             already use it keep working.",
-                        )
-                    };
-                    if ui
-                        .button(egui::RichText::new(label).size(10.0))
-                        .on_hover_text(hover)
-                        .clicked()
-                    {
-                        cmds.push(AppCommand::ToggleAudioPluginDisabled {
-                            unique_id: plugin.unique_id,
-                        });
-                    }
-                });
             }
+
+            // is_disabled is unused here today but the row's tile
+            // colour was already adjusted at the top — silence the
+            // unused-but-necessary compiler warning by referencing
+            // it in a no-op binding.
+            let _ = is_disabled;
         });
 }
 
