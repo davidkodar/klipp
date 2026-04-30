@@ -201,7 +201,7 @@ impl ToolbarPanel {
                 Self::mark_menu(ui, &mut cmds, state);
                 Self::view_menu(ui, &mut cmds, state);
                 Self::window_menu(ui, &mut cmds, state);
-                Self::plugins_menu(ui, state);
+                Self::tools_menu(ui, state);
                 Self::help_menu(ui, state);
 
                 sep(ui, theme);
@@ -984,12 +984,16 @@ impl ToolbarPanel {
         });
     }
 
-    /// Plugin management menu — Audio Plugins (LADSPA today; LV2 / VST3
-    /// to come), AI Models. Dedicated top-level menu so users have a
-    /// single, discoverable home for "where do I see what's installed
-    /// and disable things I don't want".
-    fn plugins_menu(ui: &mut egui::Ui, state: &mut AppState) {
-        ui.menu_button(egui::RichText::new("Plugins").size(11.0), |ui| {
+    /// Tools menu — utilities and managers that don't belong under
+    /// File / Edit / Clip / Timeline / Mark / View / Window. Today
+    /// hosts the Audio Plugins manager (LADSPA; LV2 / VST3 to come)
+    /// and AI Models manager. Convention follows Avid Media Composer
+    /// and DaVinci Resolve where Tools is the natural home for
+    /// utility-style dialogs and managers — top-level "Plugins"
+    /// would be a convention mismatch with most pro DAWs / NLEs which
+    /// bury plugin management under Preferences.
+    fn tools_menu(ui: &mut egui::Ui, state: &mut AppState) {
+        ui.menu_button(egui::RichText::new("Tools").size(11.0), |ui| {
             if ui.button("Audio Plugins\u{2026}").clicked() {
                 state.show_audio_plugins_dialog = true;
                 state.audio_plugins_dialog.last_scanned_secs = None;
