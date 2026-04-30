@@ -2411,12 +2411,28 @@ fn render_row(
                             }
                             let desc = description_for(&entry.id);
                             if !desc.is_empty() {
-                                ui.label(
-                                    egui::RichText::new("ⓘ")
-                                        .size(12.0)
-                                        .color(theme.text_dim),
-                                )
-                                .on_hover_text(desc);
+                                // Frameless button so the (i)
+                                // glyph reads as a chip but still
+                                // takes click + hover senses.
+                                // Hover shows a one-line preview;
+                                // click opens the same Show details
+                                // modal the kebab menu's "Show
+                                // details" item targets, so users
+                                // get to the full metadata via
+                                // either path.
+                                let resp = ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new("ⓘ")
+                                                .size(12.0)
+                                                .color(theme.text_dim),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .on_hover_text(desc);
+                                if resp.clicked() {
+                                    *details_for = Some(entry.id.clone());
+                                }
                             }
                         });
                         let line = format!(
