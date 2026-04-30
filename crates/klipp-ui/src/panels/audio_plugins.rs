@@ -84,16 +84,28 @@ pub fn show_audio_plugins_dialog(
         state.audio_plugins_dialog.last_scanned_secs = Some(now_secs());
     }
 
+    // Screen-clamped sizing so the dialog never grows past 80% of the
+    // viewport even when the plugin list is huge. Default starts ~70% so
+    // there's visible margin around it. Same pattern as the AI Models
+    // dialog.
+    let screen_rect = ctx.screen_rect();
+    let max_h = (screen_rect.height() * 0.80).clamp(360.0, 720.0);
+    let max_w = (screen_rect.width() * 0.80).clamp(480.0, 820.0);
+    let default_h = (screen_rect.height() * 0.70).clamp(360.0, max_h);
+    let default_w = (screen_rect.width() * 0.55).clamp(480.0, max_w);
+
     let mut open = true;
     egui::Window::new("Audio Plugins")
         .open(&mut open)
         .resizable(true)
-        .default_width(640.0)
-        .default_height(560.0)
+        .default_size([default_w, default_h])
         .min_width(420.0)
         .min_height(360.0)
+        .max_width(max_w)
+        .max_height(max_h)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
-            render_body(ui, state, theme, cmds);
+            render_body(ui, state, theme, cmds, max_h);
         });
 
     if !open {
@@ -106,6 +118,7 @@ fn render_body(
     state: &mut AppState,
     theme: &KlippTheme,
     cmds: &mut Vec<AppCommand>,
+    max_h: f32,
 ) {
     // ── Header: search + Rescan ──
     ui.horizontal(|ui| {
@@ -151,12 +164,24 @@ fn render_body(
     });
 
     // ── Body: plugin list grouped by maker, then search-paths panel ──
-    let avail = ui.available_height();
-    let footer_h = 64.0;
-    let split = (avail - footer_h - 80.0).max(160.0);
+    //
+    // The list scroll's max_height is computed from the dialog's
+    // hard cap (max_h) minus the rough vertical budget of everything
+    // else (header + separators + search-paths section + footer).
+    // Using `ui.available_height()` here is a trap — content below the
+    // scroll grows it, the Window resizes to fit, available_height
+    // grows next frame, and the dialog walks down the screen. Pinning
+    // against `max_h` keeps the layout stable.
+    //
+    // Search-paths section budget assumes up to 5 path rows × ~22 px.
+    let other_budget = 64.0  // header
+        + 24.0               // separators
+        + 22.0 * 5.0         // search-paths rows
+        + 56.0;              // search-paths header + footer
+    let scroll_max_h = (max_h - other_budget).max(160.0);
 
     egui::ScrollArea::vertical()
-        .max_height(split)
+        .max_height(scroll_max_h)
         .show(ui, |ui| {
             ui.label(
                 egui::RichText::new(format!(
