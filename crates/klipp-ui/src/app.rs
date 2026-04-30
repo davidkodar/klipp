@@ -15368,6 +15368,14 @@ impl KlippApp {
                 ));
                 true
             }
+            AppCommand::OpenSystemProbe => {
+                self.state.show_system_probe = true;
+                true
+            }
+            AppCommand::OpenProjectDoctor => {
+                self.state.show_project_doctor = true;
+                true
+            }
             AppCommand::ClearAllAudioPluginsDisabled => {
                 let cleared = self.state.disabled_audio_plugins.len();
                 if cleared == 0 {
@@ -24057,6 +24065,29 @@ impl KlippApp {
         );
         if !audio_plugin_cmds.is_empty() {
             self.send_commands(audio_plugin_cmds);
+        }
+
+        // System Probe — read-only diagnostic snapshot. No commands
+        // dispatched from inside, so no Vec needed.
+        crate::panels::system_probe::show_system_probe_dialog(
+            ctx,
+            &mut self.state,
+            &self.theme,
+        );
+
+        // Project Doctor — detect-and-report scan of the loaded
+        // .klipp directory. Pushes commands through the standard
+        // dispatch (today no per-finding fix actions exist; the
+        // Vec is wired so future Fix buttons hook in cleanly).
+        let mut doctor_cmds: Vec<klipp_core::AppCommand> = Vec::new();
+        crate::panels::project_doctor::show_project_doctor_dialog(
+            ctx,
+            &mut self.state,
+            &self.theme,
+            &mut doctor_cmds,
+        );
+        if !doctor_cmds.is_empty() {
+            self.send_commands(doctor_cmds);
         }
 
         // 4c2. Consolidate Project dialog

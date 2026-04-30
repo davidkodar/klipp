@@ -1,0 +1,432 @@
+//! Project Doctor — read-only scan of the loaded `.klipp` directory
+//! for problems that today only surface as load-time errors or
+//! silent missing-asset behaviour.
+//!
+//! v1 scope: detect-and-report. No auto-fix yet — surfacing issues
+//! is the first reliability win; fix actions land iteration by
+//! iteration.
+//!
+//! Categories of checks:
+//!   * MISSING MEDIA — `MediaItem.path` doesn't exist on disk
+//!   * MISSING AI MASK — clip has an `ExternalMatte` node whose PNG
+//!     is gone from the cache (rare; happens when the mask cache is
+//!     evicted before the project is reopened)
+//!   * MISSING LADSPA PLUGIN — clip's audio chain references a
+//!     `ladspa:{path}:{label}` plugin that's no longer installed
+//!   * DISABLED LADSPA PLUGIN IN USE — plugin is installed but
+//!     user-disabled in audio_plugins.toml; the existing clip still
+//!     loads it (non-destructive disable semantic) but the user
+//!     should know they're using a plugin they marked off-list
+
+use crate::state::AppState;
+use crate::theme::KlippTheme;
+use klipp_core::AppCommand;
+
+/// Severity for a Project Doctor finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// Project will not work as intended without resolving — missing
+    /// media, missing plugins.
+    Error,
+    /// Project works but in a degraded or surprising state.
+    Warning,
+    /// Informational — surfaces a fact the user might want to know.
+    #[allow(dead_code)]
+    Info,
+}
+
+#[derive(Debug, Clone)]
+pub struct Finding {
+    pub severity: Severity,
+    pub category: String,
+    pub summary: String,
+    pub detail: String,
+}
+
+/// Render the Project Doctor modal. The scan runs every frame the
+/// dialog is open — cheap because all data is already in memory
+/// (state.media_pool, state.sequences, state.disabled_audio_plugins).
+/// stat()-ing media paths is the only I/O and it's bounded by the
+/// project's media count.
+pub fn show_project_doctor_dialog(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    theme: &KlippTheme,
+    cmds: &mut Vec<AppCommand>,
+) {
+    if !state.show_project_doctor {
+        return;
+    }
+
+    let screen_rect = ctx.screen_rect();
+    let max_h = (screen_rect.height() * 0.85).clamp(400.0, 720.0);
+    let max_w = (screen_rect.width() * 0.70).clamp(560.0, 800.0);
+    let default_w = (screen_rect.width() * 0.55).clamp(560.0, max_w);
+    let default_h = (screen_rect.height() * 0.65).clamp(400.0, max_h);
+    let centre = screen_rect.center();
+    let default_pos = egui::pos2(
+        centre.x - default_w * 0.5,
+        centre.y - default_h * 0.5,
+    );
+
+    let findings = scan_project(state);
+    let mut open = true;
+    egui::Window::new("Project Doctor")
+        .open(&mut open)
+        .resizable(true)
+        .movable(true)
+        .default_size([default_w, default_h])
+        .default_pos(default_pos)
+        .min_width(480.0)
+        .min_height(360.0)
+        .max_width(max_w)
+        .max_height(max_h)
+        .show(ctx, |ui| {
+            render_body(ui, theme, &findings, cmds, max_h);
+        });
+
+    if !open {
+        state.show_project_doctor = false;
+    }
+}
+
+fn render_body(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    findings: &[Finding],
+    cmds: &mut Vec<AppCommand>,
+    max_h: f32,
+) {
+    let errors = findings.iter().filter(|f| f.severity == Severity::Error).count();
+    let warnings = findings.iter().filter(|f| f.severity == Severity::Warning).count();
+    let infos = findings.iter().filter(|f| f.severity == Severity::Info).count();
+
+    // ── Header ───────────────────────────────────────────────────
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(if findings.is_empty() {
+                "No issues detected. Project looks healthy.".to_string()
+            } else {
+                let mut parts = Vec::new();
+                if errors > 0 {
+                    parts.push(format!("{errors} error{}", if errors == 1 { "" } else { "s" }));
+                }
+                if warnings > 0 {
+                    parts.push(format!("{warnings} warning{}", if warnings == 1 { "" } else { "s" }));
+                }
+                if infos > 0 {
+                    parts.push(format!("{infos} info", ));
+                }
+                format!("{} issue{} found: {}",
+                    findings.len(),
+                    if findings.len() == 1 { "" } else { "s" },
+                    parts.join(", "))
+            })
+            .size(11.0)
+            .strong()
+            .color(if errors > 0 {
+                theme.marker_error
+            } else if warnings > 0 {
+                theme.accent
+            } else {
+                theme.text_primary
+            }),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Re-scan").clicked() {
+                // Re-render flips the closure; nothing to do — scan
+                // runs every frame anyway. Button kept for users
+                // who want to confirm "yes I just fixed something
+                // and want to see the new state".
+            }
+            if ui.button("Copy report").on_hover_text(
+                "Copy the full findings list to the clipboard as plain text."
+            ).clicked() {
+                ui.ctx().copy_text(report_as_text(findings));
+            }
+        });
+    });
+
+    ui.add_space(6.0);
+    ui.separator();
+    ui.add_space(6.0);
+
+    // ── Body ─────────────────────────────────────────────────────
+    let other_budget = 100.0;
+    let scroll_max_h = (max_h - other_budget).max(200.0);
+
+    egui::ScrollArea::vertical()
+        .max_height(scroll_max_h)
+        .show(ui, |ui| {
+            if findings.is_empty() {
+                ui.add_space(20.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new("\u{2713}")
+                            .size(32.0)
+                            .color(theme.accent),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("All clear.")
+                            .size(11.0)
+                            .color(theme.text_dim),
+                    );
+                });
+                return;
+            }
+            for finding in findings {
+                render_finding(ui, theme, finding);
+            }
+        });
+
+    // ── Footer ───────────────────────────────────────────────────
+    ui.add_space(6.0);
+    ui.separator();
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(
+                "v1 scope: detect-and-report. Auto-fix actions land per-finding in \
+                 follow-ups (Relink media... is already in File menu; per-finding fix \
+                 buttons coming).",
+            )
+            .size(9.0)
+            .color(theme.text_dim),
+        );
+    });
+    let _ = cmds;
+}
+
+fn render_finding(ui: &mut egui::Ui, theme: &KlippTheme, finding: &Finding) {
+    let (icon, icon_color) = match finding.severity {
+        Severity::Error => ("\u{2716}", theme.marker_error),
+        Severity::Warning => ("\u{26A0}", theme.accent),
+        Severity::Info => ("\u{2139}", theme.text_secondary),
+    };
+
+    egui::Frame::none()
+        .fill(theme.bg_raised)
+        .stroke(egui::Stroke::new(1.0_f32, theme.border))
+        .rounding(4.0)
+        .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+        .outer_margin(egui::Margin::symmetric(0.0, 2.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(icon)
+                        .size(14.0)
+                        .strong()
+                        .color(icon_color),
+                );
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(&finding.summary)
+                                .size(11.0)
+                                .strong()
+                                .color(theme.text_primary),
+                        );
+                        ui.label(
+                            egui::RichText::new(&finding.category)
+                                .size(8.0)
+                                .strong()
+                                .color(theme.text_dim),
+                        );
+                    });
+                    ui.label(
+                        egui::RichText::new(&finding.detail)
+                            .size(10.0)
+                            .color(theme.text_secondary),
+                    );
+                });
+            });
+        });
+}
+
+// ─── Scan logic ───────────────────────────────────────────────────
+
+fn scan_project(state: &AppState) -> Vec<Finding> {
+    let mut findings = Vec::new();
+
+    // 1. Missing media — every MediaItem in the pool whose path
+    //    doesn't exist on disk. This is the most common project
+    //    breakage (drive moved, media folder renamed, etc.).
+    for item in state.media_pool.all() {
+        if !item.path.exists() {
+            let display: String = item
+                .path
+                .file_name()
+                .map(|s: &std::ffi::OsStr| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| item.path.to_string_lossy().into_owned());
+            findings.push(Finding {
+                severity: Severity::Error,
+                category: "MISSING MEDIA".to_string(),
+                summary: format!("{display} is offline"),
+                detail: format!(
+                    "Source path no longer exists: {}",
+                    item.path.to_string_lossy()
+                ),
+            });
+        }
+    }
+
+    // 2. LADSPA plugin findings — walk every clip's audio_effects
+    //    list and flag entries that reference a "ladspa:..." plugin
+    //    that isn't currently in state.ladspa_plugins, OR is in
+    //    state.ladspa_plugins but disabled.
+    let installed_ladspa: std::collections::HashSet<String> = state
+        .ladspa_plugins
+        .iter()
+        .map(|p| format!("{}:{}", p.path.to_string_lossy(), p.label))
+        .collect();
+    let disabled_by_pathlabel: std::collections::HashSet<String> = state
+        .ladspa_plugins
+        .iter()
+        .filter(|p| state.disabled_audio_plugins.contains(&p.unique_id))
+        .map(|p| format!("{}:{}", p.path.to_string_lossy(), p.label))
+        .collect();
+
+    let active = state.sequences.get(state.active_sequence_idx);
+    if let Some(seq) = active {
+        for track in &seq.tracks {
+            for clip in &track.clips {
+                for fx in &clip.audio_effects {
+                    if let Some(rest) = fx.effect_type.strip_prefix("ladspa:") {
+                        if installed_ladspa.contains(rest) {
+                            if disabled_by_pathlabel.contains(rest) {
+                                findings.push(Finding {
+                                    severity: Severity::Warning,
+                                    category: "DISABLED LADSPA IN USE".into(),
+                                    summary: format!(
+                                        "Clip uses a disabled plugin: {rest}"
+                                    ),
+                                    detail: "The plugin is installed but you've marked it \
+                                             disabled in Tools \u{2192} Audio Plugins. The \
+                                             clip still loads it because the disable is \
+                                             non-destructive, but new clips can't pick \
+                                             it. Re-enable the plugin or remove the \
+                                             effect."
+                                        .into(),
+                                });
+                            }
+                        } else {
+                            findings.push(Finding {
+                                severity: Severity::Error,
+                                category: "MISSING LADSPA PLUGIN".into(),
+                                summary: format!("Plugin not installed: {rest}"),
+                                detail: "The clip has an audio effect referencing a \
+                                         LADSPA plugin that's no longer on disk. \
+                                         Install the plugin and rescan from Tools \
+                                         \u{2192} Audio Plugins, or remove the effect \
+                                         from the clip."
+                                    .into(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Missing AI mask files — every ExternalMatte node whose
+    //    matte_image_path has been evicted from ~/.cache/klipp/ai_masks
+    //    (the cache is LRU-pruned to 2 GB on app start).
+    if let Some(seq) = active {
+        for track in &seq.tracks {
+            for clip in &track.clips {
+                for node in &clip.node_graph.nodes {
+                    if let klipp_nodes::NodeKind::ExternalMatte = node.kind {
+                        if let Some(path) = node.params.matte_image_path.as_ref() {
+                            if !path.exists() {
+                                let display: String = path
+                                    .file_name()
+                                    .map(|s: &std::ffi::OsStr| {
+                                        s.to_string_lossy().into_owned()
+                                    })
+                                    .unwrap_or_else(|| {
+                                        path.to_string_lossy().into_owned()
+                                    });
+                                findings.push(Finding {
+                                    severity: Severity::Warning,
+                                    category: "MISSING AI MASK".into(),
+                                    summary: format!(
+                                        "Mask cache file missing: {display}"
+                                    ),
+                                    detail: format!(
+                                        "An AI-generated matte was evicted from the \
+                                         2 GB mask cache before the project was \
+                                         reopened. The clip's mask falls back to \
+                                         pass-through (no mask). Re-run the AI tool \
+                                         on this clip to regenerate. Path: {}",
+                                        path.display()
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    findings
+}
+
+fn report_as_text(findings: &[Finding]) -> String {
+    if findings.is_empty() {
+        return "Klipp Project Doctor\n====================\n\nNo issues detected.\n".into();
+    }
+    let mut out = String::new();
+    out.push_str("Klipp Project Doctor\n====================\n\n");
+    out.push_str(&format!("{} issue(s) found:\n\n", findings.len()));
+    for f in findings {
+        let sev = match f.severity {
+            Severity::Error => "ERROR",
+            Severity::Warning => "WARN ",
+            Severity::Info => "INFO ",
+        };
+        out.push_str(&format!("[{}] [{}] {}\n", sev, f.category, f.summary));
+        out.push_str(&format!("    {}\n\n", f.detail));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn err(cat: &str) -> Finding {
+        Finding {
+            severity: Severity::Error,
+            category: cat.into(),
+            summary: format!("issue in {cat}"),
+            detail: "details".into(),
+        }
+    }
+
+    #[test]
+    fn report_text_empty_says_no_issues() {
+        let s = report_as_text(&[]);
+        assert!(s.contains("No issues detected"));
+    }
+
+    #[test]
+    fn report_text_lists_findings_with_severity_tags() {
+        let findings = vec![
+            err("MISSING MEDIA"),
+            Finding {
+                severity: Severity::Warning,
+                category: "DISABLED LADSPA IN USE".into(),
+                summary: "warn summary".into(),
+                detail: "warn detail".into(),
+            },
+        ];
+        let s = report_as_text(&findings);
+        assert!(s.contains("[ERROR]"));
+        assert!(s.contains("[WARN ]"));
+        assert!(s.contains("MISSING MEDIA"));
+        assert!(s.contains("DISABLED LADSPA IN USE"));
+        assert!(s.contains("2 issue(s) found"));
+    }
+}

@@ -748,6 +748,13 @@ pub struct AppState {
     /// query, "last scanned" timestamp, in-flight rescan flag.
     pub audio_plugins_dialog: crate::panels::audio_plugins::AudioPluginsDialogState,
 
+    /// Whether the System Probe modal is visible. Snapshots GPU /
+    /// ONNX runtime / audio backend state for bug reports.
+    pub show_system_probe: bool,
+
+    /// Whether the Project Doctor modal is visible.
+    pub show_project_doctor: bool,
+
     // Cache manager dialog (#78)
     /// Whether the Cache Manager modal is visible.
     pub show_cache_manager: bool,
@@ -2392,6 +2399,8 @@ impl AppState {
             || self.show_render_queue
             || self.show_ai_models_dialog
             || self.show_audio_plugins_dialog
+            || self.show_system_probe
+            || self.show_project_doctor
             || self.show_cache_manager
             || self.show_command_palette
             || self.quick_look_path.is_some()
@@ -2465,6 +2474,8 @@ impl Default for AppState {
             show_ai_models_dialog: false,
             show_audio_plugins_dialog: false,
             audio_plugins_dialog: crate::panels::audio_plugins::AudioPluginsDialogState::default(),
+            show_system_probe: false,
+            show_project_doctor: false,
             show_cache_manager: false,
             cache_categories: Vec::new(),
             show_clip_properties: false,

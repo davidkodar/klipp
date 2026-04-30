@@ -441,6 +441,18 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::Cmd(AppCommand::ClearAllAudioPluginsDisabled),
         enabled: true,
     });
+    e.push(PaletteEntry {
+        label: Cow::Borrowed("System Probe…"),
+        shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Cmd(AppCommand::OpenSystemProbe),
+        enabled: true,
+    });
+    e.push(PaletteEntry {
+        label: Cow::Borrowed("Project Doctor…"),
+        shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Cmd(AppCommand::OpenProjectDoctor),
+        enabled: true,
+    });
 
     e
 }

@@ -940,6 +940,16 @@ pub enum AppCommand {
     /// (with a confirmation prompt rendered there). Persists the
     /// now-empty disabled set and rebuilds the registry.
     ClearAllAudioPluginsDisabled,
+    /// Open the System Probe modal — read-only summary of GPU
+    /// vendor, ONNX Runtime status, audio backend, build features,
+    /// Klipp version. Single-shot snapshot intended to paste into
+    /// bug reports.
+    OpenSystemProbe,
+    /// Open the Project Doctor modal — scans the currently-loaded
+    /// `.klipp` directory for missing media, missing LADSPA
+    /// plugins, missing AI mask files, and other inconsistencies.
+    /// Read-only report in v1; per-issue Fix actions are queued.
+    OpenProjectDoctor,
     BeginScrub,
     /// End timeline scrubbing — engine restores full-res decode.
     EndScrub,

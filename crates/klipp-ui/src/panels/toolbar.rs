@@ -1016,6 +1016,15 @@ impl ToolbarPanel {
                 cmds.push(AppCommand::ShowRenderQueue);
                 ui.close_menu();
             }
+            ui.separator();
+            if ui.button("Project Doctor\u{2026}").clicked() {
+                cmds.push(AppCommand::OpenProjectDoctor);
+                ui.close_menu();
+            }
+            if ui.button("System Probe\u{2026}").clicked() {
+                cmds.push(AppCommand::OpenSystemProbe);
+                ui.close_menu();
+            }
         });
     }
 
