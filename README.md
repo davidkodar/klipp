@@ -6,18 +6,23 @@
 
 ---
 
-## Goals
+## Direction
 
-- A capable, native NLE for Linux — magnetic timeline, professional colour pipeline, on-device AI assist
-- GPU-accelerated playback (NVDEC), effects (Vulkan compute), and ML inference (CUDA EP)
-- Linear-light colour pipeline with ACEScg working space and per-clip source colourspace detection
-- On-device AI tools — masking, isolation, instance segmentation — no cloud calls
-- Direct codec support via FFmpeg
-- Permissive bundled assets so the distribution stays redistributable
+Things being explored — none finished:
+
+- A native NLE for Linux with a magnetic timeline
+- A linear-light colour pipeline with ACEScg working space and per-clip source-colourspace detection
+- GPU-accelerated playback, effects, and ML inference
+- On-device AI assist (masking, isolation, segmentation) — no cloud calls
+- Permissive bundled assets so the source stays redistributable
 
 ## Status
 
-🚧 **Early development.** Core editing, colour grading, GPU effects, and AI tools are functional, but expect rough edges, missing polish, and breaking changes. Pre-built binaries are not yet released — Klipp is currently built from source.
+🚧 **Very early development. Hobby project by a single developer.**
+
+Many subsystems are stubbed, half-built, or actively changing week-to-week. There is no stability commitment, no release schedule, no pre-built binaries, and no support — if you build it from source, expect to hit rough edges, breakage, and incomplete features. A long list of fundamentals (reliability, soak-testing, AMD/Intel GPU support, large parts of the audio and effects surface) is still ahead of any "usable for real work" milestone.
+
+If you're looking for a Linux NLE you can rely on today, use Kdenlive, DaVinci Resolve, or Olive. Klipp is not a replacement for any of them yet.
 
 ## Building
 
@@ -95,42 +100,38 @@ Klipp is a Cargo workspace with focused crates organised into layers. Dependenci
 
 ## Tech Stack
 
-- **UI** — [egui](https://github.com/emilk/egui) — immediate mode, custom timeline + scope widgets
-- **GPU** — [wgpu](https://wgpu.rs/) — Vulkan backend, custom WGSL compute shaders
-- **Decode + Encode** — [ffmpeg-next](https://crates.io/crates/ffmpeg-next) — FFmpeg bindings, CUDA NVDEC + NVENC
+The libraries doing most of the heavy lifting:
+
+- **UI** — [egui](https://github.com/emilk/egui)
+- **GPU** — [wgpu](https://wgpu.rs/) (Vulkan backend)
+- **Decode / Encode** — [ffmpeg-next](https://crates.io/crates/ffmpeg-next)
 - **Audio** — [cpal](https://crates.io/crates/cpal) with PipeWire / ALSA / JACK
-- **AI inference** — [ort](https://crates.io/crates/ort) (ONNX Runtime, load-dynamic) and [candle](https://crates.io/crates/candle-core) (pure-Rust ML)
-- **Colour** — Bespoke ACEScg pipeline with auto-detected source colourspaces (Sony / Canon / Panasonic / ARRI / Apple / RED)
+- **AI inference** — [ort](https://crates.io/crates/ort) and [candle](https://crates.io/crates/candle-core)
+- **Colour** — in-house ACEScg pipeline with source-colourspace auto-detection for common camera log formats (Sony / Canon / Panasonic / ARRI / Apple / RED). Not yet validated against reference workflows.
 
 ## Documentation
 
-The full documentation is an mdbook under [`docs/`](docs/). Build and view locally:
+There's an mdbook under [`docs/`](docs/) that documents what's currently built:
 
 ```bash
 mdbook serve docs --open
 ```
 
-Highlights:
-
-- [Getting Started → Installation](docs/src/getting-started/installation.md)
-- [Quick Start](docs/src/getting-started/quick-start.md)
-- [AI Tools Overview](docs/src/ai-tools/overview.md)
-- [Working Colourspaces (ACEScg)](docs/src/color/working-colorspaces.md)
-- [Magnetic Timeline](docs/src/editing/magnetic-timeline.md)
-- [Architecture Reference](docs/src/reference/architecture.md)
+Useful entry points: [Installation](docs/src/getting-started/installation.md), [Quick Start](docs/src/getting-started/quick-start.md), [Architecture Reference](docs/src/reference/architecture.md).
 
 ## AI Models
 
-Klipp ships an AI model catalogue with on-device inference. Models are downloaded on demand, verified by SHA-256, and stored in `~/.cache/klipp/models/`.
+Models are downloaded on demand, verified by SHA-256 against the bundled manifest, and stored in `~/.cache/klipp/models/`. Klipp does not redistribute weights — the manifest points at upstream HuggingFace mirrors.
 
-| Model | Size | Licence | Purpose |
-|---|---|---|---|
-| BiRefNet Lite | 224 MB | MIT | Remove background |
-| MobileSAM | 40 MB | Apache-2.0 | Click-to-mask isolation |
-| RF-DETR-Seg (Preview) | 134 MB | Apache-2.0 | Multi-class instance segmentation, fast tier |
-| RF-DETR-Seg (Medium) | 139 MB | Apache-2.0 | Multi-class instance segmentation, recommended |
+Currently wired up:
 
-Klipp does not redistribute weights — the bundled manifest points at upstream HuggingFace mirrors and verifies bytes via SHA-256. See [docs/src/ai-tools/models.md](docs/src/ai-tools/models.md).
+| Model | Size | Licence |
+|---|---|---|
+| BiRefNet Lite | 224 MB | MIT |
+| MobileSAM | 40 MB | Apache-2.0 |
+| RF-DETR-Seg (Preview / Medium) | 134 / 139 MB | Apache-2.0 |
+
+See [docs/src/ai-tools/models.md](docs/src/ai-tools/models.md) for the full picture, including licence audit notes.
 
 ## Bundled Assets & Third-Party Credits
 
