@@ -1,0 +1,100 @@
+# Models & Manager
+
+Klipp ships a catalogue of AI models that can be downloaded on demand from the **AI Models** dialog. All models are verified by SHA-256 against a manifest bundled with Klipp; bytes that don't match are rejected.
+
+Open the dialog from **Window → AI Models**, from the AI Tools panel footer (`Manage AI models`), or via the [Command Palette](../ui/command-palette.md).
+
+## Bundled Catalogue
+
+| Model | Size | License | Runtime | Best for |
+|---|---|---|---|---|
+| **BiRefNet Lite** | 224 MB | MIT | ort | Remove Background |
+| **MobileSAM** | 40 MB | Apache-2.0 | candle | Isolate Object (point / box / scribble) |
+| **RF-DETR-Seg (Preview)** | 134 MB | Apache-2.0 | ort | Detect Objects (fast, less accurate) |
+| **RF-DETR-Seg (Medium)** | 139 MB | Apache-2.0 | ort | Detect Objects (recommended) |
+| SAM 2.1 Tiny / Small / Base+ / Large | (pending) | Apache-2.0 | ort | Track Object (future) |
+
+The four SAM 2.1 entries appear in the dialog as **Pending release** until the SAM 2 video-tracking backend lands.
+
+## Hosting
+
+Klipp does not redistribute model weights. The bundled manifest points at upstream sources:
+
+- BiRefNet Lite — [huggingface.co/onnx-community/BiRefNet_lite-ONNX](https://huggingface.co/onnx-community/BiRefNet_lite-ONNX)
+- MobileSAM — [huggingface.co/lmz/candle-sam](https://huggingface.co/lmz/candle-sam) (mirrored from upstream)
+- RF-DETR-Seg Preview — [huggingface.co/bukuroo/RF-DETR-Seg-ONNX](https://huggingface.co/bukuroo/RF-DETR-Seg-ONNX)
+- RF-DETR-Seg Medium — [huggingface.co/davidkodar/rf-detr-seg-medium-onnx](https://huggingface.co/davidkodar/rf-detr-seg-medium-onnx) (Klipp-hosted mirror; upstream Roboflow has not published a Medium ONNX yet)
+
+This is the same pattern Kdenlive uses for its Vosk and SAM2 model lineup. The trade-off is that upstream URLs can move or break — when they do, Klipp ships a manifest update in a patch release. SHA-256 verification means that if upstream replaces a file with bytes Klipp has not blessed, the download is rejected and the user is told.
+
+## The Dialog
+
+Each row shows:
+
+- **Status dot** — green (installed), amber (downloading), grey (not installed), red (verification failed)
+- **Display name** with a `RECOMMENDED` badge if it is the default for any task
+- **(i) icon** — opens a model details modal with full attribution, license text, and source URL
+- **Three-dot kebab menu** with six actions:
+  - Show details
+  - Verify integrity (re-hash the on-disk file)
+  - Reinstall (re-download)
+  - Show in cache folder
+  - Copy model info (clipboard)
+  - Uninstall…
+
+The list supports filter by task, sort by Recommended / Display name / Size / Last used / License, and a search box.
+
+## On-Disk Layout
+
+```
+~/.cache/klipp/models/
+  birefnet_lite_v1/
+    model.onnx          (224 MB)
+    .telemetry.json     (last used, average inference time)
+  mobile_sam_v1/
+    mobile_sam-tiny-vitt.safetensors  (40 MB)
+    .telemetry.json
+  rf_detr_seg_medium_v1/
+    rf_detr_seg_medium_v1.onnx   (139 MB)
+    .telemetry.json
+```
+
+Models can be safely deleted from disk — Klipp re-detects on next launch and the AI Models dialog will show them as not installed.
+
+## Telemetry
+
+Klipp records per-model average inference time and last-used timestamp in `.telemetry.json` next to each model. This data is **never** transmitted — it is used only to drive the AI Tools running-state progress bar and the *Last used* sort key.
+
+To wipe telemetry: delete the `.telemetry.json` files, or use **Uninstall** from the kebab menu (which removes the model and its telemetry together).
+
+## Custom Manifest
+
+Power users can override the bundled manifest by placing `models.toml` at `~/.config/klipp/models.toml`. Klipp loads the user manifest first; missing entries fall back to the bundled one. The schema is documented in `crates/klipp-ml/src/manifest.rs`. Required fields per entry:
+
+```toml
+[[model]]
+id = "stable_id"
+display_name = "User-facing name"
+size_bytes = 12345678
+sha256 = "64-char-lowercase-hex"
+license = "Apache-2.0"
+attribution = "Credit shown in consent dialog"
+sources = [
+    { url = "https://..." },
+]
+kind = "mask_generator"     # see manifest.rs for all kinds
+runtime = "ort"             # or "candle"
+prompts = "point | box | scribble"   # or "" for automatic models
+```
+
+Downloads exceeding `size_bytes` by more than 5 % are rejected — a guard against malicious or runaway downloads.
+
+## License Audit
+
+Klipp's permissive distribution model (GPL-3.0 with permissive bundled assets) imposes hard licence limits on which models can ship in the catalogue:
+
+**On the GO list** — BiRefNet (MIT), U²-Net (Apache-2.0), MODNet (Apache-2.0), RF-DETR-Seg (Apache-2.0), MobileSAM (Apache-2.0), SAM family (Apache-2.0), Whisper (MIT).
+
+**Off-limits** — RMBG (CC-BY-NC: non-commercial-only), Ultralytics YOLO and YOLO-Seg (AGPL-3.0: viral copyleft would force Klipp to AGPL), YOLO-NAS-Seg (Deci-restricted custom licence).
+
+When proposing new models for inclusion, weights licence — not just code licence — is the gate.

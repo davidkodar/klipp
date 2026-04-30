@@ -14,16 +14,22 @@
 - [Menu Bar](./ui/menu-bar.md)
 - [Toolbar](./ui/toolbar.md)
 - [Viewer](./ui/viewer.md)
+- [Source Viewer](./ui/source-viewer.md)
 - [Timeline](./ui/timeline.md)
 - [Browser Panel](./ui/browser.md)
 - [Inspector Panel](./ui/inspector.md)
+- [Command Palette](./ui/command-palette.md)
 
 # Editing
 
 - [Importing Media](./editing/importing.md)
 - [Working with Clips](./editing/clips.md)
+- [Magnetic Timeline](./editing/magnetic-timeline.md)
 - [Transitions](./editing/transitions.md)
 - [Markers](./editing/markers.md)
+- [Titles](./editing/titles.md)
+- [Stabilization](./editing/stabilization.md)
+- [Scene Detection](./editing/scene-detection.md)
 - [Keyboard Shortcuts](./editing/shortcuts.md)
 
 # Audio
@@ -32,11 +38,27 @@
 - [Audio Effects](./audio/effects.md)
 - [Audio Hardware](./audio/hardware.md)
 
-# Color & Effects
+# Color & Grading
 
 - [Color Grading](./color/grading.md)
-- [GPU Effects](./color/gpu-effects.md)
+- [Working Colorspaces](./color/working-colorspaces.md)
+- [Source Colorspace & Log](./color/source-colorspace.md)
 - [Scopes](./color/scopes.md)
+- [Node Graph](./color/node-graph.md)
+- [Keyframes](./color/keyframes.md)
+
+# Effects
+
+- [GPU Effects](./effects/gpu-effects.md)
+
+# AI Tools
+
+- [Overview](./ai-tools/overview.md)
+- [Models & Manager](./ai-tools/models.md)
+- [Remove Background](./ai-tools/remove-background.md)
+- [Isolate Object](./ai-tools/isolate-object.md)
+- [Detect Objects](./ai-tools/detect-objects.md)
+- [GPU Runtime](./ai-tools/gpu-runtime.md)
 
 # Export
 
@@ -48,12 +70,14 @@
 
 - [General](./preferences/general.md)
 - [System & Performance](./preferences/system.md)
-- [Appearance](./preferences/appearance.md)
+- [Appearance & Themes](./preferences/appearance.md)
 - [Audio & Hardware](./preferences/audio.md)
 - [Keyboard Shortcuts](./preferences/shortcuts.md)
 
 # Technical Reference
 
 - [Architecture](./reference/architecture.md)
+- [Project Format](./reference/project-format.md)
 - [Supported Formats](./reference/formats.md)
+- [File Locations](./reference/file-locations.md)
 - [Troubleshooting](./reference/troubleshooting.md)

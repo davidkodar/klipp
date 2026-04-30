@@ -1,34 +1,42 @@
-# Interchange Formats
+# FCPXML & EDL
 
-Klipp supports exporting project timelines in interchange formats for use in other editing applications.
+Klipp supports exporting and importing project timelines in interchange formats for use in other editing applications.
 
 ## FCPXML 1.9
 
-Export your timeline as FCPXML (Final Cut Pro XML) version 1.9 for import into Final Cut Pro and other compatible NLEs.
+Final Cut Pro XML version 1.9 — supported by Final Cut Pro and DaVinci Resolve, partially by Premiere Pro.
 
-### What Is Exported
-
+### What is exported
 - Timeline structure (sequence, tracks)
 - Clip positions and durations
-- In/out points
+- In / out points
 - Basic transitions (cross dissolves)
 - Audio levels
 - Markers
+- Clip metadata (resolution, frame rate)
 
-### What Is Not Exported
-
-- GPU effects and color grades (application-specific)
+### What is not exported
+- GPU effects and colour grades (application-specific representations)
 - Compound clip internal structure
 - Audio effects (EQ, compressor)
-- Keyframe animation
+- Keyframe animation outside of basic opacity / transform
+- AI-generated mattes (the matte PNGs are external; references would not survive in another NLE)
 
-### How to Export
+### Exporting
 
-1. Go to **File > Export**
-2. In the export dialog, select the **Interchange** tab
+1. **File → Export**
+2. Select the **Interchange** tab
 3. Choose **FCPXML 1.9**
-4. Select the output file location
-5. Click **Export**
+4. Pick the output file location
+5. **Export**
+
+### Importing
+
+1. **File → Import FCPXML**
+2. Pick the FCPXML file
+3. Klipp creates a new sequence in the current project mirroring the FCPXML structure
+
+Klipp's importer is verified against real exports from Final Cut Pro and DaVinci Resolve — not just spec / docs. This matters because in practice both applications take liberties with the FCPXML schema; matching their actual output is more useful than matching the spec.
 
 ### Notes
 
@@ -36,32 +44,30 @@ FCPXML references media files by their original file paths. Ensure the receiving
 
 ## CMX 3600 EDL
 
-Export an Edit Decision List in CMX 3600 format, the industry-standard text-based interchange format.
+Industry-standard text-based interchange format. Single-track only.
 
-### What Is Exported
-
-- Cut edit points (in/out timecodes for source and record)
+### What is exported
+- Cut edit points (in / out timecodes for source and record)
 - Dissolve transitions with duration
 - Source file references by reel name
 
-### What Is Not Exported
-
-- Multiple video tracks (EDL is single-track)
-- Effects, color grades, audio mixing
+### What is not exported
+- Multiple video tracks (EDL is single-track by definition)
+- Effects, colour grades, audio mixing
 - Markers
 
-### How to Export
+### Exporting
 
-1. Go to **File > Export**
-2. In the export dialog, select the **Interchange** tab
+1. **File → Export**
+2. Select the **Interchange** tab
 3. Choose **CMX 3600 EDL**
-4. Configure the frame rate to match your timeline
-5. Select the output file location
-6. Click **Export**
+4. Configure the timecode frame rate (drop-frame / non-drop-frame)
+5. Pick the output file
+6. **Export**
 
 ### EDL Format
 
-The exported EDL follows standard CMX 3600 conventions:
+Output follows standard CMX 3600 conventions:
 
 ```
 TITLE: My Project
@@ -76,4 +82,13 @@ FCM: NON-DROP FRAME
 
 ### Compatibility
 
-CMX 3600 EDL is supported by virtually all major NLEs including DaVinci Resolve, Avid Media Composer, Adobe Premiere Pro, and Final Cut Pro. It is the most reliable interchange format for simple timelines.
+CMX 3600 EDL is supported by virtually all major NLEs — DaVinci Resolve, Avid Media Composer, Premiere Pro, Final Cut Pro. The most reliable interchange format for simple, single-track timelines.
+
+## When to Use Which
+
+| Need | Use |
+|---|---|
+| Round-trip a multi-track edit to FCP / Resolve | FCPXML |
+| Send a colourist a cut list against camera reels | EDL |
+| Archive a timeline with effect parameters | Klipp's native `.klipp` directory format |
+| Hand off to a sound engineer | Export OMF (planned) or stems |

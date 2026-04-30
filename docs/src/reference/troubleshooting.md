@@ -1,100 +1,158 @@
 # Troubleshooting
 
-Common issues and solutions for Klipp.
+Common issues and solutions.
 
 ## Log File
 
-Klipp writes diagnostic logs to `klipp-debug.log` in the working directory. This file contains detailed information about decode pipeline selection, GPU initialization, audio device setup, and any errors encountered during operation.
+Klipp writes diagnostic logs to `klipp-debug.log` in the working directory. The file contains decode pipeline selection, GPU initialisation, audio device setup, ML runtime resolution, and any errors.
 
-When reporting issues, include the relevant sections of this log file.
+When reporting issues, include the relevant sections.
 
 ## Performance Overlay
 
 Press **P** to toggle the performance overlay. It displays:
 
-- UI FPS, decode backend (NVDEC/SW), playback state
-- Frame queue depth, dropped frames
-- CPU and memory usage
+- UI FPS, decode backend (NVDEC / Software)
+- Playback state, frame queue depth, dropped frames
+- CPU usage (process-specific, EMA-smoothed) and memory in MB
 
-This is the fastest way to diagnose playback and performance problems.
+The fastest way to diagnose playback and performance problems.
 
 ## Common Issues
 
 ### VAAPI Produces Black Frames (NVIDIA)
 
-**Symptom**: Video plays but shows all-black or all-zero frames when using VAAPI decode on NVIDIA GPUs.
+**Symptom** — Video plays but shows all-black or all-zero frames when using VAAPI on NVIDIA.
 
-**Cause**: The nvidia-vaapi-driver has known issues with AV1 and VP9 codecs, producing all-zero frame data.
+**Cause** — `nvidia-vaapi-driver` has known issues with AV1 and VP9, producing all-zero frame data.
 
-**Solution**: Set decode preference to CUDA NVDEC in **Edit > Preferences > System > Hardware Decode**. NVDEC handles all codecs correctly on NVIDIA hardware.
+**Fix** — Use CUDA NVDEC. Klipp now defaults to NVDEC and skips VAAPI entirely on NVIDIA hardware.
 
-### Vulkan Not Detected (CachyOS/Arch)
+### Vulkan Not Detected (CachyOS / Arch)
 
-**Symptom**: GPU effects fall back to CPU. Performance overlay shows no GPU effects.
+**Symptom** — GPU effects fall back to CPU. Performance overlay shows no GPU effects.
 
-**Cause**: On CachyOS and some Arch-based distributions, the NVIDIA Vulkan ICD file is located at `/usr/share/vulkan/icd.d/nvidia_icd.json` instead of the standard `/etc/vulkan/icd.d/` path.
+**Cause** — On CachyOS, the NVIDIA Vulkan ICD lives at `/usr/share/vulkan/icd.d/nvidia_icd.json` rather than `/etc/vulkan/icd.d/`.
 
-**Solution**: Klipp sets the `VK_DRIVER_FILES` environment variable automatically. If issues persist, set it manually:
+**Fix** — Klipp sets `VK_DRIVER_FILES` automatically. If issues persist, set it manually:
 
 ```bash
 export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/nvidia_icd.json
-cargo rr
+cargo r
 ```
 
 ### Choppy 4K Playback
 
-**Symptom**: 4K footage plays with dropped frames or stuttering.
+**Symptom** — 4K footage plays with dropped frames or stuttering.
 
-**Solutions**:
-1. Enable CUDA NVDEC in preferences (if using NVIDIA GPU)
-2. Set playback resolution to **Half** in **Edit > Preferences > System**
-3. Increase frame queue size (default 16, try 24 or 32)
+**Fixes**
+
+1. Ensure CUDA NVDEC is the active decode backend (check the performance overlay)
+2. Set playback resolution to **Half** in **Edit → Preferences → System**
+3. Increase frame queue size (default 16; try 24 or 32)
 4. Close other GPU-intensive applications
-5. Use proxy media for editing, then switch to full resolution for export
+5. Use proxy media for editing, switch to full resolution for export
 
 ### Audio Crackling or Dropouts
 
-**Symptom**: Audio plays with pops, clicks, or gaps.
+**Symptom** — Audio plays with pops, clicks, or gaps.
 
-**Solutions**:
-1. Increase audio buffer size in **Edit > Preferences > Audio** (try 1024 or 2048 samples)
-2. Check that PipeWire or ALSA is running correctly
+**Fixes**
+
+1. Increase audio buffer size in **Edit → Preferences → Audio** (try 1024 or 2048 samples)
+2. Check that PipeWire or ALSA is running (`systemctl --user status pipewire`)
 3. Ensure no other application has exclusive access to the audio device
-4. Verify CPU usage is not at 100% (heavy effects can starve the audio thread)
+4. Verify CPU usage is not at 100% — heavy effects can starve the audio thread
 
 ### No Audio Output
 
-**Symptom**: Video plays but no sound is heard.
+**Symptom** — Video plays but no sound.
 
-**Solutions**:
-1. Check the correct output device is selected in **Edit > Preferences > Audio**
-2. Verify system volume and application volume are not muted
-3. Check that the clip has audio (some video files are video-only)
-4. Try selecting a different output device or the system default
+**Fixes**
+
+1. Check the correct output device is selected in **Edit → Preferences → Audio**
+2. Verify system and application volume are not muted
+3. Check that the clip has audio (some files are video-only)
+4. Try a different output device or the system default
 
 ### High Memory Usage
 
-**Symptom**: Klipp uses excessive RAM during long editing sessions.
+**Symptom** — Klipp uses excessive RAM during long editing sessions.
 
-**Solutions**:
-1. Reduce frame queue size in **Edit > Preferences > System**
-2. Clear the cache in **Edit > Preferences > System > Clear Cache**
-3. Reduce undo history depth in **Edit > Preferences > General**
+**Fixes**
+
+1. Reduce frame queue size in **Edit → Preferences → System**
+2. Clear the cache (**Edit → Preferences → System → Clear Cache**)
+3. Reduce undo history depth in **Edit → Preferences → General**
 4. Close and reopen large projects periodically
 
 ### Slow Startup
 
-**Symptom**: Klipp takes a long time to start.
+**Symptom** — Klipp takes a long time to launch.
 
-**Cause**: GPU initialization (Vulkan device creation, shader compilation) and CUDA detection happen at startup.
+**Cause** — On a clean install, the first launch builds the font registry by scanning system fonts (typically 16 s on a fully-populated system).
 
-**Solution**: This is normal on first launch. Subsequent launches may be faster due to driver shader caching. If startup consistently exceeds 10 seconds, check the log file for errors during GPU initialization.
+**Fix** — Subsequent launches should be ~175 ms because the font registry is cached at `~/.cache/klipp/font_registry.json`. If startup consistently exceeds a few seconds after the first launch, the cache may be invalidated — check that the cache file exists and is readable.
+
+### AI Inference on CPU Even Though I Have an NVIDIA GPU
+
+**Symptom** — AI Tools panel footer shows "GPU detected — runtime libs missing" or "CPU only".
+
+**Cause** — `cudnn` runtime libraries are not installed.
+
+**Fix** — Install `cudnn` for your distribution:
+
+```bash
+sudo pacman -S cudnn          # Arch / CachyOS
+sudo apt install libcudnn9-cuda-12   # Ubuntu / Debian
+sudo dnf install libcudnn9    # Fedora
+```
+
+See [GPU Runtime](../ai-tools/gpu-runtime.md) for the full chain.
+
+### libonnxruntime.so Not Found
+
+**Symptom** — AI Models dialog shows "ort runtime not found".
+
+**Fix** — Install `onnxruntime` from your distro, or download a prebuilt from the upstream releases page and extract to `~/.local/lib/onnxruntime/`. Klipp probes `~/.local/lib/onnxruntime*`, `/usr/lib/`, `/usr/local/lib/`, and `/opt/onnxruntime/lib/` automatically.
+
+### Build Fails: "Failed to execute nvcc"
+
+**Symptom** — `cargo r-cuda` or `cargo build --features ai-candle-cuda` fails with a `cudarc` error mentioning `nvcc`.
+
+**Cause** — `cudarc` requires the CUDA Toolkit at build time.
+
+**Fix** — Install CUDA Toolkit, or use `cargo r-ort-cuda` (no nvcc required, covers BiRefNet + RF-DETR-Seg but not MobileSAM).
+
+```bash
+sudo pacman -S cuda           # CachyOS / Arch — provides /opt/cuda/bin/nvcc
+sudo apt install nvidia-cuda-toolkit  # Ubuntu / Debian
+```
+
+### Mask Was Applied but the Clip Looks Unchanged
+
+**Symptom** — Apply mask from AI Tools succeeded (toast appeared), but the clip's appearance hasn't changed.
+
+**Cause** — The mask is wired to the clip's first Corrector, but if the Corrector has no active grade, the matte has nothing to gate. The matte itself doesn't change the image — it gates a colour operation.
+
+**Fix** — Open the inspector → Color tab → bring up the wheels or curves and apply some grade. The mask now restricts that grade to its area.
 
 ## Performance Tips
 
 - Use CUDA NVDEC for all video decode on NVIDIA GPUs
-- Set playback resolution to Half for 4K projects
+- Set playback resolution to **Half** for 4K projects
 - Keep frame queue at 16 (default) unless experiencing issues
 - Use the Color Grading workspace only when grading (scopes add GPU load)
 - Close unused panels to reduce UI rendering overhead
 - Use background rendering for effects-heavy timelines
+- Pre-cache thumbnails by pre-loading bins in the browser before editing
+
+## Reporting Bugs
+
+Klipp does not yet have a public issue tracker. When the project opens for issues, log filings should include:
+
+- Klipp version (visible in **Help → About**)
+- Linux distribution and kernel version (`uname -r`)
+- GPU model and driver version
+- Relevant section of `klipp-debug.log`
+- Reproduction steps

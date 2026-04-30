@@ -1,57 +1,64 @@
 # Keyboard Shortcuts Preferences
 
-Access keyboard shortcut preferences from **Edit > Preferences > Keyboard**.
+Access keyboard shortcut preferences from **Edit → Preferences → Keyboard**.
 
 ## Shortcut Editor
 
-The shortcut editor displays all available actions organized by category. Each row shows:
+The shortcut editor displays all available actions organised by category. Each row shows:
 
-- **Action name** -- Description of what the shortcut does
-- **Current binding** -- The currently assigned key combination
-- **Default binding** -- The factory default (shown when modified)
+- **Action name** — description of what the shortcut does
+- **Current binding** — the currently assigned key combination
+- **Default binding** — the factory default (shown when modified)
 
 ## Remapping Shortcuts
 
 To change a keyboard shortcut:
 
-1. Open **Edit > Preferences > Keyboard**
-2. Find the action you want to remap (use the search field to filter)
-3. Click on the current binding for that action
-4. Press the new key combination you want to assign
-5. The binding updates immediately
+1. Open **Edit → Preferences → Keyboard**
+2. Find the action (use the search field to filter)
+3. Click on the current binding
+4. Press the new key combination
+5. Binding updates immediately
 
 To clear a binding, click the binding and press **Escape** or click the clear button.
 
 ## Conflict Detection
 
-When you assign a key combination that is already used by another action, Klipp highlights the conflict:
+When you assign a key combination already used by another action, Klipp highlights the conflict:
 
 - The conflicting actions are both highlighted in the list
-- A warning message indicates which other action uses the same binding
-- You can choose to proceed (the old binding is removed) or cancel
+- A warning indicates which other action uses the same binding
+- You can proceed (the old binding is removed) or cancel
 
-Klipp prevents assigning system-reserved combinations that would conflict with window management.
+System-reserved combinations that conflict with window management are not assignable.
 
 ## Search
 
-Type in the search field at the top of the shortcuts panel to filter actions by name. This helps you find specific shortcuts quickly in the full list.
+Type in the search field at the top of the shortcuts panel to filter actions by name. Helps locate shortcuts in the full list.
 
 ## Categories
 
-Shortcuts are organized into the following categories:
+Shortcuts are organised into these categories:
 
-- **File** -- Project operations (new, open, save, export)
-- **Edit** -- Clipboard and selection operations
-- **Tools** -- Editing tool selection
-- **Timeline** -- Timeline navigation and editing
-- **Mark** -- In/out points and markers
-- **Transport** -- Playback control
-- **View** -- UI and overlay toggles
+- **File** — Project operations (new, open, save, export)
+- **Edit** — Clipboard and selection
+- **Tools** — Editing tool selection
+- **Timeline** — Timeline navigation and editing
+- **Mark** — In/out points and markers
+- **Transport** — Playback control
+- **Clips** — Per-clip operations (enable, solo, transitions)
+- **AI Tools** — Open panel, run task, apply mask
+- **View** — UI and overlay toggles
+- **Window** — Workspace switching, panel toggles
 
 ## Reset to Defaults
 
-Click **Reset to Defaults** at the bottom of the shortcuts panel to restore all keyboard shortcuts to their factory default bindings. This cannot be undone, so confirm when prompted.
+**Reset to Defaults** at the bottom of the shortcuts panel restores all keyboard shortcuts to their factory defaults. This cannot be undone, so confirm when prompted.
 
-## Shortcut Persistence
+## Persistence
 
-Custom shortcut bindings are saved in your Klipp preferences and persist across sessions. They are stored separately from project files, so your shortcuts are the same regardless of which project is open.
+Custom shortcut bindings are saved at `~/.config/klipp/keybindings.json` and persist across sessions and Klipp updates. They are stored separately from project files.
+
+## Default Reference
+
+A complete list of default shortcuts is in the [Keyboard Shortcuts](../editing/shortcuts.md) reference.

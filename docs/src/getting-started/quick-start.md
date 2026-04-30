@@ -1,82 +1,135 @@
 # Quick Start
 
-This guide walks you through creating your first project in Klipp, from launch to export.
+This guide walks you through creating your first project in Klipp, from launch to export, and introduces the core panels along the way.
 
 ## 1. Launch Klipp
 
 ```bash
-cargo rr
+cargo r          # debug
+cargo rr         # release
 ```
 
-Klipp opens with an empty project. The interface shows the viewer at top-left, the media browser at top-right, the timeline at the bottom, and the inspector on the far right.
+Klipp opens with a launch screen. From there you can create a new project or open a recent one.
 
 ## 2. Create a New Project
 
-Go to **File > New Project** (or press **Ctrl+N**). Choose a location and name for your project. Klipp saves projects as `.klipp` directories containing all project metadata.
+Click **New Project** on the launch screen, or use **File → New Project** (**Ctrl+N**) once the editor is open. Choose a location and name. Klipp saves projects as `.klipp` directories containing all metadata, thumbnails, and per-clip cached data.
 
 ## 3. Import Media
 
 Import your footage using one of these methods:
 
-- **File > Import Media** (or press **Ctrl+I**)
+- **File → Import Media** (or **Ctrl+I**)
 - Drag files from your file manager into the media browser
+- Drag a folder onto the browser to import recursively
 
-Klipp accepts most common video, audio, and image formats. Imported media appears in the media browser panel.
+Klipp accepts most common video, audio, and image formats. Imported media appears in the media browser with thumbnails and (for video) a filmstrip strip across the bottom of each tile.
 
 ## 4. Browse Your Media
 
-In the media browser, hover over a clip thumbnail to **skim** through it. Switch between grid and list views using the icons at the top of the browser. Use bins to organize your media into folders.
+In the media browser:
+
+- **Hover** over a clip thumbnail to *skim* through it. The viewer follows your cursor across the filmstrip.
+- **Switch views** between grid and list using the icons at the top of the browser.
+- **Bins** organise media into folders. Right-click in the bin tree for create/rename.
+- **Sort** by name, date, duration, or size from the sort menu.
+- **Search** with the box at the top — matches name, tags, and bin path.
 
 ## 5. Add Clips to the Timeline
 
-Select a clip in the media browser and use one of these methods:
+Select a clip in the media browser, then:
 
-- Press **W** to insert at the playhead position (ripples subsequent clips)
+- Press **W** to insert at the playhead position (ripples subsequent clips down)
 - Press **D** to overwrite at the playhead position
 - Drag the clip directly onto a timeline track
 
+Klipp's timeline is *magnetic* by default — gaps automatically close when you delete or move clips. See [Magnetic Timeline](../editing/magnetic-timeline.md) for the full set of behaviours.
+
 ## 6. Edit on the Timeline
 
-- **V** -- Select tool for moving and trimming clips
-- **B** -- Blade tool for splitting clips at the playhead
-- **R** -- Range tool for selecting portions of clips
-- **Left/Right arrows** -- Step one frame backward/forward
-- **Space** -- Play/pause
-- **J/K/L** -- Shuttle reverse/pause/forward
+Tool shortcuts:
 
-Trim clips by dragging their edges. The magnetic timeline automatically closes gaps when you ripple delete.
+| Key | Tool |
+|---|---|
+| **V** | Select — move and trim clips |
+| **B** | Blade — split clips at the playhead |
+| **R** | Range — select portions of clips |
+
+Transport:
+
+| Key | Action |
+|---|---|
+| **Space** | Play / pause |
+| **J / K / L** | Shuttle reverse / pause / forward |
+| **← / →** | Step one frame backward / forward |
+| **Shift + ← / →** | Step ten frames |
+
+Trim by dragging clip edges. Drop a clip on top of another and Klipp asks whether to insert (ripple) or overwrite.
 
 ## 7. Set In and Out Points
 
-- Press **I** to mark an in point at the playhead
-- Press **O** to mark an out point at the playhead
-- Press **Alt+I** or **Alt+O** to clear in/out points
+- **I** — mark in point at playhead
+- **O** — mark out point at playhead
+- **Alt+I** / **Alt+O** — clear in / out
+- **Shift+I** / **Shift+O** — go to in / out
 
-## 8. Preview Your Edit
+## 8. Adjust Clip Properties
 
-Press **Space** to play your timeline. Use **J/K/L** for variable-speed shuttling. The viewer shows your video with optional overlays (safe areas, grid, zebra stripes) accessible from the View menu.
+Select a clip on the timeline. The **Inspector** on the right shows tabs:
 
-## 9. Add Effects and Color
+- **Video** — Transform, opacity, GPU effects, source colourspace override
+- **Audio** — Volume, pan, EQ, fade curves
+- **Effects** — Per-clip effect chain with reorder + bypass
+- **Info** — Source metadata (codec, resolution, frame rate, colourspace)
 
-Select a clip on the timeline and open the inspector panel:
+Most parameters can be keyframed by clicking the diamond icon next to the value. See [Keyframes](../color/keyframes.md).
 
-- **Video tab** -- Adjust transform, opacity, and apply GPU effects
-- **Audio tab** -- Set volume, pan, and EQ
-- **Color tab** -- Grade with color wheels, curves, and hue/saturation
+## 9. Apply an AI Mask
 
-## 10. Export
+Klipp ships with on-device AI tools for masking and object isolation:
 
-Go to **File > Export** (or press **Ctrl+E**) to open the export dialog. Choose a preset or configure:
+1. Press **Alt+A** to open the AI Tools panel.
+2. Pick a task: *Remove Background*, *Isolate Object*, or *Detect Objects*.
+3. Klipp auto-selects the best model for that task. To override, expand **Advanced** and pick a different model.
+4. Click **Run on current frame**. The first run downloads the model (~40–225 MB) — subsequent runs use the cache.
+5. When complete, click **Apply to clip**. Klipp inserts an `ExternalMatte` node into the clip's colour graph and wires it to the first Corrector.
 
-- Container format (MP4, MKV, MOV)
-- Video codec (H.264, H.265, ProRes, DNxHD)
-- Resolution and frame rate
-- Audio codec (AAC, FLAC, MP3)
+See [AI Tools Overview](../ai-tools/overview.md) for the full workflow.
 
-Click **Export** to render your project.
+## 10. Grade Colour
+
+Open the **Color** workspace from **Window → Workspaces → Color**, or click the colour panel button. From here:
+
+- **Wheels** — Lift, Gamma, Gain, Offset
+- **Curves** — RGB and luma
+- **HSL** — Hue/saturation/luminance qualifiers
+- **Scopes** — Waveform, vectorscope, histogram, parade
+
+Klipp's pipeline is linear-light by default with **ACEScg** as the working colour space. Source clips with camera-log encoding (Sony SLog3, Canon Log, etc.) are auto-detected and decoded through their inverse log curve. See [Working Colorspaces](../color/working-colorspaces.md) for details.
+
+## 11. Export
+
+Go to **File → Export** (**Ctrl+E**). Choose a preset or configure:
+
+- **Container** — MP4, MKV, MOV
+- **Video codec** — H.264, H.265, ProRes, DNxHD
+- **Resolution and frame rate**
+- **Audio codec** — AAC, FLAC, MP3
+- **Output Display Transform** — sRGB, Rec.709, Rec.2020, P3-D65
+
+Click **Export**. Klipp renders in the background; you can keep editing.
+
+## Tips
+
+- The **Command Palette** (**Ctrl+Shift+P**) is the fastest way to find any command. Just start typing.
+- **Performance overlay** (**P**) shows decode backend, GPU effects status, frame drops, and CPU/memory.
+- **Auto-save** runs every 60 seconds while the project is dirty.
+- Project files are plain JSON inside the `.klipp` directory — version-controllable.
 
 ## Next Steps
 
-- Learn about [timeline editing](../editing/clips.md) in depth
-- Explore [color grading](../color/grading.md) tools
-- Set up [keyboard shortcuts](../editing/shortcuts.md) to match your workflow
+- [Working with Clips](../editing/clips.md) — trimming, slipping, sliding, replacing
+- [Magnetic Timeline](../editing/magnetic-timeline.md) — the full set of FCP-parity behaviours
+- [Color Grading](../color/grading.md) — wheels, curves, qualifiers, node graph
+- [AI Tools](../ai-tools/overview.md) — masking, isolation, detection
+- [Keyboard Shortcuts](../editing/shortcuts.md) — full reference
