@@ -103,6 +103,27 @@ fn main() -> Result<()> {
     // Anchor T0 for STARTUP_PERF measurements as the very first thing in main.
     mark_process_start();
 
+    // ── Auto-configured env vars ─────────────────────────────
+    // Set BEFORE any thread spawns so `std::thread`'s lazy
+    // RUST_MIN_STACK read picks up our value, and ort's
+    // load-dynamic init sees ORT_DYLIB_PATH. Each call respects
+    // a user-set override.
+    //
+    // RUST_MIN_STACK = 1 GiB. Default thread stack (2 MiB) is
+    // too small for some candle / ort / graph executor recursion
+    // depths. Setting this here means users don't have to
+    // remember `RUST_MIN_STACK=...` in every launch command.
+    if std::env::var_os("RUST_MIN_STACK").is_none() {
+        // SAFETY: main thread, before any threads spawn.
+        unsafe { std::env::set_var("RUST_MIN_STACK", "1073741824"); }
+    }
+    // ORT_DYLIB_PATH = first libonnxruntime.so found on disk.
+    // Probes ~/.local/lib/onnxruntime*, /usr/lib, etc. via
+    // klipp_ml_ort::find_libonnxruntime. No-op when the user
+    // already set the env var, OR when the ai-ort feature is
+    // off (build doesn't pull in ort at all).
+    klipp_ui::auto_set_ort_dylib_path();
+
     // Kick off system font discovery on a background thread immediately, so the
     // ~5s scan runs in parallel with ffmpeg / engine / window init instead of
     // blocking the foreground startup path. The first call from any thread

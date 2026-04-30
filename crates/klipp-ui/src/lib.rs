@@ -71,3 +71,41 @@ pub mod widgets;
 
 pub use app::KlippApp;
 pub use prefs::Preferences;
+
+/// Resolve a libonnxruntime.so on disk and set `ORT_DYLIB_PATH`
+/// so users don't have to. Called by `klipp-app::main` very
+/// early — before any thread spawns or any ort code touches the
+/// env. No-op when:
+///
+/// * `ORT_DYLIB_PATH` is already set (respects user override).
+/// * The `ai-ort` feature isn't compiled in (stub generator only).
+/// * No libonnxruntime is found at the candidate paths
+///   (probe_resolve.rs's `find_libonnxruntime`).
+///
+/// Logs the resolved path at info level so users can see what
+/// Klipp picked when they're debugging "why isn't GPU working".
+#[cfg(feature = "ai-ort")]
+pub fn auto_set_ort_dylib_path() {
+    if std::env::var_os("ORT_DYLIB_PATH").is_some() {
+        return;
+    }
+    if let Some(path) = klipp_ml_ort::find_libonnxruntime() {
+        // SAFETY: called from main, before any thread spawns.
+        // Rust 2024 marked set_var unsafe because env mutation
+        // is process-global and racy with reads from other
+        // threads. We're single-threaded here.
+        unsafe {
+            std::env::set_var("ORT_DYLIB_PATH", &path);
+        }
+        tracing::info!(
+            target: "klipp_ui",
+            "ORT_DYLIB_PATH auto-set to {}",
+            path.display(),
+        );
+    }
+}
+
+/// Stub when ort isn't in the build. Lets `main.rs` call the
+/// function unconditionally without an explicit feature gate.
+#[cfg(not(feature = "ai-ort"))]
+pub fn auto_set_ort_dylib_path() {}
