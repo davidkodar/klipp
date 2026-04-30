@@ -699,10 +699,16 @@ impl KlippApp {
             );
         }
 
-        // Discover LADSPA plugins at startup (cheap — dlopen+iterate only).
+        // Discover LADSPA plugins at startup. Uses the on-disk cache when
+        // available — cache hit is ~1–5 ms, cold scan is 50–500 ms depending
+        // on plugin count. Cache invalidates automatically when any LADSPA
+        // search directory's mtime changes (i.e. a plugin was installed,
+        // removed, or renamed).
         {
             let _t = LogTimer::new("ui: LADSPA discovery");
-            app.state.ladspa_plugins = klipp_audio::ladspa::discover_ladspa_plugins();
+            let cache_dir = dirs::cache_dir().map(|p| p.join("klipp"));
+            app.state.ladspa_plugins =
+                klipp_audio::ladspa::discover_ladspa_plugins_cached(cache_dir.as_deref());
             app.state
                 .effect_registry
                 .merge_ladspa_plugins(&app.state.ladspa_plugins);

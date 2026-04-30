@@ -170,7 +170,7 @@ pub(crate) fn read_latency_samples(slot: Option<usize>, control_out_sinks: &[f32
 
 // ─── Discovery types ───────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LadspaControlPort {
     pub index: usize,
     pub name: String,
@@ -182,7 +182,7 @@ pub struct LadspaControlPort {
     pub is_toggle: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LadspaPluginInfo {
     pub path: PathBuf,
     pub unique_id: u64,
@@ -310,6 +310,147 @@ pub fn discover_ladspa_plugins() -> Vec<LadspaPluginInfo> {
         }
     }
     out
+}
+
+/// Cached-on-disk variant of [`discover_ladspa_plugins`].
+///
+/// Caches the result of a successful scan in a JSON file so subsequent
+/// launches skip the dlopen/iterate cost (50–500 ms depending on plugin
+/// count) and return in 1–5 ms. Cache validity is checked by snapshotting
+/// the mtime of every search directory at scan time and comparing on
+/// load — adding / removing / renaming a `.so` inside one of these dirs
+/// bumps the parent dir's mtime, so the cache invalidates automatically.
+///
+/// Mirrors the disk-cache pattern used by the title crate's font registry.
+///
+/// `cache_dir` is the base under which the cache file lives (the actual
+/// path is `<cache_dir>/ladspa_registry.json`). Pass `None` to disable
+/// caching and always do a fresh scan; otherwise pass something like
+/// `dirs::cache_dir().map(|p| p.join("klipp"))`.
+///
+/// Failures during cache read or write are non-fatal — they fall through
+/// to a fresh scan. The cache is purely an optimisation; correctness
+/// always depends on the live scan path.
+pub fn discover_ladspa_plugins_cached(cache_dir: Option<&Path>) -> Vec<LadspaPluginInfo> {
+    let dirs = ladspa_search_paths();
+
+    if let Some(base) = cache_dir {
+        if let Some(plugins) = ladspa_cache::load(base, &dirs) {
+            tracing::info!(
+                "LADSPA: loaded {} plugin(s) from disk cache",
+                plugins.len()
+            );
+            return plugins;
+        }
+    }
+
+    let plugins = discover_ladspa_plugins();
+
+    if let Some(base) = cache_dir {
+        if let Err(e) = ladspa_cache::save(base, &dirs, &plugins) {
+            tracing::warn!("LADSPA: failed to write cache: {e}");
+        }
+    }
+
+    plugins
+}
+
+// ─── Disk cache ────────────────────────────────────────────────────────────
+//
+// Persisted at `<cache_dir>/ladspa_registry.json`. The cache is a JSON
+// document containing a schema-version number, a per-search-directory
+// mtime snapshot, and the discovered plugins. On load we recompute the
+// mtime snapshot and compare; any difference invalidates the cache.
+
+mod ladspa_cache {
+    use super::LadspaPluginInfo;
+    use serde::{Deserialize, Serialize};
+    use std::path::{Path, PathBuf};
+    use std::time::SystemTime;
+
+    /// Bump when [`LadspaPluginInfo`] or [`super::LadspaControlPort`]
+    /// gain or lose fields, so old caches don't deserialise into the new
+    /// shape with default-zero fields and confuse downstream code.
+    const SCHEMA_VERSION: u32 = 1;
+
+    const FILE_NAME: &str = "ladspa_registry.json";
+
+    #[derive(Serialize, Deserialize)]
+    struct DiskCache {
+        version: u32,
+        dir_signatures: Vec<DirSig>,
+        plugins: Vec<LadspaPluginInfo>,
+    }
+
+    #[derive(Serialize, Deserialize, PartialEq, Eq)]
+    struct DirSig {
+        path: String,
+        /// Mtime in seconds since UNIX epoch. `None` for directories that
+        /// don't exist; that absence is part of the signature so a future
+        /// install of plugins into a previously-empty path forces a
+        /// rescan.
+        mtime_secs: Option<u64>,
+    }
+
+    fn cache_file(base: &Path) -> PathBuf {
+        base.join(FILE_NAME)
+    }
+
+    fn collect_signatures(dirs: &[PathBuf]) -> Vec<DirSig> {
+        dirs.iter()
+            .map(|d| {
+                let mtime_secs = std::fs::metadata(d)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs());
+                DirSig {
+                    path: d.to_string_lossy().into_owned(),
+                    mtime_secs,
+                }
+            })
+            .collect()
+    }
+
+    /// Try to read the on-disk cache. Returns `Some(plugins)` only if
+    /// (a) the file exists and parses, (b) the schema version matches,
+    /// and (c) the recorded directory mtimes match the current ones.
+    pub fn load(base: &Path, dirs: &[PathBuf]) -> Option<Vec<LadspaPluginInfo>> {
+        let path = cache_file(base);
+        let data = std::fs::read_to_string(&path).ok()?;
+        let cache: DiskCache = serde_json::from_str(&data).ok()?;
+        if cache.version != SCHEMA_VERSION {
+            tracing::debug!(
+                "LADSPA cache: schema mismatch ({} vs {}), rescanning",
+                cache.version,
+                SCHEMA_VERSION
+            );
+            return None;
+        }
+        if cache.dir_signatures != collect_signatures(dirs) {
+            tracing::debug!("LADSPA cache: directory mtime changed, rescanning");
+            return None;
+        }
+        Some(cache.plugins)
+    }
+
+    /// Persist the scan result to disk. Creates the cache directory if
+    /// it doesn't exist. Failures bubble up so callers can log them but
+    /// they never alter the behaviour of a fresh scan.
+    pub fn save(
+        base: &Path,
+        dirs: &[PathBuf],
+        plugins: &[LadspaPluginInfo],
+    ) -> std::io::Result<()> {
+        std::fs::create_dir_all(base)?;
+        let cache = DiskCache {
+            version: SCHEMA_VERSION,
+            dir_signatures: collect_signatures(dirs),
+            plugins: plugins.to_vec(),
+        };
+        let json = serde_json::to_string(&cache).map_err(std::io::Error::other)?;
+        std::fs::write(cache_file(base), json)
+    }
 }
 
 /// Open a single `.so`, iterate its descriptors, and return one info record
@@ -1152,5 +1293,107 @@ mod tests {
             |_i| None,
         );
         assert_eq!(result, DescriptorLookup::NotFound);
+    }
+
+    // ─── Disk cache round-trip ───────────────────────────────────────
+
+    fn fixture_plugin(unique_id: u64, name: &str) -> LadspaPluginInfo {
+        LadspaPluginInfo {
+            path: PathBuf::from(format!("/tmp/fake/{name}.so")),
+            unique_id,
+            label: name.to_string(),
+            name: name.to_string(),
+            maker: "Test Suite".to_string(),
+            port_count: 4,
+            control_inputs: vec![LadspaControlPort {
+                index: 0,
+                name: "Gain".to_string(),
+                default: 1.0,
+                min: 0.0,
+                max: 2.0,
+                is_integer: false,
+                is_logarithmic: false,
+                is_toggle: false,
+            }],
+            audio_inputs: 1,
+            audio_outputs: 1,
+        }
+    }
+
+    fn unique_tmp(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "klipp-test-ladspa-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ))
+    }
+
+    #[test]
+    fn cache_roundtrips_plugins() {
+        let tmp = unique_tmp("roundtrip");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let dirs = vec![tmp.clone()];
+        let plugins = vec![fixture_plugin(1, "alpha"), fixture_plugin(2, "beta")];
+        ladspa_cache::save(&tmp, &dirs, &plugins).expect("save");
+
+        let loaded = ladspa_cache::load(&tmp, &dirs).expect("load");
+        assert_eq!(loaded.len(), plugins.len());
+        assert_eq!(loaded[0].unique_id, 1);
+        assert_eq!(loaded[0].name, "alpha");
+        assert_eq!(loaded[0].control_inputs.len(), 1);
+        assert_eq!(loaded[0].control_inputs[0].name, "Gain");
+        assert_eq!(loaded[1].unique_id, 2);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn cache_invalidates_when_dir_signature_differs() {
+        // Save against one dir, load against a different dir → miss.
+        // Simulates the "user installed a new plugin pack into a previously-
+        // empty path" case (or removed plugins from one of the dirs).
+        let base = unique_tmp("mtime");
+        let dir_a = base.join("a");
+        let dir_b = base.join("b");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+
+        let plugins = vec![fixture_plugin(42, "stable")];
+        ladspa_cache::save(&base, &[dir_a.clone()], &plugins).expect("save");
+
+        let same = ladspa_cache::load(&base, &[dir_a.clone()]);
+        assert!(same.is_some(), "same-dir load should hit");
+
+        let different = ladspa_cache::load(&base, &[dir_b.clone()]);
+        assert!(
+            different.is_none(),
+            "different-dir signature should miss the cache"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cache_load_missing_file_returns_none() {
+        let tmp = unique_tmp("missing");
+        // Don't create the dir — cache file definitely doesn't exist.
+        let result = ladspa_cache::load(&tmp, &[tmp.clone()]);
+        assert!(result.is_none(), "missing cache file → None");
+    }
+
+    #[test]
+    fn cache_load_corrupt_json_returns_none() {
+        let tmp = unique_tmp("corrupt");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("ladspa_registry.json"), "{not valid json").unwrap();
+
+        let result = ladspa_cache::load(&tmp, &[tmp.clone()]);
+        assert!(result.is_none(), "corrupt cache → None, not panic");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

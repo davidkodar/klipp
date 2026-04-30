@@ -168,7 +168,7 @@ fn main() -> Result<()> {
                 EnvFilter::new(
                     "klipp_engine=debug,klipp_ui=debug,klipp_app=debug,\
                      klipp_core=debug,klipp_effects=debug,klipp_media=debug,\
-                     klipp_color=debug,\
+                     klipp_color=debug,klipp_audio=debug,\
                      klipp_timeline=debug,klipp_jobs=debug,klipp_title=debug,\
                      klipp_nodes=debug,\
                      klipp_ml=debug,klipp_ml_candle=debug,klipp_ml_ort=debug,\
