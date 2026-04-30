@@ -685,6 +685,7 @@ mod device_enum_tests {
     }
 
     #[test]
+    #[ignore = "cpal+ALSA dmix/dsnoop contention under parallel test execution; run with --ignored --test-threads=1 (TEST-CPAL-PARALLEL-HANG)"]
     fn cached_output_devices_returns_consistent_results() {
         // Two consecutive calls without explicit refresh should return
         // the same set of device names (the cache is stable between
@@ -697,6 +698,7 @@ mod device_enum_tests {
     }
 
     #[test]
+    #[ignore = "cpal+ALSA dmix/dsnoop contention under parallel test execution; run with --ignored --test-threads=1 (TEST-CPAL-PARALLEL-HANG)"]
     fn refresh_audio_devices_cache_returns_a_vec() {
         // Same shape contract as enumerate_output_devices — the result
         // may be empty but must not panic and must update the cache.
@@ -710,6 +712,7 @@ mod device_enum_tests {
     }
 
     #[test]
+    #[ignore = "cpal+ALSA dmix/dsnoop contention under parallel test execution; run with --ignored --test-threads=1 (TEST-CPAL-PARALLEL-HANG)"]
     fn prime_is_idempotent_and_does_not_panic() {
         prime_audio_devices_cache();
         prime_audio_devices_cache();
