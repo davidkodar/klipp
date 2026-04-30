@@ -156,21 +156,21 @@ runtime = "ort"
 prompts = ""
 
 # Medium tier — same architecture as Preview, different weights.
-# Stays as a Pending placeholder in the bundled manifest because no
-# public ONNX export exists yet; the Medium ONNX has to be locally
-# exported via Roboflow's `rfdetr.RFDETRSegMedium.export()`. Power
-# users pin a real entry via their `~/.config/klipp/models.toml`
-# override (see crates/klipp-ml/src/manifest.rs::load_effective).
-# Drop this entry if/when upstream publishes a public ONNX mirror.
+# No public ONNX exists at upstream Roboflow / community mirrors;
+# this entry points at Klipp's HF mirror at
+# huggingface.co/davidkodar/rf-detr-seg-medium-onnx, exported
+# locally from `rfdetr.RFDETRSegMedium.export()` (Python). The HF
+# mirror is the closest thing to a "public" ONNX of Medium today.
+# Drop / repoint when upstream publishes a canonical mirror.
 [[model]]
 id = "rf_detr_seg_medium_v1"
 display_name = "RF-DETR-Seg (Medium)"
-size_bytes = 0
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+size_bytes = 139278517
+sha256 = "ac764d38d19183940d120f3333eb769dbca90100b6955f2cef2b3848565f7cf4"
 license = "Apache-2.0"
-attribution = "Roboflow / RF-DETR Medium (no public ONNX yet — local export only)"
+attribution = "Roboflow / RF-DETR Medium (mirrored at davidkodar/rf-detr-seg-medium-onnx on HuggingFace, locally exported via rfdetr.RFDETRSegMedium.export)"
 sources = [
-    { url = "https://github.com/davidkodar/klipp-models/releases/download/rf-detr-seg-medium-placeholder/rf_detr_seg_medium_v1.onnx" },
+    { url = "https://huggingface.co/davidkodar/rf-detr-seg-medium-onnx/resolve/main/rf_detr_seg_medium_v1.onnx" },
 ]
 kind = "mask_generator"
 runtime = "ort"
