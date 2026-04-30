@@ -139,13 +139,10 @@ pub struct AiModelsDialogState {
     /// case-insensitively against display name, model id,
     /// attribution, license. Empty = no filter.
     pub search: String,
-    /// Stable id of the model whose three-dot overflow menu is
-    /// currently open. `None` = no menu open. egui's pop-up
-    /// machinery is per-id so we track which row is owning the
-    /// pop-up here rather than scattering bool flags.
-    pub overflow_menu_for: Option<String>,
     /// Stable id of the model whose Show details modal is open.
-    /// `None` = no modal. Same pattern as `overflow_menu_for`.
+    /// `None` = no modal. The three-dot overflow menu's open
+    /// state is handled by egui's built-in popup memory (keyed
+    /// by row id); only the modal needs cross-frame state here.
     pub details_for: Option<String>,
 }
 
@@ -719,7 +716,6 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                                 &state.ai_tools_state.model_telemetry,
                                 &mut state.show_ai_model_uninstall_confirm,
                                 &mut state.toast,
-                                &mut state.ai_models_dialog.overflow_menu_for,
                                 &mut state.ai_models_dialog.details_for,
                             );
                         }
@@ -2370,7 +2366,6 @@ fn render_row(
     telemetry: &HashMap<String, ModelTelemetry>,
     pending_uninstall: &mut Option<ModelEntry>,
     toast: &mut crate::widgets::toast::ToastState,
-    overflow_menu_for: &mut Option<String>,
     details_for: &mut Option<String>,
 ) {
     let row_h = 52.0;
@@ -2480,7 +2475,6 @@ fn render_row(
                                 download,
                                 pending_uninstall,
                                 toast,
-                                overflow_menu_for,
                                 details_for,
                             );
                         }
@@ -2667,101 +2661,120 @@ fn row_overflow_menu(
     download: &mut ModelDownloadState,
     pending_uninstall: &mut Option<ModelEntry>,
     toast: &mut crate::widgets::toast::ToastState,
-    overflow_menu_for: &mut Option<String>,
     details_for: &mut Option<String>,
 ) {
-    let is_open = overflow_menu_for.as_deref() == Some(entry.id.as_str());
-    let response = ui.add(
-        egui::Button::new(egui::RichText::new("⋮").size(16.0))
-            .frame(false),
-    );
+    // Use egui's built-in popup memory so the show + close
+    // semantics line up with the rest of the app (Esc closes,
+    // clicking outside closes, click-on-button toggles). The
+    // earlier external-state approach didn't drive
+    // popup_below_widget's internal is_popup_open flag, which is
+    // why the menu never appeared.
+    let response = ui
+        .add(
+            egui::Button::new(egui::RichText::new("⋮").size(16.0))
+                .frame(false),
+        )
+        .on_hover_text("More actions");
+    let popup_id = ui.make_persistent_id(("ai_row_overflow", &entry.id));
     if response.clicked() {
-        *overflow_menu_for = if is_open {
-            None
-        } else {
-            Some(entry.id.clone())
-        };
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
     }
-    if is_open {
-        let popup_id = ui.make_persistent_id(("ai_row_overflow", &entry.id));
-        let mut close_menu = false;
-        egui::popup::popup_below_widget(
-            ui,
-            popup_id,
-            &response,
-            egui::PopupCloseBehavior::CloseOnClick,
-            |ui| {
-                ui.set_min_width(200.0);
-                if ui.button("Show details").clicked() {
-                    *details_for = Some(entry.id.clone());
-                    close_menu = true;
-                }
-                if matches!(status, ModelInstallStatus::Present { .. }) {
-                    if ui.button("Verify integrity").clicked() {
-                        verify_now(entry, toast);
-                        close_menu = true;
+    egui::popup::popup_below_widget(
+        ui,
+        popup_id,
+        &response,
+        egui::PopupCloseBehavior::CloseOnClick,
+        |ui| {
+            ui.set_min_width(220.0);
+            menu_item(ui, "ⓘ", "Show details", false, theme, || {
+                *details_for = Some(entry.id.clone());
+            });
+            if matches!(status, ModelInstallStatus::Present { .. }) {
+                menu_item(ui, "✓", "Verify integrity", false, theme, || {
+                    verify_now(entry, toast);
+                });
+            }
+            if !matches!(status, ModelInstallStatus::Pending) {
+                menu_item(ui, "↻", "Reinstall", false, theme, || {
+                    if matches!(download, ModelDownloadState::Idle) {
+                        *download = ModelDownloadState::Consenting {
+                            entry: entry.clone(),
+                        };
+                    } else {
+                        toast.show("Another download is in progress");
                     }
-                }
-                if !matches!(status, ModelInstallStatus::Pending) {
-                    if ui.button("Reinstall").clicked() {
-                        if matches!(download, ModelDownloadState::Idle) {
-                            *download = ModelDownloadState::Consenting {
-                                entry: entry.clone(),
-                            };
-                        } else {
-                            toast.show("Another download is in progress");
-                        }
-                        close_menu = true;
+                });
+            }
+            if matches!(status, ModelInstallStatus::Present { .. }) {
+                menu_item(ui, "📁", "Show in cache folder", false, theme, || {
+                    if let Some(c) = cache {
+                        let _ = open_in_file_browser(c.root());
                     }
-                }
-                if matches!(status, ModelInstallStatus::Present { .. }) {
-                    if ui.button("Show in cache folder").clicked() {
-                        if let Some(c) = cache {
-                            let _ = open_in_file_browser(c.root());
-                        }
-                        close_menu = true;
-                    }
-                }
-                if ui.button("Copy model info").clicked() {
-                    let info = format!(
-                        "id: {}\ndisplay_name: {}\nkind: {}\nlicense: {}\n\
-                         attribution: {}\nsize_bytes: {}\nsha256: {}\nsources: {}",
-                        entry.id,
-                        entry.display_name,
-                        kind_label(entry.kind),
-                        entry.license,
-                        entry.attribution,
-                        entry.size_bytes,
-                        entry.sha256,
-                        entry
-                            .sources
-                            .iter()
-                            .map(|s| s.url.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                    );
-                    ui.ctx().copy_text(info);
-                    toast.show(format!("Copied {} info to clipboard", entry.display_name));
-                    close_menu = true;
-                }
-                if matches!(status, ModelInstallStatus::Present { .. }) {
-                    ui.separator();
-                    if ui
-                        .button(
-                            egui::RichText::new("Uninstall…")
-                                .color(theme.marker_error),
-                        )
-                        .clicked()
-                    {
-                        *pending_uninstall = Some(entry.clone());
-                        close_menu = true;
-                    }
-                }
-            },
-        );
-        if close_menu {
-            *overflow_menu_for = None;
-        }
+                });
+            }
+            // Clone ctx out before the menu_item closure so the
+            // closure captures `ctx` (by move) instead of `ui` —
+            // ui is mutably borrowed by menu_item itself.
+            let ctx_for_copy = ui.ctx().clone();
+            menu_item(ui, "⎘", "Copy model info", false, theme, || {
+                let info = format!(
+                    "id: {}\ndisplay_name: {}\nkind: {}\nlicense: {}\n\
+                     attribution: {}\nsize_bytes: {}\nsha256: {}\nsources: {}",
+                    entry.id,
+                    entry.display_name,
+                    kind_label(entry.kind),
+                    entry.license,
+                    entry.attribution,
+                    entry.size_bytes,
+                    entry.sha256,
+                    entry
+                        .sources
+                        .iter()
+                        .map(|s| s.url.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+                ctx_for_copy.copy_text(info);
+                toast.show(format!("Copied {} info to clipboard", entry.display_name));
+            });
+            if matches!(status, ModelInstallStatus::Present { .. }) {
+                ui.separator();
+                menu_item(ui, "🗑", "Uninstall…", true, theme, || {
+                    *pending_uninstall = Some(entry.clone());
+                });
+            }
+        },
+    );
+}
+
+/// One row inside the overflow popup: glyph + label, full-width
+/// click target, optional destructive-red colour. The glyph is a
+/// monospace unicode symbol so we don't depend on any icon font.
+/// Replaces a plain `ui.button(label)` so all rows have a
+/// consistent left-glyph + label-text alignment.
+fn menu_item(
+    ui: &mut egui::Ui,
+    glyph: &str,
+    label: &str,
+    destructive: bool,
+    theme: &KlippTheme,
+    on_click: impl FnOnce(),
+) {
+    let color = if destructive {
+        theme.marker_error
+    } else {
+        ui.style().visuals.text_color()
+    };
+    let resp = ui.add(
+        egui::Button::new(
+            egui::RichText::new(format!("  {glyph}    {label}"))
+                .color(color),
+        )
+        .frame(false)
+        .min_size(egui::vec2(220.0, 22.0)),
+    );
+    if resp.clicked() {
+        on_click();
     }
 }
 
