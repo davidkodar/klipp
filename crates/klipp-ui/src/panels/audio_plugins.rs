@@ -94,16 +94,27 @@ pub fn show_audio_plugins_dialog(
     let default_h = (screen_rect.height() * 0.70).clamp(360.0, max_h);
     let default_w = (screen_rect.width() * 0.55).clamp(480.0, max_w);
 
+    // Default-centre the window on first open. Using `default_pos`
+    // (not `anchor`) means the window is draggable; `anchor` would
+    // pin it and break the move handle entirely. egui remembers the
+    // user's chosen position across opens via window memory.
+    let centre = screen_rect.center();
+    let default_pos = egui::pos2(
+        centre.x - default_w * 0.5,
+        centre.y - default_h * 0.5,
+    );
+
     let mut open = true;
     egui::Window::new("Audio Plugins")
         .open(&mut open)
         .resizable(true)
+        .movable(true)
         .default_size([default_w, default_h])
+        .default_pos(default_pos)
         .min_width(420.0)
         .min_height(360.0)
         .max_width(max_w)
         .max_height(max_h)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
             render_body(ui, state, theme, cmds, max_h);
         });
