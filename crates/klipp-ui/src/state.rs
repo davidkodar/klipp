@@ -741,6 +741,13 @@ pub struct AppState {
     /// Whether the AI Models management dialog is visible.
     pub show_ai_models_dialog: bool,
 
+    /// Whether the Audio Plugins management dialog is visible.
+    pub show_audio_plugins_dialog: bool,
+
+    /// Per-dialog state for the Audio Plugins management modal: search
+    /// query, "last scanned" timestamp, in-flight rescan flag.
+    pub audio_plugins_dialog: crate::panels::audio_plugins::AudioPluginsDialogState,
+
     // Cache manager dialog (#78)
     /// Whether the Cache Manager modal is visible.
     pub show_cache_manager: bool,
@@ -2368,6 +2375,7 @@ impl AppState {
             || self.show_autosave_recovery
             || self.show_render_queue
             || self.show_ai_models_dialog
+            || self.show_audio_plugins_dialog
             || self.show_cache_manager
             || self.show_command_palette
             || self.quick_look_path.is_some()
@@ -2439,6 +2447,8 @@ impl Default for AppState {
             show_preset_manager: false,
             preset_manager_selected: None,
             show_ai_models_dialog: false,
+            show_audio_plugins_dialog: false,
+            audio_plugins_dialog: crate::panels::audio_plugins::AudioPluginsDialogState::default(),
             show_cache_manager: false,
             cache_categories: Vec::new(),
             show_clip_properties: false,

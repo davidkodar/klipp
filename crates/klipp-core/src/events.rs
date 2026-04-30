@@ -915,6 +915,18 @@ pub enum AppCommand {
     /// manifest, install status, and per-model install / reinstall
     /// actions. Handled by flipping `AppState::show_ai_models_dialog`.
     OpenAiModelsDialog,
+    /// Open the Audio Plugins management modal. Lists every discovered
+    /// LADSPA plugin grouped by maker, the search paths that were
+    /// scanned, and exposes a Rescan action that clears the disk cache
+    /// and re-runs discovery. Handled by flipping
+    /// `AppState::show_audio_plugins_dialog`.
+    OpenAudioPluginsDialog,
+    /// Drop the on-disk LADSPA discovery cache and re-run
+    /// `discover_ladspa_plugins`. Used by the Audio Plugins dialog's
+    /// Rescan button. Engine doesn't need to know — this is a UI-side
+    /// operation that updates `state.ladspa_plugins` and the
+    /// `effect_registry`.
+    RescanAudioPlugins,
     BeginScrub,
     /// End timeline scrubbing — engine restores full-res decode.
     EndScrub,

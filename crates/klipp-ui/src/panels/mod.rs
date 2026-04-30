@@ -1,5 +1,6 @@
 pub mod ai_models;
 pub mod audio_mixer;
+pub mod audio_plugins;
 pub mod batch_rename_dialog;
 pub mod cache_manager;
 pub mod clip_properties;

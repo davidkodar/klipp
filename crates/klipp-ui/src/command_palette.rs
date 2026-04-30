@@ -423,6 +423,18 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::Cmd(AppCommand::OpenAiModelsDialog),
         enabled: true,
     });
+    e.push(PaletteEntry {
+        label: Cow::Borrowed("Manage Audio Plugins…"),
+        shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Cmd(AppCommand::OpenAudioPluginsDialog),
+        enabled: true,
+    });
+    e.push(PaletteEntry {
+        label: Cow::Borrowed("Rescan Audio Plugins"),
+        shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Cmd(AppCommand::RescanAudioPlugins),
+        enabled: true,
+    });
 
     e
 }

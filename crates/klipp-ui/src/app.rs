@@ -15292,6 +15292,65 @@ impl KlippApp {
                 self.state.show_ai_models_dialog = true;
                 true
             }
+            AppCommand::OpenAudioPluginsDialog => {
+                self.state.show_audio_plugins_dialog = true;
+                // Reset the in-process "last scanned" stamp so the panel
+                // re-stamps itself on first frame (the discovery state
+                // shown is whatever's already in state.ladspa_plugins).
+                self.state.audio_plugins_dialog.last_scanned_secs = None;
+                true
+            }
+            AppCommand::RescanAudioPlugins => {
+                // Drop the on-disk cache so discover_ladspa_plugins_cached
+                // is forced to do a fresh scan — without this the function
+                // would happily return the cached result and our "Rescan"
+                // button would do nothing visible.
+                let cache_dir = dirs::cache_dir().map(|p| p.join("klipp"));
+                if let Some(ref base) = cache_dir {
+                    let cache_file = base.join("ladspa_registry.json");
+                    if cache_file.exists() {
+                        if let Err(e) = std::fs::remove_file(&cache_file) {
+                            tracing::warn!(
+                                "LADSPA rescan: failed to delete cache file {}: {e}",
+                                cache_file.display()
+                            );
+                        }
+                    }
+                }
+                let t0 = std::time::Instant::now();
+                self.state.ladspa_plugins =
+                    klipp_audio::ladspa::discover_ladspa_plugins_cached(cache_dir.as_deref());
+                // Replace the LADSPA section of the effect registry with
+                // the fresh result. The simplest correct way: remove all
+                // existing LADSPA entries, then re-merge.
+                self.state.effect_registry.effects.retain(|e| {
+                    !matches!(
+                        e.source,
+                        crate::browser::effect_registry::EffectSource::Ladspa(_)
+                    )
+                });
+                self.state
+                    .effect_registry
+                    .merge_ladspa_plugins(&self.state.ladspa_plugins);
+                self.state.audio_plugins_dialog.last_scanned_secs = Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                );
+                let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                tracing::info!(
+                    "LADSPA rescan: {} plugin(s) in {:.1} ms",
+                    self.state.ladspa_plugins.len(),
+                    elapsed_ms
+                );
+                self.state.toast.show(format!(
+                    "Rescanned: {} LADSPA plugin(s) in {:.0} ms",
+                    self.state.ladspa_plugins.len(),
+                    elapsed_ms
+                ));
+                true
+            }
             AppCommand::ShowAiToolsPanel { task } => {
                 self.state.ai_tools_state.panel_visible = true;
                 self.state.ai_tools_state.active_task = Some(ai_tools_task_from_tag(*task));
@@ -23894,6 +23953,22 @@ impl KlippApp {
         // reinstall actions. Drives the existing model_download
         // consent flow when the user picks Download.
         crate::panels::ai_models::show_ai_models_dialog(ctx, &mut self.state, &self.theme);
+
+        // Audio Plugins management modal — LADSPA discovery, search
+        // paths, Rescan. Pushes commands onto a local Vec so they go
+        // through the standard `send_commands` dispatch (giving
+        // `handle_playback_commands` first crack at OpenAudioPluginsDialog
+        // / RescanAudioPlugins, same path as OpenAiModelsDialog).
+        let mut audio_plugin_cmds: Vec<klipp_core::AppCommand> = Vec::new();
+        crate::panels::audio_plugins::show_audio_plugins_dialog(
+            ctx,
+            &mut self.state,
+            &self.theme,
+            &mut audio_plugin_cmds,
+        );
+        if !audio_plugin_cmds.is_empty() {
+            self.send_commands(audio_plugin_cmds);
+        }
 
         // 4c2. Consolidate Project dialog
         // Copies the project + all referenced media into a NEW self-contained
