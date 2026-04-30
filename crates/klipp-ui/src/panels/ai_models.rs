@@ -790,12 +790,14 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                         .color(theme.text_secondary),
                 );
                 ui.add_space(8.0);
+                let (accel_text, accel_color, accel_tooltip) = inference_status_label(theme);
                 ui.label(
-                    egui::RichText::new(format!("GPU   {}", gpu_status_label_short()))
+                    egui::RichText::new(accel_text)
                         .small()
                         .strong()
-                        .color(theme.text_secondary),
-                );
+                        .color(accel_color),
+                )
+                .on_hover_text(accel_tooltip);
                 ui.with_layout(
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
@@ -2808,13 +2810,38 @@ fn kind_label(kind: klipp_ml::manifest::ModelKind) -> &'static str {
 /// Open `path` in the user's default file browser. Best-effort —
 /// failures fall through silently because there's nothing useful
 /// the dialog can do about it.
-/// Compact GPU status for the dialog footer. Same data as
-/// `gpu_status_label` but trimmed to fit the small-caps cell.
-fn gpu_status_label_short() -> &'static str {
-    if cfg!(feature = "ai-ort-cuda") || cfg!(feature = "ai-candle-cuda") {
-        "NVIDIA"
+/// Footer cell describing inference acceleration. Returns
+/// `(label, color, hover_tooltip)`. Differentiates two states:
+///
+/// * **GPU enabled** — "GPU   NVIDIA" in normal text colour.
+/// * **CPU only** — amber "⚠ NO GPU — CPU ONLY" so the user
+///   can tell at a glance that ML inference will be slow.
+///   Tooltip explains the build flag + libonnxruntime swap that
+///   enables GPU acceleration.
+fn inference_status_label(theme: &KlippTheme) -> (String, egui::Color32, String) {
+    let cuda_feature_on =
+        cfg!(feature = "ai-ort-cuda") || cfg!(feature = "ai-candle-cuda");
+    if cuda_feature_on {
+        (
+            "GPU   NVIDIA".to_string(),
+            theme.text_secondary,
+            "ai-ort-cuda enabled. Runtime acceleration kicks in once the \
+             GPU build of libonnxruntime.so is on ORT_DYLIB_PATH and \
+             CUDA / cuDNN libs are on LD_LIBRARY_PATH; otherwise ort \
+             falls back to the CPU EP silently."
+                .to_string(),
+        )
     } else {
-        "CPU only"
+        (
+            "⚠ NO GPU — CPU ONLY".to_string(),
+            theme.marker_warning,
+            "Klipp is running ML inference on the CPU. Rebuild with \
+             --features ai-ort-cuda + swap to the GPU build of \
+             libonnxruntime.so to enable NVIDIA acceleration. AMD \
+             (MIGraphX) and Intel (OpenVINO) are tracked separately \
+             — see F-97-AMD-ROCM / F-97-INTEL-OPENVINO."
+                .to_string(),
+        )
     }
 }
 
