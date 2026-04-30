@@ -970,6 +970,11 @@ impl ToolbarPanel {
             if ui.button(toggle_label(state.show_markers_panel, "Markers")).clicked() { state.show_markers_panel = !state.show_markers_panel; ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.show_subtitle_editor, "Subtitle Editor")).shortcut_text("Ctrl+Shift+T")).clicked() { state.show_subtitle_editor = !state.show_subtitle_editor; ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.show_project_notes, "Project Notes")).shortcut_text("Ctrl+Shift+N")).clicked() { state.show_project_notes = !state.show_project_notes; ui.close_menu(); }
+            if ui.add(egui::Button::new(toggle_label(state.ai_tools_state.panel_visible, "AI Tools")).shortcut_text("Alt+A")).clicked() { state.ai_tools_state.panel_visible = !state.ai_tools_state.panel_visible; ui.close_menu(); }
+            ui.separator();
+            // Modal dialogs — distinct from panels because they
+            // overlay the editor instead of docking.
+            if ui.button("\u{2699} Manage AI Models\u{2026}").clicked() { state.show_ai_models_dialog = true; ui.close_menu(); }
             ui.separator();
             if ui.add(egui::Button::new("Command Palette").shortcut_text("Ctrl+K")).clicked() { state.show_command_palette = true; ui.close_menu(); }
         });
