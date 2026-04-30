@@ -99,12 +99,17 @@ impl AiToolsPanel {
                         .selected_model_id
                         .as_ref()
                         .is_some_and(|id| registry.has_id(id));
+                // Section header link routes to the plugin
+                // manager dialog. "Manage…" rather than "Change…"
+                // because the inline picker on the card itself
+                // handles ordinary model-switching — this link
+                // is for installing / uninstalling / verifying.
                 section_step_header_with_action(
                     ui,
                     2,
                     "MODEL",
                     model_active,
-                    "Change…",
+                    "Manage…",
                     theme,
                     show_models_dialog,
                 );
@@ -535,24 +540,140 @@ fn model_card(
                 ui.with_layout(
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("Change ›")
-                                        .small()
-                                        .color(theme.text_secondary),
-                                )
-                                .frame(false),
-                            )
-                            .on_hover_text("Open the AI Models dialog")
-                            .clicked()
-                        {
-                            *show_models_dialog = true;
-                        }
+                        // Inline model picker. Lightweight popup
+                        // listing every model capable of the
+                        // active task, plus a "Manage models…"
+                        // footer that opens the full plugin
+                        // dialog. Replaces the previous "Change
+                        // ›" link that always opened the heavier
+                        // manager — picking a different variant
+                        // is a much more frequent action than
+                        // installing one.
+                        model_picker_button(
+                            ui,
+                            state,
+                            registry,
+                            theme,
+                            show_models_dialog,
+                        );
                     },
                 );
             });
         });
+}
+
+/// Caret-down button that opens an inline popup of every model
+/// capable of the active task, with "Manage models…" as the
+/// footer escape hatch into the plugin manager. Disabled when
+/// there's no active task (no menu to populate from).
+fn model_picker_button(
+    ui: &mut egui::Ui,
+    state: &mut AiToolsState,
+    registry: &AiToolsRegistry,
+    theme: &KlippTheme,
+    show_models_dialog: &mut bool,
+) {
+    let Some(task) = state.active_task else {
+        ui.add_enabled(
+            false,
+            egui::Button::new(
+                egui::RichText::new("˅")
+                    .small()
+                    .color(theme.text_dim),
+            )
+            .frame(false),
+        )
+        .on_disabled_hover_text("Pick a task first to choose a model");
+        return;
+    };
+
+    let response = ui
+        .add(
+            egui::Button::new(
+                egui::RichText::new("˅ Pick model")
+                    .small()
+                    .color(theme.text_secondary),
+            )
+            .frame(false),
+        )
+        .on_hover_text(
+            "Switch to another installed model for this task. \
+             Use Manage… for install / uninstall / verify.",
+        );
+
+    let popup_id = ui.make_persistent_id("ai_model_picker_popup");
+    if response.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(popup_id));
+    }
+    egui::popup::popup_below_widget(
+        ui,
+        popup_id,
+        &response,
+        egui::PopupCloseBehavior::CloseOnClick,
+        |ui| {
+            ui.set_min_width(220.0);
+            let models = registry.models_for(task);
+            if models.is_empty() {
+                ui.label(
+                    egui::RichText::new("No installed models for this task")
+                        .small()
+                        .color(theme.text_dim),
+                );
+            } else {
+                for m in &models {
+                    let is_selected =
+                        state.selected_model_id.as_deref() == Some(m.id.as_str());
+                    let label = if is_selected {
+                        format!("✓  {}", m.display_name)
+                    } else {
+                        format!("    {}", m.display_name)
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new(label).size(12.0),
+                            )
+                            .frame(false)
+                            .min_size(egui::vec2(220.0, 22.0)),
+                        )
+                        .clicked()
+                    {
+                        state.selected_model_id = Some(m.id.clone());
+                        // Remember the explicit pick under this
+                        // task so the next switch back to it
+                        // restores this selection (matches the
+                        // behaviour of the dropdown that used to
+                        // live in the panel header pre-redesign).
+                        state
+                            .last_picked_model_per_task
+                            .insert(task, m.id.clone());
+                        // Persist to ai_tools.toml so the choice
+                        // survives the next launch.
+                        crate::ai_tools::persistence::save(
+                            &crate::ai_tools::persistence::AiToolsConfig::from_state(
+                                state,
+                            ),
+                        );
+                    }
+                }
+            }
+            ui.separator();
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new("⚙  Manage models…")
+                            .size(12.0)
+                            .color(theme.text_secondary),
+                    )
+                    .frame(false)
+                    .min_size(egui::vec2(220.0, 22.0)),
+                )
+                .clicked()
+            {
+                *show_models_dialog = true;
+            }
+        },
+    );
 }
 
 /// "Mask Generator · 213.6 MB · Ready" sub-line for the model
