@@ -20,7 +20,8 @@
 
 use crate::state::AppState;
 use crate::theme::KlippTheme;
-use klipp_core::AppCommand;
+use klipp_core::{AppCommand, ClipId, MediaId};
+use std::path::PathBuf;
 
 /// Severity for a Project Doctor finding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +42,37 @@ pub struct Finding {
     pub category: String,
     pub summary: String,
     pub detail: String,
+    /// Per-finding fix actions rendered as buttons next to the
+    /// detail text. v1 had none; v2 adds them per category.
+    /// Multiple fixes are allowed (e.g. DISABLED LADSPA IN USE
+    /// offers both "Re-enable" and "Remove from clip").
+    pub fixes: Vec<Fix>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Fix {
+    pub label: String,
+    pub action: FixAction,
+}
+
+/// Typed actions a Project Doctor fix button can perform. Most
+/// dispatch an existing `AppCommand` directly; `RelinkMedia` is
+/// special because it needs a file picker and runs synchronously
+/// from the dialog UI thread (rfd is not async-safe in the
+/// general case but Klipp uses it sync everywhere).
+#[derive(Debug, Clone)]
+pub enum FixAction {
+    RelinkMedia {
+        media_id: MediaId,
+        original_path: PathBuf,
+    },
+    RemoveAudioEffectFromClip {
+        clip_id: ClipId,
+        effect_index: usize,
+    },
+    ReEnableLadspaPlugin {
+        unique_id: u64,
+    },
 }
 
 /// Render the Project Doctor modal. The scan runs every frame the
@@ -176,7 +208,7 @@ fn render_body(
                 return;
             }
             for finding in findings {
-                render_finding(ui, theme, finding);
+                render_finding(ui, theme, finding, cmds);
             }
         });
 
@@ -187,18 +219,21 @@ fn render_body(
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new(
-                "v1 scope: detect-and-report. Auto-fix actions land per-finding in \
-                 follow-ups (Relink media... is already in File menu; per-finding fix \
-                 buttons coming).",
+                "Per-finding fix buttons dispatch existing AppCommands. Most fixes \
+                 are immediate; Relink opens a file picker.",
             )
             .size(9.0)
             .color(theme.text_dim),
         );
     });
-    let _ = cmds;
 }
 
-fn render_finding(ui: &mut egui::Ui, theme: &KlippTheme, finding: &Finding) {
+fn render_finding(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    finding: &Finding,
+    cmds: &mut Vec<AppCommand>,
+) {
     let (icon, icon_color) = match finding.severity {
         Severity::Error => ("\u{2716}", theme.marker_error),
         Severity::Warning => ("\u{26A0}", theme.accent),
@@ -239,9 +274,73 @@ fn render_finding(ui: &mut egui::Ui, theme: &KlippTheme, finding: &Finding) {
                             .size(10.0)
                             .color(theme.text_secondary),
                     );
+                    if !finding.fixes.is_empty() {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            for fix in &finding.fixes {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new(&fix.label).size(10.0),
+                                        )
+                                        .min_size(egui::vec2(80.0, 0.0)),
+                                    )
+                                    .clicked()
+                                {
+                                    apply_fix(&fix.action, cmds);
+                                }
+                            }
+                        });
+                    }
                 });
             });
         });
+}
+
+/// Translate a typed `FixAction` into one or more `AppCommand`s.
+/// The `RelinkMedia` arm pops a file picker synchronously — Klipp
+/// uses rfd from the UI thread everywhere already, and the Project
+/// Doctor dialog is modal so the brief blocking pick is fine.
+fn apply_fix(action: &FixAction, cmds: &mut Vec<AppCommand>) {
+    match action {
+        FixAction::RelinkMedia {
+            media_id,
+            original_path,
+        } => {
+            let start_dir = original_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+            let original_name = original_path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "media file".to_string());
+            if let Some(new_path) = rfd::FileDialog::new()
+                .set_title(&format!("Relink: {original_name}"))
+                .set_directory(start_dir)
+                .pick_file()
+            {
+                cmds.push(AppCommand::RelinkMedia {
+                    media_id: *media_id,
+                    new_path,
+                });
+            }
+        }
+        FixAction::RemoveAudioEffectFromClip {
+            clip_id,
+            effect_index,
+        } => {
+            cmds.push(AppCommand::RemoveAudioEffect {
+                clip_id: *clip_id,
+                effect_index: *effect_index,
+            });
+        }
+        FixAction::ReEnableLadspaPlugin { unique_id } => {
+            cmds.push(AppCommand::ToggleAudioPluginDisabled {
+                unique_id: *unique_id,
+            });
+        }
+    }
 }
 
 // ─── Scan logic ───────────────────────────────────────────────────
@@ -267,6 +366,13 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
                     "Source path no longer exists: {}",
                     item.path.to_string_lossy()
                 ),
+                fixes: vec![Fix {
+                    label: "Relink…".into(),
+                    action: FixAction::RelinkMedia {
+                        media_id: item.id,
+                        original_path: item.path.clone(),
+                    },
+                }],
             });
         }
     }
@@ -287,14 +393,39 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
         .map(|p| format!("{}:{}", p.path.to_string_lossy(), p.label))
         .collect();
 
+    // Map plugin "path:label" → unique_id so we can dispatch
+    // ToggleAudioPluginDisabled from a fix button without re-doing
+    // the lookup.
+    let unique_id_by_pathlabel: std::collections::HashMap<String, u64> = state
+        .ladspa_plugins
+        .iter()
+        .map(|p| (format!("{}:{}", p.path.to_string_lossy(), p.label), p.unique_id))
+        .collect();
+
     let active = state.sequences.get(state.active_sequence_idx);
     if let Some(seq) = active {
         for track in &seq.tracks {
             for clip in &track.clips {
-                for fx in &clip.audio_effects {
+                for (effect_index, fx) in clip.audio_effects.iter().enumerate() {
                     if let Some(rest) = fx.effect_type.strip_prefix("ladspa:") {
                         if installed_ladspa.contains(rest) {
                             if disabled_by_pathlabel.contains(rest) {
+                                let mut fixes = Vec::new();
+                                if let Some(uid) = unique_id_by_pathlabel.get(rest) {
+                                    fixes.push(Fix {
+                                        label: "Re-enable plugin".into(),
+                                        action: FixAction::ReEnableLadspaPlugin {
+                                            unique_id: *uid,
+                                        },
+                                    });
+                                }
+                                fixes.push(Fix {
+                                    label: "Remove from clip".into(),
+                                    action: FixAction::RemoveAudioEffectFromClip {
+                                        clip_id: clip.id,
+                                        effect_index,
+                                    },
+                                });
                                 findings.push(Finding {
                                     severity: Severity::Warning,
                                     category: "DISABLED LADSPA IN USE".into(),
@@ -306,8 +437,9 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
                                              clip still loads it because the disable is \
                                              non-destructive, but new clips can't pick \
                                              it. Re-enable the plugin or remove the \
-                                             effect."
+                                             effect from the clip."
                                         .into(),
+                                    fixes,
                                 });
                             }
                         } else {
@@ -321,6 +453,13 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
                                          \u{2192} Audio Plugins, or remove the effect \
                                          from the clip."
                                     .into(),
+                                fixes: vec![Fix {
+                                    label: "Remove from clip".into(),
+                                    action: FixAction::RemoveAudioEffectFromClip {
+                                        clip_id: clip.id,
+                                        effect_index,
+                                    },
+                                }],
                             });
                         }
                     }
@@ -361,6 +500,13 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
                                          on this clip to regenerate. Path: {}",
                                         path.display()
                                     ),
+                                    // No fix action for missing AI masks: we'd
+                                    // need a node-graph mutation command (drop
+                                    // the ExternalMatte node) that doesn't
+                                    // exist yet; meanwhile the user can re-run
+                                    // the AI tool which overwrites the dead
+                                    // matte path. Detail text already explains.
+                                    fixes: Vec::new(),
                                 });
                             }
                         }
@@ -402,6 +548,7 @@ mod tests {
             category: cat.into(),
             summary: format!("issue in {cat}"),
             detail: "details".into(),
+            fixes: Vec::new(),
         }
     }
 
@@ -409,6 +556,46 @@ mod tests {
     fn report_text_empty_says_no_issues() {
         let s = report_as_text(&[]);
         assert!(s.contains("No issues detected"));
+    }
+
+    #[test]
+    fn apply_fix_remove_audio_effect_dispatches_command() {
+        let mut cmds = Vec::new();
+        let clip_id = ClipId::new();
+        apply_fix(
+            &FixAction::RemoveAudioEffectFromClip {
+                clip_id,
+                effect_index: 3,
+            },
+            &mut cmds,
+        );
+        assert_eq!(cmds.len(), 1);
+        match &cmds[0] {
+            AppCommand::RemoveAudioEffect {
+                clip_id: c,
+                effect_index,
+            } => {
+                assert_eq!(*c, clip_id);
+                assert_eq!(*effect_index, 3);
+            }
+            other => panic!("expected RemoveAudioEffect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_fix_reenable_plugin_dispatches_toggle() {
+        let mut cmds = Vec::new();
+        apply_fix(
+            &FixAction::ReEnableLadspaPlugin { unique_id: 12345 },
+            &mut cmds,
+        );
+        assert_eq!(cmds.len(), 1);
+        match &cmds[0] {
+            AppCommand::ToggleAudioPluginDisabled { unique_id } => {
+                assert_eq!(*unique_id, 12345);
+            }
+            other => panic!("expected ToggleAudioPluginDisabled, got {other:?}"),
+        }
     }
 
     #[test]
@@ -420,6 +607,7 @@ mod tests {
                 category: "DISABLED LADSPA IN USE".into(),
                 summary: "warn summary".into(),
                 detail: "warn detail".into(),
+                fixes: Vec::new(),
             },
         ];
         let s = report_as_text(&findings);
