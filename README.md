@@ -18,9 +18,9 @@ Things being explored — none finished:
 
 ## Status
 
-🚧 **Very early development. Hobby project by a single developer.**
+🚧 **Early development.**
 
-Many subsystems are stubbed, half-built, or actively changing week-to-week. There is no stability commitment, no release schedule, no pre-built binaries, and no support — if you build it from source, expect to hit rough edges, breakage, and incomplete features. A long list of fundamentals (reliability, soak-testing, AMD/Intel GPU support, large parts of the audio and effects surface) is still ahead of any "usable for real work" milestone.
+Many subsystems are stubbed, half-built, or actively changing. There is no stability commitment, no release schedule, no pre-built binaries, and no support — if you build it from source, expect to hit rough edges, breakage, and incomplete features. A long list of fundamentals (reliability, soak-testing, AMD/Intel GPU support, large parts of the audio and effects surface) is still ahead of any "usable for real work" milestone.
 
 If you're looking for a Linux NLE you can rely on today, use Kdenlive, DaVinci Resolve, or Olive. Klipp is not a replacement for any of them yet.
 

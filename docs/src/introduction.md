@@ -1,10 +1,10 @@
 # Introduction
 
-Klipp is an in-progress non-linear video editor for Linux, written in Rust with an egui/eframe interface. It is a hobby project by a single developer; this documentation describes what is currently wired up — not what works reliably, not what is feature-complete, and not what should be relied on for real work.
+Klipp is an in-progress non-linear video editor for Linux, written in Rust with an egui/eframe interface. This documentation describes what is currently wired up — not what works reliably, not what is feature-complete, and not what should be relied on for real work.
 
 ## Status
 
-🚧 **Very early development. Hobby project by a single developer.**
+🚧 **Early development.**
 
 Many subsystems are stubbed, half-built, or actively changing. There is no stability commitment, no release schedule, no pre-built binaries, and no support. Building from source is currently the only way to run Klipp, and you should expect to hit rough edges, breakage, and incomplete features.
 
