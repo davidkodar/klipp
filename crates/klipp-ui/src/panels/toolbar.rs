@@ -201,7 +201,7 @@ impl ToolbarPanel {
                 Self::mark_menu(ui, &mut cmds, state);
                 Self::view_menu(ui, &mut cmds, state);
                 Self::window_menu(ui, &mut cmds, state);
-                Self::tools_menu(ui, state);
+                Self::tools_menu(ui, &mut cmds, state);
                 Self::help_menu(ui, state);
 
                 sep(ui, theme);
@@ -985,14 +985,18 @@ impl ToolbarPanel {
     }
 
     /// Tools menu — utilities and managers that don't belong under
-    /// File / Edit / Clip / Timeline / Mark / View / Window. Today
-    /// hosts the Audio Plugins manager (LADSPA; LV2 / VST3 to come)
-    /// and AI Models manager. Convention follows Avid Media Composer
-    /// and DaVinci Resolve where Tools is the natural home for
-    /// utility-style dialogs and managers — top-level "Plugins"
-    /// would be a convention mismatch with most pro DAWs / NLEs which
-    /// bury plugin management under Preferences.
-    fn tools_menu(ui: &mut egui::Ui, state: &mut AppState) {
+    /// File / Edit / Clip / Timeline / Mark / View / Window.
+    /// Convention follows Avid Media Composer and DaVinci Resolve
+    /// where Tools is the natural home for utility-style dialogs and
+    /// managers.
+    ///
+    /// Two groups separated by a divider:
+    ///   1. Plugin / model managers — Audio Plugins, AI Models
+    ///   2. Project-state utilities — Cache Manager, Render Queue
+    ///
+    /// LV2 / VST3 plugin managers will join group 1; project-doctor /
+    /// consolidate / asset-relink etc. will join group 2.
+    fn tools_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
         ui.menu_button(egui::RichText::new("Tools").size(11.0), |ui| {
             if ui.button("Audio Plugins\u{2026}").clicked() {
                 state.show_audio_plugins_dialog = true;
@@ -1001,6 +1005,15 @@ impl ToolbarPanel {
             }
             if ui.button("AI Models\u{2026}").clicked() {
                 state.show_ai_models_dialog = true;
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Cache Manager\u{2026}").clicked() {
+                cmds.push(AppCommand::OpenCacheManager);
+                ui.close_menu();
+            }
+            if ui.button("Render Queue").clicked() {
+                cmds.push(AppCommand::ShowRenderQueue);
                 ui.close_menu();
             }
         });
