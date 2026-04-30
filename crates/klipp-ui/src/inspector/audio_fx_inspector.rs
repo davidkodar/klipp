@@ -2,6 +2,177 @@ use crate::theme::KlippTheme;
 use klipp_audio::ladspa::LadspaPluginInfo;
 use klipp_core::{AppCommand, AudioEffectInstance, ClipId};
 
+/// Render the body of the "+ Add Effect" popup. Contents:
+///   - Search box (filters by name; for LADSPA also matches maker + label)
+///   - "BUILT-IN" section with the 13 built-in audio effects
+///   - "LADSPA" section grouped by maker (alphabetical)
+/// Calls `on_select(effect_type)` when the user picks an item; the caller
+/// is responsible for pushing the right `AppCommand::AddAudioEffect`.
+/// `popup_anchor_id` keys the search-query memory so each popup keeps its
+/// own filter state across frames.
+fn add_effect_picker(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    ladspa_plugins: &[LadspaPluginInfo],
+    popup_anchor_id: egui::Id,
+    on_select: &mut dyn FnMut(String),
+) {
+    // Width: wide enough for typical LADSPA plugin names without truncation,
+    // but not so wide it dominates the inspector. ~280 px matches the
+    // patterns used elsewhere in the UI (AI Models dialog).
+    ui.set_min_width(280.0);
+    ui.set_max_width(320.0);
+
+    // ── Search box ──
+    let query_key = popup_anchor_id.with("search_query");
+    let mut query: String = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<String>(query_key).unwrap_or_default());
+    let resp = ui.add(
+        egui::TextEdit::singleline(&mut query)
+            .hint_text("Search effects...")
+            .desired_width(f32::INFINITY),
+    );
+    if resp.changed() {
+        ui.ctx().data_mut(|d| d.insert_temp(query_key, query.clone()));
+    }
+    let search_lower = query.to_lowercase();
+
+    ui.add_space(4.0);
+
+    // The popup uses CloseOnClick — any button click closes the popup. To
+    // avoid losing the popup on every keystroke in the search box, the
+    // outer wiring (egui::popup_below_widget) handles this fine because
+    // TextEdit::changed() doesn't fire popup-close. But we still want to
+    // be defensive: don't bail on empty results, just show a message.
+
+    let max_height = 320.0_f32;
+    egui::ScrollArea::vertical()
+        .max_height(max_height)
+        .show(ui, |ui| {
+            // ── Built-in section ──
+            let builtins: Vec<(&'static str, &'static str)> = klipp_audio::dsp::available_effects()
+                .into_iter()
+                .filter(|(_, name)| {
+                    search_lower.is_empty() || name.to_lowercase().contains(&search_lower)
+                })
+                .collect();
+
+            if !builtins.is_empty() {
+                ui.label(
+                    egui::RichText::new("BUILT-IN")
+                        .size(9.0)
+                        .strong()
+                        .color(theme.text_dim),
+                );
+                ui.add_space(2.0);
+                for (type_id, name) in &builtins {
+                    if ui.button(*name).clicked() {
+                        on_select(type_id.to_string());
+                    }
+                }
+            }
+
+            // ── LADSPA section, grouped by maker ──
+            let mut visible_ladspa: Vec<&LadspaPluginInfo> = ladspa_plugins
+                .iter()
+                .filter(|p| {
+                    if search_lower.is_empty() {
+                        return true;
+                    }
+                    let display = if p.name.is_empty() { &p.label } else { &p.name };
+                    display.to_lowercase().contains(&search_lower)
+                        || p.maker.to_lowercase().contains(&search_lower)
+                        || p.label.to_lowercase().contains(&search_lower)
+                })
+                .collect();
+            visible_ladspa.sort_by(|a, b| {
+                a.maker
+                    .to_lowercase()
+                    .cmp(&b.maker.to_lowercase())
+                    .then_with(|| {
+                        let an = if a.name.is_empty() { &a.label } else { &a.name };
+                        let bn = if b.name.is_empty() { &b.label } else { &b.name };
+                        an.to_lowercase().cmp(&bn.to_lowercase())
+                    })
+            });
+
+            if !visible_ladspa.is_empty() {
+                if !builtins.is_empty() {
+                    ui.add_space(8.0);
+                }
+                ui.label(
+                    egui::RichText::new("LADSPA")
+                        .size(9.0)
+                        .strong()
+                        .color(theme.text_dim),
+                );
+                ui.add_space(2.0);
+
+                let mut last_maker: Option<String> = None;
+                for plugin in &visible_ladspa {
+                    let maker = if plugin.maker.is_empty() {
+                        "Other".to_string()
+                    } else {
+                        plugin.maker.clone()
+                    };
+                    if last_maker.as_ref() != Some(&maker) {
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(maker.to_uppercase())
+                                .size(8.0)
+                                .color(theme.text_secondary),
+                        );
+                        last_maker = Some(maker);
+                    }
+
+                    let display = if plugin.name.is_empty() {
+                        &plugin.label
+                    } else {
+                        &plugin.name
+                    };
+                    if ui.button(display).clicked() {
+                        let type_id = format!(
+                            "ladspa:{}:{}",
+                            plugin.path.to_string_lossy(),
+                            plugin.label
+                        );
+                        on_select(type_id);
+                    }
+                }
+            }
+
+            if builtins.is_empty() && visible_ladspa.is_empty() {
+                ui.add_space(8.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new(if search_lower.is_empty() {
+                            "No audio effects available".to_string()
+                        } else {
+                            format!("No effects match \"{query}\"")
+                        })
+                        .size(10.0)
+                        .color(theme.text_dim),
+                    );
+                });
+            }
+        });
+
+    // Footer count line so the user knows how many things are searchable.
+    ui.add_space(4.0);
+    ui.separator();
+    ui.add_space(2.0);
+    ui.label(
+        egui::RichText::new(format!(
+            "{} built-in   |   {} LADSPA",
+            klipp_audio::dsp::available_effects().len(),
+            ladspa_plugins.len(),
+        ))
+        .size(9.0)
+        .color(theme.text_dim),
+    );
+}
+
 /// Show the audio effects chain for a clip.
 /// Returns commands for the app to process.
 pub fn show(
@@ -37,15 +208,9 @@ pub fn show(
                 ui.memory_mut(|m| m.toggle_popup(popup_id));
             }
             egui::popup_below_widget(ui, popup_id, &btn, egui::PopupCloseBehavior::CloseOnClick, |ui| {
-                ui.set_min_width(160.0);
-                for (type_id, name) in klipp_audio::dsp::available_effects() {
-                    if ui.button(name).clicked() {
-                        cmds.push(AppCommand::AddAudioEffect {
-                            clip_id,
-                            effect_type: type_id.to_string(),
-                        });
-                    }
-                }
+                add_effect_picker(ui, theme, ladspa_plugins, popup_id, &mut |type_id| {
+                    cmds.push(AppCommand::AddAudioEffect { clip_id, effect_type: type_id });
+                });
             });
         });
     });
@@ -82,15 +247,9 @@ pub fn show_content(
                 ui.memory_mut(|m| m.toggle_popup(popup_id));
             }
             egui::popup_below_widget(ui, popup_id, &btn, egui::PopupCloseBehavior::CloseOnClick, |ui| {
-                ui.set_min_width(160.0);
-                for (type_id, name) in klipp_audio::dsp::available_effects() {
-                    if ui.button(name).clicked() {
-                        cmds.push(AppCommand::AddAudioEffect {
-                            clip_id,
-                            effect_type: type_id.to_string(),
-                        });
-                    }
-                }
+                add_effect_picker(ui, theme, ladspa_plugins, popup_id, &mut |type_id| {
+                    cmds.push(AppCommand::AddAudioEffect { clip_id, effect_type: type_id });
+                });
             });
         });
     });
