@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = []
-# Forwards to klipp-ui. Build with `cargo build --features ai-ort`
-# (CPU-only ORT) or `--features ai-ort-cuda` (NVIDIA acceleration).
+# AI features ship by default so `cargo r` produces a fully-loaded
+# Klipp without env prefixes or extra flags. Opt into CUDA tiers
+# explicitly with `--features ai-ort-cuda,ai-candle-cuda` (or a
+# single one) when the local toolchain has nvcc. Strip everything
+# AI with `--no-default-features`.
+default = ["ai-ort", "ai-candle"]
 ai-ort = ["klipp-ui/ai-ort"]
 ai-ort-cuda = ["klipp-ui/ai-ort-cuda"]
-# Pure-Rust ML backend via candle. Ships MobileSAM for Isolate
-# Object (click-to-mask). Build with `--features ai-candle` or
-# `--features ai-candle-cuda` for NVIDIA acceleration.
 ai-candle = ["klipp-ui/ai-candle"]
 ai-candle-cuda = ["klipp-ui/ai-candle-cuda"]
 

@@ -22,3 +22,20 @@ r = "run -p klipp-app"
 rr = "run --release -p klipp-app"
 b = "build -p klipp-app"
 c = "clippy --workspace"
+# CUDA-accelerated ML inference. Two tiers because the build-time
+# requirements differ:
+#
+#   *-ort-cuda  — ort with CUDA EP via load-dynamic. No nvcc needed.
+#                 Covers BiRefNet + RF-DETR-Seg.
+#   *-cuda      — full GPU AI (ort + candle). Requires CUDA Toolkit
+#                 (nvcc) on PATH because cudarc compiles kernels at
+#                 build. Covers MobileSAM in addition to ort models.
+#
+# Plain `cargo r` still gives full AI on CPU. Released binaries will
+# build with the full set unconditionally once the release pipeline
+# is in place.
+r-ort-cuda = "run -p klipp-app --features ai-ort-cuda"
+rr-ort-cuda = "run --release -p klipp-app --features ai-ort-cuda"
+r-cuda = "run -p klipp-app --features ai-ort-cuda,ai-candle-cuda"
+rr-cuda = "run --release -p klipp-app --features ai-ort-cuda,ai-candle-cuda"
+b-cuda = "build -p klipp-app --features ai-ort-cuda,ai-candle-cuda"
