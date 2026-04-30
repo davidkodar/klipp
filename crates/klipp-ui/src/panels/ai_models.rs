@@ -50,7 +50,11 @@ use crate::theme::KlippTheme;
 /// user toggles between criteria.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModelSort {
+    /// Curated order: recommended models first, then by manifest
+    /// declaration order. The "best default for newcomers" view —
+    /// puts the picks Klipp's authors stand behind at the top.
     #[default]
+    Recommended,
     DisplayName,
     SizeBytes,
     LastUsed,
@@ -60,6 +64,7 @@ pub enum ModelSort {
 impl ModelSort {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Recommended => "Recommended order",
             Self::DisplayName => "Display name (A→Z)",
             Self::SizeBytes => "Size (small → large)",
             Self::LastUsed => "Last used (recent first)",
@@ -68,6 +73,7 @@ impl ModelSort {
     }
 
     pub const ALL: &'static [ModelSort] = &[
+        ModelSort::Recommended,
         ModelSort::DisplayName,
         ModelSort::SizeBytes,
         ModelSort::LastUsed,
@@ -75,10 +81,48 @@ impl ModelSort {
     ];
 }
 
+/// Hardcoded curation flag — true for models Klipp's authors
+/// recommend as the default pick. Surfaces the RECOMMENDED badge
+/// in the row layout and pins the entry to the top of the
+/// "Recommended order" sort. Migrate to a manifest field
+/// (`recommended = true`) once we want users to extend this list
+/// for their own custom entries.
+fn is_recommended(id: &str) -> bool {
+    matches!(id, "birefnet_lite_v1" | "rf_detr_seg_medium_v1" | "mobile_sam_v1")
+}
+
+/// Hardcoded short description rendered in the (i) info-icon
+/// tooltip. ~one sentence per model, written from the user's POV
+/// (what does this model do well? trade-offs vs siblings?). Empty
+/// string = no tooltip. Same migration story as `is_recommended`:
+/// move to a manifest field when we want users to author their own.
+fn description_for(id: &str) -> &'static str {
+    match id {
+        "birefnet_lite_v1" => {
+            "High-detail mask generator. Best edge quality of the lite-tier \
+             foreground/background matting models."
+        }
+        "mobile_sam_v1" => {
+            "Click-to-mask SAM-family model. Tiny (~40 MB) and fast; one \
+             foreground click usually nails the silhouette."
+        }
+        "rf_detr_seg_v1" => {
+            "Auto-detect instance segmentation, preview tier (~134 MB). \
+             Fast, classifier sometimes confidently wrong on out-of-\
+             distribution scenes."
+        }
+        "rf_detr_seg_medium_v1" => {
+            "Auto-detect instance segmentation, medium tier (~140 MB). \
+             Same speed as preview, genuinely accurate classifier."
+        }
+        _ => "",
+    }
+}
+
 /// Per-frame UI state for the AI Models dialog. Carried on AppState
 /// because the dialog needs to remember the user's filter + sort
-/// across renders. Resets on each app launch (intentional — fresh
-/// dialog should be unfiltered).
+/// + search across renders. Resets on each app launch (intentional
+/// — a fresh dialog should be unfiltered).
 #[derive(Debug, Clone, Default)]
 pub struct AiModelsDialogState {
     /// Task filter. `None` = show every task. `Some(t)` = show only
@@ -91,6 +135,18 @@ pub struct AiModelsDialogState {
     pub installed_only: bool,
     /// Sort criterion applied before rendering rows.
     pub sort: ModelSort,
+    /// Substring filter typed into the search box. Compared
+    /// case-insensitively against display name, model id,
+    /// attribution, license. Empty = no filter.
+    pub search: String,
+    /// Stable id of the model whose three-dot overflow menu is
+    /// currently open. `None` = no menu open. egui's pop-up
+    /// machinery is per-id so we track which row is owning the
+    /// pop-up here rather than scattering bool flags.
+    pub overflow_menu_for: Option<String>,
+    /// Stable id of the model whose Show details modal is open.
+    /// `None` = no modal. Same pattern as `overflow_menu_for`.
+    pub details_for: Option<String>,
 }
 
 /// Threshold for "Uninstall unused". A model whose last successful
@@ -163,9 +219,40 @@ fn filter_and_sort<'m>(
         .iter()
         .filter(|e| match_task_filter(prompt_kinds_to_capabilities(e.prompts), state))
         .filter(|e| match_installed_filter(*e, cache, state))
+        .filter(|e| {
+            match_search(
+                &state.search,
+                &e.display_name,
+                &e.id,
+                &e.attribution,
+                &e.license,
+            )
+        })
         .collect();
-    sort_entries(&mut out, state.sort, telemetry, |e| e.size_bytes, |e| e.license.as_str(), |e| e.display_name.as_str(), |e| &e.id);
+    sort_entries(
+        &mut out,
+        state.sort,
+        telemetry,
+        |e| e.size_bytes,
+        |e| e.license.as_str(),
+        |e| e.display_name.as_str(),
+        |e| &e.id,
+    );
     out
+}
+
+/// Case-insensitive substring match across the four searchable
+/// fields. Empty query matches everything (the "no filter" case).
+fn match_search(query: &str, name: &str, id: &str, attribution: &str, license: &str) -> bool {
+    let q = query.trim();
+    if q.is_empty() {
+        return true;
+    }
+    let q = q.to_ascii_lowercase();
+    name.to_ascii_lowercase().contains(&q)
+        || id.to_ascii_lowercase().contains(&q)
+        || attribution.to_ascii_lowercase().contains(&q)
+        || license.to_ascii_lowercase().contains(&q)
 }
 
 /// Same shape but for custom entries. Custom models are always
@@ -192,6 +279,15 @@ fn filter_and_sort_custom(
                 CustomAdapter::RfDetrSeg => klipp_ml::MaskCapabilities::AUTO_DETECT,
             };
             match_task_filter(caps, state)
+        })
+        .filter(|e| {
+            match_search(
+                &state.search,
+                &e.display_name,
+                &e.id,
+                "",
+                "",
+            )
         })
         .cloned()
         .collect();
@@ -289,6 +385,16 @@ fn compare_for_sort(
     display_a: &str, display_b: &str,
 ) -> std::cmp::Ordering {
     match sort {
+        ModelSort::Recommended => {
+            // Recommended ids first (true sorts before false ⇒
+            // reverse-cmp), then preserve declaration order via
+            // display name as the secondary criterion.
+            match (is_recommended(id_a), is_recommended(id_b)) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => display_a.cmp(display_b),
+            }
+        }
         ModelSort::DisplayName => display_a.cmp(display_b),
         ModelSort::SizeBytes => size_a.cmp(&size_b),
         ModelSort::License => license_a.cmp(license_b),
@@ -436,13 +542,17 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
             );
             ui.add_space(6.0);
 
-            // ── Filter + sort toolbar ────────────────────────────
-            // Sits between the description and the model list so
-            // the user can narrow the list before scanning it. All
-            // controls mutate `state.ai_models_dialog` directly;
-            // the iteration below reads them.
+            // ── Toolbar: TASK + SORT + Installed only + search ──
+            // Visual style mirrors the F-97-MODEL-MANAGER mockup
+            // — small-caps labels, tight ComboBoxes, search box
+            // pinned to the right edge.
             ui.horizontal(|ui| {
-                ui.label("Filter:");
+                ui.label(
+                    egui::RichText::new("TASK")
+                        .small()
+                        .strong()
+                        .color(theme.text_dim),
+                );
                 let task_label = match state.ai_models_dialog.filter_task {
                     None => "All tasks",
                     Some(AiTask::RemoveBackground) => "Remove Background",
@@ -452,7 +562,7 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                 };
                 egui::ComboBox::from_id_salt("ai_models_filter_task")
                     .selected_text(task_label)
-                    .width(160.0)
+                    .width(170.0)
                     .show_ui(ui, |ui| {
                         if ui
                             .selectable_label(
@@ -474,12 +584,13 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                             }
                         }
                     });
-                ui.checkbox(
-                    &mut state.ai_models_dialog.installed_only,
-                    "Installed only",
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("SORT")
+                        .small()
+                        .strong()
+                        .color(theme.text_dim),
                 );
-                ui.separator();
-                ui.label("Sort:");
                 egui::ComboBox::from_id_salt("ai_models_sort")
                     .selected_text(state.ai_models_dialog.sort.label())
                     .width(200.0)
@@ -491,8 +602,23 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                             }
                         }
                     });
+                ui.add_space(8.0);
+                ui.checkbox(
+                    &mut state.ai_models_dialog.installed_only,
+                    "Installed only",
+                );
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut state.ai_models_dialog.search)
+                                .hint_text("🔍 Filter models…")
+                                .desired_width(200.0),
+                        );
+                    },
+                );
             });
-            ui.add_space(4.0);
+            ui.add_space(6.0);
             ui.separator();
 
             // Build the filtered + sorted list of manifest entries
@@ -534,32 +660,52 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                             );
                         });
                     }
-                    for &entry in &visible_entries {
-                        let status = if entry.size_bytes == 0 {
-                            // Placeholder entry — the release-CI
-                            // mirror hasn't filled in size + sha256
-                            // yet. Show as Pending instead of hiding;
-                            // gives users visibility into the roadmap.
-                            ModelInstallStatus::Pending
-                        } else {
-                            match &cache {
-                                Some(c) => install_status_for(c, entry),
-                                None => ModelInstallStatus::Unknown(
-                                    "cache open failed".into(),
-                                ),
-                            }
-                        };
-                        render_row(
-                            ui,
-                            entry,
-                            &status,
-                            theme,
-                            &mut state.model_download,
-                            &state.ai_tools_state.model_telemetry,
-                            &mut state.show_ai_model_uninstall_confirm,
-                            &mut state.toast,
-                        );
-                        ui.separator();
+                    // Group by ModelKind so each kind gets its own
+                    // section header ("MASK GENERATOR", "OBJECT
+                    // DETECTOR", "VIDEO TRACKER") with a count.
+                    // Stable iteration order: MaskGenerator first,
+                    // then ObjectDetector, then VideoTracker.
+                    use klipp_ml::manifest::ModelKind;
+                    let kinds_in_order: &[(ModelKind, &str)] = &[
+                        (ModelKind::MaskGenerator, "MASK GENERATOR"),
+                        (ModelKind::ObjectDetector, "OBJECT DETECTOR"),
+                        (ModelKind::VideoTracker, "VIDEO TRACKER"),
+                    ];
+                    for (kind, header) in kinds_in_order {
+                        let entries: Vec<&ModelEntry> = visible_entries
+                            .iter()
+                            .copied()
+                            .filter(|e| e.kind == *kind)
+                            .collect();
+                        if entries.is_empty() {
+                            continue;
+                        }
+                        section_header(ui, header, entries.len(), theme);
+                        for &entry in &entries {
+                            let status = if entry.size_bytes == 0 {
+                                ModelInstallStatus::Pending
+                            } else {
+                                match &cache {
+                                    Some(c) => install_status_for(c, entry),
+                                    None => ModelInstallStatus::Unknown(
+                                        "cache open failed".into(),
+                                    ),
+                                }
+                            };
+                            render_row(
+                                ui,
+                                entry,
+                                &status,
+                                theme,
+                                cache.as_ref(),
+                                &mut state.model_download,
+                                &state.ai_tools_state.model_telemetry,
+                                &mut state.show_ai_model_uninstall_confirm,
+                                &mut state.toast,
+                                &mut state.ai_models_dialog.overflow_menu_for,
+                                &mut state.ai_models_dialog.details_for,
+                            );
+                        }
                     }
 
                     // ── User-added custom models ────────────────────
@@ -595,10 +741,13 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
 
             ui.add_space(6.0);
             ui.separator();
-            // Count installed entries once for the bulk-action button
-            // gating. Cheap stat — already done above for the cache
-            // size readout, but we need the entry list (not just the
-            // total) for "Uninstall all" / "Verify all".
+
+            // ── Footer ──
+            // Cache size + GPU status pinned to the left in caps;
+            // primary actions on the right edge. Uninstall all and
+            // Uninstall unused are reachable via the more verbose
+            // confirmations they always required, kept here as
+            // text-button links.
             let installed_count = match cache.as_ref() {
                 Some(c) => manifest
                     .models
@@ -621,101 +770,132 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
                 None => 0,
             };
             ui.horizontal(|ui| {
-                if ui.button("Open cache folder").clicked() {
-                    if let Some(c) = cache.as_ref() {
-                        let _ = open_in_file_browser(c.root());
-                    }
-                }
-                if ui
-                    .button("Edit user override…")
-                    .on_hover_text(
-                        "Opens ~/.config/klipp/models.toml in your \
-                         default editor — for air-gapped installs, \
-                         private mirrors, or hand-tuning bundled \
-                         entries. Created from a comment template \
-                         if it doesn't exist yet.",
-                    )
-                    .clicked()
-                {
-                    if let Err(e) = open_user_override(&mut state.toast) {
-                        state
-                            .toast
-                            .show(format!("Couldn't open user override: {e}"));
-                    }
-                }
-                if ui
-                    .add_enabled(installed_count > 0, egui::Button::new("Verify all"))
-                    .on_hover_text(
-                        "Re-hash every installed model and toast a \
-                         summary of matches vs mismatches.",
-                    )
-                    .on_disabled_hover_text("No models installed")
-                    .clicked()
-                {
-                    verify_all(&manifest, cache.as_ref(), &mut state.toast);
-                }
-                if ui
-                    .add_enabled(installed_count > 0, egui::Button::new("Uninstall all"))
-                    .on_hover_text(
-                        "Delete every installed model from the cache. \
-                         Manifest entries stay visible so you can \
-                         re-download any of them.",
-                    )
-                    .on_disabled_hover_text("No models installed")
-                    .clicked()
-                {
-                    state.show_ai_models_bulk_uninstall_confirm = true;
-                }
-                if ui
-                    .add_enabled(stale_count > 0, egui::Button::new("Uninstall unused"))
-                    .on_hover_text(
-                        "Delete models you haven't used in 30+ days. \
-                         Telemetry is what makes this meaningful — \
-                         freshly installed models that haven't been \
-                         run yet are skipped.",
-                    )
-                    .on_disabled_hover_text(
-                        "No installed models are stale yet (used in \
-                         the last 30 days, or never used).",
-                    )
-                    .clicked()
-                {
-                    state.show_ai_models_stale_uninstall_confirm = true;
-                }
-                if ui
-                    .button("Add custom model…")
-                    .on_hover_text(
-                        "Paste a URL to an ONNX or safetensors file \
-                         and add it as a custom model. You'll be \
-                         asked to pick which adapter (BiRefNet / \
-                         MobileSAM / RF-DETR-Seg) backs it.",
-                    )
-                    .clicked()
-                {
-                    if matches!(
-                        state.custom_model_add,
-                        crate::ai_tools::custom_install::CustomInstallState::Idle
-                    ) {
-                        state.custom_model_add =
-                            crate::ai_tools::custom_install::CustomInstallState::Form(
-                                Default::default(),
-                            );
-                    }
-                }
                 ui.label(
-                    egui::RichText::new(format!(
-                        "Cache: {}  •  {}",
-                        format_bytes(total_cache_bytes),
-                        gpu_status_label(),
-                    ))
-                    .small()
-                    .color(theme.text_secondary),
+                    egui::RichText::new(format!("CACHE   {}", format_bytes(total_cache_bytes)))
+                        .small()
+                        .strong()
+                        .color(theme.text_secondary),
                 );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Close").clicked() {
-                        close_requested = true;
-                    }
-                });
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(format!("GPU   {}", gpu_status_label_short()))
+                        .small()
+                        .strong()
+                        .color(theme.text_secondary),
+                );
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if ui.button("Done").clicked() {
+                            close_requested = true;
+                        }
+                        ui.add_space(8.0);
+                        if ui
+                            .add_enabled(
+                                installed_count > 0,
+                                egui::Button::new(
+                                    egui::RichText::new("Verify all").strong(),
+                                ),
+                            )
+                            .on_hover_text(
+                                "Re-hash every installed model and toast a \
+                                 summary of matches vs mismatches.",
+                            )
+                            .on_disabled_hover_text("No models installed")
+                            .clicked()
+                        {
+                            verify_all(&manifest, cache.as_ref(), &mut state.toast);
+                        }
+                        ui.add_space(4.0);
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Add custom model…")
+                                        .color(theme.text_secondary),
+                                )
+                                .frame(false),
+                            )
+                            .clicked()
+                        {
+                            if matches!(
+                                state.custom_model_add,
+                                crate::ai_tools::custom_install::CustomInstallState::Idle
+                            ) {
+                                state.custom_model_add =
+                                    crate::ai_tools::custom_install::CustomInstallState::Form(
+                                        Default::default(),
+                                    );
+                            }
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Open cache folder")
+                                        .color(theme.text_secondary),
+                                )
+                                .frame(false),
+                            )
+                            .clicked()
+                        {
+                            if let Some(c) = cache.as_ref() {
+                                let _ = open_in_file_browser(c.root());
+                            }
+                        }
+                        // Less-frequent actions still reachable; kept
+                        // as small text links so they don't crowd the
+                        // primary Verify all / Done buttons.
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Edit user override…")
+                                        .small()
+                                        .color(theme.text_dim),
+                                )
+                                .frame(false),
+                            )
+                            .clicked()
+                        {
+                            if let Err(e) = open_user_override(&mut state.toast) {
+                                state
+                                    .toast
+                                    .show(format!("Couldn't open user override: {e}"));
+                            }
+                        }
+                        if ui
+                            .add_enabled(
+                                installed_count > 0,
+                                egui::Button::new(
+                                    egui::RichText::new("Uninstall all")
+                                        .small()
+                                        .color(theme.text_dim),
+                                )
+                                .frame(false),
+                            )
+                            .on_disabled_hover_text("No models installed")
+                            .clicked()
+                        {
+                            state.show_ai_models_bulk_uninstall_confirm = true;
+                        }
+                        if ui
+                            .add_enabled(
+                                stale_count > 0,
+                                egui::Button::new(
+                                    egui::RichText::new("Uninstall unused")
+                                        .small()
+                                        .color(theme.text_dim),
+                                )
+                                .frame(false),
+                            )
+                            .on_disabled_hover_text(
+                                "No installed models are stale yet (used in \
+                                 the last 30 days, or never used).",
+                            )
+                            .clicked()
+                        {
+                            state.show_ai_models_stale_uninstall_confirm = true;
+                        }
+                    },
+                );
             });
         });
 
@@ -729,6 +909,154 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
     show_stale_uninstall_confirm(ctx, state, theme, &manifest, &cache);
     show_custom_install(ctx, state, theme, &manifest, &cache);
     show_custom_uninstall_confirm(ctx, state, theme, &cache);
+    show_model_details(ctx, state, theme, &manifest);
+}
+
+/// Read-only details modal triggered from the row's three-dot menu
+/// "Show details" item. Renders every field from the manifest entry
+/// — everything Copy model info would put in the clipboard, but
+/// laid out for reading. Closes on scrim click or Done button.
+fn show_model_details(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    theme: &KlippTheme,
+    manifest: &klipp_ml::manifest::ModelManifest,
+) {
+    let Some(id) = state.ai_models_dialog.details_for.clone() else {
+        return;
+    };
+    // First check manifest, then custom models — supports both.
+    let manifest_entry = manifest.models.iter().find(|e| e.id == id).cloned();
+    let custom_entry = state
+        .ai_tools_state
+        .custom_models
+        .iter()
+        .find(|e| e.id == id)
+        .cloned();
+    if manifest_entry.is_none() && custom_entry.is_none() {
+        // Stale id — entry was removed between renders. Drop the
+        // flag silently rather than render an empty modal.
+        state.ai_models_dialog.details_for = None;
+        return;
+    }
+
+    let screen_rect = ctx.screen_rect();
+    egui::Area::new(egui::Id::new("ai_model_details_scrim"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen_rect.min)
+        .show(ctx, |ui| {
+            let resp = ui.allocate_rect(screen_rect, egui::Sense::click_and_drag());
+            ui.painter().rect_filled(
+                screen_rect,
+                0.0,
+                egui::Color32::from_black_alpha(160),
+            );
+            if resp.clicked() {
+                state.ai_models_dialog.details_for = None;
+            }
+        });
+
+    let mut close = false;
+    egui::Window::new("Model details")
+        .collapsible(false)
+        .resizable(false)
+        .fixed_size([520.0, 360.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            if let Some(e) = &manifest_entry {
+                ui.label(egui::RichText::new(&e.display_name).strong().size(15.0));
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(format!("ID  {}", e.id))
+                        .small()
+                        .color(theme.text_dim),
+                );
+                ui.add_space(8.0);
+                detail_row(ui, theme, "Kind", kind_label(e.kind));
+                detail_row(ui, theme, "License", &e.license);
+                detail_row(ui, theme, "Attribution", &e.attribution);
+                detail_row(ui, theme, "Size", &format_bytes(e.size_bytes));
+                detail_row(ui, theme, "SHA-256", &e.sha256);
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Sources")
+                        .small()
+                        .strong()
+                        .color(theme.text_secondary),
+                );
+                for s in &e.sources {
+                    ui.label(
+                        egui::RichText::new(&s.url)
+                            .small()
+                            .monospace()
+                            .color(theme.text_secondary),
+                    );
+                }
+                let desc = description_for(&e.id);
+                if !desc.is_empty() {
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(desc)
+                            .small()
+                            .color(theme.text_secondary),
+                    );
+                }
+            } else if let Some(e) = &custom_entry {
+                ui.label(egui::RichText::new(&e.display_name).strong().size(15.0));
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(format!("ID  {}", e.id))
+                        .small()
+                        .color(theme.text_dim),
+                );
+                ui.add_space(8.0);
+                detail_row(ui, theme, "Adapter", e.adapter.display_name());
+                detail_row(ui, theme, "Size", &format_bytes(e.size_bytes));
+                detail_row(ui, theme, "SHA-256", &e.sha256);
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Source")
+                        .small()
+                        .strong()
+                        .color(theme.text_secondary),
+                );
+                ui.label(
+                    egui::RichText::new(&e.url)
+                        .small()
+                        .monospace()
+                        .color(theme.text_secondary),
+                );
+            }
+            ui.add_space(12.0);
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    if ui.button("Done").clicked() {
+                        close = true;
+                    }
+                },
+            );
+        });
+    if close {
+        state.ai_models_dialog.details_for = None;
+    }
+}
+
+fn detail_row(ui: &mut egui::Ui, theme: &KlippTheme, label: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(label)
+                .small()
+                .strong()
+                .color(theme.text_dim),
+        );
+        ui.label(
+            egui::RichText::new(value)
+                .small()
+                .color(theme.text_secondary),
+        );
+    });
 }
 
 /// Render the "Delete <model>?" modal when state has a pending entry.
@@ -1992,144 +2320,378 @@ fn render_row(
     entry: &ModelEntry,
     status: &ModelInstallStatus,
     theme: &KlippTheme,
+    cache: Option<&ModelCache>,
     download: &mut ModelDownloadState,
     telemetry: &HashMap<String, ModelTelemetry>,
     pending_uninstall: &mut Option<ModelEntry>,
     toast: &mut crate::widgets::toast::ToastState,
+    overflow_menu_for: &mut Option<String>,
+    details_for: &mut Option<String>,
 ) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.set_max_width(380.0);
-            ui.label(egui::RichText::new(&entry.display_name).strong());
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} • {} • {}",
-                    kind_label(entry.kind),
-                    entry.license,
-                    format_bytes(entry.size_bytes),
-                ))
-                .small()
-                .color(theme.text_secondary),
-            );
-            ui.label(
-                egui::RichText::new(&entry.attribution)
-                    .small()
-                    .color(theme.text_dim),
-            );
-            // Telemetry line — appears only if the model has been
-            // run at least once this session. Surfaces "Last used:
-            // 2m ago • avg 142ms" so users can compare runtime
-            // across the variants they've tried.
-            if let Some(t) = telemetry.get(&entry.id) {
-                if t.has_runs() {
-                    let avg = t
-                        .avg_inference_ms()
-                        .map(|ms| format!("avg {:.0}ms", ms))
-                        .unwrap_or_else(|| "—".into());
+    let row_h = 52.0;
+    let dot_color = status.badge_color(theme);
+    egui::Frame::none()
+        .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+        .show(ui, |ui| {
+            ui.set_min_height(row_h);
+            ui.horizontal(|ui| {
+                // Status dot — small + vertically centered. Same
+                // colour mapping as the status badge so the two
+                // signals reinforce.
+                paint_status_dot(ui, dot_color);
+
+                // Centre block: name + (optional) RECOMMENDED + (i),
+                // and a kind/license/attribution line below.
+                ui.vertical(|ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            egui::RichText::new(&entry.display_name)
+                                .strong()
+                                .size(14.0),
+                        );
+                        if is_recommended(&entry.id) {
+                            recommended_badge(ui, theme);
+                        }
+                        let desc = description_for(&entry.id);
+                        if !desc.is_empty() {
+                            ui.label(
+                                egui::RichText::new("ⓘ")
+                                    .size(12.0)
+                                    .color(theme.text_dim),
+                            )
+                            .on_hover_text(desc);
+                        }
+                    });
                     ui.label(
                         egui::RichText::new(format!(
-                            "Last used: {} • {}",
-                            format_relative(t.last_used),
-                            avg,
+                            "{}   {}   {}",
+                            kind_label(entry.kind),
+                            entry.license,
+                            entry.attribution,
                         ))
                         .small()
-                        .color(theme.text_dim),
+                        .color(theme.text_secondary),
                     );
-                }
-            }
-        });
+                    if let Some(t) = telemetry.get(&entry.id) {
+                        if t.has_runs() {
+                            let avg = t
+                                .avg_inference_ms()
+                                .map(|ms| format!("avg {:.0}ms", ms))
+                                .unwrap_or_else(|| "—".into());
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Last used {} · {}",
+                                    format_relative(t.last_used),
+                                    avg,
+                                ))
+                                .small()
+                                .color(theme.text_dim),
+                            );
+                        }
+                    }
+                });
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Action buttons go on the right edge.
-            match status {
-                ModelInstallStatus::Pending => {
-                    ui.add_enabled(false, egui::Button::new("Download…"))
-                        .on_disabled_hover_text(
-                            "Awaiting Klipp release-CI mirror — \
-                             the file isn't downloadable yet.",
+                // Right block: size + status badge + primary action +
+                // overflow menu.
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        // Three-dot overflow — only meaningful for
+                        // non-Pending statuses (Pending entries have
+                        // nothing to install/uninstall/verify yet).
+                        if !matches!(status, ModelInstallStatus::Pending) {
+                            row_overflow_menu(
+                                ui,
+                                entry,
+                                status,
+                                theme,
+                                cache,
+                                download,
+                                pending_uninstall,
+                                toast,
+                                overflow_menu_for,
+                                details_for,
+                            );
+                        }
+
+                        // Primary action button on the right edge.
+                        primary_action_button(
+                            ui, entry, status, theme, download,
+                            pending_uninstall, toast,
                         );
+
+                        ui.add_space(8.0);
+                        status_badge(ui, status, theme);
+
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(format_bytes(entry.size_bytes))
+                                .small()
+                                .color(theme.text_secondary),
+                        );
+                    },
+                );
+            });
+        });
+}
+
+/// Small-caps section header rendered above each ModelKind group
+/// in the dialog. Format: "MASK GENERATOR  4" — caps name +
+/// count badge.
+fn section_header(ui: &mut egui::Ui, header: &str, count: usize, theme: &KlippTheme) {
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(header)
+                .small()
+                .strong()
+                .color(theme.text_dim),
+        );
+        ui.add_space(4.0);
+        let badge = egui::Frame::none()
+            .fill(theme.bg_raised)
+            .rounding(2.0)
+            .inner_margin(egui::Margin::symmetric(5.0, 0.5));
+        badge.show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(count.to_string())
+                    .small()
+                    .color(theme.text_secondary),
+            );
+        });
+    });
+    ui.add_space(2.0);
+}
+
+/// Small filled circle used as the per-row status indicator. The
+/// fill colour mirrors the status badge so the two visuals
+/// reinforce — green = installed, amber = mismatch, blue = pending,
+/// dim grey = missing/unknown.
+fn paint_status_dot(ui: &mut egui::Ui, color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(10.0, 10.0),
+        egui::Sense::hover(),
+    );
+    ui.painter().circle_filled(rect.center(), 4.0, color);
+}
+
+/// Inline pill for recommended entries. Yellow fill + dark text,
+/// distinct from the status badge so the two read as different
+/// signals.
+fn recommended_badge(ui: &mut egui::Ui, theme: &KlippTheme) {
+    let bg = theme.marker_warning;
+    egui::Frame::none()
+        .fill(bg)
+        .rounding(3.0)
+        .inner_margin(egui::Margin::symmetric(6.0, 1.0))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new("RECOMMENDED")
+                    .small()
+                    .strong()
+                    .color(egui::Color32::BLACK),
+            );
+        });
+}
+
+/// Status badge to the right of the size column. Same shape the
+/// previous design used — kept consistent so the visual cue is
+/// stable across the rewrite.
+fn status_badge(
+    ui: &mut egui::Ui,
+    status: &ModelInstallStatus,
+    theme: &KlippTheme,
+) {
+    let color = status.badge_color(theme);
+    egui::Frame::none()
+        .fill(color.gamma_multiply(0.18))
+        .stroke(egui::Stroke::new(1.0, color))
+        .rounding(3.0)
+        .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(status.label().to_uppercase())
+                    .small()
+                    .color(color),
+            );
+        });
+}
+
+/// One-button on the right edge: Verify when the entry is
+/// installed, Download when missing/unknown, Reinstall on Mismatch.
+/// Pending entries get a disabled Download button.
+fn primary_action_button(
+    ui: &mut egui::Ui,
+    entry: &ModelEntry,
+    status: &ModelInstallStatus,
+    _theme: &KlippTheme,
+    download: &mut ModelDownloadState,
+    _pending_uninstall: &mut Option<ModelEntry>,
+    toast: &mut crate::widgets::toast::ToastState,
+) {
+    match status {
+        ModelInstallStatus::Pending => {
+            ui.add_enabled(false, egui::Button::new("Download"))
+                .on_disabled_hover_text(
+                    "Awaiting Klipp release-CI mirror — the file isn't \
+                     downloadable yet.",
+                );
+        }
+        ModelInstallStatus::Missing | ModelInstallStatus::Unknown(_) => {
+            if ui
+                .add_enabled(
+                    matches!(download, ModelDownloadState::Idle),
+                    egui::Button::new("Download"),
+                )
+                .on_disabled_hover_text("Another download is in progress")
+                .clicked()
+            {
+                *download = ModelDownloadState::Consenting {
+                    entry: entry.clone(),
+                };
+            }
+        }
+        ModelInstallStatus::Mismatch => {
+            if ui
+                .add_enabled(
+                    matches!(download, ModelDownloadState::Idle),
+                    egui::Button::new("Reinstall"),
+                )
+                .clicked()
+            {
+                *download = ModelDownloadState::Consenting {
+                    entry: entry.clone(),
+                };
+            }
+        }
+        ModelInstallStatus::Present { .. } => {
+            if ui
+                .button("Verify")
+                .on_hover_text(
+                    "Re-hash the file on disk and confirm it matches \
+                     the manifest's SHA-256.",
+                )
+                .clicked()
+            {
+                verify_now(entry, toast);
+            }
+        }
+    }
+}
+
+/// Three-dot overflow menu for the row. Items follow the F-97-
+/// MODEL-MANAGER design mockup:
+///   • Show details   — opens a modal with full id/sha/url/license.
+///   • Verify integrity — same as the row's Verify button (re-hash).
+///   • Reinstall       — fires the consent + download flow.
+///   • Show in cache folder — xdg-opens the parent dir.
+///   • Copy model info — clipboard copy of structured metadata.
+///   • Uninstall...    — destructive; stages the confirm modal.
+fn row_overflow_menu(
+    ui: &mut egui::Ui,
+    entry: &ModelEntry,
+    status: &ModelInstallStatus,
+    theme: &KlippTheme,
+    cache: Option<&ModelCache>,
+    download: &mut ModelDownloadState,
+    pending_uninstall: &mut Option<ModelEntry>,
+    toast: &mut crate::widgets::toast::ToastState,
+    overflow_menu_for: &mut Option<String>,
+    details_for: &mut Option<String>,
+) {
+    let is_open = overflow_menu_for.as_deref() == Some(entry.id.as_str());
+    let response = ui.add(
+        egui::Button::new(egui::RichText::new("⋮").size(16.0))
+            .frame(false),
+    );
+    if response.clicked() {
+        *overflow_menu_for = if is_open {
+            None
+        } else {
+            Some(entry.id.clone())
+        };
+    }
+    if is_open {
+        let popup_id = ui.make_persistent_id(("ai_row_overflow", &entry.id));
+        let mut close_menu = false;
+        egui::popup::popup_below_widget(
+            ui,
+            popup_id,
+            &response,
+            egui::PopupCloseBehavior::CloseOnClick,
+            |ui| {
+                ui.set_min_width(200.0);
+                if ui.button("Show details").clicked() {
+                    *details_for = Some(entry.id.clone());
+                    close_menu = true;
                 }
-                ModelInstallStatus::Missing | ModelInstallStatus::Unknown(_) => {
-                    if ui
-                        .add_enabled(
-                            matches!(download, ModelDownloadState::Idle),
-                            egui::Button::new("Download…"),
-                        )
-                        .on_disabled_hover_text("Another download is in progress")
-                        .clicked()
-                    {
-                        *download = ModelDownloadState::Consenting {
-                            entry: entry.clone(),
-                        };
+                if matches!(status, ModelInstallStatus::Present { .. }) {
+                    if ui.button("Verify integrity").clicked() {
+                        verify_now(entry, toast);
+                        close_menu = true;
                     }
                 }
-                ModelInstallStatus::Mismatch => {
-                    if ui
-                        .add_enabled(
-                            matches!(download, ModelDownloadState::Idle),
-                            egui::Button::new("Reinstall"),
-                        )
-                        .clicked()
-                    {
-                        *download = ModelDownloadState::Consenting {
-                            entry: entry.clone(),
-                        };
+                if !matches!(status, ModelInstallStatus::Pending) {
+                    if ui.button("Reinstall").clicked() {
+                        if matches!(download, ModelDownloadState::Idle) {
+                            *download = ModelDownloadState::Consenting {
+                                entry: entry.clone(),
+                            };
+                        } else {
+                            toast.show("Another download is in progress");
+                        }
+                        close_menu = true;
                     }
                 }
-                ModelInstallStatus::Present { .. } => {
-                    // Right-to-left layout — buttons render LEFT to
-                    // RIGHT in source order on screen, in reverse.
-                    // We want Reinstall on the right edge (primary
-                    // action), Uninstall middle, Verify left.
-                    if ui
-                        .button("Reinstall")
-                        .on_hover_text("Re-download and verify the file")
-                        .clicked()
-                        && matches!(download, ModelDownloadState::Idle)
-                    {
-                        *download = ModelDownloadState::Consenting {
-                            entry: entry.clone(),
-                        };
+                if matches!(status, ModelInstallStatus::Present { .. }) {
+                    if ui.button("Show in cache folder").clicked() {
+                        if let Some(c) = cache {
+                            let _ = open_in_file_browser(c.root());
+                        }
+                        close_menu = true;
                     }
+                }
+                if ui.button("Copy model info").clicked() {
+                    let info = format!(
+                        "id: {}\ndisplay_name: {}\nkind: {}\nlicense: {}\n\
+                         attribution: {}\nsize_bytes: {}\nsha256: {}\nsources: {}",
+                        entry.id,
+                        entry.display_name,
+                        kind_label(entry.kind),
+                        entry.license,
+                        entry.attribution,
+                        entry.size_bytes,
+                        entry.sha256,
+                        entry
+                            .sources
+                            .iter()
+                            .map(|s| s.url.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                    ui.ctx().copy_text(info);
+                    toast.show(format!("Copied {} info to clipboard", entry.display_name));
+                    close_menu = true;
+                }
+                if matches!(status, ModelInstallStatus::Present { .. }) {
+                    ui.separator();
                     if ui
-                        .button("Uninstall")
-                        .on_hover_text(
-                            "Delete the cached weights + drop the \
-                             in-memory generator. Re-download anytime.",
+                        .button(
+                            egui::RichText::new("Uninstall…")
+                                .color(theme.marker_error),
                         )
                         .clicked()
                     {
                         *pending_uninstall = Some(entry.clone());
-                    }
-                    if ui
-                        .button("Verify")
-                        .on_hover_text(
-                            "Re-hash the file on disk and confirm \
-                             it matches the manifest's SHA-256.",
-                        )
-                        .clicked()
-                    {
-                        verify_now(entry, toast);
+                        close_menu = true;
                     }
                 }
-            }
-
-            // Status badge.
-            ui.add_space(8.0);
-            let badge = egui::Frame::none()
-                .fill(status.badge_color(theme).gamma_multiply(0.18))
-                .stroke(egui::Stroke::new(1.0, status.badge_color(theme)))
-                .rounding(3.0)
-                .inner_margin(egui::Margin::symmetric(6.0, 2.0));
-            badge.show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(status.label())
-                        .small()
-                        .color(status.badge_color(theme)),
-                );
-            });
-        });
-    });
+            },
+        );
+        if close_menu {
+            *overflow_menu_for = None;
+        }
+    }
 }
 
 /// User-friendly label for `ModelKind`. The enum's snake_case serde
@@ -2146,11 +2708,22 @@ fn kind_label(kind: klipp_ml::manifest::ModelKind) -> &'static str {
 /// Open `path` in the user's default file browser. Best-effort —
 /// failures fall through silently because there's nothing useful
 /// the dialog can do about it.
+/// Compact GPU status for the dialog footer. Same data as
+/// `gpu_status_label` but trimmed to fit the small-caps cell.
+fn gpu_status_label_short() -> &'static str {
+    if cfg!(feature = "ai-ort-cuda") || cfg!(feature = "ai-candle-cuda") {
+        "NVIDIA"
+    } else {
+        "CPU only"
+    }
+}
+
 /// Compile-time-aware GPU acceleration status. Reflected in the AI
 /// Models dialog footer so the user can tell at a glance which
 /// vendors the running build can actually use. Multi-vendor support
 /// is the project memory rule (see project_linux_only_gpu_diversity);
 /// AMD + Intel are tracked separately.
+#[allow(dead_code)] // kept for potential future tooltip use
 fn gpu_status_label() -> String {
     let mut active: Vec<&'static str> = Vec::new();
     if cfg!(feature = "ai-ort-cuda") {
