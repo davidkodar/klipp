@@ -296,10 +296,40 @@ fn render_body(
 
 fn render_plugin_row(ui: &mut egui::Ui, theme: &KlippTheme, plugin: &LadspaPluginInfo) {
     let display = if plugin.name.is_empty() {
-        &plugin.label
+        plugin.label.as_str()
     } else {
-        &plugin.name
+        plugin.name.as_str()
     };
+    // Technical LADSPA label alongside the display name — audio
+    // technicians know plugins by their label (matches docs, .rdf
+    // metadata, debug logs). Hide when the label is just a lower-case
+    // form of the display name (no extra information).
+    let tech_label = if !plugin.name.is_empty()
+        && !plugin.label.is_empty()
+        && plugin.name.to_lowercase() != plugin.label.to_lowercase()
+    {
+        Some(plugin.label.as_str())
+    } else {
+        None
+    };
+
+    let shape_label = if plugin.audio_inputs == 1 && plugin.audio_outputs == 1 {
+        "mono"
+    } else if plugin.audio_inputs == 2 && plugin.audio_outputs == 2 {
+        "stereo"
+    } else if plugin.audio_inputs == 1 && plugin.audio_outputs == 2 {
+        "mono → stereo"
+    } else {
+        "multi"
+    };
+
+    // Per-plugin expansion state, persisted across frames. Keyed off
+    // unique_id so a sort/filter doesn't shuffle which row was open.
+    let expand_key = ui.id().with(("plugin_row_expanded", plugin.unique_id));
+    let is_expanded: bool = ui
+        .ctx()
+        .data_mut(|d| d.get_temp(expand_key).unwrap_or(false));
+
     egui::Frame::none()
         .fill(theme.bg_raised)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
@@ -307,14 +337,34 @@ fn render_plugin_row(ui: &mut egui::Ui, theme: &KlippTheme, plugin: &LadspaPlugi
         .inner_margin(egui::Margin::symmetric(8.0, 6.0))
         .outer_margin(egui::Margin::symmetric(0.0, 1.0))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
+            // ── Header row (always visible) ─────────────────────────
+            let header_resp = ui.horizontal(|ui| {
+                let chev = if is_expanded { "\u{25BC}" } else { "\u{25B6}" };
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(chev)
+                            .size(9.0)
+                            .color(theme.text_dim),
+                    )
+                    .selectable(false),
+                );
                 ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new(display)
-                            .size(11.0)
-                            .strong()
-                            .color(theme.text_primary),
-                    );
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(display)
+                                .size(11.0)
+                                .strong()
+                                .color(theme.text_primary),
+                        );
+                        if let Some(label) = tech_label {
+                            ui.label(
+                                egui::RichText::new(label)
+                                    .size(10.0)
+                                    .monospace()
+                                    .color(theme.text_dim),
+                            );
+                        }
+                    });
                     ui.label(
                         egui::RichText::new(plugin.path.to_string_lossy())
                             .size(9.0)
@@ -322,26 +372,217 @@ fn render_plugin_row(ui: &mut egui::Ui, theme: &KlippTheme, plugin: &LadspaPlugi
                     );
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let suffix = if plugin.audio_inputs == 1 && plugin.audio_outputs == 1 {
-                        "mono"
-                    } else if plugin.audio_inputs == 2 && plugin.audio_outputs == 2 {
-                        "stereo"
-                    } else if plugin.audio_inputs == 1 && plugin.audio_outputs == 2 {
-                        "mono → stereo"
-                    } else {
-                        "multi"
-                    };
                     ui.label(
                         egui::RichText::new(format!(
                             "{} | {} ports",
-                            suffix, plugin.port_count
+                            shape_label, plugin.port_count
                         ))
                         .size(9.0)
                         .color(theme.text_dim),
                     );
                 });
             });
+
+            // Make the entire header row clickable to toggle expansion.
+            // Easier than a chevron-only hit target and matches DAW
+            // plugin-browser conventions.
+            let click_resp = ui.interact(
+                header_resp.response.rect,
+                expand_key.with("click"),
+                egui::Sense::click(),
+            );
+            if click_resp.clicked() {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(expand_key, !is_expanded));
+            }
+
+            // ── Expanded body ───────────────────────────────────────
+            if is_expanded {
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(6.0);
+                render_plugin_details(ui, theme, plugin);
+            }
         });
+}
+
+/// Per-plugin detail panel shown when a row is expanded. Pulls every
+/// piece of metadata we already have on `LadspaPluginInfo` plus a
+/// stat() of the .so for file size — no extra LADSPA work, just
+/// surfacing what's already extracted.
+fn render_plugin_details(ui: &mut egui::Ui, theme: &KlippTheme, plugin: &LadspaPluginInfo) {
+    // ── Identity row ────────────────────────────────────────────────
+    egui::Grid::new(("plugin_details", plugin.unique_id))
+        .num_columns(2)
+        .spacing([12.0, 4.0])
+        .show(ui, |ui| {
+            detail_label(ui, theme, "Unique ID");
+            ui.label(
+                egui::RichText::new(plugin.unique_id.to_string())
+                    .size(10.0)
+                    .monospace()
+                    .color(theme.text_secondary),
+            );
+            ui.end_row();
+
+            detail_label(ui, theme, "Label");
+            ui.label(
+                egui::RichText::new(&plugin.label)
+                    .size(10.0)
+                    .monospace()
+                    .color(theme.text_secondary),
+            );
+            ui.end_row();
+
+            detail_label(ui, theme, "Maker");
+            ui.label(
+                egui::RichText::new(if plugin.maker.is_empty() {
+                    "(unknown)"
+                } else {
+                    plugin.maker.as_str()
+                })
+                .size(10.0)
+                .color(theme.text_secondary),
+            );
+            ui.end_row();
+
+            detail_label(ui, theme, "Audio I/O");
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} input{}, {} output{}",
+                    plugin.audio_inputs,
+                    if plugin.audio_inputs == 1 { "" } else { "s" },
+                    plugin.audio_outputs,
+                    if plugin.audio_outputs == 1 { "" } else { "s" },
+                ))
+                .size(10.0)
+                .color(theme.text_secondary),
+            );
+            ui.end_row();
+
+            detail_label(ui, theme, "File");
+            let file_summary = match std::fs::metadata(&plugin.path) {
+                Ok(meta) => format_bytes(meta.len()),
+                Err(_) => "(unreadable)".to_string(),
+            };
+            ui.label(
+                egui::RichText::new(file_summary)
+                    .size(10.0)
+                    .color(theme.text_secondary),
+            );
+            ui.end_row();
+        });
+
+    // ── Control parameters ──────────────────────────────────────────
+    if !plugin.control_inputs.is_empty() {
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(format!(
+                "CONTROLS ({})",
+                plugin.control_inputs.len()
+            ))
+            .size(9.0)
+            .strong()
+            .color(theme.text_dim),
+        );
+        ui.add_space(2.0);
+
+        for port in &plugin.control_inputs {
+            let port_name = if port.name.is_empty() {
+                format!("port {}", port.index)
+            } else {
+                port.name.clone()
+            };
+            let unit_suffix = match klipp_audio::ladspa::unit_hint_for_port_name(&port_name) {
+                klipp_audio::dsp::ParamUnit::Db => " dB",
+                klipp_audio::dsp::ParamUnit::Hz => " Hz",
+                klipp_audio::dsp::ParamUnit::Ms => " ms",
+                klipp_audio::dsp::ParamUnit::Percent => "%",
+                klipp_audio::dsp::ParamUnit::Ratio => ":1",
+                klipp_audio::dsp::ParamUnit::None => "",
+            };
+            let mut flags = Vec::new();
+            if port.is_toggle {
+                flags.push("toggle");
+            } else if port.is_integer {
+                flags.push("integer");
+            }
+            if port.is_logarithmic {
+                flags.push("log");
+            }
+            let flag_suffix = if flags.is_empty() {
+                String::new()
+            } else {
+                format!("   ({})", flags.join(", "))
+            };
+
+            let range_text = if port.is_toggle {
+                format!("default {}", if port.default >= 0.5 { "on" } else { "off" })
+            } else {
+                let dec = if port.is_integer {
+                    0
+                } else if (port.max - port.min).abs() > 100.0 {
+                    1
+                } else {
+                    2
+                };
+                format!(
+                    "{:.*}{} – {:.*}{}   default {:.*}{}",
+                    dec, port.min, unit_suffix,
+                    dec, port.max, unit_suffix,
+                    dec, port.default, unit_suffix,
+                )
+            };
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(&port_name)
+                        .size(10.0)
+                        .color(theme.text_primary),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{}{}", range_text, flag_suffix))
+                            .size(9.0)
+                            .color(theme.text_dim),
+                    );
+                });
+            });
+        }
+    } else {
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new("(no control parameters)")
+                .size(9.0)
+                .color(theme.text_dim),
+        );
+    }
+}
+
+fn detail_label(ui: &mut egui::Ui, theme: &KlippTheme, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .size(9.0)
+            .color(theme.text_dim),
+    );
+}
+
+/// Humanise a byte count for the file-size detail row. Mirrors
+/// what's used elsewhere (cache manager, AI Models footer) without
+/// requiring a cross-crate import.
+fn format_bytes(n: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    if n >= GB {
+        format!("{:.1} GB", n as f64 / GB as f64)
+    } else if n >= MB {
+        format!("{:.1} MB", n as f64 / MB as f64)
+    } else if n >= KB {
+        format!("{:.1} KB", n as f64 / KB as f64)
+    } else {
+        format!("{n} B")
+    }
 }
 
 fn render_search_paths(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
@@ -445,6 +686,17 @@ mod tests {
         assert_eq!(format_relative_time(86_399), "23 h ago");
         assert_eq!(format_relative_time(86_400), "1 d ago");
         assert_eq!(format_relative_time(7 * 86_400), "7 d ago");
+    }
+
+    #[test]
+    fn format_bytes_buckets() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(1024), "1.0 KB");
+        assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GB");
+        // ~227 KB — typical .so size for a single-plugin LADSPA library.
+        assert_eq!(format_bytes(232_000), "226.6 KB");
     }
 
     #[test]
