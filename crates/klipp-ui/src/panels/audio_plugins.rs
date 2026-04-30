@@ -371,54 +371,72 @@ fn render_plugin_row(
         .inner_margin(egui::Margin::symmetric(8.0, 6.0))
         .outer_margin(egui::Margin::symmetric(0.0, 1.0))
         .show(ui, |ui| {
-            // The Enable/Disable button sits inside the header's
-            // right-to-left section. Capturing its rect lets us skip
-            // the row-level "click to expand" toggle when the click
-            // landed on the button — without that, clicking Disable
-            // would also expand/collapse the row.
-            let mut button_rect: Option<egui::Rect> = None;
             // ── Header row (always visible) ─────────────────────────
-            let header_resp = ui.horizontal(|ui| {
+            //
+            // The header has two distinct click zones:
+            //   left  — chevron + name + path  → toggles expand
+            //   right — Enable / Disable button + shape label
+            //
+            // Earlier this used a `ui.interact(whole_row_rect, click)`
+            // *after* rendering the button, which stole clicks from
+            // the button: egui resolves overlapping click-sense
+            // regions in the order they were registered, and the
+            // broad interact came last. The fix is to give the left
+            // zone its own scope with `Sense::click()` widened on its
+            // response, and leave the right zone (with the button) to
+            // register clicks on its own widgets only — no overlap.
+            ui.horizontal(|ui| {
                 let chev = if is_expanded { "\u{25BC}" } else { "\u{25B6}" };
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(chev)
-                            .size(9.0)
-                            .color(theme.text_dim),
-                    )
-                    .selectable(false),
-                );
-                ui.vertical(|ui| {
+                let left_resp = ui.scope(|ui| {
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(display)
-                                .size(11.0)
-                                .strong()
-                                .color(primary_color),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(chev)
+                                    .size(9.0)
+                                    .color(theme.text_dim),
+                            )
+                            .selectable(false),
                         );
-                        if let Some(label) = tech_label {
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(display)
+                                        .size(11.0)
+                                        .strong()
+                                        .color(primary_color),
+                                );
+                                if let Some(label) = tech_label {
+                                    ui.label(
+                                        egui::RichText::new(label)
+                                            .size(10.0)
+                                            .monospace()
+                                            .color(theme.text_dim),
+                                    );
+                                }
+                                if is_disabled {
+                                    ui.label(
+                                        egui::RichText::new("DISABLED")
+                                            .size(8.0)
+                                            .strong()
+                                            .color(theme.text_dim),
+                                    );
+                                }
+                            });
                             ui.label(
-                                egui::RichText::new(label)
-                                    .size(10.0)
-                                    .monospace()
+                                egui::RichText::new(plugin.path.to_string_lossy())
+                                    .size(9.0)
                                     .color(theme.text_dim),
                             );
-                        }
-                        if is_disabled {
-                            ui.label(
-                                egui::RichText::new("DISABLED")
-                                    .size(8.0)
-                                    .strong()
-                                    .color(theme.text_dim),
-                            );
-                        }
+                        });
                     });
-                    ui.label(
-                        egui::RichText::new(plugin.path.to_string_lossy())
-                            .size(9.0)
-                            .color(theme.text_dim),
-                    );
-                });
+                })
+                .response
+                .interact(egui::Sense::click());
+                if left_resp.clicked() {
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(expand_key, !is_expanded));
+                }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let (btn_label, hover) = if is_disabled {
                         (
@@ -439,7 +457,6 @@ fn render_plugin_row(
                             .min_size(egui::vec2(60.0, 0.0)),
                     );
                     let btn = btn.on_hover_text(hover);
-                    button_rect = Some(btn.rect);
                     if btn.clicked() {
                         cmds.push(AppCommand::ToggleAudioPluginDisabled {
                             unique_id: plugin.unique_id,
@@ -456,31 +473,6 @@ fn render_plugin_row(
                     );
                 });
             });
-
-            // Make the rest of the header row clickable to toggle
-            // expansion. We register a single Sense::click over the
-            // whole row, then suppress the toggle when the click
-            // pointer landed inside the Enable/Disable button's rect
-            // (the button has already consumed its own click via
-            // `btn.clicked()` above, so without this guard we'd
-            // double-handle the click and bounce the expansion state
-            // every time the user toggled enabled).
-            let click_resp = ui.interact(
-                header_resp.response.rect,
-                expand_key.with("click"),
-                egui::Sense::click(),
-            );
-            if click_resp.clicked() {
-                let on_button = click_resp
-                    .interact_pointer_pos()
-                    .zip(button_rect)
-                    .map(|(p, r)| r.contains(p))
-                    .unwrap_or(false);
-                if !on_button {
-                    ui.ctx()
-                        .data_mut(|d| d.insert_temp(expand_key, !is_expanded));
-                }
-            }
 
             // ── Expanded body ───────────────────────────────────────
             // Enable/Disable lives on the header row now (no need to
