@@ -189,6 +189,12 @@ pub struct LadspaPluginInfo {
     pub label: String,
     pub name: String,
     pub maker: String,
+    /// LADSPA `copyright` field — typically a short licence phrase like
+    /// "GPL" or "MIT/X11". Empty when the plugin author left it blank.
+    /// `#[serde(default)]` so old cache files (pre-v2 schema) load
+    /// cleanly with this field empty; a rescan fills it in.
+    #[serde(default)]
+    pub copyright: String,
     pub port_count: usize,
     pub control_inputs: Vec<LadspaControlPort>,
     pub audio_inputs: usize,
@@ -371,7 +377,13 @@ mod ladspa_cache {
     /// Bump when [`LadspaPluginInfo`] or [`super::LadspaControlPort`]
     /// gain or lose fields, so old caches don't deserialise into the new
     /// shape with default-zero fields and confuse downstream code.
-    const SCHEMA_VERSION: u32 = 1;
+    ///
+    /// History:
+    ///   1 — initial schema
+    ///   2 — added LadspaPluginInfo::copyright (safe to load v1 with
+    ///       serde default = "", but a rescan fills the new field
+    ///       with real values, which the dialog needs to surface)
+    const SCHEMA_VERSION: u32 = 2;
 
     const FILE_NAME: &str = "ladspa_registry.json";
 
@@ -577,6 +589,7 @@ unsafe fn extract_plugin_info(
         label: cstr_to_string(desc.label),
         name: cstr_to_string(desc.name),
         maker: cstr_to_string(desc.maker),
+        copyright: cstr_to_string(desc.copyright),
         port_count,
         control_inputs,
         audio_inputs: audio_in,
@@ -1304,6 +1317,7 @@ mod tests {
             label: name.to_string(),
             name: name.to_string(),
             maker: "Test Suite".to_string(),
+            copyright: "GPL".to_string(),
             port_count: 4,
             control_inputs: vec![LadspaControlPort {
                 index: 0,

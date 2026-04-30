@@ -446,6 +446,19 @@ fn render_plugin_details(ui: &mut egui::Ui, theme: &KlippTheme, plugin: &LadspaP
             );
             ui.end_row();
 
+            // LADSPA `copyright` field — typically a short licence
+            // phrase ("GPL", "MIT/X11", "BSD"). Empty when the plugin
+            // author left it blank in the descriptor.
+            if !plugin.copyright.is_empty() {
+                detail_label(ui, theme, "Licence");
+                ui.label(
+                    egui::RichText::new(&plugin.copyright)
+                        .size(10.0)
+                        .color(theme.text_secondary),
+                );
+                ui.end_row();
+            }
+
             detail_label(ui, theme, "Audio I/O");
             ui.label(
                 egui::RichText::new(format!(
@@ -460,6 +473,12 @@ fn render_plugin_details(ui: &mut egui::Ui, theme: &KlippTheme, plugin: &LadspaP
             );
             ui.end_row();
 
+            // ── File metadata ───────────────────────────────────────
+            // `metadata()` follows symlinks so the size/mtime reflect
+            // the real plugin .so. `symlink_metadata()` separately
+            // tells us whether the path itself is a symlink and, if
+            // so, what it points at — relevant on Debian-style distros
+            // that symlink LADSPA plugins from /usr/lib/x86_64-linux-gnu.
             detail_label(ui, theme, "File");
             let file_summary = match std::fs::metadata(&plugin.path) {
                 Ok(meta) => format_bytes(meta.len()),
@@ -471,6 +490,45 @@ fn render_plugin_details(ui: &mut egui::Ui, theme: &KlippTheme, plugin: &LadspaP
                     .color(theme.text_secondary),
             );
             ui.end_row();
+
+            if let Ok(modified_relative) = std::fs::metadata(&plugin.path)
+                .and_then(|m| m.modified())
+                .map(|t| {
+                    let secs = t
+                        .duration_since(SystemTime::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    format_relative_time(now_secs().saturating_sub(secs))
+                })
+            {
+                detail_label(ui, theme, "Modified");
+                ui.label(
+                    egui::RichText::new(modified_relative)
+                        .size(10.0)
+                        .color(theme.text_secondary),
+                );
+                ui.end_row();
+            }
+
+            if let Ok(target) = std::fs::read_link(&plugin.path) {
+                detail_label(ui, theme, "Symlink");
+                let resolved = if target.is_absolute() {
+                    target
+                } else {
+                    plugin
+                        .path
+                        .parent()
+                        .map(|p| p.join(&target))
+                        .unwrap_or(target)
+                };
+                ui.label(
+                    egui::RichText::new(resolved.to_string_lossy())
+                        .size(10.0)
+                        .monospace()
+                        .color(theme.text_secondary),
+                );
+                ui.end_row();
+            }
         });
 
     // ── Control parameters ──────────────────────────────────────────
