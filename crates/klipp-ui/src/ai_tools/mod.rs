@@ -137,6 +137,105 @@ pub struct AiToolsState {
     /// next launch can re-register them without re-downloading. The
     /// shared registry holds the matching factory closures.
     pub custom_models: Vec<persistence::CustomModelEntry>,
+    /// Dispatch scope for the next inference run. Today only
+    /// [`AiScope::CurrentFrame`] actually fires inference; the
+    /// other variants are visible-but-disabled chips so the panel
+    /// telegraphs the planned batch features. See AppCommand
+    /// dispatch in `app.rs`.
+    pub scope: AiScope,
+    /// Whether the panel's Advanced section (mask threshold, edge
+    /// feather, output format) is currently expanded. Persists for
+    /// the lifetime of the panel; resets on app restart.
+    pub advanced_open: bool,
+    /// Per-task post-processing knobs surfaced in the Advanced
+    /// drawer. `mask_threshold` aliases `MaskTunables.score_threshold`
+    /// when sent to inference; `edge_feather` is a CPU post-process
+    /// applied to the final mask; `output_format` controls how the
+    /// mask leaves the panel toward Apply-to-clip.
+    pub advanced_settings: AdvancedSettings,
+}
+
+/// Where the next inference run should target. Visible UI for all
+/// three even though only `CurrentFrame` is wired today — Selection
+/// and FullClip are disabled chips with "coming soon" tooltips so
+/// the planned batch features stay forward-compatible in the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AiScope {
+    #[default]
+    CurrentFrame,
+    Selection,
+    FullClip,
+}
+
+impl AiScope {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CurrentFrame => "Current frame",
+            Self::Selection => "Selection",
+            Self::FullClip => "Full clip",
+        }
+    }
+
+    /// `true` when the scope is wired through to a real dispatch
+    /// path. Only CurrentFrame is real today; the others render
+    /// as disabled chips.
+    pub fn is_implemented(self) -> bool {
+        matches!(self, Self::CurrentFrame)
+    }
+}
+
+/// Per-panel mask post-processing knobs. Surface lives in the
+/// Advanced drawer; values flow into the inference dispatch +
+/// post-process path.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdvancedSettings {
+    /// Binarisation threshold for soft alpha output. RF-DETR uses
+    /// this directly as `score_threshold`; BiRefNet treats it as
+    /// the cut between alpha and hard mask in the post-process.
+    /// Range [0.0, 1.0]; default 0.5.
+    pub mask_threshold: f32,
+    /// Gaussian-blur radius applied to the mask edges in pixels
+    /// before the result lands in the panel's preview / Apply
+    /// path. 0 = no feather. Default 2.
+    pub edge_feather: u32,
+    /// How the mask is encoded for delivery to a clip via
+    /// Apply-to-clip. v1 ships AlphaMatte16 only; the enum is
+    /// here so the dropdown surface is forward-compatible.
+    pub output_format: OutputFormat,
+}
+
+impl Default for AdvancedSettings {
+    fn default() -> Self {
+        Self {
+            mask_threshold: 0.5,
+            edge_feather: 2,
+            output_format: OutputFormat::AlphaMatte16,
+        }
+    }
+}
+
+/// Bit-depth + format options for the panel's mask output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+    AlphaMatte16,
+    AlphaMatte8,
+    HardBinary,
+}
+
+impl OutputFormat {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::AlphaMatte16 => "Alpha matte (16-bit)",
+            Self::AlphaMatte8 => "Alpha matte (8-bit)",
+            Self::HardBinary => "Hard binary",
+        }
+    }
+
+    pub const ALL: &'static [OutputFormat] = &[
+        OutputFormat::AlphaMatte16,
+        OutputFormat::AlphaMatte8,
+        OutputFormat::HardBinary,
+    ];
 }
 
 impl Default for AiToolsState {
@@ -155,6 +254,9 @@ impl Default for AiToolsState {
             model_tunables: std::collections::HashMap::new(),
             last_picked_model_per_task: std::collections::HashMap::new(),
             custom_models: Vec::new(),
+            scope: AiScope::default(),
+            advanced_open: false,
+            advanced_settings: AdvancedSettings::default(),
         }
     }
 }
@@ -191,6 +293,33 @@ impl AiTask {
             AiTask::IsolateObject => "Isolate Object",
             AiTask::DetectObjects => "Detect Objects",
             AiTask::TrackObject => "Track Object",
+        }
+    }
+
+    /// One-line description rendered under the task tile title in
+    /// the panel's task grid. Reads as something you'd say out
+    /// loud to describe the user-facing intent of the task.
+    pub fn short_description(self) -> &'static str {
+        match self {
+            AiTask::RemoveBackground => "Mask the subject, drop the background",
+            AiTask::IsolateObject => "Click or box-select a subject",
+            AiTask::DetectObjects => "Find and label everything in frame",
+            AiTask::TrackObject => "Follow a subject across frames",
+        }
+    }
+
+    /// Icon shown in the task tile. v1 uses closest-fit icons from
+    /// our existing Phosphor set; the four follow-up SVGs noted in
+    /// commit notes will tighten the visual language.
+    /// (Eye for matting, Cursor for click-to-mask, GridFour for
+    /// multi-detect, ArrowsOut as a weak motion proxy for tracking.)
+    pub fn icon(self) -> crate::icons::Icon {
+        use crate::icons::Icon;
+        match self {
+            AiTask::RemoveBackground => Icon::Eye,
+            AiTask::IsolateObject => Icon::Cursor,
+            AiTask::DetectObjects => Icon::GridFour,
+            AiTask::TrackObject => Icon::ArrowsOut,
         }
     }
 }

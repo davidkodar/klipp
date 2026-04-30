@@ -23380,12 +23380,15 @@ impl KlippApp {
         if self.state.ai_tools_state.panel_visible {
             egui::SidePanel::right("ai_tools_side")
                 .resizable(true)
-                .default_width(280.0)
+                .default_width(340.0)
+                .min_width(300.0)
                 .show(ctx, |ui| {
                     crate::ai_tools::AiToolsPanel::show(
                         ui,
                         &mut self.state.ai_tools_state,
                         &self.state.ai_tools_registry,
+                        &self.theme,
+                        &mut self.state.show_ai_models_dialog,
                     );
                 });
         }

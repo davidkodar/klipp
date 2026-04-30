@@ -1,138 +1,411 @@
 //! egui rendering for the AI Tools panel.
 //!
-//! Visual layout (Side panel docked right by default; toggleable):
+//! ## State machine + visual posture
 //!
-//! ```text
-//! ┌────────────────────────────────────────────┐
-//! │ AI Tools                            [×]    │
-//! ├────────────────────────────────────────────┤
-//! │ ┌────────┬──────────┬─────────┬──────────┐ │
-//! │ │Remove  │ Isolate  │ Detect  │  Track   │ │
-//! │ │  BG    │  Object  │ Objects │  Object  │ │
-//! │ └────────┴──────────┴─────────┴──────────┘ │
-//! ├────────────────────────────────────────────┤
-//! │ Model:  [Stub (placeholder)        ▾]      │
-//! │ Caps:   POINT_PROMPT  AUTO_DETECT          │
-//! │ Cached: ✓                                  │
-//! ├────────────────────────────────────────────┤
-//! │ [ Run on current frame ]                   │
-//! ├────────────────────────────────────────────┤
-//! │ Mask preview:                              │
-//! │ ┌──────────────┐                           │
-//! │ │  (preview    │  conf 0.92                │
-//! │ │   thumbnail) │  inference 14 ms          │
-//! │ └──────────────┘                           │
-//! └────────────────────────────────────────────┘
-//! ```
+//! Three visual states the panel renders, switching off
+//! `state.inference`:
 //!
-//! The actual click-on-viewer plumbing (collecting `MaskPrompts`
-//! from cursor events on the viewer canvas) is Track F's job. This
-//! file only renders the panel + advances the dispatch state
-//! machine. The "Run on current frame" button moves
-//! Clicking "Run on current frame" sets `state.pending_run = true`;
-//! the app dispatcher drains that, builds an `OwnedMaskRequest` from
-//! the live viewer frame, and calls `spawn_inference`. The panel
-//! never touches the worker thread directly.
+//! * **Idle** — TASK / MODEL / PROMPTS / RUN / OUTPUT (empty
+//!   placeholder) / ADVANCED. The user picks a task, picks a
+//!   model, captures prompts via the viewer, and clicks Generate.
+//! * **Running** *(commit 2)* — same skeleton, but tiles compress,
+//!   model row swaps to a spinner + "Inferring on …" sub-line, a
+//!   progress bar replaces the Generate button, and OUTPUT shows
+//!   a static prompt overlay on the source frame.
+//! * **Complete** *(commit 3)* — banner with frame + duration,
+//!   OUTPUT shows mask preview with display-mode tabs (Overlay /
+//!   Mask only / Cutout), Re-run + Apply-to-clip buttons, Recent
+//!   list of prior inferences below.
+//!
+//! Commit 1 (this file's current shape) lands the visual frame
+//! for the idle state. The wiring for running/complete is
+//! follow-up commits.
+//!
+//! ## Panel ↔ dispatcher contract
+//!
+//! The panel never touches the worker thread. It only ever
+//! mutates state on `AiToolsState`:
+//!
+//! * `pending_run = true` → app dispatcher reads this each frame,
+//!   builds an `OwnedMaskRequest` from the live viewer frame, and
+//!   calls `spawn_inference`.
+//! * `pending_cancel = true` → dispatcher cancels via
+//!   `InferenceState::cancel`.
+//! * `selected_model_id` / `last_picked_model_per_task` /
+//!   `model_tunables` / `scope` / `advanced_settings` are read by
+//!   the dispatcher when it builds the request.
+//!
+//! ## Theme
+//!
+//! Every colour comes from `KlippTheme` so cream / light / dark
+//! variants stay legible. Orange accents reuse `theme.marker_warning`
+//! (the existing curated warning hue) rather than a hardcoded
+//! orange.
 
-use klipp_ml::{MaskCapabilities, ModelInfo};
+use klipp_ml::ModelInfo;
 
-use super::registry::{required_capability, AiToolsRegistry};
-use super::{AiTask, AiToolsState, InferenceState};
+use crate::icons::Icon;
+use crate::theme::KlippTheme;
+
+use super::registry::AiToolsRegistry;
+use super::{
+    AiScope, AiTask, AiToolsState, InferenceState, OutputFormat, PromptMode,
+};
 
 /// Stateless renderer for the AI Tools panel. Holds nothing —
 /// every frame the caller passes in the mutable state + the
-/// (read-only) registry.
+/// (read-only) registry + the active theme.
 pub struct AiToolsPanel;
 
 impl AiToolsPanel {
     /// Render the panel inside the supplied egui Ui (typically a
-    /// `SidePanel` body the caller has already opened, or a
-    /// `Window` central area). The caller decides docking.
-    pub fn show(ui: &mut egui::Ui, state: &mut AiToolsState, registry: &AiToolsRegistry) {
-        ui.heading("AI Tools");
-        ui.add_space(4.0);
+    /// `SidePanel` body the caller has already opened). The caller
+    /// decides docking. `show_models_dialog` is a write-back flag
+    /// the panel flips to `true` when the user clicks "Change…"
+    /// or the model card's chevron — opens the AI Models dialog.
+    pub fn show(
+        ui: &mut egui::Ui,
+        state: &mut AiToolsState,
+        registry: &AiToolsRegistry,
+        theme: &KlippTheme,
+        show_models_dialog: &mut bool,
+    ) {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                // ── 1. TASK ─────────────────────────────────────────
+                section_step_header(ui, 1, "TASK", state.active_task.is_some(), theme);
+                task_grid(ui, state, registry, theme);
 
-        // ── Task buttons ────────────────────────────────────────
-        ui.horizontal_wrapped(|ui| {
-            for task in AiTask::ALL {
-                task_button(ui, *task, state, registry);
-            }
-        });
+                ui.add_space(10.0);
+                ui.separator();
 
-        ui.add_space(8.0);
-        ui.separator();
+                // ── 2. MODEL ────────────────────────────────────────
+                let model_active = state
+                    .active_task
+                    .is_some()
+                    && state
+                        .selected_model_id
+                        .as_ref()
+                        .is_some_and(|id| registry.has_id(id));
+                section_step_header_with_action(
+                    ui,
+                    2,
+                    "MODEL",
+                    model_active,
+                    "Change…",
+                    theme,
+                    show_models_dialog,
+                );
+                model_card(ui, state, registry, theme, show_models_dialog);
 
-        // ── Model picker + info card ────────────────────────────
-        match state.active_task {
-            Some(task) => model_section(ui, task, state, registry),
-            None => {
-                ui.label("Pick a task above to choose a model.");
-            }
-        }
+                ui.add_space(10.0);
+                ui.separator();
 
-        ui.add_space(8.0);
-        ui.separator();
+                // ── 3. PROMPTS ──────────────────────────────────────
+                let prompts_active = !state.prompts.is_empty();
+                section_step_header(ui, 3, "PROMPTS", prompts_active, theme);
+                prompts_section(ui, state, theme);
 
-        // ── Per-model tunables ──────────────────────────────────
-        tunables_section(ui, state);
+                ui.add_space(10.0);
+                ui.separator();
 
-        ui.add_space(8.0);
-        ui.separator();
+                // ── 4. RUN ──────────────────────────────────────────
+                section_step_header(ui, 4, "RUN", false, theme);
+                run_section(ui, state, registry, theme);
 
-        // ── Prompt mode + summary ───────────────────────────────
-        prompt_section(ui, state);
+                ui.add_space(10.0);
+                ui.separator();
 
-        ui.add_space(8.0);
-        ui.separator();
+                // ── OUTPUT ──────────────────────────────────────────
+                output_section(ui, state, theme);
 
-        // ── Run button ──────────────────────────────────────────
-        run_section(ui, state, registry);
+                ui.add_space(10.0);
+                ui.separator();
 
-        ui.add_space(8.0);
-        ui.separator();
-
-        // ── Mask preview ────────────────────────────────────────
-        preview_section(ui, state);
+                // ── ADVANCED (collapsible) ──────────────────────────
+                advanced_section(ui, state, theme);
+            });
     }
 }
 
-fn task_button(
+// ============================================================
+// Section helpers — step badges + headers
+// ============================================================
+
+/// Section header with the numbered step badge on the left + the
+/// section label in caps on the right. Used for TASK / MODEL /
+/// PROMPTS / RUN. `active` flips the badge from grey to orange
+/// once the step has user input.
+fn section_step_header(
     ui: &mut egui::Ui,
-    task: AiTask,
+    n: usize,
+    label: &str,
+    active: bool,
+    theme: &KlippTheme,
+) {
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        step_badge(ui, n, active, theme);
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(label)
+                .small()
+                .strong()
+                .color(theme.text_secondary),
+        );
+    });
+    ui.add_space(2.0);
+}
+
+/// Section header with a right-aligned text-link action. Used for
+/// MODEL's "Change…" affordance + future cousins. Sets the
+/// caller's `action_flag` to true on click.
+fn section_step_header_with_action(
+    ui: &mut egui::Ui,
+    n: usize,
+    label: &str,
+    active: bool,
+    action_label: &str,
+    theme: &KlippTheme,
+    action_flag: &mut bool,
+) {
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        step_badge(ui, n, active, theme);
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new(label)
+                .small()
+                .strong()
+                .color(theme.text_secondary),
+        );
+        ui.with_layout(
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new(action_label)
+                                .color(theme.marker_warning)
+                                .small()
+                                .strong(),
+                        )
+                        .frame(false),
+                    )
+                    .clicked()
+                {
+                    *action_flag = true;
+                }
+            },
+        );
+    });
+    ui.add_space(2.0);
+}
+
+/// Filled circle with the step number centred inside. Active
+/// (user has provided input) → marker_warning fill + light text.
+/// Inactive → muted bg + dim text.
+fn step_badge(ui: &mut egui::Ui, n: usize, active: bool, theme: &KlippTheme) {
+    let size = 18.0;
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(size, size),
+        egui::Sense::hover(),
+    );
+    let (fill, fg) = if active {
+        (theme.marker_warning, egui::Color32::WHITE)
+    } else {
+        (theme.bg_raised, theme.text_dim)
+    };
+    ui.painter().circle_filled(rect.center(), size * 0.5, fill);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        n.to_string(),
+        egui::FontId::proportional(11.0),
+        fg,
+    );
+}
+
+// ============================================================
+// 1. TASK — 2x2 tile grid
+// ============================================================
+
+fn task_grid(
+    ui: &mut egui::Ui,
     state: &mut AiToolsState,
     registry: &AiToolsRegistry,
+    theme: &KlippTheme,
 ) {
-    let label = task.display_label();
+    let avail = ui.available_width();
+    let gap = 8.0;
+    let tile_w = ((avail - gap) / 2.0).max(120.0);
+    let tile_h = 92.0;
+
+    egui::Grid::new("ai_tools_task_grid")
+        .num_columns(2)
+        .spacing([gap, gap])
+        .show(ui, |ui| {
+            for (i, task) in AiTask::ALL.iter().enumerate() {
+                task_tile(ui, *task, tile_w, tile_h, state, registry, theme);
+                if i % 2 == 1 {
+                    ui.end_row();
+                }
+            }
+        });
+}
+
+/// One 2×2-grid task tile. Active task gets an orange border +
+/// faint orange tint. Tasks with no capable model installed are
+/// rendered greyed-out with an "install from AI Models" tooltip.
+fn task_tile(
+    ui: &mut egui::Ui,
+    task: AiTask,
+    w: f32,
+    h: f32,
+    state: &mut AiToolsState,
+    registry: &AiToolsRegistry,
+    theme: &KlippTheme,
+) {
     let has_model = registry.has_model_for(task);
     let active = state.active_task == Some(task);
 
-    // Greyed out when no model satisfies the task; click is
-    // suppressed and the tooltip nudges the user to install one.
-    let response = ui.add_enabled(
-        has_model,
-        egui::Button::new(label)
-            .min_size(egui::vec2(110.0, 44.0))
-            .selected(active),
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(w, h),
+        if has_model {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
     );
 
-    if !has_model {
-        response.on_hover_text("No model installed — open Model Manager");
-        return;
-    }
+    // Background fill + border. Active = warning fill (very low
+    // alpha) + warning stroke. Hover (when enabled) = subtle
+    // raised fill. Disabled = no fill, no stroke.
+    let painter = ui.painter();
+    let (fill, stroke) = if active {
+        (
+            theme.marker_warning.gamma_multiply(0.10),
+            egui::Stroke::new(1.5, theme.marker_warning),
+        )
+    } else if has_model && response.hovered() {
+        (theme.bg_raised, egui::Stroke::new(1.0, theme.text_dim.gamma_multiply(0.4)))
+    } else {
+        (theme.bg_raised.gamma_multiply(0.6), egui::Stroke::NONE)
+    };
+    painter.rect(rect, 6.0, fill, stroke);
 
-    if response.clicked() {
+    // Content padding inside the tile.
+    let pad = 10.0;
+    let icon_size = 18.0;
+    let icon_color = if !has_model {
+        theme.text_dim
+    } else if active {
+        theme.marker_warning
+    } else {
+        theme.text_primary
+    };
+
+    // Icon at top-left. Render via egui::Image positioned manually
+    // so the tile content composes cleanly without a nested
+    // horizontal layout.
+    let icon_pos = rect.min + egui::vec2(pad, pad);
+    let icon_rect = egui::Rect::from_min_size(
+        icon_pos,
+        egui::vec2(icon_size, icon_size),
+    );
+    let mut icon_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(icon_rect)
+            .layout(egui::Layout::default()),
+    );
+    icon_ui.add(
+        task.icon()
+            .image(icon_size)
+            .tint(icon_color),
+    );
+
+    // Title + description text laid out below the icon.
+    let title_pos = icon_pos + egui::vec2(0.0, icon_size + 10.0);
+    let title_rect = egui::Rect::from_min_size(
+        title_pos,
+        egui::vec2(w - pad * 2.0, h - pad - icon_size - 10.0),
+    );
+    let mut text_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(title_rect)
+            .layout(egui::Layout::top_down(egui::Align::LEFT)),
+    );
+    let title_color = if has_model {
+        theme.text_primary
+    } else {
+        theme.text_dim
+    };
+    text_ui.label(
+        egui::RichText::new(task.display_label())
+            .strong()
+            .size(13.0)
+            .color(title_color),
+    );
+    text_ui.label(
+        egui::RichText::new(task.short_description())
+            .small()
+            .color(theme.text_secondary),
+    );
+
+    // Click → activate the task. Auto-pick the user's last
+    // explicit choice for this task if they have one (via
+    // pick_default_model_for_task), otherwise the first capable
+    // model in registry order.
+    if has_model && response.clicked() {
         let capable = registry.models_for(task);
         state.active_task = Some(task);
         state.selected_model_id = pick_default_model_for_task(task, state, &capable);
     }
+
+    // Tooltips. Disabled tile gets the "install from AI Models"
+    // hint that points users at the dialog rather than guessing
+    // why the button is greyed.
+    if !has_model {
+        response.on_hover_text(disabled_task_tooltip(task));
+    } else if !active {
+        response.on_hover_text(format!(
+            "Activate {} (currently {} capable model{})",
+            task.display_label(),
+            registry.models_for(task).len(),
+            if registry.models_for(task).len() == 1 { "" } else { "s" },
+        ));
+    }
+}
+
+/// Tooltip text for a disabled task tile — explains exactly which
+/// models would unlock it and points at the AI Models dialog.
+fn disabled_task_tooltip(task: AiTask) -> &'static str {
+    match task {
+        AiTask::TrackObject => {
+            "Requires SAM 2.1 Large or RF-DETR-Seg with temporal support \
+             — install from AI Models. Klipp's v1 lineup doesn't ship a \
+             temporal-tracking model yet (tracker entry F-97-VIDEOTRACK)."
+        }
+        AiTask::RemoveBackground => {
+            "Install BiRefNet Lite (or another matting model) from AI \
+             Models to enable Remove Background."
+        }
+        AiTask::IsolateObject => {
+            "Install MobileSAM (or another SAM-family model) from AI \
+             Models to enable Isolate Object."
+        }
+        AiTask::DetectObjects => {
+            "Install RF-DETR-Seg (or another detection model) from AI \
+             Models to enable Detect Objects."
+        }
+    }
 }
 
 /// Decide which model id should pre-populate the dropdown when the
-/// user (re)opens a task. Restores the last explicit pick if it's
-/// still capable for the task; otherwise falls back to the first
-/// capable model. Pure data logic — kept out of `task_button` so
-/// the unit tests below can drive it without an egui Ui.
-fn pick_default_model_for_task(
+/// user (re)opens a task. Same logic as the previous panel — kept
+/// here unchanged from the F-97-MODEL-MANAGER work.
+pub(super) fn pick_default_model_for_task(
     task: AiTask,
     state: &AiToolsState,
     capable: &[klipp_ml::ModelInfo],
@@ -145,337 +418,660 @@ fn pick_default_model_for_task(
     restored.or_else(|| capable.first().map(|m| m.id.clone()))
 }
 
-fn model_section(
+// ============================================================
+// 2. MODEL — card with status dot + name + sub-line + change link
+// ============================================================
+
+fn model_card(
     ui: &mut egui::Ui,
-    task: AiTask,
     state: &mut AiToolsState,
     registry: &AiToolsRegistry,
+    theme: &KlippTheme,
+    show_models_dialog: &mut bool,
 ) {
-    let models = registry.models_for(task);
-
-    ui.horizontal(|ui| {
-        ui.label("Model:");
-
-        let current_label = state
-            .selected_model_id
-            .as_ref()
-            .and_then(|id| registry.info(id))
-            .map(|m| m.display_name.clone())
-            .unwrap_or_else(|| "—".to_string());
-
-        egui::ComboBox::from_id_salt("ai_tools_model_picker")
-            .selected_text(current_label)
-            .show_ui(ui, |ui| {
-                for m in &models {
-                    let is_selected = state.selected_model_id.as_deref() == Some(m.id.as_str());
-                    if ui
-                        .selectable_label(is_selected, &m.display_name)
-                        .clicked()
-                    {
-                        state.selected_model_id = Some(m.id.clone());
-                        // Remember the explicit pick under the
-                        // current task so the next switch back to
-                        // this task restores it. Keyed by `task`
-                        // (the function-local arg), which is the
-                        // same as state.active_task here.
-                        state
-                            .last_picked_model_per_task
-                            .insert(task, m.id.clone());
-                        // Persist the full AI Tools state (picks +
-                        // telemetry) to ~/.config/klipp/ai_tools.toml
-                        // so the pick survives the next launch. Save
-                        // failures are logged + swallowed — the
-                        // in-memory state still works for the
-                        // current session.
-                        super::persistence::save(
-                            &super::persistence::AiToolsConfig::from_state(state),
-                        );
-                    }
-                }
-            });
-    });
-
-    // Info card for the picked model.
-    if let Some(info) = state
+    let info = state
         .selected_model_id
         .as_ref()
-        .and_then(|id| registry.info(id))
-    {
-        info_card(ui, &info, task);
-    } else {
-        ui.label("(no model selected)");
-    }
-}
+        .and_then(|id| registry.info(id));
 
-fn info_card(ui: &mut egui::Ui, info: &ModelInfo, task: AiTask) {
-    egui::Frame::group(ui.style())
-        .inner_margin(egui::Margin::same(6.0))
+    egui::Frame::none()
+        .fill(theme.bg_raised.gamma_multiply(0.6))
+        .rounding(6.0)
+        .inner_margin(egui::Margin::symmetric(10.0, 8.0))
         .show(ui, |ui| {
-            ui.label(format!("Display name: {}", info.display_name));
-            ui.label(format!("Id: {}", info.id));
             ui.horizontal(|ui| {
-                ui.label("Capabilities:");
-                for (flag, name) in capability_labels(info.capabilities) {
-                    let required = required_capability(task);
-                    let highlight = required.contains(flag);
-                    let mut text = egui::RichText::new(name);
-                    if highlight {
-                        text = text.strong();
+                // Status dot — green when a model is selected and
+                // its registry entry resolves; dim otherwise.
+                let dot_color = if info.is_some() {
+                    theme.marker_success
+                } else {
+                    theme.text_dim
+                };
+                paint_status_dot(ui, dot_color, 8.0);
+
+                ui.add_space(6.0);
+                ui.vertical(|ui| {
+                    if let Some(info) = info {
+                        ui.label(
+                            egui::RichText::new(&info.display_name)
+                                .strong()
+                                .size(13.0),
+                        );
+                        ui.label(
+                            egui::RichText::new(model_subline(&info, state.active_task))
+                                .small()
+                                .color(theme.text_secondary),
+                        );
+                    } else if state.active_task.is_some() {
+                        ui.label(
+                            egui::RichText::new("No model selected")
+                                .strong()
+                                .size(13.0),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                "Click Change… to install or pick one",
+                            )
+                            .small()
+                            .color(theme.text_secondary),
+                        );
+                    } else {
+                        ui.label(
+                            egui::RichText::new("Pick a task above")
+                                .strong()
+                                .size(13.0)
+                                .color(theme.text_dim),
+                        );
                     }
-                    ui.label(text);
-                }
+                });
+
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Change ›")
+                                        .small()
+                                        .color(theme.text_secondary),
+                                )
+                                .frame(false),
+                            )
+                            .on_hover_text("Open the AI Models dialog")
+                            .clicked()
+                        {
+                            *show_models_dialog = true;
+                        }
+                    },
+                );
             });
-            // Cached/not-cached state will surface once we wire in
-            // klipp_ml::ModelCache lookups; UI placeholder for now.
-            ui.label("Cached: (status pending cache wire-up)");
         });
 }
 
-fn capability_labels(caps: MaskCapabilities) -> Vec<(MaskCapabilities, &'static str)> {
-    let mut out = Vec::new();
-    let pairs: &[(MaskCapabilities, &'static str)] = &[
-        (MaskCapabilities::POINT_PROMPT, "POINT"),
-        (MaskCapabilities::BOX_PROMPT, "BOX"),
-        (MaskCapabilities::SCRIBBLE, "SCRIBBLE"),
-        (MaskCapabilities::TEXT_PROMPT, "TEXT"),
-        (MaskCapabilities::AUTO_DETECT, "AUTO"),
-        (MaskCapabilities::TEMPORAL, "TEMPORAL"),
-        (MaskCapabilities::BATCH, "BATCH"),
-    ];
-    for (flag, name) in pairs {
-        if caps.contains(*flag) {
-            out.push((*flag, *name));
-        }
-    }
-    out
+/// "Mask Generator · 213.6 MB · Ready" sub-line for the model
+/// card. Size pulled from the manifest if we can resolve it;
+/// otherwise just kind + Ready.
+fn model_subline(info: &ModelInfo, _task: Option<AiTask>) -> String {
+    // Resolve manifest size best-effort — we don't fail the
+    // panel if the manifest read errors.
+    let size_str = klipp_ml::manifest::load_effective()
+        .ok()
+        .and_then(|m| {
+            m.models
+                .iter()
+                .find(|e| e.id == info.id)
+                .map(|e| crate::panels::ai_models::format_bytes(e.size_bytes))
+        })
+        .unwrap_or_else(|| "—".into());
+
+    let kind_label = capability_kind_label(info.capabilities);
+    format!("{kind_label} · {size_str} · Ready")
 }
 
-/// Per-model tuning knobs. Today only RF-DETR-Seg variants expose
-/// any: a confidence cut + an NMS overlap threshold. Both clamp to
-/// safe ranges on read inside the generator, so the slider can't
-/// produce a degenerate request. Other models render nothing.
-fn tunables_section(ui: &mut egui::Ui, state: &mut AiToolsState) {
-    let Some(model_id) = state.selected_model_id.clone() else {
-        return;
-    };
-    if !is_rf_detr(&model_id) {
-        return;
-    }
-
-    let entry = state
-        .model_tunables
-        .entry(model_id.clone())
-        .or_default();
-
-    // Convert from Option<f32> → f32 with the same defaults the
-    // builder uses, so the slider always shows a concrete value.
-    // 0.5 / 0.5 are the construction defaults from
-    // `RfDetrSegBuilder::new()`.
-    let mut score = entry.score_threshold.unwrap_or(0.5);
-    let mut nms = entry.nms_iou_threshold.unwrap_or(0.5);
-
-    ui.label(egui::RichText::new("Detection knobs").small().strong());
-    ui.horizontal(|ui| {
-        ui.label("Score:");
-        if ui
-            .add(egui::Slider::new(&mut score, 0.0..=1.0).fixed_decimals(2))
-            .on_hover_text(
-                "Minimum confidence for emitting a detection. Lower \
-                 surfaces more candidates (including noisier ones).",
-            )
-            .changed()
-        {
-            entry.score_threshold = Some(score);
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label("NMS:");
-        if ui
-            .add(egui::Slider::new(&mut nms, 0.0..=1.05).fixed_decimals(2))
-            .on_hover_text(
-                "IoU + IoMin threshold above which two same-class \
-                 detections collapse to one. Set to 1.05 to disable \
-                 NMS entirely (raw model output).",
-            )
-            .changed()
-        {
-            entry.nms_iou_threshold = Some(nms);
-        }
-    });
-
-    if ui
-        .small_button("Reset to defaults")
-        .on_hover_text("Restore the model's built-in score + NMS values")
-        .clicked()
+/// Inline label for a model's coarse kind, derived from the
+/// capability bits — no separate source-of-truth needed in the
+/// panel (the registry's `MaskCapabilities` IS the truth).
+fn capability_kind_label(caps: klipp_ml::MaskCapabilities) -> &'static str {
+    if caps.contains(klipp_ml::MaskCapabilities::TEMPORAL) {
+        "Video Tracker"
+    } else if caps.contains(klipp_ml::MaskCapabilities::POINT_PROMPT)
+        || caps.contains(klipp_ml::MaskCapabilities::BOX_PROMPT)
     {
-        entry.score_threshold = None;
-        entry.nms_iou_threshold = None;
+        "Mask Generator"
+    } else if caps.contains(klipp_ml::MaskCapabilities::AUTO_DETECT) {
+        "Mask Generator"
+    } else {
+        "Mask Generator"
     }
 }
 
-/// Recognise RF-DETR-Seg variants by stable id prefix. The only
-/// models today that expose tuning knobs through the panel sliders.
-fn is_rf_detr(model_id: &str) -> bool {
-    model_id.starts_with("rf_detr_seg_")
+/// Small filled circle used as a status indicator. Mirrors the
+/// AI Models dialog's row dot for visual consistency across the
+/// surfaces.
+fn paint_status_dot(ui: &mut egui::Ui, color: egui::Color32, diameter: f32) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(diameter, diameter),
+        egui::Sense::hover(),
+    );
+    ui.painter().circle_filled(rect.center(), diameter * 0.5, color);
 }
 
-fn prompt_section(ui: &mut egui::Ui, state: &mut AiToolsState) {
-    use super::PromptMode;
-    ui.label("Prompt mode:");
+// ============================================================
+// 3. PROMPTS — tab bar + counter chips + tags + help text
+// ============================================================
+
+fn prompts_section(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippTheme) {
+    let active_task = state.active_task;
+
+    // Tab bar — three equal-width segments, selected gets accent.
     ui.horizontal(|ui| {
-        for (mode, label) in [
-            (PromptMode::PointPrompt, "Point"),
-            (PromptMode::BoxPrompt, "Box"),
-            (PromptMode::Scribble, "Scribble"),
-        ] {
-            let active = state.prompts.mode == mode;
-            if ui
-                .add(egui::Button::new(label).selected(active))
-                .clicked()
-            {
-                state.prompts.set_mode(mode);
-            }
-        }
+        let avail = ui.available_width();
+        let tab_w = (avail - 8.0) / 3.0;
+        prompt_tab(ui, state, PromptMode::PointPrompt, "● Point", tab_w, theme);
+        prompt_tab(ui, state, PromptMode::BoxPrompt, "▢ Box", tab_w, theme);
+        prompt_tab(ui, state, PromptMode::Scribble, "～ Scribble", tab_w, theme);
     });
 
-    let prompts = &state.prompts;
-    ui.label(format!(
-        "Captured: {} click(s), {} box(es), {} scribble(s)",
-        prompts.clicks.len(),
-        prompts.boxes.len(),
-        prompts.finalized_scribbles.len(),
-    ));
+    ui.add_space(6.0);
 
-    if ui.button("Clear prompts").clicked() {
-        state.prompts.clear();
+    // Counter chips: "0 points  0 boxes  0 strokes  Clear"
+    ui.horizontal(|ui| {
+        let prompts = &state.prompts;
+        counter_chip(
+            ui,
+            theme,
+            "●",
+            prompts.clicks.len(),
+            "point",
+            state.prompts.mode == PromptMode::PointPrompt,
+        );
+        counter_chip(
+            ui,
+            theme,
+            "▢",
+            prompts.boxes.len(),
+            "box",
+            state.prompts.mode == PromptMode::BoxPrompt,
+        );
+        counter_chip(
+            ui,
+            theme,
+            "～",
+            prompts.finalized_scribbles.len(),
+            "stroke",
+            state.prompts.mode == PromptMode::Scribble,
+        );
+        ui.with_layout(
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("Clear")
+                                .small()
+                                .color(theme.text_dim),
+                        )
+                        .frame(false),
+                    )
+                    .clicked()
+                {
+                    state.prompts.clear();
+                }
+            },
+        );
+    });
+
+    ui.add_space(4.0);
+
+    // Help text below the chips. Wording shifts with the active
+    // task so the user sees task-relevant guidance (e.g.
+    // RemoveBackground tells them the task auto-detects).
+    let help = prompt_help_text(active_task, state.prompts.mode);
+    ui.horizontal_wrapped(|ui| {
+        ui.add(Icon::Info.image(11.0).tint(theme.text_dim));
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(help)
+                .small()
+                .color(theme.text_secondary),
+        );
+    });
+}
+
+fn prompt_tab(
+    ui: &mut egui::Ui,
+    state: &mut AiToolsState,
+    mode: PromptMode,
+    label: &str,
+    width: f32,
+    theme: &KlippTheme,
+) {
+    let active = state.prompts.mode == mode;
+    let color = if active {
+        theme.marker_warning
+    } else {
+        theme.text_secondary
+    };
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(width, 28.0),
+        egui::Sense::click(),
+    );
+    if active {
+        ui.painter().rect_filled(
+            rect,
+            4.0,
+            theme.bg_raised,
+        );
+    } else if resp.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            4.0,
+            theme.bg_raised.gamma_multiply(0.5),
+        );
+    }
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(12.0),
+        color,
+    );
+    if resp.clicked() {
+        state.prompts.set_mode(mode);
     }
 }
 
-fn run_section(ui: &mut egui::Ui, state: &mut AiToolsState, registry: &AiToolsRegistry) {
+fn counter_chip(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    glyph: &str,
+    n: usize,
+    word: &str,
+    active: bool,
+) {
+    let plural = if n == 1 { "" } else { "s" };
+    let text = format!("{glyph} {n} {word}{plural}");
+    let color = if active {
+        theme.marker_warning
+    } else {
+        theme.text_secondary
+    };
+    egui::Frame::none()
+        .fill(theme.bg_raised.gamma_multiply(0.5))
+        .rounding(3.0)
+        .inner_margin(egui::Margin::symmetric(6.0, 3.0))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(text)
+                    .small()
+                    .color(color),
+            );
+        });
+}
+
+fn prompt_help_text(task: Option<AiTask>, mode: PromptMode) -> &'static str {
+    match (task, mode) {
+        (Some(AiTask::RemoveBackground), _) => {
+            "Remove BG runs auto-detect — no clicks needed. Click Generate \
+             Mask to extract the foreground."
+        }
+        (Some(AiTask::DetectObjects), _) => {
+            "Detect Objects runs auto-detect — no clicks needed. Click \
+             Generate Mask to find every object in frame."
+        }
+        (Some(AiTask::TrackObject), _) => {
+            "Track Object isn't enabled — install a temporal model from AI \
+             Models first."
+        }
+        (_, PromptMode::PointPrompt) => {
+            "Click in the viewport to add a positive point. Hold Alt for \
+             negative (excluded) regions."
+        }
+        (_, PromptMode::BoxPrompt) => {
+            "Drag in the viewport to draw a bounding box around the subject."
+        }
+        (_, PromptMode::Scribble) => {
+            "Drag in the viewport to scribble over the subject. Hold Alt \
+             for excluded regions."
+        }
+    }
+}
+
+// ============================================================
+// 4. RUN — Generate Mask button + scope chips
+// ============================================================
+
+fn run_section(
+    ui: &mut egui::Ui,
+    state: &mut AiToolsState,
+    registry: &AiToolsRegistry,
+    theme: &KlippTheme,
+) {
     let can_run = state.active_task.is_some()
         && state
             .selected_model_id
             .as_ref()
-            .map(|id| registry.info(id).is_some())
+            .map(|id| registry.has_id(id))
             .unwrap_or(false)
         && !matches!(state.inference, InferenceState::Running { .. });
 
-    if ui
-        .add_enabled(
-            can_run,
-            egui::Button::new("Run on current frame").min_size(egui::vec2(180.0, 32.0)),
+    ui.horizontal(|ui| {
+        let avail = ui.available_width();
+        let button_w = avail - 36.0 - 4.0;
+        let resp = ui.add_sized(
+            [button_w, 36.0],
+            egui::Button::new(
+                egui::RichText::new("▶ Generate Mask")
+                    .strong()
+                    .size(13.0),
+            )
+            .fill(if can_run {
+                theme.marker_warning
+            } else {
+                theme.bg_raised
+            }),
+        );
+        if can_run && resp.clicked() {
+            state.pending_run = true;
+        }
+        if !can_run {
+            resp.on_disabled_hover_text(disabled_run_reason(state, registry));
+        }
+        // Trailing ▾ — placeholder for future "run-with-presets"
+        // overflow. Disabled visually for v1.
+        ui.add_enabled(
+            false,
+            egui::Button::new("▾").min_size(egui::vec2(32.0, 36.0)),
         )
-        .on_disabled_hover_text(disabled_run_reason(state))
-        .clicked()
-    {
-        state.pending_run = true;
-    }
+        .on_disabled_hover_text("Per-run presets — coming soon");
+    });
 
-    if matches!(state.inference, InferenceState::Running { .. })
-        && ui.button("Cancel").clicked()
-    {
-        state.pending_cancel = true;
-    }
+    ui.add_space(6.0);
 
-    // Status line under the button so the user always sees state.
-    match &state.inference {
-        InferenceState::Idle => {
-            ui.label(egui::RichText::new("Ready").weak());
+    // SCOPE chips. CurrentFrame is wired; Selection / FullClip
+    // are visible-but-disabled with "coming soon" tooltips so the
+    // batch-dispatch story is forward-compatible in the UI.
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("SCOPE:")
+                .small()
+                .strong()
+                .color(theme.text_dim),
+        );
+        for sc in &[AiScope::CurrentFrame, AiScope::Selection, AiScope::FullClip] {
+            scope_chip(ui, *sc, state, theme);
         }
-        InferenceState::Running { model_id, .. } => {
-            ui.label(format!("Running on {}…", model_id));
-        }
-        InferenceState::Failed { error, .. } => {
-            ui.colored_label(egui::Color32::from_rgb(220, 80, 80), error);
-        }
-        InferenceState::Done { response, .. } => {
-            ui.label(format!("Done in {} ms", response.inference_ms));
-        }
+    });
+}
+
+fn scope_chip(
+    ui: &mut egui::Ui,
+    sc: AiScope,
+    state: &mut AiToolsState,
+    theme: &KlippTheme,
+) {
+    let active = state.scope == sc;
+    let enabled = sc.is_implemented();
+    let label = sc.label();
+    let resp = ui.add_enabled(
+        enabled,
+        egui::Button::new(
+            egui::RichText::new(label).color(if active {
+                theme.marker_warning
+            } else if enabled {
+                theme.text_secondary
+            } else {
+                theme.text_dim
+            }),
+        )
+        .stroke(if active {
+            egui::Stroke::new(1.0, theme.marker_warning)
+        } else {
+            egui::Stroke::NONE
+        })
+        .frame(active),
+    );
+    if !enabled {
+        resp.on_disabled_hover_text(
+            "Batch processing — coming soon. Today only Current frame \
+             dispatches inference.",
+        );
+    } else if resp.clicked() {
+        state.scope = sc;
     }
 }
 
-fn disabled_run_reason(state: &AiToolsState) -> &'static str {
+fn disabled_run_reason(state: &AiToolsState, registry: &AiToolsRegistry) -> &'static str {
     if state.active_task.is_none() {
         "Pick a task first"
-    } else if state.selected_model_id.is_none() {
-        "Pick a model first"
-    } else if matches!(state.inference, InferenceState::Running { .. }) {
+    } else if state
+        .selected_model_id
+        .as_ref()
+        .map(|id| registry.has_id(id))
+        .unwrap_or(false)
+    {
         "Inference already running"
     } else {
-        "Cannot run"
+        "Pick a model first"
     }
 }
 
-fn preview_section(ui: &mut egui::Ui, state: &AiToolsState) {
+// ============================================================
+// OUTPUT — empty state for v1; running / complete in commits 2-3
+// ============================================================
+
+fn output_section(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippTheme) {
+    ui.label(
+        egui::RichText::new("OUTPUT")
+            .small()
+            .strong()
+            .color(theme.text_secondary),
+    );
+    ui.add_space(4.0);
+
+    // Until commits 2 + 3 land the Running and Complete states,
+    // we just render the empty placeholder for any non-Done state.
+    // The Done case still uses the existing single-mask preview
+    // path so nothing regresses for users who already had a
+    // working AI Tools workflow.
     match &state.inference {
-        InferenceState::Done { response, .. } => {
-            if response.candidates.is_empty() {
-                ui.label("Mask preview:");
-                ui.label(egui::RichText::new("(empty response)").weak());
-                return;
-            }
-
-            // Header: total count + first-mask resolution + total
-            // inference time. Single-candidate output (BiRefNet,
-            // MobileSAM) reads naturally because the count is 1.
-            let first = &response.candidates[0];
-            ui.label(format!(
-                "{} detection{} • {} ms • {}×{}",
-                response.candidates.len(),
-                if response.candidates.len() == 1 { "" } else { "s" },
-                response.inference_ms,
-                first.mask.width,
-                first.mask.height,
-            ));
-
-            // Per-candidate row: a colored chip matching the bbox /
-            // mask tint in the viewer, plus label + confidence.
-            // Capped at 16 rows so a busy frame doesn't blow the
-            // panel's height — the viewer overlay still draws all
-            // of them.
-            const MAX_ROWS: usize = 16;
-            egui::ScrollArea::vertical()
-                .max_height(220.0)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    for (idx, c) in response.candidates.iter().take(MAX_ROWS).enumerate() {
-                        ui.horizontal(|ui| {
-                            // Color chip — keep it small + square so the
-                            // row stays readable.
-                            let chip_size = egui::vec2(12.0, 12.0);
-                            let (chip_rect, _) = ui.allocate_exact_size(
-                                chip_size,
-                                egui::Sense::hover(),
-                            );
-                            ui.painter().rect_filled(
-                                chip_rect,
-                                2.0,
-                                crate::ai_tools::detection_color(idx),
-                            );
-                            let label = c.label.as_deref().unwrap_or("?");
-                            ui.label(format!(
-                                "{} — {:.0}%",
-                                label,
-                                c.confidence * 100.0,
-                            ));
-                        });
-                    }
-                    if response.candidates.len() > MAX_ROWS {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "(+{} more — viewer shows all)",
-                                response.candidates.len() - MAX_ROWS,
-                            ))
-                            .weak(),
-                        );
-                    }
-                });
+        InferenceState::Done { response, .. } if !response.candidates.is_empty() => {
+            done_preview_v1(ui, state, theme);
         }
         _ => {
-            ui.label("Mask preview:");
-            ui.label(egui::RichText::new("(none yet)").weak());
+            empty_output_placeholder(ui, theme);
         }
     }
+}
+
+fn empty_output_placeholder(ui: &mut egui::Ui, theme: &KlippTheme) {
+    let avail = ui.available_width();
+    let h = 160.0;
+    egui::Frame::none()
+        .fill(theme.bg_raised.gamma_multiply(0.6))
+        .rounding(6.0)
+        .show(ui, |ui| {
+            ui.set_min_width(avail);
+            ui.set_min_height(h);
+            ui.vertical_centered(|ui| {
+                ui.add_space(40.0);
+                ui.add(Icon::Info.image(28.0).tint(theme.text_dim));
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Add a prompt and run to preview the mask here.",
+                    )
+                    .small()
+                    .color(theme.text_secondary),
+                );
+            });
+        });
+}
+
+/// v1 fallback preview — keeps the existing single-mask + N-row
+/// candidate list working for users already mid-flow when this
+/// commit lands. Commit 3 replaces this with a proper
+/// display-mode-tabbed preview (Overlay / Mask only / Cutout).
+fn done_preview_v1(ui: &mut egui::Ui, state: &AiToolsState, theme: &KlippTheme) {
+    let response = match &state.inference {
+        InferenceState::Done { response, .. } => response,
+        _ => return,
+    };
+    let first = &response.candidates[0];
+    ui.label(format!(
+        "{} detection{} · {} ms · {}×{}",
+        response.candidates.len(),
+        if response.candidates.len() == 1 { "" } else { "s" },
+        response.inference_ms,
+        first.mask.width,
+        first.mask.height,
+    ));
+    const MAX_ROWS: usize = 16;
+    egui::ScrollArea::vertical()
+        .max_height(180.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            for (idx, c) in response.candidates.iter().take(MAX_ROWS).enumerate() {
+                ui.horizontal(|ui| {
+                    let chip_size = egui::vec2(12.0, 12.0);
+                    let (chip_rect, _) = ui.allocate_exact_size(
+                        chip_size,
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().rect_filled(
+                        chip_rect,
+                        2.0,
+                        crate::ai_tools::detection_color(idx),
+                    );
+                    let label = c.label.as_deref().unwrap_or("?");
+                    ui.label(format!("{} — {:.0}%", label, c.confidence * 100.0));
+                });
+            }
+            if response.candidates.len() > MAX_ROWS {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "(+{} more — viewer shows all)",
+                        response.candidates.len() - MAX_ROWS,
+                    ))
+                    .weak()
+                    .color(theme.text_dim),
+                );
+            }
+        });
+}
+
+// ============================================================
+// ADVANCED — collapsible drawer with mask/feather/output controls
+// ============================================================
+
+fn advanced_section(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippTheme) {
+    let count = 3; // mask threshold + edge feather + output format
+    ui.horizontal(|ui| {
+        let arrow = if state.advanced_open { "▾" } else { "▸" };
+        if ui
+            .add(
+                egui::Button::new(
+                    egui::RichText::new(format!("{arrow}  ADVANCED"))
+                        .small()
+                        .strong()
+                        .color(theme.text_secondary),
+                )
+                .frame(false),
+            )
+            .clicked()
+        {
+            state.advanced_open = !state.advanced_open;
+        }
+        ui.with_layout(
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{count} settings"))
+                        .small()
+                        .color(theme.text_dim),
+                );
+            },
+        );
+    });
+
+    if !state.advanced_open {
+        return;
+    }
+    ui.add_space(6.0);
+    egui::Frame::none()
+        .fill(theme.bg_raised.gamma_multiply(0.4))
+        .rounding(4.0)
+        .inner_margin(egui::Margin::same(8.0))
+        .show(ui, |ui| {
+            // Mask threshold — slider 0.0..=1.0 with the value
+            // pinned right-aligned. Reuses MaskTunables's
+            // score_threshold for inference dispatch (covered
+            // separately in commit 2 wiring).
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Mask threshold").small());
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{:.2}",
+                                state.advanced_settings.mask_threshold,
+                            ))
+                            .small()
+                            .color(theme.text_secondary),
+                        );
+                    },
+                );
+            });
+            ui.add(
+                egui::Slider::new(
+                    &mut state.advanced_settings.mask_threshold,
+                    0.0..=1.0,
+                )
+                .show_value(false),
+            );
+            ui.add_space(6.0);
+
+            // Edge feather — slider 0..=20 px.
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Edge feather").small());
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} px",
+                                state.advanced_settings.edge_feather,
+                            ))
+                            .small()
+                            .color(theme.text_secondary),
+                        );
+                    },
+                );
+            });
+            ui.add(
+                egui::Slider::new(
+                    &mut state.advanced_settings.edge_feather,
+                    0..=20,
+                )
+                .show_value(false),
+            );
+            ui.add_space(6.0);
+
+            // Output format — dropdown.
+            ui.label(egui::RichText::new("Output").small());
+            egui::ComboBox::from_id_salt("ai_tools_output_format")
+                .selected_text(state.advanced_settings.output_format.label())
+                .width(ui.available_width())
+                .show_ui(ui, |ui| {
+                    for f in OutputFormat::ALL {
+                        let is_selected = state.advanced_settings.output_format == *f;
+                        if ui.selectable_label(is_selected, f.label()).clicked() {
+                            state.advanced_settings.output_format = *f;
+                        }
+                    }
+                });
+        });
 }
 
 #[cfg(test)]
@@ -520,10 +1116,6 @@ mod tests {
 
     #[test]
     fn pick_default_drops_stale_remembered_choice() {
-        // User had picked a model that's since been unregistered
-        // (manifest churn, feature flag rebuild). The restoration
-        // logic should fall back to the first capable model rather
-        // than offering the stale id.
         let mut state = AiToolsState::default();
         state.last_picked_model_per_task.insert(
             AiTask::DetectObjects,
@@ -544,7 +1136,6 @@ mod tests {
 
     #[test]
     fn per_task_history_is_independent() {
-        // Picks for one task don't leak into another.
         let mut state = AiToolsState::default();
         state.last_picked_model_per_task.insert(
             AiTask::DetectObjects,
@@ -558,5 +1149,26 @@ mod tests {
             Some("rf_detr_seg_v1"),
             "RemoveBackground should fall back to first, not pick up DetectObjects' history",
         );
+    }
+
+    #[test]
+    fn ai_scope_default_is_current_frame() {
+        let state = AiToolsState::default();
+        assert_eq!(state.scope, AiScope::CurrentFrame);
+    }
+
+    #[test]
+    fn ai_scope_only_current_frame_is_implemented() {
+        assert!(AiScope::CurrentFrame.is_implemented());
+        assert!(!AiScope::Selection.is_implemented());
+        assert!(!AiScope::FullClip.is_implemented());
+    }
+
+    #[test]
+    fn advanced_settings_defaults() {
+        let s = crate::ai_tools::AdvancedSettings::default();
+        assert_eq!(s.mask_threshold, 0.5);
+        assert_eq!(s.edge_feather, 2);
+        assert_eq!(s.output_format, OutputFormat::AlphaMatte16);
     }
 }
