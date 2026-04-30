@@ -70,9 +70,20 @@ impl AiToolsPanel {
         theme: &KlippTheme,
         show_models_dialog: &mut bool,
     ) {
+        // Hard-cap content width to whatever the SidePanel gives
+        // us this frame. Without this, any Frame::none() with
+        // inner_margin reports `available_width + margin*2` as
+        // its outer size, the SidePanel reads that as "content
+        // wants more", and the panel grows by margin*2 each
+        // frame until it hits the screen edge. Cap holds the
+        // ScrollArea + every nested ui at the parent's width.
+        let max_w = ui.available_width();
+        ui.set_max_width(max_w);
+
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
+                ui.set_max_width(max_w);
                 // ── 1. TASK ─────────────────────────────────────────
                 section_step_header(ui, 1, "TASK", state.active_task.is_some(), theme);
                 task_grid(ui, state, registry, theme);
