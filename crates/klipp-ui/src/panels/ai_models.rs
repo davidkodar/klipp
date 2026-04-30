@@ -524,21 +524,38 @@ pub fn show_ai_models_dialog(ctx: &egui::Context, state: &mut AppState, theme: &
             }
         });
 
+    // Dialog sizing: default ~900px wide so the row layout fits
+    // without truncation; resizable so users with smaller monitors
+    // can shrink it (rows degrade gracefully with the truncate +
+    // tooltip path below). Min width set high enough that the
+    // toolbar's TASK / SORT / search controls don't overlap.
+    let default_w = (screen_rect.width() * 0.65).clamp(720.0, 1100.0);
     egui::Window::new("AI Models")
         .collapsible(false)
-        .resizable(false)
-        .fixed_size([620.0, max_h])
+        .resizable(true)
+        .default_size([default_w, max_h])
+        .min_width(680.0)
+        .min_height(360.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .open(&mut open)
         .show(ctx, |ui| {
+            // Header description — wraps cleanly across multiple
+            // lines instead of pushing toolbar/list off-screen.
+            // Cache path on its own line so it stays visible even
+            // at narrow widths.
             ui.label(
                 egui::RichText::new(
-                    "Local AI models. Downloads are explicit; no bytes hit your disk \
-                     without your confirmation. Cache lives at \
-                     ~/.local/share/klipp/models/.",
+                    "Local AI models. Downloads are explicit — no bytes hit your \
+                     disk without your confirmation. Cache lives at",
                 )
                 .small()
                 .color(theme.text_secondary),
+            );
+            ui.label(
+                egui::RichText::new("~/.local/share/klipp/models/")
+                    .small()
+                    .monospace()
+                    .color(theme.text_secondary),
             );
             ui.add_space(6.0);
 
@@ -1553,73 +1570,101 @@ fn render_custom_row(
         theme.marker_warning
     };
 
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.set_max_width(380.0);
-            ui.label(egui::RichText::new(&entry.display_name).strong());
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} • {}",
-                    entry.adapter.display_name(),
-                    format_bytes(entry.size_bytes),
-                ))
-                .small()
-                .color(theme.text_secondary),
-            );
-            ui.label(
-                egui::RichText::new(&entry.url)
-                    .small()
-                    .color(theme.text_dim),
-            );
-            // Telemetry line — same shape as render_row's. Custom
-            // entries get the rolling avg too because the registry
-            // dispatch path doesn't know one model from another.
-            if let Some(t) = telemetry.get(&entry.id) {
-                if t.has_runs() {
-                    let avg = t
-                        .avg_inference_ms()
-                        .map(|ms| format!("avg {:.0}ms", ms))
-                        .unwrap_or_else(|| "—".into());
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Last used: {} • {}",
-                            crate::ai_tools::format_relative(t.last_used),
-                            avg,
-                        ))
-                        .small()
-                        .color(theme.text_dim),
-                    );
-                }
-            }
-        });
+    let row_h = 52.0;
+    let right_reserve = 220.0_f32; // size + badge + Uninstall button
+    let avail = ui.available_width();
+    let left_w = (avail - right_reserve - 28.0).max(200.0);
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .button("Uninstall")
-                .on_hover_text(
-                    "Delete the cached file + drop the in-memory \
-                     generator + remove the entry from \
-                     ~/.config/klipp/ai_tools.toml.",
-                )
-                .clicked()
-            {
-                *pending_uninstall = Some(entry.clone());
-            }
-            ui.add_space(8.0);
-            let badge = egui::Frame::none()
-                .fill(badge_color.gamma_multiply(0.18))
-                .stroke(egui::Stroke::new(1.0, badge_color))
-                .rounding(3.0)
-                .inner_margin(egui::Margin::symmetric(6.0, 2.0));
-            badge.show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(badge_label)
-                        .small()
-                        .color(badge_color),
+    egui::Frame::none()
+        .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+        .show(ui, |ui| {
+            ui.set_min_height(row_h);
+            ui.horizontal(|ui| {
+                paint_status_dot(ui, badge_color);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(left_w, row_h),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        ui.set_max_width(left_w);
+                        ui.label(
+                            egui::RichText::new(&entry.display_name)
+                                .strong()
+                                .size(14.0),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}   Custom",
+                                entry.adapter.display_name(),
+                            ))
+                            .small()
+                            .color(theme.text_secondary),
+                        );
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&entry.url)
+                                    .small()
+                                    .color(theme.text_dim),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(&entry.url);
+                        if let Some(t) = telemetry.get(&entry.id) {
+                            if t.has_runs() {
+                                let avg = t
+                                    .avg_inference_ms()
+                                    .map(|ms| format!("avg {:.0}ms", ms))
+                                    .unwrap_or_else(|| "—".into());
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "Last used {} · {}",
+                                        crate::ai_tools::format_relative(t.last_used),
+                                        avg,
+                                    ))
+                                    .small()
+                                    .color(theme.text_dim),
+                                );
+                            }
+                        }
+                    },
+                );
+
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if ui
+                            .button("Uninstall")
+                            .on_hover_text(
+                                "Delete the cached file + drop the in-memory \
+                                 generator + remove the entry from \
+                                 ~/.config/klipp/ai_tools.toml.",
+                            )
+                            .clicked()
+                        {
+                            *pending_uninstall = Some(entry.clone());
+                        }
+                        ui.add_space(8.0);
+                        let badge = egui::Frame::none()
+                            .fill(badge_color.gamma_multiply(0.18))
+                            .stroke(egui::Stroke::new(1.0, badge_color))
+                            .rounding(3.0)
+                            .inner_margin(egui::Margin::symmetric(6.0, 2.0));
+                        badge.show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(badge_label)
+                                    .small()
+                                    .color(badge_color),
+                            );
+                        });
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(format_bytes(entry.size_bytes))
+                                .small()
+                                .color(theme.text_secondary),
+                        );
+                    },
                 );
             });
         });
-    });
 }
 
 /// Confirmation modal for "Uninstall this custom model". Three-line
@@ -2330,6 +2375,17 @@ fn render_row(
 ) {
     let row_h = 52.0;
     let dot_color = status.badge_color(theme);
+    // Reserve the right column up front so the left block can be
+    // explicitly width-bounded — without this the vertical block
+    // fills available_width and the second line either pushes the
+    // right column off-screen or wraps to multiple lines.
+    // Empirical numbers: size column ~70px, badge ~80px, primary
+    // action button ~80px, overflow ⋮ ~24px, plus inter-element
+    // spacing ~30px → ~290px reserve.
+    let right_reserve = 290.0_f32;
+    let avail = ui.available_width();
+    // Leave room for the status dot (~18px) + a small margin.
+    let left_w = (avail - right_reserve - 28.0).max(200.0);
     egui::Frame::none()
         .inner_margin(egui::Margin::symmetric(8.0, 6.0))
         .show(ui, |ui| {
@@ -2341,55 +2397,70 @@ fn render_row(
                 paint_status_dot(ui, dot_color);
 
                 // Centre block: name + (optional) RECOMMENDED + (i),
-                // and a kind/license/attribution line below.
-                ui.vertical(|ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            egui::RichText::new(&entry.display_name)
-                                .strong()
-                                .size(14.0),
-                        );
-                        if is_recommended(&entry.id) {
-                            recommended_badge(ui, theme);
-                        }
-                        let desc = description_for(&entry.id);
-                        if !desc.is_empty() {
+                // and a kind/license/attribution line below. Width
+                // is bounded so the second-line label can truncate
+                // cleanly with an ellipsis when attribution is long.
+                ui.allocate_ui_with_layout(
+                    egui::vec2(left_w, row_h),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        ui.set_max_width(left_w);
+                        ui.horizontal(|ui| {
                             ui.label(
-                                egui::RichText::new("ⓘ")
-                                    .size(12.0)
-                                    .color(theme.text_dim),
-                            )
-                            .on_hover_text(desc);
-                        }
-                    });
-                    ui.label(
-                        egui::RichText::new(format!(
+                                egui::RichText::new(&entry.display_name)
+                                    .strong()
+                                    .size(14.0),
+                            );
+                            if is_recommended(&entry.id) {
+                                recommended_badge(ui, theme);
+                            }
+                            let desc = description_for(&entry.id);
+                            if !desc.is_empty() {
+                                ui.label(
+                                    egui::RichText::new("ⓘ")
+                                        .size(12.0)
+                                        .color(theme.text_dim),
+                                )
+                                .on_hover_text(desc);
+                            }
+                        });
+                        let line = format!(
                             "{}   {}   {}",
                             kind_label(entry.kind),
                             entry.license,
                             entry.attribution,
-                        ))
-                        .small()
-                        .color(theme.text_secondary),
-                    );
-                    if let Some(t) = telemetry.get(&entry.id) {
-                        if t.has_runs() {
-                            let avg = t
-                                .avg_inference_ms()
-                                .map(|ms| format!("avg {:.0}ms", ms))
-                                .unwrap_or_else(|| "—".into());
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "Last used {} · {}",
-                                    format_relative(t.last_used),
-                                    avg,
-                                ))
-                                .small()
-                                .color(theme.text_dim),
-                            );
+                        );
+                        // Single-line label that ellipsizes on
+                        // overflow; full text revealed on hover so
+                        // long attributions stay accessible.
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&line)
+                                    .small()
+                                    .color(theme.text_secondary),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(&line);
+                        if let Some(t) = telemetry.get(&entry.id) {
+                            if t.has_runs() {
+                                let avg = t
+                                    .avg_inference_ms()
+                                    .map(|ms| format!("avg {:.0}ms", ms))
+                                    .unwrap_or_else(|| "—".into());
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "Last used {} · {}",
+                                        format_relative(t.last_used),
+                                        avg,
+                                    ))
+                                    .small()
+                                    .color(theme.text_dim),
+                                );
+                            }
                         }
-                    }
-                });
+                    },
+                );
 
                 // Right block: size + status badge + primary action +
                 // overflow menu.
