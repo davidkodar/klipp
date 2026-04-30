@@ -152,8 +152,4 @@ See the AI Models table above; each model retains its upstream attribution and l
 
 ## License
 
-GPL-3.0. Bundled assets retain their original licences (MIT, CC0, Apache-2.0) and remain redistributable under their respective terms; GPL-3.0 is compatible with all of them as a downstream licence.
-
-## Author
-
-David Bolin ([@davidkodar](https://github.com/davidkodar) on GitHub).
+GPL-3.0.
