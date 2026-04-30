@@ -439,19 +439,55 @@ fn disabled_task_tooltip(task: AiTask) -> &'static str {
 }
 
 /// Decide which model id should pre-populate the dropdown when the
-/// user (re)opens a task. Same logic as the previous panel — kept
-/// here unchanged from the F-97-MODEL-MANAGER work.
+/// user (re)opens a task. Three-tier fallback:
+///
+/// 1. User's last explicit pick for this task (if still capable).
+///    Wins always — once a user has chosen, that choice sticks
+///    until they change it.
+/// 2. The task's recommended model (if installed). Lets newcomers
+///    pick a task and have the right tool selected without
+///    knowing the lineup.
+/// 3. First capable model in registry order. Last-resort fallback
+///    when neither the user's history nor the recommendation
+///    resolves.
 pub(super) fn pick_default_model_for_task(
     task: AiTask,
     state: &AiToolsState,
     capable: &[klipp_ml::ModelInfo],
 ) -> Option<String> {
-    let restored = state
+    // Tier 1: user's previous explicit pick.
+    if let Some(restored) = state
         .last_picked_model_per_task
         .get(&task)
         .filter(|id| capable.iter().any(|m| m.id == **id))
-        .cloned();
-    restored.or_else(|| capable.first().map(|m| m.id.clone()))
+    {
+        return Some(restored.clone());
+    }
+    // Tier 2: task-recommended model, if it's installed.
+    if let Some(rec_id) = recommended_model_for_task(task) {
+        if capable.iter().any(|m| m.id == rec_id) {
+            return Some(rec_id.to_string());
+        }
+    }
+    // Tier 3: first capable.
+    capable.first().map(|m| m.id.clone())
+}
+
+/// Best-for-task model id for newcomers. Picks reflect the
+/// curated quality ranking inside each task's lineup; same
+/// recommendations the AI Models dialog flags with the
+/// RECOMMENDED badge.
+///
+/// Returns `None` when no model is recommended for the task
+/// (e.g. Track Object — Klipp's v1 lineup has no temporal model;
+/// the task is greyed out anyway).
+fn recommended_model_for_task(task: AiTask) -> Option<&'static str> {
+    match task {
+        AiTask::RemoveBackground => Some("birefnet_lite_v1"),
+        AiTask::IsolateObject => Some("mobile_sam_v1"),
+        AiTask::DetectObjects => Some("rf_detr_seg_medium_v1"),
+        AiTask::TrackObject => None,
+    }
 }
 
 // ============================================================
@@ -1895,8 +1931,25 @@ mod tests {
     }
 
     #[test]
-    fn pick_default_falls_back_to_first_when_no_history() {
+    fn pick_default_picks_task_recommended_when_no_history() {
+        // No remembered pick → tier-2 recommendation for
+        // DetectObjects is rf_detr_seg_medium_v1, which IS in
+        // capable, so it wins over the first-capable fallback.
         let state = AiToolsState::default();
+        let capable = fake_capable();
+        let pick = pick_default_model_for_task(AiTask::DetectObjects, &state, &capable);
+        assert_eq!(pick.as_deref(), Some("rf_detr_seg_medium_v1"));
+    }
+
+    #[test]
+    fn pick_default_user_pick_beats_task_recommendation() {
+        // User explicitly picked the Preview tier — that beats
+        // the task's recommended Medium.
+        let mut state = AiToolsState::default();
+        state.last_picked_model_per_task.insert(
+            AiTask::DetectObjects,
+            "rf_detr_seg_v1".into(),
+        );
         let capable = fake_capable();
         let pick = pick_default_model_for_task(AiTask::DetectObjects, &state, &capable);
         assert_eq!(pick.as_deref(), Some("rf_detr_seg_v1"));
@@ -1915,7 +1968,9 @@ mod tests {
     }
 
     #[test]
-    fn pick_default_drops_stale_remembered_choice() {
+    fn pick_default_drops_stale_remembered_choice_to_recommendation() {
+        // Stale remembered id → falls through to the task-
+        // recommended model since it's installed.
         let mut state = AiToolsState::default();
         state.last_picked_model_per_task.insert(
             AiTask::DetectObjects,
@@ -1923,6 +1978,18 @@ mod tests {
         );
         let capable = fake_capable();
         let pick = pick_default_model_for_task(AiTask::DetectObjects, &state, &capable);
+        assert_eq!(pick.as_deref(), Some("rf_detr_seg_medium_v1"));
+    }
+
+    #[test]
+    fn pick_default_falls_through_to_first_when_recommendation_uninstalled() {
+        // RemoveBackground recommends BiRefNet, which isn't in
+        // fake_capable (RF-DETR variants only). With no user
+        // history either, the first capable wins.
+        let state = AiToolsState::default();
+        let capable = fake_capable();
+        let pick =
+            pick_default_model_for_task(AiTask::RemoveBackground, &state, &capable);
         assert_eq!(pick.as_deref(), Some("rf_detr_seg_v1"));
     }
 
@@ -1936,6 +2003,10 @@ mod tests {
 
     #[test]
     fn per_task_history_is_independent() {
+        // RemoveBackground task — DetectObjects' history
+        // shouldn't leak in. Recommended for RemoveBackground is
+        // BiRefNet (uninstalled in fake_capable), so we expect
+        // the first-capable fallback for that task.
         let mut state = AiToolsState::default();
         state.last_picked_model_per_task.insert(
             AiTask::DetectObjects,
@@ -1947,8 +2018,29 @@ mod tests {
         assert_eq!(
             pick_other.as_deref(),
             Some("rf_detr_seg_v1"),
-            "RemoveBackground should fall back to first, not pick up DetectObjects' history",
+            "RemoveBackground should fall back to first capable, not pick up DetectObjects' history",
         );
+    }
+
+    #[test]
+    fn recommended_model_for_task_covers_every_running_task() {
+        // Every task except TrackObject (which has no temporal
+        // model in our v1 lineup) should have a recommendation
+        // — pinning here so the lineup curation stays in sync
+        // with what we actually ship.
+        assert_eq!(
+            recommended_model_for_task(AiTask::RemoveBackground),
+            Some("birefnet_lite_v1"),
+        );
+        assert_eq!(
+            recommended_model_for_task(AiTask::IsolateObject),
+            Some("mobile_sam_v1"),
+        );
+        assert_eq!(
+            recommended_model_for_task(AiTask::DetectObjects),
+            Some("rf_detr_seg_medium_v1"),
+        );
+        assert_eq!(recommended_model_for_task(AiTask::TrackObject), None);
     }
 
     #[test]
