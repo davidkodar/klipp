@@ -323,6 +323,14 @@ impl KlippApp {
     ) -> Self {
         use klipp_core::startup_timer::LogTimer;
 
+        // AI mask cache LRU sweep — trim
+        // ~/.cache/klipp/ai_masks/ to AI_MASK_CACHE_BYTES_CAP if
+        // it's overgrown. Cheap (stat-only walk + delete oldest)
+        // and runs once at startup so it doesn't cost during
+        // editing. See execute_apply_mask_to_clip for the schema
+        // these files are written under.
+        prune_ai_mask_cache();
+
         let (thumb_tx, thumb_rx) = crossbeam_channel::unbounded();
         let (source_frame_tx, source_frame_rx) = crossbeam_channel::unbounded();
         let (filmstrip_tx, filmstrip_rx) = crossbeam_channel::unbounded();
@@ -15357,10 +15365,17 @@ impl KlippApp {
             {
                 let id = model_id.clone();
                 let ms = response.inference_ms;
+                let candidates = response.candidates.len();
+                let model_display = self
+                    .state
+                    .ai_tools_registry
+                    .info(&id)
+                    .map(|i| i.display_name)
+                    .unwrap_or_else(|| id.clone());
                 self.state
                     .ai_tools_state
                     .model_telemetry
-                    .entry(id)
+                    .entry(id.clone())
                     .or_default()
                     .record_run(ms);
                 // Persist updated telemetry. The file is small
@@ -15373,9 +15388,54 @@ impl KlippApp {
                         &self.state.ai_tools_state,
                     ),
                 );
+                // Push a Recent entry. Thumbnail texture is built
+                // here while we still hold a reference to the
+                // mask buffer; pushed at the front so the panel's
+                // .iter().take(3) shows the freshest first.
+                if let Some(task) = self.state.ai_tools_state.active_task {
+                    let thumbnail = build_recent_thumbnail(
+                        ctx,
+                        &self.state.ai_tools_state.inference,
+                    );
+                    let entry = crate::ai_tools::RecentEntry {
+                        task,
+                        model_id: id,
+                        model_display_name: model_display,
+                        timestamp: std::time::SystemTime::now(),
+                        duration_ms: ms,
+                        candidates_count: candidates,
+                        thumbnail,
+                        prompts: self.state.ai_tools_state.prompts.clone(),
+                    };
+                    self.state.ai_tools_state.recent_inferences.push_front(entry);
+                    while self.state.ai_tools_state.recent_inferences.len() > 20 {
+                        self.state.ai_tools_state.recent_inferences.pop_back();
+                    }
+                }
             }
             self.refresh_ai_tools_overlay_texture(ctx);
             ctx.request_repaint();
+        }
+
+        // Drain the panel's Re-run button. Resets inference back
+        // to Idle while keeping the captured prompts so the user
+        // can tweak + re-fire. Defers the overlay texture drop
+        // through the wgpu-safe path.
+        if self.state.ai_tools_state.pending_rerun {
+            self.state.ai_tools_state.pending_rerun = false;
+            self.state.ai_tools_state.inference =
+                crate::ai_tools::InferenceState::Idle;
+            self.state.ai_tools_state.inference_start_time = None;
+            self.refresh_ai_tools_overlay_texture(ctx);
+            ctx.request_repaint();
+        }
+
+        // Drain the panel's Apply-to-clip button. Writes the mask
+        // PNG to the cache + inserts an ExternalMatte node into
+        // the chosen clip's node graph.
+        if self.state.ai_tools_state.pending_apply_to_clip {
+            self.state.ai_tools_state.pending_apply_to_clip = false;
+            self.execute_apply_mask_to_clip();
         }
 
         // Drive the custom-URL paste state machine. Worker thread
@@ -15384,6 +15444,204 @@ impl KlippApp {
         // confirmation view.
         if self.state.custom_model_add.poll() {
             ctx.request_repaint();
+        }
+    }
+
+    /// Apply the most recent successful mask to a clip's node
+    /// graph. Target clip selection follows the
+    /// selected-then-playhead-fallback rule:
+    ///   1. `state.selected_clip` if set and resolvable.
+    ///   2. Otherwise the topmost video track's clip at the
+    ///      playhead (egui's `find_map` order matches our
+    ///      bottom-up track numbering — first match is highest).
+    ///   3. Otherwise toast "No clip selected".
+    ///
+    /// On success: writes the mask to a metadata-rich filename in
+    /// `~/.cache/klipp/ai_masks/`, inserts an `ExternalMatte`
+    /// node into the clip's graph wired into the existing
+    /// Corrector's matte input (port 1) when one exists, and
+    /// toasts "Mask applied to {track} · {clip_short}".
+    fn execute_apply_mask_to_clip(&mut self) {
+        // Snapshot what we need from inference state without
+        // holding the borrow into mutating ops.
+        let (mask, model_id) = match &self.state.ai_tools_state.inference {
+            crate::ai_tools::InferenceState::Done { model_id, response }
+                if !response.candidates.is_empty() =>
+            {
+                (response.candidates[0].mask.clone(), model_id.clone())
+            }
+            _ => {
+                self.state.toast.show("No mask to apply");
+                return;
+            }
+        };
+
+        // Resolve target clip. Selected first, playhead fallback.
+        let playhead = self.state.playhead;
+        let target = self.state.selected_clip_loc().map(|(t, c)| (t, c.id, c.clone()));
+        let target = target.or_else(|| {
+            self.state
+                .sequence()
+                .tracks
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Video)
+                .find_map(|(i, t)| {
+                    t.clip_at_timecode(playhead).map(|(_, c)| (i, c.id, c.clone()))
+                })
+        });
+        let Some((track_idx, clip_id, clip_snapshot)) = target else {
+            self.state.toast.show(
+                "No clip selected. Select a clip or position the playhead over one.",
+            );
+            return;
+        };
+
+        // Resolve the cache directory + a metadata-rich filename.
+        // Schema: <clip_id>_<frame>_<model_id_hash>_<timestamp>.png
+        // — gives a future cleanup pass enough info to identify
+        // orphans (clip_id parsed against current project) and
+        // dupes (clip+frame+model triple) without re-hashing.
+        let cache_dir = match dirs::cache_dir() {
+            Some(d) => d.join("klipp").join("ai_masks"),
+            None => {
+                self.state.toast.show("Apply failed: no cache dir");
+                return;
+            }
+        };
+        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+            self.state.toast.show(format!("Apply failed: mkdir cache ({e})"));
+            return;
+        }
+        let frame = playhead.value;
+        let model_hash: u64 = {
+            // 64-bit FNV-1a — stable, no extra dep, short enough
+            // to keep the filename readable.
+            let mut h: u64 = 0xcbf29ce484222325;
+            for b in model_id.as_bytes() {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            h
+        };
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let filename = format!(
+            "{}_{frame}_{:016x}_{timestamp}.png",
+            clip_id.to_string().split('-').next().unwrap_or("clip"),
+            model_hash,
+        );
+        let final_path = cache_dir.join(&filename);
+        let tmp_path = cache_dir.join(format!("{filename}.tmp"));
+
+        // Encode mask as a single-channel grayscale PNG via the
+        // image crate. Atomic write: encode to .tmp then rename
+        // so a crash mid-write doesn't leave a half-written file
+        // referenced by the node.
+        let img = image::GrayImage::from_raw(
+            mask.width,
+            mask.height,
+            mask.alpha.clone(),
+        );
+        let img = match img {
+            Some(i) => i,
+            None => {
+                self.state.toast.show("Apply failed: mask buffer dimensions mismatch");
+                return;
+            }
+        };
+        if let Err(e) = img.save_with_format(&tmp_path, image::ImageFormat::Png) {
+            self.state.toast.show(format!("Apply failed: PNG write ({e})"));
+            return;
+        }
+        if let Err(e) = std::fs::rename(&tmp_path, &final_path) {
+            self.state.toast.show(format!("Apply failed: rename ({e})"));
+            return;
+        }
+        // TODO(cleanup): orphan detection — the schema in this
+        // filename gives a future cleanup pass enough info to
+        // prune AI mask cache entries whose clip_id is no longer
+        // referenced. v1 ships a 2GB LRU sweep on app start
+        // (klipp-app::main) as the disk-pressure safety net.
+
+        // Insert the ExternalMatte node into the clip's graph and
+        // wire it into the existing Corrector's matte input
+        // (port 1) when one exists. If not, the matte hangs in
+        // the graph and the user can wire it manually from the
+        // V2 editor — still better than no apply.
+        let track_name = self
+            .state
+            .sequence()
+            .tracks
+            .get(track_idx)
+            .map(|t| t.name.clone())
+            .unwrap_or_else(|| format!("Track {track_idx}"));
+        let _ = clip_snapshot; // we mutate via sequence_mut below
+
+        let path_for_node = final_path.clone();
+        let mut wired = false;
+        if let Some(track) = self.state.sequence_mut().tracks.get_mut(track_idx) {
+            if let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) {
+                let matte_id = klipp_nodes::NodeId::new_v4();
+                let mut params = klipp_nodes::params::NodeParams::default();
+                params.matte_image_path = Some(path_for_node);
+                params.matte_channel =
+                    Some(klipp_nodes::params::MatteChannel::Luminance);
+                clip.node_graph.nodes.push(klipp_nodes::graph::Node {
+                    id: matte_id,
+                    kind: klipp_nodes::kinds::NodeKind::ExternalMatte,
+                    label: "AI mask".into(),
+                    enabled: true,
+                    params,
+                    keyframes: klipp_nodes::params::NodeKeyframeTracks::default(),
+                    output_link: None,
+                    input_links: Vec::new(),
+                });
+                // Find the first Corrector node — that's where the
+                // default-graph's grade-with-matte expects the
+                // matte input to feed (port 1).
+                let corrector_id = clip
+                    .node_graph
+                    .nodes
+                    .iter()
+                    .find(|n| {
+                        matches!(n.kind, klipp_nodes::kinds::NodeKind::Corrector)
+                    })
+                    .map(|n| n.id);
+                if let Some(corrector_id) = corrector_id {
+                    // Drop any existing matte edge into the
+                    // corrector's port 1 so the new mask wins.
+                    clip.node_graph
+                        .edges
+                        .retain(|e| !(e.to_node == corrector_id && e.to_port == 1));
+                    clip.node_graph.edges.push(klipp_nodes::graph::Edge {
+                        from_node: matte_id,
+                        from_port: 0,
+                        to_node: corrector_id,
+                        to_port: 1,
+                    });
+                    wired = true;
+                }
+            }
+        }
+
+        let clip_short = clip_id
+            .to_string()
+            .split('-')
+            .next()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "clip".into());
+        if wired {
+            self.state.toast.show(format!(
+                "Mask applied to {track_name} · {clip_short}",
+            ));
+        } else {
+            self.state.toast.show(format!(
+                "Mask added to {track_name} · {clip_short} (no Corrector found — \
+                 wire the matte from the V2 editor)",
+            ));
         }
     }
 
@@ -18905,6 +19163,107 @@ impl KlippApp {
             }
         });
     }
+}
+
+/// 2 GB cap on the AI mask cache directory. Bigger than any
+/// realistic short-term workflow (a 1080p mask PNG is ~80–200 KB
+/// — that's 10k+ masks at the high end) but enforces a ceiling
+/// so months of heavy use can't quietly fill the disk.
+const AI_MASK_CACHE_BYTES_CAP: u64 = 2 * 1024 * 1024 * 1024;
+
+/// LRU prune of `~/.cache/klipp/ai_masks/`. Walks the directory,
+/// stats each file's size + mtime, and if the total is over the
+/// cap deletes oldest-first until under cap. Errors at every
+/// step are logged + swallowed — failure to prune is never a
+/// reason to refuse to start the app.
+///
+/// This is the disk-pressure safety net. Proper orphan-detection
+/// (parse filenames, cross-reference with current project's clip
+/// IDs) is filed as a follow-up — the schema documented in
+/// execute_apply_mask_to_clip puts enough metadata in the
+/// filename to support it.
+fn prune_ai_mask_cache() {
+    let Some(cache_root) = dirs::cache_dir() else {
+        return;
+    };
+    let dir = cache_root.join("klipp").join("ai_masks");
+    if !dir.exists() {
+        return;
+    }
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(it) => it,
+        Err(e) => {
+            tracing::debug!(
+                "ai mask cache prune: read_dir failed: {} ({e})",
+                dir.display(),
+            );
+            return;
+        }
+    };
+    let mut files: Vec<(std::path::PathBuf, u64, std::time::SystemTime)> =
+        Vec::new();
+    let mut total: u64 = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let size = meta.len();
+        let mtime = meta
+            .modified()
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        total += size;
+        files.push((path, size, mtime));
+    }
+    if total <= AI_MASK_CACHE_BYTES_CAP {
+        return;
+    }
+    // Oldest-first delete order so the freshest masks (most
+    // likely to be referenced by the current project) survive.
+    files.sort_by_key(|(_, _, mtime)| *mtime);
+    let mut deleted = 0u32;
+    let mut freed = 0u64;
+    for (path, size, _) in files {
+        if total.saturating_sub(freed) <= AI_MASK_CACHE_BYTES_CAP {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            freed += size;
+            deleted += 1;
+        }
+    }
+    if deleted > 0 {
+        tracing::info!(
+            "ai mask cache prune: deleted {} file(s), freed {} bytes (cap {})",
+            deleted,
+            freed,
+            AI_MASK_CACHE_BYTES_CAP,
+        );
+    }
+}
+
+/// Build a small thumbnail of the most recent inference's mask
+/// for the panel's Recent list. Reuses the overlay crate's
+/// `build_mask_texture` and tints with the panel's default
+/// overlay colour so the row thumbnails read as "this was a
+/// mask" at a glance. Returns `None` when the mask is empty /
+/// malformed.
+fn build_recent_thumbnail(
+    ctx: &egui::Context,
+    inference: &crate::ai_tools::InferenceState,
+) -> Option<egui::TextureHandle> {
+    let response = match inference {
+        crate::ai_tools::InferenceState::Done { response, .. } => response,
+        _ => return None,
+    };
+    let first = response.candidates.first()?;
+    crate::ai_tools::build_mask_texture(
+        ctx,
+        &first.mask,
+        crate::ai_tools::DEFAULT_MASK_OVERLAY_COLOR,
+        "ai_recent_thumb",
+    )
 }
 
 impl Drop for KlippApp {

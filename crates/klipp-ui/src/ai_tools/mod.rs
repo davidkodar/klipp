@@ -165,6 +165,39 @@ pub struct AiToolsState {
     /// capped at 95% until Done lands. Cleared when inference
     /// returns to Idle.
     pub inference_start_time: Option<std::time::Instant>,
+    /// Ring of the user's most recent successful inferences.
+    /// Capped at 20 entries; ephemeral (drops on app close).
+    /// Each entry carries enough metadata + a downsampled
+    /// thumbnail to render the bottom-of-panel Recent list.
+    pub recent_inferences: std::collections::VecDeque<RecentEntry>,
+    /// Set by the panel's "Apply to clip" button. Drained by the
+    /// app dispatcher each frame — the dispatcher does the
+    /// clip-finding + PNG-writing + node-insertion since none of
+    /// that fits in the panel's `&mut AiToolsState` borrow.
+    pub pending_apply_to_clip: bool,
+    /// Set by the panel's "Re-run" button. Drained by the
+    /// dispatcher to reset inference back to Idle (keeping
+    /// prompts captured so the user can tweak + run again).
+    pub pending_rerun: bool,
+}
+
+/// One row in the bottom-of-panel Recent list. Built on the
+/// Idle→Done transition; the texture is owned here so the panel
+/// can render it without re-decoding the mask each frame.
+pub struct RecentEntry {
+    pub task: AiTask,
+    pub model_id: String,
+    pub model_display_name: String,
+    pub timestamp: std::time::SystemTime,
+    pub duration_ms: u64,
+    pub candidates_count: usize,
+    /// 96×54 thumbnail of the mask preview. None when texture
+    /// creation failed for any reason — we still keep the entry
+    /// so the user can see the Task · Model history.
+    pub thumbnail: Option<egui::TextureHandle>,
+    /// Captured prompts at the moment of inference, for a future
+    /// "replay" affordance that re-fires the same request.
+    pub prompts: PromptCapture,
 }
 
 /// Where the next inference run should target. Visible UI for all
@@ -271,6 +304,9 @@ impl Default for AiToolsState {
             advanced_settings: AdvancedSettings::default(),
             display_mode: DisplayMode::default(),
             inference_start_time: None,
+            recent_inferences: std::collections::VecDeque::with_capacity(20),
+            pending_apply_to_clip: false,
+            pending_rerun: false,
         }
     }
 }

@@ -1113,12 +1113,363 @@ fn output_section(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippThem
             display_mode_tabs(ui, state, theme, /*has_mask=*/ false);
         }
         InferenceState::Done { response, .. } if !response.candidates.is_empty() => {
-            done_preview_v1(ui, state, theme);
+            done_preview(ui, state, theme);
         }
         _ => {
             empty_output_placeholder(ui, theme);
         }
     }
+
+    // Recent history — appears below the OUTPUT block once at
+    // least one inference has resolved. Hidden in the empty
+    // state to keep the idle panel clean.
+    if !state.recent_inferences.is_empty() {
+        ui.add_space(10.0);
+        ui.separator();
+        recent_list(ui, state, theme);
+    }
+}
+
+/// Done-state preview: success banner, mask thumbnail with the
+/// selected display-mode tint, Re-run + Apply-to-clip buttons.
+fn done_preview(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippTheme) {
+    // Pull the response we need without holding the borrow into
+    // any mutating call below.
+    let (frame_label, duration_ms, mask) = match &state.inference {
+        InferenceState::Done { response, .. } if !response.candidates.is_empty() => {
+            let m = response.candidates[0].mask.clone();
+            (
+                "frame".to_string(),
+                response.inference_ms,
+                m,
+            )
+        }
+        _ => return,
+    };
+
+    // Success banner.
+    egui::Frame::none()
+        .fill(theme.marker_success.gamma_multiply(0.18))
+        .stroke(egui::Stroke::new(1.0, theme.marker_success))
+        .rounding(4.0)
+        .inner_margin(egui::Margin::symmetric(10.0, 6.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(Icon::Check.image(12.0).tint(theme.marker_success));
+                ui.label(
+                    egui::RichText::new(format!("Mask generated on {frame_label}"))
+                        .strong()
+                        .small()
+                        .color(theme.marker_success),
+                );
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new(format!("{:.2}s", duration_ms as f64 / 1000.0))
+                                .small()
+                                .color(theme.marker_success),
+                        );
+                    },
+                );
+            });
+        });
+
+    ui.add_space(6.0);
+
+    // Mask preview rect. Display mode controls how the alpha is
+    // tinted — Overlay = warning hue, MaskOnly = white grayscale,
+    // Cutout = white over a checker bg. The preview shows the
+    // mask itself, not the source frame ⊗ mask (proper Cutout
+    // with source pixels needs the panel to hold the source
+    // frame across frames; tracked as a follow-up).
+    let avail = ui.available_width();
+    let h = (avail * 9.0 / 16.0).clamp(120.0, 220.0);
+    let preview_w = (avail - 4.0).max(120.0);
+    egui::Frame::none()
+        .rounding(6.0)
+        .inner_margin(egui::Margin::same(0.0))
+        .show(ui, |ui| {
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(preview_w, h),
+                egui::Sense::hover(),
+            );
+            let painter = ui.painter_at(rect);
+            // Background — checker for Cutout, dim raised for the
+            // others. Same checker pattern most NLE alpha previews
+            // use.
+            if state.display_mode == DisplayMode::Cutout {
+                paint_checker_bg(&painter, rect, theme);
+            } else {
+                painter.rect_filled(
+                    rect,
+                    6.0,
+                    theme.bg_raised.gamma_multiply(0.4),
+                );
+            }
+            // Mask alpha rendered at the rect's aspect. Tile
+            // sampling — we don't have a real upload-to-texture
+            // path here for the panel preview, so we draw the
+            // mask as a coarse heatmap of rectangles. Good enough
+            // for the v1 preview; the real "live full-res mask"
+            // belongs to the streaming work.
+            paint_mask_heatmap(
+                &painter,
+                rect,
+                &mask,
+                state.display_mode,
+                theme,
+            );
+            // Watermark when there are no actual mask pixels (a
+            // misbehaving generator returning empty bytes).
+            if mask.alpha.iter().all(|&a| a == 0) {
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Empty mask",
+                    egui::FontId::proportional(13.0),
+                    theme.text_dim,
+                );
+            }
+        });
+
+    ui.add_space(6.0);
+    display_mode_tabs(ui, state, theme, /*has_mask=*/ true);
+
+    ui.add_space(8.0);
+
+    // Action row — Re-run + Apply to clip.
+    ui.horizontal(|ui| {
+        let avail = ui.available_width();
+        let half = (avail / 2.0 - 4.0).max(80.0);
+        if ui
+            .add_sized(
+                [half, 32.0],
+                egui::Button::new(
+                    egui::RichText::new("↻ Re-run").size(13.0),
+                ),
+            )
+            .clicked()
+        {
+            state.pending_rerun = true;
+        }
+        if ui
+            .add_sized(
+                [half, 32.0],
+                egui::Button::new(
+                    egui::RichText::new("✓ Apply to clip")
+                        .strong()
+                        .size(13.0),
+                )
+                .fill(theme.marker_warning),
+            )
+            .clicked()
+        {
+            state.pending_apply_to_clip = true;
+        }
+    });
+}
+
+/// Paint a 2-tone alpha-checker background — the universal "this
+/// pixel is transparent" indicator. Tile is 8×8.
+fn paint_checker_bg(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    theme: &KlippTheme,
+) {
+    let tile = 8.0;
+    let bg_a = theme.bg_raised.gamma_multiply(0.4);
+    let bg_b = theme.bg_raised.gamma_multiply(0.6);
+    let mut y = rect.min.y;
+    let mut row = 0u32;
+    while y < rect.max.y {
+        let mut x = rect.min.x;
+        let mut col = 0u32;
+        while x < rect.max.x {
+            let c = if (row + col) % 2 == 0 { bg_a } else { bg_b };
+            let cell = egui::Rect::from_min_max(
+                egui::pos2(x, y),
+                egui::pos2((x + tile).min(rect.max.x), (y + tile).min(rect.max.y)),
+            );
+            painter.rect_filled(cell, 0.0, c);
+            x += tile;
+            col += 1;
+        }
+        y += tile;
+        row += 1;
+    }
+}
+
+/// Coarse alpha visualization — samples the mask buffer at a grid
+/// of points and paints rectangles tinted by the alpha value.
+/// Not a pixel-perfect render (the real one needs an egui
+/// TextureHandle); the heatmap gives the user the gist of the
+/// mask shape without the texture-upload plumbing in the v1.
+fn paint_mask_heatmap(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    mask: &klipp_ml::MaskBuffer,
+    mode: DisplayMode,
+    theme: &KlippTheme,
+) {
+    if mask.width == 0 || mask.height == 0 {
+        return;
+    }
+    let cols: u32 = 64;
+    let rows: u32 = (cols as f32 * rect.height() / rect.width()).max(8.0) as u32;
+    let cell_w = rect.width() / cols as f32;
+    let cell_h = rect.height() / rows as f32;
+    let tint = match mode {
+        DisplayMode::Overlay => theme.marker_warning,
+        DisplayMode::MaskOnly => egui::Color32::WHITE,
+        DisplayMode::Cutout => egui::Color32::WHITE,
+    };
+    for r in 0..rows {
+        for c in 0..cols {
+            let mx = ((c as f32 + 0.5) / cols as f32 * mask.width as f32) as u32;
+            let my = ((r as f32 + 0.5) / rows as f32 * mask.height as f32) as u32;
+            let mx = mx.min(mask.width.saturating_sub(1));
+            let my = my.min(mask.height.saturating_sub(1));
+            let alpha = mask.at(mx, my);
+            if alpha < 8 {
+                continue;
+            }
+            let cell = egui::Rect::from_min_size(
+                egui::pos2(
+                    rect.min.x + c as f32 * cell_w,
+                    rect.min.y + r as f32 * cell_h,
+                ),
+                egui::vec2(cell_w + 0.5, cell_h + 0.5),
+            );
+            let color = egui::Color32::from_rgba_unmultiplied(
+                tint.r(),
+                tint.g(),
+                tint.b(),
+                alpha,
+            );
+            painter.rect_filled(cell, 0.0, color);
+        }
+    }
+}
+
+/// Recent inferences list — three thumbnails with task / model
+/// captions and a relative-time + duration sub-line. Shown only
+/// when the deque has at least one entry.
+fn recent_list(
+    ui: &mut egui::Ui,
+    state: &mut AiToolsState,
+    theme: &KlippTheme,
+) {
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("RECENT")
+                .small()
+                .strong()
+                .color(theme.text_secondary),
+        );
+        ui.with_layout(
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("Clear")
+                                .small()
+                                .color(theme.marker_warning),
+                        )
+                        .frame(false),
+                    )
+                    .clicked()
+                {
+                    state.recent_inferences.clear();
+                }
+            },
+        );
+    });
+    ui.add_space(4.0);
+
+    // Render up to the last 3 entries (most-recent first). The
+    // VecDeque is push-front in app.rs, so the front is freshest.
+    for entry in state.recent_inferences.iter().take(3) {
+        recent_row(ui, entry, theme);
+    }
+}
+
+fn recent_row(
+    ui: &mut egui::Ui,
+    entry: &super::RecentEntry,
+    theme: &KlippTheme,
+) {
+    egui::Frame::none()
+        .inner_margin(egui::Margin::symmetric(0.0, 4.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                // Thumbnail or coloured placeholder block.
+                let thumb_size = egui::vec2(54.0, 36.0);
+                if let Some(thumb) = &entry.thumbnail {
+                    let img = egui::Image::new(thumb)
+                        .fit_to_exact_size(thumb_size)
+                        .rounding(2.0);
+                    ui.add(img);
+                } else {
+                    let (rect, _) = ui.allocate_exact_size(
+                        thumb_size,
+                        egui::Sense::hover(),
+                    );
+                    ui.painter()
+                        .rect_filled(rect, 2.0, theme.bg_raised);
+                }
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    let model_short = entry.model_display_name.clone();
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} · {model_short}",
+                            entry.task.display_label(),
+                        ))
+                        .strong()
+                        .small(),
+                    );
+                    let mut subline = format!(
+                        "{} · {:.2}s",
+                        super::format_relative(entry.timestamp),
+                        entry.duration_ms as f64 / 1000.0,
+                    );
+                    if entry.candidates_count > 1 {
+                        subline.push_str(&format!(
+                            " · {} found",
+                            entry.candidates_count,
+                        ));
+                    }
+                    ui.label(
+                        egui::RichText::new(subline)
+                            .small()
+                            .color(theme.text_dim),
+                    );
+                });
+                // Replay glyph at the right edge — currently a
+                // visual cue only; full re-fire belongs to a
+                // follow-up that wires through the dispatcher.
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        ui.add(
+                            egui::Button::new(
+                                egui::RichText::new("↻")
+                                    .size(14.0)
+                                    .color(theme.text_dim),
+                            )
+                            .frame(false),
+                        )
+                        .on_hover_text(
+                            "Replay — coming soon. Captured prompts are stored on \
+                             the entry; the wiring to re-fire the inference lands \
+                             in a follow-up commit.",
+                        );
+                    },
+                );
+            });
+        });
 }
 
 /// Static visualization of the user's captured prompts during
@@ -1280,58 +1631,6 @@ fn empty_output_placeholder(ui: &mut egui::Ui, theme: &KlippTheme) {
                     .color(theme.text_secondary),
                 );
             });
-        });
-}
-
-/// v1 fallback preview — keeps the existing single-mask + N-row
-/// candidate list working for users already mid-flow when this
-/// commit lands. Commit 3 replaces this with a proper
-/// display-mode-tabbed preview (Overlay / Mask only / Cutout).
-fn done_preview_v1(ui: &mut egui::Ui, state: &AiToolsState, theme: &KlippTheme) {
-    let response = match &state.inference {
-        InferenceState::Done { response, .. } => response,
-        _ => return,
-    };
-    let first = &response.candidates[0];
-    ui.label(format!(
-        "{} detection{} · {} ms · {}×{}",
-        response.candidates.len(),
-        if response.candidates.len() == 1 { "" } else { "s" },
-        response.inference_ms,
-        first.mask.width,
-        first.mask.height,
-    ));
-    const MAX_ROWS: usize = 16;
-    egui::ScrollArea::vertical()
-        .max_height(180.0)
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            for (idx, c) in response.candidates.iter().take(MAX_ROWS).enumerate() {
-                ui.horizontal(|ui| {
-                    let chip_size = egui::vec2(12.0, 12.0);
-                    let (chip_rect, _) = ui.allocate_exact_size(
-                        chip_size,
-                        egui::Sense::hover(),
-                    );
-                    ui.painter().rect_filled(
-                        chip_rect,
-                        2.0,
-                        crate::ai_tools::detection_color(idx),
-                    );
-                    let label = c.label.as_deref().unwrap_or("?");
-                    ui.label(format!("{} — {:.0}%", label, c.confidence * 100.0));
-                });
-            }
-            if response.candidates.len() > MAX_ROWS {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "(+{} more — viewer shows all)",
-                        response.candidates.len() - MAX_ROWS,
-                    ))
-                    .weak()
-                    .color(theme.text_dim),
-                );
-            }
         });
 }
 
