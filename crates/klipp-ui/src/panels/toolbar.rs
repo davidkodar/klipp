@@ -201,6 +201,7 @@ impl ToolbarPanel {
                 Self::mark_menu(ui, &mut cmds, state);
                 Self::view_menu(ui, &mut cmds, state);
                 Self::window_menu(ui, &mut cmds, state);
+                Self::plugins_menu(ui, state);
                 Self::help_menu(ui, state);
 
                 sep(ui, theme);
@@ -973,10 +974,31 @@ impl ToolbarPanel {
             if ui.add(egui::Button::new(toggle_label(state.ai_tools_state.panel_visible, "AI Tools")).shortcut_text("Alt+A")).clicked() { state.ai_tools_state.panel_visible = !state.ai_tools_state.panel_visible; ui.close_menu(); }
             ui.separator();
             // Modal dialogs — distinct from panels because they
-            // overlay the editor instead of docking.
-            if ui.button("\u{2699} Manage AI Models\u{2026}").clicked() { state.show_ai_models_dialog = true; ui.close_menu(); }
-            ui.separator();
+            // overlay the editor instead of docking. Plugin-management
+            // dialogs (AI Models, Audio Plugins) live under their own
+            // top-level "Plugins" menu so future LV2 / VST3 sections
+            // have a natural home; they used to live here under
+            // Window but the noun mismatch (modal dialog vs panel)
+            // got worse as more were added.
             if ui.add(egui::Button::new("Command Palette").shortcut_text("Ctrl+K")).clicked() { state.show_command_palette = true; ui.close_menu(); }
+        });
+    }
+
+    /// Plugin management menu — Audio Plugins (LADSPA today; LV2 / VST3
+    /// to come), AI Models. Dedicated top-level menu so users have a
+    /// single, discoverable home for "where do I see what's installed
+    /// and disable things I don't want".
+    fn plugins_menu(ui: &mut egui::Ui, state: &mut AppState) {
+        ui.menu_button(egui::RichText::new("Plugins").size(11.0), |ui| {
+            if ui.button("Audio Plugins\u{2026}").clicked() {
+                state.show_audio_plugins_dialog = true;
+                state.audio_plugins_dialog.last_scanned_secs = None;
+                ui.close_menu();
+            }
+            if ui.button("AI Models\u{2026}").clicked() {
+                state.show_ai_models_dialog = true;
+                ui.close_menu();
+            }
         });
     }
 

@@ -37,6 +37,50 @@ pub struct AudioPluginsDialogState {
     /// sees a real "last scanned" value even on cache-hit launches),
     /// then bumped every time a Rescan completes.
     pub last_scanned_secs: Option<u64>,
+    pub sort_by: SortKey,
+    pub filter: PluginFilter,
+}
+
+/// Sort key for the detected-plugins list. Default mirrors the
+/// initial design: alphabetical by maker, then by display name within
+/// each maker — gives the user a stable, predictable layout.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SortKey {
+    #[default]
+    Maker,
+    Name,
+    PortCount,
+}
+
+impl SortKey {
+    fn label(self) -> &'static str {
+        match self {
+            SortKey::Maker => "Maker",
+            SortKey::Name => "Name",
+            SortKey::PortCount => "Ports",
+        }
+    }
+}
+
+/// Filter applied to the detected list. `All` shows every discovered
+/// plugin (default); `Enabled` and `Disabled` filter to one side of
+/// the user's enable/disable toggles.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PluginFilter {
+    #[default]
+    All,
+    Enabled,
+    Disabled,
+}
+
+impl PluginFilter {
+    fn label(self) -> &'static str {
+        match self {
+            PluginFilter::All => "All",
+            PluginFilter::Enabled => "Enabled only",
+            PluginFilter::Disabled => "Disabled only",
+        }
+    }
 }
 
 /// LADSPA search paths in the order `discover_ladspa_plugins` scans
@@ -131,7 +175,7 @@ fn render_body(
     cmds: &mut Vec<AppCommand>,
     max_h: f32,
 ) {
-    // ── Header: search + Rescan ──
+    // ── Header row 1: search + Rescan ──
     ui.horizontal(|ui| {
         ui.add(
             egui::TextEdit::singleline(&mut state.audio_plugins_dialog.search_query)
@@ -143,16 +187,76 @@ fn render_body(
         }
     });
 
+    // ── Header row 2: sort + filter dropdowns ──
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Sort:")
+                .size(10.0)
+                .color(theme.text_dim),
+        );
+        let mut sort = state.audio_plugins_dialog.sort_by;
+        egui::ComboBox::from_id_salt("audio_plugins_sort")
+            .selected_text(sort.label())
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut sort, SortKey::Maker, SortKey::Maker.label());
+                ui.selectable_value(&mut sort, SortKey::Name, SortKey::Name.label());
+                ui.selectable_value(
+                    &mut sort,
+                    SortKey::PortCount,
+                    SortKey::PortCount.label(),
+                );
+            });
+        state.audio_plugins_dialog.sort_by = sort;
+
+        ui.add_space(12.0);
+
+        ui.label(
+            egui::RichText::new("Show:")
+                .size(10.0)
+                .color(theme.text_dim),
+        );
+        let mut filter = state.audio_plugins_dialog.filter;
+        egui::ComboBox::from_id_salt("audio_plugins_filter")
+            .selected_text(filter.label())
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut filter, PluginFilter::All, PluginFilter::All.label());
+                ui.selectable_value(
+                    &mut filter,
+                    PluginFilter::Enabled,
+                    PluginFilter::Enabled.label(),
+                );
+                ui.selectable_value(
+                    &mut filter,
+                    PluginFilter::Disabled,
+                    PluginFilter::Disabled.label(),
+                );
+            });
+        state.audio_plugins_dialog.filter = filter;
+    });
+
     ui.add_space(6.0);
     ui.separator();
     ui.add_space(6.0);
 
-    // Filter the plugin list.
+    // Filter + sort the plugin list.
     let search_lower = state.audio_plugins_dialog.search_query.to_lowercase();
+    let active_filter = state.audio_plugins_dialog.filter;
     let mut visible: Vec<&LadspaPluginInfo> = state
         .ladspa_plugins
         .iter()
         .filter(|p| {
+            // Enable/disable filter first — coarsest cut.
+            let disabled = state.disabled_audio_plugins.contains(&p.unique_id);
+            match active_filter {
+                PluginFilter::All => {}
+                PluginFilter::Enabled if disabled => return false,
+                PluginFilter::Disabled if !disabled => return false,
+                _ => {}
+            }
+            // Then search-string filter — substring match across the
+            // fields a user is likely to type ("calf", "/usr/lib",
+            // "vocoder_1337").
             if search_lower.is_empty() {
                 return true;
             }
@@ -163,16 +267,41 @@ fn render_body(
                 || p.path.to_string_lossy().to_lowercase().contains(&search_lower)
         })
         .collect();
-    visible.sort_by(|a, b| {
-        a.maker
-            .to_lowercase()
-            .cmp(&b.maker.to_lowercase())
-            .then_with(|| {
+
+    // Sort. Maker mode preserves the existing nested layout (maker
+    // group headers are inserted later; sort here yields a stable
+    // by-maker-then-by-name order). Name and PortCount produce a
+    // flat list — group headers are skipped in those modes.
+    match state.audio_plugins_dialog.sort_by {
+        SortKey::Maker => {
+            visible.sort_by(|a, b| {
+                a.maker
+                    .to_lowercase()
+                    .cmp(&b.maker.to_lowercase())
+                    .then_with(|| {
+                        let an = if a.name.is_empty() { &a.label } else { &a.name };
+                        let bn = if b.name.is_empty() { &b.label } else { &b.name };
+                        an.to_lowercase().cmp(&bn.to_lowercase())
+                    })
+            });
+        }
+        SortKey::Name => {
+            visible.sort_by(|a, b| {
                 let an = if a.name.is_empty() { &a.label } else { &a.name };
                 let bn = if b.name.is_empty() { &b.label } else { &b.name };
                 an.to_lowercase().cmp(&bn.to_lowercase())
-            })
-    });
+            });
+        }
+        SortKey::PortCount => {
+            visible.sort_by(|a, b| {
+                a.port_count.cmp(&b.port_count).reverse().then_with(|| {
+                    let an = if a.name.is_empty() { &a.label } else { &a.name };
+                    let bn = if b.name.is_empty() { &b.label } else { &b.name };
+                    an.to_lowercase().cmp(&bn.to_lowercase())
+                })
+            });
+        }
+    }
 
     // ── Body: plugin list grouped by maker, then search-paths panel ──
     //
@@ -242,23 +371,26 @@ fn render_body(
                 return;
             }
 
+            let group_by_maker = state.audio_plugins_dialog.sort_by == SortKey::Maker;
             let mut last_maker: Option<String> = None;
             for plugin in &visible {
-                let maker = if plugin.maker.is_empty() {
-                    "Other".to_string()
-                } else {
-                    plugin.maker.clone()
-                };
-                if last_maker.as_ref() != Some(&maker) {
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new(maker.to_uppercase())
-                            .size(9.0)
-                            .strong()
-                            .color(theme.text_secondary),
-                    );
-                    ui.add_space(2.0);
-                    last_maker = Some(maker);
+                if group_by_maker {
+                    let maker = if plugin.maker.is_empty() {
+                        "Other".to_string()
+                    } else {
+                        plugin.maker.clone()
+                    };
+                    if last_maker.as_ref() != Some(&maker) {
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new(maker.to_uppercase())
+                                .size(9.0)
+                                .strong()
+                                .color(theme.text_secondary),
+                        );
+                        ui.add_space(2.0);
+                        last_maker = Some(maker);
+                    }
                 }
 
                 let is_disabled =
@@ -304,6 +436,29 @@ fn render_body(
                 .size(10.0)
                 .color(theme.text_dim),
         );
+
+        // Push the bulk-action button to the right edge of the footer.
+        // Only relevant when at least one plugin is disabled — hide
+        // the button entirely otherwise to avoid noise.
+        if disabled_count > 0 {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let btn = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new(format!("Re-enable all ({disabled_count})"))
+                            .size(10.0),
+                    ),
+                );
+                if btn
+                    .on_hover_text(
+                        "Re-enable every disabled plugin so they all return to the \
+                         Audio FX browser. Existing clips were never affected.",
+                    )
+                    .clicked()
+                {
+                    cmds.push(AppCommand::ClearAllAudioPluginsDisabled);
+                }
+            });
+        }
     });
 }
 

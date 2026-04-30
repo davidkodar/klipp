@@ -435,6 +435,12 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::Cmd(AppCommand::RescanAudioPlugins),
         enabled: true,
     });
+    e.push(PaletteEntry {
+        label: Cow::Borrowed("Re-enable all Audio Plugins"),
+        shortcut: Cow::Borrowed(""),
+        action: PaletteAction::Cmd(AppCommand::ClearAllAudioPluginsDisabled),
+        enabled: true,
+    });
 
     e
 }

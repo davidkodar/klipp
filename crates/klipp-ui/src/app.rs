@@ -15368,6 +15368,28 @@ impl KlippApp {
                 ));
                 true
             }
+            AppCommand::ClearAllAudioPluginsDisabled => {
+                let cleared = self.state.disabled_audio_plugins.len();
+                if cleared == 0 {
+                    return true;
+                }
+                self.state.disabled_audio_plugins.clear();
+                self.state.effect_registry.effects.retain(|e| {
+                    !matches!(
+                        e.source,
+                        crate::browser::effect_registry::EffectSource::Ladspa(_)
+                    )
+                });
+                self.state
+                    .effect_registry
+                    .merge_ladspa_plugins(&self.state.ladspa_plugins);
+                crate::audio_plugins_disabled::save(&self.state.disabled_audio_plugins);
+                self.state.toast.show(format!(
+                    "Re-enabled {cleared} plugin{}",
+                    if cleared == 1 { "" } else { "s" }
+                ));
+                true
+            }
             AppCommand::ToggleAudioPluginDisabled { unique_id } => {
                 let now_disabled = if self.state.disabled_audio_plugins.contains(unique_id) {
                     self.state.disabled_audio_plugins.remove(unique_id);

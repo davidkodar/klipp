@@ -935,6 +935,11 @@ pub enum AppCommand {
     /// entries on saved clips continue to work; the disable only
     /// blocks the plugin from the browser / "+ Add Effect" picker.
     ToggleAudioPluginDisabled { unique_id: u64 },
+    /// Re-enable every disabled audio plugin in one shot. Issued from
+    /// the Audio Plugins dialog's "Clear all disabled" footer button
+    /// (with a confirmation prompt rendered there). Persists the
+    /// now-empty disabled set and rebuilds the registry.
+    ClearAllAudioPluginsDisabled,
     BeginScrub,
     /// End timeline scrubbing — engine restores full-res decode.
     EndScrub,
