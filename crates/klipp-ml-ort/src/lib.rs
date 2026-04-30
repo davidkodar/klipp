@@ -52,6 +52,7 @@ pub mod birefnet_lite;
 pub mod postprocess;
 pub mod preprocess;
 pub mod rf_detr_seg;
+pub mod runtime_resolve;
 
 pub use birefnet_lite::{BiRefNetLite, BiRefNetLiteBuilder, BIREFNET_LITE_MODEL_ID};
 pub use rf_detr_seg::{
@@ -65,4 +66,8 @@ pub use postprocess::{
 pub use preprocess::{
     bilinear_resize_rgba, preprocess, preprocess_to_size, PreprocessedTensor,
     BIREFNET_INPUT_SIZE, IMAGENET_MEAN, IMAGENET_STD,
+};
+pub use runtime_resolve::{
+    detect_gpu_vendor, find_libonnxruntime, resolve_runtime_status, GpuVendor,
+    RuntimeStatus, StatusSeverity,
 };

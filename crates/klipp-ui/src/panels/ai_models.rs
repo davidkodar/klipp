@@ -2811,67 +2811,110 @@ fn kind_label(kind: klipp_ml::manifest::ModelKind) -> &'static str {
 /// failures fall through silently because there's nothing useful
 /// the dialog can do about it.
 /// Footer cell describing inference acceleration. Returns
-/// `(label, color, hover_tooltip)`. Differentiates two states:
+/// `(label, color, hover_tooltip)`. Combines two layers of info:
 ///
-/// * **GPU enabled** — "GPU   NVIDIA" in normal text colour.
-/// * **CPU only** — amber "⚠ NO GPU — CPU ONLY" so the user
-///   can tell at a glance that ML inference will be slow.
-///   Tooltip explains the build flag + libonnxruntime swap that
-///   enables GPU acceleration.
+/// 1. **Vendor probe** (runtime): does this machine have an
+///    NVIDIA / AMD / Intel GPU? Resolved via `lspci` / `/sys/`
+///    in `klipp_ml_ort::resolve_runtime_status`.
+/// 2. **Compile-time feature**: was Klipp built with
+///    `ai-ort-cuda`? Without it, even an NVIDIA user gets CPU
+///    inference because the EP isn't registered.
+///
+/// Combinations the user sees:
+///   * NVIDIA + cuda feature on  → "GPU (NVIDIA)" neutral
+///   * NVIDIA + cuda feature off → "⚠ Built without GPU support"
+///   * NVIDIA + cuda + libort missing → "⚠ NVIDIA — runtime missing"
+///   * AMD / Intel              → "⚠ {vendor} — coming soon"
+///   * No GPU / probe failed    → "CPU only" neutral
+#[cfg(not(feature = "ai-ort"))]
 fn inference_status_label(theme: &KlippTheme) -> (String, egui::Color32, String) {
-    let cuda_feature_on =
-        cfg!(feature = "ai-ort-cuda") || cfg!(feature = "ai-candle-cuda");
-    if cuda_feature_on {
-        (
-            "GPU   NVIDIA".to_string(),
-            theme.text_secondary,
-            "ai-ort-cuda enabled. Runtime acceleration kicks in once the \
-             GPU build of libonnxruntime.so is on ORT_DYLIB_PATH and \
-             CUDA / cuDNN libs are on LD_LIBRARY_PATH; otherwise ort \
-             falls back to the CPU EP silently."
-                .to_string(),
-        )
-    } else {
-        (
-            "⚠ NO GPU — CPU ONLY".to_string(),
-            theme.marker_warning,
-            "Klipp is running ML inference on the CPU. Rebuild with \
-             --features ai-ort-cuda + swap to the GPU build of \
-             libonnxruntime.so to enable NVIDIA acceleration. AMD \
-             (MIGraphX) and Intel (OpenVINO) are tracked separately \
-             — see F-97-AMD-ROCM / F-97-INTEL-OPENVINO."
-                .to_string(),
-        )
-    }
+    (
+        "CPU only".into(),
+        theme.text_secondary,
+        "Klipp built without --features ai-ort; AI Tools \
+         inference uses Klipp's stub generator only."
+            .into(),
+    )
 }
 
-/// Compile-time-aware GPU acceleration status. Reflected in the AI
-/// Models dialog footer so the user can tell at a glance which
-/// vendors the running build can actually use. Multi-vendor support
-/// is the project memory rule (see project_linux_only_gpu_diversity);
-/// AMD + Intel are tracked separately.
-#[allow(dead_code)] // kept for potential future tooltip use
-fn gpu_status_label() -> String {
-    let mut active: Vec<&'static str> = Vec::new();
-    if cfg!(feature = "ai-ort-cuda") {
-        active.push("ort+CUDA");
-    }
-    if cfg!(feature = "ai-candle-cuda") {
-        active.push("candle+CUDA");
-    }
-    if active.is_empty() {
-        "GPU: CPU-only build".into()
-    } else {
-        format!(
-            "GPU: NVIDIA via {}{}",
-            active.join(" + "),
-            // Reminder for users that the runtime ALSO needs a GPU
-            // build of libonnxruntime.so / libcudart for ort to
-            // actually offload work — the feature flag enables the
-            // EP registration but the dlopened library has the
-            // final say.
-            "  (runtime needs GPU libs)"
-        )
+#[cfg(feature = "ai-ort")]
+fn inference_status_label(theme: &KlippTheme) -> (String, egui::Color32, String) {
+    use klipp_ml_ort::{GpuVendor, RuntimeStatus};
+    let cuda_feature_on =
+        cfg!(feature = "ai-ort-cuda") || cfg!(feature = "ai-candle-cuda");
+    let runtime = klipp_ml_ort::resolve_runtime_status();
+
+    // Match every relevant combination once + return text + color
+    // + tooltip. Verbose but explicit — every state has its own
+    // recommended action in the tooltip.
+    match (runtime, cuda_feature_on) {
+        (RuntimeStatus::CpuOnly, _) => (
+            "CPU only".into(),
+            theme.text_secondary,
+            "No GPU detected on this machine. Klipp's AI Tools \
+             will run inference on the CPU EP."
+                .into(),
+        ),
+        (RuntimeStatus::GpuAccelerationActive(GpuVendor::Nvidia), true) => (
+            "GPU (NVIDIA)".into(),
+            theme.text_secondary,
+            "ort+CUDA active. AI Tools inference offloads to the \
+             GPU once the session opens. (Runtime libs CUDA + \
+             cuDNN must be on LD_LIBRARY_PATH; if they're not, \
+             ort falls back to CPU silently.)"
+                .into(),
+        ),
+        (RuntimeStatus::GpuAccelerationActive(GpuVendor::Nvidia), false) => (
+            "⚠ Built without GPU support".into(),
+            theme.marker_warning,
+            "NVIDIA GPU detected, but Klipp was compiled without \
+             --features ai-ort-cuda. AI Tools will run on the \
+             CPU. Rebuild with the cuda feature to enable \
+             acceleration."
+                .into(),
+        ),
+        (RuntimeStatus::GpuAvailableNotInstalled(GpuVendor::Nvidia), true) => (
+            "⚠ NVIDIA — runtime missing".into(),
+            theme.marker_warning,
+            "NVIDIA GPU detected and Klipp built with the cuda \
+             feature, but no libonnxruntime.so resolved (checked \
+             ORT_DYLIB_PATH + standard install paths). Install \
+             onnxruntime-linux-x64-gpu-1.24.4 from \
+             github.com/microsoft/onnxruntime/releases and set \
+             ORT_DYLIB_PATH to its libonnxruntime.so."
+                .into(),
+        ),
+        (RuntimeStatus::GpuAvailableNotInstalled(GpuVendor::Nvidia), false) => (
+            "⚠ NVIDIA — needs setup".into(),
+            theme.marker_warning,
+            "NVIDIA GPU detected. Two things missing: rebuild Klipp \
+             with --features ai-ort-cuda, and install \
+             onnxruntime GPU build (set ORT_DYLIB_PATH)."
+                .into(),
+        ),
+        (RuntimeStatus::GpuVendorUnsupported(v), _) => (
+            format!("⚠ {} — coming soon", v.display_label()),
+            theme.marker_warning,
+            format!(
+                "{} GPU detected. Klipp doesn't ship a custom \
+                 libonnxruntime build for {} yet — tracked under \
+                 F-97-AMD-ROCM (AMD via MIGraphX EP) and \
+                 F-97-INTEL-OPENVINO (Intel via OpenVINO EP). \
+                 Falling back to the CPU EP for now.",
+                v.display_label(),
+                v.display_label(),
+            ),
+        ),
+        // Catch-all: unexpected (vendor, feature) combos. Return a
+        // generic "GPU detected" so the user isn't told their GPU
+        // doesn't exist when egui hits a state we didn't enumerate.
+        (other, _) => (
+            format!("⚠ {}", other.label()),
+            theme.marker_warning,
+            "Unexpected GPU runtime state — falling back to CPU. \
+             Open an issue if this persists."
+                .into(),
+        ),
     }
 }
 

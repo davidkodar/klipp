@@ -2710,6 +2710,7 @@ name = "klipp-ml-ort"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.11.0",
+ "dirs",
  "klipp-color",
  "klipp-ml",
  "ort",
