@@ -3252,6 +3252,47 @@ impl PlaybackEngine {
         }
     }
 
+    /// Wait until the mix thread has pre-filled the main ring buffer with at
+    /// least one cpal-callback-worth of samples, or until the timeout elapses.
+    /// Replaces a previous hardcoded 15 ms `thread::sleep` after seek.
+    ///
+    /// Why: cpal's output callback pulls a few hundred to a few thousand
+    /// samples per call. Resuming cpal against an empty main ring causes a
+    /// brief silent gap or starvation while the mix pipeline catches up.
+    /// The fixed 15 ms wait was unreliable under load (mix thread might still
+    /// be warming up at 15 ms on a busy machine) and wasteful idle (mix
+    /// thread typically fills enough in 2–5 ms).
+    ///
+    /// We poll `MixThread::buffered_samples()` (a lock-free atomic written
+    /// by the mix loop on every iteration) at 1 ms granularity, and proceed
+    /// either when the buffer has reached `target_samples` or when the
+    /// `timeout` elapses. The timeout matches the prior worst-case
+    /// behaviour so a misconfigured pipeline still progresses rather than
+    /// blocking forever.
+    fn wait_for_audio_prefill(&self) {
+        // ~21 ms of stereo audio at 48 kHz, ~10 ms at 96 kHz. Comfortable
+        // margin over a typical 256–1024-sample cpal callback request.
+        const TARGET_SAMPLES: usize = 2048;
+        const POLL_INTERVAL: Duration = Duration::from_millis(1);
+        const TIMEOUT: Duration = Duration::from_millis(50);
+        let Some(mt) = &self.mix_thread else { return };
+        let start = std::time::Instant::now();
+        loop {
+            if mt.buffered_samples() >= TARGET_SAMPLES {
+                return;
+            }
+            if start.elapsed() >= TIMEOUT {
+                debug!(
+                    "audio prefill timeout: only {} samples ready after {:?}",
+                    mt.buffered_samples(),
+                    TIMEOUT
+                );
+                return;
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+    }
+
     /// Re-read speed_keyframes from the current clip into the engine's local copy.
     /// Call after any `self.clip_speed = ...` or after advancing current_clip_index
     /// so the time-remap path has up-to-date keyframes. Also resets the ramp
@@ -4949,7 +4990,7 @@ impl PlaybackEngine {
 
             if was_playing {
                 for active in &self.audio_sources { active.source.resume(); }
-                std::thread::sleep(Duration::from_millis(15));
+                self.wait_for_audio_prefill();
                 if let Some(aout) = &self.audio_output { aout.0.resume(); }
                 self.master_clock.resume();
             }
@@ -5015,7 +5056,7 @@ impl PlaybackEngine {
             // 4. Pre-fill + resume
             if was_playing {
                 for active in &self.audio_sources { active.source.resume(); }
-                std::thread::sleep(Duration::from_millis(15));
+                self.wait_for_audio_prefill();
                 if let Some(aout) = &self.audio_output { aout.0.resume(); }
                 self.master_clock.resume();
             }
@@ -5043,7 +5084,7 @@ impl PlaybackEngine {
 
             if was_playing {
                 for active in &self.audio_sources { active.source.resume(); }
-                std::thread::sleep(Duration::from_millis(15));
+                self.wait_for_audio_prefill();
                 if let Some(aout) = &self.audio_output { aout.0.resume(); }
                 self.master_clock.resume();
             }
@@ -5233,7 +5274,7 @@ impl PlaybackEngine {
                 for active in &self.audio_sources {
                     active.source.resume();
                 }
-                std::thread::sleep(Duration::from_millis(15));
+                self.wait_for_audio_prefill();
 
                 // Resume cpal + clock together
                 if let Some(aout) = &self.audio_output {
@@ -5302,7 +5343,7 @@ impl PlaybackEngine {
                     for active in &self.audio_sources {
                         active.source.resume();
                     }
-                    std::thread::sleep(Duration::from_millis(15));
+                    self.wait_for_audio_prefill();
                     if let Some(aout) = &self.audio_output {
                         aout.0.resume();
                     }
