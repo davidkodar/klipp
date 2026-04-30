@@ -261,7 +261,9 @@ fn render_body(
                     last_maker = Some(maker);
                 }
 
-                render_plugin_row(ui, theme, plugin);
+                let is_disabled =
+                    state.disabled_audio_plugins.contains(&plugin.unique_id);
+                render_plugin_row(ui, theme, plugin, is_disabled, cmds);
             }
         });
 
@@ -281,20 +283,37 @@ fn render_body(
         .last_scanned_secs
         .map(|secs| format_relative_time(now_secs().saturating_sub(secs)))
         .unwrap_or_else(|| "—".to_string());
+    let disabled_count = state.disabled_audio_plugins.len();
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(format!(
+        let summary = if disabled_count > 0 {
+            format!(
+                "{} detected ({} disabled)   |   Last scanned: {}",
+                state.ladspa_plugins.len(),
+                disabled_count,
+                last_scanned
+            )
+        } else {
+            format!(
                 "{} detected   |   Last scanned: {}",
                 state.ladspa_plugins.len(),
                 last_scanned
-            ))
-            .size(10.0)
-            .color(theme.text_dim),
+            )
+        };
+        ui.label(
+            egui::RichText::new(summary)
+                .size(10.0)
+                .color(theme.text_dim),
         );
     });
 }
 
-fn render_plugin_row(ui: &mut egui::Ui, theme: &KlippTheme, plugin: &LadspaPluginInfo) {
+fn render_plugin_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    plugin: &LadspaPluginInfo,
+    is_disabled: bool,
+    cmds: &mut Vec<AppCommand>,
+) {
     let display = if plugin.name.is_empty() {
         plugin.label.as_str()
     } else {
@@ -330,9 +349,24 @@ fn render_plugin_row(ui: &mut egui::Ui, theme: &KlippTheme, plugin: &LadspaPlugi
         .ctx()
         .data_mut(|d| d.get_temp(expand_key).unwrap_or(false));
 
+    // Visually mute disabled plugins. Border tint hints "this row is
+    // not active" without removing it from the list — the manager
+    // dialog's whole point is letting the user re-enable.
+    let row_bg = theme.bg_raised;
+    let row_border = if is_disabled {
+        theme.text_dim
+    } else {
+        theme.border
+    };
+    let primary_color = if is_disabled {
+        theme.text_dim
+    } else {
+        theme.text_primary
+    };
+
     egui::Frame::none()
-        .fill(theme.bg_raised)
-        .stroke(egui::Stroke::new(1.0_f32, theme.border))
+        .fill(row_bg)
+        .stroke(egui::Stroke::new(1.0_f32, row_border))
         .rounding(4.0)
         .inner_margin(egui::Margin::symmetric(8.0, 6.0))
         .outer_margin(egui::Margin::symmetric(0.0, 1.0))
@@ -354,13 +388,21 @@ fn render_plugin_row(ui: &mut egui::Ui, theme: &KlippTheme, plugin: &LadspaPlugi
                             egui::RichText::new(display)
                                 .size(11.0)
                                 .strong()
-                                .color(theme.text_primary),
+                                .color(primary_color),
                         );
                         if let Some(label) = tech_label {
                             ui.label(
                                 egui::RichText::new(label)
                                     .size(10.0)
                                     .monospace()
+                                    .color(theme.text_dim),
+                            );
+                        }
+                        if is_disabled {
+                            ui.label(
+                                egui::RichText::new("DISABLED")
+                                    .size(8.0)
+                                    .strong()
                                     .color(theme.text_dim),
                             );
                         }
@@ -402,6 +444,35 @@ fn render_plugin_row(ui: &mut egui::Ui, theme: &KlippTheme, plugin: &LadspaPlugi
                 ui.separator();
                 ui.add_space(6.0);
                 render_plugin_details(ui, theme, plugin);
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let (label, hover) = if is_disabled {
+                        (
+                            "Enable",
+                            "Re-enable this plugin so it appears in the Audio FX browser \
+                             and the inspector's \"+ Add Effect\" picker.",
+                        )
+                    } else {
+                        (
+                            "Disable",
+                            "Hide this plugin from the Audio FX browser and the \
+                             inspector's \"+ Add Effect\" picker. Existing clips that \
+                             already use it keep working.",
+                        )
+                    };
+                    if ui
+                        .button(egui::RichText::new(label).size(10.0))
+                        .on_hover_text(hover)
+                        .clicked()
+                    {
+                        cmds.push(AppCommand::ToggleAudioPluginDisabled {
+                            unique_id: plugin.unique_id,
+                        });
+                    }
+                });
             }
         });
 }

@@ -927,6 +927,14 @@ pub enum AppCommand {
     /// operation that updates `state.ladspa_plugins` and the
     /// `effect_registry`.
     RescanAudioPlugins,
+    /// Toggle the enabled/disabled state of a LADSPA plugin keyed on
+    /// its `unique_id`. The Audio Plugins dialog dispatches this from
+    /// the per-row toggle. Updates `state.disabled_audio_plugins`,
+    /// rebuilds the LADSPA section of `effect_registry`, and persists
+    /// the new disabled set to disk. Existing AudioEffectInstance
+    /// entries on saved clips continue to work; the disable only
+    /// blocks the plugin from the browser / "+ Add Effect" picker.
+    ToggleAudioPluginDisabled { unique_id: u64 },
     BeginScrub,
     /// End timeline scrubbing — engine restores full-res decode.
     EndScrub,

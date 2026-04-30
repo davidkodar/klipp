@@ -704,17 +704,29 @@ impl KlippApp {
         // on plugin count. Cache invalidates automatically when any LADSPA
         // search directory's mtime changes (i.e. a plugin was installed,
         // removed, or renamed).
+        //
+        // Load the user's disabled-plugins set first, then filter it out
+        // before merging into the effect registry — disabled plugins
+        // shouldn't appear in the browser or "+ Add Effect" picker.
         {
             let _t = LogTimer::new("ui: LADSPA discovery");
             let cache_dir = dirs::cache_dir().map(|p| p.join("klipp"));
+            app.state.disabled_audio_plugins = crate::audio_plugins_disabled::load();
             app.state.ladspa_plugins =
                 klipp_audio::ladspa::discover_ladspa_plugins_cached(cache_dir.as_deref());
-            app.state
-                .effect_registry
-                .merge_ladspa_plugins(&app.state.ladspa_plugins);
+            let enabled: Vec<klipp_audio::ladspa::LadspaPluginInfo> = app
+                .state
+                .ladspa_plugins
+                .iter()
+                .filter(|p| !app.state.disabled_audio_plugins.contains(&p.unique_id))
+                .cloned()
+                .collect();
+            app.state.effect_registry.merge_ladspa_plugins(&enabled);
             tracing::info!(
-                "LADSPA: discovered {} plugin(s)",
-                app.state.ladspa_plugins.len()
+                "LADSPA: discovered {} plugin(s) ({} enabled, {} disabled)",
+                app.state.ladspa_plugins.len(),
+                enabled.len(),
+                app.state.disabled_audio_plugins.len()
             );
         }
         klipp_core::startup_timer::mark("KlippApp::new returning");
@@ -15329,9 +15341,14 @@ impl KlippApp {
                         crate::browser::effect_registry::EffectSource::Ladspa(_)
                     )
                 });
-                self.state
-                    .effect_registry
-                    .merge_ladspa_plugins(&self.state.ladspa_plugins);
+                let enabled: Vec<klipp_audio::ladspa::LadspaPluginInfo> = self
+                    .state
+                    .ladspa_plugins
+                    .iter()
+                    .filter(|p| !self.state.disabled_audio_plugins.contains(&p.unique_id))
+                    .cloned()
+                    .collect();
+                self.state.effect_registry.merge_ladspa_plugins(&enabled);
                 self.state.audio_plugins_dialog.last_scanned_secs = Some(
                     std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -15348,6 +15365,56 @@ impl KlippApp {
                     "Rescanned: {} LADSPA plugin(s) in {:.0} ms",
                     self.state.ladspa_plugins.len(),
                     elapsed_ms
+                ));
+                true
+            }
+            AppCommand::ToggleAudioPluginDisabled { unique_id } => {
+                let now_disabled = if self.state.disabled_audio_plugins.contains(unique_id) {
+                    self.state.disabled_audio_plugins.remove(unique_id);
+                    false
+                } else {
+                    self.state.disabled_audio_plugins.insert(*unique_id);
+                    true
+                };
+                // Rebuild the LADSPA section of the effect registry so
+                // the audio FX browser, inspector picker, and any other
+                // EffectSource::Ladspa consumer see the new filter
+                // applied immediately. No rescan needed; we're filtering
+                // the in-memory `state.ladspa_plugins` list which
+                // already has every discovered plugin.
+                self.state.effect_registry.effects.retain(|e| {
+                    !matches!(
+                        e.source,
+                        crate::browser::effect_registry::EffectSource::Ladspa(_)
+                    )
+                });
+                let enabled: Vec<klipp_audio::ladspa::LadspaPluginInfo> = self
+                    .state
+                    .ladspa_plugins
+                    .iter()
+                    .filter(|p| !self.state.disabled_audio_plugins.contains(&p.unique_id))
+                    .cloned()
+                    .collect();
+                self.state.effect_registry.merge_ladspa_plugins(&enabled);
+                crate::audio_plugins_disabled::save(&self.state.disabled_audio_plugins);
+
+                let label = self
+                    .state
+                    .ladspa_plugins
+                    .iter()
+                    .find(|p| p.unique_id == *unique_id)
+                    .map(|p| {
+                        if p.name.is_empty() {
+                            p.label.clone()
+                        } else {
+                            p.name.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| format!("plugin {unique_id}"));
+                self.state.toast.show(format!(
+                    "{} {}",
+                    if now_disabled { "Disabled" } else { "Enabled" },
+                    label
                 ));
                 true
             }

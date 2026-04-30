@@ -1294,8 +1294,24 @@ pub struct AppState {
     // OFX plugins
     pub available_plugins: Vec<klipp_plugin::OfxPluginInfo>,
 
-    // LADSPA audio plugins — discovered once at startup.
+    // LADSPA audio plugins — discovered once at startup. Holds *all*
+    // discovered plugins regardless of user-disable state so the
+    // Audio Plugins dialog can render every row with its enable/
+    // disable toggle. Filtering for the user-facing browser/picker
+    // lives in `effect_registry`, which is rebuilt to exclude
+    // disabled plugins on toggle and on startup.
     pub ladspa_plugins: Vec<klipp_audio::ladspa::LadspaPluginInfo>,
+
+    /// Plugins the user has explicitly disabled, keyed on the
+    /// stable LADSPA `unique_id`. Persisted to
+    /// `~/.config/klipp/audio_plugins.toml` on every toggle and
+    /// loaded at startup before the first effect-registry build.
+    /// Disabling a plugin that's already in a saved project is
+    /// non-destructive: the existing AudioEffectInstance still
+    /// loads through `dsp::create_effect`. The disable only blocks
+    /// the plugin from the browser / "+ Add Effect" picker so the
+    /// user can't make new picks against it.
+    pub disabled_audio_plugins: std::collections::HashSet<u64>,
 
     // Unified effects registry (built-in + OFX merged)
     pub effect_registry: crate::browser::effect_registry::EffectRegistry,
@@ -2643,6 +2659,7 @@ impl Default for AppState {
             pending_false_color_palette: None,
             available_plugins: Vec::new(),
             ladspa_plugins: Vec::new(),
+            disabled_audio_plugins: std::collections::HashSet::new(),
             effect_registry: crate::browser::effect_registry::EffectRegistry::new(),
             effect_filter_builtin: true,
             effect_filter_ofx: true,
