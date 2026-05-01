@@ -81,6 +81,27 @@ fn effect_display_name(type_id: &str) -> String {
     }
 }
 
+/// Pick the "primary" kf'd param to surface when the user clicks a
+/// top-strip cell on an audio clip. Order:
+///   1. First non-reserved param name, alphabetical (a real tunable
+///      like `gain`/`threshold` is what the user is most likely
+///      automating + most likely wants to see first).
+///   2. `__wetdry` (continuous control, more interesting than bypass).
+///   3. `__bypass` (binary on/off — least interesting envelope to
+///      visualise as a rubber band).
+///
+/// Returns `None` if `params` is empty.
+fn pick_primary_kf_param(params: &[String]) -> Option<String> {
+    let mut sorted: Vec<&String> = params.iter().collect();
+    sorted.sort();
+    sorted
+        .iter()
+        .find(|n| !n.starts_with("__"))
+        .map(|s| (*s).clone())
+        .or_else(|| sorted.iter().find(|n| n.as_str() == "__wetdry").map(|s| (*s).clone()))
+        .or_else(|| sorted.iter().find(|n| n.as_str() == "__bypass").map(|s| (*s).clone()))
+}
+
 /// Pill label for the audio rubber band when it's showing an effect
 /// param. Reserved keys (`__bypass`, `__wetdry`) get friendly names so
 /// the pill doesn't read like a code literal.
@@ -4674,6 +4695,149 @@ impl TimelinePanel {
     /// bypassed. Implicit baseline before the first kf is "active",
     /// which matches NLE convention (a kf at t=2s with value 0 means
     /// "bypass starting from t=2s", not "always bypassed").
+    /// Top-edge "this clip has automation" indicator. Renders a 2px
+    /// stripe along the very top of the clip whenever any audio
+    /// effect on this clip has keyframes. One cell per kf'd effect,
+    /// colored with the effect's stable palette so the user can
+    /// match clips against the FX library / inspector at a glance.
+    /// Click a cell → switches the rubber band to that effect's
+    /// "primary" kf'd param (preferring real param names over the
+    /// reserved __wetdry / __bypass tracks).
+    fn draw_audio_automation_top_strip(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        clip_rect: egui::Rect,
+        clip: &klipp_timeline::Clip,
+        track_kind: klipp_timeline::TrackKind,
+        pointer_pos: Option<egui::Pos2>,
+    ) -> Option<crate::state::RubberBandParam> {
+        if track_kind != TrackKind::Audio { return None; }
+        if clip_rect.width() < 8.0 || clip.kind.is_gap() { return None; }
+
+        // Group kf tracks by effect index. BTreeMap keeps the visual
+        // order stable across frames (and matches the inspector's
+        // top-down chain order, which is index-sorted).
+        let mut effect_kf_params: std::collections::BTreeMap<usize, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for (key, kfs) in &clip.audio_effect_keyframes {
+            if kfs.is_empty() { continue; }
+            if let Some((idx_str, name)) = key.split_once(':') {
+                if let Ok(idx) = idx_str.parse::<usize>() {
+                    effect_kf_params.entry(idx).or_default().push(name.to_string());
+                }
+            }
+        }
+        if effect_kf_params.is_empty() { return None; }
+
+        const STRIP_HEIGHT: f32 = 2.0;
+        let strip_y = clip_rect.top() + 1.0;
+        let n = effect_kf_params.len() as f32;
+        let cell_width = clip_rect.width() / n;
+
+        let theme_ref = theme();
+        let painter = painter.with_clip_rect(clip_rect);
+
+        // Track which cell the pointer hovers so we can render a
+        // tooltip naming every effect with automation, plus highlight
+        // the hovered cell. Single hover_target instead of per-cell
+        // because multiple cells could overlap pointer hit areas at
+        // very narrow widths.
+        let mut hover_target: Option<(usize, &Vec<String>, egui::Rect)> = None;
+
+        for (i, (effect_idx, params)) in effect_kf_params.iter().enumerate() {
+            let cell_x = clip_rect.left() + (i as f32) * cell_width;
+            let cell_rect = egui::Rect::from_min_size(
+                egui::pos2(cell_x, strip_y),
+                egui::vec2(cell_width, STRIP_HEIGHT),
+            );
+
+            let effect_color = clip.audio_effects.get(*effect_idx)
+                .map(|inst| crate::browser::audio_fx_tab::audio_effect_color_for_type(
+                    &inst.effect_type, &theme_ref,
+                ))
+                .unwrap_or(theme_ref.accent);
+
+            painter.rect_filled(cell_rect, 0.0, effect_color);
+
+            // Hit area is taller than the visible strip so 2px doesn't
+            // require pixel-perfect aim. Pad ±3px vertically.
+            if let Some(p) = pointer_pos {
+                let hit = egui::Rect::from_min_max(
+                    egui::pos2(cell_rect.left(), cell_rect.top() - 3.0),
+                    egui::pos2(cell_rect.right(), cell_rect.bottom() + 3.0),
+                );
+                if hit.contains(p) {
+                    hover_target = Some((*effect_idx, params, cell_rect));
+                }
+            }
+        }
+
+        // Hover highlight + tooltip + click handler. Done outside the
+        // per-cell loop so the borrow of `effect_kf_params` cleared by
+        // the loop is available again.
+        if let Some((effect_idx, params, cell_rect)) = hover_target {
+            // Subtle highlight: brighten the hovered cell with a 1px
+            // top-edge accent line so the user sees what they're about
+            // to click on.
+            let accent_color = clip.audio_effects.get(effect_idx)
+                .map(|inst| crate::browser::audio_fx_tab::audio_effect_color_for_type(
+                    &inst.effect_type, &theme_ref,
+                ))
+                .unwrap_or(theme_ref.accent);
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(cell_rect.left(), cell_rect.top() - 1.0),
+                    egui::vec2(cell_rect.width(), 1.0),
+                ),
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(
+                    accent_color.r(), accent_color.g(), accent_color.b(), 240,
+                ),
+            );
+
+            // Tooltip: effect name + comma-separated kf'd params.
+            let effect_name = clip.audio_effects.get(effect_idx)
+                .map(|inst| effect_display_name(&inst.effect_type))
+                .unwrap_or_else(|| format!("FX {effect_idx}"));
+            let mut sorted_params = params.clone();
+            sorted_params.sort();
+            let pretty_params: Vec<String> = sorted_params.iter().map(|n| match n.as_str() {
+                "__bypass" => "Bypass".to_string(),
+                "__wetdry" => "Mix".to_string(),
+                other => other.to_string(),
+            }).collect();
+            egui::show_tooltip_at(
+                ui.ctx(),
+                ui.layer_id(),
+                egui::Id::new(("audio_automation_top_strip_tooltip", clip.id)),
+                pointer_pos.unwrap_or(cell_rect.center_bottom()),
+                |ui| {
+                    ui.label(egui::RichText::new(effect_name).strong().size(11.0));
+                    ui.label(
+                        egui::RichText::new(format!("Automated: {}", pretty_params.join(", ")))
+                            .size(10.0),
+                    );
+                    ui.label(
+                        egui::RichText::new("Click to view envelope")
+                            .size(9.0)
+                            .color(theme_ref.text_dim),
+                    );
+                },
+            );
+
+            if ui.input(|i| i.pointer.primary_clicked()) {
+                if let Some(name) = pick_primary_kf_param(params) {
+                    return Some(crate::state::RubberBandParam::EffectParam {
+                        effect_index: effect_idx,
+                        param_name: name,
+                    });
+                }
+            }
+        }
+        None
+    }
+
     fn draw_audio_bypass_strips(
         &self,
         ui: &mut egui::Ui,
@@ -9062,6 +9226,19 @@ impl TimelinePanel {
                 self.draw_audio_fade_overlay(painter, clip_rect, clip, state, track_kind);
                 self.draw_fade_drag_handles(ui, painter, clip_rect, clip, state, track_kind, content_rect, pointer_pos);
                 self.draw_audio_bypass_strips(ui, painter, clip_rect, clip, track_kind, pointer_pos);
+            }
+
+            // Top-edge automation indicator strip. Returns Some when
+            // the user clicked a cell — the &mut state write happens
+            // outside the &clip borrow scope.
+            let switch_rb = {
+                let clip = &state.sequence().tracks[track_idx].clips[clip_index];
+                self.draw_audio_automation_top_strip(
+                    ui, painter, clip_rect, clip, track_kind, pointer_pos,
+                )
+            };
+            if let Some(rb) = switch_rb {
+                state.rubber_band_param = rb;
             }
 
             // Mutating method.
@@ -13969,6 +14146,48 @@ mod bypass_strip_helper_tests {
         assert!(s.contains("1:15.00"),
             "75s should render as 1:15.00, got: {s}");
         assert!(s.contains("2:00.00"));
+    }
+
+    #[test]
+    fn primary_kf_param_picks_real_param_over_reserved_keys() {
+        // The top-strip click handler picks "the most useful param to
+        // show on the rubber band" given the kf'd params on an effect.
+        // A real tunable (gain/threshold/etc.) wins over the reserved
+        // __wetdry / __bypass tracks because the user is most likely
+        // automating the real param and wants to see its envelope.
+        use super::pick_primary_kf_param;
+        let params: Vec<String> = vec!["__bypass".into(), "__wetdry".into(), "gain".into()];
+        assert_eq!(pick_primary_kf_param(&params).as_deref(), Some("gain"));
+    }
+
+    #[test]
+    fn primary_kf_param_alphabetical_among_real_params() {
+        use super::pick_primary_kf_param;
+        let params: Vec<String> = vec!["threshold".into(), "attack".into(), "ratio".into()];
+        // "attack" < "ratio" < "threshold" lexicographically.
+        assert_eq!(pick_primary_kf_param(&params).as_deref(), Some("attack"));
+    }
+
+    #[test]
+    fn primary_kf_param_falls_back_to_wetdry_when_no_real_params() {
+        use super::pick_primary_kf_param;
+        let params: Vec<String> = vec!["__bypass".into(), "__wetdry".into()];
+        // Bypass is binary; wet/dry is continuous → wet/dry wins.
+        assert_eq!(pick_primary_kf_param(&params).as_deref(), Some("__wetdry"));
+    }
+
+    #[test]
+    fn primary_kf_param_bypass_is_last_resort() {
+        use super::pick_primary_kf_param;
+        let params: Vec<String> = vec!["__bypass".into()];
+        assert_eq!(pick_primary_kf_param(&params).as_deref(), Some("__bypass"));
+    }
+
+    #[test]
+    fn primary_kf_param_returns_none_for_empty_input() {
+        use super::pick_primary_kf_param;
+        let params: Vec<String> = vec![];
+        assert_eq!(pick_primary_kf_param(&params), None);
     }
 
     #[test]
