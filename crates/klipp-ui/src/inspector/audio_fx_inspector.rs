@@ -68,6 +68,28 @@ fn has_audio_kfs(
     audio_effect_keyframes.get(&key).is_some_and(|kfs| !kfs.is_empty())
 }
 
+/// Dispatch BeginAudioChainDrag / EndAudioChainDrag on drag boundaries
+/// so per-tick UpdateAudioEffectParam / SetAudioEffectWetDry calls during
+/// the drag skip their own history push. Without this, the user moves
+/// a slider once and the history accumulates 60+ entries per second —
+/// each one bumps `ops_since_save`, which trips the autosave threshold,
+/// which fires "Auto saved" toasts continuously while the slider moves.
+fn dispatch_audio_chain_drag(
+    resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+    clip_id: ClipId,
+    effect_index: usize,
+    param_name: &str,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let drag_key = format!("audio_chain:{}:{}:{}", clip_id.0, effect_index, param_name);
+    if resp.drag_started {
+        cmds.push(AppCommand::BeginAudioChainDrag { drag_key: drag_key.clone(), clip_id });
+    }
+    if resp.drag_stopped {
+        cmds.push(AppCommand::EndAudioChainDrag { drag_key, clip_id });
+    }
+}
+
 /// Wire a scrubby_param row's response to the AudioEffectKeyframe
 /// command family — auto-update, diamond toggle, prev/next nav. Mirrors
 /// the post-loop block in `inspector::effects_tab::show_builtin_effect_params`.
@@ -663,6 +685,7 @@ pub fn show_content(
                                     value: val,
                                 });
                             }
+                            dispatch_audio_chain_drag(&resp, clip_id, idx, desc.name, cmds);
                             dispatch_audio_kf_response(
                                 &resp, val, audio_effect_keyframes,
                                 clip_id, idx, desc.name,
@@ -705,6 +728,7 @@ pub fn show_content(
                             wet_dry,
                         });
                     }
+                    dispatch_audio_chain_drag(&resp, clip_id, idx, "__wetdry", cmds);
                     dispatch_audio_kf_response(
                         &resp, wet_dry, audio_effect_keyframes,
                         clip_id, idx, "__wetdry",
@@ -849,6 +873,7 @@ fn render_ladspa_params(
                 value: val,
             });
         }
+        dispatch_audio_chain_drag(&resp, clip_id, effect_index, &port.name, cmds);
         dispatch_audio_kf_response(
             &resp, val, audio_effect_keyframes,
             clip_id, effect_index, &port.name,

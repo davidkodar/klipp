@@ -648,6 +648,15 @@ fn combine_old_new(old_entry: HistoryEntry, new_entry: HistoryEntry) -> HistoryE
             old_linked_state: old_linked_state.clone(),
             new_linked_state: new_linked_state.clone(),
         },
+        (
+            EditCommand::EditAudioChain { clip_id, description, old_state, .. },
+            EditCommand::EditAudioChain { new_state, .. },
+        ) => EditCommand::EditAudioChain {
+            clip_id: *clip_id,
+            description,
+            old_state: old_state.clone(),
+            new_state: new_state.clone(),
+        },
         // Unmatched pair: the pre-drag and post-drag commands are different
         // variants, or this is a coalesce-eligible variant someone wired up
         // without extending combine_old_new. Loudly flag in debug, fall back

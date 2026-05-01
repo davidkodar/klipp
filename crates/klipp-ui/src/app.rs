@@ -8898,6 +8898,58 @@ impl KlippApp {
                 });
                 true
             }
+            AppCommand::BeginAudioChainDrag { ref drag_key, clip_id } => {
+                // Snapshot the clip's audio chain BEFORE the drag so
+                // the merged history entry rolls back to the pre-drag
+                // state on undo. Per-tick UpdateAudioEffectParam /
+                // SetAudioEffectWetDry calls during the drag check
+                // is_dragging(drag_key) and skip their own pushes,
+                // so the entire gesture coalesces into one entry.
+                if let Some(old_state) = self.state.sequences[self.state.active_sequence_idx]
+                    .all_clips()
+                    .find(|c| c.id == *clip_id)
+                    .map(crate::history::AudioChainSnapshot::from_clip)
+                {
+                    self.state.history.begin_drag(
+                        drag_key.clone(),
+                        HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: EditCommand::EditAudioChain {
+                                clip_id: *clip_id,
+                                description: "Edit Audio Effect Param",
+                                old_state: old_state.clone(),
+                                // Placeholder — combine_old_new replaces with end_drag's new_state.
+                                new_state: old_state,
+                            },
+                        },
+                    );
+                }
+                true
+            }
+            AppCommand::EndAudioChainDrag { ref drag_key, clip_id } => {
+                let _ = drag_key; // matched against the pending begin_drag
+                let new_state = self.state.sequences[self.state.active_sequence_idx]
+                    .all_clips()
+                    .find(|c| c.id == *clip_id)
+                    .map(crate::history::AudioChainSnapshot::from_clip);
+                let old_state = self.state.history.pending_old_entry_ref()
+                    .and_then(|e| match &e.command {
+                        EditCommand::EditAudioChain { old_state, .. } => Some(old_state.clone()),
+                        _ => None,
+                    });
+                if let (Some(old_state), Some(new_state)) = (old_state, new_state) {
+                    self.state.history.end_drag(HistoryEntry {
+                        sequence_idx: self.state.active_sequence_idx,
+                        command: EditCommand::EditAudioChain {
+                            clip_id: *clip_id,
+                            description: "Edit Audio Effect Param",
+                            old_state,
+                            new_state,
+                        },
+                    });
+                }
+                true
+            }
             AppCommand::ReorderBuiltinEffect { clip_id, from_index, to_index } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -9015,10 +9067,18 @@ impl KlippApp {
                 true
             }
             AppCommand::UpdateAudioEffectParam { clip_id, effect_index, ref param_name, value } => {
-                let old_state = self.state.sequences[self.state.active_sequence_idx]
-                    .all_clips()
-                    .find(|c| c.id == *clip_id)
-                    .map(crate::history::AudioChainSnapshot::from_clip);
+                let drag_key = format!("audio_chain:{}:{}:{}", clip_id.0, effect_index, param_name);
+                let is_dragging = self.state.history.is_dragging(&drag_key);
+                // Snapshot only when we'll actually push — saves an
+                // AudioChainSnapshot::clone on every drag tick.
+                let old_state = if !is_dragging {
+                    self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips()
+                        .find(|c| c.id == *clip_id)
+                        .map(crate::history::AudioChainSnapshot::from_clip)
+                } else {
+                    None
+                };
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
@@ -9031,7 +9091,16 @@ impl KlippApp {
                         break;
                     }
                 }
-                self.push_audio_chain_history(*clip_id, "Edit Audio Effect Param", old_state);
+                // History push only on non-drag updates (text-entry,
+                // single-click reset). During a drag the
+                // BeginAudioChainDrag / EndAudioChainDrag pair owns
+                // history coalescing — without this guard every
+                // 60Hz drag tick pushes a separate entry, bumping
+                // ops_since_save and triggering "Auto saved" toasts
+                // continuously while the user moves a slider.
+                if !is_dragging {
+                    self.push_audio_chain_history(*clip_id, "Edit Audio Effect Param", old_state);
+                }
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
                 // Param edits emit SequenceUpdated so the running chain rebuilds —
@@ -9061,10 +9130,19 @@ impl KlippApp {
                 true
             }
             AppCommand::SetAudioEffectWetDry { clip_id, effect_index, wet_dry } => {
-                let old_state = self.state.sequences[self.state.active_sequence_idx]
-                    .all_clips()
-                    .find(|c| c.id == *clip_id)
-                    .map(crate::history::AudioChainSnapshot::from_clip);
+                // Same drag-coalesce shape as UpdateAudioEffectParam. The
+                // wet/dry slider is also dragged so per-tick history pushes
+                // would spam autosave too.
+                let drag_key = format!("audio_chain:{}:{}:__wetdry", clip_id.0, effect_index);
+                let is_dragging = self.state.history.is_dragging(&drag_key);
+                let old_state = if !is_dragging {
+                    self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips()
+                        .find(|c| c.id == *clip_id)
+                        .map(crate::history::AudioChainSnapshot::from_clip)
+                } else {
+                    None
+                };
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
@@ -9073,7 +9151,9 @@ impl KlippApp {
                         break;
                     }
                 }
-                self.push_audio_chain_history(*clip_id, "Set Wet/Dry", old_state);
+                if !is_dragging {
+                    self.push_audio_chain_history(*clip_id, "Set Wet/Dry", old_state);
+                }
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);

@@ -1766,6 +1766,16 @@ pub enum AppCommand {
         duration_secs: f64,
         ramp_secs: f64,
     },
+    /// Drag-coalesce envelope begin: snapshot the clip's audio chain
+    /// state before a slider drag begins. Per-tick UpdateAudioEffectParam
+    /// / SetAudioEffectWetDry calls during the drag skip their history
+    /// push so a single drag becomes one undo step (and one ops_since_save
+    /// bump, not 60+/second of autosave triggers).
+    BeginAudioChainDrag { drag_key: String, clip_id: ClipId },
+    /// Drag-coalesce envelope end: snapshot the clip's audio chain
+    /// state after the drag and commit a single EditAudioChain entry
+    /// covering the entire gesture.
+    EndAudioChainDrag { drag_key: String, clip_id: ClipId },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
