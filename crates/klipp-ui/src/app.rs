@@ -8215,6 +8215,28 @@ impl KlippApp {
                     self.state.dirty = true;
                     true
                 }
+                AppCommand::SetAudioEffectKeyframeTangent { clip_id, effect_index, param_name, keyframe_index, tangent_in, tangent_out } => {
+                    let key = format!("{}:{}", effect_index, param_name);
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
+                                if let Some(kf) = keyframes.get_mut(*keyframe_index) {
+                                    if let Some(ti) = tangent_in { kf.tangent_in = *ti; }
+                                    if let Some(to) = tangent_out { kf.tangent_out = *to; }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    // Tangent edits coalesce through the existing drag
+                    // pipeline (BeginDrag / EndKeyframeDrag) so no
+                    // separate history push here — matches the
+                    // SetAudioKeyframeTangent contract.
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    true
+                }
             _ => false,
         }
     }

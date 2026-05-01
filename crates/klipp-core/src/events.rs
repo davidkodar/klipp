@@ -1720,6 +1720,17 @@ pub enum AppCommand {
     RemoveAudioEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, time_secs: f64 },
     MoveAudioEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, keyframe_index: usize, new_time_secs: f64, new_value: f32 },
     SetAudioEffectKeyframeInterpolation { clip_id: ClipId, effect_index: usize, param_name: String, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
+    /// Bezier tangent edit on an audio EFFECT keyframe. Either side
+    /// can be left None to keep its current value (matches the
+    /// SetAudioKeyframeTangent contract).
+    SetAudioEffectKeyframeTangent {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+        keyframe_index: usize,
+        tangent_in: Option<(f64, f32)>,
+        tangent_out: Option<(f64, f32)>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

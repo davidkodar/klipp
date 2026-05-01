@@ -914,6 +914,9 @@ impl TimelinePanel {
         let pointer_down = ui.input(|i| i.pointer.primary_down());
         self.handle_audio_keyframe_drag(ui, state, &mut cmds, pointer_released, pointer_down);
 
+        // ── Audio EFFECT keyframe rubber band drag update ──────────────
+        self.handle_audio_effect_keyframe_drag(ui, state, &mut cmds, pointer_released, pointer_down);
+
         // ── Video keyframe rubber band drag update ─────────────────────
         self.handle_video_keyframe_drag(ui, state, &mut cmds, pointer_released, pointer_down);
 
@@ -925,6 +928,9 @@ impl TimelinePanel {
 
         // ── Video Bezier tangent handle drag update ─────────────────────────
         self.handle_video_bezier_tangent_drag(ui, state, &mut cmds, pointer_released, pointer_down);
+
+        // ── Audio EFFECT Bezier tangent handle drag update ──────────────
+        self.handle_audio_effect_bezier_tangent_drag(ui, state, &mut cmds, pointer_released, pointer_down);
 
         // ── Keyframe interpolation context menu popup ───────────────────────
         self.show_keyframe_context_menu(ui, state, &mut cmds);
@@ -10496,7 +10502,38 @@ impl TimelinePanel {
                 );
             }
 
-            // Diamonds at each kf
+            // Track click hits on tangent handles so we can prefer
+            // them over diamond hits at the same screen position.
+            let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect.width() / clip_dur_secs as f32 } else { 1.0 };
+            let value_scale = clip_rect.height() / param_range;
+            let mut nearest_handle: Option<(usize, bool, f32)> = None; // (kf_idx, is_out, dist)
+            if interactive
+                && (is_selected || is_multi_selected)
+                && state.dragging_audio_effect_bezier_handle.is_none()
+            {
+                if let Some(pos) = pointer_pos {
+                    for (ki, kf) in kf_keyframes_vec.iter().enumerate() {
+                        if kf.interpolation != klipp_core::Interpolation::Bezier { continue; }
+                        let cx = time_to_x(kf.time_secs);
+                        let cy = value_to_y(kf.value);
+                        let tout_x = cx + kf.tangent_out.0 as f32 * pixels_per_sec;
+                        let tout_y = cy - kf.tangent_out.1 * value_scale;
+                        let d_out = ((pos.x - tout_x).powi(2) + (pos.y - tout_y).powi(2)).sqrt();
+                        if d_out < 8.0 && nearest_handle.is_none_or(|(_, _, d)| d_out < d) {
+                            nearest_handle = Some((ki, true, d_out));
+                        }
+                        let tin_x = cx + kf.tangent_in.0 as f32 * pixels_per_sec;
+                        let tin_y = cy - kf.tangent_in.1 * value_scale;
+                        let d_in = ((pos.x - tin_x).powi(2) + (pos.y - tin_y).powi(2)).sqrt();
+                        if d_in < 8.0 && nearest_handle.is_none_or(|(_, _, d)| d_in < d) {
+                            nearest_handle = Some((ki, false, d_in));
+                        }
+                    }
+                }
+            }
+
+            // Diamonds at each kf, plus Bezier tangent handles for
+            // Bezier-interp kfs on the selected clip.
             for (kf_idx, kf) in kf_keyframes_vec.iter().enumerate() {
                 let cx = time_to_x(kf.time_secs);
                 let cy = value_to_y(kf.value);
@@ -10513,12 +10550,61 @@ impl TimelinePanel {
                     egui::Stroke::new(1.0, egui::Color32::WHITE),
                 ));
 
-                // Click-on-diamond → start drag state. Motion handled
-                // in B4. For now we just record the selection.
+                // Bezier tangent handles + connector lines, only on
+                // Bezier-interp kfs and only when the clip is selected
+                // (to keep unselected clips visually quiet).
+                if kf.interpolation == klipp_core::Interpolation::Bezier
+                    && (is_selected || is_multi_selected)
+                {
+                    let tangent_line = egui::Color32::from_rgba_unmultiplied(
+                        line_color.r(), line_color.g(), line_color.b(), 120,
+                    );
+                    let handle_r = 4.0_f32;
+                    // Out handle (right)
+                    let tout_x = cx + kf.tangent_out.0 as f32 * pixels_per_sec;
+                    let tout_y = cy - kf.tangent_out.1 * value_scale;
+                    clip_painter.line_segment(
+                        [egui::pos2(cx, cy), egui::pos2(tout_x, tout_y)],
+                        egui::Stroke::new(1.0_f32, tangent_line),
+                    );
+                    clip_painter.circle(
+                        egui::pos2(tout_x, tout_y), handle_r, line_color,
+                        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                    );
+                    // In handle (left)
+                    let tin_x = cx + kf.tangent_in.0 as f32 * pixels_per_sec;
+                    let tin_y = cy - kf.tangent_in.1 * value_scale;
+                    clip_painter.line_segment(
+                        [egui::pos2(cx, cy), egui::pos2(tin_x, tin_y)],
+                        egui::Stroke::new(1.0_f32, tangent_line),
+                    );
+                    clip_painter.circle(
+                        egui::pos2(tin_x, tin_y), handle_r, line_color,
+                        egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+                    );
+                }
+
+                // Click priority: tangent handle > diamond. Without
+                // this a click on a handle that overlaps the diamond
+                // would start a kf drag instead of a tangent drag.
                 if interactive {
                     if let Some(pos) = pointer_pos {
+                        let primary_clicked = ui.input(|i| i.pointer.primary_clicked());
+                        if let Some((handle_kf_idx, is_out, _)) = nearest_handle {
+                            if handle_kf_idx == kf_idx && primary_clicked {
+                                state.dragging_audio_effect_bezier_handle =
+                                    Some(crate::state::BezierEffectHandleDrag {
+                                        clip_id: kf_clip_id,
+                                        effect_index,
+                                        param_name: param_name.to_string(),
+                                        keyframe_index: kf_idx,
+                                        is_out,
+                                    });
+                                continue;
+                            }
+                        }
                         let hit = (pos.x - cx).abs() <= r + 2.0 && (pos.y - cy).abs() <= r + 2.0;
-                        if hit && ui.input(|i| i.pointer.primary_clicked()) {
+                        if hit && primary_clicked {
                             state.dragging_audio_effect_keyframe =
                                 Some(crate::state::DraggingEffectKeyframe {
                                     clip_id: kf_clip_id,
@@ -12193,6 +12279,237 @@ impl TimelinePanel {
                     }
                 }
             }
+        }
+    }
+
+    /// Sibling of `handle_audio_keyframe_drag` for the
+    /// `DraggingEffectKeyframe` variant — kf data lives in
+    /// `clip.audio_effect_keyframes["{idx}:{name}"]` instead of the
+    /// per-clip Volume/Pan/Gain vecs. Same snapping behaviour
+    /// (playhead, clip start/end, sibling kfs) and same Y-axis auto-
+    /// scaling as the clip-param drag.
+    fn handle_audio_effect_keyframe_drag(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+        pointer_released: bool,
+        pointer_down: bool,
+    ) {
+        let drag_kf = match state.dragging_audio_effect_keyframe.clone() {
+            Some(d) => d,
+            None => return,
+        };
+
+        if pointer_released || !pointer_down {
+            // End of drag — push the EndKeyframeDrag undo-coalesce
+            // marker so a single drag becomes one undo step. Reuses
+            // the same drag_key shape as the clip-kf path so the
+            // history coalescing pipe doesn't have to special-case
+            // effect kfs.
+            let drag_key = format!(
+                "kf:audio_effect:{}:{}:{}:{}",
+                drag_kf.clip_id.0, drag_kf.effect_index, drag_kf.param_name, drag_kf.keyframe_index,
+            );
+            cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id: drag_kf.clip_id });
+            state.dragging_audio_effect_keyframe = None;
+            return;
+        }
+
+        let pos = match ui.input(|i| i.pointer.interact_pos()) {
+            Some(p) => p,
+            None => return,
+        };
+
+        let zoom = state.timeline_zoom;
+        let scroll = state.timeline_scroll_x;
+        let key = format!("{}:{}", drag_kf.effect_index, drag_kf.param_name);
+
+        for (ti, track) in state.sequence().tracks.iter().enumerate() {
+            let Some(clip) = track.find_clip(drag_kf.clip_id) else { continue };
+            let track_height = effective_track_height(track);
+            let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) else { continue };
+
+            let cx = track_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+            let cw = clip.duration().to_secs_f64() as f32 * zoom;
+            let clip_rect = egui::Rect::from_min_size(
+                egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
+                egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
+            );
+            let clip_dur_secs = clip.duration().to_secs_f64();
+            if clip_dur_secs <= 0.0 || clip_rect.width() <= 0.0 {
+                break;
+            }
+
+            let frac = ((pos.x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0) as f64;
+            let mut new_time = frac * clip_dur_secs;
+
+            let snap_thresh_secs = snap_threshold_px() as f64 / (zoom as f64);
+
+            // Snap to playhead
+            let playhead_rel = state.playhead_smooth_secs - clip.timeline_in.to_secs_f64();
+            if playhead_rel >= 0.0 && playhead_rel <= clip_dur_secs
+                && (new_time - playhead_rel).abs() < snap_thresh_secs
+            {
+                new_time = playhead_rel;
+            }
+
+            // Snap to clip start/end
+            if new_time < snap_thresh_secs { new_time = 0.0; }
+            if (new_time - clip_dur_secs).abs() < snap_thresh_secs { new_time = clip_dur_secs; }
+
+            // Snap to sibling kfs on the same track
+            let empty: Vec<klipp_core::Keyframe> = Vec::new();
+            let kfs_ref = clip.audio_effect_keyframes.get(&key).unwrap_or(&empty);
+            for (ki, kf) in kfs_ref.iter().enumerate() {
+                if ki != drag_kf.keyframe_index && (kf.time_secs - new_time).abs() < snap_thresh_secs {
+                    new_time = kf.time_secs;
+                    break;
+                }
+            }
+
+            // Y-axis: same auto-scale as the draw fn so visual position
+            // and stored value align.
+            let static_val = clip.audio_effects.get(drag_kf.effect_index)
+                .and_then(|inst| inst.params.iter().find(|(k, _)| k == &drag_kf.param_name).map(|(_, v)| *v))
+                .unwrap_or(match drag_kf.param_name.as_str() {
+                    "__bypass" | "__wetdry" => 1.0,
+                    _ => 0.0,
+                });
+            let mut v_min = static_val;
+            let mut v_max = static_val;
+            for kf in kfs_ref.iter() {
+                if kf.value < v_min { v_min = kf.value; }
+                if kf.value > v_max { v_max = kf.value; }
+            }
+            let v_span = (v_max - v_min).max(0.01);
+            let v_pad = v_span * 0.2;
+            let p_min = v_min - v_pad;
+            let p_range = v_span + v_pad * 2.0;
+            let normalized = ((clip_rect.bottom() - pos.y) / clip_rect.height()).clamp(0.0, 1.0);
+            let new_value = p_min + normalized * p_range;
+
+            cmds.push(AppCommand::MoveAudioEffectKeyframe {
+                clip_id: drag_kf.clip_id,
+                effect_index: drag_kf.effect_index,
+                param_name: drag_kf.param_name.clone(),
+                keyframe_index: drag_kf.keyframe_index,
+                new_time_secs: new_time,
+                new_value,
+            });
+
+            // Live readout tooltip
+            let tooltip = format!("{:.2}s | {:.2}", new_time, new_value);
+            let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
+            painter.text(
+                egui::pos2(pos.x + 12.0, pos.y - 16.0),
+                egui::Align2::LEFT_BOTTOM,
+                &tooltip,
+                egui::FontId::proportional(10.0),
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+            );
+            break;
+        }
+    }
+
+    /// Bezier tangent drag for audio EFFECT keyframes — sibling of
+    /// `handle_audio_bezier_tangent_drag`. Reads the active drag
+    /// state, maps the pointer position back to (time_delta, value_delta)
+    /// relative to the kf, and dispatches
+    /// `SetAudioEffectKeyframeTangent` per frame. End-of-drag clears
+    /// the state; coalescing through the BeginDrag / EndKeyframeDrag
+    /// envelope is owned by callers (the Add/Move kf path) — tangent
+    /// edits ride that envelope so a single drag becomes one undo step.
+    fn handle_audio_effect_bezier_tangent_drag(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+        pointer_released: bool,
+        pointer_down: bool,
+    ) {
+        let drag = match state.dragging_audio_effect_bezier_handle.clone() {
+            Some(d) => d,
+            None => return,
+        };
+
+        if pointer_released || !pointer_down {
+            state.dragging_audio_effect_bezier_handle = None;
+            return;
+        }
+
+        let pos = match ui.input(|i| i.pointer.interact_pos()) {
+            Some(p) => p,
+            None => return,
+        };
+        let zoom = state.timeline_zoom;
+        let scroll = state.timeline_scroll_x;
+        let key = format!("{}:{}", drag.effect_index, drag.param_name);
+
+        for (ti, track) in state.sequence().tracks.iter().enumerate() {
+            let Some(clip) = track.find_clip(drag.clip_id) else { continue };
+            let track_height = effective_track_height(track);
+            let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) else { continue };
+            let cx = track_rect.left() + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+            let cw = clip.duration().to_secs_f64() as f32 * zoom;
+            let clip_rect = egui::Rect::from_min_size(
+                egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
+                egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
+            );
+            let clip_dur_secs = clip.duration().to_secs_f64();
+            if clip_dur_secs <= 0.0 || clip_rect.width() <= 0.0 { break; }
+
+            let kfs = match clip.audio_effect_keyframes.get(&key) {
+                Some(v) => v,
+                None => break,
+            };
+            let kf = match kfs.get(drag.keyframe_index) {
+                Some(k) => k,
+                None => break,
+            };
+
+            // Map pointer back to (handle_t, handle_v) using the SAME
+            // auto-Y-scale as the draw fn so the visual handle and
+            // stored tangent line up.
+            let static_val = clip.audio_effects.get(drag.effect_index)
+                .and_then(|inst| inst.params.iter().find(|(k, _)| k == &drag.param_name).map(|(_, v)| *v))
+                .unwrap_or(match drag.param_name.as_str() {
+                    "__bypass" | "__wetdry" => 1.0,
+                    _ => 0.0,
+                });
+            let mut v_min = static_val;
+            let mut v_max = static_val;
+            for k in kfs.iter() {
+                if k.value < v_min { v_min = k.value; }
+                if k.value > v_max { v_max = k.value; }
+            }
+            let v_span = (v_max - v_min).max(0.01);
+            let v_pad = v_span * 0.2;
+            let p_min = v_min - v_pad;
+            let p_range = v_span + v_pad * 2.0;
+
+            let frac = ((pos.x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0) as f64;
+            let handle_t = frac * clip_dur_secs;
+            let normalized = ((clip_rect.bottom() - pos.y) / clip_rect.height()).clamp(0.0, 1.0);
+            let handle_v = p_min + normalized * p_range;
+
+            let dt = handle_t - kf.time_secs;
+            let dv = handle_v - kf.value;
+            let (tangent_in, tangent_out) = if drag.is_out {
+                (None, Some((dt, dv)))
+            } else {
+                (Some((dt, dv)), None)
+            };
+
+            cmds.push(AppCommand::SetAudioEffectKeyframeTangent {
+                clip_id: drag.clip_id,
+                effect_index: drag.effect_index,
+                param_name: drag.param_name.clone(),
+                keyframe_index: drag.keyframe_index,
+                tangent_in,
+                tangent_out,
+            });
+            break;
         }
     }
 
