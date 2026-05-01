@@ -5986,6 +5986,7 @@ impl KlippApp {
                                     multicam_angle: clip.multicam_angle,
                                     multicam_cuts: clip.multicam_cuts.clone(),
                                     audio_effects: clip.audio_effects.clone(),
+                                    audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
                                     stabilization_data: None,
                                     smoothed_trajectory: None,
                                     track_points: Vec::new(),
@@ -6025,6 +6026,7 @@ impl KlippApp {
                             pan_keyframes: clip.pan_keyframes.clone(),
                             gain_keyframes: clip.gain_keyframes.clone(),
                             audio_effects: clip.audio_effects.clone(),
+                            audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
                             opacity_keyframes: clip.opacity_keyframes.clone(),
                             transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
                             transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
@@ -6073,6 +6075,7 @@ impl KlippApp {
                                 clip.pan_keyframes = attrs.pan_keyframes.clone();
                                 clip.gain_keyframes = attrs.gain_keyframes.clone();
                                 clip.audio_effects = attrs.audio_effects.clone();
+                                clip.audio_effect_keyframes = attrs.audio_effect_keyframes.clone();
                             }
                             if *transform {
                                 clip.opacity_keyframes = attrs.opacity_keyframes.clone();
@@ -6148,6 +6151,7 @@ impl KlippApp {
                             multicam_angle: clip.multicam_angle,
                             multicam_cuts: clip.multicam_cuts.clone(),
                             audio_effects: clip.audio_effects.clone(),
+                            audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
                             stabilization_data: None,
                             smoothed_trajectory: None,
                             track_points: Vec::new(),
@@ -11929,6 +11933,7 @@ impl KlippApp {
                     multicam_angle: 0,
                     multicam_cuts: Vec::new(),
                     audio_effects: Vec::new(),
+                    audio_effect_keyframes: std::collections::HashMap::new(),
                     stabilization_data: None,
                     smoothed_trajectory: None,
                     track_points: Vec::new(),
@@ -17474,6 +17479,7 @@ impl KlippApp {
                 multicam_angle: clip.multicam_angle,
                 multicam_cuts: clip.multicam_cuts.clone(),
                 audio_effects: clip.audio_effects.clone(),
+                audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
                 stabilization_data: None,
                 smoothed_trajectory: None,
                 track_points: Vec::new(),
@@ -17592,6 +17598,7 @@ impl KlippApp {
                 multicam_angle: clip.multicam_angle,
                 multicam_cuts: clip.multicam_cuts.clone(),
                 audio_effects: clip.audio_effects.clone(),
+                audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
                 stabilization_data: None,
                 smoothed_trajectory: None,
                 track_points: Vec::new(),

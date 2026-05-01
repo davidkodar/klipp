@@ -479,6 +479,7 @@ mod tests {
             source_start_secs: 0.0,
             path,
             audio_effects: vec![],
+            audio_effect_keyframes: std::collections::HashMap::new(),
         });
 
         let mut mixdown = AudioMixdown::new(&snapshot).unwrap();

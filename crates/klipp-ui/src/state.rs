@@ -2370,6 +2370,8 @@ pub struct AttributesClipboard {
     pub gain_keyframes: Vec<klipp_core::Keyframe>,
     /// Audio effects.
     pub audio_effects: Vec<klipp_core::AudioEffectInstance>,
+    /// Audio-effect keyframes (mirror of effect_keyframes for the audio chain).
+    pub audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
     /// Transform keyframes.
     pub opacity_keyframes: Vec<klipp_core::Keyframe>,
     pub transform_pos_x_keyframes: Vec<klipp_core::Keyframe>,

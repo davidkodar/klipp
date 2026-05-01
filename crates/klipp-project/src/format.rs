@@ -215,6 +215,8 @@ pub struct ClipJson {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_effects: Option<Vec<klipp_core::AudioEffectInstance>>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multicam_group: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -599,5 +601,154 @@ mod tests {
             serde_json::to_string(&WorkingColorspace::Bt2020Linear).unwrap(),
             "\"Bt2020Linear\"",
         );
+    }
+
+    /// JSON round-trip for `audio_effect_keyframes` on `ClipJson`. Phase 1
+    /// of the audio-keyframe support: storing the field on a clip is
+    /// useless if save/load drops it on the floor, so we pin the
+    /// behaviour with a focused serde roundtrip.
+    ///
+    /// Three properties pinned here:
+    /// 1. The field round-trips with values intact (kf time + value + interp).
+    /// 2. The reserved `__bypass` and `__wetdry` keys survive (they're
+    ///    plain strings to serde — no special handling).
+    /// 3. An empty map skips serialisation (`skip_serializing_if`) so old
+    ///    projects don't grow a noisy empty field on every save.
+    #[test]
+    fn audio_effect_keyframes_round_trip_through_clip_json() {
+        let mut audio_kfs: std::collections::HashMap<String, Vec<klipp_core::Keyframe>> =
+            std::collections::HashMap::new();
+        audio_kfs.insert(
+            "0:gain".to_string(),
+            vec![
+                klipp_core::Keyframe {
+                    time_secs: 0.0,
+                    value: -6.0,
+                    interpolation: klipp_core::Interpolation::Linear,
+                    tangent_in: (0.0, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+                klipp_core::Keyframe {
+                    time_secs: 1.5,
+                    value: 0.0,
+                    interpolation: klipp_core::Interpolation::Bezier,
+                    tangent_in: (-0.3, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+            ],
+        );
+        audio_kfs.insert(
+            "0:__bypass".to_string(),
+            vec![klipp_core::Keyframe {
+                time_secs: 0.5,
+                value: 1.0,
+                interpolation: klipp_core::Interpolation::Step,
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
+            }],
+        );
+
+        let clip = ClipJson {
+            id: "test-clip".to_string(),
+            media_id: None,
+            kind: None,
+            timeline_in: 0,
+            timeline_out: 48,
+            source_in: 0,
+            source_out: 48,
+            rate: 24,
+            node_graph: None,
+            color_grade: None,
+            effects: vec![],
+            builtin_effects: None,
+            linked_clip_id: None,
+            group_id: None,
+            gain: None, volume: None, pan: None,
+            fade_in_secs: None, fade_out_secs: None,
+            fade_in_curve: None, fade_out_curve: None,
+            channel_config: None,
+            volume_keyframes: None, pan_keyframes: None, gain_keyframes: None,
+            opacity_keyframes: None,
+            transform_pos_x_keyframes: None, transform_pos_y_keyframes: None,
+            transform_scale_keyframes: None, transform_rotation_keyframes: None,
+            clip_markers: None,
+            effect_keyframes: None,
+            role: None,
+            param_modifiers: None,
+            speed: None, speed_keyframes: None,
+            source_rotation: None,
+            enabled: None,
+            audio_effects: None,
+            audio_effect_keyframes: audio_kfs.clone(),
+            multicam_group: None, multicam_angle: None,
+            multicam_cuts: vec![],
+            solo: None,
+            grade_versions: vec![],
+            active_grade_version: None,
+            track_points: vec![],
+        };
+
+        let serialised = serde_json::to_string(&clip).expect("serialise clip");
+        let back: ClipJson = serde_json::from_str(&serialised).expect("deserialise clip");
+
+        // 1. Both kf tracks survived.
+        assert_eq!(back.audio_effect_keyframes.len(), 2);
+        assert!(back.audio_effect_keyframes.contains_key("0:gain"));
+        assert!(back.audio_effect_keyframes.contains_key("0:__bypass"));
+
+        // 2. Values intact, including bezier tangents.
+        let gain = &back.audio_effect_keyframes["0:gain"];
+        assert_eq!(gain.len(), 2);
+        assert!((gain[0].value - (-6.0)).abs() < 1e-6);
+        assert!((gain[1].time_secs - 1.5).abs() < 1e-9);
+        assert!(matches!(gain[1].interpolation, klipp_core::Interpolation::Bezier));
+        assert!((gain[1].tangent_in.0 - (-0.3)).abs() < 1e-9);
+
+        // 3. Reserved bypass key keeps its Step interp.
+        let bypass = &back.audio_effect_keyframes["0:__bypass"];
+        assert_eq!(bypass.len(), 1);
+        assert!(matches!(bypass[0].interpolation, klipp_core::Interpolation::Step));
+        assert!((bypass[0].value - 1.0).abs() < 1e-6);
+    }
+
+    /// `skip_serializing_if = "HashMap::is_empty"` keeps the on-disk
+    /// representation lean: a clip with no audio kfs must not write the
+    /// field at all. This pins that — if someone "cleans up" the attr
+    /// later the JSON will get noisier and this test will catch it.
+    #[test]
+    fn audio_effect_keyframes_empty_map_is_omitted_from_json() {
+        let clip = ClipJson {
+            id: "test-clip".to_string(),
+            media_id: None, kind: None,
+            timeline_in: 0, timeline_out: 24,
+            source_in: 0, source_out: 24, rate: 24,
+            node_graph: None, color_grade: None,
+            effects: vec![], builtin_effects: None,
+            linked_clip_id: None, group_id: None,
+            gain: None, volume: None, pan: None,
+            fade_in_secs: None, fade_out_secs: None,
+            fade_in_curve: None, fade_out_curve: None,
+            channel_config: None,
+            volume_keyframes: None, pan_keyframes: None, gain_keyframes: None,
+            opacity_keyframes: None,
+            transform_pos_x_keyframes: None, transform_pos_y_keyframes: None,
+            transform_scale_keyframes: None, transform_rotation_keyframes: None,
+            clip_markers: None,
+            effect_keyframes: None,
+            role: None, param_modifiers: None,
+            speed: None, speed_keyframes: None,
+            source_rotation: None, enabled: None,
+            audio_effects: None,
+            audio_effect_keyframes: std::collections::HashMap::new(),
+            multicam_group: None, multicam_angle: None,
+            multicam_cuts: vec![],
+            solo: None,
+            grade_versions: vec![],
+            active_grade_version: None,
+            track_points: vec![],
+        };
+        let serialised = serde_json::to_string(&clip).expect("serialise");
+        assert!(!serialised.contains("audio_effect_keyframes"),
+            "empty audio_effect_keyframes must be skipped, got: {serialised}");
     }
 }

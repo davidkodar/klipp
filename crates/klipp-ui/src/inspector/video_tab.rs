@@ -190,6 +190,7 @@ fn show_bin_media_video(
         multicam_angle: 0,
         multicam_cuts: Vec::new(),
         audio_effects: Vec::new(),
+        audio_effect_keyframes: std::collections::HashMap::new(),
         stabilization_data: None,
         smoothed_trajectory: None,
         track_points: Vec::new(),

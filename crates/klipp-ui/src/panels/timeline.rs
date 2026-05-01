@@ -1522,6 +1522,9 @@ impl TimelinePanel {
                     if !any_down {
                         if let Some(clip_id) = hit_clip_id {
                             if let Some(crate::drag_drop::DragPayload::Effect { name, is_builtin, plugin_id }) = state.drag_drop.end() {
+                                if state.selected_clip != Some(clip_id) {
+                                    cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                                }
                                 if is_builtin {
                                     let effect = state.effect_registry.effects.iter()
                                         .find(|e| e.name == name)
@@ -1587,6 +1590,9 @@ impl TimelinePanel {
                     if !any_down {
                         if let Some(clip_id) = hit_clip_id {
                             if let Some(crate::drag_drop::DragPayload::AudioEffect { name, type_id }) = state.drag_drop.end() {
+                                if state.selected_clip != Some(clip_id) {
+                                    cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                                }
                                 cmds.push(AppCommand::AddAudioEffect { clip_id, effect_type: type_id });
                                 state.toast.show(format!("\"{}\" applied to clip", name));
                             }

@@ -1,4 +1,5 @@
 use crate::browser::effect_registry::{EffectEntry, EffectSource};
+use crate::drag_drop::DragPayload;
 use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -240,7 +241,7 @@ pub fn show(
                 }
 
                 let color = tile_color(entry, theme);
-                let resp = egui::Frame::none()
+                let inner = egui::Frame::none()
                     .fill(theme.bg_raised)
                     .stroke(egui::Stroke::new(1.0_f32, theme.border))
                     .rounding(6.0)
@@ -303,8 +304,11 @@ pub fn show(
                                 );
                             });
                         });
-                    })
-                    .response;
+                    });
+
+                let tile_rect = inner.response.rect;
+                let interact_id = ui.make_persistent_id(("audio_fx_tile", &entry.name));
+                let resp = ui.interact(tile_rect, interact_id, egui::Sense::click_and_drag());
 
                 if resp.double_clicked() {
                     if let Some(type_id) = effect_type_for_dispatch(entry) {
@@ -319,6 +323,15 @@ pub fn show(
                         } else {
                             state.toast.show("Select a clip first".to_string());
                         }
+                    }
+                }
+
+                if resp.drag_started() {
+                    if let Some(type_id) = effect_type_for_dispatch(entry) {
+                        state.drag_drop.begin(DragPayload::AudioEffect {
+                            name: entry.name.clone(),
+                            type_id,
+                        });
                     }
                 }
             }

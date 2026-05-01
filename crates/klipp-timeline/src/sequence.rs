@@ -458,6 +458,7 @@ impl Track {
             speed: 1.0,
             speed_keyframes: Vec::new(),
             audio_effects: Vec::new(),
+            audio_effect_keyframes: std::collections::HashMap::new(),
             source_rotation: 0,
             enabled: true,
             solo: false,
@@ -625,6 +626,19 @@ impl Track {
             }
         }
 
+        // Split audio-effect keyframes at the cut point
+        let mut audio_effect_kfs_a = std::collections::HashMap::new();
+        let mut audio_effect_kfs_b = std::collections::HashMap::new();
+        for (key, kfs) in &clip.audio_effect_keyframes {
+            let (a, b) = split_kfs(kfs);
+            if !a.is_empty() {
+                audio_effect_kfs_a.insert(key.clone(), a);
+            }
+            if !b.is_empty() {
+                audio_effect_kfs_b.insert(key.clone(), b);
+            }
+        }
+
         // Split clip markers at the cut point
         let mut markers_a = Vec::new();
         let mut markers_b = Vec::new();
@@ -683,6 +697,7 @@ impl Track {
             multicam_angle: clip.multicam_angle,
             multicam_cuts: clip.multicam_cuts.clone(),
             audio_effects: clip.audio_effects.clone(),
+            audio_effect_keyframes: audio_effect_kfs_a,
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
@@ -732,6 +747,7 @@ impl Track {
             multicam_angle: clip.multicam_angle,
             multicam_cuts: clip.multicam_cuts.clone(),
             audio_effects: clip.audio_effects,
+            audio_effect_keyframes: audio_effect_kfs_b,
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
@@ -908,6 +924,10 @@ pub struct Clip {
     /// Per-clip audio effect chain (EQ, compressor, reverb, etc.)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audio_effects: Vec<AudioEffectInstance>,
+    /// Per-audio-effect keyframes: maps "{effect_index}:{param_name}" to keyframe track.
+    /// Reserved param names: "__bypass" (0/1, step) and "__wetdry" (0..1, linear).
+    #[serde(default)]
+    pub audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
     /// Pre-computed stabilization data. Not serialized — reanalysis needed on load.
     #[serde(skip)]
     pub stabilization_data: Option<klipp_effects::stabilization::StabilizationData>,
@@ -1150,6 +1170,7 @@ impl Clip {
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
             audio_effects: Vec::new(),
+            audio_effect_keyframes: std::collections::HashMap::new(),
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
@@ -1209,6 +1230,7 @@ impl Clip {
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
             audio_effects: Vec::new(),
+            audio_effect_keyframes: std::collections::HashMap::new(),
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
@@ -1267,6 +1289,7 @@ impl Clip {
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
             audio_effects: Vec::new(),
+            audio_effect_keyframes: std::collections::HashMap::new(),
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
@@ -1562,6 +1585,80 @@ mod tests {
         assert!(track.blade_at(id0, tc(1)).is_none());
         // Cut at 1 frame from end
         assert!(track.blade_at(id0, tc(47)).is_none());
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // audio_effect_keyframes split round-trip — Phase 1 of audio
+    // keyframe support. Mirrors the existing video `effect_keyframes`
+    // split logic at sequence.rs:618-626. The whole point of Option B
+    // (separate field) is that audio kfs travel through every clip
+    // operation just like video kfs do — blade is the most rigorous
+    // exercise because it has to split the kf track at the cut and
+    // shift the right half's times back to the new clip's source_in.
+    // ═══════════════════════════════════════════════════════════════
+    #[test]
+    fn blade_splits_audio_effect_keyframes() {
+        use klipp_core::{Interpolation, Keyframe};
+        let mut c0 = make_clip(0, 48, 0, 48);
+        // Three keyframes on `0:gain` at clip-relative times 0.25s, 0.75s,
+        // 1.5s. Cut is at frame 24 (= 1.0s @ 24fps), so the first two
+        // belong to clip_a and the third to clip_b (with time shifted to
+        // 0.5s relative to the new clip).
+        let mk = |t: f64, v: f32| Keyframe {
+            time_secs: t,
+            value: v,
+            interpolation: Interpolation::Linear,
+            tangent_in: (0.0, 0.0),
+            tangent_out: (0.0, 0.0),
+        };
+        c0.audio_effect_keyframes.insert(
+            "0:gain".to_string(),
+            vec![mk(0.25, 0.5), mk(0.75, 0.7), mk(1.5, 0.9)],
+        );
+        // Bypass kf on the second-half side only (at 1.25s = 0.25s into clip_b).
+        c0.audio_effect_keyframes.insert(
+            "0:__bypass".to_string(),
+            vec![mk(1.25, 1.0)],
+        );
+        let id0 = c0.id;
+        let mut track = make_track(vec![c0]);
+
+        let result = track.blade_at(id0, tc(24));
+        assert!(result.is_some(), "blade should succeed at frame 24");
+        assert_eq!(track.clips.len(), 2);
+
+        // clip_a: keeps the first two `gain` kfs, no bypass kf.
+        let a_gain = track.clips[0].audio_effect_keyframes.get("0:gain")
+            .expect("clip_a must keep the gain track");
+        assert_eq!(a_gain.len(), 2, "clip_a gets the two pre-cut kfs");
+        assert!((a_gain[0].time_secs - 0.25).abs() < 1e-9);
+        assert!((a_gain[1].time_secs - 0.75).abs() < 1e-9);
+        assert!(track.clips[0].audio_effect_keyframes.get("0:__bypass").is_none(),
+            "clip_a must not carry the bypass kf (it sits past the cut)");
+
+        // clip_b: the third gain kf, with time shifted back by 1.0s
+        // (the cut point), and the bypass kf shifted likewise.
+        let b_gain = track.clips[1].audio_effect_keyframes.get("0:gain")
+            .expect("clip_b must inherit the post-cut gain kf");
+        assert_eq!(b_gain.len(), 1);
+        assert!((b_gain[0].time_secs - 0.5).abs() < 1e-9,
+            "clip_b's kf time must be shifted: 1.5s - 1.0s = 0.5s, got {}", b_gain[0].time_secs);
+        let b_bypass = track.clips[1].audio_effect_keyframes.get("0:__bypass")
+            .expect("clip_b must carry the bypass kf");
+        assert!((b_bypass[0].time_secs - 0.25).abs() < 1e-9,
+            "bypass kf time must be 1.25s - 1.0s = 0.25s, got {}", b_bypass[0].time_secs);
+    }
+
+    #[test]
+    fn blade_with_no_audio_effect_keyframes_leaves_both_halves_empty() {
+        // Sanity: clips without audio kfs split into two clips that also
+        // have empty maps — no spurious keys, no panics.
+        let c0 = make_clip(0, 48, 0, 48);
+        let id0 = c0.id;
+        let mut track = make_track(vec![c0]);
+        track.blade_at(id0, tc(24));
+        assert!(track.clips[0].audio_effect_keyframes.is_empty());
+        assert!(track.clips[1].audio_effect_keyframes.is_empty());
     }
 
     // ═══════════════════════════════════════════════════════════════
