@@ -77,10 +77,13 @@ pub fn downsample_linear_box(
     out
 }
 
-/// Bilinear upsample. Output dimensions are arbitrary — typical use
-/// is `dst_w = src_w * 2`, `dst_h = src_h * 2` to undo a 2× box
-/// downsample. Linear-light f32 RGBA throughout, so the math stays
-/// consistent with the grade pipeline's edge-to-edge linear chain.
+/// Bilinear resize in either direction. Output dimensions are
+/// arbitrary; the math is direction-agnostic (Triangle filter without
+/// a prefilter), matching what `image::imageops::resize` with
+/// `FilterType::Triangle` does — except in linear-light f32 RGBA, so
+/// the bilinear taps stay gamma-correct. Severe downsamples (>2:1)
+/// alias because there's no prefilter; upstream callers handle that
+/// case with `downsample_linear_box` instead.
 pub fn upsample_linear_bilinear(
     src: &[f32],
     src_w: u32,
@@ -235,6 +238,39 @@ mod tests {
             assert!((px[1] - 0.2).abs() < 1e-6);
             assert!((px[2] - 0.3).abs() < 1e-6);
             assert!((px[3] - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn bilinear_downsample_solid_color_preserves_value() {
+        // The overlay path (P-4) uses upsample_linear_bilinear for the
+        // shrink direction too. A solid-colour input must still produce
+        // the same solid colour out — proves the function isn't
+        // upsample-only despite the historical name.
+        let src = solid(8, 8, [0.7, 0.4, 0.2, 1.0]);
+        let dst = upsample_linear_bilinear(&src, 8, 8, 4, 4);
+        assert_eq!(dst.len(), 4 * 4 * 4);
+        for px in dst.chunks_exact(4) {
+            assert!((px[0] - 0.7).abs() < 1e-6);
+            assert!((px[1] - 0.4).abs() < 1e-6);
+            assert!((px[2] - 0.2).abs() < 1e-6);
+            assert!((px[3] - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn bilinear_resize_preserves_alpha() {
+        // Overlay clips often carry per-pixel alpha (PNG titles, masked
+        // footage). Bilinear taps must preserve a constant alpha through
+        // either direction.
+        let src = solid(3, 5, [0.5, 0.5, 0.5, 0.42]);
+        let up = upsample_linear_bilinear(&src, 3, 5, 9, 7);
+        for px in up.chunks_exact(4) {
+            assert!((px[3] - 0.42).abs() < 1e-6, "alpha drift on upsample: {}", px[3]);
+        }
+        let down = upsample_linear_bilinear(&src, 3, 5, 2, 3);
+        for px in down.chunks_exact(4) {
+            assert!((px[3] - 0.42).abs() < 1e-6, "alpha drift on downsample: {}", px[3]);
         }
     }
 

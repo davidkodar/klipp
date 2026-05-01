@@ -3970,17 +3970,21 @@ impl PlaybackEngine {
                 let src_linear = if ov_w == final_w && ov_h == final_h {
                     ov_linear
                 } else {
-                    use image::{ImageBuffer, Rgba};
-                    // Resize path: linear → u8 → resize → u8 → linear.
-                    // Inevitable while imageops is u8-only; localised to
-                    // just the mismatched-dim case. The main case
-                    // (dims match) stays fully linear.
+                    // P-4: linear-light bilinear resize. Replaces the
+                    // earlier linear → u8 → image::imageops::resize →
+                    // u8 → linear round-trip, which paid two whole-frame
+                    // float↔u8 conversions and processed in sRGB-encoded
+                    // u8 (gamma-incorrect filtering at the bilinear taps)
+                    // purely because `image::imageops::resize` is u8-only.
+                    // `upsample_linear_bilinear` is direction-agnostic
+                    // (its doc calls out arbitrary output dimensions) and
+                    // does the same Triangle-filter math the old path
+                    // used, just in linear f32 — so output is at-worst
+                    // bit-comparable and at-best gamma-correct.
                     let t_resize = std::time::Instant::now();
-                    let ov_rgba = linear_rgba_to_u8(&ov_linear);
-                    let img = ImageBuffer::<Rgba<u8>, _>::from_raw(ov_w, ov_h, ov_rgba)
-                        .unwrap_or_else(|| ImageBuffer::new(final_w, final_h));
-                    let scaled = image::imageops::resize(&img, final_w, final_h, image::imageops::FilterType::Triangle);
-                    let out = u8_rgba_to_linear(&scaled.into_raw());
+                    let out = crate::grade_resample::upsample_linear_bilinear(
+                        &ov_linear, ov_w, ov_h, final_w, final_h,
+                    );
                     ov_resize_us += t_resize.elapsed().as_micros();
                     out
                 };
