@@ -200,7 +200,12 @@ fn get_track_samples(
         let clip = &state.clips[clip_idx];
         match decode_clip_audio(&clip.path, clip.source_start_secs, sample_rate) {
             Ok(mut buf) => {
-                // Apply per-clip audio effects (EQ, compressor, reverb, etc.)
+                // Apply per-clip audio effects (EQ, compressor, reverb, etc.).
+                // `decode_clip_audio` is called with `source_start_secs`, so the
+                // returned buffer's first sample IS clip-relative t=0. The chain
+                // sees the start time here and is responsible for advancing
+                // internally as it processes the buffer (matters once keyframes
+                // land — see audio_effect_keyframes wiring).
                 if !clip.audio_effects.is_empty() {
                     let mut chain = AudioEffectChain::from_instances(&clip.audio_effects, sample_rate);
                     let ctx = AudioProcessContext {

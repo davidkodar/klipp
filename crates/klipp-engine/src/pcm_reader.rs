@@ -345,11 +345,6 @@ fn pcm_feed_thread(
     } else {
         None
     };
-    let fx_ctx = AudioProcessContext {
-        sample_rate: output_rate,
-        channels: CHANNELS as u32,
-        clip_time_secs: 0.0,
-    };
 
     let mut paused = true;
     let mut eof = false;
@@ -500,8 +495,17 @@ fn pcm_feed_thread(
                         pair.iter().map(move |s| s * mult)
                     })
                     .collect();
-                // Apply audio effects chain after volume/fade
+                // Apply audio effects chain after volume/fade.
+                // clip_time_secs = source position - clip's source_in, so
+                // keyframe tracks store time relative to clip start (matches
+                // the video keyframe convention in keyframe.rs:18-19).
                 if let Some(ref mut chain) = effect_chain {
+                    let chunk_start_src_secs = (read_pos / CHANNELS) as f64 / SAMPLE_RATE as f64;
+                    let fx_ctx = AudioProcessContext {
+                        sample_rate: output_rate,
+                        channels: CHANNELS as u32,
+                        clip_time_secs: (chunk_start_src_secs - src_in).max(0.0),
+                    };
                     chain.process(&mut scaled, &fx_ctx);
                 }
                 producer.push_slice(&scaled);
@@ -533,8 +537,16 @@ fn pcm_feed_thread(
             }
 
             if !buf.is_empty() {
-                // Apply audio effects chain after resample + volume/fade
+                // Apply audio effects chain after resample + volume/fade.
+                // Time domain matches the fast path: source-position seconds
+                // minus clip's source_in.
                 if let Some(ref mut chain) = effect_chain {
+                    let chunk_start_src_secs = (read_pos / CHANNELS) as f64 / SAMPLE_RATE as f64;
+                    let fx_ctx = AudioProcessContext {
+                        sample_rate: output_rate,
+                        channels: CHANNELS as u32,
+                        clip_time_secs: (chunk_start_src_secs - src_in).max(0.0),
+                    };
                     chain.process(&mut buf, &fx_ctx);
                 }
                 producer.push_slice(&buf);

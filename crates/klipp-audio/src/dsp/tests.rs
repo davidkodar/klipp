@@ -814,3 +814,111 @@ fn limiter_type_id_and_display_name_are_stable() {
     assert_eq!(fx.type_id(), "limiter");
     assert_eq!(fx.name(), "Limiter");
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// AudioProcessContext.clip_time_secs forwarding contract
+//
+// The chain receives an `AudioProcessContext` per process() call and
+// must forward `ctx.clip_time_secs` verbatim to each slot's
+// effect.process(). This is the load-bearing field for keyframe
+// evaluation in the audio chain: feeders (pcm_reader, audio_decoder)
+// and the offline mixdown derive a real time from sample-position /
+// PTS / frame-number and hand it to chain.process; effects then sample
+// their kf tracks at that time.
+//
+// Before this contract: all four call sites hardcoded
+// `clip_time_secs: 0.0`, so any future "I'll just smuggle the time
+// in via a side channel" alternative would silently regress automation.
+// The recording-stub effect below is the simplest possible witness:
+// every value the chain receives shows up unchanged in the recorder.
+// ═══════════════════════════════════════════════════════════════════
+
+/// Test-only effect that captures every `ctx.clip_time_secs` value.
+struct RecordingStub {
+    times: std::sync::Arc<std::sync::Mutex<Vec<f64>>>,
+}
+
+impl RecordingStub {
+    fn new() -> (Self, std::sync::Arc<std::sync::Mutex<Vec<f64>>>) {
+        let times = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (Self { times: times.clone() }, times)
+    }
+}
+
+impl AudioEffect for RecordingStub {
+    fn type_id(&self) -> &'static str { "recording_stub" }
+    fn name(&self) -> &'static str { "Recording Stub" }
+    fn param_descriptors(&self) -> &[AudioParamDescriptor] { &[] }
+    fn get_param(&self, _: &str) -> Option<f32> { None }
+    fn set_param(&mut self, _: &str, _: f32) {}
+    fn process(&mut self, _: &mut [f32], ctx: &AudioProcessContext) {
+        self.times.lock().unwrap().push(ctx.clip_time_secs);
+    }
+    fn reset(&mut self) {}
+    fn serialize_params(&self) -> Vec<(String, f32)> { vec![] }
+    fn deserialize_params(&mut self, _: &[(String, f32)]) {}
+}
+
+#[test]
+fn chain_forwards_clip_time_secs_to_slot_effects() {
+    let (stub, times) = RecordingStub::new();
+    let mut chain = AudioEffectChain::new();
+    chain.push_test_slot(Box::new(stub), true, 1.0);
+
+    let mut buf = vec![0.0f32; 1024];
+    let mk = |t: f64| AudioProcessContext {
+        sample_rate: SR,
+        channels: 2,
+        clip_time_secs: t,
+    };
+    chain.process(&mut buf, &mk(0.0));
+    chain.process(&mut buf, &mk(0.5));
+    chain.process(&mut buf, &mk(1.5));
+    chain.process(&mut buf, &mk(3.25));
+
+    let recorded = times.lock().unwrap().clone();
+    assert_eq!(
+        recorded,
+        vec![0.0, 0.5, 1.5, 3.25],
+        "AudioEffectChain.process must forward ctx.clip_time_secs verbatim — \
+         feeders thread the chunk-start time through this field, and Phase 3 \
+         keyframe evaluation reads it. Hardcoding 0.0 anywhere in the chain \
+         silently kills automation."
+    );
+}
+
+#[test]
+fn chain_forwards_time_even_when_wet_dry_lt_1() {
+    // Wet/dry mixing path is a separate code branch in chain.process —
+    // it builds dry_buffer and only re-routes the buffer through the
+    // effect, but the ctx is the same instance. Pin that the time still
+    // makes it through for partially-wet slots.
+    let (stub, times) = RecordingStub::new();
+    let mut chain = AudioEffectChain::new();
+    chain.push_test_slot(Box::new(stub), true, 0.5); // 50% wet
+
+    let mut buf = vec![0.1f32; 256];
+    chain.process(&mut buf, &AudioProcessContext {
+        sample_rate: SR, channels: 2, clip_time_secs: 2.75,
+    });
+
+    assert_eq!(*times.lock().unwrap(), vec![2.75]);
+}
+
+#[test]
+fn chain_skips_disabled_slots_and_does_not_record_time() {
+    // Disabled slots are skipped entirely — process() on the inner
+    // effect never fires. This pins that "enabled: false" really
+    // bypasses the slot and isn't just a wet/dry=0 mix.
+    let (stub, times) = RecordingStub::new();
+    let mut chain = AudioEffectChain::new();
+    chain.push_test_slot(Box::new(stub), false, 1.0); // disabled
+
+    let mut buf = vec![0.0f32; 256];
+    chain.process(&mut buf, &AudioProcessContext {
+        sample_rate: SR, channels: 2, clip_time_secs: 5.0,
+    });
+
+    assert!(times.lock().unwrap().is_empty(),
+        "disabled slot must not have its process() called");
+}

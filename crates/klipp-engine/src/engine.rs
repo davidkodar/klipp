@@ -3106,7 +3106,7 @@ impl PlaybackEngine {
         }
 
         // Fallback: real-time ffmpeg decode
-        match AudioDecoder::open(path, self.cpal_sample_rate, audio_effects) {
+        match AudioDecoder::open(path, self.cpal_sample_rate, audio_effects, source_secs) {
             Ok((adec, consumer)) => {
                 if source_secs > 0.01 {
                     adec.seek(source_secs);
@@ -4776,7 +4776,7 @@ impl PlaybackEngine {
                     continue;
                 }
                 // Fallback: ffmpeg decode
-                if let Ok((adec, consumer)) = AudioDecoder::open(&path, sample_rate, audio_effects) {
+                if let Ok((adec, consumer)) = AudioDecoder::open(&path, sample_rate, audio_effects, source_secs) {
                     if source_secs > 0.01 {
                         adec.seek(source_secs);
                     }
@@ -8772,7 +8772,9 @@ impl PlaybackEngine {
         let track = self.source_mixer_track_index;
         // Default: PCM cache fast path (only available for media that's been
         // through audio-conform), then ffmpeg-decoder fallback.
-        match AudioDecoder::open(path, self.cpal_sample_rate, Vec::new()) {
+        // Source viewer is not bound to a timeline clip — keyframe time
+        // domain is irrelevant (no audio_effects passed), so 0.0 is safe.
+        match AudioDecoder::open(path, self.cpal_sample_rate, Vec::new(), 0.0) {
             Ok((adec, consumer)) => {
                 if source_secs > 0.01 {
                     adec.seek(source_secs);

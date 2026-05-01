@@ -161,6 +161,15 @@ impl Default for AudioEffectChain {
     }
 }
 
+#[cfg(test)]
+impl AudioEffectChain {
+    /// Test-only: push a pre-built effect into the chain. Production code
+    /// goes through `from_instances` / the factory.
+    pub(crate) fn push_test_slot(&mut self, effect: Box<dyn AudioEffect>, enabled: bool, wet_dry: f32) {
+        self.slots.push(ChainSlot { effect, enabled, wet_dry });
+    }
+}
+
 /// Factory: create effect by type ID.
 ///
 /// LADSPA plugins use a composite type_id: `"ladspa:{path}:{label}"`. The
