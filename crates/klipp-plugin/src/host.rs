@@ -110,6 +110,10 @@ pub struct OfxPluginInfo {
     pub supported_contexts: Vec<OfxCategory>,
     /// Human-readable description from the plugin's Describe action.
     pub description: String,
+    /// Plugin advertised support for `kOfxImageEffectPropSupportsOpenGLRender`
+    /// during Describe. Drives the on-thumbnail GPU/CPU badge in the
+    /// effects browser. Mirrors `OfxPlugin::supports_opengl`.
+    pub supports_opengl: bool,
 }
 
 // ── Loaded plugin ────────────────────────────────────────────────────
@@ -172,6 +176,7 @@ impl OfxPlugin {
             grouping: self.grouping.clone(),
             supported_contexts: self.supported_contexts.clone(),
             description: self.description.clone(),
+            supports_opengl: self.supports_opengl,
         }
     }
 }

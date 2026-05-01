@@ -25,6 +25,31 @@ pub struct EffectEntry {
     pub description: String,
 }
 
+impl EffectEntry {
+    /// Whether this effect has a GPU implementation that runs on the
+    /// video preview path. Drives the on-thumbnail GPU/CPU badge and the
+    /// "GPU only" filter pill.
+    ///
+    /// Derivation rules:
+    /// - **Built-in video effects** route through Klipp's wgpu pipeline
+    ///   (`klipp_effects::GpuEffectsPipeline`), so they're always `true`.
+    /// - **OFX plugins** are looked up against `available_plugins` for
+    ///   their `supports_opengl` flag — passed in by the caller because
+    ///   the registry doesn't own that table.
+    /// - **Audio / LADSPA** are CPU-only.
+    pub fn supports_gpu(&self, ofx_plugins: &[klipp_plugin::OfxPluginInfo]) -> bool {
+        match &self.source {
+            EffectSource::Builtin(_) => true,
+            EffectSource::Ofx(id) => ofx_plugins
+                .iter()
+                .find(|p| &p.name == id)
+                .map(|p| p.supports_opengl)
+                .unwrap_or(false),
+            EffectSource::Audio(_) | EffectSource::Ladspa(_) => false,
+        }
+    }
+}
+
 /// A downscaled reference frame used as source for effect thumbnails.
 #[derive(Clone)]
 pub struct ReferenceFrame {

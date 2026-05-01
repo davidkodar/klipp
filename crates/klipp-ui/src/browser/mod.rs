@@ -634,6 +634,10 @@ pub struct BrowserPanel {
     /// — not persisted to prefs. Trimmed to a small cap so the Recent
     /// pseudo-category in the Library sidebar stays digestible.
     pub recent_effects: Vec<String>,
+    /// Effects grid layout: thumbnail grid (default) or dense list.
+    pub effect_view_mode: effects_tab::EffectViewMode,
+    /// Effects grid sort key — drives the result-strip sort dropdown.
+    pub effect_sort: effects_tab::EffectSort,
     /// System file-manager bookmarks read once at startup from KDE Places
     /// (`~/.local/share/user-places.xbel`) and GTK plain-text bookmarks
     /// (`~/.config/gtk-{3,4}.0/bookmarks`). Read-only at runtime.
@@ -795,6 +799,8 @@ impl Default for BrowserPanel {
             pinned_folders: Vec::new(),
             favorite_effects: Vec::new(),
             recent_effects: Vec::new(),
+            effect_view_mode: effects_tab::EffectViewMode::default(),
+            effect_sort: effects_tab::EffectSort::default(),
             system_bookmarks: read_system_bookmarks(),
             files_panel_focused: false,
             type_ahead_buffer: String::new(),
@@ -1212,11 +1218,21 @@ impl BrowserPanel {
                             .frame(false);
                         let resp = ui.add(search);
                         if resp.has_focus() {
+                            // Accent border + soft glow ring. The glow
+                            // sits OUTSIDE the border so the rectangle
+                            // reads as "this input is the keyboard
+                            // target" without competing with the input's
+                            // own outline.
                             let frame_rect = resp.rect.expand2(egui::vec2(9.0, 5.0));
+                            ui.painter().rect_stroke(
+                                frame_rect.expand(2.0),
+                                7.0,
+                                egui::Stroke::new(3.0_f32, theme.accent_subtle),
+                            );
                             ui.painter().rect_stroke(
                                 frame_rect,
                                 5.0,
-                                egui::Stroke::new(1.0_f32, theme.accent_dim),
+                                egui::Stroke::new(1.0_f32, theme.accent),
                             );
                         }
                     });
@@ -1301,11 +1317,21 @@ impl BrowserPanel {
                             .frame(false);
                         let resp = ui.add(search);
                         if resp.has_focus() {
+                            // Accent border + soft glow ring. The glow
+                            // sits OUTSIDE the border so the rectangle
+                            // reads as "this input is the keyboard
+                            // target" without competing with the input's
+                            // own outline.
                             let frame_rect = resp.rect.expand2(egui::vec2(9.0, 5.0));
+                            ui.painter().rect_stroke(
+                                frame_rect.expand(2.0),
+                                7.0,
+                                egui::Stroke::new(3.0_f32, theme.accent_subtle),
+                            );
                             ui.painter().rect_stroke(
                                 frame_rect,
                                 5.0,
-                                egui::Stroke::new(1.0_f32, theme.accent_dim),
+                                egui::Stroke::new(1.0_f32, theme.accent),
                             );
                         }
                     });
@@ -4166,6 +4192,8 @@ impl BrowserPanel {
                     &mut self.effects_category,
                     &mut self.favorite_effects,
                     &mut self.recent_effects,
+                    &mut self.effect_view_mode,
+                    &mut self.effect_sort,
                 )
             }
             LibraryCategory::AudioFx => {
