@@ -74,9 +74,18 @@ impl AudioDecoder {
     /// Returns the decoder and a consumer for reading samples.
     /// `output_rate` is the cpal device's sample rate.
     /// `audio_effects` are the per-clip DSP effects to apply after decode/resample.
+    /// `audio_effect_keyframes` are the per-clip param/bypass/wet-dry keyframe
+    /// tracks (`clip.audio_effect_keyframes`); when non-empty the chain runs
+    /// in sub-chunked evaluation mode.
     /// `clip_source_in_secs` is the clip's source-in time — used to derive
     /// clip-relative `clip_time_secs` for keyframe evaluation in the chain.
-    pub fn open(path: &Path, output_rate: u32, audio_effects: Vec<AudioEffectInstance>, clip_source_in_secs: f64) -> Result<(Self, AudioConsumer), AudioDecoderError> {
+    pub fn open(
+        path: &Path,
+        output_rate: u32,
+        audio_effects: Vec<AudioEffectInstance>,
+        audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+        clip_source_in_secs: f64,
+    ) -> Result<(Self, AudioConsumer), AudioDecoderError> {
         // Validate that file has an audio stream
         {
             let ctx = ffmpeg_next::format::input(path)
@@ -107,7 +116,7 @@ impl AudioDecoder {
             .name("klipp-adec".into())
             .spawn(move || {
                 crate::thread_guard::catch_panic("klipp-adec", || {
-                    audio_decode_thread(path_owned, output_rate, producer, cmd_rx, vol, mute, pts_clone, gen_clone, audio_effects, clip_source_in_secs);
+                    audio_decode_thread(path_owned, output_rate, producer, cmd_rx, vol, mute, pts_clone, gen_clone, audio_effects, audio_effect_keyframes, clip_source_in_secs);
                 });
             })
             .map_err(|e| AudioDecoderError::Open(format!("spawn thread: {e}")))?;
@@ -184,6 +193,7 @@ fn audio_decode_thread(
     post_seek_pts_us: Arc<AtomicU64>,
     seek_generation: Arc<AtomicU64>,
     audio_effects: Vec<AudioEffectInstance>,
+    audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
     clip_source_in_secs: f64,
 ) {
     // CODE_AUDIT C-4: flush denormals on this DSP thread so a silent
@@ -260,10 +270,18 @@ fn audio_decode_thread(
     let tb_den = time_base.denominator() as f64;
     let tb_f64 = if tb_den != 0.0 { tb_num / tb_den } else { 1.0 / 48000.0 };
 
-    // Build audio effect chain from per-clip effects
+    // Build audio effect chain from per-clip effects + keyframe tracks.
     let mut effect_chain = if !audio_effects.is_empty() {
-        let chain = AudioEffectChain::from_instances(&audio_effects, output_rate);
-        debug!("audio_decode_thread: {} audio effects active", chain.slot_count());
+        let chain = AudioEffectChain::from_instances_with_kfs(
+            &audio_effects,
+            &audio_effect_keyframes,
+            output_rate,
+        );
+        debug!(
+            "audio_decode_thread: {} audio effects active ({} kf tracks)",
+            chain.slot_count(),
+            audio_effect_keyframes.len(),
+        );
         Some(chain)
     } else {
         None

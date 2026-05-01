@@ -117,7 +117,15 @@ impl PcmAudioFeeder {
     /// Open a PCM cache file and create a feeder + ring buffer consumer.
     /// The PCM file must be 48kHz stereo f32 interleaved (as produced by conform_audio).
     /// `audio_effects` are the per-clip DSP effects to apply before ring buffer push.
-    pub fn open(pcm_path: &Path, output_rate: u32, audio_effects: Vec<AudioEffectInstance>) -> Result<(Self, AudioConsumer), PcmFeederError> {
+    /// `audio_effect_keyframes` are the per-clip param/bypass/wet-dry keyframe
+    /// tracks (`clip.audio_effect_keyframes`); when non-empty the chain runs
+    /// in sub-chunked evaluation mode.
+    pub fn open(
+        pcm_path: &Path,
+        output_rate: u32,
+        audio_effects: Vec<AudioEffectInstance>,
+        audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+    ) -> Result<(Self, AudioConsumer), PcmFeederError> {
         let pcm_bytes = std::fs::read(pcm_path)
             .map_err(|e| PcmFeederError::Open(format!("read {:?}: {e}", pcm_path)))?;
 
@@ -210,6 +218,7 @@ impl PcmAudioFeeder {
                         fg,
                         ac,
                         audio_effects,
+                        audio_effect_keyframes,
                     );
                 });
             })
@@ -325,6 +334,7 @@ fn pcm_feed_thread(
     _fade_gain: Arc<AtomicU32>,
     anti_click: Arc<AtomicBool>,
     audio_effects: Vec<AudioEffectInstance>,
+    audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
 ) {
     // CODE_AUDIT C-4: flush denormals on this DSP thread — same reason
     // as in audio_decoder. A silent PCM region with biquads engaged
@@ -337,10 +347,18 @@ fn pcm_feed_thread(
     let samples: &[f32] = &pcm_data;
     let total_floats = samples.len();
 
-    // Build audio effect chain from per-clip effects
+    // Build audio effect chain from per-clip effects + keyframe tracks.
     let mut effect_chain = if !audio_effects.is_empty() {
-        let chain = AudioEffectChain::from_instances(&audio_effects, output_rate);
-        debug!("pcm_feed: {} audio effects active", chain.slot_count());
+        let chain = AudioEffectChain::from_instances_with_kfs(
+            &audio_effects,
+            &audio_effect_keyframes,
+            output_rate,
+        );
+        debug!(
+            "pcm_feed: {} audio effects active ({} kf tracks)",
+            chain.slot_count(),
+            audio_effect_keyframes.len(),
+        );
         Some(chain)
     } else {
         None
