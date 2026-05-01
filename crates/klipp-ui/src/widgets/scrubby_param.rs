@@ -188,13 +188,19 @@ pub fn scrubby_param_row(
         }
 
         // ---- DRAG VALUE (number, also draggable + double-click-to-type) ----
+        // `value_width` is the width reserved when computing label_width
+        // above. We must enforce it here too — without `add_sized` the
+        // DragValue auto-sizes to its content ("8" → narrow, "0.500 dB"
+        // → wider, "1.00" → narrow again) and every widget after it
+        // (reset icon, nav arrows, diamond) shifts. The result is the
+        // staircase-of-boxes look across rows of the same inspector.
         let dv = egui::DragValue::new(value)
             .speed(effective_speed)
             .range(range.clone())
             .fixed_decimals(decimals)
             .suffix(suffix);
 
-        let dv_resp = ui.add(dv);
+        let dv_resp = ui.add_sized(egui::vec2(value_width, 18.0), dv);
         dv_response = Some(dv_resp);
 
         // ---- RESET ICON (always allocated, icon only painted when row hovered + non-default) ----
