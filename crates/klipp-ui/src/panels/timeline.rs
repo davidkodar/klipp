@@ -5715,8 +5715,15 @@ impl TimelinePanel {
 
             if let Some((cmd_clip_id, target)) = end_data {
                 if let Some((g, v, p, fi, fo)) = target {
+                    // Canonical drag key: must match
+                    // UpdateClipAudio's `is_dragging` check
+                    // (`"{:?}:audio"`) so per-tick history pushes
+                    // during a fade-handle drag get coalesced into
+                    // the single Begin/End envelope. A mismatched
+                    // key here previously let every tick spam an
+                    // EditClipAudio entry → "Auto saved" toast loop.
                     cmds.push(AppCommand::EndAudioDrag {
-                        key: format!("fade_handle_{:?}", cmd_clip_id),
+                        key: format!("{:?}:audio", cmd_clip_id),
                         clip_id: cmd_clip_id,
                         new_gain: g, new_volume: v, new_pan: p,
                         new_fade_in: fi, new_fade_out: fo,
@@ -5811,8 +5818,11 @@ impl TimelinePanel {
                         found
                     };
                     if let Some((clip_id, cmd_clip_id, is_in, cur, g, v, p, fi_s, fo_s)) = fade_hit {
+                        // See matching EndAudioDrag below — key
+                        // shape must match UpdateClipAudio's
+                        // is_dragging gate.
                         cmds.push(AppCommand::BeginAudioDrag {
-                            key: format!("fade_handle_{:?}", cmd_clip_id),
+                            key: format!("{:?}:audio", cmd_clip_id),
                             clip_id: cmd_clip_id,
                             old_gain: g, old_volume: v, old_pan: p,
                             old_fade_in: fi_s, old_fade_out: fo_s,
