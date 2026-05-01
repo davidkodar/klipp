@@ -1124,3 +1124,136 @@ fn static_chain_skips_sub_chunking_when_no_kfs() {
         recorded.len());
     assert!((recorded[0] - 1.5).abs() < 1e-9);
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Sub-chunk seam + edge cases
+//
+// The keyframed-path loop divides the buffer into 64-stereo-frame
+// slices and re-evaluates kfs at each slice's start. Two failure
+// modes the tests below pin against:
+//
+// 1. The final partial sub-chunk — buffers whose length isn't a
+//    multiple of (SUB_CHUNK_FRAMES * channels) must process the tail
+//    correctly, not silently truncate. A naive `while offset + chunk
+//    <= total` would drop the trailing < 64 frames.
+// 2. Cross-slice continuity — for a smooth Linear-interp ramp, the
+//    LAST sample of one slice and the FIRST sample of the next must
+//    differ by ~one slice-step's worth of param movement, not by a
+//    quantised jump. With 64-frame slices at 48kHz the step is ~1.3ms
+//    of ramp progress. Visible discontinuities here would manifest
+//    as zipper noise in real audio.
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn sub_chunk_handles_partial_tail_buffer() {
+    // Pick a buffer length that is NOT a clean multiple of the
+    // sub-chunk size. 64 stereo frames = 128 floats; 200 floats
+    // forces a partial 72-float tail.
+    let (stub, times) = RecordingStub::new();
+    let mut chain = AudioEffectChain::new();
+    let mut param_kfs = std::collections::HashMap::new();
+    param_kfs.insert("dummy".to_string(), vec![linear_kf(0.0, 0.0), linear_kf(1.0, 1.0)]);
+    chain.push_test_slot_with_kfs(
+        Box::new(stub),
+        true,
+        1.0,
+        param_kfs,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let mut buf = vec![0.5f32; 200];
+    chain.process(&mut buf, &AudioProcessContext {
+        sample_rate: SR, channels: 2, clip_time_secs: 0.0,
+    });
+
+    // 200 floats / (64 frames * 2 ch) = 1 full sub-chunk + 1 partial.
+    // RecordingStub::process is called once per sub-chunk slice.
+    let recorded = times.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 2,
+        "200-float buffer = one full sub-chunk + one partial tail = 2 process() calls, got {}",
+        recorded.len());
+    // First slice starts at clip_time_secs 0.0; second at 64/SR ≈ 0.00133.
+    assert!((recorded[0] - 0.0).abs() < 1e-9);
+    let expected_second = 64.0 / SR as f64;
+    assert!((recorded[1] - expected_second).abs() < 1e-9,
+        "second slice time must be exactly 64 frames in: expected {expected_second}, got {}", recorded[1]);
+}
+
+#[test]
+fn sub_chunk_seam_is_continuous_for_linear_ramp() {
+    // A Linear gain ramp 0 → 1 over 1s, processed in one buffer of
+    // 1s. Sample the buffer at the boundary between two sub-chunks
+    // (frame 64 = sample index 128 stereo) and verify the
+    // monotonic, no-jump shape. Without this pin a future "smooth
+    // each sub-chunk" change that broke the boundary continuity
+    // would surface here.
+    let mut chain = AudioEffectChain::new();
+    let mut param_kfs = std::collections::HashMap::new();
+    param_kfs.insert("gain".to_string(), vec![linear_kf(0.0, 0.0), linear_kf(1.0, 1.0)]);
+    chain.push_test_slot_with_kfs(
+        Box::new(GainStub::new(1.0)),
+        true,
+        1.0,
+        param_kfs,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let frames = SR as usize; // 1 second
+    let mut buf = vec![1.0f32; frames * 2];
+    chain.process(&mut buf, &AudioProcessContext {
+        sample_rate: SR, channels: 2, clip_time_secs: 0.0,
+    });
+
+    // At sub-chunk boundaries the gain should advance by ~1.33ms of
+    // ramp progress (≈ 0.0013 in value). Compare last sample of
+    // slice 1 to last sample of slice 2 — they MUST differ in the
+    // expected direction (rising) and not by a wild quantum.
+    let frames_per_chunk = 64;
+    // End of slice 1 = sample index (frames_per_chunk * 2 - 1).
+    let end_slice_1 = (frames_per_chunk * 2 - 1) as usize;
+    // End of slice 2 = sample index (frames_per_chunk * 2 * 2 - 1).
+    let end_slice_2 = (frames_per_chunk * 2 * 2 - 1) as usize;
+    let v1 = buf[end_slice_1];
+    let v2 = buf[end_slice_2];
+    assert!(v2 > v1,
+        "ramp must be monotonic across sub-chunks: v1={v1}, v2={v2}");
+    let step = v2 - v1;
+    // One sub-chunk is 64 samples = 64/48000 ≈ 1.33ms of ramp.
+    // Expected step ≈ 0.00133 * gain_max - the gain is held constant
+    // within a sub-chunk, so v1 = first_sub_chunk_gain and v2 =
+    // second_sub_chunk_gain. Within a sub-chunk values are flat;
+    // across boundaries they step up by exactly one sub-chunk's
+    // worth of ramp progress.
+    let expected_step = 64.0 / SR as f32; // ≈ 0.00133
+    assert!(
+        (step - expected_step).abs() < 0.001,
+        "sub-chunk step must equal one sub-chunk of ramp ({:.6}), got {:.6}",
+        expected_step, step,
+    );
+}
+
+#[test]
+fn sub_chunk_buffer_smaller_than_one_chunk() {
+    // Edge case: buffer is shorter than a single sub-chunk.
+    // The loop must still process it as one (final + only) slice.
+    let (stub, times) = RecordingStub::new();
+    let mut chain = AudioEffectChain::new();
+    let mut param_kfs = std::collections::HashMap::new();
+    param_kfs.insert("dummy".to_string(), vec![linear_kf(0.0, 0.5)]);
+    chain.push_test_slot_with_kfs(
+        Box::new(stub),
+        true,
+        1.0,
+        param_kfs,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let mut buf = vec![0.0f32; 16]; // 8 stereo frames — well below 64
+    chain.process(&mut buf, &AudioProcessContext {
+        sample_rate: SR, channels: 2, clip_time_secs: 0.0,
+    });
+    assert_eq!(times.lock().unwrap().len(), 1);
+}

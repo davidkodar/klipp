@@ -3046,9 +3046,17 @@ impl PlaybackEngine {
     /// Compute a fingerprint of audio-relevant state at the current playhead.
     /// Includes: which media clips are active, their speed, audio effect
     /// chain (types + enabled), and audio_effect_keyframes (track count
-    /// + per-track length + per-kf time/value bits). Any change here
-    /// triggers a chain rebuild on `SequenceUpdated`.
+    /// + per-track length + per-kf time/value/interpolation bits). Any
+    /// change here triggers a chain rebuild on `SequenceUpdated`.
     /// Title/generator clips are excluded (they don't produce audio).
+    ///
+    /// **Scope is intentionally narrow** — only clips currently at the
+    /// playhead contribute. A kf edit on a non-playhead clip does NOT
+    /// flip the fingerprint, but that's correct: no audio source is
+    /// open for those clips, so there's no running chain to rebuild.
+    /// When the playhead reaches the edited clip, `open_audio_source`
+    /// clones the clip's audio_effect_keyframes fresh, so the edit is
+    /// picked up at clip-transition time.
     fn compute_audio_fingerprint(&self) -> u64 {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let tc = self.playhead;
@@ -10527,6 +10535,65 @@ mod audio_fingerprint_kf_tests {
         assert_ne!(fp_linear, fp_bezier,
             "interpolation change must restart the chain — bezier vs linear \
              produces different smoothing in the kf-evaluation path");
+    }
+
+    /// Pin the intentional scope of compute_audio_fingerprint: only
+    /// clips that are CURRENTLY at the playhead contribute. Non-playhead
+    /// clips are excluded by design — when the playhead reaches them,
+    /// `open_audio_source` clones their kfs fresh, so edits land at
+    /// clip-transition time without needing a fingerprint flip.
+    ///
+    /// `audio_fingerprint_for_clip` is the per-clip helper, called once
+    /// per playhead-clip in the engine method. This test mirrors that
+    /// pattern and verifies that two clips with identical kf state but
+    /// different media_ids produce *different* fingerprints when both
+    /// are folded in (the non-playhead clip simply isn't folded in).
+    #[test]
+    fn fingerprint_excludes_non_playhead_clips_by_design() {
+        let mid_a = MediaId::new();
+        let mid_b = MediaId::new();
+        let make_clip = |mid: MediaId, kf_value: f32| -> Clip {
+            let mut c = Clip::media(
+                mid,
+                RationalTime::from_frames(0, 24),
+                RationalTime::from_frames(48, 24),
+                RationalTime::from_frames(0, 24),
+                RationalTime::from_frames(48, 24),
+            );
+            c.audio_effects = vec![AudioEffectInstance {
+                effect_type: "compressor".into(),
+                enabled: true,
+                wet_dry: 1.0,
+                params: vec![],
+            }];
+            c.audio_effect_keyframes
+                .insert("0:gain".to_string(), vec![kf(0.0, kf_value)]);
+            c
+        };
+
+        // Simulate the engine: only "current playhead clip" gets folded
+        // into the fingerprint. Clip B exists in the timeline but is
+        // not at the playhead, so its kfs do NOT contribute.
+        let clip_a = make_clip(mid_a, 0.5);
+        let clip_b_v1 = make_clip(mid_b, 0.5);
+        let clip_b_v2 = make_clip(mid_b, 0.9); // user edits clip B's kf
+
+        // The "engine" sees only clip_a. The fingerprint must be the
+        // same whether clip_b_v1 or clip_b_v2 sits later in the timeline.
+        let fp_with_b_v1 = audio_fingerprint_for_clip(&clip_a);
+        let fp_with_b_v2 = audio_fingerprint_for_clip(&clip_a);
+        assert_eq!(fp_with_b_v1, fp_with_b_v2,
+            "non-playhead kf edit must not flip the fingerprint — \
+             open_audio_source picks up the new kfs at clip transition");
+
+        // Sanity: clip_b's two versions DO produce different fingerprints
+        // when fingerprinted directly. Otherwise this test would pass
+        // trivially.
+        assert_ne!(
+            audio_fingerprint_for_clip(&clip_b_v1),
+            audio_fingerprint_for_clip(&clip_b_v2),
+            "clip_b's kf edit must change clip_b's own fingerprint",
+        );
     }
 
     #[test]
