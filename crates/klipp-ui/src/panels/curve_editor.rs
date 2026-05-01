@@ -366,7 +366,15 @@ impl CurveEditorPanel {
                         self.param = CurveParam::Video(state.video_rubber_band_param);
                     }
                     TrackKind::Audio => {
-                        self.param = CurveParam::Audio(state.rubber_band_param);
+                        // Curve editor only mirrors clip-level rubber band
+                        // params (Volume/Pan/Gain). When the rubber band is
+                        // currently showing an effect param, the curve editor
+                        // already supports CurveParam::AudioEffect and that
+                        // path gets selected by the user via its own picker
+                        // — no auto-mirror needed here.
+                        if let Some(p) = state.rubber_band_param.as_clip_param() {
+                            self.param = CurveParam::Audio(p);
+                        }
                     }
                     _ => {}
                 }

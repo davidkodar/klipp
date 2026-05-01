@@ -9695,7 +9695,14 @@ impl TimelinePanel {
             return;
         }
 
-        let rb_param = state.rubber_band_param;
+        // B1 scope: the existing rubber band only handles clip-level
+        // params (Volume/Pan/Gain). When the picker has selected an
+        // effect param, fall through silently — B2 will route those to
+        // a dedicated effect-param renderer.
+        let rb_param = match state.rubber_band_param.as_clip_param() {
+            Some(p) => p,
+            None => return,
+        };
 
         // ── Phase 1: extract everything we need from the clip (and linked
         // clip, if any) into owned locals. After this block the clip borrow
@@ -9854,15 +9861,18 @@ impl TimelinePanel {
                     pill_font,
                     egui::Color32::WHITE,
                 );
-                // Click pill to cycle param
+                // Click pill to cycle param. Stays in the clip-level
+                // ClipParam(Volume/Pan/Gain) cycle — the popup picker
+                // (B3) is what lets the user pick an effect param.
                 if interactive {
                     if let Some(pos) = pointer_pos {
                         if pill_rect.contains(pos) && ui.input(|i| i.pointer.primary_clicked()) {
-                            state.rubber_band_param = match rb_param {
+                            let next = match rb_param {
                                 klipp_core::AudioParam::Volume => klipp_core::AudioParam::Pan,
                                 klipp_core::AudioParam::Pan => klipp_core::AudioParam::Gain,
                                 klipp_core::AudioParam::Gain => klipp_core::AudioParam::Volume,
                             };
+                            state.rubber_band_param = crate::state::RubberBandParam::ClipParam(next);
                         }
                     }
                 }

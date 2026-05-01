@@ -54,11 +54,77 @@ pub struct ViewerMaskDrag {
     pub drag_start_pos: egui::Pos2,
 }
 
+/// What the audio rubber band displays — either a clip-level audio param
+/// (Volume/Pan/Gain, the legacy three) or a per-effect param (any
+/// keyframable param on any audio effect, identified by effect index +
+/// param name). Reserved param names "__bypass" and "__wetdry" route
+/// to the slot's bypass-keyframe and wet/dry-keyframe tracks.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RubberBandParam {
+    /// Clip-level audio param (Volume/Pan/Gain). Carries the legacy
+    /// `AudioParam` so existing AddAudioKeyframe / MoveAudioKeyframe
+    /// dispatches keep working unchanged.
+    ClipParam(AudioParam),
+    /// Per-effect param identified by `(effect_index, param_name)` —
+    /// keyed the same way as `clip.audio_effect_keyframes` map keys.
+    EffectParam {
+        effect_index: usize,
+        param_name: String,
+    },
+}
+
+impl Default for RubberBandParam {
+    fn default() -> Self {
+        Self::ClipParam(AudioParam::Volume)
+    }
+}
+
+impl RubberBandParam {
+    /// If this is a clip-level param, return the underlying `AudioParam`.
+    /// Used at sites that still operate purely on clip kfs.
+    pub fn as_clip_param(&self) -> Option<AudioParam> {
+        match self {
+            Self::ClipParam(p) => Some(*p),
+            Self::EffectParam { .. } => None,
+        }
+    }
+
+    /// True when the rubber band is showing a per-effect param.
+    pub fn is_effect(&self) -> bool {
+        matches!(self, Self::EffectParam { .. })
+    }
+
+    /// Map an EffectParam variant back to the
+    /// "{effect_index}:{param_name}" key used in
+    /// `clip.audio_effect_keyframes`. Returns None for ClipParam.
+    pub fn effect_key(&self) -> Option<String> {
+        match self {
+            Self::EffectParam { effect_index, param_name } => {
+                Some(format!("{effect_index}:{param_name}"))
+            }
+            Self::ClipParam(_) => None,
+        }
+    }
+}
+
 /// State during an active audio keyframe drag on the timeline rubber band.
 #[derive(Debug, Clone)]
 pub struct DraggingKeyframe {
     pub clip_id: ClipId,
     pub param: AudioParam,
+    pub keyframe_index: usize,
+}
+
+/// State during an active audio EFFECT keyframe drag on the timeline
+/// rubber band. Parallel to `DraggingKeyframe` for clip-level kfs;
+/// kept separate so the existing clip-kf drag handler doesn't grow a
+/// branch on every step. Effect kfs are stored in
+/// `clip.audio_effect_keyframes["{effect_index}:{param_name}"]`.
+#[derive(Debug, Clone)]
+pub struct DraggingEffectKeyframe {
+    pub clip_id: ClipId,
+    pub effect_index: usize,
+    pub param_name: String,
     pub keyframe_index: usize,
 }
 
@@ -69,6 +135,18 @@ pub struct BezierHandleDrag {
     pub param: AudioParam,
     pub keyframe_index: usize,
     /// true = tangent_out (right handle), false = tangent_in (left handle)
+    pub is_out: bool,
+}
+
+/// State during an active Bezier tangent handle drag on an audio EFFECT
+/// keyframe (rubber band rendering an effect param). Parallel to
+/// `BezierHandleDrag` for the same reason `DraggingEffectKeyframe` is.
+#[derive(Debug, Clone)]
+pub struct BezierEffectHandleDrag {
+    pub clip_id: ClipId,
+    pub effect_index: usize,
+    pub param_name: String,
+    pub keyframe_index: usize,
     pub is_out: bool,
 }
 
@@ -1558,14 +1636,19 @@ pub struct AppState {
     pub dragging_bezier_handle: Option<BezierHandleDrag>,
     /// Bezier tangent handle drag state (video)
     pub dragging_video_bezier_handle: Option<BezierVideoHandleDrag>,
+    /// Audio EFFECT keyframe drag (rubber band rendering an effect param).
+    pub dragging_audio_effect_keyframe: Option<DraggingEffectKeyframe>,
+    /// Bezier tangent handle drag state for audio EFFECT keyframes.
+    pub dragging_audio_effect_bezier_handle: Option<BezierEffectHandleDrag>,
     /// Keyframe interpolation right-click context menu
     pub keyframe_context_menu: Option<KeyframeContextMenu>,
     /// Keyframe clipboard for copy/paste between clips/params
     pub keyframe_clipboard: Option<KeyframeClipboard>,
     /// Currently selected keyframe on timeline (click to select, right-click for menu)
     pub selected_keyframe: Option<SelectedKeyframe>,
-    /// Which audio parameter the timeline rubber band displays.
-    pub rubber_band_param: AudioParam,
+    /// What the audio rubber band displays — clip-level Volume/Pan/Gain
+    /// or a per-effect keyframable param.
+    pub rubber_band_param: RubberBandParam,
     /// Which video parameter the timeline rubber band displays.
     pub video_rubber_band_param: VideoParam,
     /// Audio prefs synced from preferences (fade overlay mode, show rubber band, show waveform)
@@ -2789,10 +2872,12 @@ impl Default for AppState {
             dragging_rubber_band: None,
             dragging_bezier_handle: None,
             dragging_video_bezier_handle: None,
+            dragging_audio_effect_keyframe: None,
+            dragging_audio_effect_bezier_handle: None,
             keyframe_context_menu: None,
             keyframe_clipboard: None,
             selected_keyframe: None,
-            rubber_band_param: AudioParam::Volume,
+            rubber_band_param: RubberBandParam::default(),
             video_rubber_band_param: VideoParam::Opacity,
             audio_fade_overlay_mode: crate::prefs::FadeOverlayMode::default(),
             audio_show_rubber_band: true,
@@ -3229,5 +3314,98 @@ mod tests {
         let result = find_clip_cached(&seq, cid, &cache);
         assert!(result.is_none());
         assert_eq!(cache.get(), None);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// RubberBandParam helper tests (Phase B1).
+//
+// The enum is the foundation that lets the audio rubber band display
+// either a clip-level param (Volume/Pan/Gain) or a per-effect param.
+// These tests pin the helpers used by the rubber band's resolver and
+// the popup picker so a future "let me simplify the enum" change
+// can't silently break the routing.
+// ═══════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod rubber_band_param_tests {
+    use super::*;
+
+    #[test]
+    fn default_is_clip_volume() {
+        // Rubber band starts on the clip-level Volume param so existing
+        // muscle memory (open project → see volume rubber band) is
+        // preserved. Changing the default in a future refactor would
+        // surprise every existing project on first open.
+        let rb = RubberBandParam::default();
+        assert_eq!(rb, RubberBandParam::ClipParam(AudioParam::Volume));
+        assert_eq!(rb.as_clip_param(), Some(AudioParam::Volume));
+        assert!(!rb.is_effect());
+    }
+
+    #[test]
+    fn as_clip_param_returns_none_for_effect_variant() {
+        let rb = RubberBandParam::EffectParam {
+            effect_index: 2,
+            param_name: "threshold".to_string(),
+        };
+        assert_eq!(rb.as_clip_param(), None);
+        assert!(rb.is_effect());
+    }
+
+    #[test]
+    fn effect_key_round_trips_via_audio_effect_keyframes_format() {
+        // The effect_key must match the same "{idx}:{name}" key shape
+        // that `clip.audio_effect_keyframes` uses. This is what lets
+        // the rubber band's resolver pull the right kf vec from the
+        // map without re-implementing the format anywhere else.
+        let rb = RubberBandParam::EffectParam {
+            effect_index: 0,
+            param_name: "threshold".to_string(),
+        };
+        assert_eq!(rb.effect_key().as_deref(), Some("0:threshold"));
+
+        // Reserved key names (__bypass / __wetdry) flow through verbatim
+        // so the bypass strip and the rubber band see the same key.
+        let rb_bypass = RubberBandParam::EffectParam {
+            effect_index: 1,
+            param_name: "__bypass".to_string(),
+        };
+        assert_eq!(rb_bypass.effect_key().as_deref(), Some("1:__bypass"));
+
+        let rb_wet = RubberBandParam::EffectParam {
+            effect_index: 1,
+            param_name: "__wetdry".to_string(),
+        };
+        assert_eq!(rb_wet.effect_key().as_deref(), Some("1:__wetdry"));
+    }
+
+    #[test]
+    fn effect_key_returns_none_for_clip_variant() {
+        let rb = RubberBandParam::ClipParam(AudioParam::Pan);
+        assert!(rb.effect_key().is_none());
+    }
+
+    #[test]
+    fn equality_distinguishes_effect_index_and_param_name() {
+        // Pin that two EffectParams with the same name but different
+        // indices are NOT equal — matters for picker state and for the
+        // "is the selected param still on this clip?" check that the
+        // rubber band uses to decide whether to render or fall back.
+        let a = RubberBandParam::EffectParam {
+            effect_index: 0,
+            param_name: "threshold".to_string(),
+        };
+        let b = RubberBandParam::EffectParam {
+            effect_index: 1,
+            param_name: "threshold".to_string(),
+        };
+        let c = RubberBandParam::EffectParam {
+            effect_index: 0,
+            param_name: "ratio".to_string(),
+        };
+        let a_clone = a.clone();
+        assert_ne!(a, b, "different indices must not match");
+        assert_ne!(a, c, "different param names must not match");
+        assert_eq!(a, a_clone, "clone must equal");
     }
 }

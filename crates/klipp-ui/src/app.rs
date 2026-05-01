@@ -15408,7 +15408,7 @@ impl KlippApp {
                 true
             }
             AppCommand::SetRubberBandParam(param) => {
-                self.state.rubber_band_param = *param;
+                self.state.rubber_band_param = crate::state::RubberBandParam::ClipParam(*param);
                 true
             }
             AppCommand::SetVideoRubberBandParam(param) => {
@@ -19359,23 +19359,45 @@ impl KlippApp {
                             let clip_time_secs = playhead_secs - clip_start_secs;
                             let tolerance = 0.02;
                             if track_kind == klipp_timeline::TrackKind::Audio {
-                                let param = self.state.rubber_band_param;
-                                let keyframes = match param {
-                                    klipp_core::AudioParam::Volume => &clip.volume_keyframes,
-                                    klipp_core::AudioParam::Pan => &clip.pan_keyframes,
-                                    klipp_core::AudioParam::Gain => &clip.gain_keyframes,
-                                };
-                                let existing = keyframes.iter().find(|kf| (kf.time_secs - clip_time_secs).abs() < tolerance);
-                                if let Some(kf) = existing {
-                                    cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param, time_secs: kf.time_secs });
-                                } else {
-                                    let default_val = match param {
-                                        klipp_core::AudioParam::Volume => clip.volume,
-                                        klipp_core::AudioParam::Pan => clip.pan,
-                                        klipp_core::AudioParam::Gain => clip.gain,
-                                    };
-                                    let value = klipp_core::keyframe::evaluate(keyframes, clip_time_secs, default_val);
-                                    cmds.push(AppCommand::AddAudioKeyframe { clip_id, param, time_secs: clip_time_secs, value });
+                                match self.state.rubber_band_param.clone() {
+                                    crate::state::RubberBandParam::ClipParam(param) => {
+                                        let keyframes = match param {
+                                            klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                            klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                            klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                        };
+                                        let existing = keyframes.iter().find(|kf| (kf.time_secs - clip_time_secs).abs() < tolerance);
+                                        if let Some(kf) = existing {
+                                            cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param, time_secs: kf.time_secs });
+                                        } else {
+                                            let default_val = match param {
+                                                klipp_core::AudioParam::Volume => clip.volume,
+                                                klipp_core::AudioParam::Pan => clip.pan,
+                                                klipp_core::AudioParam::Gain => clip.gain,
+                                            };
+                                            let value = klipp_core::keyframe::evaluate(keyframes, clip_time_secs, default_val);
+                                            cmds.push(AppCommand::AddAudioKeyframe { clip_id, param, time_secs: clip_time_secs, value });
+                                        }
+                                    }
+                                    crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+                                        let key = format!("{effect_index}:{param_name}");
+                                        let empty: Vec<klipp_core::Keyframe> = Vec::new();
+                                        let kfs_ref = clip.audio_effect_keyframes.get(&key).unwrap_or(&empty);
+                                        let existing = kfs_ref.iter().find(|kf| (kf.time_secs - clip_time_secs).abs() < tolerance);
+                                        if let Some(kf) = existing {
+                                            cmds.push(AppCommand::RemoveAudioEffectKeyframe {
+                                                clip_id, effect_index, param_name: param_name.clone(), time_secs: kf.time_secs,
+                                            });
+                                        } else {
+                                            let default_val = clip.audio_effects.get(effect_index)
+                                                .and_then(|inst| inst.params.iter().find(|(k, _)| k == &param_name).map(|(_, v)| *v))
+                                                .unwrap_or(0.0);
+                                            let value = klipp_core::keyframe::evaluate(kfs_ref, clip_time_secs, default_val);
+                                            cmds.push(AppCommand::AddAudioEffectKeyframe {
+                                                clip_id, effect_index, param_name, time_secs: clip_time_secs, value,
+                                            });
+                                        }
+                                    }
                                 }
                             } else {
                                 let param = self.state.video_rubber_band_param;
@@ -19442,11 +19464,19 @@ impl KlippApp {
                     });
                     if let Some((clip, track_kind)) = clip_and_kind {
                         let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
-                        let keyframes = if track_kind == klipp_timeline::TrackKind::Audio {
-                            match self.state.rubber_band_param {
-                                klipp_core::AudioParam::Volume => &clip.volume_keyframes,
-                                klipp_core::AudioParam::Pan => &clip.pan_keyframes,
-                                klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                        let empty_kfs: Vec<klipp_core::Keyframe> = Vec::new();
+                        let keyframes: &Vec<klipp_core::Keyframe> = if track_kind == klipp_timeline::TrackKind::Audio {
+                            match &self.state.rubber_band_param {
+                                crate::state::RubberBandParam::ClipParam(param) => match param {
+                                    klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                    klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                    klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                },
+                                crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+                                    clip.audio_effect_keyframes
+                                        .get(&format!("{effect_index}:{param_name}"))
+                                        .unwrap_or(&empty_kfs)
+                                }
                             }
                         } else {
                             match self.state.video_rubber_band_param {
@@ -19478,11 +19508,19 @@ impl KlippApp {
                     });
                     if let Some((clip, track_kind)) = clip_and_kind {
                         let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
-                        let keyframes = if track_kind == klipp_timeline::TrackKind::Audio {
-                            match self.state.rubber_band_param {
-                                klipp_core::AudioParam::Volume => &clip.volume_keyframes,
-                                klipp_core::AudioParam::Pan => &clip.pan_keyframes,
-                                klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                        let empty_kfs: Vec<klipp_core::Keyframe> = Vec::new();
+                        let keyframes: &Vec<klipp_core::Keyframe> = if track_kind == klipp_timeline::TrackKind::Audio {
+                            match &self.state.rubber_band_param {
+                                crate::state::RubberBandParam::ClipParam(param) => match param {
+                                    klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                    klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                    klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                },
+                                crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+                                    clip.audio_effect_keyframes
+                                        .get(&format!("{effect_index}:{param_name}"))
+                                        .unwrap_or(&empty_kfs)
+                                }
                             }
                         } else {
                             match self.state.video_rubber_band_param {
