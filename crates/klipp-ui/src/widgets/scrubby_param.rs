@@ -129,15 +129,30 @@ pub fn scrubby_param_row(
     let mut label_rect_out = egui::Rect::NOTHING;
 
     let _row_response = ui.horizontal(|ui| {
-        // Reserve space: label takes left portion, value + reset + nav arrows + diamond on right
+        // Reserve space: label takes left portion, value + reset + nav arrows + diamond on right.
+        // The trailing cluster is rendered with `Layout::right_to_left` (see below) so it always
+        // packs to the row's right edge — that's why the only thing we need to compute here is
+        // the LABEL width. Subtracting all the right-cluster widget widths plus the actual
+        // `item_spacing.x` between them keeps the row total under `available_width` and prevents
+        // the parent Frame from auto-growing every row (which would compound row-by-row into a
+        // pyramid of ever-wider rows).
         let available = ui.available_width();
         let value_width = 70.0;
         let icon_width = 18.0;
         let nav_arrow_width = 10.0; // per arrow
         let diamond_width = 16.0;
         let has_nav = keyframe_state.as_ref().is_some_and(|ks| ks.has_any_keyframes);
+        let item_spacing = ui.spacing().item_spacing.x;
         let nav_total = if has_nav { nav_arrow_width * 2.0 } else { 0.0 };
-        let label_width = (available - value_width - icon_width - nav_total - diamond_width - 12.0).max(40.0);
+        // Right cluster contains: value + reset + (prev arrow if has_nav) + diamond + (next arrow if has_nav).
+        // That's 3 widgets without nav, 5 with nav. Spacings between them = (n-1) * item_spacing,
+        // plus one item_spacing between the label and the cluster.
+        let right_cluster_widget_count = if has_nav { 5 } else { 3 };
+        let right_cluster_spacings = (right_cluster_widget_count as f32) * item_spacing;
+        let label_width = (available
+            - value_width - icon_width - nav_total - diamond_width
+            - right_cluster_spacings
+        ).max(40.0);
 
         // ---- LABEL (draggable -- this is the scrubby slider) ----
         // Use allocate_exact_size instead of Label to prevent text selection on drag.
@@ -187,27 +202,99 @@ pub fn scrubby_param_row(
             reset_clicked = true;
         }
 
-        // ---- DRAG VALUE (number, also draggable + double-click-to-type) ----
-        // `value_width` is the width reserved when computing label_width
-        // above. We must enforce it here too — without `add_sized` the
-        // DragValue auto-sizes to its content ("8" → narrow, "0.500 dB"
-        // → wider, "1.00" → narrow again) and every widget after it
-        // (reset icon, nav arrows, diamond) shifts. The result is the
-        // staircase-of-boxes look across rows of the same inspector.
-        let dv = egui::DragValue::new(value)
-            .speed(effective_speed)
-            .range(range.clone())
-            .fixed_decimals(decimals)
-            .suffix(suffix);
+        // ---- TRAILING CLUSTER (right-to-left, anchored to row's right edge) ----
+        // Visual order from left to right: value | reset | prev | diamond | next
+        // Right-to-left layout means the FIRST widget added is RIGHTMOST, so we
+        // add in reverse: next → diamond → prev → reset → value.
+        // This keeps the diamond column lined up across rows regardless of how
+        // wide the value string ("8" vs "0.500 dB" vs "1.00") renders.
+        let is_keyframeable = keyframe_state.is_some();
+        let mut diamond_btn_resp_opt: Option<egui::Response> = None;
+        let mut reset_rect_inner: egui::Rect = egui::Rect::NOTHING;
+        let mut reset_rect_resp: Option<egui::Response> = None;
 
-        let dv_resp = ui.add_sized(egui::vec2(value_width, 18.0), dv);
-        dv_response = Some(dv_resp);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Next keyframe arrow (rightmost — only when keyframes exist)
+            if let Some(ref ks) = keyframe_state {
+                if ks.has_any_keyframes {
+                    let has_next = ks.next_keyframe_time.is_some();
+                    let (next_rect, next_resp) = ui.allocate_exact_size(
+                        egui::vec2(nav_arrow_width, 18.0),
+                        if has_next { egui::Sense::click() } else { egui::Sense::hover() },
+                    );
+                    let arrow_color = if !has_next {
+                        egui::Color32::from_rgb(60, 60, 65)
+                    } else if next_resp.hovered() {
+                        egui::Color32::from_rgb(240, 180, 40)
+                    } else {
+                        egui::Color32::from_rgb(140, 140, 145)
+                    };
+                    let icon_rect = egui::Rect::from_center_size(next_rect.center(), egui::vec2(8.0, 8.0));
+                    Icon::CaretRight.image(8.0).tint(arrow_color).paint_at(ui, icon_rect);
+                    if has_next && next_resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if has_next && next_resp.clicked() {
+                        nav_next = true;
+                    }
+                }
+            }
 
-        // ---- RESET ICON (always allocated, icon only painted when row hovered + non-default) ----
-        let (reset_rect_inner, reset_rect) = ui.allocate_exact_size(
-            egui::vec2(icon_width, 18.0),
-            egui::Sense::click(),
-        );
+            // Diamond button (left of next arrow)
+            let diamond_btn_resp = ui.add(
+                egui::Button::new("")
+                    .frame(false)
+                    .min_size(egui::vec2(diamond_width, 18.0))
+                    .sense(if is_keyframeable { egui::Sense::click() } else { egui::Sense::hover() })
+            );
+            diamond_btn_resp_opt = Some(diamond_btn_resp);
+
+            // Previous keyframe arrow (left of diamond)
+            if let Some(ref ks) = keyframe_state {
+                if ks.has_any_keyframes {
+                    let has_prev = ks.prev_keyframe_time.is_some();
+                    let (prev_rect, prev_resp) = ui.allocate_exact_size(
+                        egui::vec2(nav_arrow_width, 18.0),
+                        if has_prev { egui::Sense::click() } else { egui::Sense::hover() },
+                    );
+                    let arrow_color = if !has_prev {
+                        egui::Color32::from_rgb(60, 60, 65)
+                    } else if prev_resp.hovered() {
+                        egui::Color32::from_rgb(240, 180, 40)
+                    } else {
+                        egui::Color32::from_rgb(140, 140, 145)
+                    };
+                    let icon_rect = egui::Rect::from_center_size(prev_rect.center(), egui::vec2(8.0, 8.0));
+                    Icon::CaretLeft.image(8.0).tint(arrow_color).paint_at(ui, icon_rect);
+                    if has_prev && prev_resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if has_prev && prev_resp.clicked() {
+                        nav_prev = true;
+                    }
+                }
+            }
+
+            // Reset icon (left of prev arrow)
+            let (rri, rr) = ui.allocate_exact_size(
+                egui::vec2(icon_width, 18.0),
+                egui::Sense::click(),
+            );
+            reset_rect_inner = rri;
+            reset_rect_resp = Some(rr);
+
+            // Drag value (leftmost in cluster)
+            let dv = egui::DragValue::new(value)
+                .speed(effective_speed)
+                .range(range.clone())
+                .fixed_decimals(decimals)
+                .suffix(suffix);
+            let dv_resp = ui.add(dv);
+            dv_response = Some(dv_resp);
+        });
+
+        let diamond_btn_resp = diamond_btn_resp_opt.expect("diamond always allocated");
+        let reset_rect = reset_rect_resp.expect("reset always allocated");
 
         // Check hover on the entire row including the reset area itself
         let row_is_hovered = label_rect.hovered() || label_rect.dragged()
@@ -240,43 +327,6 @@ pub fn scrubby_param_row(
 
         // Store hover state for next frame (prevents reset button flicker)
         ui.ctx().data_mut(|d| d.insert_temp(row_id, row_is_hovered));
-
-        // ---- KEYFRAME NAV + DIAMOND ----
-        let is_keyframeable = keyframe_state.is_some();
-
-        // Previous keyframe arrow (only when keyframes exist and prev is available)
-        if let Some(ref ks) = keyframe_state {
-            if ks.has_any_keyframes {
-                let has_prev = ks.prev_keyframe_time.is_some();
-                let (prev_rect, prev_resp) = ui.allocate_exact_size(
-                    egui::vec2(nav_arrow_width, 18.0),
-                    if has_prev { egui::Sense::click() } else { egui::Sense::hover() },
-                );
-                let arrow_color = if !has_prev {
-                    egui::Color32::from_rgb(60, 60, 65)
-                } else if prev_resp.hovered() {
-                    egui::Color32::from_rgb(240, 180, 40)
-                } else {
-                    egui::Color32::from_rgb(140, 140, 145)
-                };
-                let icon_rect = egui::Rect::from_center_size(prev_rect.center(), egui::vec2(8.0, 8.0));
-                Icon::CaretLeft.image(8.0).tint(arrow_color).paint_at(ui, icon_rect);
-                if has_prev && prev_resp.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                if has_prev && prev_resp.clicked() {
-                    nav_prev = true;
-                }
-            }
-        }
-
-        // Diamond button
-        let diamond_btn_resp = ui.add(
-            egui::Button::new("")
-                .frame(false)
-                .min_size(egui::vec2(diamond_width, 18.0))
-                .sense(if is_keyframeable { egui::Sense::click() } else { egui::Sense::hover() })
-        );
 
         // Determine diamond color, fill, and stroke width based on keyframe state.
         // Three visual states:
@@ -367,31 +417,6 @@ pub fn scrubby_param_row(
             });
         }
 
-        // Next keyframe arrow (only when keyframes exist and next is available)
-        if let Some(ref ks) = keyframe_state {
-            if ks.has_any_keyframes {
-                let has_next = ks.next_keyframe_time.is_some();
-                let (next_rect, next_resp) = ui.allocate_exact_size(
-                    egui::vec2(nav_arrow_width, 18.0),
-                    if has_next { egui::Sense::click() } else { egui::Sense::hover() },
-                );
-                let arrow_color = if !has_next {
-                    egui::Color32::from_rgb(60, 60, 65)
-                } else if next_resp.hovered() {
-                    egui::Color32::from_rgb(240, 180, 40)
-                } else {
-                    egui::Color32::from_rgb(140, 140, 145)
-                };
-                let icon_rect = egui::Rect::from_center_size(next_rect.center(), egui::vec2(8.0, 8.0));
-                Icon::CaretRight.image(8.0).tint(arrow_color).paint_at(ui, icon_rect);
-                if has_next && next_resp.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                if has_next && next_resp.clicked() {
-                    nav_next = true;
-                }
-            }
-        }
     });
 
     // ---- RANGE INDICATOR (subtle fill bar under the label area only) ----
