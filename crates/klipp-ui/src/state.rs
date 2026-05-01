@@ -182,6 +182,10 @@ pub struct KeyframeClipboard {
 pub enum KeyframeParamKind {
     Audio(AudioParam),
     Video(VideoParam),
+    /// Audio EFFECT param keyframe — identified by effect index +
+    /// param name, same as `audio_effect_keyframes` HashMap keys.
+    /// Reserved keys `__bypass` / `__wetdry` route here too.
+    AudioEffect { effect_index: usize, param_name: String },
 }
 
 /// State for the keyframe interpolation context menu (right-click on diamond).

@@ -18791,14 +18791,27 @@ impl KlippApp {
                                 };
                                 kfs.get(sk.keyframe_index).map(|kf| kf.time_secs)
                             }
+                            crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
+                                clip.audio_effect_keyframes
+                                    .get(&format!("{effect_index}:{param_name}"))
+                                    .and_then(|kfs| kfs.get(sk.keyframe_index).map(|kf| kf.time_secs))
+                            }
                         };
                         if let Some(time_secs) = kf_time {
-                            match sk.param_kind {
+                            match &sk.param_kind {
                                 crate::state::KeyframeParamKind::Audio(param) => {
-                                    cmds.push(AppCommand::RemoveAudioKeyframe { clip_id: sk.clip_id, param, time_secs });
+                                    cmds.push(AppCommand::RemoveAudioKeyframe { clip_id: sk.clip_id, param: *param, time_secs });
                                 }
                                 crate::state::KeyframeParamKind::Video(param) => {
-                                    cmds.push(AppCommand::RemoveVideoKeyframe { clip_id: sk.clip_id, param, time_secs });
+                                    cmds.push(AppCommand::RemoveVideoKeyframe { clip_id: sk.clip_id, param: *param, time_secs });
+                                }
+                                crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
+                                    cmds.push(AppCommand::RemoveAudioEffectKeyframe {
+                                        clip_id: sk.clip_id,
+                                        effect_index: *effect_index,
+                                        param_name: param_name.clone(),
+                                        time_secs,
+                                    });
                                 }
                             }
                             keyframe_deleted = true;

@@ -1052,9 +1052,20 @@ impl CurveEditorPanel {
         match &self.param {
             CurveParam::Audio(p) => KeyframeParamKind::Audio(*p),
             CurveParam::Video(p) => KeyframeParamKind::Video(*p),
-            CurveParam::Speed
-            | CurveParam::Effect(_)
-            | CurveParam::AudioEffect(_) => KeyframeParamKind::Video(VideoParam::Opacity), // fallback
+            CurveParam::AudioEffect(key) => {
+                if let Some((idx_str, name)) = key.split_once(':') {
+                    if let Ok(idx) = idx_str.parse::<usize>() {
+                        return KeyframeParamKind::AudioEffect {
+                            effect_index: idx,
+                            param_name: name.to_string(),
+                        };
+                    }
+                }
+                KeyframeParamKind::Video(VideoParam::Opacity)
+            }
+            CurveParam::Speed | CurveParam::Effect(_) => {
+                KeyframeParamKind::Video(VideoParam::Opacity) // fallback
+            }
         }
     }
 
@@ -1062,6 +1073,9 @@ impl CurveEditorPanel {
         match (&self.param, kind) {
             (CurveParam::Audio(a), KeyframeParamKind::Audio(b)) => a == b,
             (CurveParam::Video(a), KeyframeParamKind::Video(b)) => a == b,
+            (CurveParam::AudioEffect(key), KeyframeParamKind::AudioEffect { effect_index, param_name }) => {
+                key == &format!("{effect_index}:{param_name}")
+            }
             _ => false,
         }
     }
