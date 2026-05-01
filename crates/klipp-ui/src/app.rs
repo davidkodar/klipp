@@ -21277,6 +21277,7 @@ impl eframe::App for KlippApp {
         if (time_trigger || op_trigger)
             && self.state.dirty
             && self.state.project_path.is_some()
+            && !self.state.history.is_any_drag_in_progress()
         {
             if let Some(ref project_path) = self.state.project_path.clone() {
                 let autosave_path = autosave_path_for(project_path);

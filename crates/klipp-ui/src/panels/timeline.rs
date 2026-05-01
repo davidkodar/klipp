@@ -976,7 +976,7 @@ impl TimelinePanel {
         self.handle_video_keyframe_drag(ui, state, &mut cmds, pointer_released, pointer_down);
 
         // ── Flat rubber band drag release ────────────────────────────────
-        self.handle_rubber_band_release(ui, state);
+        self.handle_rubber_band_release(ui, state, &mut cmds);
 
         // ── Bezier tangent handle drag update ──────────────────────────────
         self.handle_audio_bezier_tangent_drag(ui, state, &mut cmds, pointer_released, pointer_down);
@@ -10205,19 +10205,19 @@ impl TimelinePanel {
         let kf_keyframes = &kf_keyframes_vec[..];
 
 
-            // Auto-scale Y axis to actual keyframe values (with padding),
-            // matching the video rubber band approach so small changes are visible.
-            let mut val_min = kf_static_val;
-            let mut val_max = kf_static_val;
-            for kf in kf_keyframes.iter() {
-                if kf.value < val_min { val_min = kf.value; }
-                if kf.value > val_max { val_max = kf.value; }
-            }
-            // Add 20% padding on each side so curves don't touch edges
-            let val_span = (val_max - val_min).max(0.01);
-            let val_padding = val_span * 0.2;
-            let param_min = val_min - val_padding;
-            let param_range = val_span + val_padding * 2.0;
+            // Phase A: fixed Y range per param so the unity / centre line
+            // lands at the same vertical position on every clip,
+            // regardless of keyframe content. The previous auto-scale
+            // behaviour collapsed the curve to a 14%-from-bottom band on
+            // the (very common) no-keyframes case, blending into the
+            // waveform peaks. Fixed ranges match how DaVinci/Premiere
+            // present the inline rubber band; the dedicated automation
+            // lane (Phase B) is where zoom-to-fit auto-scaling will live.
+            let (param_min, param_range, unity_value) = match rb_param {
+                klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32, 1.0_f32),
+                klipp_core::AudioParam::Pan    => (-1.0_f32, 2.0_f32, 0.0_f32),
+                klipp_core::AudioParam::Gain   => (0.0_f32, 2.0_f32, 1.0_f32),
+            };
 
             let clip_painter = painter.with_clip_rect(clip_rect);
 
@@ -10234,27 +10234,36 @@ impl TimelinePanel {
                 clip_rect.left() + frac as f32 * clip_rect.width()
             };
 
-            // Color per param: amber=Volume, cyan=Pan, green=Gain
-            let (line_color, line_color_dim, diamond_fill_sel, diamond_fill_norm, _diamond_stroke_color) = match rb_param {
+            // Color per param: amber=Volume, cyan=Pan, green=Gain.
+            // Phase A bumped unselected alpha 140 → 220 so the curve
+            // actually reads against the waveform; selected stays at
+            // 250+ to keep the "this clip is active" signal strong.
+            let (line_color, line_color_dim, diamond_fill_sel, diamond_fill_norm, fill_color, ref_color, _diamond_stroke_color) = match rb_param {
                 klipp_core::AudioParam::Volume => (
+                    egui::Color32::from_rgba_unmultiplied(255, 195, 50, 250),
                     egui::Color32::from_rgba_unmultiplied(255, 195, 50, 220),
-                    egui::Color32::from_rgba_unmultiplied(240, 180, 50, 140),
                     egui::Color32::from_rgba_unmultiplied(255, 210, 60, 250),
                     egui::Color32::from_rgba_unmultiplied(255, 195, 50, 200),
+                    egui::Color32::from_rgba_unmultiplied(255, 195, 50, 38),
+                    egui::Color32::from_rgba_unmultiplied(255, 220, 130, 70),
                     egui::Color32::from_rgba_unmultiplied(200, 150, 30, 240),
                 ),
                 klipp_core::AudioParam::Pan => (
+                    egui::Color32::from_rgba_unmultiplied(50, 195, 255, 250),
                     egui::Color32::from_rgba_unmultiplied(50, 195, 255, 220),
-                    egui::Color32::from_rgba_unmultiplied(50, 180, 240, 140),
                     egui::Color32::from_rgba_unmultiplied(60, 210, 255, 250),
                     egui::Color32::from_rgba_unmultiplied(50, 195, 255, 200),
+                    egui::Color32::from_rgba_unmultiplied(50, 195, 255, 38),
+                    egui::Color32::from_rgba_unmultiplied(140, 220, 255, 70),
                     egui::Color32::from_rgba_unmultiplied(30, 150, 200, 240),
                 ),
                 klipp_core::AudioParam::Gain => (
+                    egui::Color32::from_rgba_unmultiplied(50, 220, 100, 250),
                     egui::Color32::from_rgba_unmultiplied(50, 220, 100, 220),
-                    egui::Color32::from_rgba_unmultiplied(50, 200, 90, 140),
                     egui::Color32::from_rgba_unmultiplied(60, 240, 110, 250),
                     egui::Color32::from_rgba_unmultiplied(50, 220, 100, 200),
+                    egui::Color32::from_rgba_unmultiplied(50, 220, 100, 38),
+                    egui::Color32::from_rgba_unmultiplied(140, 240, 170, 70),
                     egui::Color32::from_rgba_unmultiplied(30, 170, 60, 240),
                 ),
             };
@@ -10262,8 +10271,20 @@ impl TimelinePanel {
             let diamond_fill = if is_selected || is_multi_selected { diamond_fill_sel } else { diamond_fill_norm };
             let _diamond_shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160);
             let active_line_color = if is_selected || is_multi_selected { line_color } else { line_color_dim };
-            let rb_line_width = if is_selected || is_multi_selected { 2.5_f32 } else { 2.0_f32 };
+            let rb_line_width = if is_selected || is_multi_selected { 3.0_f32 } else { 2.0_f32 };
             let rb_shadow_width = rb_line_width + 1.0_f32;
+
+            // Reference line (unity for Volume/Gain, centre for Pan).
+            // A faint horizontal at the param's neutral value gives the
+            // user a spatial anchor — without it the curve looks
+            // arbitrary against an empty clip background. Drawn before
+            // the fill + stroke so it sits behind both.
+            let unity_y = clip_rect.bottom()
+                - ((unity_value - param_min) / param_range).clamp(0.0, 1.0) * clip_rect.height();
+            clip_painter.line_segment(
+                [egui::pos2(clip_rect.left(), unity_y), egui::pos2(clip_rect.right(), unity_y)],
+                egui::Stroke::new(1.0, ref_color),
+            );
 
             // Draw param pill badge at top-left of clip (below clip name area)
             let param_label = match rb_param {
@@ -10306,9 +10327,23 @@ impl TimelinePanel {
             }
 
             if kf_keyframes.is_empty() {
-                // No keyframes: draw a single horizontal line at the static value
+                // No keyframes: draw a single horizontal line at the
+                // static value, plus a translucent fill from the line
+                // down to the clip bottom so the curve reads as a
+                // band rather than a stroke. Phase A polish.
                 let y = value_to_y(kf_static_val);
-                // Shadow line behind for contrast
+                let band_bottom = clip_rect.bottom();
+                clip_painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(clip_rect.left(), y),
+                        egui::pos2(clip_rect.right(), y),
+                        egui::pos2(clip_rect.right(), band_bottom),
+                        egui::pos2(clip_rect.left(), band_bottom),
+                    ],
+                    fill_color,
+                    egui::Stroke::NONE,
+                ));
+                // Shadow line behind for contrast.
                 clip_painter.line_segment(
                     [egui::pos2(clip_rect.left(), y), egui::pos2(clip_rect.right(), y)],
                     egui::Stroke::new(rb_shadow_width, shadow_color),
@@ -10334,7 +10369,29 @@ impl TimelinePanel {
                     curve_pts.push(egui::pos2(x, y));
                 }
 
-                // Draw shadow pass then color pass
+                // Translucent fill from the curve down to the clip
+                // bottom — reads as a "band" instead of a naked stroke.
+                // Tessellate as a triangle strip via egui's mesh rather
+                // than convex_polygon because the curve isn't convex
+                // (zig-zag keyframe shapes would render incorrectly as
+                // a single polygon).
+                if curve_pts.len() >= 2 {
+                    let band_bottom = clip_rect.bottom();
+                    let mut mesh = egui::epaint::Mesh::default();
+                    for p in &curve_pts {
+                        mesh.colored_vertex(*p, fill_color);
+                        mesh.colored_vertex(egui::pos2(p.x, band_bottom), fill_color);
+                    }
+                    for i in 0..(curve_pts.len() - 1) {
+                        let base = (i * 2) as u32;
+                        // Two triangles per quad.
+                        mesh.add_triangle(base, base + 1, base + 2);
+                        mesh.add_triangle(base + 1, base + 3, base + 2);
+                    }
+                    clip_painter.add(egui::Shape::mesh(mesh));
+                }
+
+                // Draw shadow pass then color pass.
                 for i in 0..curve_pts.len().saturating_sub(1) {
                     clip_painter.line_segment(
                         [curve_pts[i], curve_pts[i + 1]],
@@ -10525,11 +10582,19 @@ impl TimelinePanel {
                         let near_line = (pos.y - rubber_band_y).abs() < 6.0;
 
                         // ── Cursor feedback ──
+                        // Mid-drag the rubber-band/keyframe gesture is
+                        // dominantly vertical (we're shaping a value
+                        // curve, not panning a clip). Keep
+                        // ResizeVertical so the cursor matches the
+                        // intent the user committed to on press —
+                        // otherwise the OS-level pointer flicks to
+                        // Grabbing and reads as "I'm moving the whole
+                        // clip", which is a different operation.
                         let is_dragging_this_rb = state.dragging_rubber_band == Some(kf_clip_id);
                         let is_dragging_this_kf = state.dragging_audio_keyframe.as_ref().is_some_and(|d| d.clip_id == kf_clip_id);
                         let is_dragging_bezier = state.dragging_bezier_handle.as_ref().is_some_and(|d| d.clip_id == kf_clip_id);
                         if is_dragging_this_rb || is_dragging_this_kf || is_dragging_bezier {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
                         } else if nearest_bezier_handle.is_some() {
                             ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                         } else if nearest_kf_idx.is_some() {
@@ -10629,6 +10694,15 @@ impl TimelinePanel {
                         }
 
                         // ── Flat-line drag: drag rubber band to change volume (no keyframes) ──
+                        // Open a Begin/End drag-coalesce envelope so per-frame
+                        // UpdateClipAudio dispatches collapse to ONE history
+                        // entry and ONE autosave op-bump (the gate at
+                        // app.rs `UpdateClipAudio` checks `is_dragging` and
+                        // skips its own history push during the gesture).
+                        // Without this every drag tick was incrementing
+                        // ops_since_save → autosave spam, even though the
+                        // keyframe-diamond drag path already had its own
+                        // BeginKeyframeDrag envelope.
                         if kf_keyframes.is_empty() && near_line && pointer_down
                             && state.dragging_audio_keyframe.is_none()
                             && state.dragging_rubber_band.is_none()
@@ -10636,6 +10710,15 @@ impl TimelinePanel {
                             && !state.drag_drop.is_active() // don't start rubber band during drag-and-drop
                             && !alt_held
                         {
+                            cmds.push(AppCommand::BeginAudioDrag {
+                                key: format!("{:?}:audio", kf_clip_id),
+                                clip_id: kf_clip_id,
+                                old_gain: kf_gain,
+                                old_volume: kf_volume,
+                                old_pan: kf_pan,
+                                old_fade_in: kf_fade_in,
+                                old_fade_out: kf_fade_out,
+                            });
                             state.dragging_rubber_band = Some(kf_clip_id);
                         }
 
@@ -12395,27 +12478,22 @@ impl TimelinePanel {
                                 )
                             };
                             let clip_dur_secs = clip.duration().to_secs_f64();
-                            // Auto-scale Y range to match the drawing code
+                            // Fixed Y range per param — must match the
+                            // renderer in `draw_audio_rubber_band`. Same
+                            // mismatch would break tangent dragging
+                            // otherwise (the Bezier handle would lag the
+                            // pointer until the user gives up). See the
+                            // sibling fix in `handle_audio_keyframe_drag`.
                             let keyframes = match drag_bh.param {
                                 klipp_core::AudioParam::Volume => &clip.volume_keyframes,
                                 klipp_core::AudioParam::Pan => &clip.pan_keyframes,
                                 klipp_core::AudioParam::Gain => &clip.gain_keyframes,
                             };
-                            let bh_static = match drag_bh.param {
-                                klipp_core::AudioParam::Volume => clip.volume,
-                                klipp_core::AudioParam::Pan => clip.pan,
-                                klipp_core::AudioParam::Gain => clip.gain,
+                            let (p_min, p_range) = match drag_bh.param {
+                                klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32),
+                                klipp_core::AudioParam::Pan    => (-1.0_f32, 2.0_f32),
+                                klipp_core::AudioParam::Gain   => (0.0_f32, 2.0_f32),
                             };
-                            let mut bh_vmin = bh_static;
-                            let mut bh_vmax = bh_static;
-                            for k in keyframes.iter() {
-                                if k.value < bh_vmin { bh_vmin = k.value; }
-                                if k.value > bh_vmax { bh_vmax = k.value; }
-                            }
-                            let bh_span = (bh_vmax - bh_vmin).max(0.01);
-                            let bh_pad = bh_span * 0.2;
-                            let p_min = bh_vmin - bh_pad;
-                            let p_range = bh_span + bh_pad * 2.0;
                             if let Some(kf) = keyframes.get(drag_bh.keyframe_index) {
                                 let kf_x = {
                                     let frac = if clip_dur_secs > 0.0 { (kf.time_secs / clip_dur_secs).clamp(0.0, 1.0) } else { 0.0 };
@@ -12683,22 +12761,22 @@ impl TimelinePanel {
                                 }
 
                                 let normalized = ((clip_rect_approx.bottom() - pos.y) / clip_rect_approx.height()).clamp(0.0, 1.0);
-                                // Auto-scale Y range to match the drawing code
-                                let (static_val, kfs_ref) = match drag_kf.param {
-                                    klipp_core::AudioParam::Volume => (clip.volume, &clip.volume_keyframes),
-                                    klipp_core::AudioParam::Pan => (clip.pan, &clip.pan_keyframes),
-                                    klipp_core::AudioParam::Gain => (clip.gain, &clip.gain_keyframes),
+                                // Fixed Y range per param — must match the
+                                // renderer in `draw_audio_rubber_band` so a
+                                // diamond ends up under the pointer after
+                                // a drag. The pre-Phase-A auto-scale here
+                                // (val_min/val_max + 20% pad) collapsed to
+                                // a ±0.7%-of-unity range when only one
+                                // keyframe existed, so dragging the diamond
+                                // 50 px on screen moved the stored value by
+                                // ~0.005 — the diamond barely shifted, the
+                                // pointer left it behind, and the next
+                                // hit-test failed because pointer ≠ diamond.
+                                let (p_min, p_range) = match drag_kf.param {
+                                    klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32),
+                                    klipp_core::AudioParam::Pan    => (-1.0_f32, 2.0_f32),
+                                    klipp_core::AudioParam::Gain   => (0.0_f32, 2.0_f32),
                                 };
-                                let mut v_min = static_val;
-                                let mut v_max = static_val;
-                                for kf in kfs_ref.iter() {
-                                    if kf.value < v_min { v_min = kf.value; }
-                                    if kf.value > v_max { v_max = kf.value; }
-                                }
-                                let v_span = (v_max - v_min).max(0.01);
-                                let v_pad = v_span * 0.2;
-                                let p_min = v_min - v_pad;
-                                let p_range = v_span + v_pad * 2.0;
                                 let new_value = p_min + normalized * p_range;
                                 cmds.push(AppCommand::MoveAudioKeyframe {
                                     clip_id: drag_kf.clip_id,
@@ -13008,11 +13086,32 @@ impl TimelinePanel {
         &mut self,
         ui: &mut egui::Ui,
         state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
     ) {
         let pointer_released = ui.input(|i| i.pointer.primary_released());
         let pointer_down = ui.input(|i| i.pointer.primary_down());
-        if state.dragging_rubber_band.is_some() && (pointer_released || !pointer_down) {
-            state.dragging_rubber_band = None;
+        if let Some(clip_id) = state.dragging_rubber_band {
+            if pointer_released || !pointer_down {
+                // Close the Begin/End coalesce envelope opened on press.
+                // The clip's current values are post-drag — read them
+                // back so the single history entry has the correct
+                // (old → new) pair and autosave can finally fire once.
+                let snap = state.sequence().all_clips()
+                    .find(|c| c.id == clip_id)
+                    .map(|c| (c.gain, c.volume, c.pan, c.fade_in_secs, c.fade_out_secs));
+                if let Some((g, v, p, fi, fo)) = snap {
+                    cmds.push(AppCommand::EndAudioDrag {
+                        key: format!("{:?}:audio", clip_id),
+                        clip_id,
+                        new_gain: g,
+                        new_volume: v,
+                        new_pan: p,
+                        new_fade_in: fi,
+                        new_fade_out: fo,
+                    });
+                }
+                state.dragging_rubber_band = None;
+            }
         }
     }
 }

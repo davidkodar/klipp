@@ -551,6 +551,16 @@ impl CommandHistory {
         self.pending_coalesce_key.as_deref() == Some(key)
     }
 
+    /// Returns true if ANY drag-coalesce envelope is currently open (regardless
+    /// of which key). The autosave timer reads this to skip while the user is
+    /// mid-gesture — without it, a per-frame state mutation (e.g. dragging a
+    /// keyframe diamond at 60 Hz) trips the time-or-op autosave trigger and
+    /// floods the toast queue. Autosave catches up on the next tick after the
+    /// gesture's `end_drag`.
+    pub fn is_any_drag_in_progress(&self) -> bool {
+        self.pending_coalesce_key.is_some()
+    }
+
     /// Returns a reference to the pending old entry (for reading old state at end_drag).
     pub fn pending_old_entry_ref(&self) -> Option<&HistoryEntry> {
         self.pending_old_entry.as_ref()
