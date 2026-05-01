@@ -310,8 +310,12 @@ pub fn show(
         });
         ui.add_space(6.0);
 
-        // Apply filters
-        let mut filtered: Vec<&_> = state
+        // Apply filters. Cloning into an owned Vec releases the borrow
+        // on `state.effect_registry` so the per-row loop can pass `state`
+        // mutably (toast, drag_drop, effect_thumbnails). EffectEntry is
+        // a few strings + an enum — ~200 entries clone in ~microseconds
+        // per frame, dwarfed by the egui paint cost.
+        let mut filtered: Vec<crate::browser::effect_registry::EffectEntry> = state
             .effect_registry
             .filtered_full(*active_category, search_query, favorite_effects, recent_effects)
             .into_iter()
@@ -357,6 +361,7 @@ pub fn show(
 
                 true
             })
+            .cloned()
             .collect();
 
         // Re-sort according to the user-picked sort mode (registry's
@@ -412,37 +417,70 @@ pub fn show(
                 // in the loop body and the push/retain we'd otherwise do
                 // in the same expression.
                 let mut pending_fav_toggle: Option<String> = None;
-                egui::Grid::new("effects_grid")
-                    .num_columns(2)
-                    .spacing([spacing, spacing])
-                    .min_col_width(card_w)
-                    .show(ui, |ui| {
-                        for (i, fx) in filtered.iter().enumerate() {
+                let render_grid = *view_mode == EffectViewMode::Grid;
+                let list_row_h = 48.0;
+
+                // Wrap the per-item loop in either an egui::Grid (grid
+                // view) or a plain vertical flow (list view). The
+                // post-render interaction code below is identical between
+                // the two — only the render call and the favorite star
+                // position differ.
+                let render_items = |ui: &mut egui::Ui,
+                                    pending_fav_toggle: &mut Option<String>,
+                                    cmds: &mut Vec<AppCommand>,
+                                    state: &mut AppState,
+                                    recent_effects: &mut Vec<String>| {
+                    for (i, fx) in filtered.iter().enumerate() {
                             let thumb = state.effect_thumbnails.get_texture(&fx.name);
                             let is_pending = state.effect_thumbnails.is_ofx_pending(&fx.name);
                             let supports_gpu = fx.supports_gpu(&state.available_plugins);
-                            let resp = effect_card(
-                                ui,
-                                theme,
-                                fx,
-                                card_w,
-                                card_h,
-                                preview_h,
-                                thumb,
-                                is_pending,
-                                supports_gpu,
-                            );
+                            let resp = if render_grid {
+                                effect_card(
+                                    ui,
+                                    theme,
+                                    fx,
+                                    card_w,
+                                    card_h,
+                                    preview_h,
+                                    thumb,
+                                    is_pending,
+                                    supports_gpu,
+                                )
+                            } else {
+                                effect_list_row(
+                                    ui,
+                                    theme,
+                                    fx,
+                                    list_row_h,
+                                    thumb,
+                                    is_pending,
+                                    supports_gpu,
+                                )
+                            };
 
-                            // ── Favourite star (top-LEFT of thumb) ──
-                            // Hover-reveal behaviour: invisible until the
-                            // card is hovered or the effect is already
-                            // starred.
+                            // ── Favourite star ──
+                            // Grid: top-LEFT of thumb, hover-reveal with
+                            // a dark scrim so it stays legible over any
+                            // thumbnail content.
+                            // List: right edge, vertically centered, no
+                            // scrim — the row background already gives
+                            // it contrast.
                             let is_fav = favorite_effects.iter().any(|n| n == &fx.name);
                             let card_hovered = resp.hovered();
-                            let star_rect = egui::Rect::from_min_size(
-                                egui::pos2(resp.rect.min.x + 6.0, resp.rect.min.y + 6.0),
-                                egui::vec2(22.0, 22.0),
-                            );
+                            let star_rect = if render_grid {
+                                egui::Rect::from_min_size(
+                                    egui::pos2(resp.rect.min.x + 6.0, resp.rect.min.y + 6.0),
+                                    egui::vec2(22.0, 22.0),
+                                )
+                            } else {
+                                egui::Rect::from_min_size(
+                                    egui::pos2(
+                                        resp.rect.max.x - 28.0,
+                                        resp.rect.center().y - 11.0,
+                                    ),
+                                    egui::vec2(22.0, 22.0),
+                                )
+                            };
                             let star_resp = ui.interact(
                                 star_rect,
                                 ui.id().with(("fav_star", &fx.name)),
@@ -450,19 +488,26 @@ pub fn show(
                             );
                             let star_visible = is_fav || card_hovered || star_resp.hovered();
                             if star_visible {
-                                let bg_alpha = if is_fav { 180 } else { 130 };
-                                ui.painter().rect_filled(
-                                    star_rect,
-                                    4.0,
-                                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, bg_alpha),
-                                );
+                                if render_grid {
+                                    let bg_alpha = if is_fav { 180 } else { 130 };
+                                    ui.painter().rect_filled(
+                                        star_rect,
+                                        4.0,
+                                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, bg_alpha),
+                                    );
+                                }
                                 let star_glyph = if is_fav { "\u{2605}" } else { "\u{2606}" };
                                 let star_color = if is_fav {
                                     egui::Color32::from_rgb(255, 215, 106)
                                 } else if star_resp.hovered() {
                                     egui::Color32::from_rgb(255, 215, 106)
-                                } else {
+                                } else if render_grid {
                                     egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200)
+                                } else {
+                                    // List view: tint with the panel's
+                                    // dim text colour so light themes
+                                    // don't get a washed-out white star.
+                                    theme.text_dim
                                 };
                                 ui.painter().text(
                                     star_rect.center(),
@@ -478,7 +523,7 @@ pub fn show(
                                 "Add to favourites"
                             });
                             if star_resp.clicked() {
-                                pending_fav_toggle = Some(fx.name.clone());
+                                *pending_fav_toggle = Some(fx.name.clone());
                             }
 
                             // Right-click menu on the card — same Add/Remove
@@ -490,7 +535,7 @@ pub fn show(
                                     "Add to Favourites"
                                 };
                                 if ui.button(label).clicked() {
-                                    pending_fav_toggle = Some(fx.name.clone());
+                                    *pending_fav_toggle = Some(fx.name.clone());
                                     ui.close_menu();
                                 }
                             });
@@ -588,11 +633,26 @@ pub fn show(
                                 }
                             }
 
-                            if i % 2 == 1 {
+                            // Grid view places two cards per row — list
+                            // view is single-column so the end_row call
+                            // is grid-only.
+                            if render_grid && i % 2 == 1 {
                                 ui.end_row();
                             }
                         }
-                    });
+                };
+
+                if render_grid {
+                    egui::Grid::new("effects_grid")
+                        .num_columns(2)
+                        .spacing([spacing, spacing])
+                        .min_col_width(card_w)
+                        .show(ui, |ui| {
+                            render_items(ui, &mut pending_fav_toggle, &mut cmds, state, recent_effects);
+                        });
+                } else {
+                    render_items(ui, &mut pending_fav_toggle, &mut cmds, state, recent_effects);
+                }
 
                 // Apply the deferred favourite toggle (star click or
                 // right-click menu). One toggle per frame is enough — egui
@@ -800,6 +860,128 @@ fn effect_card(
         }
         ui.label(egui::RichText::new("Double-click to apply").size(9.0).color(theme.text_dim));
     });
+
+    resp
+}
+
+/// Dense list-view row: small leading thumbnail, name + "Category · Source"
+/// metadata stacked, GPU/CPU + Source badges anchored on the right with
+/// a reserved gutter on the far right for the favorite star (drawn by
+/// the caller). Same `Sense::click_and_drag` as `effect_card`, so the
+/// caller's interaction tail (double-click apply, drag-to-timeline,
+/// context menu, OFX thumbnail request) reuses the returned response.
+fn effect_list_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    fx: &crate::browser::effect_registry::EffectEntry,
+    row_h: f32,
+    thumbnail: Option<&egui::TextureHandle>,
+    is_pending: bool,
+    supports_gpu: bool,
+) -> egui::Response {
+    let avail_w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(avail_w, row_h),
+        egui::Sense::click_and_drag(),
+    );
+    let hovered = resp.hovered();
+    let painter = ui.painter();
+
+    // Row background — subtle bg_raised on hover, clean separator line
+    // along the bottom.
+    if hovered {
+        painter.rect_filled(rect, 4.0, theme.bg_raised);
+    }
+    painter.hline(
+        rect.x_range(),
+        rect.max.y - 0.5,
+        egui::Stroke::new(1.0_f32, theme.border),
+    );
+
+    // Thumbnail at left — 16:9, padded 6px from row edges.
+    let thumb_w = 64.0;
+    let thumb_h = thumb_w * 9.0 / 16.0;
+    let thumb_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x + 6.0, rect.center().y - thumb_h * 0.5),
+        egui::vec2(thumb_w, thumb_h),
+    );
+    let rounding = egui::Rounding::same(4.0);
+    painter.rect_filled(thumb_rect, rounding, theme.bg_panel);
+    painter.rect_stroke(thumb_rect, rounding, egui::Stroke::new(1.0_f32, theme.border));
+    if let Some(tex) = thumbnail {
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        painter.image(tex.id(), thumb_rect, uv, egui::Color32::WHITE);
+    } else {
+        paint_effect_preview(painter, thumb_rect.shrink(1.0), fx, theme);
+        if is_pending {
+            let center = thumb_rect.center();
+            let t = ui.input(|i| i.time) as f32;
+            for i in 0..6 {
+                let a = t * 4.0 + i as f32 * std::f32::consts::TAU / 6.0;
+                let alpha = (255.0 * (1.0 - i as f32 / 6.0)) as u8;
+                let dot = egui::pos2(center.x + a.cos() * 4.0, center.y + a.sin() * 4.0);
+                painter.circle_filled(dot, 1.0, egui::Color32::from_white_alpha(alpha));
+            }
+            ui.ctx().request_repaint();
+        }
+    }
+
+    // Right-side: GPU/CPU + Source pills, right-aligned, with a
+    // reserved gutter for the favorite star painted by the caller.
+    let perf_label = if supports_gpu { "GPU" } else { "CPU" };
+    let source_label = match &fx.source {
+        EffectSource::Ofx(_) => "OFX",
+        EffectSource::Builtin(_) | EffectSource::Audio(_) => "Built-in",
+        EffectSource::Ladspa(_) => "LADSPA",
+    };
+    let star_reserve = 30.0;
+    let badge_y = rect.center().y - 8.0;
+    let src_rect = paint_thumb_badge(
+        ui,
+        theme,
+        egui::pos2(rect.max.x - star_reserve, badge_y),
+        source_label,
+        ThumbBadgeKind::Source,
+    );
+    let perf_rect = paint_thumb_badge(
+        ui,
+        theme,
+        egui::pos2(src_rect.min.x - 4.0, badge_y),
+        perf_label,
+        if supports_gpu { ThumbBadgeKind::Gpu } else { ThumbBadgeKind::Cpu },
+    );
+
+    // Text block between thumbnail and badges.
+    let painter = ui.painter();
+    let text_x = thumb_rect.max.x + 10.0;
+    let text_max_x = perf_rect.min.x - 8.0;
+    let text_w = (text_max_x - text_x).max(40.0);
+    let display_name = display_name_for(fx);
+    let name_galley = painter.layout(
+        display_name,
+        egui::FontId::proportional(12.5),
+        theme.text_primary,
+        text_w,
+    );
+    let meta_text = format!("{} \u{00B7} {}", display_category_for(fx), fx.source_label);
+    let meta_galley = painter.layout(
+        meta_text,
+        egui::FontId::proportional(10.0),
+        theme.text_dim,
+        text_w,
+    );
+    let total_text_h = name_galley.size().y + meta_galley.size().y + 1.0;
+    let name_y = rect.center().y - total_text_h * 0.5;
+    painter.galley(
+        egui::pos2(text_x, name_y),
+        name_galley.clone(),
+        theme.text_primary,
+    );
+    painter.galley(
+        egui::pos2(text_x, name_y + name_galley.size().y + 1.0),
+        meta_galley,
+        theme.text_dim,
+    );
 
     resp
 }
