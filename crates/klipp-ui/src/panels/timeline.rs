@@ -6282,6 +6282,15 @@ impl TimelinePanel {
         track_response.context_menu(|ui| {
             ui.set_min_width(160.0);
             if let Some(clip_id) = state.selected_clip {
+                // The clip's host track kind drives video-only /
+                // audio-only filtering below. Pro-NLE convention:
+                // strict filter, never gray-out — grayed items just
+                // clutter without aiding discovery. Linked-pair items
+                // (Reveal Linked …) deliberately appear in BOTH
+                // menus so they remain reachable from either side.
+                let track_kind = state.sequence().tracks.get(track_idx).map(|t| t.kind);
+                let is_video_track = track_kind == Some(TrackKind::Video);
+
                 // ── Title/Text clip actions ──
                 let title_data_cloned: Option<klipp_timeline::TitleData> = state.sequence().tracks.iter()
                     .flat_map(|t| t.clips.iter())
@@ -6410,7 +6419,6 @@ impl TimelinePanel {
                         ui.close_menu();
                     }
                 }
-                ui.separator();
                 // Colour match (#CG-CLIP2CLIP-MATCH). Parallel to the
                 // audio-reference pattern: one clip is the reference,
                 // others can match against it. Match result lands on a
@@ -6419,7 +6427,13 @@ impl TimelinePanel {
                 // adjustments — the reference frame itself is NOT
                 // persisted; only the distilled match lives with the
                 // project.
-                {
+                //
+                // VIDEO-ONLY: grade nodes are pixel-domain operations,
+                // meaningless for audio clips. (Linked video+audio
+                // pairs still show this on the video side; users
+                // reach it via the linked partner.)
+                if is_video_track {
+                    ui.separator();
                     let is_ref = state.color_match_reference_clip == Some(clip_id);
                     let ref_label = if is_ref {
                         "\u{25CF} Colour Reference (click to re-set)".to_string()
@@ -6492,21 +6506,24 @@ impl TimelinePanel {
                     cmds.push(AppCommand::CreateMulticamClip);
                     ui.close_menu();
                 }
-                // Motion presets submenu
-                ui.menu_button("Motion Presets", |ui| {
-                    for (label, preset) in [
-                        ("Ken Burns: Zoom In", "ken_burns_zoom_in"),
-                        ("Ken Burns: Zoom Out", "ken_burns_zoom_out"),
-                        ("Ken Burns: Pan Left", "ken_burns_pan_left"),
-                        ("PiP: Top Right", "pip_top_right"),
-                        ("PiP: Bottom Left", "pip_bottom_left"),
-                    ] {
-                        if ui.button(label).clicked() {
-                            cmds.push(AppCommand::ApplyMotionPreset { clip_id, preset: preset.into() });
-                            ui.close_menu();
+                // Motion presets submenu — VIDEO-ONLY: spatial
+                // transforms (Ken Burns, PiP) have no audio analogue.
+                if is_video_track {
+                    ui.menu_button("Motion Presets", |ui| {
+                        for (label, preset) in [
+                            ("Ken Burns: Zoom In", "ken_burns_zoom_in"),
+                            ("Ken Burns: Zoom Out", "ken_burns_zoom_out"),
+                            ("Ken Burns: Pan Left", "ken_burns_pan_left"),
+                            ("PiP: Top Right", "pip_top_right"),
+                            ("PiP: Bottom Left", "pip_bottom_left"),
+                        ] {
+                            if ui.button(label).clicked() {
+                                cmds.push(AppCommand::ApplyMotionPreset { clip_id, preset: preset.into() });
+                                ui.close_menu();
+                            }
                         }
-                    }
-                });
+                    });
+                }
                 ui.separator();
                 // Enable/Disable clip
                 let clip_enabled = state.sequence().tracks.iter()
@@ -6523,7 +6540,11 @@ impl TimelinePanel {
                 // insert a 2s freeze as a generator clip at the playhead.
                 // Only offered when the clip under the mouse is ClipKind::Media
                 // and the playhead sits inside that clip (so blading makes sense).
-                let can_freeze = state.sequence().tracks.iter()
+                //
+                // VIDEO-ONLY: "freeze" is the visual frame. An audio
+                // freeze is conceptually different (loop / sustain)
+                // and not what this command does.
+                let can_freeze = is_video_track && state.sequence().tracks.iter()
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.id == clip_id)
                     .is_some_and(|c| {
@@ -6541,7 +6562,11 @@ impl TimelinePanel {
                 // Scene detection: only valid on Media clips whose source file
                 // exists. Suppressed for title/compound/sequence clips and for
                 // offline media.
-                let scene_detect_target = state.sequence().tracks.iter()
+                //
+                // VIDEO-ONLY: histogram-diff scene detector — no
+                // audio equivalent here (audio "scene"/silence
+                // detection would be a separate command).
+                let scene_detect_target = if !is_video_track { None } else { state.sequence().tracks.iter()
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.id == clip_id)
                     .and_then(|c| {
@@ -6551,7 +6576,7 @@ impl TimelinePanel {
                         let mid = c.media_id()?;
                         let item = state.media_pool.get(&mid)?;
                         if item.path.exists() { Some(()) } else { None }
-                    });
+                    }) };
                 if scene_detect_target.is_some() {
                     if state.scene_detect_in_progress.contains(&clip_id) {
                         let pct = (state.scene_detect_progress
@@ -6585,12 +6610,36 @@ impl TimelinePanel {
                     }
                 }
 
-                // Link/Unlink
+                // Link/Unlink + Reveal Linked partner. The Reveal
+                // entry intentionally appears in BOTH the audio-side
+                // and video-side menus so a linked pair stays
+                // navigable from either clip — this is the small
+                // "linked" section that survives the kind split (pro
+                // NLEs do this too: "Reveal in Source Monitor" /
+                // "Find Linked Clip" stay cross-kind).
                 let clip_info = state.sequence().tracks.iter()
                     .flat_map(|t| t.clips.iter())
                     .find(|c| c.id == clip_id);
                 if let Some(clip) = clip_info {
-                    if clip.linked_clip_id.is_some() {
+                    if let Some(partner_id) = clip.linked_clip_id {
+                        // Look up partner's track kind to pick the
+                        // right label — "Reveal Linked Audio" on a
+                        // video clip's menu, "Reveal Linked Video"
+                        // on an audio clip's menu.
+                        let partner_kind = state.sequence().tracks.iter()
+                            .find(|t| t.clips.iter().any(|c| c.id == partner_id))
+                            .map(|t| t.kind);
+                        let reveal_label = match partner_kind {
+                            Some(TrackKind::Audio) => "Reveal Linked Audio",
+                            Some(TrackKind::Video) => "Reveal Linked Video",
+                            Some(TrackKind::Text) => "Reveal Linked Text",
+                            Some(TrackKind::Subtitle) => "Reveal Linked Subtitle",
+                            None => "Reveal Linked Clip",
+                        };
+                        if ui.button(reveal_label).clicked() {
+                            cmds.push(AppCommand::SelectClip(Some(partner_id)));
+                            ui.close_menu();
+                        }
                         if ui.button("Unlink Clip").clicked() {
                             cmds.push(AppCommand::UnlinkClip { clip_id });
                             ui.close_menu();
