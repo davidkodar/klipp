@@ -21950,8 +21950,10 @@ impl eframe::App for KlippApp {
         // 11. Send all commands
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::SEND_COMMANDS);
         self.send_commands(all_cmds);
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::POST_COMMANDS);
 
         // 11.5. Upload title overlay texture if a title property was changed this frame
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::UPLOAD_TITLE);
         self.upload_title_overlay(ctx);
 
         // Clear title overlay during playback (engine handles compositing then)
@@ -22020,6 +22022,7 @@ impl eframe::App for KlippApp {
         }
 
         // 11c. Toast notifications + drag-drop cleanup
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::TOAST_AND_GHOST);
         self.state.toast.render(ctx, &self.theme);
         self.state.toast.cleanup();
 
@@ -22069,6 +22072,8 @@ impl eframe::App for KlippApp {
         }
 
         self.state.drag_drop.frame_start();
+
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::FRAME_END);
 
         // 12. Filmstrip generation — shown in status bar now (no popup)
 

@@ -425,9 +425,11 @@ pub mod ui_stage {
     pub const SHORTCUTS: u64 = 13;
     pub const PROCESS_QUIT: u64 = 14;
     pub const SEND_COMMANDS: u64 = 15;
-    pub const AUTOSAVE_CLEANUP: u64 = 16;
-    pub const VIEWPORT_CLOSE: u64 = 17;
+    pub const POST_COMMANDS: u64 = 16;
+    pub const UPLOAD_TITLE: u64 = 17;
     pub const ON_EXIT: u64 = 18;
+    pub const TOAST_AND_GHOST: u64 = 19;
+    pub const FRAME_END: u64 = 20;
 
     pub fn mark(s: u64) {
         UI_STAGE.store(s, Ordering::Relaxed);
@@ -451,9 +453,11 @@ pub mod ui_stage {
             13 => "Shortcuts",
             14 => "ProcessQuit",
             15 => "SendCommands",
-            16 => "AutosaveCleanup",
-            17 => "ViewportClose",
+            16 => "PostCommands",
+            17 => "UploadTitle",
             18 => "OnExit",
+            19 => "ToastAndGhost",
+            20 => "FrameEnd",
             _ => "Unknown",
         }
     }
