@@ -81,6 +81,18 @@ fn effect_display_name(type_id: &str) -> String {
     }
 }
 
+/// Pill label for the audio rubber band when it's showing an effect
+/// param. Reserved keys (`__bypass`, `__wetdry`) get friendly names so
+/// the pill doesn't read like a code literal.
+fn format_effect_param_pill(effect_index: usize, param_name: &str) -> String {
+    let pretty = match param_name {
+        "__bypass" => "Bypass",
+        "__wetdry" => "Mix",
+        other => other,
+    };
+    format!("FX{effect_index}:{pretty}")
+}
+
 /// Formatted active/bypass time-range summary for a `__bypass` kf
 /// track over a clip of `clip_dur_secs`. Implicit baseline is "active"
 /// before the first kf. Used in the bypass-strip hover tooltip.
@@ -9695,13 +9707,20 @@ impl TimelinePanel {
             return;
         }
 
-        // B1 scope: the existing rubber band only handles clip-level
-        // params (Volume/Pan/Gain). When the picker has selected an
-        // effect param, fall through silently — B2 will route those to
-        // a dedicated effect-param renderer.
-        let rb_param = match state.rubber_band_param.as_clip_param() {
-            Some(p) => p,
-            None => return,
+        // Dispatch on the rubber band variant: ClipParam stays in this
+        // fn (existing 600-line code below); EffectParam routes to a
+        // sibling fn that pulls kfs from `audio_effect_keyframes`.
+        let rb_param = match state.rubber_band_param.clone() {
+            crate::state::RubberBandParam::ClipParam(p) => p,
+            crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+                self.draw_audio_rubber_band_effect(
+                    ui, painter, clip_rect, track_idx, clip_index,
+                    state, cmds, effect_index, &param_name,
+                    interactive, pointer_pos, pointer_down,
+                    is_selected, is_multi_selected,
+                );
+                return;
+            }
         };
 
         // ── Phase 1: extract everything we need from the clip (and linked
@@ -9861,20 +9880,14 @@ impl TimelinePanel {
                     pill_font,
                     egui::Color32::WHITE,
                 );
-                // Click pill to cycle param. Stays in the clip-level
-                // ClipParam(Volume/Pan/Gain) cycle — the popup picker
-                // (B3) is what lets the user pick an effect param.
+                // Click pill → open popup picker (Volume/Pan/Gain plus
+                // any kf'd effect param on this clip). Right-click for
+                // the legacy quick-cycle (Volume → Pan → Gain → Volume)
+                // — keyboard-free fast toggle.
                 if interactive {
-                    if let Some(pos) = pointer_pos {
-                        if pill_rect.contains(pos) && ui.input(|i| i.pointer.primary_clicked()) {
-                            let next = match rb_param {
-                                klipp_core::AudioParam::Volume => klipp_core::AudioParam::Pan,
-                                klipp_core::AudioParam::Pan => klipp_core::AudioParam::Gain,
-                                klipp_core::AudioParam::Gain => klipp_core::AudioParam::Volume,
-                            };
-                            state.rubber_band_param = crate::state::RubberBandParam::ClipParam(next);
-                        }
-                    }
+                    self.show_rubber_band_pill_popup(
+                        ui, pill_rect, kf_clip_id, track_idx, clip_index, state,
+                    );
                 }
             }
 
@@ -10288,6 +10301,431 @@ impl TimelinePanel {
                     }
                 }
             }
+    }
+
+    /// Sibling of `draw_audio_rubber_band` for the EffectParam variant
+    /// of `RubberBandParam`. Reads kfs from
+    /// `clip.audio_effect_keyframes["{idx}:{name}"]`, renders line +
+    /// diamonds, and dispatches click-to-add via
+    /// `AddAudioEffectKeyframe`. Drag motion + Bezier handles arrive
+    /// in B4/B5; for now click-on-diamond still starts the drag state
+    /// so the visual selection works.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_audio_rubber_band_effect(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        clip_rect: egui::Rect,
+        track_idx: usize,
+        clip_index: usize,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+        effect_index: usize,
+        param_name: &str,
+        interactive: bool,
+        pointer_pos: Option<egui::Pos2>,
+        _pointer_down: bool,
+        is_selected: bool,
+        is_multi_selected: bool,
+    ) {
+        let kf_key = format!("{effect_index}:{param_name}");
+
+        // Phase 1: extract data we need from the clip into owned locals
+        // so the &state borrow drops before the &mut state writes below.
+        let (
+            kf_kind_is_gap,
+            clip_dur_secs,
+            kf_static_val,
+            kf_keyframes_vec,
+            kf_clip_id,
+            kf_effect_type,
+        ) = {
+            let clip = &state.sequence().tracks[track_idx].clips[clip_index];
+            let static_val = clip
+                .audio_effects
+                .get(effect_index)
+                .and_then(|inst| inst.params.iter().find(|(k, _)| k == param_name).map(|(_, v)| *v))
+                .unwrap_or(match param_name {
+                    "__bypass" => 1.0,
+                    "__wetdry" => 1.0,
+                    _ => 0.0,
+                });
+            let kfs = clip.audio_effect_keyframes.get(&kf_key).cloned().unwrap_or_default();
+            let effect_type = clip
+                .audio_effects
+                .get(effect_index)
+                .map(|inst| inst.effect_type.clone())
+                .unwrap_or_default();
+            (
+                clip.kind.is_gap(),
+                clip.duration().to_secs_f64(),
+                static_val,
+                kfs,
+                clip.id,
+                effect_type,
+            )
+        };
+
+        if kf_kind_is_gap || clip_dur_secs <= 0.0 {
+            return;
+        }
+        // Effect doesn't exist on this clip — nothing to draw. Pill
+        // still renders with a "—" so the user knows the picker is
+        // pointing at a param this clip doesn't have.
+        if kf_effect_type.is_empty() {
+            self.draw_audio_rubber_band_missing_pill(painter, clip_rect, param_name);
+            return;
+        }
+
+        // Auto-scale Y axis from kf min/max with 20% padding, same as
+        // the clip-param path.
+        let mut val_min = kf_static_val;
+        let mut val_max = kf_static_val;
+        for kf in &kf_keyframes_vec {
+            if kf.value < val_min { val_min = kf.value; }
+            if kf.value > val_max { val_max = kf.value; }
+        }
+        let val_span = (val_max - val_min).max(0.01);
+        let val_padding = val_span * 0.2;
+        let param_min = val_min - val_padding;
+        let param_range = val_span + val_padding * 2.0;
+
+        let theme_ref = theme();
+        let line_color = crate::browser::audio_fx_tab::audio_effect_color_for_type(
+            &kf_effect_type, &theme_ref,
+        );
+        let line_color_dim = egui::Color32::from_rgba_unmultiplied(
+            line_color.r(), line_color.g(), line_color.b(), 140,
+        );
+        let active_line_color = if is_selected || is_multi_selected { line_color } else { line_color_dim };
+        let rb_line_width = if is_selected || is_multi_selected { 2.5_f32 } else { 2.0_f32 };
+        let shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150);
+        let rb_shadow_width = rb_line_width + 1.0_f32;
+
+        let clip_painter = painter.with_clip_rect(clip_rect);
+
+        let value_to_y = |val: f32| -> f32 {
+            let normalized = ((val - param_min) / param_range).clamp(0.0, 1.0);
+            clip_rect.bottom() - normalized * clip_rect.height()
+        };
+        let time_to_x = |t: f64| -> f32 {
+            let frac = (t / clip_dur_secs).clamp(0.0, 1.0) as f32;
+            clip_rect.left() + frac * clip_rect.width()
+        };
+
+        // ── Pill: "FX {idx}: {name}" ──
+        let pill_label = format_effect_param_pill(effect_index, param_name);
+        let pill_font = egui::FontId::proportional(9.0);
+        let pill_galley = ui.painter().layout_no_wrap(
+            pill_label.clone(), pill_font.clone(), egui::Color32::WHITE,
+        );
+        let pill_w = pill_galley.size().x + 8.0;
+        let pill_h = 14.0;
+        let pill_rect = egui::Rect::from_min_size(
+            egui::pos2(clip_rect.left() + 4.0, clip_rect.top() + 14.0),
+            egui::vec2(pill_w, pill_h),
+        );
+        if clip_rect.width() > 30.0 {
+            let pill_bg = egui::Color32::from_rgba_unmultiplied(
+                line_color.r(), line_color.g(), line_color.b(), 100,
+            );
+            clip_painter.rect_filled(pill_rect, 4.0, pill_bg);
+            clip_painter.text(
+                pill_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                &pill_label,
+                pill_font,
+                egui::Color32::WHITE,
+            );
+            // Click pill → popup picker (same one used by the clip-
+            // param rubber band). Lets the user jump between any
+            // automatable param on this clip without leaving the
+            // timeline.
+            if interactive {
+                self.show_rubber_band_pill_popup(
+                    ui, pill_rect, kf_clip_id, track_idx, clip_index, state,
+                );
+            }
+        }
+
+        // ── Line: flat at static value if no kfs, else step/linear/bezier ──
+        if kf_keyframes_vec.is_empty() {
+            // Flat horizontal line at the static value.
+            let y = value_to_y(kf_static_val);
+            clip_painter.line_segment(
+                [
+                    egui::pos2(clip_rect.left(), y + 1.0),
+                    egui::pos2(clip_rect.right(), y + 1.0),
+                ],
+                egui::Stroke::new(rb_shadow_width, shadow_color),
+            );
+            clip_painter.line_segment(
+                [
+                    egui::pos2(clip_rect.left(), y),
+                    egui::pos2(clip_rect.right(), y),
+                ],
+                egui::Stroke::new(rb_line_width, active_line_color),
+            );
+        } else {
+            // Polyline through kfs (Linear shown as straight, Step/
+            // Bezier rendered approximately by the same straight
+            // segment for B2 — full Bezier tangent visualisation
+            // belongs to B5).
+            let mut pts: Vec<egui::Pos2> = Vec::with_capacity(kf_keyframes_vec.len() + 2);
+            // Hold first kf value backward to clip start.
+            pts.push(egui::pos2(time_to_x(0.0), value_to_y(kf_keyframes_vec[0].value)));
+            for kf in &kf_keyframes_vec {
+                pts.push(egui::pos2(time_to_x(kf.time_secs), value_to_y(kf.value)));
+            }
+            // Hold last kf value forward to clip end.
+            let last = kf_keyframes_vec.last().unwrap();
+            pts.push(egui::pos2(time_to_x(clip_dur_secs), value_to_y(last.value)));
+
+            // Shadow
+            for w in pts.windows(2) {
+                clip_painter.line_segment(
+                    [egui::pos2(w[0].x, w[0].y + 1.0), egui::pos2(w[1].x, w[1].y + 1.0)],
+                    egui::Stroke::new(rb_shadow_width, shadow_color),
+                );
+            }
+            // Line
+            for w in pts.windows(2) {
+                clip_painter.line_segment(
+                    [w[0], w[1]],
+                    egui::Stroke::new(rb_line_width, active_line_color),
+                );
+            }
+
+            // Diamonds at each kf
+            for (kf_idx, kf) in kf_keyframes_vec.iter().enumerate() {
+                let cx = time_to_x(kf.time_secs);
+                let cy = value_to_y(kf.value);
+                let r = if is_selected || is_multi_selected { 4.0 } else { 3.5 };
+                let diamond = vec![
+                    egui::pos2(cx, cy - r),
+                    egui::pos2(cx + r, cy),
+                    egui::pos2(cx, cy + r),
+                    egui::pos2(cx - r, cy),
+                ];
+                clip_painter.add(egui::Shape::convex_polygon(
+                    diamond,
+                    line_color,
+                    egui::Stroke::new(1.0, egui::Color32::WHITE),
+                ));
+
+                // Click-on-diamond → start drag state. Motion handled
+                // in B4. For now we just record the selection.
+                if interactive {
+                    if let Some(pos) = pointer_pos {
+                        let hit = (pos.x - cx).abs() <= r + 2.0 && (pos.y - cy).abs() <= r + 2.0;
+                        if hit && ui.input(|i| i.pointer.primary_clicked()) {
+                            state.dragging_audio_effect_keyframe =
+                                Some(crate::state::DraggingEffectKeyframe {
+                                    clip_id: kf_clip_id,
+                                    effect_index,
+                                    param_name: param_name.to_string(),
+                                    keyframe_index: kf_idx,
+                                });
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Click-on-line (alt+click) → AddAudioEffectKeyframe ──
+        if interactive {
+            if let Some(pos) = pointer_pos {
+                let mods = ui.input(|i| i.modifiers);
+                if mods.alt && ui.input(|i| i.pointer.primary_clicked())
+                    && clip_rect.contains(pos)
+                {
+                    let frac = ((pos.x - clip_rect.left()) / clip_rect.width()).clamp(0.0, 1.0) as f64;
+                    let t = frac * clip_dur_secs;
+                    // Value picked from the y-position; same auto-scale.
+                    let normalized = ((clip_rect.bottom() - pos.y) / clip_rect.height()).clamp(0.0, 1.0);
+                    let value = param_min + normalized * param_range;
+                    cmds.push(AppCommand::AddAudioEffectKeyframe {
+                        clip_id: kf_clip_id,
+                        effect_index,
+                        param_name: param_name.to_string(),
+                        time_secs: t,
+                        value,
+                    });
+                }
+            }
+        }
+    }
+
+    /// Pill click → popup picker. Lets the user select what the
+    /// rubber band displays on this audio track: clip-level
+    /// Volume/Pan/Gain (always available) plus any kf'd effect param
+    /// on the clicked clip (so the picker stays scoped to params that
+    /// have actual data). Right-click on the pill quick-cycles through
+    /// clip params (Vol → Pan → Gain) for keyboard-free toggling.
+    fn show_rubber_band_pill_popup(
+        &self,
+        ui: &mut egui::Ui,
+        pill_rect: egui::Rect,
+        clip_id: klipp_core::ClipId,
+        track_idx: usize,
+        clip_index: usize,
+        state: &mut AppState,
+    ) {
+        let pill_id = ui.id().with(("rb_pill", clip_id));
+        let popup_id = ui.id().with(("rb_pill_popup", clip_id));
+        let pill_resp = ui.interact(pill_rect, pill_id, egui::Sense::click());
+
+        // Right-click cycles clip params (no popup).
+        if pill_resp.secondary_clicked() {
+            let cur_clip = state.rubber_band_param.as_clip_param().unwrap_or(klipp_core::AudioParam::Volume);
+            let next = match cur_clip {
+                klipp_core::AudioParam::Volume => klipp_core::AudioParam::Pan,
+                klipp_core::AudioParam::Pan => klipp_core::AudioParam::Gain,
+                klipp_core::AudioParam::Gain => klipp_core::AudioParam::Volume,
+            };
+            state.rubber_band_param = crate::state::RubberBandParam::ClipParam(next);
+            return;
+        }
+
+        // Left-click toggles the popup.
+        if pill_resp.clicked() {
+            ui.memory_mut(|m| m.toggle_popup(popup_id));
+        }
+
+        // Pre-collect picker rows so we can pass owned data into the
+        // closure without re-borrowing state mid-render.
+        let (clip_kf_keys, effect_types): (Vec<String>, Vec<(usize, String)>) = {
+            let clip = &state.sequences[state.active_sequence_idx]
+                .tracks[track_idx]
+                .clips[clip_index];
+            let mut keys: Vec<String> = clip.audio_effect_keyframes.keys().cloned().collect();
+            keys.sort();
+            let types: Vec<(usize, String)> = clip.audio_effects.iter().enumerate()
+                .map(|(i, inst)| (i, inst.effect_type.clone()))
+                .collect();
+            (keys, types)
+        };
+
+        let current_param = state.rubber_band_param.clone();
+        let mut picked: Option<crate::state::RubberBandParam> = None;
+
+        egui::popup_below_widget(
+            ui,
+            popup_id,
+            &pill_resp,
+            egui::popup::PopupCloseBehavior::CloseOnClick,
+            |ui| {
+                ui.set_min_width(160.0);
+
+                // ── Clip-level group ──
+                ui.label(egui::RichText::new("CLIP").size(9.0).strong()
+                    .color(theme().text_dim));
+                for (param, label) in [
+                    (klipp_core::AudioParam::Volume, "Volume"),
+                    (klipp_core::AudioParam::Pan, "Pan"),
+                    (klipp_core::AudioParam::Gain, "Gain"),
+                ] {
+                    let is_sel = current_param == crate::state::RubberBandParam::ClipParam(param);
+                    if ui.selectable_label(is_sel, label).clicked() {
+                        picked = Some(crate::state::RubberBandParam::ClipParam(param));
+                    }
+                }
+
+                if clip_kf_keys.is_empty() {
+                    return;
+                }
+
+                ui.separator();
+                ui.label(egui::RichText::new("EFFECTS").size(9.0).strong()
+                    .color(theme().text_dim));
+
+                // Group keys by effect index, preserve order via
+                // BTreeMap (sorted by index).
+                let mut by_effect: std::collections::BTreeMap<usize, Vec<String>> =
+                    std::collections::BTreeMap::new();
+                for key in &clip_kf_keys {
+                    if let Some((idx_str, name)) = key.split_once(':') {
+                        if let Ok(idx) = idx_str.parse::<usize>() {
+                            by_effect.entry(idx).or_default().push(name.to_string());
+                        }
+                    }
+                }
+
+                for (idx, mut names) in by_effect {
+                    names.sort();
+                    let effect_type = effect_types.iter()
+                        .find(|(i, _)| *i == idx)
+                        .map(|(_, t)| t.clone())
+                        .unwrap_or_default();
+                    let header = if effect_type.is_empty() {
+                        format!("FX {idx}")
+                    } else {
+                        format!("FX {idx}: {}", effect_display_name(&effect_type))
+                    };
+                    ui.label(egui::RichText::new(header).size(9.0)
+                        .color(theme().text_secondary));
+                    for name in names {
+                        let pretty = match name.as_str() {
+                            "__bypass" => "Bypass".to_string(),
+                            "__wetdry" => "Mix".to_string(),
+                            other => other.to_string(),
+                        };
+                        let is_sel = matches!(
+                            &current_param,
+                            crate::state::RubberBandParam::EffectParam { effect_index, param_name }
+                            if *effect_index == idx && param_name == &name
+                        );
+                        if ui.selectable_label(is_sel, format!("  {pretty}")).clicked() {
+                            picked = Some(crate::state::RubberBandParam::EffectParam {
+                                effect_index: idx,
+                                param_name: name.clone(),
+                            });
+                        }
+                    }
+                }
+            },
+        );
+
+        if let Some(p) = picked {
+            state.rubber_band_param = p;
+        }
+    }
+
+    /// Render a "—" placeholder pill when the rubber band picker is
+    /// pointing at an effect param that doesn't exist on this clip.
+    /// Lets the user keep navigating to other clips that DO have that
+    /// effect without losing their selection.
+    fn draw_audio_rubber_band_missing_pill(
+        &self,
+        painter: &egui::Painter,
+        clip_rect: egui::Rect,
+        param_name: &str,
+    ) {
+        if clip_rect.width() <= 30.0 { return; }
+        let theme_ref = theme();
+        let pill_w = 24.0;
+        let pill_h = 14.0;
+        let pill_rect = egui::Rect::from_min_size(
+            egui::pos2(clip_rect.left() + 4.0, clip_rect.top() + 14.0),
+            egui::vec2(pill_w, pill_h),
+        );
+        let painter = painter.with_clip_rect(clip_rect);
+        painter.rect_filled(
+            pill_rect,
+            4.0,
+            egui::Color32::from_rgba_unmultiplied(
+                theme_ref.text_dim.r(), theme_ref.text_dim.g(), theme_ref.text_dim.b(), 80,
+            ),
+        );
+        painter.text(
+            pill_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "\u{2014}", // em-dash
+            egui::FontId::proportional(9.0),
+            egui::Color32::WHITE,
+        );
+        // Suppress unused warning for diagnostic-only param name.
+        let _ = param_name;
     }
 
     fn draw_fade_drag_handles(
@@ -13066,6 +13504,17 @@ mod bypass_strip_helper_tests {
         assert!(s.contains("1:15.00"),
             "75s should render as 1:15.00, got: {s}");
         assert!(s.contains("2:00.00"));
+    }
+
+    #[test]
+    fn pill_label_humanises_reserved_keys() {
+        // Reserved keys (__bypass, __wetdry) get friendly names so the
+        // pill doesn't read like a code literal. Same convention as
+        // the curve editor's CurveParam::AudioEffect label.
+        use super::format_effect_param_pill;
+        assert_eq!(format_effect_param_pill(0, "__bypass"), "FX0:Bypass");
+        assert_eq!(format_effect_param_pill(2, "__wetdry"), "FX2:Mix");
+        assert_eq!(format_effect_param_pill(1, "threshold"), "FX1:threshold");
     }
 
     #[test]
