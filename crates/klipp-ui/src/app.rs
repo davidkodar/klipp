@@ -8055,8 +8055,27 @@ impl KlippApp {
                 }
                 AppCommand::AddAudioEffectKeyframe { clip_id, effect_index, param_name, time_secs, value } => {
                     let key = format!("{}:{}", effect_index, param_name);
-                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
-                        .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
+                    // Same drag key the BeginAudioChainDrag /
+                    // EndAudioChainDrag pair uses — when a slider drag
+                    // is active, the auto-update path
+                    // (`dispatch_audio_kf_response`) fires
+                    // AddAudioEffectKeyframe per drag tick. Without
+                    // this is_dragging gate every tick was pushing a
+                    // separate EditKeyframes entry, replicating the
+                    // 60 Hz "Auto saved" spam on the kf'd-slider path
+                    // (the static-slider path is already gated via
+                    // UpdateAudioEffectParam). The Begin/End pair
+                    // already snapshots the full clip state including
+                    // audio_effect_keyframes, so undo rolls back the
+                    // entire drag in one step.
+                    let drag_key = format!("audio_chain:{}:{}:{}", clip_id.0, effect_index, param_name);
+                    let is_dragging = self.state.history.is_dragging(&drag_key);
+                    let old_state = if !is_dragging {
+                        self.state.sequences[self.state.active_sequence_idx].all_clips()
+                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip)
+                    } else {
+                        None
+                    };
                     // `__bypass` defaults to Step interpolation (it's an
                     // on/off toggle); other params default to Linear.
                     let default_interp = if param_name == "__bypass" {
@@ -8080,21 +8099,23 @@ impl KlippApp {
                             break;
                         }
                     }
-                    if let Some(old_snap) = old_state {
-                        if let Some(new_snap) = self.state.sequences[self.state.active_sequence_idx].all_clips()
-                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
-                            self.state.history.push(HistoryEntry {
-                                sequence_idx: self.state.active_sequence_idx,
-                                command: EditCommand::EditKeyframes {
-                                    clip_id: *clip_id,
-                                    linked_clip_id: None,
-                                    description: "Add Audio Effect Keyframe",
-                                    old_state: old_snap,
-                                    new_state: new_snap,
-                                    old_linked_state: None,
-                                    new_linked_state: None,
-                                },
-                            });
+                    if !is_dragging {
+                        if let Some(old_snap) = old_state {
+                            if let Some(new_snap) = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                                .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
+                                self.state.history.push(HistoryEntry {
+                                    sequence_idx: self.state.active_sequence_idx,
+                                    command: EditCommand::EditKeyframes {
+                                        clip_id: *clip_id,
+                                        linked_clip_id: None,
+                                        description: "Add Audio Effect Keyframe",
+                                        old_state: old_snap,
+                                        new_state: new_snap,
+                                        old_linked_state: None,
+                                        new_linked_state: None,
+                                    },
+                                });
+                            }
                         }
                     }
                     self.sync_sequence_to_engine();
@@ -8104,8 +8125,21 @@ impl KlippApp {
                 }
                 AppCommand::RemoveAudioEffectKeyframe { clip_id, effect_index, param_name, time_secs } => {
                     let key = format!("{}:{}", effect_index, param_name);
-                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
-                        .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
+                    // See AddAudioEffectKeyframe above for the
+                    // is_dragging contract — diamond toggles fire this
+                    // path during a drag too (when scrubby_param's
+                    // auto-update detects the user re-crossed an
+                    // existing kf at the playhead and the value is
+                    // being removed in place). Skip the per-tick push
+                    // and let the Begin/End wrap own the history.
+                    let drag_key = format!("audio_chain:{}:{}:{}", clip_id.0, effect_index, param_name);
+                    let is_dragging = self.state.history.is_dragging(&drag_key);
+                    let old_state = if !is_dragging {
+                        self.state.sequences[self.state.active_sequence_idx].all_clips()
+                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip)
+                    } else {
+                        None
+                    };
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
@@ -8117,21 +8151,23 @@ impl KlippApp {
                             break;
                         }
                     }
-                    if let Some(old_snap) = old_state {
-                        if let Some(new_snap) = self.state.sequences[self.state.active_sequence_idx].all_clips()
-                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
-                            self.state.history.push(HistoryEntry {
-                                sequence_idx: self.state.active_sequence_idx,
-                                command: EditCommand::EditKeyframes {
-                                    clip_id: *clip_id,
-                                    linked_clip_id: None,
-                                    description: "Remove Audio Effect Keyframe",
-                                    old_state: old_snap,
-                                    new_state: new_snap,
-                                    old_linked_state: None,
-                                    new_linked_state: None,
-                                },
-                            });
+                    if !is_dragging {
+                        if let Some(old_snap) = old_state {
+                            if let Some(new_snap) = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                                .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
+                                self.state.history.push(HistoryEntry {
+                                    sequence_idx: self.state.active_sequence_idx,
+                                    command: EditCommand::EditKeyframes {
+                                        clip_id: *clip_id,
+                                        linked_clip_id: None,
+                                        description: "Remove Audio Effect Keyframe",
+                                        old_state: old_snap,
+                                        new_state: new_snap,
+                                        old_linked_state: None,
+                                        new_linked_state: None,
+                                    },
+                                });
+                            }
                         }
                     }
                     self.sync_sequence_to_engine();
