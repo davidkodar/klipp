@@ -81,6 +81,40 @@ fn effect_display_name(type_id: &str) -> String {
     }
 }
 
+/// Build the ordered list of `RubberBandParam`s the user can rotate
+/// through on a given clip — the SAME list the popup picker shows
+/// (clip-level Volume/Pan/Gain, then per-effect kf'd params grouped
+/// by effect index, alphabetical within each group). Used by both
+/// the click-popup (B3) and the wheel-cycle (D) so the orderings
+/// stay in lockstep — you can't end up with the popup highlighting
+/// one item while wheel-scroll lands on a different one.
+fn build_rubber_band_picker_list(clip_kf_keys: &[String]) -> Vec<crate::state::RubberBandParam> {
+    let mut list = vec![
+        crate::state::RubberBandParam::ClipParam(klipp_core::AudioParam::Volume),
+        crate::state::RubberBandParam::ClipParam(klipp_core::AudioParam::Pan),
+        crate::state::RubberBandParam::ClipParam(klipp_core::AudioParam::Gain),
+    ];
+    let mut by_effect: std::collections::BTreeMap<usize, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for key in clip_kf_keys {
+        if let Some((idx_str, name)) = key.split_once(':') {
+            if let Ok(idx) = idx_str.parse::<usize>() {
+                by_effect.entry(idx).or_default().push(name.to_string());
+            }
+        }
+    }
+    for (idx, mut names) in by_effect {
+        names.sort();
+        for name in names {
+            list.push(crate::state::RubberBandParam::EffectParam {
+                effect_index: idx,
+                param_name: name,
+            });
+        }
+    }
+    list
+}
+
 /// Pick the "primary" kf'd param to surface when the user clicks a
 /// top-strip cell on an audio clip. Order:
 ///   1. First non-reserved param name, alphabetical (a real tunable
@@ -10984,7 +11018,12 @@ impl TimelinePanel {
     ) {
         let pill_id = ui.id().with(("rb_pill", clip_id));
         let popup_id = ui.id().with(("rb_pill_popup", clip_id));
-        let pill_resp = ui.interact(pill_rect, pill_id, egui::Sense::click());
+        // Sense includes hover so the wheel-cycle handler below can
+        // gate on pill_resp.hovered() instead of doing its own hit-test.
+        let pill_resp = ui.interact(
+            pill_rect, pill_id,
+            egui::Sense::click().union(egui::Sense::hover()),
+        );
 
         // Right-click cycles clip params (no popup).
         if pill_resp.secondary_clicked() {
@@ -11016,6 +11055,30 @@ impl TimelinePanel {
                 .collect();
             (keys, types)
         };
+
+        // Mouse-wheel on the pill rotates through the picker list —
+        // fast iteration for clips with several automated effects
+        // without having to open the popup each time. Scroll up =
+        // previous param, scroll down = next param. Threshold gates
+        // out tiny touchpad jitters; one wheel click typically
+        // produces 30–60 px so anything > 8px counts as intent.
+        if pill_resp.hovered() {
+            let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
+            if scroll_y.abs() > 8.0 {
+                let list = build_rubber_band_picker_list(&clip_kf_keys);
+                if !list.is_empty() {
+                    let cur_idx = list
+                        .iter()
+                        .position(|p| *p == state.rubber_band_param)
+                        .unwrap_or(0);
+                    // Scroll-wheel-up (+y) → previous, scroll-wheel-down (-y) → next.
+                    let delta: i32 = if scroll_y > 0.0 { -1 } else { 1 };
+                    let len = list.len() as i32;
+                    let new_idx = ((cur_idx as i32 + delta).rem_euclid(len)) as usize;
+                    state.rubber_band_param = list[new_idx].clone();
+                }
+            }
+        }
 
         let current_param = state.rubber_band_param.clone();
         let mut picked: Option<crate::state::RubberBandParam> = None;
@@ -14188,6 +14251,116 @@ mod bypass_strip_helper_tests {
         use super::pick_primary_kf_param;
         let params: Vec<String> = vec![];
         assert_eq!(pick_primary_kf_param(&params), None);
+    }
+
+    // ── build_rubber_band_picker_list (Phase D wheel-cycle source) ──
+
+    #[test]
+    fn picker_list_clip_only_when_no_kfs() {
+        // No kf'd effects on the clip → list is just the clip-level
+        // params. Wheel-cycle on this clip stays inside Volume/Pan/Gain.
+        use super::build_rubber_band_picker_list;
+        let list = build_rubber_band_picker_list(&[]);
+        assert_eq!(list.len(), 3);
+        assert!(matches!(
+            list[0],
+            crate::state::RubberBandParam::ClipParam(klipp_core::AudioParam::Volume)
+        ));
+        assert!(matches!(
+            list[1],
+            crate::state::RubberBandParam::ClipParam(klipp_core::AudioParam::Pan)
+        ));
+        assert!(matches!(
+            list[2],
+            crate::state::RubberBandParam::ClipParam(klipp_core::AudioParam::Gain)
+        ));
+    }
+
+    #[test]
+    fn picker_list_orders_clip_params_then_effects_grouped_by_index() {
+        // Clip params come first, then effect params grouped by
+        // effect_index (BTreeMap ordering — ascending), alphabetical
+        // within each group. Both the popup and the wheel-cycle
+        // consume this exact ordering, so the popup item the user
+        // sees as "next" is the same one wheel-down lands on.
+        use super::build_rubber_band_picker_list;
+        let keys = vec![
+            "1:gain".to_string(),
+            "0:threshold".to_string(),
+            "0:__bypass".to_string(),
+            "1:__wetdry".to_string(),
+        ];
+        let list = build_rubber_band_picker_list(&keys);
+        // 3 clip + 4 effect = 7
+        assert_eq!(list.len(), 7);
+        // Effect 0 first (lower idx), with __bypass alphabetical first
+        // (underscore sorts before letters in ASCII).
+        match &list[3] {
+            crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+                assert_eq!(*effect_index, 0);
+                assert_eq!(param_name, "__bypass");
+            }
+            _ => panic!("expected EffectParam at idx 3, got {:?}", list[3]),
+        }
+        match &list[4] {
+            crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+                assert_eq!(*effect_index, 0);
+                assert_eq!(param_name, "threshold");
+            }
+            _ => panic!("expected EffectParam at idx 4, got {:?}", list[4]),
+        }
+        match &list[5] {
+            crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+                assert_eq!(*effect_index, 1);
+                assert_eq!(param_name, "__wetdry");
+            }
+            _ => panic!("expected EffectParam at idx 5, got {:?}", list[5]),
+        }
+        match &list[6] {
+            crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+                assert_eq!(*effect_index, 1);
+                assert_eq!(param_name, "gain");
+            }
+            _ => panic!("expected EffectParam at idx 6, got {:?}", list[6]),
+        }
+    }
+
+    #[test]
+    fn picker_list_skips_malformed_keys() {
+        // A key without a colon, or with a non-numeric index, must
+        // not panic and must not appear in the list. Defensive
+        // against hand-edited project files or corrupted state.
+        use super::build_rubber_band_picker_list;
+        let keys = vec![
+            "no_colon".to_string(),
+            "abc:gain".to_string(),     // non-numeric index
+            "0:threshold".to_string(),  // valid
+        ];
+        let list = build_rubber_band_picker_list(&keys);
+        assert_eq!(list.len(), 4); // 3 clip + 1 valid effect
+        match &list[3] {
+            crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+                assert_eq!(*effect_index, 0);
+                assert_eq!(param_name, "threshold");
+            }
+            _ => panic!("expected the valid effect param to land at idx 3"),
+        }
+    }
+
+    #[test]
+    fn picker_list_wheel_cycle_wraps_at_ends() {
+        // The wheel-cycle handler does `(cur + delta).rem_euclid(len)`.
+        // From the last item, scroll-down lands on the first item;
+        // from the first, scroll-up lands on the last. rem_euclid
+        // is the right tool here because regular `%` gives negative
+        // results for negative dividends in Rust.
+        let len = 7_i32;
+        // Last → next wraps to first.
+        let cur = 6_i32;
+        assert_eq!(((cur + 1).rem_euclid(len)) as usize, 0);
+        // First → prev wraps to last.
+        let cur = 0_i32;
+        assert_eq!(((cur - 1).rem_euclid(len)) as usize, 6);
     }
 
     #[test]
