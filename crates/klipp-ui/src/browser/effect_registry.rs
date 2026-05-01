@@ -720,6 +720,11 @@ impl EffectRegistry {
 /// Convert an OFX plugin identifier to a human-readable name.
 /// "net.sf.openfx.GaussianBlur" → "Gaussian Blur"
 /// "net.sf.cimg.CImgBloom" → "CImg Bloom"
+///
+/// Drops a trailing "Plugin" suffix — every OFX entry IS a plugin, so
+/// the word adds zero information and clutters the card title. The
+/// per-id override map in `effects_tab::display_name_override` handles
+/// the small set of names where this mechanical algorithm still goofs.
 fn format_ofx_name(identifier: &str) -> String {
     let last = identifier.rsplit_once('.').map(|(_, n)| n).unwrap_or(identifier);
     // Insert spaces before uppercase letters (CamelCase → Camel Case)
@@ -734,7 +739,15 @@ fn format_ofx_name(identifier: &str) -> String {
         }
         result.push(c);
     }
-    result
+    // Strip "Plugin" suffix (with or without leading space). Be defensive
+    // — only strip when the suffix is genuinely a separate token, not a
+    // word like "Toplugin".
+    let trimmed = result
+        .trim_end_matches("Plugin")
+        .trim_end_matches(" Plugin")
+        .trim_end()
+        .to_string();
+    if trimmed.is_empty() { result } else { trimmed }
 }
 
 /// Map an OFX grouping string to an EffectCategory.

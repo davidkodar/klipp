@@ -727,11 +727,12 @@ fn effect_card(
         if supports_gpu { ThumbBadgeKind::Gpu } else { ThumbBadgeKind::Cpu },
     );
 
-    // Name + category below preview
+    // ── Card metadata: Name (top), then "Category · Source" below ──
     let painter = ui.painter();
     let name_y = card_rect.min.y + preview_h + 6.0;
+    let display_name = display_name_for(fx);
     let name_galley = painter.layout(
-        fx.name.clone(),
+        display_name,
         egui::FontId::proportional(12.0),
         theme.text_primary,
         width - 12.0,
@@ -742,15 +743,23 @@ fn effect_card(
         theme.text_primary,
     );
 
-    // Category subtitle
-    let cat_y = name_y + name_galley.size().y + 1.0;
-    let cat_galley = painter.layout(
-        fx.grouping.clone(),
+    // Category · Source — single line. "Category · Source" format
+    // makes provenance scannable at a glance. Source pill on the
+    // thumbnail still owns the visual emphasis; this is just the
+    // textual companion.
+    let meta_y = name_y + name_galley.size().y + 1.0;
+    let meta_text = format!("{} \u{00B7} {}", display_category_for(fx), fx.source_label);
+    let meta_galley = painter.layout(
+        meta_text,
         egui::FontId::proportional(10.0),
         theme.text_dim,
         width - 12.0,
     );
-    painter.galley(egui::pos2(card_rect.min.x + 6.0, cat_y), cat_galley, theme.text_dim);
+    painter.galley(
+        egui::pos2(card_rect.min.x + 6.0, meta_y),
+        meta_galley,
+        theme.text_dim,
+    );
 
     // Tooltip with full info
     resp.clone().on_hover_ui(|ui| {
@@ -1366,6 +1375,77 @@ fn push_recent(recent: &mut Vec<String>, name: &str) {
     recent.truncate(MAX_RECENT);
 }
 
+// ────────────────────────── Display name cleanup ──────────────────────────
+
+/// Polished display name for the card title. Drops the dead-weight
+/// "Plugin" suffix and applies a small override map for the worst
+/// auto-generated OFX names. Falls back to the entry's stored name
+/// when no override hits.
+pub fn display_name_for(fx: &crate::browser::effect_registry::EffectEntry) -> String {
+    use crate::browser::effect_registry::EffectSource;
+    if let EffectSource::Ofx(id) = &fx.source {
+        if let Some(clean) = display_name_override(id.as_str()) {
+            return clean.to_string();
+        }
+    }
+    let name = fx.name.trim().trim_end_matches(" Plugin").trim();
+    if name.is_empty() { fx.name.clone() } else { name.to_string() }
+}
+
+/// Category-as-text for the card metadata line. Uses the same string
+/// the registry exposes today — `EffectEntry::grouping` — but falls
+/// back to a category-derived label when grouping is empty.
+pub fn display_category_for(fx: &crate::browser::effect_registry::EffectEntry) -> String {
+    if !fx.grouping.is_empty() {
+        return fx.grouping.clone();
+    }
+    match fx.category {
+        EffectCategory::Blur => "Blur",
+        EffectCategory::Color => "Color",
+        EffectCategory::Stylize => "Stylize",
+        EffectCategory::Keying => "Keying",
+        EffectCategory::Distort => "Distort",
+        EffectCategory::Light => "Light",
+        EffectCategory::AudioEQ => "EQ",
+        EffectCategory::AudioDynamics => "Dynamics",
+        EffectCategory::AudioReverb => "Reverb",
+        _ => "Effect",
+    }
+    .to_string()
+}
+
+/// Hand-curated cleanups for the worst auto-generated OFX names. The
+/// mechanical `format_ofx_name` insertion of spaces between
+/// CamelCase characters does fine for most plugins (`GaussianBlur` →
+/// "Gaussian Blur") but trips on a handful of acronym-heavy or
+/// numerical names. Keyed by the OFX plugin identifier.
+fn display_name_override(id: &str) -> Option<&'static str> {
+    // Match-arm form so the table is easy to scan and extend; trailing
+    // wildcard returns None.
+    match id {
+        // RGB / acronym-heavy — the auto-formatter inserts a stray
+        // space before "DPlugin"
+        "net.sf.openfx.AdjustRoDPlugin" => Some("Adjust RGB"),
+        "net.sf.openfx.adjustRoDPlugin" => Some("Adjust RGB"),
+        // Numerals butted against words
+        "net.sf.openfx.Card3D" => Some("Card 3D"),
+        "net.sf.openfx.Position" => Some("Position 2D"),
+        // Lowercase names that arrive title-cased
+        "net.sf.openfx.anaglyphPlugin" => Some("Anaglyph"),
+        "net.sf.openfx.deinterlace" => Some("Deinterlace"),
+        "net.sf.openfx.SideBySidePlugin" => Some("Side By Side"),
+        "net.sf.openfx.JoinViewsPlugin" => Some("Join Views"),
+        "net.sf.openfx.MixViewsPlugin" => Some("Mix Views"),
+        "net.sf.openfx.OneViewPlugin" => Some("One View"),
+        // CImg* tier — strip the prefix, the source pill already says
+        // OFX so the family is obvious from context.
+        "net.sf.cimg.CImgBlur" => Some("Blur (CImg)"),
+        "net.sf.cimg.CImgBloom" => Some("Bloom (CImg)"),
+        "net.sf.cimg.CImgSharpen" => Some("Sharpen (CImg)"),
+        _ => None,
+    }
+}
+
 fn paint_effect_preview(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -1651,5 +1731,61 @@ fn paint_effect_preview(
         _ => {
             painter.rect_filled(rect, 0.0, dim);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::browser::effect_registry::{EffectEntry, EffectSource};
+
+    fn make_ofx_entry(id: &str, name: &str) -> EffectEntry {
+        EffectEntry {
+            name: name.into(),
+            category: EffectCategory::Color,
+            source: EffectSource::Ofx(id.into()),
+            source_label: "OFX",
+            grouping: "Color".into(),
+            description: String::new(),
+        }
+    }
+
+    #[test]
+    fn display_name_strips_plugin_suffix() {
+        let fx = make_ofx_entry("net.sf.openfx.Saturation", "Saturation Plugin");
+        assert_eq!(display_name_for(&fx), "Saturation");
+    }
+
+    #[test]
+    fn display_name_override_map_wins_over_stored_name() {
+        let fx = make_ofx_entry("net.sf.openfx.AdjustRoDPlugin", "Adjust Ro DPlugin");
+        assert_eq!(display_name_for(&fx), "Adjust RGB");
+    }
+
+    #[test]
+    fn display_name_override_handles_card3d() {
+        let fx = make_ofx_entry("net.sf.openfx.Card3D", "Card 3 D");
+        assert_eq!(display_name_for(&fx), "Card 3D");
+    }
+
+    #[test]
+    fn display_name_falls_back_when_no_override() {
+        let fx = make_ofx_entry("net.sf.openfx.GaussianBlur", "Gaussian Blur");
+        assert_eq!(display_name_for(&fx), "Gaussian Blur");
+    }
+
+    #[test]
+    fn push_recent_dedupes_and_caps() {
+        let mut r: Vec<String> = Vec::new();
+        for i in 0..20 {
+            push_recent(&mut r, &format!("fx_{}", i));
+        }
+        assert_eq!(r.len(), 12, "MRU list capped at 12");
+        assert_eq!(r[0], "fx_19", "most-recent at the front");
+
+        // Re-pushing an existing entry moves it to the front, doesn't dupe.
+        push_recent(&mut r, "fx_15");
+        assert_eq!(r[0], "fx_15");
+        assert_eq!(r.iter().filter(|n| n.as_str() == "fx_15").count(), 1);
     }
 }
