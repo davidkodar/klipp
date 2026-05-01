@@ -8022,6 +8022,168 @@ impl KlippApp {
                     self.state.dirty = true;
                     true
                 }
+                AppCommand::AddAudioEffectKeyframe { clip_id, effect_index, param_name, time_secs, value } => {
+                    let key = format!("{}:{}", effect_index, param_name);
+                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
+                    // `__bypass` defaults to Step interpolation (it's an
+                    // on/off toggle); other params default to Linear.
+                    let default_interp = if param_name == "__bypass" {
+                        klipp_core::Interpolation::Step
+                    } else {
+                        klipp_core::Interpolation::Linear
+                    };
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let kf = klipp_core::Keyframe {
+                                time_secs: *time_secs,
+                                value: *value,
+                                interpolation: default_interp,
+                                tangent_out: (0.0, 0.0),
+                                tangent_in: (0.0, 0.0),
+                            };
+                            let keyframes = clip.audio_effect_keyframes.entry(key.clone()).or_default();
+                            keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                            keyframes.push(kf);
+                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            break;
+                        }
+                    }
+                    if let Some(old_snap) = old_state {
+                        if let Some(new_snap) = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
+                            self.state.history.push(HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditKeyframes {
+                                    clip_id: *clip_id,
+                                    linked_clip_id: None,
+                                    description: "Add Audio Effect Keyframe",
+                                    old_state: old_snap,
+                                    new_state: new_snap,
+                                    old_linked_state: None,
+                                    new_linked_state: None,
+                                },
+                            });
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::RemoveAudioEffectKeyframe { clip_id, effect_index, param_name, time_secs } => {
+                    let key = format!("{}:{}", effect_index, param_name);
+                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
+                                keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                                if keyframes.is_empty() {
+                                    clip.audio_effect_keyframes.remove(&key);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if let Some(old_snap) = old_state {
+                        if let Some(new_snap) = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
+                            self.state.history.push(HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditKeyframes {
+                                    clip_id: *clip_id,
+                                    linked_clip_id: None,
+                                    description: "Remove Audio Effect Keyframe",
+                                    old_state: old_snap,
+                                    new_state: new_snap,
+                                    old_linked_state: None,
+                                    new_linked_state: None,
+                                },
+                            });
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::MoveAudioEffectKeyframe { clip_id, effect_index, param_name, keyframe_index, new_time_secs, new_value } => {
+                    let key = format!("{}:{}", effect_index, param_name);
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
+                                if let Some(kf) = keyframes.get_mut(*keyframe_index) {
+                                    kf.time_secs = *new_time_secs;
+                                    kf.value = *new_value;
+                                }
+                                keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::SetAudioEffectKeyframeInterpolation { clip_id, effect_index, param_name, keyframe_index, interpolation } => {
+                    let key = format!("{}:{}", effect_index, param_name);
+                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
+                                let ki = *keyframe_index;
+                                let len = keyframes.len();
+                                if ki < len {
+                                    keyframes[ki].interpolation = *interpolation;
+                                }
+                                if ki > 0 {
+                                    keyframes[ki - 1].interpolation = *interpolation;
+                                }
+                                if *interpolation == klipp_core::Interpolation::Bezier {
+                                    for idx in [ki.saturating_sub(1), ki] {
+                                        if idx >= len { continue; }
+                                        let prev_t = if idx > 0 { keyframes[idx - 1].time_secs } else { keyframes[idx].time_secs - 1.0 };
+                                        let next_t = if idx + 1 < len { keyframes[idx + 1].time_secs } else { keyframes[idx].time_secs + 1.0 };
+                                        let span_out = (next_t - keyframes[idx].time_secs).abs() * 0.33;
+                                        let span_in = (keyframes[idx].time_secs - prev_t).abs() * 0.33;
+                                        let kf = &mut keyframes[idx];
+                                        if kf.tangent_out == (0.0, 0.0) || kf.tangent_out.0.abs() < 0.5 {
+                                            kf.tangent_out = (span_out, 0.0);
+                                        }
+                                        if kf.tangent_in == (0.0, 0.0) || kf.tangent_in.0.abs() < 0.5 {
+                                            kf.tangent_in = (-span_in, 0.0);
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if let Some(old_snap) = old_state {
+                        if let Some(new_snap) = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
+                            self.state.history.push(HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditKeyframes {
+                                    clip_id: *clip_id,
+                                    linked_clip_id: None,
+                                    description: "Set Audio Keyframe Interpolation",
+                                    old_state: old_snap,
+                                    new_state: new_snap,
+                                    old_linked_state: None,
+                                    new_linked_state: None,
+                                },
+                            });
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    true
+                }
             _ => false,
         }
     }

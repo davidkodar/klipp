@@ -1710,6 +1710,16 @@ pub enum AppCommand {
     /// NVDEC slot and releases the audio source from the mixer. Used
     /// when the user closes the source viewer or loads a new clip.
     StopSource,
+
+    // Audio effect keyframes — automate per-effect params, the bypass
+    // toggle, and the wet/dry mix. `param_name` follows the same
+    // convention as the chain: any descriptor name routes to that
+    // param's track; the reserved `__bypass` name routes to the
+    // slot's bypass-keyframe track and `__wetdry` to wet/dry.
+    AddAudioEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, time_secs: f64, value: f32 },
+    RemoveAudioEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, time_secs: f64 },
+    MoveAudioEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, keyframe_index: usize, new_time_secs: f64, new_value: f32 },
+    SetAudioEffectKeyframeInterpolation { clip_id: ClipId, effect_index: usize, param_name: String, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

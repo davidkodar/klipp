@@ -3044,7 +3044,10 @@ impl PlaybackEngine {
     }
 
     /// Compute a fingerprint of audio-relevant state at the current playhead.
-    /// Includes: which media clips are active, their speed, and audio effect count.
+    /// Includes: which media clips are active, their speed, audio effect
+    /// chain (types + enabled), and audio_effect_keyframes (track count
+    /// + per-track length + per-kf time/value bits). Any change here
+    /// triggers a chain rebuild on `SequenceUpdated`.
     /// Title/generator clips are excluded (they don't produce audio).
     fn compute_audio_fingerprint(&self) -> u64 {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
@@ -3052,22 +3055,53 @@ impl PlaybackEngine {
         let mut fp: u64 = 0;
         for track in &seq.tracks {
             if let Some((_, clip)) = track.clip_at_timecode(tc) {
-                if let Some(mid) = clip.media_id() {
-                    fp = fp.wrapping_mul(31).wrapping_add(mid.0.as_u64_pair().0);
-                    fp = fp.wrapping_mul(31).wrapping_add(clip.speed.to_bits());
-                    fp = fp.wrapping_mul(31).wrapping_add(clip.audio_effects.len() as u64);
-                    // Include effect types so adding/removing effects triggers restart
-                    for ae in &clip.audio_effects {
-                        for b in ae.effect_type.bytes() {
-                            fp = fp.wrapping_mul(31).wrapping_add(b as u64);
-                        }
-                        fp = fp.wrapping_mul(31).wrapping_add(ae.enabled as u64);
-                    }
-                }
+                fp = fp.wrapping_mul(31).wrapping_add(audio_fingerprint_for_clip(clip));
             }
         }
         fp
     }
+}
+
+/// Pure helper: hash the audio-relevant fields of a single clip.
+/// Extracted from `compute_audio_fingerprint` so the per-clip formula
+/// is unit-testable without standing up an Engine. Returns 0 for clips
+/// without media (titles, generators) — caller folds this into the
+/// per-track combine.
+pub(crate) fn audio_fingerprint_for_clip(clip: &klipp_timeline::Clip) -> u64 {
+    let Some(mid) = clip.media_id() else { return 0 };
+    let mut fp: u64 = 0;
+    fp = fp.wrapping_mul(31).wrapping_add(mid.0.as_u64_pair().0);
+    fp = fp.wrapping_mul(31).wrapping_add(clip.speed.to_bits());
+    fp = fp.wrapping_mul(31).wrapping_add(clip.audio_effects.len() as u64);
+    for ae in &clip.audio_effects {
+        for b in ae.effect_type.bytes() {
+            fp = fp.wrapping_mul(31).wrapping_add(b as u64);
+        }
+        fp = fp.wrapping_mul(31).wrapping_add(ae.enabled as u64);
+    }
+    // Audio effect keyframes: any add/remove/move/interp change must
+    // invalidate the running chain. Hash the sorted (key → kfs) pairs
+    // deterministically — HashMap iteration order would otherwise leak
+    // nondeterminism into the fingerprint and cause spurious restarts.
+    fp = fp.wrapping_mul(31).wrapping_add(clip.audio_effect_keyframes.len() as u64);
+    let mut kf_keys: Vec<&String> = clip.audio_effect_keyframes.keys().collect();
+    kf_keys.sort();
+    for key in kf_keys {
+        for b in key.bytes() {
+            fp = fp.wrapping_mul(31).wrapping_add(b as u64);
+        }
+        let kfs = &clip.audio_effect_keyframes[key];
+        fp = fp.wrapping_mul(31).wrapping_add(kfs.len() as u64);
+        for kf in kfs {
+            fp = fp.wrapping_mul(31).wrapping_add(kf.time_secs.to_bits());
+            fp = fp.wrapping_mul(31).wrapping_add(kf.value.to_bits() as u64);
+            fp = fp.wrapping_mul(31).wrapping_add(kf.interpolation as u64);
+        }
+    }
+    fp
+}
+
+impl PlaybackEngine {
 
     fn stop_all_audio(&mut self) {
         // Clear mix thread staging first (stop reading from source ring buffers)
@@ -10381,5 +10415,149 @@ mod param_change_queue_tests {
     fn queue_capacity_matches_documented_bound() {
         // Pin the bound so PR review catches accidental shrinks.
         assert_eq!(PARAM_CHANGE_QUEUE_CAPACITY, 256);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Audio fingerprint sensitivity to audio_effect_keyframes
+//
+// `compute_audio_fingerprint` is what gates chain rebuild on
+// `SequenceUpdated` — if the kf state isn't part of the hash, the
+// running chain misses every kf edit until the next seek/play. The
+// per-clip portion is extracted into `audio_fingerprint_for_clip`
+// for testability. These tests pin that every observable kf change
+// flips the hash so the engine actually sees the edit.
+// ═══════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod audio_fingerprint_kf_tests {
+    use super::audio_fingerprint_for_clip;
+    use klipp_core::{AudioEffectInstance, Interpolation, Keyframe, MediaId, RationalTime};
+    use klipp_timeline::Clip;
+
+    fn make_media_clip() -> Clip {
+        Clip::media(
+            MediaId::new(),
+            RationalTime::from_frames(0, 24),
+            RationalTime::from_frames(48, 24),
+            RationalTime::from_frames(0, 24),
+            RationalTime::from_frames(48, 24),
+        )
+    }
+
+    fn kf(t: f64, v: f32) -> Keyframe {
+        Keyframe {
+            time_secs: t,
+            value: v,
+            interpolation: Interpolation::Linear,
+            tangent_in: (0.0, 0.0),
+            tangent_out: (0.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn fingerprint_changes_when_kf_track_added() {
+        let mut clip = make_media_clip();
+        clip.audio_effects = vec![AudioEffectInstance {
+            effect_type: "compressor".into(),
+            enabled: true,
+            wet_dry: 1.0,
+            params: vec![],
+        }];
+        let fp_before = audio_fingerprint_for_clip(&clip);
+
+        clip.audio_effect_keyframes
+            .insert("0:threshold".to_string(), vec![kf(0.0, -18.0)]);
+        let fp_after = audio_fingerprint_for_clip(&clip);
+
+        assert_ne!(fp_before, fp_after,
+            "adding a kf track must invalidate the running chain — \
+             without this the user adds a kf and hears nothing change");
+    }
+
+    #[test]
+    fn fingerprint_changes_when_kf_added_to_existing_track() {
+        let mut clip = make_media_clip();
+        clip.audio_effects = vec![AudioEffectInstance {
+            effect_type: "compressor".into(), enabled: true, wet_dry: 1.0, params: vec![],
+        }];
+        clip.audio_effect_keyframes
+            .insert("0:threshold".to_string(), vec![kf(0.0, -18.0)]);
+        let fp_one = audio_fingerprint_for_clip(&clip);
+
+        clip.audio_effect_keyframes
+            .get_mut("0:threshold")
+            .unwrap()
+            .push(kf(1.0, -6.0));
+        let fp_two = audio_fingerprint_for_clip(&clip);
+
+        assert_ne!(fp_one, fp_two);
+    }
+
+    #[test]
+    fn fingerprint_changes_when_kf_value_moves() {
+        let mut clip = make_media_clip();
+        clip.audio_effects = vec![AudioEffectInstance {
+            effect_type: "compressor".into(), enabled: true, wet_dry: 1.0, params: vec![],
+        }];
+        clip.audio_effect_keyframes
+            .insert("0:threshold".to_string(), vec![kf(0.0, -18.0), kf(1.0, -6.0)]);
+        let fp_before = audio_fingerprint_for_clip(&clip);
+
+        // Same time, different value.
+        clip.audio_effect_keyframes.get_mut("0:threshold").unwrap()[1].value = -3.0;
+        let fp_after = audio_fingerprint_for_clip(&clip);
+
+        assert_ne!(fp_before, fp_after);
+    }
+
+    #[test]
+    fn fingerprint_changes_when_kf_interpolation_flips() {
+        let mut clip = make_media_clip();
+        clip.audio_effects = vec![AudioEffectInstance {
+            effect_type: "compressor".into(), enabled: true, wet_dry: 1.0, params: vec![],
+        }];
+        clip.audio_effect_keyframes
+            .insert("0:threshold".to_string(), vec![kf(0.0, -18.0)]);
+        let fp_linear = audio_fingerprint_for_clip(&clip);
+
+        clip.audio_effect_keyframes.get_mut("0:threshold").unwrap()[0].interpolation =
+            Interpolation::Bezier;
+        let fp_bezier = audio_fingerprint_for_clip(&clip);
+
+        assert_ne!(fp_linear, fp_bezier,
+            "interpolation change must restart the chain — bezier vs linear \
+             produces different smoothing in the kf-evaluation path");
+    }
+
+    #[test]
+    fn fingerprint_is_stable_across_hashmap_iteration_orders() {
+        // Two clips with identical kf state inserted in different orders
+        // must produce the same fingerprint. HashMap iteration order is
+        // not deterministic, so the formula sorts keys before hashing.
+        // Without that sort the engine would restart the chain on every
+        // SequenceUpdated even when nothing kf-relevant changed.
+        let media_id = MediaId::new(); // Same MediaId for both clips —
+        // otherwise we'd be measuring media_id divergence, not kf order.
+        let make_clip_with_kfs = |order: &[&str]| {
+            let mut c = Clip::media(
+                media_id,
+                RationalTime::from_frames(0, 24),
+                RationalTime::from_frames(48, 24),
+                RationalTime::from_frames(0, 24),
+                RationalTime::from_frames(48, 24),
+            );
+            c.audio_effects = vec![AudioEffectInstance {
+                effect_type: "compressor".into(), enabled: true, wet_dry: 1.0, params: vec![],
+            }];
+            for name in order {
+                c.audio_effect_keyframes
+                    .insert(format!("0:{name}"), vec![kf(0.5, 1.0)]);
+            }
+            c
+        };
+        let a = make_clip_with_kfs(&["threshold", "ratio", "makeup"]);
+        let b = make_clip_with_kfs(&["makeup", "threshold", "ratio"]);
+        assert_eq!(audio_fingerprint_for_clip(&a), audio_fingerprint_for_clip(&b),
+            "fingerprint must be insertion-order-independent");
     }
 }
