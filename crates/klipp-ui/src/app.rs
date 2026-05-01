@@ -4809,22 +4809,57 @@ impl KlippApp {
         let playhead = self.state.playhead;
         let seq = self.state.sequence();
         let fps = seq.fps.rate() as f64;
-        // Walk video tracks in REVERSE so a topmost clip wins over
-        // any clip beneath it, mirroring the engine's seek_in_sequence
-        // convention. Skip non-media clips (titles, generators) since
-        // there's nothing to load into the source viewer for those.
-        let hit = seq
-            .tracks
-            .iter()
-            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-            .rev()
-            .find_map(|track| {
-                track.clip_at_timecode(playhead).and_then(|(_, clip)| {
+
+        // Layered pick:
+        //   1. If a clip is selected (e.g. user right-clicked it
+        //      and chose Match Frame) AND the playhead is inside
+        //      that clip AND it has media, match against THAT clip.
+        //      This is what makes right-click on an audio clip do
+        //      the obvious thing — load its audio source — instead
+        //      of silently switching to whatever video is at the
+        //      same playhead. Pro NLEs honour the selection here.
+        //   2. Else fall back to the topmost video clip at the
+        //      playhead — this is the keyboard-F path and matches
+        //      the engine's seek_in_sequence convention.
+        //   3. Else walk audio tracks — handles pure-audio
+        //      sequences (music edits, podcasts) where there's no
+        //      video at the playhead at all. Without this fallback,
+        //      F just toasts "no media clip at playhead" for those.
+        let selected_hit = self.state.selected_clip.and_then(|sid| {
+            seq.tracks.iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == sid
+                    && c.timeline_in <= playhead
+                    && playhead < c.timeline_out)
+                .and_then(|clip| {
                     let mid = clip.media_id()?;
                     let src = clip.source_time_for_sequence_time(playhead, fps)?;
                     Some((mid, src))
                 })
-            });
+        });
+        let hit = selected_hit.or_else(|| {
+            seq.tracks.iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .rev()
+                .find_map(|track| {
+                    track.clip_at_timecode(playhead).and_then(|(_, clip)| {
+                        let mid = clip.media_id()?;
+                        let src = clip.source_time_for_sequence_time(playhead, fps)?;
+                        Some((mid, src))
+                    })
+                })
+        }).or_else(|| {
+            seq.tracks.iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Audio)
+                .rev()
+                .find_map(|track| {
+                    track.clip_at_timecode(playhead).and_then(|(_, clip)| {
+                        let mid = clip.media_id()?;
+                        let src = clip.source_time_for_sequence_time(playhead, fps)?;
+                        Some((mid, src))
+                    })
+                })
+        });
         let Some((media_id, source_time)) = hit else {
             self.state.toast.show("Match Frame: no media clip at playhead");
             return;
@@ -4858,10 +4893,19 @@ impl KlippApp {
         let current_program_playhead = self.state.playhead;
         let seq = self.state.sequence();
         let fps = seq.fps.rate() as f64;
+        // Search every track kind that can hold media — the loaded
+        // source media may be referenced by video clips, audio
+        // clips, or both (a single media file is often used as
+        // both a linked video+audio pair). Walking only video
+        // tracks would miss every occurrence on audio-only or
+        // pure-audio uses of the source.
         let mut hits: Vec<Timecode> = seq
             .tracks
             .iter()
-            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .filter(|t| matches!(
+                t.kind,
+                klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Audio
+            ))
             .flat_map(|track| {
                 track.clips.iter().filter_map(|clip| {
                     if clip.media_id() != Some(media_id) {
@@ -4876,6 +4920,12 @@ impl KlippApp {
             return;
         }
         hits.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        // Linked video+audio pairs reference the same source file
+        // and produce the same sequence-time hit on both tracks.
+        // Dedup post-sort so Shift+F cycle steps land on distinct
+        // sequence positions instead of bouncing between the V and
+        // A halves of the same pair.
+        hits.dedup_by(|a, b| (a.to_secs_f64() - b.to_secs_f64()).abs() < 1e-6);
         // Pick the first hit strictly past the current playhead; if
         // none, wrap to the earliest. That gives a clean cycle: every
         // press lands on a different occurrence and eventually returns
