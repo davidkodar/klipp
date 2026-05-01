@@ -633,41 +633,11 @@ pub fn apply_input_transform(rgba: &mut [f32], log_format: klipp_core::LogFormat
     if matches!(log_format, LogFormat::Srgb | LogFormat::Linear) {
         return;
     }
-    let needs_matrix = matches!(log_format, LogFormat::AcesCG | LogFormat::Aces2065);
 
     for pixel in rgba.chunks_exact_mut(4) {
-        // Input can be either sRGB (u8 path round-tripped through
-        // linear) or a log encoding the decoder didn't decode. The
-        // function operates on the value as log-encoded, maps to
-        // linear, and applies any colour-primary matrix.
-        let (mut lr, mut lg, mut lb) = (
-            crate::transforms::log_to_linear(pixel[0], log_format),
-            crate::transforms::log_to_linear(pixel[1], log_format),
-            crate::transforms::log_to_linear(pixel[2], log_format),
-        );
-
-        if needs_matrix {
-            let (nr, ng, nb) = match log_format {
-                LogFormat::AcesCG => (
-                     1.705051 * lr - 0.621792 * lg - 0.083259 * lb,
-                    -0.130256 * lr + 1.140805 * lg - 0.010549 * lb,
-                    -0.024003 * lr - 0.128969 * lg + 1.152972 * lb,
-                ),
-                LogFormat::Aces2065 => (
-                     2.521401 * lr - 1.134038 * lg - 0.387363 * lb,
-                    -0.276214 * lr + 1.372595 * lg - 0.096381 * lb,
-                    -0.015315 * lr - 0.152836 * lg + 1.168151 * lb,
-                ),
-                _ => (lr, lg, lb),
-            };
-            lr = nr;
-            lg = ng;
-            lb = nb;
-        }
-
-        pixel[0] = lr;
-        pixel[1] = lg;
-        pixel[2] = lb;
+        pixel[0] = crate::transforms::log_to_linear(pixel[0], log_format);
+        pixel[1] = crate::transforms::log_to_linear(pixel[1], log_format);
+        pixel[2] = crate::transforms::log_to_linear(pixel[2], log_format);
     }
 }
 

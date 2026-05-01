@@ -82,12 +82,6 @@ pub enum LogFormat {
     HLG,
     /// Perceptual Quantizer (SMPTE ST 2084)
     PQ,
-    /// ACES — ACEScc (logarithmic, for color grading)
-    AcesCC,
-    /// ACES — ACEScg (linear, AP1 primaries, common working space)
-    AcesCG,
-    /// ACES — ACES2065-1 (linear, AP0 primaries, archival interchange)
-    Aces2065,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
