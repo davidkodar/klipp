@@ -60,10 +60,13 @@ impl ToastState {
             )
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
+                // Polarity-aware bg so dark text on light theme (and
+                // vice versa) stays readable. Was hardcoded 0x1e1e26
+                // — invisible against `text_primary` on light themes.
                 let bg = egui::Color32::from_rgba_premultiplied(
-                    0x1e,
-                    0x1e,
-                    0x26,
+                    theme.bg_raised.r(),
+                    theme.bg_raised.g(),
+                    theme.bg_raised.b(),
                     (255.0 * alpha) as u8,
                 );
                 let border = egui::Color32::from_rgba_premultiplied(

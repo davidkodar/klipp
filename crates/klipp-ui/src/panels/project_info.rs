@@ -149,7 +149,112 @@ pub fn show_project_info(
                 state.project_auto_skim = new_skim;
                 state.dirty = true;
             }
+
+            // Working colorspace. The grade chain operates in this
+            // basis; decoded frames are converted to it; the display
+            // path (RRT + ODT) consumes it on the way out. Defaults
+            // to Rec.709 for back-compat with any project on disk.
+            // Switching it changes the look of the existing grade —
+            // there's no in-place migration in this dialog, just the
+            // setting.
+            let mut ws = state.project_working_colorspace;
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Working colorspace:")
+                        .size(11.0)
+                        .color(theme.text_dim),
+                );
+                egui::ComboBox::from_id_salt("proj_ws")
+                    .width(140.0)
+                    .selected_text(working_colorspace_label(ws))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut ws,
+                            klipp_core::WorkingColorspace::Rec709Linear,
+                            "Rec.709 / sRGB (linear)",
+                        );
+                        ui.selectable_value(
+                            &mut ws,
+                            klipp_core::WorkingColorspace::AcesCG,
+                            "ACEScg (AP1)",
+                        );
+                        ui.selectable_value(
+                            &mut ws,
+                            klipp_core::WorkingColorspace::Bt2020Linear,
+                            "BT.2020 (linear)",
+                        );
+                    });
+            });
+            if ws != state.project_working_colorspace {
+                state.project_working_colorspace = ws;
+                state.dirty = true;
+                // Push into the engine's atomic immediately — the
+                // decoder reads it lock-free per-frame, the executor
+                // mirrors it into the GPU pipeline's luma uniform.
+                // Without this push the change wouldn't take effect
+                // until the next project reload.
+                klipp_engine::video_decoder::set_working_colorspace(ws);
+            }
+            ui.label(
+                egui::RichText::new(
+                    "Switching working colorspace re-bases the entire grade \
+                     chain. The dropdown above does a naked switch — existing \
+                     grades will look different. Use the button below to \
+                     instead wrap each clip's chain with primaries-conversion \
+                     nodes so the look is preserved across the switch.",
+                )
+                .size(10.0)
+                .italics()
+                .color(theme.text_dim),
+            );
+
+            // Pick the most likely migration target — the "other" of
+            // the two supported working spaces (Rec.709 ↔ ACEScg).
+            // BT.2020 is a stub today; users on it have no migration
+            // path until that primaries pair lands as a first-class
+            // working space, so we hide the button for them rather
+            // than offering an action that would silently no-op.
+            let migration_target = match state.project_working_colorspace {
+                klipp_core::WorkingColorspace::Rec709Linear => Some(klipp_core::WorkingColorspace::AcesCG),
+                klipp_core::WorkingColorspace::AcesCG => Some(klipp_core::WorkingColorspace::Rec709Linear),
+                klipp_core::WorkingColorspace::Bt2020Linear => None,
+            };
+            if let Some(target) = migration_target {
+                let from = state.project_working_colorspace;
+                let label = format!(
+                    "Convert grades to {} (preserve look)",
+                    working_colorspace_label(target),
+                );
+                if ui.button(label).clicked() {
+                    let mut migrated = 0usize;
+                    for sequence in &mut state.sequences {
+                        for track in &mut sequence.tracks {
+                            for clip in &mut track.clips {
+                                if clip.node_graph.migrate_working_space(from, target) {
+                                    migrated += 1;
+                                }
+                            }
+                        }
+                    }
+                    state.project_working_colorspace = target;
+                    state.dirty = true;
+                    klipp_engine::video_decoder::set_working_colorspace(target);
+                    state.toast.show(format!(
+                        "Migrated {migrated} clip{} to {}",
+                        if migrated == 1 { "" } else { "s" },
+                        working_colorspace_label(target),
+                    ));
+                }
+            }
         });
+}
+
+fn working_colorspace_label(ws: klipp_core::WorkingColorspace) -> &'static str {
+    match ws {
+        klipp_core::WorkingColorspace::Rec709Linear => "Rec.709 / sRGB (linear)",
+        klipp_core::WorkingColorspace::AcesCG => "ACEScg (AP1)",
+        klipp_core::WorkingColorspace::Bt2020Linear => "BT.2020 (linear)",
+    }
 }
 
 fn info_row(ui: &mut egui::Ui, theme: &KlippTheme, label: &str, value: &str) {

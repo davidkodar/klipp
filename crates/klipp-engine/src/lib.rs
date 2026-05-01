@@ -69,7 +69,7 @@ pub mod types;
 pub mod video_decoder;
 
 pub use composite::{composite_layers, CompositeLayer};
-pub use engine::{detect_rotation_from_path, engine_stage_name, generate_filmstrip_incremental, generate_thumbnail, generate_thumbnail_at_size, generate_thumbnail_non_black, generate_thumbnail_at_size_non_black, is_frame_black, seq_write_holder_set, EngineStage, PlaybackEngine, PlaybackState, SeqWriteHolder, SequentialFrameDecoder, ENGINE_STAGE, ENGINE_TICK, UI_TICK};
+pub use engine::{detect_rotation_from_path, engine_stage_name, generate_filmstrip_incremental, generate_thumbnail, generate_thumbnail_at_size, generate_thumbnail_non_black, generate_thumbnail_at_size_non_black, is_frame_black, seq_write_holder_name, seq_write_holder_set, ui_stage, EngineStage, PlaybackEngine, PlaybackState, SeqWriteHolder, SequentialFrameDecoder, ENGINE_STAGE, ENGINE_TICK, SEQ_WRITE_HOLDER, UI_STAGE, UI_TICK};
 pub use frame::{CpuFrame, CpuFrameRef, Frame, FrameRef, GpuFrame, GpuFrameRef};
 pub use texture::{FrameBuffer, SharedFrameBuffer};
 pub use types::{AudioRingBuf, DecodedFrame, FrameQueue, SharedFrameQueue};
@@ -80,6 +80,77 @@ pub use types::{AudioRingBuf, DecodedFrame, FrameQueue, SharedFrameQueue};
 /// themselves to avoid depending on `ffmpeg_next` directly.
 pub fn init_ffmpeg() -> Result<(), ffmpeg_next::Error> {
     ffmpeg_next::init()
+}
+
+/// `av_log_set_callback` target that routes ffmpeg's own log messages
+/// into our `tracing` subscriber. Without this, ffmpeg writes to
+/// stderr (invisible to GUI launches) — and we need its diagnostics
+/// when triaging hwaccel / cuvid / decoder failures.
+///
+/// Levels are mapped:
+///   * `AV_LOG_PANIC` / `_FATAL` / `_ERROR` → `tracing::error!`
+///   * `AV_LOG_WARNING`                      → `tracing::warn!`
+///   * `AV_LOG_INFO`                         → `tracing::info!`
+///   * `AV_LOG_VERBOSE` / `_DEBUG` / lower   → `tracing::debug!`
+///
+/// `av_log_format_line` does the printf-style formatting for us so
+/// we never touch a `va_list` directly from Rust.
+///
+/// SAFETY: Called from arbitrary ffmpeg-internal threads. We use a
+/// stack-allocated buffer (no heap from the callback) and make zero
+/// assumptions about the `avcl` pointer's lifetime — only its name
+/// is read for context, then we drop the reference.
+#[no_mangle]
+pub unsafe extern "C" fn ffmpeg_log_to_tracing(
+    avcl: *mut std::ffi::c_void,
+    level: std::os::raw::c_int,
+    fmt: *const std::os::raw::c_char,
+    vl: *mut ffmpeg_next::ffi::__va_list_tag,
+) {
+    use ffmpeg_next::ffi::*;
+    // Skip if level is above the user's configured ffmpeg log level
+    // — av_log_format_line still pays the printf cost otherwise.
+    let max_level = av_log_get_level();
+    if level > max_level {
+        return;
+    }
+    let mut buf = [0u8; 1024];
+    let mut print_prefix: std::os::raw::c_int = 1;
+    let written = av_log_format_line2(
+        avcl,
+        level,
+        fmt,
+        vl,
+        buf.as_mut_ptr() as *mut std::os::raw::c_char,
+        buf.len() as std::os::raw::c_int,
+        &mut print_prefix,
+    );
+    if written <= 0 {
+        return;
+    }
+    // av_log_format_line2 writes a NUL-terminated, newline-suffixed
+    // string. Trim the trailing newline so tracing doesn't render
+    // double line breaks.
+    let len = (written as usize).min(buf.len()).saturating_sub(1);
+    let raw = &buf[..len];
+    let trimmed = if raw.last() == Some(&b'\n') { &raw[..raw.len() - 1] } else { raw };
+    let msg = String::from_utf8_lossy(trimmed);
+    // AV_LOG_* constants from libavutil/log.h:
+    // PANIC=0, FATAL=8, ERROR=16, WARNING=24, INFO=32, VERBOSE=40, DEBUG=48, TRACE=56
+    //
+    // No `target:` override — EnvFilter's crate whitelist treats
+    // custom targets as opaque names, which silently drops the
+    // event. Default target = module path = `klipp_engine`, which
+    // is whitelisted in `klipp-app::main`.
+    if level <= 16 {
+        tracing::error!("[ffmpeg] {msg}");
+    } else if level <= 24 {
+        tracing::warn!("[ffmpeg] {msg}");
+    } else if level <= 32 {
+        tracing::info!("[ffmpeg] {msg}");
+    } else {
+        tracing::debug!("[ffmpeg] {msg}");
+    }
 }
 
 /// Extract the largest embedded JPEG preview from a camera RAW file (ARW,

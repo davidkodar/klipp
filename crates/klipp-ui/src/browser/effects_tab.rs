@@ -1,5 +1,6 @@
 use crate::browser::effect_registry::EffectSource;
 use crate::drag_drop::DragPayload;
+use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
@@ -9,6 +10,12 @@ pub enum EffectCategory {
     /// UI-only pseudo-category: shows only effects the user has starred.
     /// Not stored on `EffectEntry`; the filter reads from prefs.
     Favourites,
+    /// UI-only pseudo-category: shows the most recently applied effects
+    /// (session-only, MRU order). Backed by `BrowserPanel::recent_effects`.
+    Recent,
+    /// UI-only pseudo-category: shows every effect the registry knows
+    /// about, video and audio combined.
+    Installed,
     All,
     Blur,
     Color,
@@ -23,7 +30,63 @@ pub enum EffectCategory {
     AudioReverb,
 }
 
-const CATEGORY_SIDEBAR_W: f32 = 110.0;
+/// Mutually-exclusive source filter. Replaces the previous three
+/// competing colored toggles (Built-in / OFX / Hide unsupported) with a
+/// single segmented control. "Hide unsupported" remains a separate
+/// AppState bool — its toggle UI lands in a follow-up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceFilter {
+    All,
+    Builtin,
+    Ofx,
+}
+
+impl Default for SourceFilter {
+    fn default() -> Self { SourceFilter::All }
+}
+
+/// Effects-grid layout mode. Grid renders 2-column thumbnail cards;
+/// List would render a denser one-row-per-effect list. List rendering
+/// itself is out of scope for the current pass — the toggle exists so
+/// the segmented icon-button state has a real binding to flip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectViewMode {
+    Grid,
+    List,
+}
+
+impl Default for EffectViewMode {
+    fn default() -> Self { EffectViewMode::Grid }
+}
+
+/// Sort mode for the effects grid. Drives the result strip's sort
+/// dropdown. `Name` is the alphabetical default; `Category` and
+/// `Source` group entries before sorting alphabetically within each
+/// group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectSort {
+    NameAsc,
+    NameDesc,
+    Category,
+    Source,
+}
+
+impl Default for EffectSort {
+    fn default() -> Self { EffectSort::NameAsc }
+}
+
+impl EffectSort {
+    pub fn label(self) -> &'static str {
+        match self {
+            EffectSort::NameAsc => "A\u{2192}Z",
+            EffectSort::NameDesc => "Z\u{2192}A",
+            EffectSort::Category => "Category",
+            EffectSort::Source => "Source",
+        }
+    }
+}
+
+const CATEGORY_SIDEBAR_W: f32 = 168.0;
 
 pub fn show(
     ui: &mut egui::Ui,
@@ -32,12 +95,15 @@ pub fn show(
     search_query: &str,
     active_category: &mut EffectCategory,
     favorite_effects: &mut Vec<String>,
+    recent_effects: &mut Vec<String>,
+    view_mode: &mut EffectViewMode,
+    sort_mode: &mut EffectSort,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
     let avail = ui.available_rect_before_wrap();
 
     // ── Split: category sidebar (left) | thumbnail grid (right) ──
-    let sidebar_w = CATEGORY_SIDEBAR_W.min(avail.width() * 0.35);
+    let sidebar_w = CATEGORY_SIDEBAR_W.min(avail.width() * 0.40);
     let sidebar_rect = egui::Rect::from_min_size(
         avail.min,
         egui::vec2(sidebar_w, avail.height()),
@@ -47,11 +113,12 @@ pub fn show(
         avail.max,
     );
 
-    // ── Category sidebar ──
+    // ── Category sidebar (3 sections: General / Video FX / Audio FX) ──
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
         ui.set_min_size(sidebar_rect.size());
 
-        // Subtle right border
+        // Soft sidebar fill that lifts above the panel base.
+        ui.painter().rect_filled(sidebar_rect, 0.0, theme.bg_panel);
         ui.painter().vline(
             sidebar_rect.max.x,
             sidebar_rect.y_range(),
@@ -62,252 +129,228 @@ pub fn show(
             .id_salt("effects_category_scroll")
             .show(ui, |ui| {
                 ui.add_space(6.0);
-                ui.spacing_mut().indent = 8.0; // left padding from window edge
-                ui.indent("cat_indent", |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
 
-                // ── FAVOURITES pseudo-category ──
-                // Pinned at the top (Kdenlive convention). Filters the grid
-                // to only effects the user has starred. Count read from the
-                // favorites list directly — no registry scan needed.
-                {
-                    let is_active = *active_category == EffectCategory::Favourites;
-                    let count = favorite_effects.len();
-                    let row_resp = ui.horizontal(|ui| {
-                        let hovered = ui.rect_contains_pointer(ui.max_rect());
-                        let text_color = if is_active {
-                            theme.accent
-                        } else if hovered {
-                            theme.text_primary
-                        } else {
-                            theme.text_secondary
-                        };
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new("\u{2605} Favourites")
-                                    .size(11.0)
-                                    .color(text_color),
-                            )
-                            .selectable(false),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add_space(12.0);
-                            let badge_color = if is_active {
-                                egui::Color32::from_rgb(60, 60, 65)
-                            } else {
-                                egui::Color32::from_rgb(45, 45, 50)
-                            };
-                            let badge = egui::Button::new(
-                                egui::RichText::new(format!("{}", count))
-                                    .size(9.0)
-                                    .color(theme.text_dim),
-                            )
-                            .fill(badge_color)
-                            .rounding(8.0)
-                            .min_size(egui::vec2(24.0, 16.0));
-                            ui.add(badge);
-                        });
-                    });
-                    let row_rect = row_resp.response.rect;
-                    let click_resp = ui.interact(
-                        row_rect,
-                        ui.id().with("cat_click_favourites"),
-                        egui::Sense::click(),
-                    );
-                    if is_active {
-                        let bar_rect = egui::Rect::from_min_size(
-                            egui::pos2(row_rect.min.x - 4.0, row_rect.min.y + 2.0),
-                            egui::vec2(2.0, row_rect.height() - 4.0),
-                        );
-                        ui.painter().rect_filled(bar_rect, 1.0, theme.accent);
-                    }
-                    if click_resp.clicked() {
-                        *active_category = EffectCategory::Favourites;
-                    }
-                }
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(4.0);
+                // Counts that don't depend on the search query — sidebar
+                // numbers reflect the registry, not the current filter.
+                let video_total = state
+                    .effect_registry
+                    .filtered_with_favorites(EffectCategory::All, "", &[])
+                    .len();
+                let audio_total = state
+                    .effect_registry
+                    .filtered_with_favorites(EffectCategory::AudioAll, "", &[])
+                    .len();
+                let installed_total = state.effect_registry.effects.len();
 
-                // ── VIDEO section ──
-                ui.label(
-                    egui::RichText::new("VIDEO")
-                        .size(10.0)
-                        .strong()
-                        .color(theme.text_secondary),
+                // ── General section: Favorites / Recent / Installed ──
+                sidebar_row(
+                    ui,
+                    theme,
+                    Some(Icon::Star),
+                    "Favorites",
+                    favorite_effects.len(),
+                    *active_category == EffectCategory::Favourites,
+                    "general_favourites",
+                    &mut |c| *active_category = c,
+                    EffectCategory::Favourites,
                 );
-                ui.add_space(2.0);
+                sidebar_row(
+                    ui,
+                    theme,
+                    // No clock icon in the bundled Phosphor set —
+                    // ArrowCounterClockwise reads as "history" until a
+                    // proper Clock SVG lands. Flagged as TODO.
+                    Some(Icon::ArrowCounterClockwise),
+                    "Recent",
+                    recent_effects.len(),
+                    *active_category == EffectCategory::Recent,
+                    "general_recent",
+                    &mut |c| *active_category = c,
+                    EffectCategory::Recent,
+                );
+                sidebar_row(
+                    ui,
+                    theme,
+                    // No download/install icon in the bundled set;
+                    // UploadSimple is closest in shape. TODO: drop in a
+                    // proper Phosphor `download-simple` SVG.
+                    Some(Icon::UploadSimple),
+                    "Installed",
+                    installed_total,
+                    *active_category == EffectCategory::Installed,
+                    "general_installed",
+                    &mut |c| *active_category = c,
+                    EffectCategory::Installed,
+                );
 
-                let categories = [
-                    (EffectCategory::All, "All"),
-                    (EffectCategory::Blur, "Blur"),
-                    (EffectCategory::Color, "Color"),
-                    (EffectCategory::Stylize, "Stylize"),
-                    (EffectCategory::Keying, "Keying"),
-                    (EffectCategory::Distort, "Distort"),
-                    (EffectCategory::Light, "Light"),
-                ];
-
-                for (cat, label) in &categories {
-                    let is_active = *active_category == *cat;
-                    let count = state.effect_registry.filtered(*cat, "").len();
-
-                    // Category row — entire row is clickable
-                    let row_resp = ui.horizontal(|ui| {
-                        let hovered = ui.rect_contains_pointer(ui.max_rect());
-                        let text_color = if is_active {
-                            theme.accent
-                        } else if hovered {
-                            theme.text_primary
-                        } else {
-                            theme.text_secondary
-                        };
-                        ui.add(egui::Label::new(egui::RichText::new(*label).size(11.0).color(text_color)).selectable(false));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add_space(12.0);
-                            let badge_color = if is_active {
-                                egui::Color32::from_rgb(60, 60, 65)
-                            } else {
-                                egui::Color32::from_rgb(45, 45, 50)
-                            };
-                            let badge = egui::Button::new(
-                                egui::RichText::new(format!("{}", count))
-                                    .size(9.0)
-                                    .color(theme.text_dim)
-                            ).fill(badge_color).rounding(8.0).min_size(egui::vec2(24.0, 16.0));
-                            ui.add(badge);
-                        });
-                    });
-                    // Make the whole row clickable
-                    let row_rect = row_resp.response.rect;
-                    let click_resp = ui.interact(row_rect, ui.id().with(("cat_click", *cat as u8)), egui::Sense::click());
-
-                    if is_active {
-                        let bar_rect = egui::Rect::from_min_size(
-                            egui::pos2(row_rect.min.x - 4.0, row_rect.min.y + 2.0),
-                            egui::vec2(2.0, row_rect.height() - 4.0),
-                        );
-                        ui.painter().rect_filled(bar_rect, 1.0, theme.accent);
-                    }
-
-                    if click_resp.clicked() {
-                        *active_category = *cat;
-                    }
-                }
-
-                // ── Divider ──
                 ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
+                sidebar_section_separator(ui, theme);
 
-                // ── AUDIO section ──
-                ui.label(
-                    egui::RichText::new("AUDIO")
-                        .size(10.0)
-                        .strong()
-                        .color(theme.text_secondary),
-                );
-                ui.add_space(2.0);
+                // ── VIDEO FX section ──
+                sidebar_section_header(ui, theme, Some(Icon::FilmStrip), "Video FX");
 
-                let audio_categories = [
-                    (EffectCategory::AudioAll, "All"),
-                    (EffectCategory::AudioEQ, "EQ"),
-                    (EffectCategory::AudioDynamics, "Dynamics"),
-                    (EffectCategory::AudioReverb, "Reverb"),
+                let video_categories: [(EffectCategory, &str, Option<Icon>); 7] = [
+                    (EffectCategory::All, "All", Some(Icon::List)),
+                    // No drop/blur icon — leaving blank reads cleaner than
+                    // a wrong-fit stand-in. TODO: bespoke blur glyph.
+                    (EffectCategory::Blur, "Blur", None),
+                    (EffectCategory::Color, "Color", Some(Icon::Eyedropper)),
+                    (EffectCategory::Stylize, "Stylize", Some(Icon::Sliders)),
+                    // No keying-specific icon — leaving blank. TODO.
+                    (EffectCategory::Keying, "Keying", None),
+                    (EffectCategory::Distort, "Distort", Some(Icon::ArrowsOut)),
+                    (EffectCategory::Light, "Light", Some(Icon::Lightning)),
                 ];
-
-                for (cat, label) in &audio_categories {
-                    let is_active = *active_category == *cat;
-                    let count = state.effect_registry.filtered(*cat, "").len();
-
-                    let row_resp = ui.horizontal(|ui| {
-                        let hovered = ui.rect_contains_pointer(ui.max_rect());
-                        let text_color = if is_active {
-                            theme.accent
-                        } else if hovered {
-                            theme.text_primary
-                        } else {
-                            theme.text_secondary
-                        };
-                        ui.add(egui::Label::new(egui::RichText::new(*label).size(11.0).color(text_color)).selectable(false));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add_space(12.0);
-                            let badge_color = if is_active {
-                                egui::Color32::from_rgb(60, 60, 65)
-                            } else {
-                                egui::Color32::from_rgb(45, 45, 50)
-                            };
-                            let badge = egui::Button::new(
-                                egui::RichText::new(format!("{}", count)).size(9.0).color(theme.text_dim)
-                            ).fill(badge_color).rounding(8.0).min_size(egui::vec2(24.0, 16.0));
-                            ui.add(badge);
-                        });
-                    });
-                    let row_rect = row_resp.response.rect;
-                    let click_resp = ui.interact(row_rect, ui.id().with(("audio_cat_click", *cat as u8)), egui::Sense::click());
-
-                    if is_active {
-                        let bar_rect = egui::Rect::from_min_size(
-                            egui::pos2(row_rect.min.x - 4.0, row_rect.min.y + 2.0),
-                            egui::vec2(2.0, row_rect.height() - 4.0),
-                        );
-                        ui.painter().rect_filled(bar_rect, 1.0, theme.accent);
-                    }
-
-                    if click_resp.clicked() {
-                        *active_category = *cat;
-                    }
+                for (cat, label, icon) in &video_categories {
+                    let count = if *cat == EffectCategory::All {
+                        video_total
+                    } else {
+                        state.effect_registry.filtered_with_favorites(*cat, "", &[]).len()
+                    };
+                    sidebar_row(
+                        ui,
+                        theme,
+                        *icon,
+                        label,
+                        count,
+                        *active_category == *cat,
+                        &format!("video_cat_{:?}", cat),
+                        &mut |c| *active_category = c,
+                        *cat,
+                    );
                 }
-                }); // close indent
+
+                ui.add_space(8.0);
+                sidebar_section_separator(ui, theme);
+
+                // ── AUDIO FX section ──
+                sidebar_section_header(ui, theme, Some(Icon::Waveform), "Audio FX");
+
+                let audio_categories: [(EffectCategory, &str, Option<Icon>); 4] = [
+                    (EffectCategory::AudioAll, "All", Some(Icon::List)),
+                    (EffectCategory::AudioEQ, "EQ", Some(Icon::Equalizer)),
+                    (EffectCategory::AudioDynamics, "Dynamics", Some(Icon::Waveform)),
+                    (EffectCategory::AudioReverb, "Reverb", Some(Icon::SpeakerHigh)),
+                ];
+                for (cat, label, icon) in &audio_categories {
+                    let count = if *cat == EffectCategory::AudioAll {
+                        audio_total
+                    } else {
+                        state.effect_registry.filtered_with_favorites(*cat, "", &[]).len()
+                    };
+                    sidebar_row(
+                        ui,
+                        theme,
+                        *icon,
+                        label,
+                        count,
+                        *active_category == *cat,
+                        &format!("audio_cat_{:?}", cat),
+                        &mut |c| *active_category = c,
+                        *cat,
+                    );
+                }
+                ui.add_space(8.0);
             });
     });
 
-    // ── Thumbnail grid ──
+    // ── Thumbnail grid pane ──
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(grid_rect), |ui| {
         ui.set_min_size(grid_rect.size());
 
-        // ── Filter toggles ──
+        // ── Filter row: segmented source filter (All / Built-in / OFX) ──
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            let pill = |ui: &mut egui::Ui, label: &str, active: &mut bool, color: egui::Color32| {
-                let bg = if *active { color } else { egui::Color32::from_rgb(50, 50, 55) };
-                let text_color = if *active { egui::Color32::WHITE } else { egui::Color32::from_rgb(120, 120, 130) };
-                let resp = ui.add(
-                    egui::Button::new(egui::RichText::new(label).size(9.0).color(text_color))
-                        .fill(bg)
-                        .rounding(10.0)
-                        .min_size(egui::vec2(0.0, 18.0)),
-                );
-                if resp.clicked() { *active = !*active; }
-            };
-            // Count effects by type
-            let all_effects = state.effect_registry.filtered_with_favorites(*active_category, search_query, favorite_effects);
-            let builtin_count = all_effects.iter().filter(|fx| matches!(fx.source, crate::browser::effect_registry::EffectSource::Builtin(_) | crate::browser::effect_registry::EffectSource::Audio(_))).count();
-            let ofx_count = all_effects.iter().filter(|fx| matches!(fx.source, crate::browser::effect_registry::EffectSource::Ofx(_))).count();
+            ui.add_space(6.0);
 
-            pill(ui, &format!("Built-in ({})", builtin_count), &mut state.effect_filter_builtin, egui::Color32::from_rgb(60, 150, 80));
-            if ofx_count > 0 {
-                pill(ui, &format!("OFX ({})", ofx_count), &mut state.effect_filter_ofx, egui::Color32::from_rgb(80, 120, 200));
-            }
-            pill(ui, "Hide unsupported", &mut state.effect_filter_hide_unsupported, egui::Color32::from_rgb(140, 70, 70));
+            // Counts feed the segmented control's embedded badges. They
+            // honour the active category + search query (and recents/favs)
+            // so the user can always see how many entries each segment
+            // would return at the current scope.
+            let scoped = state
+                .effect_registry
+                .filtered_full(*active_category, search_query, favorite_effects, recent_effects);
+            let all_count = scoped.len();
+            let builtin_count = scoped
+                .iter()
+                .filter(|fx| {
+                    matches!(
+                        fx.source,
+                        EffectSource::Builtin(_)
+                            | EffectSource::Audio(_)
+                            | EffectSource::Ladspa(_)
+                    )
+                })
+                .count();
+            let ofx_count = scoped
+                .iter()
+                .filter(|fx| matches!(fx.source, EffectSource::Ofx(_)))
+                .count();
+
+            segmented_source_filter(
+                ui,
+                theme,
+                &mut state.effect_source_filter,
+                all_count,
+                builtin_count,
+                ofx_count,
+            );
+
+            ui.add_space(6.0);
+            // GPU-only toggle pill — accent-tinted when active.
+            gpu_only_pill(ui, theme, &mut state.effect_filter_gpu);
+
+            // Right-aligned controls: hide-unsupported, grid, list.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(6.0);
+                view_mode_button(ui, theme, view_mode, EffectViewMode::List, Icon::List, "List view");
+                view_mode_button(ui, theme, view_mode, EffectViewMode::Grid, Icon::GridFour, "Grid view");
+                hide_unsupported_button(ui, theme, &mut state.effect_filter_hide_unsupported);
+            });
         });
-        ui.add_space(2.0);
+        ui.add_space(6.0);
 
-        // Apply filters
-        let filtered: Vec<&_> = state.effect_registry.filtered_with_favorites(*active_category, search_query, favorite_effects)
+        // Apply filters. Cloning into an owned Vec releases the borrow
+        // on `state.effect_registry` so the per-row loop can pass `state`
+        // mutably (toast, drag_drop, effect_thumbnails). EffectEntry is
+        // a few strings + an enum — ~200 entries clone in ~microseconds
+        // per frame, dwarfed by the egui paint cost.
+        let mut filtered: Vec<crate::browser::effect_registry::EffectEntry> = state
+            .effect_registry
+            .filtered_full(*active_category, search_query, favorite_effects, recent_effects)
             .into_iter()
             .filter(|fx| {
-                let is_builtin = matches!(fx.source, crate::browser::effect_registry::EffectSource::Builtin(_) | crate::browser::effect_registry::EffectSource::Audio(_));
-                let is_ofx = matches!(fx.source, crate::browser::effect_registry::EffectSource::Ofx(_));
+                let is_builtin = matches!(
+                    fx.source,
+                    EffectSource::Builtin(_) | EffectSource::Audio(_) | EffectSource::Ladspa(_)
+                );
+                let is_ofx = matches!(fx.source, EffectSource::Ofx(_));
 
-                // Source type filter
-                if is_builtin && !state.effect_filter_builtin { return false; }
-                if is_ofx && !state.effect_filter_ofx { return false; }
+                // Source filter (mutually exclusive: All / Builtin / Ofx)
+                match state.effect_source_filter {
+                    SourceFilter::All => {}
+                    SourceFilter::Builtin => {
+                        if !is_builtin {
+                            return false;
+                        }
+                    }
+                    SourceFilter::Ofx => {
+                        if !is_ofx {
+                            return false;
+                        }
+                    }
+                }
+
+                // GPU-only filter — derived from EffectEntry::supports_gpu,
+                // which consults `available_plugins` for the OFX flag.
+                if state.effect_filter_gpu && !fx.supports_gpu(&state.available_plugins) {
+                    return false;
+                }
 
                 // Hide unsupported (stereo, render-only)
                 if state.effect_filter_hide_unsupported {
                     let id = match &fx.source {
-                        crate::browser::effect_registry::EffectSource::Ofx(id) => id.as_str(),
+                        EffectSource::Ofx(id) => id.as_str(),
                         _ => "",
                     };
                     if id.contains("anaglyph") || id.contains("joinView") || id.contains("mixView")
@@ -318,17 +361,44 @@ pub fn show(
 
                 true
             })
+            .cloned()
             .collect();
+
+        // Re-sort according to the user-picked sort mode (registry's
+        // default is alphabetical, which matches `NameAsc` — only the
+        // other modes need a re-sort).
+        match *sort_mode {
+            EffectSort::NameAsc => {} // already sorted
+            EffectSort::NameDesc => {
+                filtered.sort_by(|a, b| b.name.to_lowercase().cmp(&a.name.to_lowercase()));
+            }
+            EffectSort::Category => {
+                filtered.sort_by(|a, b| {
+                    a.grouping
+                        .to_lowercase()
+                        .cmp(&b.grouping.to_lowercase())
+                        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                });
+            }
+            EffectSort::Source => {
+                filtered.sort_by(|a, b| {
+                    a.source_label
+                        .cmp(b.source_label)
+                        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                });
+            }
+        }
         let count = filtered.len();
 
-        // ── Header: count + view toggle ──
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(format!("{} effects", count))
-                    .size(10.0)
-                    .color(theme.text_dim),
-            );
-        });
+        // ── Result strip: live count + sort dropdown ──
+        result_strip(
+            ui,
+            theme,
+            count,
+            *active_category,
+            state.effect_filter_gpu,
+            sort_mode,
+        );
         ui.add_space(4.0);
 
         egui::ScrollArea::vertical()
@@ -347,54 +417,113 @@ pub fn show(
                 // in the loop body and the push/retain we'd otherwise do
                 // in the same expression.
                 let mut pending_fav_toggle: Option<String> = None;
-                egui::Grid::new("effects_grid")
-                    .num_columns(2)
-                    .spacing([spacing, spacing])
-                    .min_col_width(card_w)
-                    .show(ui, |ui| {
-                        for (i, fx) in filtered.iter().enumerate() {
+                let render_grid = *view_mode == EffectViewMode::Grid;
+                let list_row_h = 48.0;
+
+                // Wrap the per-item loop in either an egui::Grid (grid
+                // view) or a plain vertical flow (list view). The
+                // post-render interaction code below is identical between
+                // the two — only the render call and the favorite star
+                // position differ.
+                let render_items = |ui: &mut egui::Ui,
+                                    pending_fav_toggle: &mut Option<String>,
+                                    cmds: &mut Vec<AppCommand>,
+                                    state: &mut AppState,
+                                    recent_effects: &mut Vec<String>| {
+                    for (i, fx) in filtered.iter().enumerate() {
                             let thumb = state.effect_thumbnails.get_texture(&fx.name);
                             let is_pending = state.effect_thumbnails.is_ofx_pending(&fx.name);
-                            let resp = effect_card(ui, theme, fx, card_w, card_h, preview_h, thumb, is_pending);
+                            let supports_gpu = fx.supports_gpu(&state.available_plugins);
+                            let resp = if render_grid {
+                                effect_card(
+                                    ui,
+                                    theme,
+                                    fx,
+                                    card_w,
+                                    card_h,
+                                    preview_h,
+                                    thumb,
+                                    is_pending,
+                                    supports_gpu,
+                                )
+                            } else {
+                                effect_list_row(
+                                    ui,
+                                    theme,
+                                    fx,
+                                    list_row_h,
+                                    thumb,
+                                    is_pending,
+                                    supports_gpu,
+                                )
+                            };
 
-                            // ── Favourite star overlay (top-right of card) ──
+                            // ── Favourite star ──
+                            // Grid: top-LEFT of thumb, hover-reveal with
+                            // a dark scrim so it stays legible over any
+                            // thumbnail content.
+                            // List: right edge, vertically centered, no
+                            // scrim — the row background already gives
+                            // it contrast.
                             let is_fav = favorite_effects.iter().any(|n| n == &fx.name);
-                            let star_rect = egui::Rect::from_min_size(
-                                egui::pos2(resp.rect.max.x - 20.0, resp.rect.min.y + 2.0),
-                                egui::vec2(18.0, 18.0),
-                            );
+                            let card_hovered = resp.hovered();
+                            let star_rect = if render_grid {
+                                egui::Rect::from_min_size(
+                                    egui::pos2(resp.rect.min.x + 6.0, resp.rect.min.y + 6.0),
+                                    egui::vec2(22.0, 22.0),
+                                )
+                            } else {
+                                egui::Rect::from_min_size(
+                                    egui::pos2(
+                                        resp.rect.max.x - 28.0,
+                                        resp.rect.center().y - 11.0,
+                                    ),
+                                    egui::vec2(22.0, 22.0),
+                                )
+                            };
                             let star_resp = ui.interact(
                                 star_rect,
                                 ui.id().with(("fav_star", &fx.name)),
                                 egui::Sense::click(),
                             );
-                            let star_glyph = if is_fav { "\u{2605}" } else { "\u{2606}" };
-                            let star_color = if is_fav {
-                                // Matches the amber/gold used by the media-bin
-                                // clip rating stars — one visual vocabulary for
-                                // "starred" across the app.
-                                egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
-                            } else if star_resp.hovered() {
-                                egui::Color32::from_rgb(220, 220, 230)
-                            } else {
-                                // Dim when not hovered and not starred — avoids
-                                // visual clutter on the grid.
-                                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 140)
-                            };
-                            ui.painter().text(
-                                star_rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                star_glyph,
-                                egui::FontId::proportional(14.0),
-                                star_color,
-                            );
+                            let star_visible = is_fav || card_hovered || star_resp.hovered();
+                            if star_visible {
+                                if render_grid {
+                                    let bg_alpha = if is_fav { 180 } else { 130 };
+                                    ui.painter().rect_filled(
+                                        star_rect,
+                                        4.0,
+                                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, bg_alpha),
+                                    );
+                                }
+                                let star_glyph = if is_fav { "\u{2605}" } else { "\u{2606}" };
+                                let star_color = if is_fav {
+                                    egui::Color32::from_rgb(255, 215, 106)
+                                } else if star_resp.hovered() {
+                                    egui::Color32::from_rgb(255, 215, 106)
+                                } else if render_grid {
+                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200)
+                                } else {
+                                    // List view: tint with the panel's
+                                    // dim text colour so light themes
+                                    // don't get a washed-out white star.
+                                    theme.text_dim
+                                };
+                                ui.painter().text(
+                                    star_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    star_glyph,
+                                    egui::FontId::proportional(14.0),
+                                    star_color,
+                                );
+                            }
                             let star_resp = star_resp.on_hover_text(if is_fav {
                                 "Remove from favourites"
                             } else {
                                 "Add to favourites"
                             });
                             if star_resp.clicked() {
-                                pending_fav_toggle = Some(fx.name.clone());
+                                *pending_fav_toggle = Some(fx.name.clone());
                             }
 
                             // Right-click menu on the card — same Add/Remove
@@ -406,7 +535,7 @@ pub fn show(
                                     "Add to Favourites"
                                 };
                                 if ui.button(label).clicked() {
-                                    pending_fav_toggle = Some(fx.name.clone());
+                                    *pending_fav_toggle = Some(fx.name.clone());
                                     ui.close_menu();
                                 }
                             });
@@ -427,6 +556,7 @@ pub fn show(
 
                             if resp.double_clicked() {
                                 if let Some(clip_id) = state.selected_clip {
+                                    push_recent(recent_effects, &fx.name);
                                     match &fx.source {
                                         EffectSource::Builtin(effect) => {
                                             cmds.push(AppCommand::AddBuiltinEffect {
@@ -467,6 +597,7 @@ pub fn show(
                             }
 
                             if resp.drag_started() {
+                                push_recent(recent_effects, &fx.name);
                                 match &fx.source {
                                     EffectSource::Audio(type_id) => {
                                         state.drag_drop.begin(DragPayload::AudioEffect {
@@ -502,11 +633,26 @@ pub fn show(
                                 }
                             }
 
-                            if i % 2 == 1 {
+                            // Grid view places two cards per row — list
+                            // view is single-column so the end_row call
+                            // is grid-only.
+                            if render_grid && i % 2 == 1 {
                                 ui.end_row();
                             }
                         }
-                    });
+                };
+
+                if render_grid {
+                    egui::Grid::new("effects_grid")
+                        .num_columns(2)
+                        .spacing([spacing, spacing])
+                        .min_col_width(card_w)
+                        .show(ui, |ui| {
+                            render_items(ui, &mut pending_fav_toggle, &mut cmds, state, recent_effects);
+                        });
+                } else {
+                    render_items(ui, &mut pending_fav_toggle, &mut cmds, state, recent_effects);
+                }
 
                 // Apply the deferred favourite toggle (star click or
                 // right-click menu). One toggle per frame is enough — egui
@@ -534,7 +680,7 @@ pub fn show(
                         ui.label(
                             egui::RichText::new("Drag to timeline to apply")
                                 .size(9.0)
-                                .color(egui::Color32::from_rgb(90, 90, 100)),
+                                .color(theme.text_dim),
                         );
                     });
                 });
@@ -544,7 +690,10 @@ pub fn show(
     cmds
 }
 
-/// FCP-style effect card: large thumbnail + name below. Clean, no badges.
+/// FCP-style effect card. Thumbnail + name below; the on-thumbnail
+/// favorite star is overlaid by the caller (loop), but the GPU/CPU +
+/// Source badge pair is painted in here so it's always tied to the
+/// thumbnail rect.
 fn effect_card(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -554,6 +703,7 @@ fn effect_card(
     preview_h: f32,
     thumbnail: Option<&egui::TextureHandle>,
     is_pending: bool,
+    supports_gpu: bool,
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
         egui::vec2(width, card_h),
@@ -566,18 +716,16 @@ fn effect_card(
 
     // Preview area (top)
     let preview_rect = egui::Rect::from_min_size(card_rect.min, egui::vec2(width, preview_h));
-    let rounding = egui::Rounding::same(4.0);
+    let rounding = egui::Rounding::same(6.0);
 
     // Dark background for preview
     painter.rect_filled(preview_rect, rounding, theme.bg_panel);
 
-    // Subtle dark frame around the card (always visible)
-    painter.rect_stroke(preview_rect, rounding, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(45, 45, 50)));
-
-    // Brighter border on hover
-    if hovered {
-        painter.rect_stroke(preview_rect, rounding, egui::Stroke::new(1.5_f32, theme.accent_dim));
-    }
+    // Card border tightens on hover (accent_dim) but stays 1px thick so
+    // the card doesn't "jump" — the visual lift is the divider line +
+    // the brighter border, not a thickness swap.
+    let stroke_color = if hovered { theme.accent_dim } else { theme.border };
+    painter.rect_stroke(preview_rect, rounding, egui::Stroke::new(1.0_f32, stroke_color));
 
     if let Some(tex) = thumbnail {
         let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
@@ -601,49 +749,77 @@ fn effect_card(
         }
     }
 
-    // Source badge on the preview area (top-right corner)
-    let (badge_text, badge_color) = match &fx.source {
-        crate::browser::effect_registry::EffectSource::Ofx(_) => ("OFX", egui::Color32::from_rgba_unmultiplied(80, 120, 200, 200)),
-        crate::browser::effect_registry::EffectSource::Builtin(_) => ("Built-in", egui::Color32::from_rgba_unmultiplied(60, 150, 80, 200)),
-        crate::browser::effect_registry::EffectSource::Audio(_) => ("Built-in", egui::Color32::from_rgba_unmultiplied(60, 150, 80, 200)),
-        crate::browser::effect_registry::EffectSource::Ladspa(_) => ("LADSPA", egui::Color32::from_rgba_unmultiplied(170, 120, 60, 220)),
-    };
-    {
-        let badge_font = egui::FontId::monospace(8.0);
-        let badge_galley = painter.layout_no_wrap(badge_text.to_string(), badge_font, egui::Color32::WHITE);
-        let badge_w = badge_galley.size().x + 6.0;
-        let badge_h = badge_galley.size().y + 2.0;
-        let badge_rect = egui::Rect::from_min_size(
-            egui::pos2(card_rect.max.x - badge_w - 2.0, card_rect.min.y + 2.0),
-            egui::vec2(badge_w, badge_h),
-        );
-        painter.rect_filled(badge_rect, 2.0, badge_color);
-        painter.galley(
-            egui::pos2(badge_rect.min.x + 3.0, badge_rect.min.y + 1.0),
-            badge_galley,
-            egui::Color32::WHITE,
+    // Faint white center divider on hover — hints at a before/after
+    // split. Low opacity so it never competes with the thumbnail content.
+    if hovered {
+        let mid_x = preview_rect.center().x;
+        painter.line_segment(
+            [
+                egui::pos2(mid_x, preview_rect.min.y + 4.0),
+                egui::pos2(mid_x, preview_rect.max.y - 4.0),
+            ],
+            egui::Stroke::new(
+                1.0_f32,
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 90),
+            ),
         );
     }
 
-    // Name + category below preview
-    let name_y = card_rect.min.y + preview_h + 4.0;
-    let name_galley = painter.layout(
-        fx.name.clone(),
-        egui::FontId::proportional(11.0),
-        if hovered { theme.text_primary } else { theme.text_secondary },
-        width - 6.0,
+    // ── Top-right paired badges: GPU/CPU (left) · Source (right) ──
+    let source_label = match &fx.source {
+        EffectSource::Ofx(_) => "OFX",
+        EffectSource::Builtin(_) | EffectSource::Audio(_) => "Built-in",
+        EffectSource::Ladspa(_) => "LADSPA",
+    };
+    let perf_label = if supports_gpu { "GPU" } else { "CPU" };
+    let src_rect = paint_thumb_badge(
+        ui,
+        theme,
+        egui::pos2(card_rect.max.x - 6.0, card_rect.min.y + 6.0),
+        source_label,
+        ThumbBadgeKind::Source,
     );
-    painter.galley(egui::pos2(card_rect.min.x + 3.0, name_y), name_galley.clone(), theme.text_secondary);
+    let _perf_rect = paint_thumb_badge(
+        ui,
+        theme,
+        egui::pos2(src_rect.min.x - 4.0, card_rect.min.y + 6.0),
+        perf_label,
+        if supports_gpu { ThumbBadgeKind::Gpu } else { ThumbBadgeKind::Cpu },
+    );
 
-    // Category subtitle
-    let cat_y = name_y + name_galley.size().y + 1.0;
-    let cat_galley = painter.layout(
-        fx.grouping.clone(),
-        egui::FontId::proportional(9.0),
-        theme.text_dim,
-        width - 6.0,
+    // ── Card metadata: Name (top), then "Category · Source" below ──
+    let painter = ui.painter();
+    let name_y = card_rect.min.y + preview_h + 6.0;
+    let display_name = display_name_for(fx);
+    let name_galley = painter.layout(
+        display_name,
+        egui::FontId::proportional(12.0),
+        theme.text_primary,
+        width - 12.0,
     );
-    painter.galley(egui::pos2(card_rect.min.x + 3.0, cat_y), cat_galley, theme.text_dim);
+    painter.galley(
+        egui::pos2(card_rect.min.x + 6.0, name_y),
+        name_galley.clone(),
+        theme.text_primary,
+    );
+
+    // Category · Source — single line. "Category · Source" format
+    // makes provenance scannable at a glance. Source pill on the
+    // thumbnail still owns the visual emphasis; this is just the
+    // textual companion.
+    let meta_y = name_y + name_galley.size().y + 1.0;
+    let meta_text = format!("{} \u{00B7} {}", display_category_for(fx), fx.source_label);
+    let meta_galley = painter.layout(
+        meta_text,
+        egui::FontId::proportional(10.0),
+        theme.text_dim,
+        width - 12.0,
+    );
+    painter.galley(
+        egui::pos2(card_rect.min.x + 6.0, meta_y),
+        meta_galley,
+        theme.text_dim,
+    );
 
     // Tooltip with full info
     resp.clone().on_hover_ui(|ui| {
@@ -670,30 +846,155 @@ fn effect_card(
             || plugin_id.contains("Keyer") || plugin_id.contains("IDistort")
             || plugin_id.contains("STMap") || plugin_id.contains("VectorToColor")
         {
-            ui.label(egui::RichText::new("CPU only — adjust while paused, apply on export").size(9.0).color(egui::Color32::from_rgb(220, 160, 60)));
+            ui.label(egui::RichText::new("CPU only — adjust while paused, apply on export").size(9.0).color(theme.marker_warning));
         }
         if plugin_id.contains("Retime") || plugin_id.contains("SlitScan") || plugin_id.contains("timeOffset") {
-            ui.label(egui::RichText::new("Render only — not real-time, applied on export").size(9.0).color(egui::Color32::from_rgb(200, 100, 100)));
+            ui.label(egui::RichText::new("Render only — not real-time, applied on export").size(9.0).color(theme.marker_error));
         }
         if plugin_id.contains("anaglyph") || plugin_id.contains("joinView") || plugin_id.contains("mixView")
             || plugin_id.contains("oneView") || plugin_id.contains("sideBySide")
             || name.contains("Anaglyph") || name.contains("Join Views") || name.contains("Mix Views")
             || name.contains("One View") || name.contains("Side By Side")
         {
-            ui.label(egui::RichText::new("Requires multi-view — stereo 3D not supported yet").size(9.0).color(egui::Color32::from_rgb(180, 80, 80)));
+            ui.label(egui::RichText::new("Requires multi-view — stereo 3D not supported yet").size(9.0).color(theme.marker_error));
         }
-        ui.label(egui::RichText::new("Double-click to apply").size(9.0).color(egui::Color32::from_rgb(100, 100, 110)));
+        ui.label(egui::RichText::new("Double-click to apply").size(9.0).color(theme.text_dim));
     });
+
+    resp
+}
+
+/// Dense list-view row: small leading thumbnail, name + "Category · Source"
+/// metadata stacked, GPU/CPU + Source badges anchored on the right with
+/// a reserved gutter on the far right for the favorite star (drawn by
+/// the caller). Same `Sense::click_and_drag` as `effect_card`, so the
+/// caller's interaction tail (double-click apply, drag-to-timeline,
+/// context menu, OFX thumbnail request) reuses the returned response.
+fn effect_list_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    fx: &crate::browser::effect_registry::EffectEntry,
+    row_h: f32,
+    thumbnail: Option<&egui::TextureHandle>,
+    is_pending: bool,
+    supports_gpu: bool,
+) -> egui::Response {
+    let avail_w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(avail_w, row_h),
+        egui::Sense::click_and_drag(),
+    );
+    let hovered = resp.hovered();
+    let painter = ui.painter();
+
+    // Row background — subtle bg_raised on hover, clean separator line
+    // along the bottom.
+    if hovered {
+        painter.rect_filled(rect, 4.0, theme.bg_raised);
+    }
+    painter.hline(
+        rect.x_range(),
+        rect.max.y - 0.5,
+        egui::Stroke::new(1.0_f32, theme.border),
+    );
+
+    // Thumbnail at left — 16:9, padded 6px from row edges.
+    let thumb_w = 64.0;
+    let thumb_h = thumb_w * 9.0 / 16.0;
+    let thumb_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x + 6.0, rect.center().y - thumb_h * 0.5),
+        egui::vec2(thumb_w, thumb_h),
+    );
+    let rounding = egui::Rounding::same(4.0);
+    painter.rect_filled(thumb_rect, rounding, theme.bg_panel);
+    painter.rect_stroke(thumb_rect, rounding, egui::Stroke::new(1.0_f32, theme.border));
+    if let Some(tex) = thumbnail {
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        painter.image(tex.id(), thumb_rect, uv, egui::Color32::WHITE);
+    } else {
+        paint_effect_preview(painter, thumb_rect.shrink(1.0), fx, theme);
+        if is_pending {
+            let center = thumb_rect.center();
+            let t = ui.input(|i| i.time) as f32;
+            for i in 0..6 {
+                let a = t * 4.0 + i as f32 * std::f32::consts::TAU / 6.0;
+                let alpha = (255.0 * (1.0 - i as f32 / 6.0)) as u8;
+                let dot = egui::pos2(center.x + a.cos() * 4.0, center.y + a.sin() * 4.0);
+                painter.circle_filled(dot, 1.0, egui::Color32::from_white_alpha(alpha));
+            }
+            ui.ctx().request_repaint();
+        }
+    }
+
+    // Right-side: GPU/CPU + Source pills, right-aligned, with a
+    // reserved gutter for the favorite star painted by the caller.
+    let perf_label = if supports_gpu { "GPU" } else { "CPU" };
+    let source_label = match &fx.source {
+        EffectSource::Ofx(_) => "OFX",
+        EffectSource::Builtin(_) | EffectSource::Audio(_) => "Built-in",
+        EffectSource::Ladspa(_) => "LADSPA",
+    };
+    let star_reserve = 30.0;
+    let badge_y = rect.center().y - 8.0;
+    let src_rect = paint_thumb_badge(
+        ui,
+        theme,
+        egui::pos2(rect.max.x - star_reserve, badge_y),
+        source_label,
+        ThumbBadgeKind::Source,
+    );
+    let perf_rect = paint_thumb_badge(
+        ui,
+        theme,
+        egui::pos2(src_rect.min.x - 4.0, badge_y),
+        perf_label,
+        if supports_gpu { ThumbBadgeKind::Gpu } else { ThumbBadgeKind::Cpu },
+    );
+
+    // Text block between thumbnail and badges.
+    let painter = ui.painter();
+    let text_x = thumb_rect.max.x + 10.0;
+    let text_max_x = perf_rect.min.x - 8.0;
+    let text_w = (text_max_x - text_x).max(40.0);
+    let display_name = display_name_for(fx);
+    let name_galley = painter.layout(
+        display_name,
+        egui::FontId::proportional(12.5),
+        theme.text_primary,
+        text_w,
+    );
+    let meta_text = format!("{} \u{00B7} {}", display_category_for(fx), fx.source_label);
+    let meta_galley = painter.layout(
+        meta_text,
+        egui::FontId::proportional(10.0),
+        theme.text_dim,
+        text_w,
+    );
+    let total_text_h = name_galley.size().y + meta_galley.size().y + 1.0;
+    let name_y = rect.center().y - total_text_h * 0.5;
+    painter.galley(
+        egui::pos2(text_x, name_y),
+        name_galley.clone(),
+        theme.text_primary,
+    );
+    painter.galley(
+        egui::pos2(text_x, name_y + name_galley.size().y + 1.0),
+        meta_galley,
+        theme.text_dim,
+    );
 
     resp
 }
 
 fn category_color(cat: EffectCategory, theme: &KlippTheme) -> egui::Color32 {
     match cat {
-        // Favourites is a pseudo-category for filtering only; cards still
-        // paint using their real category colour via `EffectEntry.category`.
-        // Use a generic dim tint here as a harmless fallback.
-        EffectCategory::Favourites => theme.text_dim,
+        // Favourites / Recent / Installed are pseudo-categories for
+        // filtering only; cards still paint using their real category
+        // colour via `EffectEntry.category`. Use a generic dim tint here
+        // as a harmless fallback.
+        EffectCategory::Favourites
+        | EffectCategory::Recent
+        | EffectCategory::Installed => theme.text_dim,
         EffectCategory::All => theme.text_dim,
         EffectCategory::Blur => egui::Color32::from_rgb(0x4a, 0x9a, 0xde),
         EffectCategory::Color => theme.accent,
@@ -705,6 +1006,625 @@ fn category_color(cat: EffectCategory, theme: &KlippTheme) -> egui::Color32 {
         EffectCategory::AudioEQ => egui::Color32::from_rgb(0x50, 0xb0, 0x70),
         EffectCategory::AudioDynamics => egui::Color32::from_rgb(0x40, 0xa0, 0x90),
         EffectCategory::AudioReverb => egui::Color32::from_rgb(0x60, 0x90, 0xb0),
+    }
+}
+
+// ────────────────────────────── Sidebar widgets ──────────────────────────────
+
+/// Single category row: leading icon (or reserved blank space when
+/// `icon` is `None`), label, right-aligned count badge, full-row click
+/// target, and a 2px accent stripe + accent_subtle fill when active.
+fn sidebar_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    icon: Option<Icon>,
+    label: &str,
+    count: usize,
+    is_active: bool,
+    id_salt: &str,
+    on_click: &mut dyn FnMut(EffectCategory),
+    target_cat: EffectCategory,
+) {
+    let row_h = 22.0;
+    let avail_w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(avail_w, row_h),
+        egui::Sense::click(),
+    );
+    let click_resp = ui.interact(rect, ui.id().with(id_salt), egui::Sense::click());
+
+    let hovered = resp.hovered() || click_resp.hovered();
+    let painter = ui.painter();
+
+    // Active fill — translucent accent overlay matching the mockup's
+    // `--accent-soft` recipe. Hover is a softer panel-raised tint so it
+    // never competes with the active state visually.
+    if is_active {
+        painter.rect_filled(rect, 0.0, theme.accent_subtle);
+        let stripe_rect = egui::Rect::from_min_size(
+            rect.min,
+            egui::vec2(2.0, rect.height()),
+        );
+        painter.rect_filled(stripe_rect, 0.0, theme.accent);
+    } else if hovered {
+        painter.rect_filled(rect, 0.0, theme.bg_raised);
+    }
+
+    // Layout: indent · icon (13px) · gap · label · …badge
+    let indent = 14.0;
+    let icon_size = 13.0;
+    let icon_gap = 8.0;
+    let label_x = rect.min.x + indent + icon_size + icon_gap;
+    let label_color = if is_active {
+        theme.text_primary
+    } else if hovered {
+        theme.text_primary
+    } else {
+        theme.text_secondary
+    };
+    let icon_tint = if is_active { theme.accent } else { theme.text_dim };
+
+    if let Some(icon) = icon {
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.min.x + indent, rect.center().y - icon_size * 0.5),
+            egui::vec2(icon_size, icon_size),
+        );
+        let img = icon.image(icon_size).tint(icon_tint);
+        ui.allocate_new_ui(
+            egui::UiBuilder::new().max_rect(icon_rect),
+            |ui| {
+                ui.add(img);
+            },
+        );
+    }
+
+    // Label, vertically centered.
+    let label_galley = ui.painter().layout_no_wrap(
+        label.to_string(),
+        egui::FontId::proportional(11.5),
+        label_color,
+    );
+    ui.painter().galley(
+        egui::pos2(label_x, rect.center().y - label_galley.size().y * 0.5),
+        label_galley,
+        label_color,
+    );
+
+    // Right-aligned count, monospace tabular-nums for stable column edge.
+    let count_str = format!("{}", count);
+    let count_color = if is_active { theme.accent } else { theme.text_dim };
+    let count_galley = ui.painter().layout_no_wrap(
+        count_str,
+        egui::FontId::monospace(10.0),
+        count_color,
+    );
+    let count_pos = egui::pos2(
+        rect.max.x - 14.0 - count_galley.size().x,
+        rect.center().y - count_galley.size().y * 0.5,
+    );
+    ui.painter().galley(count_pos, count_galley, count_color);
+
+    if click_resp.clicked() || resp.clicked() {
+        on_click(target_cat);
+    }
+}
+
+/// Section header (e.g. "VIDEO FX") with leading icon. Renders above the
+/// rows in that section. Visually quiet — uppercase, dim, small.
+fn sidebar_section_header(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    icon: Option<Icon>,
+    label: &str,
+) {
+    let row_h = 18.0;
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), row_h),
+        egui::Sense::hover(),
+    );
+    let indent = 14.0;
+    let icon_size = 11.0;
+    let icon_gap = 6.0;
+    let label_x = if icon.is_some() {
+        rect.min.x + indent + icon_size + icon_gap
+    } else {
+        rect.min.x + indent
+    };
+
+    if let Some(icon) = icon {
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.min.x + indent, rect.center().y - icon_size * 0.5),
+            egui::vec2(icon_size, icon_size),
+        );
+        let img = icon.image(icon_size).tint(theme.text_dim);
+        ui.allocate_new_ui(
+            egui::UiBuilder::new().max_rect(icon_rect),
+            |ui| {
+                ui.add(img);
+            },
+        );
+    }
+
+    ui.painter().text(
+        egui::pos2(label_x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label.to_uppercase(),
+        egui::FontId::proportional(9.5),
+        theme.text_dim,
+    );
+}
+
+fn sidebar_section_separator(ui: &mut egui::Ui, theme: &KlippTheme) {
+    let avail_w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(avail_w, 1.0),
+        egui::Sense::hover(),
+    );
+    ui.painter().hline(
+        (rect.min.x + 8.0)..=(rect.max.x - 8.0),
+        rect.center().y,
+        egui::Stroke::new(1.0_f32, theme.border),
+    );
+    ui.add_space(4.0);
+}
+
+// ───────────────────────────── Source segmented ─────────────────────────────
+
+/// Single coherent segmented control replacing the previous three
+/// competing colored pills. Three buttons share an outer pill body; the
+/// active segment paints with `bg_raised` to lift out of the bg_panel
+/// trough. Embedded count badges in tabular monospace.
+fn segmented_source_filter(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    filter: &mut SourceFilter,
+    all_count: usize,
+    builtin_count: usize,
+    ofx_count: usize,
+) {
+    let outer_h = 24.0;
+    let pad = 2.0;
+    let segments = [
+        (SourceFilter::All, "All", all_count),
+        (SourceFilter::Builtin, "Built-in", builtin_count),
+        (SourceFilter::Ofx, "OFX", ofx_count),
+    ];
+
+    // Pre-measure each segment so total width is known before allocating.
+    let mut seg_widths = [0.0f32; 3];
+    let mut total_w = pad * 2.0;
+    for (i, (_, label, count)) in segments.iter().enumerate() {
+        let label_galley = ui.painter().layout_no_wrap(
+            (*label).to_string(),
+            egui::FontId::proportional(10.5),
+            theme.text_secondary,
+        );
+        let count_galley = ui.painter().layout_no_wrap(
+            format!("{}", count),
+            egui::FontId::monospace(9.5),
+            theme.text_dim,
+        );
+        let w = label_galley.size().x + 5.0 + count_galley.size().x + 18.0;
+        seg_widths[i] = w;
+        total_w += w + 1.0;
+    }
+    total_w -= 1.0; // no trailing gap
+
+    let (outer_rect, _) = ui.allocate_exact_size(
+        egui::vec2(total_w, outer_h),
+        egui::Sense::hover(),
+    );
+
+    ui.painter().rect_filled(outer_rect, 5.0, theme.bg_panel);
+    ui.painter().rect_stroke(
+        outer_rect,
+        5.0,
+        egui::Stroke::new(1.0_f32, theme.border),
+    );
+
+    let mut x = outer_rect.min.x + pad;
+    for (i, (variant, label, count)) in segments.iter().enumerate() {
+        let seg_rect = egui::Rect::from_min_size(
+            egui::pos2(x, outer_rect.min.y + pad),
+            egui::vec2(seg_widths[i], outer_h - pad * 2.0),
+        );
+        let resp = ui.interact(
+            seg_rect,
+            ui.id().with(("source_seg", i)),
+            egui::Sense::click(),
+        );
+        let is_active = *filter == *variant;
+        let hovered = resp.hovered();
+
+        if is_active {
+            ui.painter().rect_filled(seg_rect, 3.0, theme.bg_raised);
+        } else if hovered {
+            ui.painter().rect_filled(seg_rect, 3.0, theme.accent_subtle);
+        }
+
+        let label_color = if is_active {
+            theme.text_primary
+        } else if hovered {
+            theme.text_primary
+        } else {
+            theme.text_secondary
+        };
+        let count_color = if is_active { theme.accent } else { theme.text_dim };
+
+        let label_galley = ui.painter().layout_no_wrap(
+            (*label).to_string(),
+            egui::FontId::proportional(10.5),
+            label_color,
+        );
+        let count_galley = ui.painter().layout_no_wrap(
+            format!("{}", count),
+            egui::FontId::monospace(9.5),
+            count_color,
+        );
+
+        let inner_w = label_galley.size().x + 5.0 + count_galley.size().x;
+        let lx = seg_rect.center().x - inner_w * 0.5;
+        ui.painter().galley(
+            egui::pos2(lx, seg_rect.center().y - label_galley.size().y * 0.5),
+            label_galley.clone(),
+            label_color,
+        );
+        ui.painter().galley(
+            egui::pos2(
+                lx + label_galley.size().x + 5.0,
+                seg_rect.center().y - count_galley.size().y * 0.5,
+            ),
+            count_galley,
+            count_color,
+        );
+
+        if resp.clicked() {
+            *filter = *variant;
+        }
+
+        x += seg_widths[i] + 1.0;
+    }
+}
+
+/// "GPU only" filter pill — shaped like the segmented buttons (24px tall,
+/// rounded), but tinted with `accent_subtle` + accent border when active.
+fn gpu_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) {
+    let label_galley = ui.painter().layout_no_wrap(
+        "GPU only".to_string(),
+        egui::FontId::proportional(10.5),
+        theme.text_secondary,
+    );
+    let icon_size = 11.0;
+    let pad_x = 10.0;
+    let gap = 5.0;
+    let w = pad_x * 2.0 + icon_size + gap + label_galley.size().x;
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(w, 24.0),
+        egui::Sense::click(),
+    );
+    let hovered = resp.hovered();
+    let (bg, border, fg) = if *active {
+        (theme.accent_subtle, theme.accent, theme.accent)
+    } else if hovered {
+        (theme.bg_raised, theme.border, theme.text_primary)
+    } else {
+        (theme.bg_panel, theme.border, theme.text_secondary)
+    };
+    ui.painter().rect_filled(rect, 12.0, bg);
+    ui.painter().rect_stroke(rect, 12.0, egui::Stroke::new(1.0_f32, border));
+    let icon_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x + pad_x, rect.center().y - icon_size * 0.5),
+        egui::vec2(icon_size, icon_size),
+    );
+    let img = Icon::Lightning.image(icon_size).tint(fg);
+    ui.allocate_new_ui(
+        egui::UiBuilder::new().max_rect(icon_rect),
+        |ui| {
+            ui.add(img);
+        },
+    );
+    ui.painter().text(
+        egui::pos2(
+            rect.min.x + pad_x + icon_size + gap,
+            rect.center().y,
+        ),
+        egui::Align2::LEFT_CENTER,
+        "GPU only",
+        egui::FontId::proportional(10.5),
+        fg,
+    );
+    if resp.clicked() {
+        *active = !*active;
+    }
+}
+
+/// Compact 24×24 icon button for the filter row. Active state mirrors
+/// the `gpu_only_pill` — accent border + accent_subtle fill.
+fn icon_filter_button(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    icon: Icon,
+    is_active: bool,
+    tooltip: &str,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(24.0, 24.0),
+        egui::Sense::click(),
+    );
+    let hovered = resp.hovered();
+    let (bg, border, fg) = if is_active {
+        (theme.accent_subtle, theme.accent, theme.accent)
+    } else if hovered {
+        (theme.bg_raised, theme.border, theme.text_primary)
+    } else {
+        (theme.bg_panel, theme.border, theme.text_secondary)
+    };
+    ui.painter().rect_filled(rect, 4.0, bg);
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
+    let size = 12.0;
+    let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(size, size));
+    let img = icon.image(size).tint(fg);
+    ui.allocate_new_ui(
+        egui::UiBuilder::new().max_rect(icon_rect),
+        |ui| {
+            ui.add(img);
+        },
+    );
+    resp.on_hover_text(tooltip)
+}
+
+fn view_mode_button(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    current: &mut EffectViewMode,
+    target: EffectViewMode,
+    icon: Icon,
+    tooltip: &str,
+) {
+    let resp = icon_filter_button(ui, theme, icon, *current == target, tooltip);
+    if resp.clicked() {
+        *current = target;
+    }
+}
+
+fn hide_unsupported_button(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) {
+    // EyeSlash when active (= currently hiding), Eye when inactive
+    // (= currently showing all). The tooltip stays consistent so users
+    // don't have to track the visual flip.
+    let icon = if *active { Icon::EyeSlash } else { Icon::Eye };
+    let resp = icon_filter_button(
+        ui,
+        theme,
+        icon,
+        *active,
+        "Hide unsupported (stereo / render-only)",
+    );
+    if resp.clicked() {
+        *active = !*active;
+    }
+}
+
+/// Result strip below the filter row — live count of currently-visible
+/// effects + an active-filter description (e.g. "GPU-supported only") +
+/// a sort dropdown anchored to the right.
+fn result_strip(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    count: usize,
+    cat: EffectCategory,
+    gpu_only: bool,
+    sort_mode: &mut EffectSort,
+) {
+    let avail_w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(avail_w, 22.0),
+        egui::Sense::hover(),
+    );
+    ui.painter().rect_filled(rect, 0.0, theme.bg_panel);
+    ui.painter().hline(
+        rect.x_range(),
+        rect.max.y,
+        egui::Stroke::new(1.0_f32, theme.border),
+    );
+
+    // Left: count + scope description.
+    let scope = match cat {
+        EffectCategory::Favourites => "Favorites",
+        EffectCategory::Recent => "Recent",
+        EffectCategory::Installed => "Installed",
+        EffectCategory::AudioAll
+        | EffectCategory::AudioEQ
+        | EffectCategory::AudioDynamics
+        | EffectCategory::AudioReverb => "Audio FX",
+        _ => "Video FX",
+    };
+    let mut left = format!("{} {}", count, scope);
+    if gpu_only {
+        left.push_str(" \u{00B7} GPU-supported only");
+    }
+    ui.painter().text(
+        egui::pos2(rect.min.x + 12.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        left,
+        egui::FontId::proportional(10.5),
+        theme.text_secondary,
+    );
+
+    // Right: sort dropdown — egui ComboBox anchored inside the strip.
+    let dropdown_w = 116.0;
+    let dropdown_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.max.x - dropdown_w - 8.0, rect.min.y + 1.0),
+        egui::pos2(rect.max.x - 8.0, rect.max.y - 1.0),
+    );
+    ui.allocate_new_ui(
+        egui::UiBuilder::new().max_rect(dropdown_rect),
+        |ui| {
+            ui.style_mut().visuals.widgets.inactive.weak_bg_fill =
+                egui::Color32::TRANSPARENT;
+            ui.style_mut().visuals.widgets.inactive.bg_stroke =
+                egui::Stroke::NONE;
+            let label = format!("Sort: {}", sort_mode.label());
+            egui::ComboBox::from_id_salt("effect_sort_dd")
+                .selected_text(
+                    egui::RichText::new(label).size(10.5).color(theme.text_dim),
+                )
+                .width(dropdown_w - 4.0)
+                .show_ui(ui, |ui| {
+                    for variant in [
+                        EffectSort::NameAsc,
+                        EffectSort::NameDesc,
+                        EffectSort::Category,
+                        EffectSort::Source,
+                    ] {
+                        ui.selectable_value(sort_mode, variant, variant.label());
+                    }
+                });
+        },
+    );
+}
+
+// ────────────────────────── Thumbnail badge widget ──────────────────────────
+
+#[derive(Debug, Clone, Copy)]
+enum ThumbBadgeKind {
+    /// Green-tinted "GPU" pill — uses `marker_success`.
+    Gpu,
+    /// Neutral grey "CPU" pill.
+    Cpu,
+    /// Monochrome blur-style "OFX" / "Built-in" / "LADSPA" source pill.
+    Source,
+}
+
+/// Paint a single on-thumbnail badge, anchored by its TOP-RIGHT corner.
+/// Returns the painted rect so callers can stack badges left-to-right
+/// from the right edge.
+fn paint_thumb_badge(
+    ui: &egui::Ui,
+    theme: &KlippTheme,
+    top_right: egui::Pos2,
+    label: &str,
+    kind: ThumbBadgeKind,
+) -> egui::Rect {
+    let painter = ui.painter();
+    let font = egui::FontId::proportional(9.0);
+    let label_color = match kind {
+        ThumbBadgeKind::Gpu => theme.text_on_accent,
+        ThumbBadgeKind::Cpu => egui::Color32::from_rgba_unmultiplied(255, 255, 255, 230),
+        ThumbBadgeKind::Source => egui::Color32::from_rgba_unmultiplied(255, 255, 255, 230),
+    };
+    let galley = painter.layout_no_wrap(label.to_uppercase(), font, label_color);
+    let pad_x = 6.0;
+    let h = 16.0;
+    let w = galley.size().x + pad_x * 2.0;
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(top_right.x - w, top_right.y),
+        egui::vec2(w, h),
+    );
+    let bg = match kind {
+        ThumbBadgeKind::Gpu => egui::Color32::from_rgba_unmultiplied(
+            theme.marker_success.r(),
+            theme.marker_success.g(),
+            theme.marker_success.b(),
+            220,
+        ),
+        ThumbBadgeKind::Cpu => egui::Color32::from_rgba_unmultiplied(0, 0, 0, 165),
+        ThumbBadgeKind::Source => egui::Color32::from_rgba_unmultiplied(0, 0, 0, 165),
+    };
+    painter.rect_filled(rect, 3.0, bg);
+    // Hairline highlight to lift the badge off arbitrary thumbnail
+    // backgrounds (mirrors the mockup's `border-color: rgba(255,255,255,.08)`).
+    painter.rect_stroke(
+        rect,
+        3.0,
+        egui::Stroke::new(
+            1.0_f32,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24),
+        ),
+    );
+    let text_pos = egui::pos2(rect.min.x + pad_x, rect.center().y - galley.size().y * 0.5);
+    painter.galley(text_pos, galley, label_color);
+    rect
+}
+
+/// MRU push — insert/move `name` to position 0, dedupe, cap at the
+/// short list size users care about.
+fn push_recent(recent: &mut Vec<String>, name: &str) {
+    const MAX_RECENT: usize = 12;
+    if let Some(idx) = recent.iter().position(|n| n == name) {
+        recent.remove(idx);
+    }
+    recent.insert(0, name.to_string());
+    recent.truncate(MAX_RECENT);
+}
+
+// ────────────────────────── Display name cleanup ──────────────────────────
+
+/// Polished display name for the card title. Drops the dead-weight
+/// "Plugin" suffix and applies a small override map for the worst
+/// auto-generated OFX names. Falls back to the entry's stored name
+/// when no override hits.
+pub fn display_name_for(fx: &crate::browser::effect_registry::EffectEntry) -> String {
+    use crate::browser::effect_registry::EffectSource;
+    if let EffectSource::Ofx(id) = &fx.source {
+        if let Some(clean) = display_name_override(id.as_str()) {
+            return clean.to_string();
+        }
+    }
+    let name = fx.name.trim().trim_end_matches(" Plugin").trim();
+    if name.is_empty() { fx.name.clone() } else { name.to_string() }
+}
+
+/// Category-as-text for the card metadata line. Uses the same string
+/// the registry exposes today — `EffectEntry::grouping` — but falls
+/// back to a category-derived label when grouping is empty.
+pub fn display_category_for(fx: &crate::browser::effect_registry::EffectEntry) -> String {
+    if !fx.grouping.is_empty() {
+        return fx.grouping.clone();
+    }
+    match fx.category {
+        EffectCategory::Blur => "Blur",
+        EffectCategory::Color => "Color",
+        EffectCategory::Stylize => "Stylize",
+        EffectCategory::Keying => "Keying",
+        EffectCategory::Distort => "Distort",
+        EffectCategory::Light => "Light",
+        EffectCategory::AudioEQ => "EQ",
+        EffectCategory::AudioDynamics => "Dynamics",
+        EffectCategory::AudioReverb => "Reverb",
+        _ => "Effect",
+    }
+    .to_string()
+}
+
+/// Hand-curated cleanups for the worst auto-generated OFX names. The
+/// mechanical `format_ofx_name` insertion of spaces between
+/// CamelCase characters does fine for most plugins (`GaussianBlur` →
+/// "Gaussian Blur") but trips on a handful of acronym-heavy or
+/// numerical names. Keyed by the OFX plugin identifier.
+fn display_name_override(id: &str) -> Option<&'static str> {
+    // Match-arm form so the table is easy to scan and extend; trailing
+    // wildcard returns None.
+    match id {
+        // RGB / acronym-heavy — the auto-formatter inserts a stray
+        // space before "DPlugin"
+        "net.sf.openfx.AdjustRoDPlugin" => Some("Adjust RGB"),
+        "net.sf.openfx.adjustRoDPlugin" => Some("Adjust RGB"),
+        // Numerals butted against words
+        "net.sf.openfx.Card3D" => Some("Card 3D"),
+        "net.sf.openfx.Position" => Some("Position 2D"),
+        // Lowercase names that arrive title-cased
+        "net.sf.openfx.anaglyphPlugin" => Some("Anaglyph"),
+        "net.sf.openfx.deinterlace" => Some("Deinterlace"),
+        "net.sf.openfx.SideBySidePlugin" => Some("Side By Side"),
+        "net.sf.openfx.JoinViewsPlugin" => Some("Join Views"),
+        "net.sf.openfx.MixViewsPlugin" => Some("Mix Views"),
+        "net.sf.openfx.OneViewPlugin" => Some("One View"),
+        // CImg* tier — strip the prefix, the source pill already says
+        // OFX so the family is obvious from context.
+        "net.sf.cimg.CImgBlur" => Some("Blur (CImg)"),
+        "net.sf.cimg.CImgBloom" => Some("Bloom (CImg)"),
+        "net.sf.cimg.CImgSharpen" => Some("Sharpen (CImg)"),
+        _ => None,
     }
 }
 
@@ -993,5 +1913,61 @@ fn paint_effect_preview(
         _ => {
             painter.rect_filled(rect, 0.0, dim);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::browser::effect_registry::{EffectEntry, EffectSource};
+
+    fn make_ofx_entry(id: &str, name: &str) -> EffectEntry {
+        EffectEntry {
+            name: name.into(),
+            category: EffectCategory::Color,
+            source: EffectSource::Ofx(id.into()),
+            source_label: "OFX",
+            grouping: "Color".into(),
+            description: String::new(),
+        }
+    }
+
+    #[test]
+    fn display_name_strips_plugin_suffix() {
+        let fx = make_ofx_entry("net.sf.openfx.Saturation", "Saturation Plugin");
+        assert_eq!(display_name_for(&fx), "Saturation");
+    }
+
+    #[test]
+    fn display_name_override_map_wins_over_stored_name() {
+        let fx = make_ofx_entry("net.sf.openfx.AdjustRoDPlugin", "Adjust Ro DPlugin");
+        assert_eq!(display_name_for(&fx), "Adjust RGB");
+    }
+
+    #[test]
+    fn display_name_override_handles_card3d() {
+        let fx = make_ofx_entry("net.sf.openfx.Card3D", "Card 3 D");
+        assert_eq!(display_name_for(&fx), "Card 3D");
+    }
+
+    #[test]
+    fn display_name_falls_back_when_no_override() {
+        let fx = make_ofx_entry("net.sf.openfx.GaussianBlur", "Gaussian Blur");
+        assert_eq!(display_name_for(&fx), "Gaussian Blur");
+    }
+
+    #[test]
+    fn push_recent_dedupes_and_caps() {
+        let mut r: Vec<String> = Vec::new();
+        for i in 0..20 {
+            push_recent(&mut r, &format!("fx_{}", i));
+        }
+        assert_eq!(r.len(), 12, "MRU list capped at 12");
+        assert_eq!(r[0], "fx_19", "most-recent at the front");
+
+        // Re-pushing an existing entry moves it to the front, doesn't dupe.
+        push_recent(&mut r, "fx_15");
+        assert_eq!(r[0], "fx_15");
+        assert_eq!(r.iter().filter(|n| n.as_str() == "fx_15").count(), 1);
     }
 }

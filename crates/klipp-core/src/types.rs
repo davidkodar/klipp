@@ -107,6 +107,33 @@ pub enum BlendMode {
     Lighten,
 }
 
+impl BlendMode {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            BlendMode::Normal => "Normal",
+            BlendMode::Add => "Add",
+            BlendMode::Multiply => "Multiply",
+            BlendMode::Screen => "Screen",
+            BlendMode::Overlay => "Overlay",
+            BlendMode::SoftLight => "Soft Light",
+            BlendMode::HardLight => "Hard Light",
+            BlendMode::Difference => "Difference",
+            BlendMode::Exclusion => "Exclusion",
+            BlendMode::ColorDodge => "Color Dodge",
+            BlendMode::ColorBurn => "Color Burn",
+            BlendMode::Darken => "Darken",
+            BlendMode::Lighten => "Lighten",
+        }
+    }
+
+    pub const ALL: [BlendMode; 13] = [
+        BlendMode::Normal, BlendMode::Add, BlendMode::Multiply, BlendMode::Screen,
+        BlendMode::Overlay, BlendMode::SoftLight, BlendMode::HardLight,
+        BlendMode::Difference, BlendMode::Exclusion, BlendMode::ColorDodge,
+        BlendMode::ColorBurn, BlendMode::Darken, BlendMode::Lighten,
+    ];
+}
+
 /// Per-clip audio channel routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ChannelConfig {
@@ -185,6 +212,15 @@ pub struct TrackPoint {
     pub enabled: bool,
     /// Search region half-size in pixels for tracking analysis.
     pub search_radius: u32,
+    /// Optional back-reference to a mask this tracker is bound to.
+    /// Set by `TrackMaskRegion` (the one-shot Color-tab flow) and by
+    /// `GenerateKeyframesFromTrack { MaskCenter }` (the legacy Video-tab
+    /// flow). Lets `RemoveMaskShape` clean up dependent trackers, and
+    /// lets the Color-tab UI show an "Untrack" button on masks that
+    /// already have a tracker driving them. `None` for free-standing
+    /// trackers.
+    #[serde(default)]
+    pub linked_mask: Option<(uuid::Uuid, usize)>,
 }
 
 impl Default for TrackPoint {
@@ -197,6 +233,7 @@ impl Default for TrackPoint {
             start_frame: 0,
             enabled: true,
             search_radius: 32,
+            linked_mask: None,
         }
     }
 }

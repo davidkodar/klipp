@@ -1,9 +1,12 @@
 use crate::format::*;
-use crate::path_util::{resolve_media_path, read_to_string_capped, MAX_INPUT_FILE_BYTES};
+use crate::path_util::{
+    resolve_media_path, read_to_string_capped, sanitize_fps, sanitize_resolution,
+    MAX_INPUT_FILE_BYTES,
+};
 use klipp_core::*;
 use klipp_media::{MediaItem, MediaPool};
 use klipp_timeline::{
-    Clip, ClipKind, FontStyle, Sequence, TextAlignment, TitleBackground, TitleData,
+    Clip, ClipKind, FontStyle, Look, Sequence, TextAlignment, TitleBackground, TitleData,
     TitlePosition, TitleShadow, Track, TrackKind,
 };
 use klipp_nodes::{NodeGraph, NodeKind, NodeId};
@@ -14,6 +17,20 @@ use uuid::Uuid;
 
 /// Migrate old project graphs forward — insert nodes that were added in later versions.
 fn migrate_graph(graph: &mut NodeGraph) {
+    // Skip the ColorWarper auto-insert when the graph already uses the
+    // new Corrector default (or when the user has explicitly removed
+    // the legacy primary chain). The ColorWarper migration was added
+    // back when every clip carried a 12-node legacy chain — applying
+    // it to a Corrector graph would dump a stray Warper node before
+    // the Output and pollute every newly-loaded project.
+    let has_corrector = graph.nodes.iter().any(|n| n.kind == NodeKind::Corrector);
+    let has_legacy_chain = graph.nodes.iter().any(|n|
+        matches!(n.kind, NodeKind::Exposure | NodeKind::Contrast | NodeKind::ColorWheels | NodeKind::HueSatCurves)
+    );
+    if has_corrector || !has_legacy_chain {
+        return;
+    }
+
     // ColorWarper: added between HueSatCurves and ColorBalance
     let has_warper = graph.nodes.iter().any(|n| n.kind == NodeKind::ColorWarper);
     if !has_warper {
@@ -25,6 +42,8 @@ fn migrate_graph(graph: &mut NodeGraph) {
             enabled: true,
             params: klipp_nodes::NodeParams::default(),
             keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
         };
         // Insert after HueSatCurves in the node list
         if let Some(pos) = graph.nodes.iter().position(|n| n.kind == NodeKind::HueSatCurves) {
@@ -111,16 +130,16 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
         if offline {
             warn!("Media file not found, marking offline: {:?}", path);
         }
-        let media_item = MediaItem {
+        let mut media_item = MediaItem {
             id: MediaId(parse_uuid(&item_json.id)?),
             path,
             filename: item_json.filename.clone(),
             duration: RationalTime { value: item_json.duration_frames, rate: item_json.duration_rate },
-            fps: Fps::new(item_json.fps.num, item_json.fps.den),
-            resolution: Resolution {
-                width: item_json.resolution.width,
-                height: item_json.resolution.height,
-            },
+            fps: sanitize_fps(item_json.fps.num, item_json.fps.den),
+            resolution: sanitize_resolution(
+                item_json.resolution.width,
+                item_json.resolution.height,
+            ),
             video_codec: item_json.video_codec.clone(),
             audio_codec: item_json.audio_codec.clone(),
             has_audio: item_json.has_audio,
@@ -148,22 +167,28 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
             color_label: klipp_media::ColorLabel::from_u8(item_json.color_label),
             colour_space: klipp_media::ColourSpace::from_u8(item_json.colour_space),
             needs_reprobe: false,
-            log_format: Default::default(),
+            log_format: item_json.log_format,
             source_rotation: item_json.source_rotation.unwrap_or(0),
-            camera_make: None,
-            camera_model: None,
-            encoder: None,
-            bit_depth: None,
-            video_bitrate_kbps: None,
-            audio_bitrate_kbps: None,
-            color_primaries: None,
-            color_transfer: None,
-            pixel_format: None,
+            camera_make: item_json.camera_make.clone(),
+            camera_model: item_json.camera_model.clone(),
+            encoder: item_json.encoder.clone(),
+            bit_depth: item_json.bit_depth,
+            video_bitrate_kbps: item_json.video_bitrate_kbps,
+            audio_bitrate_kbps: item_json.audio_bitrate_kbps,
+            color_primaries: item_json.color_primaries.clone(),
+            color_transfer: item_json.color_transfer.clone(),
+            pixel_format: item_json.pixel_format.clone(),
             detected_log_format: Default::default(),
             skim_file: None,
             waveform_data: None,
             audio_cache: None,
         };
+        // Re-run the log-format heuristic now that the metadata
+        // fields are restored, so files saved before #35 (or files
+        // whose detected format wasn't serialised) get the right
+        // IDT seed on next clip-add. Cheap (no I/O — pure
+        // string/bit-depth heuristic) and idempotent.
+        media_item.detected_log_format = media_item.detect_log_format();
         media_pool.add(media_item);
     }
 
@@ -227,6 +252,10 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
         track_header_width: first.track_header_width,
         auto_generate_filmstrips: first.auto_generate_filmstrips,
         auto_generate_skim: first.auto_generate_skim,
+        // ProjectJson.working_colorspace is project-level (not per-
+        // sequence). Old project.json files lack the field; serde
+        // gave us Rec709Linear via #[serde(default)].
+        working_colorspace: project.working_colorspace,
     };
 
     info!("Project loaded from {:?} ({} sequence(s))", dir, sequences.len());
@@ -247,11 +276,11 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
     Ok(Sequence {
         id: SequenceId(parse_uuid(&seq_json.id)?),
         name: seq_json.name.clone(),
-        fps: Fps::new(seq_json.fps.num, seq_json.fps.den),
-        resolution: Resolution {
-            width: seq_json.resolution.width,
-            height: seq_json.resolution.height,
-        },
+        fps: sanitize_fps(seq_json.fps.num, seq_json.fps.den),
+        resolution: sanitize_resolution(
+            seq_json.resolution.width,
+            seq_json.resolution.height,
+        ),
         tracks: seq_json.tracks.iter().map(|t| {
             let kind = match t.kind.as_str() {
                 "Audio" => TrackKind::Audio,
@@ -286,7 +315,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
             }).collect();
             track.clips = t.clips.iter().map(|c| {
                 let clip_kind = load_clip_kind(c, project_dir);
-                Clip {
+                let mut clip = Clip {
                     id: ClipId(parse_uuid(&c.id).unwrap_or_else(|_| Uuid::new_v4())),
                     kind: clip_kind,
                     timeline_in: RationalTime { value: c.timeline_in, rate: c.rate },
@@ -384,13 +413,49 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     }).collect(),
                     active_grade_version: c.active_grade_version,
                     audio_effects: c.audio_effects.clone().unwrap_or_default(),
+                    audio_effect_keyframes: c.audio_effect_keyframes.clone(),
                     multicam_group: c.multicam_group.as_ref().and_then(|s| parse_uuid(s).ok().map(klipp_core::GroupId)),
                     multicam_angle: c.multicam_angle.unwrap_or(0),
                     multicam_cuts: c.multicam_cuts.clone(),
                     stabilization_data: None,
                     smoothed_trajectory: None,
                     track_points: c.track_points.clone(),
+                };
+                // Self-heal orphaned mask trackers from older
+                // projects that were saved before the inspector's
+                // delete-mask button routed through the centralized
+                // cleanup. A `TrackPoint` whose `linked_mask` points
+                // at a Mask node that no longer exists in any grade
+                // version (or at a `mask_index` past the end of the
+                // mask stack on whichever Mask node it does match)
+                // would otherwise stay attached forever and there's
+                // no UI to remove an orphaned tracker because the
+                // Untrack button lives inside the missing mask's
+                // inspector row. Drop them at load time.
+                let mask_counts: std::collections::HashMap<uuid::Uuid, usize> = clip
+                    .grade_versions.iter()
+                    .flat_map(|gv| gv.node_graph.nodes.iter())
+                    .filter(|n| n.kind == klipp_nodes::NodeKind::Mask)
+                    .map(|n| {
+                        let count = n.params.masks.as_ref()
+                            .map(|ms| ms.masks.len())
+                            .unwrap_or(0);
+                        (n.id, count)
+                    })
+                    .collect();
+                let pre = clip.track_points.len();
+                clip.track_points.retain(|tp| match tp.linked_mask {
+                    None => true,
+                    Some((nid, mi)) => mask_counts.get(&nid).map_or(false, |&n| mi < n),
+                });
+                let dropped = pre - clip.track_points.len();
+                if dropped > 0 {
+                    tracing::info!(
+                        "load: pruned {dropped} orphaned mask tracker(s) from clip {:?}",
+                        clip.id,
+                    );
                 }
+                clip
             }).collect();
             track
         }).collect(),
@@ -550,4 +615,37 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
 
 fn parse_uuid(s: &str) -> Result<Uuid, String> {
     Uuid::parse_str(s).map_err(|e| format!("Invalid UUID '{s}': {e}"))
+}
+
+/// Read every `<dir>/looks/*.json` and deserialize as a Look. Files
+/// that fail to parse are logged and skipped — a single corrupt Look
+/// shouldn't block the rest of the project from loading.
+pub fn load_looks(dir: &Path) -> Vec<Look> {
+    let looks_dir = dir.join("looks");
+    if !looks_dir.exists() {
+        return Vec::new();
+    }
+    let entries = match std::fs::read_dir(&looks_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!("Failed to read looks dir {:?}: {e}", looks_dir);
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().map_or(true, |e| e != "json") { continue; }
+        match read_to_string_capped(&path, MAX_INPUT_FILE_BYTES) {
+            Ok(text) => match serde_json::from_str::<Look>(&text) {
+                Ok(look) => out.push(look),
+                Err(e) => warn!("Skipping corrupt Look {:?}: {e}", path),
+            },
+            Err(e) => warn!("Failed to read Look {:?}: {e}", path),
+        }
+    }
+    // Stable order — UUIDs sort lexicographically. Avoids the UI list
+    // jumping around between loads on the same project.
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
 }

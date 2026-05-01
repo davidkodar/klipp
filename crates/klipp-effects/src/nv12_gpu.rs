@@ -30,6 +30,19 @@ pub struct GpuNv12Converter {
 }
 
 /// Params uniform for the NV12→RGBA shader (must match WGSL struct layout).
+///
+/// 12 u32s = 48 bytes, 16-byte aligned — fits the WGSL uniform
+/// alignment rules without padding.
+///
+/// `primaries_matrix` carries the pre-computed source-primaries →
+/// working-space matrix as 3 rows × `vec4<f32>` (12 floats; the 4th
+/// component of each row is padding for WGSL's `vec3<f32>` alignment).
+/// The engine builds it via
+/// `klipp_color::camera_log::primaries_to_working_matrix(primaries,
+/// working_colorspace)` and passes it through `pack_primaries_matrix`.
+/// Sliding the working-space choice into the matrix keeps the shader
+/// simple — one matmul per pixel regardless of which working space
+/// the project is in.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Nv12Params {
@@ -40,28 +53,35 @@ struct Nv12Params {
     y_stride: u32,
     uv_stride: u32,
     rotation: u32, // 0, 90, 180, 270
+    /// `[range, matrix_id, transfer_id, primaries_id]` from
+    /// `klipp_core::color_ids::ids(SourceColorspace)`. Drives the
+    /// shader's branching for limited/full range, BT.709/BT.601/
+    /// BT.2020 matrix, and EOTF selection. `primaries_id` is no
+    /// longer consumed by the shader — gamut conversion now goes
+    /// through `primaries_matrix` — but the field is preserved on
+    /// the API boundary for future per-primaries dispatch (e.g.
+    /// gamut-mapping modes that DO need to know the source identity).
+    color_range: u32,
+    matrix_id: u32,
+    transfer_id: u32,
+    primaries_id: u32,
     _pad1: u32,
+    /// Source-primaries → working-space matrix, packed as 3 rows ×
+    /// vec4 (12 floats). Row 0 is dotted against (R, G, B, _) to
+    /// produce out.R, etc.
+    primaries_matrix: [[f32; 4]; 3],
 }
 
-/// The compute shader source — NV12 to RGBA with BT.709 color matrix, nearest-neighbor resize,
-/// and source rotation (0/90/180/270 degrees).
+/// Per-shader code that runs after the shared colourspace prelude
+/// + helpers ([`crate::color_wgsl::WGSL_PRELUDE`] +
+/// [`crate::color_wgsl::WGSL_HELPERS`]). Reads NV12 (8-bit) Y/UV
+/// planes, dispatches the colourspace stages from the shared
+/// helpers, re-encodes as sRGB-u8 for the existing CPU/GPU
+/// hand-off in `klipp-engine::video_decoder::rgba_u8_to_linear`.
 ///
-/// Source rotation is applied here during NV12→RGBA conversion (Option A).
-/// This is zero-cost: rotation happens in the same GPU pass as color space conversion.
-///
-/// Alternative: Option C would apply rotation as a separate GPU effect in the
-/// effects pipeline (gpu.rs). This would require making GpuEffectsPipeline
-/// dimension-aware (separate src/dst dimensions for all ping-pong buffers),
-/// which is a larger refactor. Option C would be needed if rotation must
-/// interact with other effects that depend on specific orientation, or if
-/// rotation needs to be animated via keyframes.
-///
-/// Uses 2D workgroups (16×16) for spatial locality on the output image.
-const SHADER_NV12_TO_RGBA: &str = "
-// NV12 to RGBA conversion with optional resize and source rotation
-// NV12: Y plane (full res) + interleaved UV plane (half res)
-// BT.709 color matrix
-
+/// Source rotation is folded into the same pass — zero-cost since
+/// it just remaps the source coordinate before sampling.
+const SHADER_NV12_BODY: &str = "
 @group(0) @binding(0) var<storage, read> y_plane: array<u32>;
 @group(0) @binding(1) var<storage, read> uv_plane: array<u32>;
 @group(0) @binding(2) var<storage, read_write> output: array<u32>;
@@ -75,7 +95,16 @@ struct Params {
     y_stride: u32,
     uv_stride: u32,
     rotation: u32,
+    color_range: u32,
+    matrix_id: u32,
+    transfer_id: u32,
+    primaries_id: u32,
     _pad1: u32,
+    // Source-primaries → working-space matrix (3 rows × vec4; the .w
+    // of each row is unused padding for WGSL's vec3 alignment).
+    primaries_row0: vec4<f32>,
+    primaries_row1: vec4<f32>,
+    primaries_row2: vec4<f32>,
 }
 
 @compute @workgroup_size(16, 16)
@@ -84,12 +113,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dy = gid.y;
     if (dx >= params.dst_width || dy >= params.dst_height) { return; }
 
-    // Map output pixel to source pixel with rotation and nearest-neighbor resize.
-    // For 90/270 rotation, dst_width/dst_height are swapped relative to src dimensions
-    // (caller is responsible for providing the rotated output dimensions).
+    // Source coord lookup (rotation + nearest-neighbour resize).
     var sx: u32;
     var sy: u32;
-
     if params.rotation == 0u {
         sx = dx * params.src_width / params.dst_width;
         sy = dy * params.src_height / params.dst_height;
@@ -103,46 +129,64 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         sx = (params.dst_height - 1u - dy) * params.src_width / params.dst_height;
         sy = dx * params.src_height / params.dst_width;
     }
-
-    // Clamp to source bounds
     sx = min(sx, params.src_width - 1u);
     sy = min(sy, params.src_height - 1u);
 
-    // Read Y value (byte access via u32 array)
+    // Read raw 8-bit Y / U / V samples via byte access on the u32-
+    // packed planes.
     let y_byte_idx = sy * params.y_stride + sx;
     let y_word = y_plane[y_byte_idx / 4u];
     let y_shift = (y_byte_idx % 4u) * 8u;
     let y_val = f32((y_word >> y_shift) & 0xFFu);
 
-    // Read UV values (interleaved, half resolution)
-    let uv_x = (sx / 2u) * 2u; // U and V are interleaved pairs
+    let uv_x = (sx / 2u) * 2u;
     let uv_y = sy / 2u;
-    let uv_byte_idx = uv_y * params.uv_stride + uv_x;
-    let uv_word = uv_plane[uv_byte_idx / 4u];
-    let uv_shift = (uv_byte_idx % 4u) * 8u;
-    let u_val = f32((uv_word >> uv_shift) & 0xFFu);
-    let uv_byte_idx_v = uv_byte_idx + 1u;
-    let uv_word_v = uv_plane[uv_byte_idx_v / 4u];
-    let uv_shift_v = (uv_byte_idx_v % 4u) * 8u;
-    let v_val = f32((uv_word_v >> uv_shift_v) & 0xFFu);
+    let u_byte_idx = uv_y * params.uv_stride + uv_x;
+    let u_word = uv_plane[u_byte_idx / 4u];
+    let u_shift = (u_byte_idx % 4u) * 8u;
+    let u_val = f32((u_word >> u_shift) & 0xFFu);
+    let v_byte_idx = u_byte_idx + 1u;
+    let v_word = uv_plane[v_byte_idx / 4u];
+    let v_shift = (v_byte_idx % 4u) * 8u;
+    let v_val = f32((v_word >> v_shift) & 0xFFu);
 
-    // BT.709 YUV to RGB (limited range)
-    let y = (y_val - 16.0) / 219.0;
-    let u = (u_val - 128.0) / 224.0;
-    let v = (v_val - 128.0) / 224.0;
+    // Four-stage colourspace pipeline from the shared WGSL helpers:
+    // 1. Range normalise (limited 16/235 vs full 0/255).
+    // 2. YUV → display-encoded RGB via the source's matrix.
+    // 3. Inverse EOTF → linear-light in source primaries.
+    // 4. Source primaries → working space via the uniform matrix.
+    // Then re-encode to sRGB for the u8 hand-off.
+    let yuv = yuv_normalise(y_val, u_val, v_val, params.color_range, 255.0);
+    let rgb_display = yuv_to_rgb_display(yuv, params.matrix_id);
+    let rgb_linear  = display_to_linear(rgb_display, params.transfer_id);
+    let rgb_working = vec3<f32>(
+        dot(params.primaries_row0.xyz, rgb_linear),
+        dot(params.primaries_row1.xyz, rgb_linear),
+        dot(params.primaries_row2.xyz, rgb_linear),
+    );
+    let rgb_srgb    = linear_to_srgb_vec(rgb_working);
 
-    let r = clamp(y + 1.5748 * v, 0.0, 1.0);
-    let g = clamp(y - 0.1873 * u - 0.4681 * v, 0.0, 1.0);
-    let b = clamp(y + 1.8556 * u, 0.0, 1.0);
-
-    let ri = u32(r * 255.0);
-    let gi = u32(g * 255.0);
-    let bi = u32(b * 255.0);
+    let ri = u32(clamp(rgb_srgb.x * 255.0 + 0.5, 0.0, 255.0));
+    let gi = u32(clamp(rgb_srgb.y * 255.0 + 0.5, 0.0, 255.0));
+    let bi = u32(clamp(rgb_srgb.z * 255.0 + 0.5, 0.0, 255.0));
     let pixel = ri | (gi << 8u) | (bi << 16u) | (255u << 24u);
 
     output[dy * params.dst_width + dx] = pixel;
 }
 ";
+
+/// Full shader source: shared prelude + helpers + NV12-specific body.
+fn nv12_shader_source() -> String {
+    let mut s = String::with_capacity(
+        crate::color_wgsl::WGSL_PRELUDE.len()
+            + crate::color_wgsl::WGSL_HELPERS.len()
+            + SHADER_NV12_BODY.len(),
+    );
+    s.push_str(crate::color_wgsl::WGSL_PRELUDE);
+    s.push_str(crate::color_wgsl::WGSL_HELPERS);
+    s.push_str(SHADER_NV12_BODY);
+    s
+}
 
 impl GpuNv12Converter {
     /// Create a new GPU NV12 converter. Shares the process-wide
@@ -229,7 +273,7 @@ impl GpuNv12Converter {
 
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nv12_to_rgba"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_NV12_TO_RGBA.into()),
+            source: wgpu::ShaderSource::Wgsl(nv12_shader_source().into()),
         });
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -342,6 +386,16 @@ impl GpuNv12Converter {
     /// - `y_stride`, `uv_stride`: byte stride per row for each plane
     /// - `dst_width`, `dst_height`: desired output dimensions (caller must swap for 90°/270°)
     /// - `rotation`: source rotation in degrees (0, 90, 180, 270)
+    /// - `color_ids`: `[range, matrix_id, transfer_id, primaries_id]`
+    ///   from `klipp_core::color_ids::ids(SourceColorspace)`.
+    /// - `primaries_matrix`: source-primaries → working-space 3x3,
+    ///   row-major. Pass [`crate::color_wgsl::pack_primaries_matrix`]
+    ///   the output of `klipp_color::camera_log::primaries_to_working_matrix`
+    ///   to get the working-space matrix; the helper packs to the
+    ///   3-row vec4 layout the shader expects. For pure BT.709 SDR
+    ///   sources targeting `Rec709Linear` working space, identity
+    ///   ([`crate::color_wgsl::IDENTITY_PRIMARIES_MATRIX_PACKED`])
+    ///   is correct.
     ///
     /// Returns the RGBA pixel data (dst_width * dst_height * 4 bytes).
     #[allow(clippy::too_many_arguments)]
@@ -356,6 +410,8 @@ impl GpuNv12Converter {
         dst_width: u32,
         dst_height: u32,
         rotation: u32,
+        color_ids: [u32; 4],
+        primaries_matrix: [[f32; 4]; 3],
     ) -> Vec<u8> {
         let y_size = y_data.len() as u64;
         let uv_size = uv_data.len() as u64;
@@ -382,7 +438,12 @@ impl GpuNv12Converter {
             y_stride,
             uv_stride,
             rotation,
+            color_range: color_ids[0],
+            matrix_id: color_ids[1],
+            transfer_id: color_ids[2],
+            primaries_id: color_ids[3],
             _pad1: 0,
+            primaries_matrix,
         };
         self.queue
             .write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));
@@ -500,6 +561,9 @@ impl GpuNv12Converter {
         dst_width: u32,
         dst_height: u32,
         rotation: u32,
+        // `color_ids` is `[range, matrix_id, transfer_id, primaries_id]`.
+        color_ids: [u32; 4],
+        primaries_matrix: [[f32; 4]; 3],
     ) -> std::sync::Arc<wgpu::Buffer> {
         let y_size = y_data.len() as u64;
         let uv_size = uv_data.len() as u64;
@@ -533,7 +597,12 @@ impl GpuNv12Converter {
             y_stride,
             uv_stride,
             rotation,
+            color_range: color_ids[0],
+            matrix_id: color_ids[1],
+            transfer_id: color_ids[2],
+            primaries_id: color_ids[3],
             _pad1: 0,
+            primaries_matrix,
         };
         self.queue
             .write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&params));

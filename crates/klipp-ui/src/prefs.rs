@@ -812,36 +812,47 @@ impl Preferences {
 
         match std::fs::read_to_string(&path) {
             Ok(contents) => {
-                // Two-pass parse: first into a generic JSON Value so we can
-                // run the legacy field migration, then into the typed
-                // Preferences struct. The migration is idempotent — if the
-                // new fields already exist, the legacy ones are just dropped.
-                let parsed: Result<serde_json::Value, _> = serde_json::from_str(&contents);
-                match parsed {
-                    Ok(mut value) => {
-                        Self::migrate_legacy_editing_to_file_browser(&mut value);
-                        Self::migrate_skim_resolution_default(&mut value);
-                        Self::migrate_filmstrip_height_default(&mut value);
-                        Self::migrate_skim_quality_default(&mut value);
-                        match serde_json::from_value::<Self>(value) {
-                            Ok(prefs) => {
-                                tracing::info!("Preferences loaded from {}", path.display());
-                                prefs
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to parse preferences ({}), using defaults", e);
-                                Self::default()
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to read preferences JSON ({}), using defaults", e);
-                        Self::default()
-                    }
-                }
+                let prefs = Self::from_json_str(&contents);
+                tracing::info!("Preferences loaded from {}", path.display());
+                prefs
             }
             Err(_) => {
                 tracing::info!("No preferences file found, using defaults");
+                Self::default()
+            }
+        }
+    }
+
+    /// Parse a preferences JSON string with the full migration pipeline,
+    /// falling back to `Preferences::default()` on any error path. Extracted
+    /// from `load()` so the malformed-input behaviour can be tested without
+    /// going through the on-disk config path. See CODE_AUDIT PANIC-PREFS.
+    pub fn from_json_str(contents: &str) -> Self {
+        // Two-pass parse: first into a generic JSON Value so we can run the
+        // legacy field migrations, then into the typed Preferences struct.
+        // The migrations are idempotent — if the new fields already exist,
+        // the legacy ones are just dropped.
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(contents);
+        let mut value = match parsed {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Failed to read preferences JSON ({}), using defaults", e);
+                return Self::default();
+            }
+        };
+        Self::migrate_legacy_editing_to_file_browser(&mut value);
+        Self::migrate_skim_resolution_default(&mut value);
+        Self::migrate_filmstrip_height_default(&mut value);
+        Self::migrate_skim_quality_default(&mut value);
+        match serde_json::from_value::<Self>(value) {
+            Ok(mut prefs) => {
+                // Migrate legacy theme_mode → theme_name (added when the
+                // registry-based theme system landed). Idempotent.
+                prefs.appearance.migrate_theme_mode();
+                prefs
+            }
+            Err(e) => {
+                tracing::warn!("Failed to parse preferences ({}), using defaults", e);
                 Self::default()
             }
         }
@@ -1177,6 +1188,23 @@ impl Default for AudioHardwarePrefs {
     }
 }
 
+/// Legacy theme-mode enum, retained for back-compat with
+/// preferences.json files written before the registry-based theme
+/// system. New code should use `AppearancePrefs.theme_name: String`.
+/// On load, a present `theme_mode` is translated to a `theme_name`
+/// via [`AppearancePrefs::migrate_theme_mode`] then dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ThemeMode {
+    Dark,
+    Light,
+}
+
+impl Default for ThemeMode {
+    fn default() -> Self {
+        Self::Dark
+    }
+}
+
 /// Appearance / theme preferences.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppearancePrefs {
@@ -1186,6 +1214,18 @@ pub struct AppearancePrefs {
     /// UI scale percentage. 0 = Auto (match system DPI).
     #[serde(default)]
     pub ui_scale_percent: u32,
+    /// Theme name as registered in [`crate::theme::ThemeRegistry`].
+    /// Defaults to "Dark" (the built-in name from `theme/builtin/dark.toml`).
+    /// User themes drop into `~/.config/klipp/themes/*.toml` and
+    /// appear here by their TOML `name` field.
+    #[serde(default = "default_theme_name")]
+    pub theme_name: String,
+    /// Legacy: pre-registry theme mode enum. If present, the
+    /// post-load migration in `Preferences::load` translates it to
+    /// `theme_name` and clears this field. Kept Serialize so existing
+    /// installs that still emit it round-trip cleanly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme_mode: Option<ThemeMode>,
     /// Accent color [R, G, B].
     #[serde(default = "default_accent_color")]
     pub accent_color: [u8; 3],
@@ -1206,6 +1246,7 @@ pub struct AppearancePrefs {
 }
 fn default_ui_text_size() -> f32 { 13.0 }
 fn default_accent_color() -> [u8; 3] { [0xe8, 0xa0, 0x20] }
+fn default_theme_name() -> String { "Dark".to_string() }
 // Role colors match theme.rs Default exactly
 fn default_role_video() -> [u8; 3] { [0x2d, 0x6f, 0xa8] }
 fn default_role_dialogue() -> [u8; 3] { [0x3a, 0x8c, 0x6e] }
@@ -1222,6 +1263,8 @@ impl Default for AppearancePrefs {
         Self {
             ui_text_size: default_ui_text_size(),
             ui_scale_percent: 0, // Auto
+            theme_name: default_theme_name(),
+            theme_mode: None,
             accent_color: default_accent_color(),
             playhead_color: default_accent_color(),
             role_video: default_role_video(), role_dialogue: default_role_dialogue(),
@@ -1229,6 +1272,28 @@ impl Default for AppearancePrefs {
             role_title: default_role_title(), role_broll: default_role_broll(),
             role_ambience: default_role_ambience(), role_foley: default_role_foley(),
             role_voiceover: default_role_voiceover(), role_graphics: default_role_graphics(),
+        }
+    }
+}
+
+impl AppearancePrefs {
+    /// Translate the legacy `theme_mode` enum to the registry-based
+    /// `theme_name`. Run once during `Preferences::load` so the
+    /// pre-registry preferences.json migrates forward without
+    /// dropping the user's choice.
+    ///
+    /// After translation, `theme_mode` is cleared so the next save
+    /// stops emitting it (the field is `skip_serializing_if = "Option::is_none"`).
+    pub fn migrate_theme_mode(&mut self) {
+        if let Some(mode) = self.theme_mode.take() {
+            // Only overwrite the name if it's still the default —
+            // a user who already set `theme_name` explicitly wins.
+            if self.theme_name == default_theme_name() {
+                self.theme_name = match mode {
+                    ThemeMode::Dark => "Dark".to_string(),
+                    ThemeMode::Light => "Light".to_string(),
+                };
+            }
         }
     }
 }
@@ -1295,9 +1360,6 @@ impl Default for MediaCachePrefs {
 /// Color grading preferences.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColorPrefs {
-    /// Working color space.
-    #[serde(default)]
-    pub working_color_space: klipp_core::ColorSpace,
     /// Viewer LUT file path (applied for display only).
     #[serde(default)]
     pub viewer_lut_path: Option<PathBuf>,
@@ -1327,7 +1389,6 @@ fn default_skin_angle() -> f32 { 123.0 }
 impl Default for ColorPrefs {
     fn default() -> Self {
         Self {
-            working_color_space: klipp_core::ColorSpace::Rec709,
             viewer_lut_path: None,
             lut_interpolation: Default::default(),
             scope_quality: Default::default(),
@@ -1825,7 +1886,6 @@ mod tests {
         assert_eq!(rt.media_cache.thumbnail_height, 256);
 
         // ColorPrefs
-        assert_eq!(rt.color.working_color_space, klipp_core::ColorSpace::Rec709);
         assert!(rt.color.viewer_lut_path.is_none());
         assert_eq!(rt.color.scope_quality, klipp_core::ScopeQuality::Medium);
         assert_eq!(rt.color.scope_update_interval_ms, 32);
@@ -1903,7 +1963,6 @@ mod tests {
         assert_eq!(prefs.audio_hardware.sample_rate, 48000);
         assert_eq!(prefs.appearance.ui_text_size, 13.0);
         assert_eq!(prefs.media_cache.max_cache_size_gb, 20);
-        assert_eq!(prefs.color.working_color_space, klipp_core::ColorSpace::Rec709);
         assert!(prefs.title.default_font.is_empty());
         assert_eq!(prefs.timeline.clip_colors.len(), 6);
         assert_eq!(prefs.viewer.grid_color, [200, 200, 200, 80]);
@@ -2067,7 +2126,6 @@ mod tests {
         prefs.media_cache.thumbnail_height = 200;
 
         // ColorPrefs
-        prefs.color.working_color_space = klipp_core::ColorSpace::Rec2020;
         prefs.color.viewer_lut_path = Some(PathBuf::from("/luts/my.cube"));
         prefs.color.scope_quality = klipp_core::ScopeQuality::High;
         prefs.color.scope_update_interval_ms = 64;
@@ -2189,7 +2247,6 @@ mod tests {
         assert_eq!(rt.media_cache.skim_transcode_quality, 28);
         assert_eq!(rt.media_cache.thumbnail_height, 200);
 
-        assert_eq!(rt.color.working_color_space, klipp_core::ColorSpace::Rec2020);
         assert_eq!(rt.color.viewer_lut_path.as_ref().unwrap().to_str().unwrap(), "/luts/my.cube");
         assert_eq!(rt.color.scope_quality, klipp_core::ScopeQuality::High);
         assert_eq!(rt.color.scope_update_interval_ms, 64);
@@ -2265,7 +2322,6 @@ mod tests {
         assert_eq!(prefs.appearance.ui_text_size, 13.0);
         assert_eq!(prefs.appearance.accent_color, [0xe8, 0xa0, 0x20]);
         assert_eq!(prefs.media_cache.max_cache_size_gb, 20);
-        assert_eq!(prefs.color.working_color_space, klipp_core::ColorSpace::Rec709);
         assert!(prefs.title.default_font.is_empty());
         assert_eq!(prefs.timeline.clip_colors.len(), 6);
         assert_eq!(prefs.viewer.grid_color, [200, 200, 200, 80]);
@@ -2693,5 +2749,94 @@ mod tests {
         let prefs: Preferences = serde_json::from_str(json).expect("deserialize");
         assert_eq!(prefs.export.parallel_render_jobs, 2);
         assert!(prefs.export.post_export_command.is_empty());
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // PANIC-PREFS regression — closes CODE_AUDIT PANIC-PREFS.
+    //
+    // The original tracker entry pointed at three migration sites
+    // that used `value.get(...).unwrap()`, which would crash startup
+    // if a hand-edited or stale prefs.json failed the implicit shape
+    // check. The migrations have since been rewritten with `let
+    // Some(...) else { return };` and `if let Some(...)` guards, and
+    // load() falls back to defaults on every error path (file-read
+    // error, JSON-parse error, schema-deserialize error). These
+    // tests pin that contract via the new from_json_str entry point
+    // so a future "tighten up the migrations" can't silently re-
+    // introduce the panic.
+    //
+    // The hostile inputs deliberately stress every guard in the
+    // migrations: malformed JSON, JSON that's the wrong root type,
+    // objects with the wrong-shape `playback`/`media_cache`/`editing`
+    // sections, schema mismatches at the typed-deserialize step.
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn from_json_str_recovers_from_garbage_input() {
+        // Not JSON at all → defaults, no panic.
+        let prefs = Preferences::from_json_str("this is not json {[(");
+        assert_eq!(prefs.general.recent_projects.len(), 0,
+            "garbage input must yield default prefs");
+    }
+
+    #[test]
+    fn from_json_str_recovers_from_wrong_root_type() {
+        // Valid JSON but the root is an array, not an object → the
+        // typed deserialize fails → defaults.
+        let prefs = Preferences::from_json_str("[1, 2, 3]");
+        assert_eq!(prefs.general.recent_projects.len(), 0);
+        let prefs2 = Preferences::from_json_str("\"a string\"");
+        assert_eq!(prefs2.general.recent_projects.len(), 0);
+        let prefs3 = Preferences::from_json_str("null");
+        assert_eq!(prefs3.general.recent_projects.len(), 0);
+    }
+
+    #[test]
+    fn from_json_str_recovers_when_migration_sections_have_wrong_type() {
+        // The migrations' `let Some(...).as_object_mut() else { return };`
+        // bails out cleanly when the expected sub-object is the wrong
+        // type. The typed deserialize then either succeeds-with-
+        // defaults or fails (both yield default prefs from
+        // from_json_str) — both must NOT panic.
+        let inputs = [
+            r#"{ "playback": "not an object" }"#,
+            r#"{ "playback": [1, 2, 3] }"#,
+            r#"{ "media_cache": 42 }"#,
+            r#"{ "editing": null }"#,
+            r#"{ "playback": null, "media_cache": null, "editing": null, "file_browser": null }"#,
+            // Wrong INNER types inside the migration sections.
+            r#"{ "playback": { "skim_resolution": "string" } }"#,
+            r#"{ "media_cache": { "filmstrip_height": [], "skim_transcode_quality": {} } }"#,
+        ];
+        for input in &inputs {
+            let prefs = Preferences::from_json_str(input);
+            // Don't care about the specific output, only that we
+            // returned without panicking and got a usable struct.
+            let _ = prefs.general.recent_projects.len();
+        }
+    }
+
+    #[test]
+    fn from_json_str_handles_empty_object_with_serde_defaults() {
+        // `{}` should deserialize successfully because every top-
+        // level field on Preferences has #[serde(default)]. Pinning
+        // this so a future cleanup that drops a `default` annotation
+        // (which would make us crash on missing fields) surfaces
+        // here.
+        let prefs = Preferences::from_json_str("{}");
+        let _ = prefs.general.recent_projects.len();
+    }
+
+    #[test]
+    fn from_json_str_loads_valid_preferences() {
+        // Sanity: the happy path still works after the extraction.
+        let prefs = Preferences::default();
+        let json = serde_json::to_string(&prefs).expect("serialize defaults");
+        let round_tripped = Preferences::from_json_str(&json);
+        assert_eq!(
+            round_tripped.general.auto_save_interval_secs,
+            prefs.general.auto_save_interval_secs,
+            "round-trip via from_json_str must preserve fields",
+        );
     }
 }

@@ -10,10 +10,17 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+# Production-side dep (image-diff snapshot harness needs PNG I/O).
+# Still test-only at the workspace level — downstream crates pull
+# klipp-testing in via [dev-dependencies] so png never reaches a
+# release binary.
+[dependencies]
+png = "0.18"
+
 # dev-dependencies only — wired into the ground-truth spec tests that
-# exercise the real linear-light pipeline implementations. The lib
-# itself stays dependency-free so any crate can pull it in without
-# pulling klipp-color transitively.
+# exercise the real linear-light pipeline implementations. Avoid
+# pulling these into klipp-testing's main lib; downstream consumers
+# wire them in their own [dev-dependencies].
 [dev-dependencies]
 klipp-color = { workspace = true }
 klipp-core = { workspace = true }

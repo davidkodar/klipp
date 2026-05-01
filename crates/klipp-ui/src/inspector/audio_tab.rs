@@ -140,7 +140,7 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         info_row(ui, theme, pad, row_h, w, "Colour", |ui, rx, cy| {
             // SDR badge + BT.709
             let badge_text = "SDR";
-            let badge_color = egui::Color32::from_rgb(60, 120, 200);
+            let badge_color = theme.marker_info;
             let sub_text = "BT.709";
             let dim = theme.text_dim;
 
@@ -267,7 +267,7 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         // Proxy
         info_row(ui, theme, pad, row_h, w, "Proxy", |ui, rx, cy| {
             let proxy_text = if state.use_proxies { "On" } else { "Off" };
-            let color = if state.use_proxies { egui::Color32::from_rgb(100, 200, 120) } else { theme.text_primary };
+            let color = if state.use_proxies { theme.marker_success } else { theme.text_primary };
             ui.painter().text(
                 egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
                 proxy_text, egui::FontId::proportional(13.0), color,
@@ -357,12 +357,12 @@ fn slider_row(
 
         // Draw diamond
         if at_playhead {
-            draw_keyframe_diamond(ui, egui::pos2(diamond_x, diamond_y), egui::Color32::from_rgb(255, 210, 50), true);
+            draw_keyframe_diamond(ui, egui::pos2(diamond_x, diamond_y), theme.marker_warning, true);
         } else if hovered {
             draw_keyframe_diamond(ui, egui::pos2(diamond_x, diamond_y), theme.text_secondary, false);
         } else {
             draw_keyframe_diamond(ui, egui::pos2(diamond_x, diamond_y),
-                egui::Color32::from_rgba_premultiplied(120, 120, 130, 90), false);
+                egui::Color32::from_rgba_premultiplied(theme.text_dim.r(), theme.text_dim.g(), theme.text_dim.b(), 90), false);
         }
 
         if diamond_resp.clicked() {
@@ -544,7 +544,7 @@ fn slider_row(
     let thumb_x = track_left + t * track_w;
     let thumb_y = track_y + track_h / 2.0;
     ui.painter().circle_filled(
-        egui::pos2(thumb_x, thumb_y), thumb_r, egui::Color32::from_rgb(220, 220, 225),
+        egui::pos2(thumb_x, thumb_y), thumb_r, theme.text_primary,
     );
     ui.painter().circle_stroke(
         egui::pos2(thumb_x, thumb_y), thumb_r, egui::Stroke::new(1.0_f32, theme.border),
@@ -657,9 +657,9 @@ fn show_clip_audio(
                     egui::vec2(16.0, 16.0), egui::Sense::click(),
                 );
                 let tint = if reset_resp.hovered() {
-                    egui::Color32::from_rgb(220, 220, 225)
+                    theme.text_primary
                 } else {
-                    egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)
+                    egui::Color32::from_rgba_premultiplied(theme.text_dim.r(), theme.text_dim.g(), theme.text_dim.b(), 100)
                 };
                 Icon::ArrowCounterClockwise.image(12.0).tint(tint).paint_at(ui, reset_rect);
                 if reset_resp.on_hover_text("Reset all audio to defaults").clicked() {
@@ -970,7 +970,14 @@ fn show_clip_audio(
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
             .show(ui, |ui| {
-                super::audio_fx_inspector::show_content(ui, theme, clip_id, &clip.audio_effects, &state.ladspa_plugins, cmds);
+                let clip_timeline_in_secs = clip.timeline_in.to_secs_f64();
+                let clip_rate = clip.timeline_in.rate;
+                super::audio_fx_inspector::show_content(
+                    ui, theme, clip_id,
+                    &clip.audio_effects, &clip.audio_effect_keyframes,
+                    clip_time_secs, clip_timeline_in_secs, clip_rate,
+                    &state.ladspa_plugins, cmds,
+                );
             });
         ui.add_space(4.0);
     });
@@ -1400,7 +1407,7 @@ fn draw_stereo_meter(ui: &mut egui::Ui, theme: &KlippTheme, peak_l: f32, peak_r:
         );
 
         let bar = egui::Rect::from_min_size(egui::pos2(bar_left, y), egui::vec2(bar_w, bar_h));
-        painter.rect_filled(bar, 2.0, egui::Color32::from_rgb(20, 20, 25));
+        painter.rect_filled(bar, 2.0, theme.bg_deep);
 
         let fill = (level.min(max_level) / max_level * bar_w).max(0.0);
         if fill > 0.0 {
@@ -1408,23 +1415,23 @@ fn draw_stereo_meter(ui: &mut egui::Ui, theme: &KlippTheme, peak_l: f32, peak_r:
             let yellow_end = bar_w * 0.7;
             let green_w = fill.min(green_end);
             if green_w > 0.0 {
-                painter.rect_filled(egui::Rect::from_min_size(egui::pos2(bar_left, y), egui::vec2(green_w, bar_h)), 2.0, egui::Color32::from_rgb(40, 170, 60));
+                painter.rect_filled(egui::Rect::from_min_size(egui::pos2(bar_left, y), egui::vec2(green_w, bar_h)), 2.0, theme.marker_success);
             }
             if fill > green_end {
                 let yellow_w = (fill - green_end).min(yellow_end - green_end);
-                painter.rect_filled(egui::Rect::from_min_size(egui::pos2(bar_left + green_end, y), egui::vec2(yellow_w, bar_h)), 0.0, egui::Color32::from_rgb(210, 180, 40));
+                painter.rect_filled(egui::Rect::from_min_size(egui::pos2(bar_left + green_end, y), egui::vec2(yellow_w, bar_h)), 0.0, theme.marker_warning);
             }
             if fill > yellow_end {
                 let red_w = fill - yellow_end;
-                painter.rect_filled(egui::Rect::from_min_size(egui::pos2(bar_left + yellow_end, y), egui::vec2(red_w, bar_h)), 0.0, egui::Color32::from_rgb(210, 45, 45));
+                painter.rect_filled(egui::Rect::from_min_size(egui::pos2(bar_left + yellow_end, y), egui::vec2(red_w, bar_h)), 0.0, theme.marker_error);
             }
         }
 
         if hold > 0.005 {
             let hold_x = bar_left + (hold.min(max_level) / max_level * bar_w);
-            let hold_color = if hold > 0.9 { egui::Color32::from_rgb(255, 60, 60) }
-                else if hold > 0.7 { egui::Color32::from_rgb(255, 210, 50) }
-                else { egui::Color32::from_rgb(80, 220, 100) };
+            let hold_color = if hold > 0.9 { theme.marker_error }
+                else if hold > 0.7 { theme.marker_warning }
+                else { theme.marker_success };
             painter.rect_filled(egui::Rect::from_min_size(egui::pos2(hold_x - 1.0, y), egui::vec2(2.0, bar_h)), 0.0, hold_color);
         }
     }

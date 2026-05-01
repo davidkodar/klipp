@@ -1,4 +1,5 @@
 use crate::state::{ScopeMode, ScopeScale};
+use crate::theme::KlippTheme;
 use klipp_engine::SharedFrameBuffer;
 use std::time::Instant;
 
@@ -90,9 +91,14 @@ fn major_ticks(scale: ScopeScale) -> Vec<u32> {
     }
 }
 
-pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_parade: bool, section_count: usize) {
+pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_parade: bool, section_count: usize, theme: &KlippTheme) {
     let painter = ui.painter_at(rect);
-    let amber = |a: u8| egui::Color32::from_rgba_unmultiplied(0xf5, 0xb4, 0x3c, a);
+    // Amber tick / grid colour from the theme. `scope_grid` carries the
+    // theme-tuned base alpha; we modulate it per-call so minor / major
+    // grid lines + ticks read at distinct intensities.
+    let grid = theme.scope_grid;
+    let label_color = theme.scope_label;
+    let amber = |a: u8| egui::Color32::from_rgba_unmultiplied(grid.r(), grid.g(), grid.b(), a);
     let font = egui::FontId::monospace(9.0);
 
     let major_vals: Vec<f32> = major_ticks(scale).into_iter().map(|v| v as f32).collect();
@@ -135,7 +141,7 @@ pub(crate) fn draw_scale(ui: &egui::Ui, rect: egui::Rect, scale: ScopeScale, is_
         // Label — right-aligned to axis, 0 sits BELOW (TOP baseline), others sit ABOVE (BOTTOM baseline)
         let label = format!("{}", val as u32);
         let align = if val < 0.1 { egui::Align2::RIGHT_TOP } else { egui::Align2::RIGHT_BOTTOM };
-        painter.text(egui::pos2(rect.min.x + AXIS_W - 8.0, y), align, &label, font.clone(), amber(191));
+        painter.text(egui::pos2(rect.min.x + AXIS_W - 8.0, y), align, &label, font.clone(), label_color);
     }
 
     // Axis separator — 1px vertical at x=AXIS_W, rgba(255,255,255,0.08)
@@ -212,6 +218,7 @@ pub fn show_scopes(
     is_playing: bool,
     scope_cursor: Option<crate::state::ScopeCursorData>,
     show_cursor: bool,
+    theme: &KlippTheme,
 ) {
     let render_h: usize = 512;
 
@@ -421,7 +428,7 @@ pub fn show_scopes(
         let (full_rect, _) = ui.allocate_exact_size(available, egui::Sense::hover());
 
         // Dark background
-        ui.painter().rect_filled(full_rect, 0.0, egui::Color32::from_rgb(0x04, 0x04, 0x07));
+        ui.painter().rect_filled(full_rect, 0.0, theme.bg_void);
 
         if is_vector {
             // Vectorscope: centered square, no scale
@@ -438,7 +445,7 @@ pub fn show_scopes(
 
             // Vectorscope labels
             let label_font = egui::FontId::monospace(8.0);
-            let label_color = egui::Color32::from_rgb(0x90, 0x78, 0x30);
+            let label_color = theme.scope_label;
             let cx = img_rect.center().x;
             let cy = img_rect.center().y;
             let r = side / 2.0 - 4.0;
@@ -462,7 +469,7 @@ pub fn show_scopes(
             // Read scale from the scope_state (passed via the ScopeState struct)
             let scale = state.scale;
             let is_parade = mode == ScopeMode::Parade;
-            draw_scale(ui, full_rect, scale, is_parade, 3);
+            draw_scale(ui, full_rect, scale, is_parade, 3, theme);
         }
 
         // ── Scope cursor indicator ──
@@ -475,7 +482,7 @@ pub fn show_scopes(
             }
         }
     } else {
-        ui.label(egui::RichText::new("No frame data").color(egui::Color32::from_rgb(0x50, 0x50, 0x60)).size(10.0));
+        ui.label(egui::RichText::new("No frame data").color(theme.text_dim).size(10.0));
     }
 }
 

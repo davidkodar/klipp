@@ -67,6 +67,15 @@ pub struct FrameBuffer {
     pub gpu_output_width: u32,
     pub gpu_output_height: u32,
     pub gpu_output_generation: u64,
+
+    /// Per-node output thumbnails for the V2 canvas, keyed by node
+    /// id. Each entry is a ~96×54 sRGB u8 RGBA buffer. Populated by
+    /// the engine on paused / post-seek re-grades when the UI has
+    /// sent a non-empty `SetVisibleNodeThumbs` list. `node_thumbs_gen`
+    /// bumps whenever the map changes so the V2 panel can skip
+    /// texture re-uploads between no-op updates.
+    pub node_thumbs: std::collections::HashMap<klipp_nodes::NodeId, Vec<u8>>,
+    pub node_thumbs_gen: u64,
 }
 
 impl FrameBuffer {
@@ -99,6 +108,8 @@ impl FrameBuffer {
             gpu_output_width: 0,
             gpu_output_height: 0,
             gpu_output_generation: 0,
+            node_thumbs: std::collections::HashMap::new(),
+            node_thumbs_gen: 0,
         }
     }
 

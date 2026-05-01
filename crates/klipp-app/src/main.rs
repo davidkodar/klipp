@@ -27,9 +27,102 @@ use std::sync::{Arc, Mutex, RwLock};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+/// Append a single message to klipp-debug.log (best-effort,
+/// async-signal-safe-ish: open + write + close, no allocator
+/// surprises). Used by both the panic hook and the native
+/// signal handler so a hard crash still leaves a trace.
+fn write_crash_marker(msg: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("klipp-debug.log")?;
+    writeln!(f, "[CRASH-MARKER] {msg}")?;
+    f.flush()?;
+    Ok(())
+}
+
+/// Install handlers for SIGSEGV / SIGABRT / SIGBUS / SIGILL.
+/// On a native crash we write a minimal marker (signal name +
+/// best-effort backtrace from the `backtrace` crate is *not* used
+/// here — allocator may be wedged) into klipp-debug.log, then
+/// re-raise so the OS coredump path still runs. Without this a
+/// segfault leaves zero trace.
+fn install_native_crash_handler() {
+    // Note: writing inside a signal handler is technically
+    // restricted to async-signal-safe calls. `write(2)` and
+    // `open(2)` are both signal-safe; `std::fs::OpenOptions`
+    // boils down to those, but its error path can allocate.
+    // For our purposes (debug build aiding diagnosis), the
+    // best-effort write is fine even if it occasionally
+    // double-faults; the raised default handler still runs.
+    extern "C" fn handler(signum: libc::c_int) {
+        let name = match signum {
+            libc::SIGSEGV => "SIGSEGV",
+            libc::SIGABRT => "SIGABRT",
+            libc::SIGBUS  => "SIGBUS",
+            libc::SIGILL  => "SIGILL",
+            libc::SIGFPE  => "SIGFPE",
+            _ => "SIG?",
+        };
+        // Async-signal-safe: write(2) directly to a path the
+        // process can open in the handler. Truncated info but
+        // enough to know "the app hit a native crash."
+        let msg = format!(
+            "[CRASH-MARKER] NATIVE_CRASH signal={name} ({signum}) — process aborting\n"
+        );
+        unsafe {
+            let path = b"klipp-debug.log\0";
+            let fd = libc::open(
+                path.as_ptr() as *const _,
+                libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT,
+                0o644,
+            );
+            if fd >= 0 {
+                let _ = libc::write(fd, msg.as_ptr() as *const _, msg.len());
+                let _ = libc::close(fd);
+            }
+            // Restore default disposition and re-raise so the OS
+            // generates a core dump and the parent shell sees the
+            // expected exit status.
+            libc::signal(signum, libc::SIG_DFL);
+            libc::raise(signum);
+        }
+    }
+    unsafe {
+        let h = handler as *const () as libc::sighandler_t;
+        libc::signal(libc::SIGSEGV, h);
+        libc::signal(libc::SIGABRT, h);
+        libc::signal(libc::SIGBUS,  h);
+        libc::signal(libc::SIGILL,  h);
+        libc::signal(libc::SIGFPE,  h);
+    }
+}
+
 fn main() -> Result<()> {
     // Anchor T0 for STARTUP_PERF measurements as the very first thing in main.
     mark_process_start();
+
+    // ── Auto-configured env vars ─────────────────────────────
+    // Set BEFORE any thread spawns so `std::thread`'s lazy
+    // RUST_MIN_STACK read picks up our value, and ort's
+    // load-dynamic init sees ORT_DYLIB_PATH. Each call respects
+    // a user-set override.
+    //
+    // RUST_MIN_STACK = 1 GiB. Default thread stack (2 MiB) is
+    // too small for some candle / ort / graph executor recursion
+    // depths. Setting this here means users don't have to
+    // remember `RUST_MIN_STACK=...` in every launch command.
+    if std::env::var_os("RUST_MIN_STACK").is_none() {
+        // SAFETY: main thread, before any threads spawn.
+        unsafe { std::env::set_var("RUST_MIN_STACK", "1073741824"); }
+    }
+    // ORT_DYLIB_PATH = first libonnxruntime.so found on disk.
+    // Probes ~/.local/lib/onnxruntime*, /usr/lib, etc. via
+    // klipp_ml_ort::find_libonnxruntime. No-op when the user
+    // already set the env var, OR when the ai-ort feature is
+    // off (build doesn't pull in ort at all).
+    klipp_ui::auto_set_ort_dylib_path();
 
     // Kick off system font discovery on a background thread immediately, so the
     // ~5s scan runs in parallel with ffmpeg / engine / window init instead of
@@ -45,10 +138,19 @@ fn main() -> Result<()> {
         let _t = LogTimer::new("ffmpeg::init");
         ffmpeg_next::init().expect("Failed to initialize ffmpeg");
     }
-    // Suppress ffmpeg's stderr output (VAAPI init failures, thread count warnings, CUDA errors).
-    // All important decode info is captured through our own tracing system.
-    // AV_LOG_FATAL = only show unrecoverable crashes.
-    unsafe { ffmpeg_next::ffi::av_log_set_level(ffmpeg_next::ffi::AV_LOG_FATAL as i32) };
+    // Route ffmpeg's own log channel through our tracing subscriber
+    // so cuvid / hwaccel / decoder error messages land in
+    // `klipp-debug.log` alongside the rest. Without this, ffmpeg's
+    // diagnostics go to stderr (invisible when launched from a
+    // GUI) — silently swallowing the actual cause of "decoder error:
+    // Invalid argument" and similar rabbit holes. The default level
+    // is WARNING so the log isn't spammed with INFO-level chatter
+    // (codec-init details, container probe noise) while real
+    // problems still come through.
+    unsafe {
+        ffmpeg_next::ffi::av_log_set_level(ffmpeg_next::ffi::AV_LOG_WARNING as i32);
+        ffmpeg_next::ffi::av_log_set_callback(Some(klipp_engine::ffmpeg_log_to_tracing));
+    }
 
     // Log to klipp-debug.log, truncated on each launch
     let log_file = std::fs::File::create("klipp-debug.log")
@@ -66,7 +168,10 @@ fn main() -> Result<()> {
                 EnvFilter::new(
                     "klipp_engine=debug,klipp_ui=debug,klipp_app=debug,\
                      klipp_core=debug,klipp_effects=debug,klipp_media=debug,\
+                     klipp_color=debug,klipp_audio=debug,\
                      klipp_timeline=debug,klipp_jobs=debug,klipp_title=debug,\
+                     klipp_nodes=debug,\
+                     klipp_ml=debug,klipp_ml_candle=debug,klipp_ml_ort=debug,\
                      wgpu=warn,naga=warn",
                 )
             }),
@@ -74,6 +179,15 @@ fn main() -> Result<()> {
         .with_writer(log_file)
         .with_ansi(false)
         .init();
+
+    // Force RUST_BACKTRACE on so the panic hook below carries a real
+    // stack — without this, release builds emit "Backtrace::capture
+    // is disabled" and the log line above is useless. Set BEFORE the
+    // panic hook installs so the first capture sees it.
+    if std::env::var_os("RUST_BACKTRACE").is_none() {
+        // SAFETY: main thread, before any threads spawn.
+        unsafe { std::env::set_var("RUST_BACKTRACE", "full"); }
+    }
 
     // Route Rust panics (from any thread) into klipp-debug.log via tracing.
     // Without this, `panic = "abort"` + stripped release symbols makes
@@ -97,8 +211,21 @@ fn main() -> Result<()> {
             location = %location,
             "PANIC: {message}\nbacktrace:\n{backtrace}"
         );
+        // Belt-and-braces: also write directly to klipp-debug.log in
+        // case tracing's writer is wedged (panic mid-log-flush etc.).
+        let _ = write_crash_marker(&format!(
+            "PANIC thread={thread_name} at {location}: {message}\n{backtrace}\n"
+        ));
         default_hook(panic_info);
     }));
+
+    // Native crash handler — catches SIGSEGV / SIGABRT / SIGBUS /
+    // SIGILL that hit C-side code (FFmpeg, NVDEC, wgpu drivers).
+    // The Rust panic hook above does not see those because they
+    // come in as POSIX signals before any unwinding. Without this,
+    // a hard FFmpeg crash leaves zero trace in klipp-debug.log and
+    // looks like the app "just disappeared."
+    install_native_crash_handler();
 
     mark("main entered (logging up)");
     info!("Klipp starting up");
@@ -107,6 +234,10 @@ fn main() -> Result<()> {
     let (event_tx, event_rx) = crossbeam_channel::unbounded();
 
     let frame_buffer = Arc::new(Mutex::new(FrameBuffer::new(1920, 1080)));
+    // Source viewer gets its own frame buffer so its decoded frames
+    // never collide with the program viewer's. Same struct, second
+    // instance — UI's existing texture-upload code handles both.
+    let source_frame_buffer = Arc::new(Mutex::new(FrameBuffer::new(1920, 1080)));
     let sequence = Arc::new(RwLock::new(Sequence::new_default()));
     let media_pool = Arc::new(RwLock::new(MediaPool::new()));
 
@@ -126,15 +257,33 @@ fn main() -> Result<()> {
     // share the same Arc.
     let foreground_activity = klipp_jobs::ForegroundActivity::new();
 
+    // Cross-thread repaint handle. The engine calls `(repaint_cb)()`
+    // on every state transition / FrameReady / seek-complete, but
+    // there's no egui::Context at engine-creation time (eframe hasn't
+    // booted yet). Stash it in an `Arc<OnceLock<Context>>` — empty
+    // while the engine is warming up, filled by the eframe creator
+    // callback below. Once installed, every engine wake-up cross-
+    // thread calls `ctx.request_repaint()` so the UI doesn't sleep
+    // through a PlaybackStarted or FrameReady event. Without this the
+    // UI only redraws on input, so until the user moves the mouse
+    // the viewer stays blank after Play.
+    let repaint_ctx: std::sync::Arc<std::sync::OnceLock<egui::Context>> =
+        std::sync::Arc::new(std::sync::OnceLock::new());
+    let repaint_ctx_for_engine = std::sync::Arc::clone(&repaint_ctx);
     let mut engine = {
         let _t = LogTimer::new("PlaybackEngine::new (TOTAL)");
         PlaybackEngine::new(
             cmd_rx,
             event_tx,
             frame_buffer.clone(),
+            source_frame_buffer.clone(),
             sequence.clone(),
             media_pool.clone(),
-            Box::new(|| {}),
+            Box::new(move || {
+                if let Some(ctx) = repaint_ctx_for_engine.get() {
+                    ctx.request_repaint();
+                }
+            }),
             skim_consumer.clone(),
             perf_ring.clone(),
         )
@@ -222,10 +371,12 @@ fn main() -> Result<()> {
                     last_ui = current_ui;
                     last_ui_change = std::time::Instant::now();
                 } else if last_ui_change.elapsed() >= std::time::Duration::from_millis(2000) {
+                    let ui_stage_id = klipp_engine::UI_STAGE.load(Ordering::Acquire);
                     tracing::error!(
-                        "UI_WATCHDOG STALLED {}ms at tick={} — UI thread (update) is not running",
+                        "UI_WATCHDOG STALLED {}ms at tick={} stage={} — UI thread (update) is not running",
                         last_ui_change.elapsed().as_millis(),
                         last_ui,
+                        klipp_engine::ui_stage::name(ui_stage_id),
                     );
                     ui_alerted = true;
                 }
@@ -238,7 +389,12 @@ fn main() -> Result<()> {
         let png_bytes = include_bytes!("../../../assets/icons/klipp_app_icons/hicolor/256x256/apps/klipp.png");
         let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes.as_slice()));
         let mut reader = decoder.read_info().expect("Failed to decode app icon PNG");
-        let mut buf = vec![0u8; reader.output_buffer_size()];
+        // png 0.18: output_buffer_size returns Option<usize>. The
+        // app icon is a known-good baked asset; if dimensions
+        // overflow the host's usize we have bigger problems.
+        let buf_size = reader.output_buffer_size()
+            .expect("App icon PNG has dimensions that overflow usize");
+        let mut buf = vec![0u8; buf_size];
         let info = reader.next_frame(&mut buf).expect("Failed to read app icon frame");
         let rgba = match info.color_type {
             png::ColorType::Rgba => buf[..info.buffer_size()].to_vec(),
@@ -274,6 +430,7 @@ fn main() -> Result<()> {
 
     let cmd_tx_clone = cmd_tx.clone();
     let fb_clone = frame_buffer.clone();
+    let source_fb_clone = source_frame_buffer.clone();
     let seq_clone = sequence.clone();
     let pool_clone = media_pool.clone();
     let skim_clone = skim_consumer;
@@ -286,6 +443,14 @@ fn main() -> Result<()> {
         Box::new(move |cc| {
             mark("eframe creator callback entered");
             let _t = LogTimer::new("KlippApp::new (TOTAL)");
+
+            // Install the egui Context into the shared OnceLock so
+            // the engine's `repaint_cb` can wake the UI from its own
+            // thread. Without this, PlaybackStarted / FrameReady /
+            // seek-complete events from the engine land in the
+            // channel but the UI stays asleep until the user moves
+            // the mouse — classic egui-idle symptom.
+            let _ = repaint_ctx.set(cc.egui_ctx.clone());
 
             // Optionally install eframe-wgpu's device as the shared
             // `GpuContext` so the engine + decoder submit onto the
@@ -326,6 +491,7 @@ fn main() -> Result<()> {
                 cmd_tx_clone,
                 event_rx,
                 fb_clone,
+                source_fb_clone,
                 seq_clone,
                 pool_clone,
                 skim_clone,

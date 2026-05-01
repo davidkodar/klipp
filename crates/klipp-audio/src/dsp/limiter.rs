@@ -1,6 +1,18 @@
 use super::{AudioEffect, AudioParamDescriptor, AudioProcessContext, ParamUnit};
 
-/// Brick-wall limiter.
+/// Peak limiter — instant-gain-reduction, NO look-ahead.
+///
+/// This is a feed-forward limiter that reacts to peaks AFTER they
+/// arrive at the input: when a sample exceeds `ceiling`, the gain is
+/// pulled down on that and subsequent samples until the envelope
+/// recovers. A true brick-wall limiter requires 1–5 ms of look-ahead
+/// (a delay line + upsampled peak detection) so the gain reduction is
+/// already applied by the time the peak hits the output. We do
+/// neither, so very fast transients can still clip the ceiling on the
+/// first sample of an attack — usually inaudible at the default
+/// release time, but documented here so the absence of look-ahead
+/// isn't a surprise. See CODE_AUDIT C-5. Adding look-ahead is a
+/// future job.
 pub struct Limiter {
     sample_rate: f32,
     ceiling: f32,

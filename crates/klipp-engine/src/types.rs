@@ -75,6 +75,13 @@ impl DecodedFrame {
             data,
             is_eof: self.is_eof,
             gpu_source: None,
+            // `DecodedFrame` is already sRGB u8; the resulting linear
+            // frame is in linear-BT.709 working space — that's exactly
+            // what `BT709_LIMITED_SDR.transfer = Bt709` represents
+            // post-EOTF, so the matrix/primaries/transfer all sit at
+            // their working-space defaults. The range field doesn't
+            // apply post-decode; left at the safe default.
+            colorspace: klipp_core::SourceColorspace::default(),
         }
     }
 }
@@ -109,6 +116,12 @@ pub struct LinearFrame {
     /// use `data` — every current consumer already does, so `None`
     /// is the backwards-compatible default.
     pub gpu_source: Option<std::sync::Arc<crate::frame::GpuFrame>>,
+    /// Resolved source colourspace from the AVFrame's tagged range /
+    /// matrix / primaries / transfer fields, with sensible heuristic
+    /// fallbacks for "unspecified" tags. Carried through the pipeline
+    /// so the YUV→RGB shader, gamut conversion, and EOTF decode
+    /// dispatch correctly per-source.
+    pub colorspace: klipp_core::SourceColorspace,
 }
 
 impl LinearFrame {
@@ -127,6 +140,7 @@ impl LinearFrame {
             data: Vec::new(),
             is_eof: true,
             gpu_source: None,
+            colorspace: klipp_core::SourceColorspace::default(),
         }
     }
 
@@ -139,6 +153,33 @@ impl LinearFrame {
     pub fn with_gpu_source(mut self, gpu: std::sync::Arc<crate::frame::GpuFrame>) -> Self {
         self.gpu_source = Some(gpu);
         self
+    }
+
+    /// Realise CPU `data` from `gpu_source` if it isn't already.
+    ///
+    /// Phase 4d.1 lets the decoder return GPU-resident frames with
+    /// `data` empty — the underlying RGBA8 sits in `gpu_source`'s
+    /// `wgpu::Buffer` and never gets read back unless something asks.
+    /// Engine consumers that still need the linear-f32 CPU buffer
+    /// (pregrade cache, render cache, scope preview, compare-mode
+    /// snapshot) call this helper right before they touch `data`. It
+    /// performs the GPU→CPU readback (`map_async` + `device.poll`),
+    /// then linearises the resulting sRGB-u8 bytes into linear-f32
+    /// RGBA in place.
+    ///
+    /// No-op when `data` is already populated (the SW decode path,
+    /// the `KLIPP_GPU_FRAMES=0` legacy path, or a previous call to
+    /// this method on the same frame).
+    pub fn ensure_cpu_data(&mut self) {
+        if !self.data.is_empty() || self.gpu_source.is_none() || self.is_eof {
+            return;
+        }
+        let gpu = match self.gpu_source.as_ref() {
+            Some(g) => g,
+            None => return,
+        };
+        let bytes = readback_gpu_frame_to_u8(gpu);
+        self.data = u8_rgba_to_linear_f32(&bytes);
     }
 
     /// sRGB-encode this frame to raw RGBA u8 bytes. Mirrors the
@@ -176,6 +217,112 @@ impl LinearFrame {
             is_eof: self.is_eof,
         }
     }
+}
+
+/// Read an `Arc<GpuFrame>`'s RGBA8 buffer back to a CPU `Vec<u8>`.
+///
+/// Mirrors `Frame::into_cpu`'s map-async pattern but takes a borrow
+/// so the `gpu_source` Arc stays attached to the `LinearFrame`. Used
+/// by `LinearFrame::ensure_cpu_data` to realise the CPU mirror on
+/// demand without releasing the GPU buffer (the grade chain may
+/// still consume it via `prime_chain_from_gpu_u8_buffer`).
+fn readback_gpu_frame_to_u8(gpu: &crate::frame::GpuFrame) -> Vec<u8> {
+    let byte_size = (gpu.width as u64) * (gpu.height as u64) * 4;
+    let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("linear_frame_ensure_cpu_data_staging"),
+        size: byte_size,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("linear_frame_ensure_cpu_data"),
+    });
+    encoder.copy_buffer_to_buffer(&gpu.rgba_buffer, 0, &staging, 0, byte_size);
+    gpu.queue.submit(std::iter::once(encoder.finish()));
+
+    let slice = staging.slice(..byte_size);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |res| {
+        let _ = tx.send(res);
+    });
+    // Non-blocking poll loop instead of `Maintain::Wait` — see
+    // `klipp_effects::gpu::poll_until_mapped` for why Wait
+    // deadlocks on a UI-shared device. Falls back to a zero-filled
+    // buffer if the map times out (engine treats as device-lost-
+    // equivalent and the next frame retries).
+    match klipp_effects::gpu::poll_until_mapped(&gpu.device, &rx) {
+        Ok(Ok(())) => {
+            let mapped = slice.get_mapped_range();
+            let v = mapped.to_vec();
+            drop(mapped);
+            staging.unmap();
+            v
+        }
+        other => {
+            tracing::warn!(
+                "LinearFrame::ensure_cpu_data readback failed ({other:?}); returning zeros",
+            );
+            vec![0u8; byte_size as usize]
+        }
+    }
+}
+
+/// sRGB-u8 RGBA → linear-f32 RGBA. Matches the encoding the GPU
+/// NV12/P010 converters emit (sRGB-encoded RGBA8) so a round-trip
+/// through `ensure_cpu_data` is bit-for-bit equivalent to the
+/// pre-Phase-4d eager path.
+///
+/// Uses 256-entry sRGB→linear and u8→[0,1] lookup tables instead of
+/// the per-channel `srgb_to_linear` powf, mirroring the decode
+/// thread's `rgba_u8_to_linear`. The naive powf path was ~55-70 ms
+/// per 1080p frame on the engine thread (single-threaded, 8.3M powf
+/// calls); the LUT path drops it to ~3-5 ms (single LUT lookup per
+/// channel, auto-vectorised).
+fn u8_rgba_to_linear_f32(rgba: &[u8]) -> Vec<f32> {
+    let srgb_lut = srgb_u8_to_linear_lut();
+    let a_lut = u8_div255_lut();
+    let n_pixels = rgba.len() / 4;
+    let mut out = Vec::with_capacity(n_pixels * 4);
+    // SAFETY: we write exactly n_pixels * 4 values below before reading.
+    unsafe { out.set_len(n_pixels * 4); }
+    for (i, chunk) in rgba.chunks_exact(4).enumerate() {
+        let o = i * 4;
+        out[o]     = srgb_lut[chunk[0] as usize];
+        out[o + 1] = srgb_lut[chunk[1] as usize];
+        out[o + 2] = srgb_lut[chunk[2] as usize];
+        out[o + 3] = a_lut[chunk[3] as usize];
+    }
+    out
+}
+
+/// 256-entry sRGB→linear LUT, computed once. The decode thread's
+/// `rgba_u8_to_linear` keeps its own private copy; duplicating the
+/// table here (rather than exposing the decoder's) avoids a public
+/// dependency edge between the engine type and the decoder module.
+fn srgb_u8_to_linear_lut() -> &'static [f32; 256] {
+    use std::sync::OnceLock;
+    static LUT: OnceLock<[f32; 256]> = OnceLock::new();
+    LUT.get_or_init(|| {
+        let mut lut = [0.0f32; 256];
+        for (i, slot) in lut.iter_mut().enumerate() {
+            *slot = srgb_to_linear(i as f32 / 255.0);
+        }
+        lut
+    })
+}
+
+/// 256-entry u8→[0,1] LUT for the alpha channel (no gamma decode).
+fn u8_div255_lut() -> &'static [f32; 256] {
+    use std::sync::OnceLock;
+    static LUT: OnceLock<[f32; 256]> = OnceLock::new();
+    LUT.get_or_init(|| {
+        let mut lut = [0.0f32; 256];
+        for (i, slot) in lut.iter_mut().enumerate() {
+            *slot = i as f32 / 255.0;
+        }
+        lut
+    })
 }
 
 #[cfg(test)]
@@ -272,6 +419,7 @@ mod linear_frame_tests {
             data: vec![2.5, 0.5, 0.18, 1.0],
             is_eof: false,
             gpu_source: None,
+            colorspace: klipp_core::SourceColorspace::default(),
         };
         assert_eq!(frame.data[0], 2.5);
         let back = frame.to_srgb_u8();

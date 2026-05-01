@@ -1,6 +1,6 @@
 # Keyboard Shortcuts
 
-Complete reference of default keyboard shortcuts. All shortcuts can be remapped in **Edit > Preferences > Keyboard**.
+Complete reference of default keyboard shortcuts. All shortcuts can be remapped in **Edit → Preferences → Keyboard**.
 
 ## File
 
@@ -24,7 +24,8 @@ Complete reference of default keyboard shortcuts. All shortcuts can be remapped 
 | Copy | Ctrl+C |
 | Paste | Ctrl+V |
 | Duplicate | Ctrl+D |
-| Delete | Del |
+| Delete (ripple) | Del |
+| Delete (lift) | Shift+Del |
 | Select All | Ctrl+A |
 | Preferences | Ctrl+, |
 
@@ -64,12 +65,14 @@ Complete reference of default keyboard shortcuts. All shortcuts can be remapped 
 
 | Action | Shortcut |
 |--------|----------|
-| Play/Pause | Space |
+| Play / Pause | Space |
 | Shuttle Reverse | J |
 | Shuttle Stop | K |
 | Shuttle Forward | L |
-| Step Backward | Left Arrow |
-| Step Forward | Right Arrow |
+| Step Backward | ← |
+| Step Forward | → |
+| Step Backward × 10 | Shift+← |
+| Step Forward × 10 | Shift+→ |
 | Go to Start | Home |
 | Go to End | End |
 | Slow Forward | K+L (held) |
@@ -79,18 +82,22 @@ Complete reference of default keyboard shortcuts. All shortcuts can be remapped 
 
 | Action | Shortcut |
 |--------|----------|
-| Enable/Disable Clip | E |
+| Enable / Disable Clip | E |
 | Solo Clip | S |
 | Add Default Transition | Ctrl+T |
 
-## View
+## Panels & View
 
 | Action | Shortcut |
 |--------|----------|
 | Toggle Color Panel | C |
+| AI Tools Panel | Alt+A |
 | Performance Overlay | P |
+| Fullscreen Viewer | F11 |
 | Command Palette | Ctrl+Shift+P |
 
-## Customization
+## Customisation
 
-All shortcuts can be remapped in **Edit > Preferences > Keyboard**. The preferences panel shows the current binding for each action and highlights conflicts when two actions share the same shortcut. Use the **Reset to Defaults** button to restore the original bindings.
+All shortcuts can be remapped in **Edit → Preferences → Keyboard**. The preferences panel shows the current binding for each action and highlights conflicts when two actions share the same shortcut. Use **Reset to Defaults** to restore the original bindings.
+
+Bindings are stored in `~/.config/klipp/keybindings.json` and survive Klipp updates.

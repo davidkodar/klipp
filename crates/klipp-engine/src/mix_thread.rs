@@ -4,7 +4,7 @@ use klipp_audio::{AudioMixer, LufsMeter, LufsReadings};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -36,6 +36,11 @@ pub struct MixThread {
     /// Capped to ~2 seconds of audio; older samples drop off the front.
     spectrum_buf: Arc<Mutex<VecDeque<f32>>>,
     spectrum_sample_rate: u32,
+    /// Number of samples currently buffered in the main ring (the one cpal
+    /// reads from). Updated by the mix loop on every iteration. Used by the
+    /// engine after seek to pre-fill audio before resuming the cpal stream
+    /// without sleeping a fixed duration.
+    main_buffered: Arc<AtomicUsize>,
 }
 
 impl MixThread {
@@ -56,16 +61,18 @@ impl MixThread {
         let lufs_readings = Arc::new(Mutex::new(LufsReadings::default()));
         let lufs_reset = Arc::new(AtomicBool::new(false));
         let spectrum_buf = Arc::new(Mutex::new(VecDeque::<f32>::new()));
+        let main_buffered = Arc::new(AtomicUsize::new(0));
         let lufs_readings_writer = lufs_readings.clone();
         let lufs_reset_reader = lufs_reset.clone();
         let spectrum_writer = spectrum_buf.clone();
+        let main_buffered_writer = main_buffered.clone();
         let sr = sample_rate;
 
         let thread = std::thread::Builder::new()
             .name("klipp-mix".into())
             .spawn(move || {
                 crate::thread_guard::catch_panic("klipp-mix", || {
-                    mix_loop(producer, cmd_rx, mixer, sr, lufs_readings_writer, lufs_reset_reader, spectrum_writer, tp_oversample);
+                    mix_loop(producer, cmd_rx, mixer, sr, lufs_readings_writer, lufs_reset_reader, spectrum_writer, main_buffered_writer, tp_oversample);
                 });
             })
             .expect("failed to spawn mix thread");
@@ -78,9 +85,17 @@ impl MixThread {
                 lufs_reset,
                 spectrum_buf,
                 spectrum_sample_rate: sample_rate,
+                main_buffered,
             },
             consumer,
         )
+    }
+
+    /// Number of samples currently sitting in the main ring buffer (the one
+    /// cpal pulls from). The engine polls this after a seek to know when the
+    /// pipeline has pre-filled enough to resume cpal without an underrun gap.
+    pub fn buffered_samples(&self) -> usize {
+        self.main_buffered.load(Ordering::Acquire)
     }
 
     /// Get a clone of the shared LUFS readings for the UI/engine to read.
@@ -157,6 +172,7 @@ fn mix_loop(
     lufs_readings: Arc<Mutex<LufsReadings>>,
     lufs_reset: Arc<AtomicBool>,
     spectrum_buf: Arc<Mutex<VecDeque<f32>>>,
+    main_buffered: Arc<AtomicUsize>,
     tp_oversample: bool,
 ) {
     // 2 seconds of interleaved-stereo audio is plenty for any realistic FFT
@@ -214,6 +230,11 @@ fn mix_loop(
     let mut track_buffers: Vec<Vec<f32>> = Vec::new();
 
     loop {
+        // Publish current main-ring fill so the engine's pre-fill polling
+        // (replacing the old hardcoded 15 ms sleep on seek) sees the latest
+        // state on every iteration regardless of which branch we take below.
+        main_buffered.store(producer.occupied_len(), Ordering::Release);
+
         // Process commands
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {

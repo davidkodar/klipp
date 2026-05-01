@@ -148,9 +148,11 @@ fn gpu_frame_into_cpu(f: GpuFrame) -> CpuFrame {
         let _ = tx.send(res);
     });
     klipp_effects::gpu::mark_gpu_stage(klipp_effects::gpu::GpuStage::FrameIntoCpu);
-    f.device.poll(wgpu::Maintain::Wait);
-
-    let data = match rx.recv() {
+    // Non-blocking poll loop instead of `Maintain::Wait` — see
+    // `klipp_effects::gpu::poll_until_mapped` for why Wait deadlocks
+    // on a UI-shared device. Falls back to a zero-filled buffer if
+    // the map times out.
+    let data = match klipp_effects::gpu::poll_until_mapped(&f.device, &rx) {
         Ok(Ok(())) => {
             let mapped = slice.get_mapped_range();
             let v = mapped.to_vec();

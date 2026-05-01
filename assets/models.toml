@@ -1,0 +1,178 @@
+# Klipp ML model manifest — the trust root for every downloadable
+# model the app uses at runtime.
+#
+# Schema documented in crates/klipp-ml/src/manifest.rs. Every entry
+# below must specify:
+#   - id            stable identifier, code-facing
+#   - display_name  user-facing label (changeable without breaking)
+#   - size_bytes    expected file size, used for progress UI + DoS
+#                   guard (downloads exceeding by > 5% are rejected)
+#   - sha256        64 lowercase hex chars; the security boundary
+#   - license       SPDX identifier
+#   - attribution   credit shown in the consent dialog
+#   - sources       ordered list of HTTPS URLs; downloader tries each
+#                   in order, takes the first whose bytes match
+#                   the sha256
+#
+# Hosting posture: Klipp points the bundled URLs at upstream
+# distributions (HuggingFace, etc.) — same pattern Kdenlive uses for
+# its Vosk + SAM2 model lineup. We don't redistribute weights
+# ourselves. Trade-off: upstream URLs can move/break, in which case
+# we update this manifest and ship a Klipp patch release. SHA-256
+# verification means we'll know immediately if upstream replaces a
+# file with bytes we didn't bless.
+#
+# Entries with `size_bytes = 0` are placeholders — model exists in
+# concept but no public download URL is ready yet. The AI Models
+# dialog renders these as "Pending release" so users see the roadmap
+# without being able to install them.
+
+version = "1"
+
+[[model]]
+id = "sam2_1_hiera_tiny_onnx"
+display_name = "SAM2.1 Tiny (ONNX)"
+# TODO release-CI: fill size_bytes + sha256 once conversion runs.
+size_bytes = 0
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "Meta AI Research"
+sources = [
+    # TODO release-CI: replace placeholder with the real klipp-models
+    # GitHub Release asset URL once the converted ONNX is published.
+    { url = "https://github.com/davidkodar/klipp-models/releases/download/sam2.1-placeholder/sam2.1_hiera_tiny.onnx" },
+]
+kind = "mask_generator"
+runtime = "ort"
+prompts = "point | box | scribble | temporal"
+
+[[model]]
+id = "sam2_1_hiera_small_onnx"
+display_name = "SAM2.1 Small (ONNX)"
+size_bytes = 0
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "Meta AI Research"
+sources = [
+    { url = "https://github.com/davidkodar/klipp-models/releases/download/sam2.1-placeholder/sam2.1_hiera_small.onnx" },
+]
+kind = "mask_generator"
+runtime = "ort"
+prompts = "point | box | scribble | temporal"
+
+[[model]]
+id = "sam2_1_hiera_base_plus_onnx"
+display_name = "SAM2.1 Base+ (ONNX)"
+size_bytes = 0
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "Meta AI Research"
+sources = [
+    { url = "https://github.com/davidkodar/klipp-models/releases/download/sam2.1-placeholder/sam2.1_hiera_base_plus.onnx" },
+]
+kind = "mask_generator"
+runtime = "ort"
+prompts = "point | box | scribble | temporal"
+
+[[model]]
+id = "sam2_1_hiera_large_onnx"
+display_name = "SAM2.1 Large (ONNX)"
+size_bytes = 0
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+license = "Apache-2.0"
+attribution = "Meta AI Research"
+sources = [
+    { url = "https://github.com/davidkodar/klipp-models/releases/download/sam2.1-placeholder/sam2.1_hiera_large.onnx" },
+]
+kind = "mask_generator"
+runtime = "ort"
+prompts = "point | box | scribble | temporal"
+
+# ── Remove Background ─────────────────────────────────────────────
+# BiRefNet_lite — Swin-Tiny backbone, MIT license, single-input
+# single-output mask. First user-facing AI feature for Klipp.
+# Bundled URL points at HuggingFace's onnx-community mirror; bytes
+# verified via SHA-256.
+
+[[model]]
+id = "birefnet_lite_v1"
+display_name = "BiRefNet Lite"
+size_bytes = 224005088
+sha256 = "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333"
+license = "MIT"
+attribution = "ZhengPeng7 / BiRefNet (huggingface.co/onnx-community/BiRefNet_lite-ONNX)"
+sources = [
+    { url = "https://huggingface.co/onnx-community/BiRefNet_lite-ONNX/resolve/main/onnx/model.onnx" },
+]
+kind = "mask_generator"
+runtime = "ort"
+prompts = ""
+
+# ── Isolate Object (click-to-mask) ────────────────────────────────
+# MobileSAM — TinyViT image encoder + SAM prompt encoder + mask
+# decoder. Apache-2.0 license. ~40 MB. Pure-Rust through candle.
+
+[[model]]
+id = "mobile_sam_v1"
+display_name = "MobileSAM"
+size_bytes = 40613024
+sha256 = "5ad43a841b57cc798e2837e251c15aa9f602868a1780d195459383d117784cf7"
+license = "Apache-2.0"
+attribution = "ChaoningZhang / MobileSAM (mirrored via lmz/candle-sam on HuggingFace)"
+sources = [
+    { url = "https://huggingface.co/lmz/candle-sam/resolve/main/mobile_sam-tiny-vitt.safetensors" },
+]
+kind = "mask_generator"
+runtime = "candle"
+# SAM family supports point clicks, box prompts, scribble, and
+# auto-detect (everything mask).
+prompts = "point | box | scribble"
+
+# ── Detect Objects (multi-class instance segmentation) ───────────
+# RF-DETR-Seg — transformer-based detector with per-instance masks.
+# Apache-2.0 (code + checkpoints). Strict alternative to Ultralytics
+# YOLO whose AGPL would force Klipp to AGPL too. COCO-91 trained.
+#
+# Two-tier lineup so users can pick speed vs accuracy:
+#   - rf_detr_seg_v1: nano/preview tier (~134 MB, fast, noisier
+#     classifier — confidently wrong on out-of-distribution scenes)
+#   - rf_detr_seg_medium_v1: medium tier (~140 MB, similar speed,
+#     genuinely accurate)
+
+[[model]]
+id = "rf_detr_seg_v1"
+display_name = "RF-DETR-Seg (Preview)"
+size_bytes = 134443363
+sha256 = "42e3571cf64d70df6f6acf3c5dcf0fc4ecbf8bab46d819ca8e4e94d4cee4de9b"
+license = "Apache-2.0"
+attribution = "Roboflow / RF-DETR (mirrored via bukuroo/RF-DETR-Seg-ONNX on HuggingFace)"
+sources = [
+    { url = "https://huggingface.co/bukuroo/RF-DETR-Seg-ONNX/resolve/main/rf-detr-seg-preview.onnx" },
+]
+kind = "mask_generator"
+runtime = "ort"
+# Auto-detect — no user prompts. Each detection produces a
+# MaskCandidate with bbox + class label + per-instance mask.
+prompts = ""
+
+# Medium tier — same architecture as Preview, different weights.
+# No public ONNX exists at upstream Roboflow / community mirrors;
+# this entry points at Klipp's HF mirror at
+# huggingface.co/davidkodar/rf-detr-seg-medium-onnx, exported
+# locally from `rfdetr.RFDETRSegMedium.export()` (Python). The HF
+# mirror is the closest thing to a "public" ONNX of Medium today.
+# Drop / repoint when upstream publishes a canonical mirror.
+[[model]]
+id = "rf_detr_seg_medium_v1"
+display_name = "RF-DETR-Seg (Medium)"
+size_bytes = 139278517
+sha256 = "ac764d38d19183940d120f3333eb769dbca90100b6955f2cef2b3848565f7cf4"
+license = "Apache-2.0"
+attribution = "Roboflow / RF-DETR Medium (mirrored at davidkodar/rf-detr-seg-medium-onnx on HuggingFace, locally exported via rfdetr.RFDETRSegMedium.export)"
+sources = [
+    { url = "https://huggingface.co/davidkodar/rf-detr-seg-medium-onnx/resolve/main/rf_detr_seg_medium_v1.onnx" },
+]
+kind = "mask_generator"
+runtime = "ort"
+prompts = ""
+

@@ -1,0 +1,125 @@
+//! FPU denormal-flushing for audio DSP threads.
+//!
+//! Biquad EQ, compressors, reverb tails, and noise-reduction state can drop
+//! into denormal float range when the input goes silent (e.g. between
+//! clips, or during a fade-out). On x86, denormal arithmetic falls into
+//! microcode and runs ~50–100× slower than normal — a single biquad in a
+//! denormal state is enough to overrun the audio callback budget on a
+//! moderately busy track, producing dropouts that look mysterious to the
+//! user.
+//!
+//! The fix is a single SSE intrinsic that flips two MXCSR bits:
+//!
+//!   * **FZ** (Flush-to-Zero) — denormal RESULTS get clamped to 0.
+//!   * **DAZ** (Denormals-Are-Zero) — denormal INPUTS read as 0.
+//!
+//! Both flags are per-thread on x86_64; setting them once at the top of
+//! every DSP thread is enough. Cost on subsequent samples is zero — the
+//! flush happens transparently in the FPU.
+//!
+//! Closes CODE_AUDIT C-4. Call sites (audio threads only — UI / engine
+//! main threads don't run DSP and don't need the flag):
+//!   * `klipp-engine/src/audio_decoder.rs::audio_decode_thread`
+//!   * `klipp-engine/src/pcm_reader.rs::pcm_feed_thread`
+//!   * `klipp-engine/src/audio_output.rs` cpal output callback (defensive
+//!     — even if the mixer ran upstream, the callback does its own
+//!     volume/pan math that can produce denormals).
+
+/// Configure the calling thread's FPU to flush denormal floats to zero.
+///
+/// On `x86_64`, sets MXCSR's FZ + DAZ bits via `_mm_setcsr`. On other
+/// architectures this is currently a no-op — AArch64's equivalent is
+/// the FPCR.FZ bit and is not yet wired up; the slow-path is harmless
+/// (just slower DSP on silent biquads on ARM hosts), so revisit if
+/// Klipp ships on Apple Silicon or another AArch64 audio host.
+///
+/// Idempotent and cheap (one MXCSR write). Calling once at thread
+/// start is sufficient; calling per callback is also fine.
+#[inline]
+pub fn flush_denormals_to_zero() {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        // MXCSR layout (relevant bits):
+        //   bit 6  = DAZ (Denormals-Are-Zero, treats denormal inputs as 0)
+        //   bit 15 = FZ  (Flush-to-Zero, flushes denormal results to 0)
+        // Other bits we leave at default (0x1F80: rounding mode = nearest,
+        // exception masks all set so we don't trap on ordinary FP ops).
+        //
+        // `_mm_setcsr` was deprecated in newer Rust in favour of inline
+        // asm; we follow the recommended pattern using `ldmxcsr`.
+        const MXCSR_DEFAULT_PLUS_FTZ_DAZ: u32 = 0x1F80 | (1 << 15) | (1 << 6);
+        let csr = MXCSR_DEFAULT_PLUS_FTZ_DAZ;
+        core::arch::asm!(
+            "ldmxcsr [{}]",
+            in(reg) &csr,
+            options(readonly, nostack, preserves_flags),
+        );
+    }
+    // Other arches: no-op for now. See module doc.
+}
+
+/// Read the calling thread's MXCSR (x86_64 only). Used by the
+/// regression test below; not part of the public hot-path API.
+#[cfg(all(test, target_arch = "x86_64"))]
+fn read_mxcsr() -> u32 {
+    let mut csr: u32 = 0;
+    unsafe {
+        core::arch::asm!(
+            "stmxcsr [{}]",
+            in(reg) &mut csr,
+            options(nostack, preserves_flags),
+        );
+    }
+    csr
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// On x86_64, after `flush_denormals_to_zero()` the FZ and DAZ bits
+    /// must both be set in MXCSR. Pinning the contract so a future
+    /// "let me clean up that low-level intrinsic" surfaces in CI rather
+    /// than as a mysterious dropout in someone's silent-track export.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn flush_denormals_sets_fz_and_daz_bits_on_x86_64() {
+        flush_denormals_to_zero();
+        let csr = read_mxcsr();
+        assert!(csr & (1 << 6) != 0, "DAZ bit (6) must be set after flush_denormals_to_zero");
+        assert!(csr & (1 << 15) != 0, "FZ bit (15) must be set after flush_denormals_to_zero");
+    }
+
+    /// Behavioural pin: with FZ on, multiplying a denormal by a normal
+    /// value gives 0 instead of a denormal result. This is the actual
+    /// behaviour that saves the biquad state from sliding into slow
+    /// land on silent input.
+    ///
+    /// `black_box` is required: without it, rustc evaluates the
+    /// multiplication at compile time using its software-FP path,
+    /// which DOESN'T consult MXCSR, and the test produces a denormal
+    /// constant regardless of FZ. We need the multiply to happen at
+    /// runtime on the actual FPU.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn flush_denormals_makes_arithmetic_round_denormals_to_zero() {
+        use std::hint::black_box;
+        flush_denormals_to_zero();
+        // f32::MIN_POSITIVE = 2^-126, the smallest *normal* f32. Half
+        // of that is the largest denormal. Multiplying it by 0.5
+        // produces a smaller denormal — which FZ rounds to 0.
+        let denormal: f32 = black_box(f32::MIN_POSITIVE) * black_box(0.5);
+        let result: f32 = black_box(denormal) * black_box(0.5);
+        assert_eq!(result, 0.0,
+            "with FZ set, a denormal × 0.5 must flush to exactly 0.0 (got {result:e})");
+    }
+
+    /// On non-x86 the function is a no-op and the test just confirms
+    /// it can be called without panicking. ARM hosts will see the
+    /// slow-but-correct denormal path until FPCR.FZ is wired up.
+    #[cfg(not(target_arch = "x86_64"))]
+    #[test]
+    fn flush_denormals_is_a_safe_noop_on_non_x86_64() {
+        flush_denormals_to_zero();
+    }
+}

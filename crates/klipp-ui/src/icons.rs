@@ -65,6 +65,7 @@ define_icons! {
     ArrowsOut       => "arrows-out",
     ArrowCounterClockwise => "arrow-counter-clockwise",
     ArrowClockwise  => "arrow-clockwise",
+    FrameCorners    => "frame-corners",
 
     // Color panel
     Eyedropper      => "eyedropper",

@@ -41,7 +41,7 @@
 //! nvidia-vaapi-driver), so those codecs skip directly to software
 //! even when VAAPI is available. See `open_gpu_decoder`.
 
-use crate::frame::{Frame, GpuFrame};
+use crate::frame::GpuFrame;
 use crate::types::{FrameQueue, LinearFrame, SharedFrameQueue};
 use crossbeam_channel::{Receiver, Sender};
 use klipp_color::transfer::srgb_to_linear;
@@ -54,11 +54,13 @@ use tracing::{debug, info, warn};
 
 /// Gate for the GPU-resident decode path. When on, NV12 / P010
 /// hardware-decode output stays on the GPU as an `Arc<wgpu::Buffer>`
-/// and the decoded `LinearFrame` carries a `gpu_source` attachment
-/// alongside the usual CPU `data`. Phase 4d's grade chain binds the
-/// buffer directly; until then this is a no-op for playback — same
-/// shader dispatch, same readback, just the buffer lingers for the
-/// consumer.
+/// inside `LinearFrame.gpu_source`, and the decode thread does NOT
+/// pay the GPU→CPU readback fence. Engine consumers that still need
+/// CPU `data` realise it lazily on demand via
+/// [`LinearFrame::ensure_cpu_data`], so the readback (when actually
+/// required) moves off the decode thread onto the engine thread,
+/// pipelined with other engine work instead of serialising the
+/// decoder behind `device.poll(Wait)`.
 ///
 /// Read once per process via `OnceLock` so the env check doesn't
 /// poke syscalls on the decode hot path.
@@ -121,6 +123,113 @@ fn u8_linear_div255_lut() -> &'static [f32; 256] {
         }
         lut
     })
+}
+
+/// Per-camera-log override of the colour-tagged baseline. Read once
+/// per process from `KLIPP_FORCE_LOG_FORMAT` (case-insensitive
+/// tokens: `slog3`, `slog2`, `vlog`, `clog`, `clog3`, `logc3`,
+/// `logc4`, `redlog3g10`, `bmdfilmgen5`, `dlog`, `flog`, `applelog`,
+/// `nlog`, `goproflat`). Replaces only `transfer` + `primaries` —
+/// matrix and range still come from the file (Sony / ARRI / Canon
+/// log workflows all use BT.709 matrix on the YUV samples).
+///
+/// Stop-gap until the per-clip dropdown lands; the env var is the
+/// least-invasive way to get colour-correct decoding for the user's
+/// A6700 clip today. Tokens map to the same `(transfer, primaries)`
+/// pair that the per-clip UI will produce later.
+fn apply_env_log_override(
+    base: klipp_core::SourceColorspace,
+) -> klipp_core::SourceColorspace {
+    use klipp_core::{ColorPrimaries, ColorTransfer};
+    use std::sync::OnceLock;
+    static TOKEN: OnceLock<Option<String>> = OnceLock::new();
+    let token = TOKEN
+        .get_or_init(|| std::env::var("KLIPP_FORCE_LOG_FORMAT").ok().map(|s| s.to_ascii_lowercase()))
+        .as_deref();
+    let Some(t) = token else { return base; };
+    let (transfer, primaries) = match t {
+        "slog3" => (ColorTransfer::SLog3, ColorPrimaries::SGamut3Cine),
+        "slog3-sgamut3" => (ColorTransfer::SLog3, ColorPrimaries::SGamut3),
+        "slog2" => (ColorTransfer::SLog2, ColorPrimaries::SGamut3),
+        "vlog" => (ColorTransfer::VLog, ColorPrimaries::VGamut),
+        "clog" => (ColorTransfer::CanonLog, ColorPrimaries::CanonCinemaGamut),
+        "clog3" => (ColorTransfer::CanonLog3, ColorPrimaries::CanonCinemaGamut),
+        "logc3" => (ColorTransfer::LogC3, ColorPrimaries::AlexaWideGamut3),
+        "logc4" => (ColorTransfer::LogC4, ColorPrimaries::AlexaWideGamut4),
+        "redlog3g10" => (ColorTransfer::RedLog3G10, ColorPrimaries::RedWideGamut),
+        "bmdfilmgen5" => (ColorTransfer::BmdFilmGen5, ColorPrimaries::BmdWideGamut),
+        "dlog" => (ColorTransfer::DJIDLog, ColorPrimaries::Bt709),
+        "flog" => (ColorTransfer::FLog, ColorPrimaries::Bt2020),
+        "applelog" => (ColorTransfer::AppleLog, ColorPrimaries::Bt2020),
+        "nlog" => (ColorTransfer::NLog, ColorPrimaries::Bt2020),
+        "goproflat" => (ColorTransfer::GoProFlat, ColorPrimaries::Bt709),
+        _ => return base,
+    };
+    klipp_core::SourceColorspace { transfer, primaries, ..base }
+}
+
+/// Look up swscale's per-matrix coefficient table via
+/// `sws_getCoefficients`. The four-entry table (`[Cr, Cb, Cu, Cv]`)
+/// drives the YUV→RGB matrix swscale uses internally.
+///
+/// SAFETY: `sws_getCoefficients` returns a pointer to static data
+/// owned by libswscale — valid for the program's lifetime, no
+/// allocation, no thread-safety concerns. The returned `[i32; 4]`
+/// is a copy.
+unsafe fn sws_get_coefficients_for_matrix(matrix: klipp_core::ColorMatrix) -> [i32; 4] {
+    use ffmpeg_next::ffi::*;
+    // libswscale colorspace IDs (see swscale.h `SWS_CS_*` constants).
+    // The values map onto the corresponding AVColorSpace enum values
+    // for the matrix-defining members; FCC and SMPTE 240M have their
+    // own slots, BT.2020 has one entry, anything else falls back to
+    // ITU709 which is also the "no metadata" default.
+    const SWS_CS_ITU709: i32 = 1;
+    const SWS_CS_FCC: i32 = 4;
+    const SWS_CS_SMPTE170M: i32 = 5;   // also ITU601
+    const SWS_CS_SMPTE240M: i32 = 7;
+    const SWS_CS_BT2020: i32 = 9;
+    let cs_id = match matrix {
+        klipp_core::ColorMatrix::Bt709 => SWS_CS_ITU709,
+        klipp_core::ColorMatrix::Bt601 => SWS_CS_SMPTE170M,
+        klipp_core::ColorMatrix::Bt2020Ncl
+        | klipp_core::ColorMatrix::Bt2020Cl => SWS_CS_BT2020,
+        klipp_core::ColorMatrix::Smpte240 => SWS_CS_SMPTE240M,
+        klipp_core::ColorMatrix::Fcc => SWS_CS_FCC,
+        // Identity / YCgCo / ICtCp / chroma-derived: swscale doesn't
+        // have a dedicated table, fall back to BT.709.
+        _ => SWS_CS_ITU709,
+    };
+    let ptr = sws_getCoefficients(cs_id);
+    // libswscale returns a 4-element table — copy it out.
+    [ *ptr.add(0), *ptr.add(1), *ptr.add(2), *ptr.add(3) ]
+}
+
+/// Compute the source-primaries → working-space matrix (packed for
+/// the WGSL `Params` uniform) for the active project working space.
+///
+/// Reads `WORKING_COLORSPACE_PREF` lock-free, calls into klipp-color
+/// for the matrix, then packs to the 3-row vec4 layout the decoder
+/// shaders expect. Centralised here so all four GPU call sites
+/// (NV12 + P010, each with `_on_gpu` + readback variants) share one
+/// matrix-selection rule.
+///
+/// Caveat for non-`Rec709Linear` working spaces: the GPU decoder's
+/// final stage re-encodes via the sRGB EOTF for the existing CPU
+/// hand-off. That round-trip is bit-stable for linear BT.709 values
+/// in `[0, 1]`, but ACEScg values can exceed that range and will
+/// quantise/clip on the encode. The clean fix is to keep the
+/// GPU-resident `_on_gpu` path GPU-resident through the grade chain
+/// (PERF-GPU-RESIDENT-SCOPE in the tracker); for now non-`Rec709`
+/// projects accept the quantisation as a known limitation of the
+/// CPU-readback path.
+fn primaries_matrix_for_source(
+    source_cs: klipp_core::SourceColorspace,
+) -> [[f32; 4]; 3] {
+    let m = klipp_color::camera_log::primaries_to_working_matrix(
+        source_cs.primaries,
+        working_colorspace(),
+    );
+    klipp_effects::color_wgsl::pack_primaries_matrix(m)
 }
 
 /// sRGB-decode a RGBA u8 byte slice into a linear f32 RGBA buffer.
@@ -301,47 +410,170 @@ impl Drop for VideoDecoder {
 
 /// Which hardware acceleration is active
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum HwAccel {
+pub(crate) enum HwAccel {
     Cuda,
     Vaapi,
     Software,
 }
 
 /// Callback for FFmpeg codec negotiation — selects the preferred HW pixel format.
+///
+/// Returns `AV_PIX_FMT_CUDA` whenever it's offered so ffmpeg keeps the frame
+/// on the GPU (`AVHWFrame`) instead of auto-downloading. When CUDA isn't in
+/// the candidate list, falls back to `*pix_fmts` (ffmpeg's own first
+/// preference) — that lets the decoder still produce a software frame for
+/// codecs / profiles NVDEC can't handle. The downstream `is_hw_frame` check
+/// on `AVPixelFormat::AV_PIX_FMT_CUDA` then routes those software frames to
+/// `convert_sw_frame` instead of `download_hw_frame`.
+///
+/// Strict mode (`KLIPP_STRICT_HW_DECODE=1`) flips the fallback to
+/// `AV_PIX_FMT_NONE` instead — the official ffmpeg `hw_decode.c` example
+/// pattern. That forces ffmpeg to back off to its own software decoder
+/// rather than silently auto-downloading. Useful when investigating "HW
+/// negotiated at init then SW frames showed up mid-stream" symptoms;
+/// off by default because it's a bigger behaviour change for every codec
+/// that doesn't have a CUDA hwaccel built in.
+/// Convert an `AVPixelFormat` to its ffmpeg name string for human-
+/// readable diagnostic logs (e.g. "cuda", "yuv420p10le", "vaapi").
+/// Falls back to the integer value when ffmpeg returns NULL (out-of-
+/// range / unknown format).
+unsafe fn pix_fmt_name(f: ffmpeg_next::ffi::AVPixelFormat) -> String {
+    let p = ffmpeg_next::ffi::av_get_pix_fmt_name(f);
+    if p.is_null() {
+        format!("?{}", f as i32)
+    } else {
+        std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+    }
+}
+
+/// Set up an `AVHWFramesContext` on the codec context so the decoder
+/// has somewhere to put HW frames in `hw_pix_fmt`. Mirrors ffmpeg's
+/// `hw_decode.c` example pattern. Without this step, returning a HW
+/// pixel format from `get_format` succeeds at the API level but the
+/// decoder silently falls back to a software output format because
+/// it has no hw_frames_ctx to allocate output buffers from — exactly
+/// the symptom we observed on Sony A6700 HEVC Main 10 (first call
+/// picks CUDA, follow-up calls offer no CUDA → SW auto-download).
+///
+/// Returns `true` on success. On failure, logs the cause and lets
+/// the caller decide whether to still accept the HW format (ffmpeg
+/// will then fall back internally — no worse than the pre-fix state).
+unsafe fn install_hw_frames_ctx(
+    ctx: *mut ffmpeg_next::ffi::AVCodecContext,
+    hw_pix_fmt: ffmpeg_next::ffi::AVPixelFormat,
+) -> bool {
+    use ffmpeg_next::ffi::*;
+    if (*ctx).hw_device_ctx.is_null() {
+        warn!("install_hw_frames_ctx: hw_device_ctx is NULL");
+        return false;
+    }
+    let device_ref = (*ctx).hw_device_ctx;
+    let mut frames_ref: *mut AVBufferRef = std::ptr::null_mut();
+    let rc = avcodec_get_hw_frames_parameters(ctx, device_ref, hw_pix_fmt, &mut frames_ref);
+    if rc < 0 || frames_ref.is_null() {
+        warn!("install_hw_frames_ctx: avcodec_get_hw_frames_parameters returned {rc}");
+        return false;
+    }
+    let init_rc = av_hwframe_ctx_init(frames_ref);
+    if init_rc < 0 {
+        warn!("install_hw_frames_ctx: av_hwframe_ctx_init returned {init_rc}");
+        av_buffer_unref(&mut frames_ref);
+        return false;
+    }
+    (*ctx).hw_frames_ctx = av_buffer_ref(frames_ref);
+    av_buffer_unref(&mut frames_ref);
+    true
+}
+
 unsafe extern "C" fn cuda_get_format(
-    _ctx: *mut ffmpeg_next::ffi::AVCodecContext,
+    ctx: *mut ffmpeg_next::ffi::AVCodecContext,
     pix_fmts: *const ffmpeg_next::ffi::AVPixelFormat,
 ) -> ffmpeg_next::ffi::AVPixelFormat {
     use ffmpeg_next::ffi::AVPixelFormat;
 
+    // Walk the candidate list once, hunting for CUDA + collecting
+    // names for the diagnostic log. Most lists are 2–4 entries long
+    // so the double pass is negligible.
     let mut p = pix_fmts;
+    let mut candidates: Vec<String> = Vec::with_capacity(8);
     while *p != AVPixelFormat::AV_PIX_FMT_NONE {
+        candidates.push(pix_fmt_name(*p));
         if *p == AVPixelFormat::AV_PIX_FMT_CUDA {
-            info!("CUDA get_format: selected AV_PIX_FMT_CUDA");
+            // Install hw_frames_ctx before returning the HW format —
+            // see `install_hw_frames_ctx` for why this matters.
+            // Already installed (re-negotiation pass with the same
+            // codec context) is fine; we only set it the first time.
+            let already_set = !(*ctx).hw_frames_ctx.is_null();
+            let ok = already_set
+                || install_hw_frames_ctx(ctx, AVPixelFormat::AV_PIX_FMT_CUDA);
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static LOGGED: AtomicBool = AtomicBool::new(false);
+            if !LOGGED.swap(true, Ordering::Relaxed) {
+                info!(
+                    "CUDA get_format: selected AV_PIX_FMT_CUDA (candidates={candidates:?}, \
+                     hw_frames_ctx={})",
+                    if already_set { "already set" }
+                    else if ok { "installed" }
+                    else { "INSTALL FAILED — decoder will fall back to SW" },
+                );
+            }
             return AVPixelFormat::AV_PIX_FMT_CUDA;
         }
         p = p.add(1);
     }
-    warn!("CUDA get_format: AV_PIX_FMT_CUDA not in candidate list, using fallback");
-    *pix_fmts
+    let strict = std::env::var("KLIPP_STRICT_HW_DECODE").as_deref() == Ok("1");
+    if strict {
+        warn!(
+            "CUDA get_format: AV_PIX_FMT_CUDA not offered (candidates={candidates:?}); \
+             KLIPP_STRICT_HW_DECODE=1 → returning AV_PIX_FMT_NONE"
+        );
+        AVPixelFormat::AV_PIX_FMT_NONE
+    } else {
+        warn!(
+            "CUDA get_format: AV_PIX_FMT_CUDA not offered (candidates={candidates:?}); \
+             falling back to ffmpeg's first preference (software decode for this pass)"
+        );
+        *pix_fmts
+    }
 }
 
 unsafe extern "C" fn vaapi_get_format(
-    _ctx: *mut ffmpeg_next::ffi::AVCodecContext,
+    ctx: *mut ffmpeg_next::ffi::AVCodecContext,
     pix_fmts: *const ffmpeg_next::ffi::AVPixelFormat,
 ) -> ffmpeg_next::ffi::AVPixelFormat {
     use ffmpeg_next::ffi::AVPixelFormat;
 
     let mut p = pix_fmts;
+    let mut candidates: Vec<String> = Vec::with_capacity(8);
     while *p != AVPixelFormat::AV_PIX_FMT_NONE {
+        candidates.push(pix_fmt_name(*p));
         if *p == AVPixelFormat::AV_PIX_FMT_VAAPI {
-            info!("VAAPI get_format: selected AV_PIX_FMT_VAAPI");
+            let already_set = !(*ctx).hw_frames_ctx.is_null();
+            let ok = already_set
+                || install_hw_frames_ctx(ctx, AVPixelFormat::AV_PIX_FMT_VAAPI);
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static LOGGED: AtomicBool = AtomicBool::new(false);
+            if !LOGGED.swap(true, Ordering::Relaxed) {
+                info!(
+                    "VAAPI get_format: selected AV_PIX_FMT_VAAPI (candidates={candidates:?}, \
+                     hw_frames_ctx={})",
+                    if already_set { "already set" }
+                    else if ok { "installed" }
+                    else { "INSTALL FAILED" },
+                );
+            }
             return AVPixelFormat::AV_PIX_FMT_VAAPI;
         }
         p = p.add(1);
     }
-    warn!("VAAPI get_format: AV_PIX_FMT_VAAPI not in candidate list, using fallback");
-    *pix_fmts
+    let strict = std::env::var("KLIPP_STRICT_HW_DECODE").as_deref() == Ok("1");
+    if strict {
+        warn!("VAAPI get_format: AV_PIX_FMT_VAAPI not offered (candidates={candidates:?}); KLIPP_STRICT_HW_DECODE=1 → AV_PIX_FMT_NONE");
+        AVPixelFormat::AV_PIX_FMT_NONE
+    } else {
+        warn!("VAAPI get_format: AV_PIX_FMT_VAAPI not offered (candidates={candidates:?}); falling back to first preference");
+        *pix_fmts
+    }
 }
 
 /// Try to initialize CUDA (NVDEC) on the codec context. Returns true if successful.
@@ -374,6 +606,464 @@ pub(crate) unsafe fn try_init_cuda(codec_ctx_ptr: *mut ffmpeg_next::ffi::AVCodec
     av_buffer_unref(&mut hw_device_ctx);
     info!("Hardware decode: CUDA (NVDEC) initialized");
     true
+}
+
+/// Manual FFI declarations for libavcodec's bitstream-filter API.
+///
+/// `ffmpeg-sys-next` 8.1.0's bindgen invocation only includes
+/// `libavcodec/avcodec.h`; the BSF API was split into a separate
+/// `libavcodec/bsf.h` upstream and isn't bound. The symbols are
+/// already linked transitively (libavcodec is in our link line) so
+/// we just need the declarations.
+///
+/// **ABI assumption:** the `AVBSFContext` field order below mirrors
+/// ffmpeg's public header `libavcodec/bsf.h` exactly. The layout has
+/// been stable since the BSF API was added (~2017); any reordering
+/// would be an ABI break across the entire libavcodec ecosystem so
+/// it's vanishingly unlikely. We only access `par_in` and `par_out`
+/// — the other fields are present so the field offsets are correct.
+mod bsf_ffi {
+    use ffmpeg_next::ffi::{AVCodecParameters, AVPacket, AVRational};
+    use std::os::raw::{c_char, c_int, c_void};
+
+    #[repr(C)]
+    pub struct AVClass {
+        _opaque: [u8; 0],
+    }
+
+    #[repr(C)]
+    pub struct AVBitStreamFilter {
+        _opaque: [u8; 0],
+    }
+
+    /// Mirror of `AVBSFContext` from `libavcodec/bsf.h`. We only
+    /// touch `par_in` / `par_out`; the other fields are declared so
+    /// the offsets are correct.
+    #[repr(C)]
+    pub struct AVBSFContext {
+        pub av_class: *const AVClass,
+        pub filter: *const AVBitStreamFilter,
+        pub priv_data: *mut c_void,
+        pub par_in: *mut AVCodecParameters,
+        pub par_out: *mut AVCodecParameters,
+        pub time_base_in: AVRational,
+        pub time_base_out: AVRational,
+    }
+
+    extern "C" {
+        pub fn av_bsf_get_by_name(name: *const c_char) -> *const AVBitStreamFilter;
+        pub fn av_bsf_alloc(filter: *const AVBitStreamFilter, ctx: *mut *mut AVBSFContext) -> c_int;
+        pub fn av_bsf_init(ctx: *mut AVBSFContext) -> c_int;
+        pub fn av_bsf_send_packet(ctx: *mut AVBSFContext, pkt: *mut AVPacket) -> c_int;
+        pub fn av_bsf_receive_packet(ctx: *mut AVBSFContext, pkt: *mut AVPacket) -> c_int;
+        pub fn av_bsf_free(ctx: *mut *mut AVBSFContext);
+    }
+}
+
+/// Map an ffmpeg codec ID to its `*_cuvid` decoder name when one
+/// exists. cuvid decoders are NVIDIA's dedicated NVDEC implementations
+/// — they produce CUDA hwframes natively (`AV_PIX_FMT_CUDA`) and
+/// don't rely on the fragile "standard codec + cuda hwaccel +
+/// hw_frames_ctx" negotiation that we observed silently falling back
+/// to software in our build. Used by every NLE's NVDEC path.
+fn cuvid_decoder_name(codec_id: ffmpeg_next::codec::Id) -> Option<&'static str> {
+    use ffmpeg_next::codec::Id;
+    Some(match codec_id {
+        Id::HEVC => "hevc_cuvid",
+        Id::H264 => "h264_cuvid",
+        Id::AV1 => "av1_cuvid",
+        Id::VP9 => "vp9_cuvid",
+        Id::VP8 => "vp8_cuvid",
+        Id::MPEG2VIDEO => "mpeg2_cuvid",
+        Id::MPEG1VIDEO => "mpeg1_cuvid",
+        Id::MPEG4 => "mpeg4_cuvid",
+        Id::VC1 => "vc1_cuvid",
+        Id::MJPEG => "mjpeg_cuvid",
+        _ => return None,
+    })
+}
+
+/// Decide whether a bitstream filter is needed in front of the cuvid
+/// decoder for this codec, based on the extradata format. cuvid wants
+/// annex-B framing for H.264 / HEVC; MP4/MOV containers store these
+/// in length-prefixed avcc / hvcc ("isobmff") format, distinguishable
+/// by the first byte of `extradata` being `0x01` (the version byte
+/// of the avcC / hvcC box). Without the matching `*_mp4toannexb`
+/// BSF, cuvid rejects the packet stream with `Invalid argument`.
+///
+/// Other codecs (AV1, VP9, MPEG-{1,2,4}, VC-1) don't need a BSF in
+/// front of cuvid because their bitstream format is the same in MP4
+/// as on the wire.
+fn cuvid_bsf_name(
+    codec_id: ffmpeg_next::codec::Id,
+    extradata: &[u8],
+) -> Option<&'static str> {
+    use ffmpeg_next::codec::Id;
+    if extradata.is_empty() || extradata[0] != 0x01 {
+        // Annex-B already (or no extradata at all) — no BSF needed.
+        return None;
+    }
+    match codec_id {
+        Id::H264 => Some("h264_mp4toannexb"),
+        Id::HEVC => Some("hevc_mp4toannexb"),
+        _ => None,
+    }
+}
+
+/// Owned wrapper around `*mut AVBSFContext` that frees on drop. The
+/// raw pointer is `Send` because we only use it from the decoder
+/// thread that owns the context — the BSF API itself is single-
+/// threaded.
+pub(crate) struct BsfContext {
+    ptr: *mut bsf_ffi::AVBSFContext,
+    name: &'static str,
+}
+
+unsafe impl Send for BsfContext {}
+
+impl BsfContext {
+    pub(crate) fn as_ptr(&self) -> *mut bsf_ffi::AVBSFContext {
+        self.ptr
+    }
+
+    pub(crate) fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+impl Drop for BsfContext {
+    fn drop(&mut self) {
+        unsafe { bsf_ffi::av_bsf_free(&mut self.ptr) };
+    }
+}
+
+/// Allocate + init a bitstream filter for `codec_params`. Returns
+/// `None` if the named filter doesn't exist in this ffmpeg build,
+/// allocation fails, or init fails — caller falls back to whatever
+/// decoder path doesn't need the filter.
+unsafe fn try_create_bsf(
+    name: &'static str,
+    codec_params: *mut ffmpeg_next::ffi::AVCodecParameters,
+) -> Option<BsfContext> {
+    use ffmpeg_next::ffi::*;
+    use std::ffi::CString;
+    let cname = CString::new(name).ok()?;
+    let filter = bsf_ffi::av_bsf_get_by_name(cname.as_ptr());
+    if filter.is_null() {
+        warn!("BSF: av_bsf_get_by_name({name}) returned NULL");
+        return None;
+    }
+    let mut ctx: *mut bsf_ffi::AVBSFContext = std::ptr::null_mut();
+    let alloc_rc = bsf_ffi::av_bsf_alloc(filter, &mut ctx);
+    if alloc_rc < 0 || ctx.is_null() {
+        warn!("BSF: av_bsf_alloc({name}) returned {alloc_rc}");
+        return None;
+    }
+    let owned = BsfContext { ptr: ctx, name };
+    let copy_rc = avcodec_parameters_copy((*owned.ptr).par_in, codec_params);
+    if copy_rc < 0 {
+        warn!("BSF: avcodec_parameters_copy({name}) returned {copy_rc}");
+        return None; // Drop frees the BSF
+    }
+    let init_rc = bsf_ffi::av_bsf_init(owned.ptr);
+    if init_rc < 0 {
+        warn!("BSF: av_bsf_init({name}) returned {init_rc}");
+        return None;
+    }
+    Some(owned)
+}
+
+/// Build a codec context backed by a `*_cuvid` decoder, with a
+/// matching `*_mp4toannexb` bitstream filter if the source extradata
+/// is in avcc / hvcc format. Returns `(codec_context, optional_bsf)`
+/// on success — the caller owns both and must keep the BSF alive for
+/// the decoder's lifetime.
+///
+/// Returns `None` when:
+///   * cuvid isn't built into this ffmpeg, OR
+///   * this codec id has no cuvid variant, OR
+///   * the required BSF (if any) can't be created, OR
+///   * CUDA device init fails.
+///
+/// The decode loop must route demuxer packets through the BSF (when
+/// `Some`) via `bsf_send_packet` / `bsf_receive_packet` before each
+/// `decoder.send_packet()` — see the loop in `decode_thread_main`.
+fn try_open_cuvid_decoder(
+    stream: &ffmpeg_next::format::stream::Stream,
+) -> Option<(ffmpeg_next::codec::Context, Option<BsfContext>)> {
+    use ffmpeg_next::ffi::*;
+    let codec_id = stream.parameters().id();
+    let cuvid_name = cuvid_decoder_name(codec_id)?;
+    let codec = ffmpeg_next::codec::decoder::find_by_name(cuvid_name)?;
+
+    // Read extradata to decide whether a BSF is needed.
+    let params_ptr = unsafe { stream.parameters().as_ptr() } as *mut AVCodecParameters;
+    let extradata: &[u8] = unsafe {
+        if (*params_ptr).extradata.is_null() || (*params_ptr).extradata_size <= 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(
+                (*params_ptr).extradata,
+                (*params_ptr).extradata_size as usize,
+            )
+        }
+    };
+    let bsf = if let Some(bsf_name) = cuvid_bsf_name(codec_id, extradata) {
+        let b = unsafe { try_create_bsf(bsf_name, params_ptr)? };
+        Some(b)
+    } else {
+        None
+    };
+
+    // The codec context must use the BSF's *output* parameters when
+    // a BSF is in play (the BSF rewrites the extradata format), and
+    // the stream's parameters otherwise.
+    let codec_params: *const AVCodecParameters = match &bsf {
+        Some(b) => unsafe { (*b.as_ptr()).par_out as *const _ },
+        None => unsafe { stream.parameters().as_ptr() },
+    };
+
+    let mut ctx = ffmpeg_next::codec::Context::new_with_codec(codec);
+    let (src_w, src_h) = unsafe {
+        let p = stream.parameters().as_ptr();
+        ((*p).width.max(0) as u32, (*p).height.max(0) as u32)
+    };
+    // For HW decode the PCIe transfer cost of the hwframe dominates
+    // — at 4K HEVC, `av_hwframe_transfer_data` is ~41 ms / frame,
+    // which alone exceeds the 24 fps budget. Every pro NLE handles
+    // this by capping playback resolution to a smaller "preview"
+    // size (Resolve / Premiere / FCP all do "Half Res" or similar
+    // by default) and reserving full-res for export. We mirror
+    // that: cuvid downscales to fit a 1080p bounding box on the GPU
+    // via NVDEC, then we transfer the smaller frame. Saves ~4× over
+    // PCIe and keeps the playhead smooth.
+    //
+    // The user's `max_playback_height` pref still drives the SW
+    // decode path + export pipeline — it just doesn't override the
+    // HW transfer cap because that's about PCIe physics, not user
+    // intent.
+    let (resize_w, resize_h) = hw_transfer_cap_dimensions(src_w, src_h);
+    let want_resize = resize_w != src_w || resize_h != src_h;
+    unsafe {
+        let ctx_ptr = ctx.as_mut_ptr();
+        if ctx_ptr.is_null() {
+            warn!("cuvid: avcodec_alloc_context3 returned NULL for {cuvid_name}");
+            return None;
+        }
+        let rc = avcodec_parameters_to_context(ctx_ptr, codec_params);
+        if rc < 0 {
+            warn!("cuvid: avcodec_parameters_to_context failed for {cuvid_name}: rc={rc}");
+            return None;
+        }
+        // Wire `pkt_timebase` from the stream so cuvid stops warning
+        // "Invalid pkt_timebase, passing timestamps as-is." — no
+        // visible behaviour change (PTS already worked via the
+        // fallback) but removes the ambiguity flag for any future
+        // frame-accurate seek code that consults the timebase.
+        let stb = stream.time_base();
+        (*ctx_ptr).pkt_timebase = AVRational {
+            num: stb.numerator(),
+            den: stb.denominator(),
+        };
+        // GPU-side resize via cuvid's `resize` private option. NVDEC
+        // does the downscale before frames are handed off — saves
+        // ~3× the transfer cost at 4K because we move 1080p worth
+        // of pixels over PCIe instead of 4K. At 4K 24p HEVC this
+        // drops `av_hwframe_transfer_data` from ~41 ms / frame down
+        // to ~10 ms, which clears the budget for everything
+        // downstream and stops the playhead racing the decode.
+        // Skipped when source is already at playback resolution
+        // (passing `resize=WxH` with the same dimensions still
+        // configures NVDEC's resize path unnecessarily).
+        if want_resize {
+            use std::ffi::CString;
+            let resize_str = format!("{resize_w}x{resize_h}");
+            let cname = CString::new("resize").unwrap();
+            let cval = CString::new(resize_str.as_str()).unwrap();
+            let opt_rc = av_opt_set(
+                (*ctx_ptr).priv_data,
+                cname.as_ptr(),
+                cval.as_ptr(),
+                AV_OPT_SEARCH_CHILDREN,
+            );
+            if opt_rc < 0 {
+                warn!(
+                    "cuvid: av_opt_set(resize={resize_str}) failed rc={opt_rc} on {cuvid_name}; \
+                     decode will run at source resolution and downscale on the host"
+                );
+            }
+        }
+        if !try_init_cuda(ctx_ptr) {
+            return None;
+        }
+    }
+    info!(
+        "cuvid: opened {cuvid_name} for codec_id={codec_id:?} src={src_w}x{src_h}{}{}",
+        if want_resize { format!(" → resize={resize_w}x{resize_h} (NVDEC)") } else { String::new() },
+        match &bsf {
+            Some(b) => format!(" / BSF '{}'", b.name()),
+            None => String::new(),
+        },
+    );
+    Some((ctx, bsf))
+}
+
+/// Push a packet through a BSF and drain *all* of its output into
+/// the decoder. Returns `Ok(())` on success or after EAGAIN (BSF
+/// needs more input); other errors propagate.
+unsafe fn bsf_route_packet_to_decoder(
+    bsf: &BsfContext,
+    decoder: &mut ffmpeg_next::decoder::Video,
+    packet: &mut ffmpeg_next::Packet,
+) -> Result<(), i32> {
+    use ffmpeg_next::codec::packet::Mut;
+    let send_rc = bsf_ffi::av_bsf_send_packet(bsf.as_ptr(), packet.as_mut_ptr());
+    if send_rc < 0 {
+        return Err(send_rc);
+    }
+    loop {
+        let mut filtered = ffmpeg_next::Packet::empty();
+        let recv_rc = bsf_ffi::av_bsf_receive_packet(bsf.as_ptr(), filtered.as_mut_ptr());
+        const AVERROR_EAGAIN: i32 = -11; // EAGAIN
+        const AVERROR_EOF: i32 = -541478725; // FFERRTAG('E','O','F',' ')
+        if recv_rc == AVERROR_EAGAIN || recv_rc == AVERROR_EOF {
+            return Ok(());
+        }
+        if recv_rc < 0 {
+            return Err(recv_rc);
+        }
+        // Send to decoder; if EAGAIN here, we need to drain decoder
+        // first — but we've already drained via the caller's loop.
+        // A second EAGAIN is rare; log and stash if it happens.
+        if let Err(e) = decoder.send_packet(&filtered) {
+            warn!("BSF: decoder.send_packet returned {e}");
+        }
+    }
+}
+
+/// Flush the BSF on EOF: send a NULL packet, drain remaining outputs.
+unsafe fn bsf_flush_to_decoder(
+    bsf: &BsfContext,
+    decoder: &mut ffmpeg_next::decoder::Video,
+) {
+    use ffmpeg_next::codec::packet::Mut;
+    bsf_ffi::av_bsf_send_packet(bsf.as_ptr(), std::ptr::null_mut());
+    loop {
+        let mut filtered = ffmpeg_next::Packet::empty();
+        let rc = bsf_ffi::av_bsf_receive_packet(bsf.as_ptr(), filtered.as_mut_ptr());
+        if rc < 0 {
+            return;
+        }
+        let _ = decoder.send_packet(&filtered);
+    }
+}
+
+/// Result of opening a video decoder: the opened `Video`, the
+/// hardware tier it ended up using, and any bitstream filter that
+/// must run in front of `decoder.send_packet()` for the decode loop
+/// (only present on the cuvid path for H.264 / HEVC in MP4).
+pub(crate) struct OpenedDecoder {
+    pub(crate) decoder: ffmpeg_next::decoder::Video,
+    pub(crate) hw_accel: HwAccel,
+    pub(crate) bsf: Option<BsfContext>,
+}
+
+/// Apply the `thread_count` policy to a fresh codec context. Pure
+/// software decoders read `DECODE_THREADS_PREF` (0 = ffmpeg auto);
+/// HW decoders default to the same but `KLIPP_HW_SINGLE_THREAD=1`
+/// pins them to a single thread (NVDEC parallelises on the GPU; CPU
+/// worker threads can confuse hwaccel negotiation — see the
+/// commentary on `KLIPP_HW_SINGLE_THREAD`).
+unsafe fn apply_thread_count(
+    ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext,
+    hw_accel: HwAccel,
+) {
+    let hw_single_thread = hw_accel != HwAccel::Software
+        && std::env::var("KLIPP_HW_SINGLE_THREAD").as_deref() == Ok("1");
+    let tc = if hw_single_thread {
+        1
+    } else {
+        DECODE_THREADS_PREF.load(std::sync::atomic::Ordering::Relaxed) as i32
+    };
+    (*ctx_ptr).thread_count = tc;
+    if hw_accel != HwAccel::Software {
+        info!(
+            "decode_thread: HW={:?}, thread_count set to {tc}{}",
+            hw_accel,
+            if hw_single_thread { " (KLIPP_HW_SINGLE_THREAD=1)" } else { " (default)" },
+        );
+    }
+}
+
+/// Open the video decoder for `stream`, walking the cuvid → standard
+/// + CUDA → standard + VAAPI → software ladder. Each tier is
+/// attempted; if its `decoder.video()` open fails (codec / profile
+/// not supported, hwaccel init failed, …), we drop the half-built
+/// context and try the next tier.
+///
+/// Returns the first tier that successfully produced an opened
+/// `Video`. The returned `OpenedDecoder.bsf` is `Some` only on the
+/// cuvid path for codecs that require an `*_mp4toannexb` filter
+/// (H.264 + HEVC out of MP4 / MOV containers).
+pub(crate) fn open_video_decoder(
+    stream: &ffmpeg_next::format::stream::Stream,
+    hw_enabled: bool,
+    try_cuvid: bool,
+) -> Result<OpenedDecoder, ffmpeg_next::Error> {
+    // Tier 1: cuvid (standalone NVDEC). Only attempted when the
+    // pref AND the env-var gate both authorise it.
+    if try_cuvid {
+        if let Some((mut ctx, bsf)) = try_open_cuvid_decoder(stream) {
+            unsafe { apply_thread_count(ctx.as_mut_ptr(), HwAccel::Cuda) };
+            match ctx.decoder().video() {
+                Ok(decoder) => {
+                    return Ok(OpenedDecoder {
+                        decoder,
+                        hw_accel: HwAccel::Cuda,
+                        bsf,
+                    });
+                }
+                Err(e) => {
+                    // Most common cause: NVDEC doesn't support this
+                    // codec / profile combination (e.g. H.264 Hi10P
+                    // is unsupported on every consumer NVIDIA GPU).
+                    // Fall through to the standard codec path which
+                    // will hand off to software for unsupported HW
+                    // codecs.
+                    warn!(
+                        "cuvid: avcodec_open2 failed for codec {:?}: {e} \
+                         — falling back to standard codec",
+                        stream.parameters().id(),
+                    );
+                    // `bsf` and `ctx` drop here automatically.
+                    drop(bsf);
+                }
+            }
+        }
+    }
+
+    // Tier 2 / 3 / 4: standard codec context with HW-accel
+    // attempted in order. `try_init_cuda` and `try_init_vaapi`
+    // mutate the context with `hw_device_ctx` + `get_format`; if
+    // both decline (HW pref off or device init fails) we end up on
+    // the software path with no extra plumbing.
+    let mut ctx = ffmpeg_next::codec::context::Context::from_parameters(stream.parameters())?;
+    let hw_accel = unsafe {
+        if hw_enabled && try_init_cuda(ctx.as_mut_ptr()) {
+            HwAccel::Cuda
+        } else if hw_enabled && try_init_vaapi(ctx.as_mut_ptr()) {
+            HwAccel::Vaapi
+        } else {
+            HwAccel::Software
+        }
+    };
+    unsafe { apply_thread_count(ctx.as_mut_ptr(), hw_accel) };
+    let decoder = ctx.decoder().video()?;
+    Ok(OpenedDecoder {
+        decoder,
+        hw_accel,
+        bsf: None,
+    })
 }
 
 /// Try to initialize VAAPI on the codec context. Returns true if successful.
@@ -446,6 +1136,32 @@ pub fn optimised_playback_mode() -> u8 {
     OPTIMISED_PLAYBACK_PREF.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Working colorspace the decoder lands frames in. u8 tag matches
+/// `klipp_core::WorkingColorspace::as_u8`:
+///   0 = Rec709Linear (default — pre-upgrade pipeline behaviour)
+///   1 = AcesCG       (linear AP1 primaries, D60 white)
+///   2 = Bt2020Linear (placeholder until end-to-end Rec.2020 lands)
+/// Unknown tags fall back to `Rec709Linear` via
+/// `WorkingColorspace::from_u8`. The setter is the only sanctioned way
+/// to change this — driven by project state when a `.klipp` file
+/// loads / changes.
+static WORKING_COLORSPACE_PREF: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Set the active working colorspace. Called by the engine when the
+/// loaded project's `working_colorspace` changes.
+pub fn set_working_colorspace(ws: klipp_core::WorkingColorspace) {
+    WORKING_COLORSPACE_PREF.store(ws.as_u8(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Read the active working colorspace. Lock-free; safe to call from
+/// the decode thread per-frame and from the engine's grade-chain
+/// dispatch.
+pub fn working_colorspace() -> klipp_core::WorkingColorspace {
+    klipp_core::WorkingColorspace::from_u8(
+        WORKING_COLORSPACE_PREF.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
 /// Decide whether the playback decoder should open the skim file
 /// instead of the original source. Pure function — separated from the
 /// engine so it's unit-testable. Three inputs:
@@ -509,6 +1225,25 @@ fn max_playback_width() -> u32 {
 
 /// Compute output dimensions that fit within MAX_PLAYBACK, preserving aspect ratio.
 /// For 90°/270° rotation, the effective display dimensions are swapped before scaling.
+/// HW-decode-specific playback dimensions. Caps at 1080p (1920×1080
+/// bounding box, aspect-preserving) regardless of user prefs, because
+/// PCIe transfer of full-res hwframes costs more than the realtime
+/// frame budget allows (~41 ms / frame at 4K). Source-resolution HW
+/// playback is reserved for export, not edit-time scrubbing — same
+/// convention as every pro NLE.
+fn hw_transfer_cap_dimensions(src_w: u32, src_h: u32) -> (u32, u32) {
+    const HW_MAX_W: u32 = 1920;
+    const HW_MAX_H: u32 = 1080;
+    if src_w <= HW_MAX_W && src_h <= HW_MAX_H {
+        return (src_w, src_h);
+    }
+    let scale = (HW_MAX_W as f64 / src_w as f64)
+        .min(HW_MAX_H as f64 / src_h as f64);
+    let out_w = ((src_w as f64 * scale) as u32) & !1; // even width
+    let out_h = ((src_h as f64 * scale) as u32) & !1; // even height
+    (out_w.max(2), out_h.max(2))
+}
+
 fn playback_dimensions(src_w: u32, src_h: u32, rotation: i32) -> (u32, u32) {
     // For rotation, the effective display dimensions are swapped
     let (eff_w, eff_h) = if rotation == 90 || rotation == 270 {
@@ -538,6 +1273,7 @@ unsafe fn download_hw_frame(
     gpu_converter: Option<&mut klipp_effects::nv12_gpu::GpuNv12Converter>,
     gpu_p010: &mut Option<klipp_effects::p010_gpu::GpuP010Converter>,
     source_rotation: i32,
+    cs_baseline: klipp_core::SourceColorspace,
 ) -> Option<LinearFrame> {
     use ffmpeg_next::ffi::*;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -580,6 +1316,34 @@ unsafe fn download_hw_frame(
     let is_hi_bit_depth = source_is_high_bit_depth(sw_fmt);
     let (out_w, out_h) = playback_dimensions(src_w, src_h, source_rotation);
 
+    // Resolve the source's colour metadata once per frame. Per-frame
+    // tags from the AVFrame override the codec-context baseline only
+    // where actually specified — NVDEC's `av_hwframe_transfer_data`
+    // strips `color_range` (and sometimes the matrix) from downloaded
+    // frames, so the AVCodecParameters values captured at decoder
+    // init are the authoritative source for those tags. Every
+    // `LinearFrame` constructed below stamps `source_cs` onto the
+    // frame so downstream shaders can dispatch the correct YUV→RGB
+    // matrix, range divisor, EOTF and gamut conversion.
+    let source_cs = klipp_core::SourceColorspace::resolve_with_baseline(
+        (*sw_frame).color_range as i32,
+        (*sw_frame).colorspace as i32,
+        (*sw_frame).color_primaries as i32,
+        (*sw_frame).color_trc as i32,
+        cs_baseline,
+    );
+    {
+        use std::sync::atomic::AtomicBool;
+        static LOGGED: AtomicBool = AtomicBool::new(false);
+        if !LOGGED.swap(true, Ordering::Relaxed) {
+            tracing::info!(
+                "decode colorspace: {} ({}x{}, sw_fmt={:?}, baseline={})",
+                source_cs.describe(), src_w, src_h, sw_fmt,
+                cs_baseline.describe(),
+            );
+        }
+    }
+
     // Try GPU NV12→RGBA path: only for NV12 format with an available converter
     // Temporary diagnostic — log first frame only
     {
@@ -605,15 +1369,6 @@ unsafe fn download_hw_frame(
             }
         }
         if let Some(converter) = gpu_p010.as_mut() {
-            // Detect HDR (PQ + BT.2020) from the frame's colorspace
-            // metadata. AVCOL_TRC_SMPTE2084 (PQ) and AVCOL_PRI_BT2020
-            // both signal HDR; AVCOL_TRC_ARIB_STD_B67 is HLG, also HDR.
-            let trc = (*sw_frame).color_trc as i32;
-            let pri = (*sw_frame).color_primaries as i32;
-            let is_hdr = trc == AVColorTransferCharacteristic::AVCOL_TRC_SMPTE2084 as i32
-                || trc == AVColorTransferCharacteristic::AVCOL_TRC_ARIB_STD_B67 as i32
-                || pri == AVColorPrimaries::AVCOL_PRI_BT2020 as i32;
-
             let y_stride = (*sw_frame).linesize[0] as u32;
             let uv_stride = (*sw_frame).linesize[1] as u32;
             let y_data_len = (y_stride * src_h) as usize;
@@ -622,41 +1377,47 @@ unsafe fn download_hw_frame(
             let uv_data = std::slice::from_raw_parts((*sw_frame).data[1], uv_data_len);
 
             let t_p010 = std::time::Instant::now();
-            // Same shader dispatch either way. With the gate on we
-            // also hold an `Arc<Buffer>` of the output so the frame
-            // can carry a `gpu_source` for phase 4d's grade chain;
-            // the readback cost is identical to the legacy path.
-            let (rgba_data, gpu_source) = if should_attach_gpu_source() {
+            // The shader picks PQ/HLG vs BT.709 transfer, BT.2020 vs
+            // BT.709 matrix/primaries, and limited vs full range from
+            // these IDs — no ad-hoc HDR sniffing in the host code.
+            let color_ids = klipp_core::color_ids::ids(source_cs);
+            let (linear, gpu_source) = if should_attach_gpu_source() {
+                // Phase 4d.1: GPU-resident handoff. The shader runs;
+                // we attach the resulting wgpu::Buffer to gpu_source
+                // and skip the readback + linearise entirely. The
+                // engine's grade chain consumes the buffer directly
+                // via `prime_chain_from_gpu_u8_buffer`. CPU `data`
+                // stays empty; consumers that need it call
+                // `LinearFrame::ensure_cpu_data` on demand.
+                let pm = primaries_matrix_for_source(source_cs);
                 let buffer = converter.convert_p010_to_rgba_on_gpu(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32, is_hdr,
+                    out_w, out_h, source_rotation as u32, color_ids, pm,
                 );
                 let device = converter.device();
                 let queue = converter.queue();
-                let readback = Frame::Gpu(GpuFrame::new(
-                    device.clone(), queue.clone(), Arc::clone(&buffer), out_w, out_h,
-                ));
-                let bytes = readback.into_cpu().data;
                 let attach = Arc::new(GpuFrame::new(device, queue, buffer, out_w, out_h));
-                (bytes, Some(attach))
+                (Vec::new(), Some(attach))
             } else {
+                let pm = primaries_matrix_for_source(source_cs);
                 let bytes = converter.convert_p010_to_rgba(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32, is_hdr,
+                    out_w, out_h, source_rotation as u32, color_ids, pm,
                 );
-                (bytes, None)
+                let t_linear = std::time::Instant::now();
+                let lin = rgba_u8_to_linear(&bytes);
+                PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
+                (lin, None)
             };
             // Reuse the NV12 perf bucket — the meaning is identical
             // (GPU YUV→RGBA encode time per frame).
             PERF_NV12_CONV_US.fetch_add(t_p010.elapsed().as_micros() as u64, Ordering::Relaxed);
 
             av_frame_free(&mut (sw_frame as *mut _));
-            let t_linear = std::time::Instant::now();
-            let linear = rgba_u8_to_linear(&rgba_data);
-            PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
 
             let count = CALL_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
             PERF_GPU_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+            log_first_resident_delivery(gpu_source.is_some(), "p010_cuvid");
             maybe_log_hw_download_stats(
                 count, &CALL_COUNT, &PERF_HW_DL_US, &PERF_NV12_CONV_US,
                 &PERF_LINEAR_ENCODE_US, &PERF_SW_SCALE_US,
@@ -670,6 +1431,7 @@ unsafe fn download_hw_frame(
                 data: linear,
                 is_eof: false,
                 gpu_source,
+                colorspace: source_cs,
             });
         }
     }
@@ -687,35 +1449,39 @@ unsafe fn download_hw_frame(
             let uv_data = std::slice::from_raw_parts((*sw_frame).data[1], uv_data_len);
 
             let t_nv12 = std::time::Instant::now();
-            let (rgba_data, gpu_source) = if should_attach_gpu_source() {
+            let color_ids = klipp_core::color_ids::ids(source_cs);
+            let (linear, gpu_source) = if should_attach_gpu_source() {
+                // Phase 4d.1: see P010 path above. NV12 follows the
+                // same GPU-resident handoff — no readback, no
+                // linearise; the engine consumes the wgpu::Buffer
+                // directly when it primes the chain.
+                let pm = primaries_matrix_for_source(source_cs);
                 let buffer = converter.convert_nv12_to_rgba_on_gpu(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32,
+                    out_w, out_h, source_rotation as u32, color_ids, pm,
                 );
                 let device = converter.device();
                 let queue = converter.queue();
-                let readback = Frame::Gpu(GpuFrame::new(
-                    device.clone(), queue.clone(), Arc::clone(&buffer), out_w, out_h,
-                ));
-                let bytes = readback.into_cpu().data;
                 let attach = Arc::new(GpuFrame::new(device, queue, buffer, out_w, out_h));
-                (bytes, Some(attach))
+                (Vec::new(), Some(attach))
             } else {
+                let pm = primaries_matrix_for_source(source_cs);
                 let bytes = converter.convert_nv12_to_rgba(
                     y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32,
+                    out_w, out_h, source_rotation as u32, color_ids, pm,
                 );
-                (bytes, None)
+                let t_linear = std::time::Instant::now();
+                let lin = rgba_u8_to_linear(&bytes);
+                PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
+                (lin, None)
             };
             PERF_NV12_CONV_US.fetch_add(t_nv12.elapsed().as_micros() as u64, Ordering::Relaxed);
 
             av_frame_free(&mut (sw_frame as *mut _));
-            let t_linear = std::time::Instant::now();
-            let linear = rgba_u8_to_linear(&rgba_data);
-            PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
 
             let count = CALL_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
             PERF_GPU_PATH_COUNT.fetch_add(1, Ordering::Relaxed);
+            log_first_resident_delivery(gpu_source.is_some(), "nv12_cuvid");
             maybe_log_hw_download_stats(
                 count,
                 &CALL_COUNT,
@@ -734,6 +1500,7 @@ unsafe fn download_hw_frame(
                 data: linear,
                 is_eof: false,
                 gpu_source,
+                colorspace: source_cs,
             });
         }
     }
@@ -851,6 +1618,7 @@ unsafe fn download_hw_frame(
     };
 
     let count = CALL_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    log_first_resident_delivery(false, "swscale_cpu");
     maybe_log_hw_download_stats(
         count,
         &CALL_COUNT,
@@ -869,7 +1637,34 @@ unsafe fn download_hw_frame(
         data: linear_data,
         is_eof: false,
         gpu_source: None,
+        colorspace: source_cs,
     })
+}
+
+/// One-shot info log per delivery mode so the operator can confirm
+/// whether the decoder actually delivered a GPU-resident `gpu_source`
+/// or fell through to CPU `data`. Helps validate
+/// `KLIPP_GPU_FRAMES=1` end-to-end without sifting per-frame trace.
+/// `mode` is a short tag distinguishing which path produced the
+/// frame (e.g. `p010_cuvid`, `nv12_cuvid`, `swscale_cpu`).
+fn log_first_resident_delivery(gpu_resident: bool, mode: &'static str) {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
+    static GPU_LOGGED: AtomicBool = AtomicBool::new(false);
+    static CPU_LOGGED: AtomicBool = AtomicBool::new(false);
+    if gpu_resident {
+        if !GPU_LOGGED.swap(true, Ordering::Relaxed) {
+            tracing::info!(
+                "decode delivery: GPU-resident frame delivered (mode={mode}; \
+                 gpu_source attached, CPU readback deferred until consumer asks)"
+            );
+        }
+    } else if !CPU_LOGGED.swap(true, Ordering::Relaxed) {
+        tracing::info!(
+            "decode delivery: CPU frame delivered (mode={mode}; \
+             gpu_source absent, full CPU data populated up front)"
+        );
+    }
 }
 
 /// Log + reset accumulated per-stage timing every 60 frames so the
@@ -944,50 +1739,104 @@ fn decode_thread_main(
     let stream_index = video_stream.index();
     let time_base = video_stream.time_base();
 
-    // Decoder selection: CUDA (NVDEC) → VAAPI → Software with multi-threading
-    // CUDA works for all codecs on NVIDIA (including AV1/VP9).
-    // VAAPI works for H.264/HEVC but nvidia-vaapi-driver has broken transfers for AV1/VP9.
-    // Software fallback uses multi-threaded libdav1d/libvpx.
-    let mut codec_ctx = match ffmpeg_next::codec::context::Context::from_parameters(video_stream.parameters()) {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            warn!("decode_thread: codec context error: {e}");
-            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(LinearFrame::eof());
-            return;
-        }
-    };
-
-    // Try hardware acceleration: CUDA first, then VAAPI (skipped when pref disabled)
+    // Decoder selection ladder (each tier is attempted; if its
+    // `decoder.video()` open fails — codec / profile not supported,
+    // hwaccel init failed, etc. — we drop the half-built context and
+    // try the next tier:
+    //
+    //   1. cuvid (`*_cuvid`)   — NVIDIA's dedicated NVDEC decoders.
+    //                            Native CUDA hwframes; needs a
+    //                            `*_mp4toannexb` BSF in front for
+    //                            H.264 / HEVC stored in MP4.
+    //                            Limits: H.264 Hi10P (10-bit) is not
+    //                            supported in NVDEC hardware on any
+    //                            consumer NVIDIA GPU — `h264_cuvid`
+    //                            errors with "Bit depth 10 with this
+    //                            chroma format is not supported".
+    //                            HEVC Main 10 (10-bit HEVC) IS
+    //                            supported and is the path we want
+    //                            for Sony / iPhone / etc. footage.
+    //   2. CUDA hwaccel        — standard codec + cuda hwaccel +
+    //                            hw_frames_ctx. ffmpeg CLI uses this
+    //                            shape; we observed silent SW fallback
+    //                            in our setup but it's harmless.
+    //   3. VAAPI hwaccel       — H.264 / HEVC on Intel iGPU.
+    //                            `nvidia-vaapi-driver` is broken for
+    //                            AV1 / VP9 (all-zero frames).
+    //   4. Software            — libdav1d / libvpx multi-threaded.
+    //
+    // Cuvid is now the default HW path. Codec matrix verified end-
+    // to-end: H.264 8-bit (1080p + 4K), HEVC Main 10 (Sony A6700,
+    // 4K), AV1 8-bit + 10-bit, VP9 Profile 2 — all open via cuvid
+    // when supported, and unsupported profiles (notably H.264 Hi10P,
+    // which no consumer NVIDIA GPU can handle) drop cleanly to the
+    // standard codec path via the avcodec_open2-failure branch in
+    // open_video_decoder. `KLIPP_USE_CUVID=0` disables cuvid and
+    // forces the standard CUDA hwaccel / VAAPI / SW ladder for
+    // diagnosis. When cuvid succeeds the BSF (if any) lives
+    // alongside the codec context for the lifetime of this decode
+    // thread; the decode loop pipes every packet through the BSF
+    // before sending it to the decoder.
     let hw_enabled = HARDWARE_DECODE_PREF.load(std::sync::atomic::Ordering::Relaxed);
-    let hw_accel = unsafe {
-        if hw_enabled && try_init_cuda(codec_ctx.as_mut_ptr()) {
-            HwAccel::Cuda
-        } else if hw_enabled && try_init_vaapi(codec_ctx.as_mut_ptr()) {
-            HwAccel::Vaapi
-        } else {
-            HwAccel::Software
-        }
-    };
+    let try_cuvid = hw_enabled && std::env::var("KLIPP_USE_CUVID").as_deref() != Ok("0");
 
-    // Enable multi-threaded decoding — helps SW fallback (libdav1d uses all cores),
-    // and doesn't hurt HW decode (ffmpeg ignores thread_count for HW decoders).
-    unsafe {
-        let tc = DECODE_THREADS_PREF.load(std::sync::atomic::Ordering::Relaxed);
-        (*codec_ctx.as_mut_ptr()).thread_count = tc as i32;
-    }
-
-    let mut decoder = match codec_ctx.decoder().video() {
-        Ok(d) => d,
+    let opened = match open_video_decoder(&video_stream, hw_enabled, try_cuvid) {
+        Ok(o) => o,
         Err(e) => {
             warn!("decode_thread: video decoder error: {e}");
             frame_queue.lock().unwrap_or_else(|e| e.into_inner()).push(LinearFrame::eof());
             return;
         }
     };
+    let mut decoder = opened.decoder;
+    let bsf_ctx = opened.bsf;
+    let hw_accel = opened.hw_accel;
 
     if hw_accel != HwAccel::Software {
         hw_active_flag.store(true, std::sync::atomic::Ordering::Relaxed);
     }
+
+    // Capture the source's colourspace from the AVCodecParameters
+    // before the decoder starts producing frames. NVDEC's
+    // `av_hwframe_transfer_data` typically strips per-frame colour
+    // tags during download (we've seen `color_range=pc` files arrive
+    // here as `unspecified`), so the codec-level values are the
+    // authoritative baseline for everything downstream. Each frame
+    // overrides individual fields where its own AVFrame tags are
+    // actually specified.
+    let cs_baseline_from_codecpar: klipp_core::SourceColorspace = unsafe {
+        let par_raw: *mut ffmpeg_next::ffi::AVCodecParameters = (*video_stream.as_ptr()).codecpar;
+        let (range_r, space_r, pri_r, trc_r, w, h) = if par_raw.is_null() {
+            (0, 0, 0, 0, 1920u32, 1080u32)
+        } else {
+            (
+                (*par_raw).color_range as i32,
+                (*par_raw).color_space as i32,
+                (*par_raw).color_primaries as i32,
+                (*par_raw).color_trc as i32,
+                (*par_raw).width.max(1) as u32,
+                (*par_raw).height.max(1) as u32,
+            )
+        };
+        klipp_core::SourceColorspace::resolve(range_r, space_r, pri_r, trc_r, w, h)
+    };
+
+    // KLIPP_FORCE_LOG_FORMAT is the test/dev override before the
+    // per-clip UI exists. Setting it to one of the recognised tokens
+    // replaces the baseline's transfer + primaries with the matching
+    // camera-native pair (e.g. S-Log3 + S-Gamut3.Cine), which the
+    // shaders and the CPU swscale path then dispatch on. Container
+    // metadata never tags these — every NLE asks the user.
+    let cs_baseline = apply_env_log_override(cs_baseline_from_codecpar);
+    info!(
+        "decode_thread: source colourspace baseline: {}{}",
+        cs_baseline.describe(),
+        if cs_baseline != cs_baseline_from_codecpar {
+            format!(" (overridden from {})", cs_baseline_from_codecpar.describe())
+        } else {
+            " (from codec params)".to_string()
+        },
+    );
 
     // Software scaler — created lazily on first SW frame
     let mut sw_scaler: Option<ffmpeg_next::software::scaling::Context> = None;
@@ -1056,20 +1905,19 @@ fn decode_thread_main(
             return;
         }
 
+        // Drain the entire pending queue first, coalescing
+        // SeekTo to the last one. A scrub-drag can pile dozens
+        // of seeks onto this thread; processing each one means a
+        // full avformat seek + decode preroll (~50 ms on 4K
+        // HEVC), pinning the CPU and stalling the visible
+        // playhead behind the cursor by hundreds of ms. Only the
+        // newest scrub target matters.
+        let mut latest_seek: Option<f64> = None;
+        let mut got_stop = false;
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 DecodeCommand::SeekTo(secs) => {
-                    let ts = (secs * 1_000_000.0) as i64;
-                    debug!("decode_thread: seek to {secs:.3}s (ts={ts} us)");
-                    drop(packets);
-                    let _ = format_ctx.seek(ts, ..ts);
-                    packets = format_ctx.packets();
-                    decoder.flush();
-                    frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                    seek_target = Some(secs);
-                    eof_sent = false;
-                    eof_from_demuxer = false;
-                    pending_packet = None;
+                    latest_seek = Some(secs);
                 }
                 DecodeCommand::Pause => paused = true,
                 DecodeCommand::Resume => {
@@ -1077,10 +1925,27 @@ fn decode_thread_main(
                     eof_sent = false;
                 }
                 DecodeCommand::Stop => {
-                    debug!("decode_thread: stop");
-                    return;
+                    got_stop = true;
+                    break;
                 }
             }
+        }
+        if got_stop {
+            debug!("decode_thread: stop");
+            return;
+        }
+        if let Some(secs) = latest_seek {
+            let ts = (secs * 1_000_000.0) as i64;
+            debug!("decode_thread: seek to {secs:.3}s (ts={ts} us)");
+            drop(packets);
+            let _ = format_ctx.seek(ts, ..ts);
+            packets = format_ctx.packets();
+            decoder.flush();
+            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            seek_target = Some(secs);
+            eof_sent = false;
+            eof_from_demuxer = false;
+            pending_packet = None;
         }
 
         if paused {
@@ -1107,28 +1972,38 @@ fn decode_thread_main(
             // retry receive_frame once a slot opens.
             if frame_queue.lock().unwrap_or_else(|e| e.into_inner()).is_full() {
                 std::thread::sleep(Duration::from_millis(1));
-                // Re-check commands (seek/stop) while waiting
-                if let Ok(cmd) = cmd_rx.try_recv() {
+                // Re-check commands (seek/stop) while waiting.
+                // Drain the whole queue and coalesce SeekTo to the
+                // latest, same reasoning as the top-of-loop drain.
+                let mut latest_inner_seek: Option<f64> = None;
+                let mut inner_break = false;
+                let mut inner_return = false;
+                while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
                         DecodeCommand::SeekTo(secs) => {
-                            let ts = (secs * 1_000_000.0) as i64;
-                            debug!("decode_thread: seek to {secs:.3}s (ts={ts} us) (in drain)");
-                            drop(packets);
-                            let _ = format_ctx.seek(ts, ..ts);
-                            packets = format_ctx.packets();
-                            decoder.flush();
-                            frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
-                            seek_target = Some(secs);
-                            eof_sent = false;
-                            eof_from_demuxer = false;
-                            pending_packet = None;
-                            break; // restart outer loop
+                            latest_inner_seek = Some(secs);
                         }
-                        DecodeCommand::Pause => { paused = true; break; }
+                        DecodeCommand::Pause => { paused = true; inner_break = true; break; }
                         DecodeCommand::Resume => { paused = false; eof_sent = false; }
-                        DecodeCommand::Stop => { return; }
+                        DecodeCommand::Stop => { inner_return = true; break; }
                     }
                 }
+                if inner_return { return; }
+                if let Some(secs) = latest_inner_seek {
+                    let ts = (secs * 1_000_000.0) as i64;
+                    debug!("decode_thread: seek to {secs:.3}s (ts={ts} us) (in drain)");
+                    drop(packets);
+                    let _ = format_ctx.seek(ts, ..ts);
+                    packets = format_ctx.packets();
+                    decoder.flush();
+                    frame_queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                    seek_target = Some(secs);
+                    eof_sent = false;
+                    eof_from_demuxer = false;
+                    pending_packet = None;
+                    break; // restart outer loop
+                }
+                if inner_break { break; }
                 continue; // retry drain
             }
 
@@ -1160,13 +2035,33 @@ fn decode_thread_main(
                 fmt == ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_CUDA as i32
                     || fmt == ffmpeg_next::ffi::AVPixelFormat::AV_PIX_FMT_VAAPI as i32
             };
+            // One-shot per-process: log the actual format the master
+            // decoder delivered + which path we're routing to. The
+            // `get_format` callback can succeed at init but later
+            // worker probes still authorise SW auto-download — this
+            // tells us what actually arrives instead of guessing.
+            {
+                use std::sync::atomic::AtomicBool;
+                static LOGGED: AtomicBool = AtomicBool::new(false);
+                if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    let fmt_name = unsafe {
+                        let f = std::mem::transmute::<i32, ffmpeg_next::ffi::AVPixelFormat>((*received_frame.as_ptr()).format);
+                        pix_fmt_name(f)
+                    };
+                    info!(
+                        "decode_thread: first delivered frame fmt={fmt_name} → routing to {}",
+                        if is_hw_frame { "download_hw_frame (GPU shader path)" }
+                        else { "convert_sw_frame (CPU path)" },
+                    );
+                }
+            }
 
             let t_transfer = std::time::Instant::now();
             let frame_result = if is_hw_frame {
                 hw_active_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                unsafe { download_hw_frame(&received_frame, &mut hw_scaler, gpu_nv12.as_mut(), &mut gpu_p010, source_rotation) }
+                unsafe { download_hw_frame(&received_frame, &mut hw_scaler, gpu_nv12.as_mut(), &mut gpu_p010, source_rotation, cs_baseline) }
             } else {
-                convert_sw_frame(&received_frame, &mut sw_scaler, &mut perf_copy_us, source_rotation)
+                convert_sw_frame(&received_frame, &mut sw_scaler, &mut perf_copy_us, source_rotation, cs_baseline)
             };
 
             let mut linear_frame = match frame_result {
@@ -1223,13 +2118,25 @@ fn decode_thread_main(
         if paused { continue; } // broke out of drain loop due to pause command
 
         // ── Phase 2: Feed next packet to the decoder ──
+        //
+        // When `bsf_ctx` is `Some`, packets go through the bitstream
+        // filter first — `bsf_route_packet_to_decoder` handles both
+        // sending the input packet to the BSF and forwarding all
+        // resulting filtered packets to the decoder. This is
+        // required for cuvid decoders consuming H.264/HEVC out of
+        // MP4 containers (avcc/hvcc → annex B).
 
         // Retry pending packet first (was EAGAIN last time)
-        if let Some(pkt) = pending_packet.take() {
-            match decoder.send_packet(&pkt) {
+        if let Some(mut pkt) = pending_packet.take() {
+            let send_result = if let Some(bsf) = bsf_ctx.as_ref() {
+                unsafe { bsf_route_packet_to_decoder(bsf, &mut decoder, &mut pkt) }
+                    .map_err(|rc| ffmpeg_next::Error::from(rc))
+            } else {
+                decoder.send_packet(&pkt)
+            };
+            match send_result {
                 Ok(()) => {}
                 Err(e) => {
-                    // Still EAGAIN? Shouldn't happen since we just drained. Keep it.
                     warn!("decode_thread: send_packet retry failed: {e}");
                     pending_packet = Some(pkt);
                     std::thread::sleep(Duration::from_millis(1));
@@ -1239,19 +2146,25 @@ fn decode_thread_main(
         } else if !eof_from_demuxer {
             // Read next packet from demuxer
             match packets.next() {
-                Some((stream, packet)) => {
+                Some((stream, mut packet)) => {
                     if stream.index() == stream_index {
-                        match decoder.send_packet(&packet) {
-                            Ok(()) => {}
-                            Err(_) => {
-                                // EAGAIN: decoder buffer full. Save packet and drain first.
-                                pending_packet = Some(packet);
-                            }
+                        let send_result = if let Some(bsf) = bsf_ctx.as_ref() {
+                            unsafe { bsf_route_packet_to_decoder(bsf, &mut decoder, &mut packet) }
+                                .map_err(|rc| ffmpeg_next::Error::from(rc))
+                        } else {
+                            decoder.send_packet(&packet)
+                        };
+                        if send_result.is_err() {
+                            // EAGAIN: decoder buffer full. Save packet and drain first.
+                            pending_packet = Some(packet);
                         }
                     }
                     // Non-video packets: just skip, loop will continue to drain+feed
                 }
                 None => {
+                    if let Some(bsf) = bsf_ctx.as_ref() {
+                        unsafe { bsf_flush_to_decoder(bsf, &mut decoder) };
+                    }
                     let _ = decoder.send_eof();
                     eof_from_demuxer = true;
                 }
@@ -1271,7 +2184,86 @@ fn convert_sw_frame(
     sw_scaler: &mut Option<ffmpeg_next::software::scaling::Context>,
     perf_copy_us: &mut u64,
     source_rotation: i32,
+    cs_baseline: klipp_core::SourceColorspace,
 ) -> Option<LinearFrame> {
+    // One-shot per-process: log the source format and resolved
+    // colourspace baseline. Useful when triaging future colour bugs
+    // ("what was the file actually tagged as?") and cheap enough to
+    // leave on in production.
+    {
+        use std::sync::atomic::AtomicBool;
+        static LOGGED: AtomicBool = AtomicBool::new(false);
+        if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            info!(
+                "convert_sw_frame: format={:?}, {}x{}, baseline={}",
+                received_frame.format(),
+                received_frame.width(), received_frame.height(),
+                cs_baseline.describe(),
+            );
+        }
+    }
+    // YUV420P10LE direct path: skip swscale entirely. swscale's
+    // YUV420P10LE → RGBA64LE conversion was observed producing
+    // channel-clamped output (R/G hitting 0/1.0 across most pixels)
+    // for valid Sony S-Log3 source frames regardless of
+    // `sws_setColorspaceDetails` configuration. The direct
+    // converter in `klipp_color::camera_log` reads the AVFrame's
+    // raw 10-bit planes, applies the resolved colourspace's matrix
+    // + range + EOTF + primaries, and outputs linear BT.709 f32
+    // ready for the engine. Same EOTFs / primaries matrices as the
+    // GPU shaders.
+    if received_frame.format() == ffmpeg_next::format::Pixel::YUV420P10LE {
+        // The per-frame AVFrame's tags: `LinearFrame.colorspace`
+        // wants the merged value, but the conversion math itself
+        // only needs `cs_baseline` (per-frame tags are usually
+        // unspecified; baseline carries the codec / override).
+        let source_cs = unsafe {
+            let avf = received_frame.as_ptr();
+            klipp_core::SourceColorspace::resolve_with_baseline(
+                (*avf).color_range as i32,
+                (*avf).colorspace as i32,
+                (*avf).color_primaries as i32,
+                (*avf).color_trc as i32,
+                cs_baseline,
+            )
+        };
+        let src_w = received_frame.width();
+        let src_h = received_frame.height();
+        let (dst_w, dst_h) = playback_dimensions(src_w, src_h, 0);
+        let y_stride = received_frame.stride(0) as usize;
+        let u_stride = received_frame.stride(1) as usize;
+        let v_stride = received_frame.stride(2) as usize;
+        let y_data = received_frame.data(0);
+        let u_data = received_frame.data(1);
+        let v_data = received_frame.data(2);
+        let linear = klipp_color::camera_log::yuv420p10le_to_linear(
+            y_data, u_data, v_data,
+            y_stride, u_stride, v_stride,
+            src_w, src_h, dst_w, dst_h,
+            source_cs,
+            working_colorspace(),
+        );
+        let (final_w, final_h) = if source_rotation == 90 || source_rotation == 270 {
+            (dst_h, dst_w)
+        } else {
+            (dst_w, dst_h)
+        };
+        let linear = if source_rotation != 0 {
+            rotate_linear_rgba(&linear, dst_w, dst_h, source_rotation).0
+        } else {
+            linear
+        };
+        return Some(LinearFrame {
+            pts: RationalTime::zero(),
+            width: final_w,
+            height: final_h,
+            data: linear,
+            is_eof: false,
+            gpu_source: None,
+            colorspace: source_cs,
+        });
+    }
+
     // Bit-depth-aware swscale target: 8-bit sources go through RGBA (1 byte
     // per channel); 10+-bit sources go through RGBA64LE (2 bytes per channel)
     // so the extra precision survives the YUV→RGB conversion and reaches the
@@ -1308,7 +2300,7 @@ fn convert_sw_frame(
             out_h,
             ffmpeg_next::software::scaling::Flags::FAST_BILINEAR,
         ) {
-            Ok(s) => {
+            Ok(mut s) => {
                 if received_frame.width() != out_w || received_frame.height() != out_h {
                     info!(
                         "decode_thread: SW scaler downscale {}x{} → {}x{} ({:?})",
@@ -1318,6 +2310,61 @@ fn convert_sw_frame(
                         out_h,
                         target_format,
                     );
+                }
+                // ffmpeg_next's `Context::get` doesn't pass the
+                // source's colourspace details to swscale, so swscale
+                // defaults to "BT.709 limited regardless." For full-
+                // range or BT.601/BT.2020 sources that produces a
+                // chroma cast (the A6700 magenta/green symptom).
+                // Reconfigure via sws_setColorspaceDetails so the
+                // YUV→RGB matrix and Y/UV range divisors match what
+                // the file actually is. Doesn't help with non-sRGB-
+                // family transfers (S-Log3, PQ, HLG) — those need the
+                // GPU shaders or Phase D's log-curve override — but
+                // it eliminates the dominant chroma cast every time.
+                //
+                // KLIPP_DISABLE_SWS_COLORSPACE=1 skips the call as an
+                // A/B test toggle — leaves swscale at its default
+                // (BT.709 limited) for verifying that the call itself
+                // is what's producing or fixing a given symptom.
+                let skip = std::env::var("KLIPP_DISABLE_SWS_COLORSPACE").as_deref() == Ok("1");
+                if skip {
+                    info!("decode_thread: sws colourspace SKIPPED via KLIPP_DISABLE_SWS_COLORSPACE=1");
+                } else {
+                    unsafe {
+                        let sws_ctx = s.as_mut_ptr();
+                        let inv_table = sws_get_coefficients_for_matrix(cs_baseline.matrix);
+                        let dst_table = sws_get_coefficients_for_matrix(klipp_core::ColorMatrix::Bt709);
+                        let src_range: i32 = match cs_baseline.range {
+                            klipp_core::ColorRange::Full => 1,
+                            klipp_core::ColorRange::Limited => 0,
+                        };
+                        // brightness=0, contrast=1<<16, saturation=1<<16
+                        // are the swscale "no adjustment" identity values.
+                        let rc = ffmpeg_next::ffi::sws_setColorspaceDetails(
+                            sws_ctx as *mut _,
+                            inv_table.as_ptr(),
+                            src_range,
+                            dst_table.as_ptr(),
+                            0, // dst is RGBA — range doesn't apply
+                            0,
+                            1 << 16,
+                            1 << 16,
+                        );
+                        if rc < 0 {
+                            warn!(
+                                "decode_thread: sws_setColorspaceDetails returned {rc} for {}; \
+                                 swscale will use its default (BT.709 limited)",
+                                cs_baseline.describe(),
+                            );
+                        } else {
+                            info!(
+                                "decode_thread: sws colourspace configured = {} (src_range={src_range})",
+                                cs_baseline.describe(),
+                            );
+                        }
+                        let _ = dst_table; // silence unused-binding warning
+                    }
                 }
                 *sw_scaler = Some(s);
             }
@@ -1355,12 +2402,35 @@ fn convert_sw_frame(
     };
     *perf_copy_us += t_copy.elapsed().as_micros() as u64;
 
-    // Rotation still operates on sRGB u8 via rotate_rgba. For hi-bit-depth
-    // sources we'd lose precision if we rotated the u16 buffer through the
-    // u8 helper, so: rotate *after* linearisation. For 8-bit we rotate the
-    // u8 then linearise — cheaper and bit-identical to the old output.
+    // Read source colourspace tags from the AVFrame underlying
+    // `received_frame`, with the codec-params baseline (captured
+    // once at decoder init) as the fallback for any tag the per-
+    // frame AVFrame leaves unspecified. Same merge rule as the GPU
+    // path so `LinearFrame.colorspace` stays consistent. Computed
+    // before linear-decode because the chosen EOTF + primaries
+    // matrix depend on it.
+    let source_cs = unsafe {
+        let avf = received_frame.as_ptr();
+        klipp_core::SourceColorspace::resolve_with_baseline(
+            (*avf).color_range as i32,
+            (*avf).colorspace as i32,
+            (*avf).color_primaries as i32,
+            (*avf).color_trc as i32,
+            cs_baseline,
+        )
+    };
+
+    // Rotation still operates on sRGB u8 via rotate_rgba. For hi-bit-
+    // depth sources we'd lose precision rotating the u16 buffer
+    // through the u8 helper, so: rotate *after* linearisation. For
+    // 8-bit we rotate the u8 then linearise — cheaper and bit-
+    // identical to the old output. Either way, the linear-decode
+    // step uses the colourspace-aware path so log curves and
+    // wide-gamut sources reach the project's working space
+    // correctly.
+    let ws = working_colorspace();
     let linear_data = if is_hi_bit_depth {
-        let linear = rgba64_le_to_linear(&raw_data);
+        let linear = klipp_color::camera_log::rgba64_le_to_linear(&raw_data, source_cs, ws);
         if source_rotation != 0 {
             rotate_linear_rgba(&linear, width, height, source_rotation).0
         } else {
@@ -1368,9 +2438,9 @@ fn convert_sw_frame(
         }
     } else if source_rotation != 0 {
         let (rotated, _rw, _rh) = crate::engine::rotate_rgba(&raw_data, width, height, source_rotation);
-        rgba_u8_to_linear(&rotated)
+        klipp_color::camera_log::rgba_u8_to_linear(&rotated, source_cs, ws)
     } else {
-        rgba_u8_to_linear(&raw_data)
+        klipp_color::camera_log::rgba_u8_to_linear(&raw_data, source_cs, ws)
     };
 
     let (final_w, final_h) = if source_rotation == 90 || source_rotation == 270 {
@@ -1386,6 +2456,7 @@ fn convert_sw_frame(
         data: linear_data,
         is_eof: false,
         gpu_source: None,
+        colorspace: source_cs,
     })
 }
 

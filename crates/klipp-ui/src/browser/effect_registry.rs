@@ -25,6 +25,31 @@ pub struct EffectEntry {
     pub description: String,
 }
 
+impl EffectEntry {
+    /// Whether this effect has a GPU implementation that runs on the
+    /// video preview path. Drives the on-thumbnail GPU/CPU badge and the
+    /// "GPU only" filter pill.
+    ///
+    /// Derivation rules:
+    /// - **Built-in video effects** route through Klipp's wgpu pipeline
+    ///   (`klipp_effects::GpuEffectsPipeline`), so they're always `true`.
+    /// - **OFX plugins** are looked up against `available_plugins` for
+    ///   their `supports_opengl` flag — passed in by the caller because
+    ///   the registry doesn't own that table.
+    /// - **Audio / LADSPA** are CPU-only.
+    pub fn supports_gpu(&self, ofx_plugins: &[klipp_plugin::OfxPluginInfo]) -> bool {
+        match &self.source {
+            EffectSource::Builtin(_) => true,
+            EffectSource::Ofx(id) => ofx_plugins
+                .iter()
+                .find(|p| &p.name == id)
+                .map(|p| p.supports_opengl)
+                .unwrap_or(false),
+            EffectSource::Audio(_) | EffectSource::Ladspa(_) => false,
+        }
+    }
+}
+
 /// A downscaled reference frame used as source for effect thumbnails.
 #[derive(Clone)]
 pub struct ReferenceFrame {
@@ -483,7 +508,12 @@ impl EffectRegistry {
                 grouping: "Dynamics".into(),
             },
             EffectEntry {
-                name: "Noise Reduction".into(),
+                // CODE_AUDIT C-3: this effect is a multi-band gate, not
+                // spectral-subtraction NR. The internal type_id stays
+                // "noise_reduction" so saved .klipp projects keep
+                // loading; the user-facing name advertises the honest
+                // behaviour.
+                name: "Multi-band Gate".into(),
                 category: EffectCategory::AudioDynamics,
                 source: EffectSource::Audio("noise_reduction".into()),
                 source_label: "Built-in",
@@ -551,8 +581,8 @@ impl EffectRegistry {
                 format!("LADSPA plugin: {} by {}", name, plugin.maker)
             };
             self.effects.push(EffectEntry {
+                category: ladspa_category_from_name(&name, &plugin.label),
                 name,
-                category: EffectCategory::AudioEQ, // shown under the Audio tab
                 source: EffectSource::Ladspa(plugin.clone()),
                 source_label: "LADSPA",
                 description,
@@ -626,14 +656,21 @@ impl EffectRegistry {
         search: &str,
         favorite_names: &[String],
     ) -> Vec<&EffectEntry> {
+        self.filtered_full(category, search, favorite_names, &[])
+    }
+
+    /// Like [`filtered_with_favorites`] but also accepts a `recent_names`
+    /// slice that backs the [`EffectCategory::Recent`] pseudo-category.
+    /// MRU order is preserved when `category == Recent`; every other
+    /// category keeps the alphabetical sort the rest of the UI expects.
+    pub fn filtered_full(
+        &self,
+        category: EffectCategory,
+        search: &str,
+        favorite_names: &[String],
+        recent_names: &[String],
+    ) -> Vec<&EffectEntry> {
         let search_lower = search.to_lowercase();
-        let _is_audio_cat = matches!(
-            category,
-            EffectCategory::AudioAll
-                | EffectCategory::AudioEQ
-                | EffectCategory::AudioDynamics
-                | EffectCategory::AudioReverb
-        );
         let mut result: Vec<&EffectEntry> = self
             .effects
             .iter()
@@ -649,6 +686,9 @@ impl EffectRegistry {
                     // video or audio alike. Empty favorites list → empty
                     // grid (handled naturally by the contains() check).
                     EffectCategory::Favourites => favorite_names.contains(&e.name),
+                    EffectCategory::Recent => recent_names.contains(&e.name),
+                    // Installed = every registered effect, video + audio.
+                    EffectCategory::Installed => true,
                     EffectCategory::All => !e_is_audio, // All = all video effects
                     EffectCategory::AudioAll => e_is_audio, // AudioAll = all audio effects
                     _ => e.category == category,
@@ -660,7 +700,19 @@ impl EffectRegistry {
                         || e.description.to_lowercase().contains(&search_lower))
             })
             .collect();
-        result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        if category == EffectCategory::Recent {
+            // MRU order — most-recently-used first. Preserve the caller's
+            // slice ordering instead of sorting alphabetically so users
+            // see their last pick at the top.
+            result.sort_by_key(|e| {
+                recent_names
+                    .iter()
+                    .position(|n| n == &e.name)
+                    .unwrap_or(usize::MAX)
+            });
+        } else {
+            result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        }
         result
     }
 }
@@ -668,6 +720,11 @@ impl EffectRegistry {
 /// Convert an OFX plugin identifier to a human-readable name.
 /// "net.sf.openfx.GaussianBlur" → "Gaussian Blur"
 /// "net.sf.cimg.CImgBloom" → "CImg Bloom"
+///
+/// Drops a trailing "Plugin" suffix — every OFX entry IS a plugin, so
+/// the word adds zero information and clutters the card title. The
+/// per-id override map in `effects_tab::display_name_override` handles
+/// the small set of names where this mechanical algorithm still goofs.
 fn format_ofx_name(identifier: &str) -> String {
     let last = identifier.rsplit_once('.').map(|(_, n)| n).unwrap_or(identifier);
     // Insert spaces before uppercase letters (CamelCase → Camel Case)
@@ -682,7 +739,15 @@ fn format_ofx_name(identifier: &str) -> String {
         }
         result.push(c);
     }
-    result
+    // Strip "Plugin" suffix (with or without leading space). Be defensive
+    // — only strip when the suffix is genuinely a separate token, not a
+    // word like "Toplugin".
+    let trimmed = result
+        .trim_end_matches("Plugin")
+        .trim_end_matches(" Plugin")
+        .trim_end()
+        .to_string();
+    if trimmed.is_empty() { result } else { trimmed }
 }
 
 /// Map an OFX grouping string to an EffectCategory.
@@ -703,6 +768,96 @@ fn category_from_grouping(grouping: &str) -> EffectCategory {
     } else {
         EffectCategory::Stylize
     }
+}
+
+/// Heuristic mapping from a LADSPA plugin's display name + label to an
+/// audio category for the effects-tab category sidebar. LADSPA itself
+/// carries no category metadata in the C ABI, so this is a substring
+/// match against common plugin name conventions.
+///
+/// Order matters — checks are top-to-bottom, first match wins. The order
+/// reflects how distinctive each substring is: "reverb" rarely appears in
+/// non-reverb plugin names, but "filter" can appear in EQ-style or
+/// dynamics-style plugins, so we check the more distinctive groups first.
+///
+/// Falls back to `AudioEQ` for unknown plugins. AudioEQ is a forgiving
+/// default: it isn't claiming the plugin IS an EQ, it's saying "no clear
+/// category match — show in the EQ sub-tab" (the AudioAll sub-tab still
+/// shows everything).
+fn ladspa_category_from_name(name: &str, label: &str) -> EffectCategory {
+    let s = format!("{} {}", name.to_lowercase(), label.to_lowercase());
+
+    // Reverb / spatial — very distinctive substrings, checked first.
+    if s.contains("reverb")
+        || s.contains("hall")
+        || s.contains("plate")
+        || s.contains("room")
+        || s.contains("freeverb")
+        || s.contains("gverb")
+        || s.contains("plateverb")
+    {
+        return EffectCategory::AudioReverb;
+    }
+
+    // Delay / echo — sit under Reverb in the audio category sidebar
+    // (the sub-tab is "Reverb" but covers reverb+delay collectively).
+    if s.contains("delay")
+        || s.contains("echo")
+        || s.contains("tap_")
+        || s.contains("flanger") // delay-based modulation
+        || s.contains("chorus") // delay-based modulation
+        || s.contains("phaser") // sometimes delay-based
+        || s.contains("comb")
+    {
+        return EffectCategory::AudioReverb;
+    }
+
+    // Dynamics — compressor/limiter/gate/expander/maximiser families.
+    if s.contains("compressor")
+        || s.contains("compress")
+        || s.contains("limiter")
+        || s.contains("gate")
+        || s.contains("expander")
+        || s.contains("maximizer")
+        || s.contains("maximiser")
+        || s.contains("ducker")
+        || s.contains("sidechain")
+        || s.contains("dynamics")
+        || s.contains("leveler")
+        || s.contains("leveller")
+    {
+        return EffectCategory::AudioDynamics;
+    }
+
+    // EQ / filter family — equalisers, filters, shelves, parametric/graphic.
+    if s.contains("eq ")
+        || s.ends_with("eq")
+        || s.starts_with("eq ")
+        || s.contains("equali")
+        || s.contains("equaliser")
+        || s.contains("equalizer")
+        || s.contains("filter")
+        || s.contains("lowpass")
+        || s.contains("highpass")
+        || s.contains("bandpass")
+        || s.contains("notch")
+        || s.contains("shelf")
+        || s.contains("low_shelf")
+        || s.contains("high_shelf")
+        || s.contains("allpass")
+        || s.contains("biquad")
+        || s.contains("formant")
+        || s.contains("vocoder")
+        || s.contains("crossover")
+    {
+        return EffectCategory::AudioEQ;
+    }
+
+    // Default: route unmatched plugins to AudioEQ. They still appear in
+    // AudioAll; the only consequence is which sub-tab in the category
+    // sidebar surfaces them. AudioEQ is the most forgiving default
+    // because users browsing for a generic effect tend to start there.
+    EffectCategory::AudioEQ
 }
 
 #[cfg(test)]
@@ -809,5 +964,135 @@ mod tests {
         let old_names: Vec<_> = old.iter().map(|e| e.name.as_str()).collect();
         let new_names: Vec<_> = new.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(old_names, new_names);
+    }
+
+    // ─── ladspa_category_from_name heuristic ─────────────────────────
+    //
+    // Locks down the substring matches that route LADSPA plugins into the
+    // audio category sidebar. The plugin names below are real LADSPA
+    // plugins from common bundles (CALF, SWH, TAP, LSP, ...). Any future
+    // change to the heuristic that would re-route one of these wrongly
+    // will fail loudly here.
+
+    #[test]
+    fn ladspa_category_routes_reverbs() {
+        for name in [
+            "Calf Reverb",
+            "Plate Reverb",
+            "Plate 2x2",
+            "Plateverb",
+            "Freeverb",
+            "GVerb",
+            "Hall Reverb",
+            "Room Reverb",
+        ] {
+            assert_eq!(
+                ladspa_category_from_name(name, ""),
+                EffectCategory::AudioReverb,
+                "expected {name:?} to be AudioReverb",
+            );
+        }
+    }
+
+    #[test]
+    fn ladspa_category_routes_delays_and_modulation_to_reverb_bucket() {
+        // Delay + delay-based modulation effects sit under the Reverb sub-tab
+        // because that's where Klipp's category sidebar groups time-domain FX.
+        for name in [
+            "Stereo Delay",
+            "Tape Echo",
+            "Tap Delay",
+            "Calf Flanger",
+            "Calf Chorus",
+            "Phaser",
+            "Comb Filter Delay",
+        ] {
+            assert_eq!(
+                ladspa_category_from_name(name, ""),
+                EffectCategory::AudioReverb,
+                "expected {name:?} to be AudioReverb",
+            );
+        }
+    }
+
+    #[test]
+    fn ladspa_category_routes_dynamics() {
+        for name in [
+            "Calf Compressor",
+            "Calf Sidechain Compressor",
+            "Calf Limiter",
+            "Calf Multiband Limiter",
+            "Calf Sidechain Gate",
+            "Expander",
+            "Maximizer",
+            "Loudness Maximiser",
+            "Auto Leveler",
+            "Stereo Ducker",
+        ] {
+            assert_eq!(
+                ladspa_category_from_name(name, ""),
+                EffectCategory::AudioDynamics,
+                "expected {name:?} to be AudioDynamics",
+            );
+        }
+    }
+
+    #[test]
+    fn ladspa_category_routes_eqs_and_filters() {
+        for name in [
+            "Calf Equalizer 8 Band",
+            "Calf Equaliser 12 Band",
+            "Parametric EQ",
+            "DJ EQ",
+            "TAP Equalizer",
+            "4-pole Lowpass Filter",
+            "Highpass Filter",
+            "Bandpass Filter",
+            "Allpass Filter",
+            "Notch Filter",
+            "Low Shelf",
+            "High Shelf",
+            "Biquad",
+            "Crossover",
+            "Vocoder",
+            "Formant Filter",
+        ] {
+            assert_eq!(
+                ladspa_category_from_name(name, ""),
+                EffectCategory::AudioEQ,
+                "expected {name:?} to be AudioEQ",
+            );
+        }
+    }
+
+    #[test]
+    fn ladspa_category_falls_back_for_unknown_names() {
+        // No matching substring → AudioEQ default. AudioAll always shows
+        // these too; the default just controls which sub-tab surfaces them.
+        for name in ["Mystery Plugin", "Foo Bar", "Saturator", "Bitcrusher"] {
+            assert_eq!(
+                ladspa_category_from_name(name, ""),
+                EffectCategory::AudioEQ,
+                "expected {name:?} to fall back to AudioEQ",
+            );
+        }
+    }
+
+    #[test]
+    fn ladspa_category_uses_label_when_name_is_empty() {
+        // Some plugins don't fill the human-readable name field; the
+        // heuristic should still match against the technical label.
+        assert_eq!(
+            ladspa_category_from_name("", "calf_reverb"),
+            EffectCategory::AudioReverb,
+        );
+        assert_eq!(
+            ladspa_category_from_name("", "plate_reverb_lr"),
+            EffectCategory::AudioReverb,
+        );
+        assert_eq!(
+            ladspa_category_from_name("", "compressor_st"),
+            EffectCategory::AudioDynamics,
+        );
     }
 }

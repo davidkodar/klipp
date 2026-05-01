@@ -54,11 +54,77 @@ pub struct ViewerMaskDrag {
     pub drag_start_pos: egui::Pos2,
 }
 
+/// What the audio rubber band displays — either a clip-level audio param
+/// (Volume/Pan/Gain, the legacy three) or a per-effect param (any
+/// keyframable param on any audio effect, identified by effect index +
+/// param name). Reserved param names "__bypass" and "__wetdry" route
+/// to the slot's bypass-keyframe and wet/dry-keyframe tracks.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RubberBandParam {
+    /// Clip-level audio param (Volume/Pan/Gain). Carries the legacy
+    /// `AudioParam` so existing AddAudioKeyframe / MoveAudioKeyframe
+    /// dispatches keep working unchanged.
+    ClipParam(AudioParam),
+    /// Per-effect param identified by `(effect_index, param_name)` —
+    /// keyed the same way as `clip.audio_effect_keyframes` map keys.
+    EffectParam {
+        effect_index: usize,
+        param_name: String,
+    },
+}
+
+impl Default for RubberBandParam {
+    fn default() -> Self {
+        Self::ClipParam(AudioParam::Volume)
+    }
+}
+
+impl RubberBandParam {
+    /// If this is a clip-level param, return the underlying `AudioParam`.
+    /// Used at sites that still operate purely on clip kfs.
+    pub fn as_clip_param(&self) -> Option<AudioParam> {
+        match self {
+            Self::ClipParam(p) => Some(*p),
+            Self::EffectParam { .. } => None,
+        }
+    }
+
+    /// True when the rubber band is showing a per-effect param.
+    pub fn is_effect(&self) -> bool {
+        matches!(self, Self::EffectParam { .. })
+    }
+
+    /// Map an EffectParam variant back to the
+    /// "{effect_index}:{param_name}" key used in
+    /// `clip.audio_effect_keyframes`. Returns None for ClipParam.
+    pub fn effect_key(&self) -> Option<String> {
+        match self {
+            Self::EffectParam { effect_index, param_name } => {
+                Some(format!("{effect_index}:{param_name}"))
+            }
+            Self::ClipParam(_) => None,
+        }
+    }
+}
+
 /// State during an active audio keyframe drag on the timeline rubber band.
 #[derive(Debug, Clone)]
 pub struct DraggingKeyframe {
     pub clip_id: ClipId,
     pub param: AudioParam,
+    pub keyframe_index: usize,
+}
+
+/// State during an active audio EFFECT keyframe drag on the timeline
+/// rubber band. Parallel to `DraggingKeyframe` for clip-level kfs;
+/// kept separate so the existing clip-kf drag handler doesn't grow a
+/// branch on every step. Effect kfs are stored in
+/// `clip.audio_effect_keyframes["{effect_index}:{param_name}"]`.
+#[derive(Debug, Clone)]
+pub struct DraggingEffectKeyframe {
+    pub clip_id: ClipId,
+    pub effect_index: usize,
+    pub param_name: String,
     pub keyframe_index: usize,
 }
 
@@ -69,6 +135,18 @@ pub struct BezierHandleDrag {
     pub param: AudioParam,
     pub keyframe_index: usize,
     /// true = tangent_out (right handle), false = tangent_in (left handle)
+    pub is_out: bool,
+}
+
+/// State during an active Bezier tangent handle drag on an audio EFFECT
+/// keyframe (rubber band rendering an effect param). Parallel to
+/// `BezierHandleDrag` for the same reason `DraggingEffectKeyframe` is.
+#[derive(Debug, Clone)]
+pub struct BezierEffectHandleDrag {
+    pub clip_id: ClipId,
+    pub effect_index: usize,
+    pub param_name: String,
+    pub keyframe_index: usize,
     pub is_out: bool,
 }
 
@@ -104,6 +182,10 @@ pub struct KeyframeClipboard {
 pub enum KeyframeParamKind {
     Audio(AudioParam),
     Video(VideoParam),
+    /// Audio EFFECT param keyframe — identified by effect index +
+    /// param name, same as `audio_effect_keyframes` HashMap keys.
+    /// Reserved keys `__bypass` / `__wetdry` route here too.
+    AudioEffect { effect_index: usize, param_name: String },
 }
 
 /// State for the keyframe interpolation context menu (right-click on diamond).
@@ -291,6 +373,343 @@ pub enum ColorTab {
     Warper,
 }
 
+/// Register every real model — the ones gated by feature flags.
+/// Called once on the shared registry; the panel-side
+/// `AiToolsRegistry` and the worker-side `RegistryHandle` both
+/// observe the same set.
+#[allow(unused_variables)]
+fn register_real_models(r: &mut klipp_ml::ModelRegistry) {
+    #[cfg(feature = "ai-ort")]
+    {
+        register_birefnet(r);
+        register_rf_detr_seg(r);
+        register_rf_detr_seg_medium(r);
+    }
+
+    #[cfg(feature = "ai-candle")]
+    register_mobile_sam(r);
+}
+
+/// Build the single shared `Arc<RwLock<ModelRegistry>>` that backs
+/// both the panel-side `AiToolsRegistry` and the worker-side
+/// `RegistryHandle`. Stub registered first so prompt-bearing tasks
+/// always have a fallback; real backends layer on top under their
+/// feature flags.
+fn build_shared_registry() -> std::sync::Arc<std::sync::RwLock<klipp_ml::ModelRegistry>> {
+    let mut r = klipp_ml::ModelRegistry::new();
+    r.register(
+        klipp_ml::ModelInfo {
+            id: klipp_ml::STUB_GENERATOR_ID.into(),
+            display_name: "Stub (placeholder)".into(),
+            capabilities: klipp_ml::MaskCapabilities::POINT_PROMPT
+                | klipp_ml::MaskCapabilities::BOX_PROMPT
+                | klipp_ml::MaskCapabilities::SCRIBBLE
+                | klipp_ml::MaskCapabilities::AUTO_DETECT,
+        },
+        Box::new(|| Ok(Box::new(klipp_ml::StubMaskGenerator::new()))),
+    );
+
+    register_real_models(&mut r);
+
+    std::sync::Arc::new(std::sync::RwLock::new(r))
+}
+
+#[cfg(feature = "ai-candle")]
+fn register_mobile_sam(r: &mut klipp_ml::ModelRegistry) {
+    use klipp_ml_candle::{MobileSamBuilder, MOBILE_SAM_MODEL_ID};
+
+    let manifest = match klipp_ml::manifest::load_effective() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(target: "klipp_ui", "ai-candle: skipping MobileSAM (manifest load failed: {e})");
+            return;
+        }
+    };
+    let entry = match manifest.get(MOBILE_SAM_MODEL_ID) {
+        Some(e) => e.clone(),
+        None => {
+            tracing::warn!(
+                target: "klipp_ui",
+                "ai-candle: skipping MobileSAM (no manifest entry for {})",
+                MOBILE_SAM_MODEL_ID
+            );
+            return;
+        }
+    };
+    let cache = match klipp_ml::ModelCache::open() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(target: "klipp_ui", "ai-candle: skipping MobileSAM (cache open failed: {e})");
+            return;
+        }
+    };
+    let weights_path = cache.path_for(&entry);
+
+    r.register(
+        klipp_ml::ModelInfo {
+            id: MOBILE_SAM_MODEL_ID.into(),
+            display_name: "MobileSAM".into(),
+            // SAM-family capability set: clicks, boxes, scribbles,
+            // and "no prompts = everything mask" auto-detect mode.
+            capabilities: klipp_ml::MaskCapabilities::POINT_PROMPT
+                | klipp_ml::MaskCapabilities::BOX_PROMPT
+                | klipp_ml::MaskCapabilities::SCRIBBLE
+                | klipp_ml::MaskCapabilities::AUTO_DETECT,
+        },
+        Box::new(move || {
+            MobileSamBuilder::new()
+                .weights(weights_path.clone())
+                .build()
+                .map(|g| Box::new(g) as Box<dyn klipp_ml::MaskGenerator>)
+        }),
+    );
+}
+
+#[cfg(feature = "ai-ort")]
+fn register_rf_detr_seg(r: &mut klipp_ml::ModelRegistry) {
+    use klipp_ml_ort::{RF_DETR_SEG_DISPLAY_NAME, RF_DETR_SEG_MODEL_ID};
+    register_rf_detr_seg_variant(r, RF_DETR_SEG_MODEL_ID, RF_DETR_SEG_DISPLAY_NAME);
+}
+
+#[cfg(feature = "ai-ort")]
+fn register_rf_detr_seg_medium(r: &mut klipp_ml::ModelRegistry) {
+    use klipp_ml_ort::{RF_DETR_SEG_MEDIUM_DISPLAY_NAME, RF_DETR_SEG_MEDIUM_MODEL_ID};
+    register_rf_detr_seg_variant(
+        r,
+        RF_DETR_SEG_MEDIUM_MODEL_ID,
+        RF_DETR_SEG_MEDIUM_DISPLAY_NAME,
+    );
+}
+
+/// Shared registration for every RF-DETR-Seg tier (preview, medium,
+/// future large/x-large). The architecture and 3-output decode are
+/// identical — only the manifest entry + weight path + reported
+/// id/display_name differ.
+#[cfg(feature = "ai-ort")]
+fn register_rf_detr_seg_variant(
+    r: &mut klipp_ml::ModelRegistry,
+    model_id: &'static str,
+    display_name: &'static str,
+) {
+    use klipp_ml_ort::RfDetrSegBuilder;
+
+    let manifest = match klipp_ml::manifest::load_effective() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(
+                target: "klipp_ui",
+                "ai-ort: skipping {model_id} (manifest load failed: {e})"
+            );
+            return;
+        }
+    };
+    let entry = match manifest.get(model_id) {
+        Some(e) => e.clone(),
+        None => {
+            tracing::warn!(
+                target: "klipp_ui",
+                "ai-ort: skipping {model_id} (no manifest entry)"
+            );
+            return;
+        }
+    };
+    let cache = match klipp_ml::ModelCache::open() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                target: "klipp_ui",
+                "ai-ort: skipping {model_id} (cache open failed: {e})"
+            );
+            return;
+        }
+    };
+    let weights_path = cache.path_for(&entry);
+
+    r.register(
+        klipp_ml::ModelInfo {
+            id: model_id.into(),
+            display_name: display_name.into(),
+            // Auto-detect only — RF-DETR consumes no user prompts.
+            // Each detection becomes a MaskCandidate; the panel
+            // renders bbox + class label per candidate.
+            capabilities: klipp_ml::MaskCapabilities::AUTO_DETECT,
+        },
+        Box::new(move || {
+            RfDetrSegBuilder::new()
+                .weights(weights_path.clone())
+                .model_id(model_id, display_name)
+                .build()
+                .map(|g| Box::new(g) as Box<dyn klipp_ml::MaskGenerator>)
+        }),
+    );
+}
+
+#[cfg(feature = "ai-ort")]
+fn register_birefnet(r: &mut klipp_ml::ModelRegistry) {
+    use klipp_ml_ort::{BiRefNetLiteBuilder, BIREFNET_LITE_MODEL_ID};
+
+    // Resolve the weights path through the manifest + cache. If
+    // anything fails (no manifest entry, no XDG dir), skip the
+    // registration — the panel just won't show BiRefNet rather
+    // than crashing the app.
+    let manifest = match klipp_ml::manifest::load_effective() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(target: "klipp_ui", "ai-ort: skipping BiRefNet (manifest load failed: {e})");
+            return;
+        }
+    };
+    let entry = match manifest.get(BIREFNET_LITE_MODEL_ID) {
+        Some(e) => e.clone(),
+        None => {
+            tracing::warn!(
+                target: "klipp_ui",
+                "ai-ort: skipping BiRefNet (no manifest entry for {})",
+                BIREFNET_LITE_MODEL_ID
+            );
+            return;
+        }
+    };
+    let cache = match klipp_ml::ModelCache::open() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(target: "klipp_ui", "ai-ort: skipping BiRefNet (cache open failed: {e})");
+            return;
+        }
+    };
+    let weights_path = cache.path_for(&entry);
+
+    r.register(
+        klipp_ml::ModelInfo {
+            id: BIREFNET_LITE_MODEL_ID.into(),
+            display_name: "BiRefNet Lite".into(),
+            // Background matting is auto-detect only — no clicks /
+            // boxes / scribbles. The panel's task→capability filter
+            // will surface this for Remove Background only.
+            capabilities: klipp_ml::MaskCapabilities::AUTO_DETECT,
+        },
+        Box::new(move || {
+            BiRefNetLiteBuilder::new()
+                .weights(weights_path.clone())
+                .build()
+                .map(|g| Box::new(g) as Box<dyn klipp_ml::MaskGenerator>)
+        }),
+    );
+}
+
+/// Register a single user-added custom model against the shared
+/// registry. Called during startup for every `CustomModelEntry`
+/// loaded from `~/.config/klipp/ai_tools.toml`, and again from the
+/// paste-URL UI when the user confirms a freshly-downloaded file.
+///
+/// Adapter routing: `CustomAdapter` carries the user's pick from
+/// the modal — Klipp can't infer the architecture from a raw ONNX
+/// without loading it, so the user tells us which builder to use.
+/// Capability flags mirror the canonical entry for that adapter.
+///
+/// Feature-gated: an adapter whose feature is off this build still
+/// registers its `ModelInfo` (so the dialog shows the entry) but
+/// the factory closure returns a `BackendInit` error explaining
+/// the missing flag. Same UX shape the built-in feature-gated
+/// entries already produce.
+pub fn register_custom_model(
+    r: &mut klipp_ml::ModelRegistry,
+    entry: &crate::ai_tools::persistence::CustomModelEntry,
+) {
+    use crate::ai_tools::persistence::CustomAdapter;
+
+    let cache = match klipp_ml::ModelCache::open() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                target: "klipp_ui",
+                "custom model: skipping {} (cache open failed: {e})",
+                entry.id
+            );
+            return;
+        }
+    };
+    let weights_path = cache.path_for_id(&entry.id);
+    let id = entry.id.clone();
+    let display_name = entry.display_name.clone();
+    let adapter = entry.adapter;
+
+    let capabilities = match adapter {
+        CustomAdapter::BiRefNet => klipp_ml::MaskCapabilities::AUTO_DETECT,
+        CustomAdapter::MobileSam => {
+            klipp_ml::MaskCapabilities::POINT_PROMPT
+                | klipp_ml::MaskCapabilities::BOX_PROMPT
+                | klipp_ml::MaskCapabilities::SCRIBBLE
+                | klipp_ml::MaskCapabilities::AUTO_DETECT
+        }
+        CustomAdapter::RfDetrSeg => klipp_ml::MaskCapabilities::AUTO_DETECT,
+    };
+
+    let factory: klipp_ml::MaskGeneratorFactory = match adapter {
+        #[cfg(feature = "ai-ort")]
+        CustomAdapter::BiRefNet => {
+            let path = weights_path.clone();
+            Box::new(move || {
+                klipp_ml_ort::BiRefNetLiteBuilder::new()
+                    .weights(path.clone())
+                    .build()
+                    .map(|g| Box::new(g) as Box<dyn klipp_ml::MaskGenerator>)
+            })
+        }
+        #[cfg(not(feature = "ai-ort"))]
+        CustomAdapter::BiRefNet => Box::new(|| {
+            Err(klipp_ml::MaskError::BackendInit(
+                "Custom BiRefNet model requires --features ai-ort".into(),
+            ))
+        }),
+        #[cfg(feature = "ai-candle")]
+        CustomAdapter::MobileSam => {
+            let path = weights_path.clone();
+            Box::new(move || {
+                klipp_ml_candle::MobileSamBuilder::new()
+                    .weights(path.clone())
+                    .build()
+                    .map(|g| Box::new(g) as Box<dyn klipp_ml::MaskGenerator>)
+            })
+        }
+        #[cfg(not(feature = "ai-candle"))]
+        CustomAdapter::MobileSam => Box::new(|| {
+            Err(klipp_ml::MaskError::BackendInit(
+                "Custom MobileSAM model requires --features ai-candle".into(),
+            ))
+        }),
+        #[cfg(feature = "ai-ort")]
+        CustomAdapter::RfDetrSeg => {
+            let path = weights_path.clone();
+            let model_id: &'static str = Box::leak(id.clone().into_boxed_str());
+            let display: &'static str =
+                Box::leak(display_name.clone().into_boxed_str());
+            Box::new(move || {
+                klipp_ml_ort::RfDetrSegBuilder::new()
+                    .weights(path.clone())
+                    .model_id(model_id, display)
+                    .build()
+                    .map(|g| Box::new(g) as Box<dyn klipp_ml::MaskGenerator>)
+            })
+        }
+        #[cfg(not(feature = "ai-ort"))]
+        CustomAdapter::RfDetrSeg => Box::new(|| {
+            Err(klipp_ml::MaskError::BackendInit(
+                "Custom RF-DETR-Seg model requires --features ai-ort".into(),
+            ))
+        }),
+    };
+
+    r.register(
+        klipp_ml::ModelInfo {
+            id,
+            display_name,
+            capabilities,
+        },
+        factory,
+    );
+}
+
 pub struct AppState {
     pub playback: PlaybackState,
     pub playhead: Timecode,
@@ -354,6 +773,21 @@ pub struct AppState {
 
     // Selection
     pub selected_clip: Option<ClipId>,
+    /// Single-frame lookup cache for `selected_clip_loc()`. Stores
+    /// `(clip_id, track_idx)` of the most recently resolved selection.
+    /// On the next call, the helper checks the cached track first
+    /// (`Track::find_clip`, O(clips_in_one_track)) and falls back to
+    /// a full sequence walk only if the cache is stale (clip moved
+    /// tracks, was deleted, or selection changed). Self-healing —
+    /// nothing else needs to invalidate it. Cell so the helper can
+    /// take `&self` and still update the cache.
+    ///
+    /// Closes CODE_AUDIT U-11. Inspector and viewer paths previously
+    /// did `tracks.iter().find_map(|t| t.find_clip(cid))` per render
+    /// — O(tracks × clips) per frame. With this cache, the steady
+    /// state is O(1) (single-track find_clip), with the full walk
+    /// only on actual selection / topology change.
+    pub selected_clip_loc_cache: std::cell::Cell<Option<(ClipId, usize)>>,
     /// UI-only state — not undoable. Multi-clip selection is managed directly
     /// for performance (marquee updates every frame). Do not convert to commands.
     pub selected_clips: Vec<ClipId>,
@@ -385,6 +819,23 @@ pub struct AppState {
     /// state only — lives on AppState rather than locally so the selection
     /// survives re-opens of the dialog within the same session.
     pub preset_manager_selected: Option<String>,
+
+    /// Whether the AI Models management dialog is visible.
+    pub show_ai_models_dialog: bool,
+
+    /// Whether the Audio Plugins management dialog is visible.
+    pub show_audio_plugins_dialog: bool,
+
+    /// Per-dialog state for the Audio Plugins management modal: search
+    /// query, "last scanned" timestamp, in-flight rescan flag.
+    pub audio_plugins_dialog: crate::panels::audio_plugins::AudioPluginsDialogState,
+
+    /// Whether the System Probe modal is visible. Snapshots GPU /
+    /// ONNX runtime / audio backend state for bug reports.
+    pub show_system_probe: bool,
+
+    /// Whether the Project Doctor modal is visible.
+    pub show_project_doctor: bool,
 
     // Cache manager dialog (#78)
     /// Whether the Cache Manager modal is visible.
@@ -456,11 +907,33 @@ pub struct AppState {
     // Source viewer
     pub source_media_id: Option<MediaId>,
     pub source_playhead: Timecode,
+    /// Last wall-clock when the source-viewer scrub bar dispatched
+    /// a `SeekSource` to the engine. Used to throttle drag-fire to
+    /// ~30 Hz so the engine's decoder thread isn't pinned with
+    /// per-UI-frame demux + BSF + seek work that the user can't
+    /// perceive at sub-33 ms granularity anyway.
+    pub source_seek_dispatch_at: Option<std::time::Instant>,
     /// First-frame texture for the currently-loaded source clip. The
     /// `MediaId` is paired with the texture so a stale frame from a
     /// previous load is dropped the moment the user switches clips,
     /// rather than briefly flashing the old image.
     pub source_video_texture: Option<(MediaId, egui::TextureHandle)>,
+    /// Source viewer's transport state — kept in sync with the
+    /// engine's `source_state` via `SourcePlaybackStarted/Paused`
+    /// events. Read by transport key handlers + on-screen play
+    /// button to decide whether Space should toggle to Play or Pause.
+    pub source_playback: PlaybackState,
+    /// Live source-viewer texture sourced from `source_frame_buffer`.
+    /// Engine writes decoded source frames there during playback /
+    /// seek; the source viewer panel uploads from it via the same
+    /// defer-drop pattern as the program viewer. Replaces / wins over
+    /// `source_video_texture` (the cold-start thumbnail) once the
+    /// engine produces its first frame.
+    pub source_live_texture: Option<egui::TextureHandle>,
+    /// Generation last uploaded into `source_live_texture`. Compared
+    /// against `source_frame_buffer.generation` to decide when to re-
+    /// upload (cheap one-int compare per render frame).
+    pub source_live_texture_gen: u64,
 
     // Media browser multi-select
     pub selected_media_ids: std::collections::HashSet<MediaId>,
@@ -542,6 +1015,13 @@ pub struct AppState {
     pub browser_skim_texture: Option<egui::TextureHandle>,
     pub browser_skim_media_id: Option<MediaId>,
     pub skim_transcoding: std::collections::HashSet<MediaId>,
+    /// In-flight skim transcodes keyed by output path. The Vec
+    /// holds every MediaId that wants notifying when this output
+    /// completes — multiple MediaIds (e.g. project-pool path vs
+    /// file-browser absolute path) can canonicalize to the same
+    /// source file and would otherwise both spawn ffmpeg jobs that
+    /// race on the shared parts/ dir.
+    pub skim_in_flight_paths: std::collections::HashMap<std::path::PathBuf, Vec<MediaId>>,
     /// Active skim transcode progress: (filename, progress 0.0..1.0)
     pub skim_transcode_status: Option<(String, f32)>,
     /// When the last skim transcode finished (for "Done" display)
@@ -649,6 +1129,16 @@ pub struct AppState {
     pub tracking_in_progress: std::collections::HashSet<klipp_core::ClipId>,
     /// Track analysis progress (0.0-1.0) per clip.
     pub tracking_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
+    /// Pending auto-link bindings keyed by `(clip_id, point_index)`.
+    /// When a `TrackingComplete` event arrives, the handler checks
+    /// this map; if an entry exists, it dispatches
+    /// `GenerateKeyframesFromTrack` with the recorded target and
+    /// removes the entry. Set by the `TrackMaskRegion` command so
+    /// the user gets one-gesture mask tracking.
+    pub pending_mask_track_link: std::collections::HashMap<
+        (klipp_core::ClipId, usize),
+        klipp_core::TrackTarget,
+    >,
 
     // Browser range selection (filmstrip drag-to-select in grid view)
     pub browser_range_selection: Option<BrowserClipSelection>,
@@ -726,9 +1216,37 @@ pub struct AppState {
     /// Where color tools are docked: Right (inspector) or Bottom (below viewer).
     pub color_tools_position: ColorToolsPosition,
     /// Selected node in the node graph (shared between canvas and inspector).
+    /// This is the **primary** of a possibly-larger selection set —
+    /// the inspector reads it to decide which node's params to show.
+    /// On a single click it equals the only entry in `selected_node_ids`;
+    /// on a multi-select gesture (shift-click / box-select) it tracks
+    /// the most recent addition so the inspector follows the user's
+    /// hand. Cleared together with the set on clip switch.
     pub selected_node_id: Option<klipp_nodes::NodeId>,
+    /// All currently-selected nodes on the V2 canvas. The canvas
+    /// renders an amber border on every entry; multi-node operations
+    /// (Delete, Group-into-Compound, future Bypass-all) iterate this
+    /// set. Single-node operations (param edit, inspector display)
+    /// use `selected_node_id` instead. Always either empty or
+    /// containing `selected_node_id` as one of its members.
+    pub selected_node_ids: std::collections::HashSet<klipp_nodes::NodeId>,
+    /// Stack of NodeIds representing the V2 canvas's descent path into
+    /// nested compound subgraphs. Empty = editing the clip's root
+    /// graph (the common case). Each entry is the id of a
+    /// `NodeKind::Compound` node in its parent graph; the canvas
+    /// renders `compound.params.compound_subgraph` instead of the
+    /// parent. Descending appends an id; ascending (breadcrumb click
+    /// or Escape) truncates. Cleared alongside `selected_node_id`s
+    /// on clip switch so stale ids don't accumulate.
+    pub graph_descent_path: Vec<klipp_nodes::NodeId>,
     /// Whether the compact node strip is visible in Color workspace.
     pub show_node_strip: bool,
+    /// Render the V2 2D node-graph editor instead of the legacy
+    /// horizontal strip. True by default — the strip is kept as a
+    /// fallback in case the V2 editor reveals a workflow regression
+    /// during rollout. Toggle via the Color workspace's "Editor"
+    /// label next to the Nodes toggle.
+    pub use_node_graph_v2: bool,
     /// Active tab in the simple (non-node) color inspector.
     pub color_tab: ColorTab,        // right inspector panel
     pub color_tab_bottom: ColorTab, // bottom panel
@@ -825,6 +1343,35 @@ pub struct AppState {
     /// past the compute step.
     pub color_match_reference: Option<(Vec<u8>, u32, u32)>,
 
+    /// Remembered ClipId of whichever clip provided the current
+    /// reference, so the timeline context menu can mark it with a
+    /// "●" and the "Match Colour to Reference" entry can grey out on
+    /// the clip that IS the reference. Parallel to
+    /// `audio_reference_clip_id`. Cleared when
+    /// `color_match_reference` is cleared.
+    pub color_match_reference_clip: Option<klipp_core::ClipId>,
+
+    /// Per-node output thumbnails for the V2 canvas, snapshotted
+    /// from `FrameBuffer::node_thumbs` on each tick. Sourced by the
+    /// engine on paused/post-seek re-grades when a non-empty
+    /// `SetVisibleNodeThumbs` list is active. Rebuilt lazily in
+    /// `update()` only when the engine's `node_thumbs_gen` advances.
+    pub node_thumbs: std::collections::HashMap<klipp_nodes::NodeId, Vec<u8>>,
+    pub node_thumbs_gen: u64,
+    /// Dedupe key for the last `RenderNodeThumbsFromSource` dispatch —
+    /// `(clip_id, filmstrip_tile_index, playhead_value, grade_hash)`.
+    /// Resending on every repaint would slam the command queue with
+    /// ~60 identical thumbnail re-renders per second. Comparing this
+    /// tuple before sending keeps the engine idle while nothing has
+    /// changed but guarantees a re-render on any meaningful change
+    /// (scroll a frame, grade edit, pick a different clip).
+    pub last_filmstrip_thumb_send: Option<(klipp_core::ClipId, usize, i64, u64)>,
+
+    /// Project-level reusable colour grades. Persisted to
+    /// `.klipp/looks/{id}.json` on save, loaded back into this Vec
+    /// on project open.
+    pub looks: Vec<klipp_timeline::Look>,
+
     // Viewer overlay (zebra / false color)
     pub viewer_overlays: ViewerOverlays,
     pub frame_count: u64, // for zebra animation
@@ -836,14 +1383,32 @@ pub struct AppState {
     // OFX plugins
     pub available_plugins: Vec<klipp_plugin::OfxPluginInfo>,
 
-    // LADSPA audio plugins — discovered once at startup.
+    // LADSPA audio plugins — discovered once at startup. Holds *all*
+    // discovered plugins regardless of user-disable state so the
+    // Audio Plugins dialog can render every row with its enable/
+    // disable toggle. Filtering for the user-facing browser/picker
+    // lives in `effect_registry`, which is rebuilt to exclude
+    // disabled plugins on toggle and on startup.
     pub ladspa_plugins: Vec<klipp_audio::ladspa::LadspaPluginInfo>,
+
+    /// Plugins the user has explicitly disabled, keyed on the
+    /// stable LADSPA `unique_id`. Persisted to
+    /// `~/.config/klipp/audio_plugins.toml` on every toggle and
+    /// loaded at startup before the first effect-registry build.
+    /// Disabling a plugin that's already in a saved project is
+    /// non-destructive: the existing AudioEffectInstance still
+    /// loads through `dsp::create_effect`. The disable only blocks
+    /// the plugin from the browser / "+ Add Effect" picker so the
+    /// user can't make new picks against it.
+    pub disabled_audio_plugins: std::collections::HashSet<u64>,
 
     // Unified effects registry (built-in + OFX merged)
     pub effect_registry: crate::browser::effect_registry::EffectRegistry,
-    /// Effect browser filters
-    pub effect_filter_builtin: bool,
-    pub effect_filter_ofx: bool,
+    /// Mutually-exclusive source filter: All / Built-in / OFX. Replaces
+    /// the previous pair of `effect_filter_builtin` + `effect_filter_ofx`
+    /// bools that backed three competing colored pills.
+    pub effect_source_filter: crate::browser::effects_tab::SourceFilter,
+    /// Reserved for the GPU-only filter pill — wired in a follow-up.
     pub effect_filter_gpu: bool,
     pub effect_filter_hide_unsupported: bool,
     /// Effect presets (built-in + user-created)
@@ -971,6 +1536,14 @@ pub struct AppState {
     // Per-project media generation overrides (None = use global pref)
     pub project_auto_filmstrips: Option<bool>,
     pub project_auto_skim: Option<bool>,
+    /// Working colorspace the project's grade chain operates in.
+    /// Driven by the Project Info panel's dropdown; engine receives
+    /// the value via `klipp_engine::video_decoder::set_working_colorspace`
+    /// at project load and on every change. Defaults to
+    /// `Rec709Linear` so brand-new projects and back-compat loads
+    /// of pre-Phase-E project files behave exactly like they did
+    /// before.
+    pub project_working_colorspace: klipp_core::WorkingColorspace,
 
     // Media panel
     pub show_media_panel: bool,
@@ -979,6 +1552,42 @@ pub struct AppState {
     pub show_remove_media_confirm: Option<MediaId>,
     /// Delete unused media confirmation: (count, total_bytes)
     pub show_delete_unused_confirm: Option<(usize, u64)>,
+    /// AI Model uninstall confirmation. `Some` when the user has
+    /// clicked Uninstall on a row in the AI Models dialog and we're
+    /// awaiting confirmation. The dialog renders a modal asking
+    /// "Delete <X>? Frees N MB"; on confirm we remove the file from
+    /// the cache + drop the cached generator instance through the
+    /// shared registry's `clear_instance`.
+    pub show_ai_model_uninstall_confirm: Option<klipp_ml::manifest::ModelEntry>,
+    /// Bulk-uninstall confirmation. `true` when the user clicked
+    /// "Uninstall all" in the AI Models dialog footer; the dialog
+    /// renders a modal listing every installed model + total size
+    /// freed, and on confirm loops through them all.
+    pub show_ai_models_bulk_uninstall_confirm: bool,
+    /// Stale-uninstall confirmation. `true` when the user clicked
+    /// "Uninstall unused" — same shape as the bulk modal but
+    /// pre-filtered to models that have been used at least once
+    /// AND whose last_used is more than `STALE_DAYS` ago.
+    pub show_ai_models_stale_uninstall_confirm: bool,
+    /// "Add custom model" flow state. `Idle` when the modal isn't
+    /// open; transitions to `Form` when the user clicks Add custom
+    /// model…, then `Downloading` while the worker fetches, then
+    /// `Confirming` once the download completes (showing computed
+    /// SHA + size for the user to confirm), then back to `Idle`
+    /// after register + persist or after a cancel.
+    pub custom_model_add: crate::ai_tools::custom_install::CustomInstallState,
+    /// Uninstall confirmation for a user-added custom model. Same
+    /// shape as `show_ai_model_uninstall_confirm` but keyed on the
+    /// `CustomModelEntry` instead of a manifest `ModelEntry` —
+    /// the two flow through different removal paths because the
+    /// custom side also has to drop the entry from
+    /// `ai_tools_state.custom_models` + persist.
+    pub show_ai_custom_uninstall_confirm:
+        Option<crate::ai_tools::persistence::CustomModelEntry>,
+    /// AI Models dialog filter / sort state. Persists across renders
+    /// so the dialog remembers the user's selection while it's open.
+    /// Resets on app launch — re-opening starts unfiltered.
+    pub ai_models_dialog: crate::panels::ai_models::AiModelsDialogState,
     /// Export offline warning: list of (filename, timecode_string) for offline clips
     pub export_offline_warning: Option<(Vec<(String, String)>, Box<klipp_core::ExportSettings>)>,
 
@@ -1031,14 +1640,19 @@ pub struct AppState {
     pub dragging_bezier_handle: Option<BezierHandleDrag>,
     /// Bezier tangent handle drag state (video)
     pub dragging_video_bezier_handle: Option<BezierVideoHandleDrag>,
+    /// Audio EFFECT keyframe drag (rubber band rendering an effect param).
+    pub dragging_audio_effect_keyframe: Option<DraggingEffectKeyframe>,
+    /// Bezier tangent handle drag state for audio EFFECT keyframes.
+    pub dragging_audio_effect_bezier_handle: Option<BezierEffectHandleDrag>,
     /// Keyframe interpolation right-click context menu
     pub keyframe_context_menu: Option<KeyframeContextMenu>,
     /// Keyframe clipboard for copy/paste between clips/params
     pub keyframe_clipboard: Option<KeyframeClipboard>,
     /// Currently selected keyframe on timeline (click to select, right-click for menu)
     pub selected_keyframe: Option<SelectedKeyframe>,
-    /// Which audio parameter the timeline rubber band displays.
-    pub rubber_band_param: AudioParam,
+    /// What the audio rubber band displays — clip-level Volume/Pan/Gain
+    /// or a per-effect keyframable param.
+    pub rubber_band_param: RubberBandParam,
     /// Which video parameter the timeline rubber band displays.
     pub video_rubber_band_param: VideoParam,
     /// Audio prefs synced from preferences (fade overlay mode, show rubber band, show waveform)
@@ -1090,6 +1704,26 @@ pub struct AppState {
     pub show_command_palette: bool,
     pub command_palette_query: String,
     pub command_palette_selected: usize,
+
+    /// Active model-download state machine. Drives the consent
+    /// dialog + progress dialog rendered each frame in app.rs.
+    /// Default `Idle` paints nothing.
+    pub model_download: crate::model_download::ModelDownloadState,
+
+    /// AI Tools panel state — task selection, last mask, panel
+    /// visibility. Default closes the panel; flipping
+    /// `panel_visible` opens it. Wired through the registry below.
+    pub ai_tools_state: crate::ai_tools::AiToolsState,
+    /// Registry of `MaskGenerator` impls. Built once at app start
+    /// with the stub generator pre-registered; backend crates (e.g.
+    /// `klipp-ml-candle`, `klipp-ml-ort`) add their models in later
+    /// phases.
+    pub ai_tools_registry: crate::ai_tools::AiToolsRegistry,
+    /// Worker-side registry handle. Cloned cheaply onto the inference
+    /// thread by [`crate::ai_tools::spawn_inference`]. Carries the
+    /// same set of registered models as `ai_tools_registry` (today
+    /// just the stub).
+    pub ml_registry: crate::ai_tools::RegistryHandle,
 
     /// Available system font families (populated at startup from font discovery)
     pub available_fonts: Vec<String>,
@@ -1823,6 +2457,8 @@ pub struct AttributesClipboard {
     pub gain_keyframes: Vec<klipp_core::Keyframe>,
     /// Audio effects.
     pub audio_effects: Vec<klipp_core::AudioEffectInstance>,
+    /// Audio-effect keyframes (mirror of effect_keyframes for the audio chain).
+    pub audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
     /// Transform keyframes.
     pub opacity_keyframes: Vec<klipp_core::Keyframe>,
     pub transform_pos_x_keyframes: Vec<klipp_core::Keyframe>,
@@ -1852,6 +2488,12 @@ impl AppState {
             || self.show_about_dialog
             || self.show_autosave_recovery
             || self.show_render_queue
+            || self.show_ai_models_dialog
+            || self.show_audio_plugins_dialog
+            || self.show_system_probe
+            || self.show_project_doctor
+            || self.show_cache_manager
+            || self.show_command_palette
             || self.quick_look_path.is_some()
     }
 }
@@ -1868,6 +2510,11 @@ pub enum UnsavedAction {
 
 impl Default for AppState {
     fn default() -> Self {
+        // Build the shared registry once and share it between the
+        // panel view + worker handle. See `build_shared_registry`
+        // for what gets registered (stub + every backend gated by
+        // its feature flag).
+        let shared_registry = build_shared_registry();
         Self {
             playback: PlaybackState::Idle,
             playhead: Timecode { value: 0, rate: 24 },
@@ -1901,6 +2548,7 @@ impl Default for AppState {
             last_timeline_content_width: 800.0,
             show_overview_bar: true,
             selected_clip: None,
+            selected_clip_loc_cache: std::cell::Cell::new(None),
             selected_transition: None,
             selected_clips: Vec::new(),
             hovered_clip: None,
@@ -1914,6 +2562,11 @@ impl Default for AppState {
             jog_wheel_state: crate::widgets::jog_wheel::JogWheelState::new(),
             show_preset_manager: false,
             preset_manager_selected: None,
+            show_ai_models_dialog: false,
+            show_audio_plugins_dialog: false,
+            audio_plugins_dialog: crate::panels::audio_plugins::AudioPluginsDialogState::default(),
+            show_system_probe: false,
+            show_project_doctor: false,
             show_cache_manager: false,
             cache_categories: Vec::new(),
             show_clip_properties: false,
@@ -1946,7 +2599,11 @@ impl Default for AppState {
             speed_dialog_reverse: false,
             source_media_id: None,
             source_playhead: Timecode::zero(),
+            source_seek_dispatch_at: None,
             source_video_texture: None,
+            source_playback: PlaybackState::Idle,
+            source_live_texture: None,
+            source_live_texture_gen: 0,
             selected_media_ids: std::collections::HashSet::new(),
             last_clicked_media_id: None,
             use_proxies: true,
@@ -1974,6 +2631,7 @@ impl Default for AppState {
             browser_skim_texture: None,
             browser_skim_media_id: None,
             skim_transcoding: std::collections::HashSet::new(),
+            skim_in_flight_paths: std::collections::HashMap::new(),
             skim_transcode_status: None,
             skim_transcode_done_at: None,
             browser_skim_pending: None,
@@ -2014,6 +2672,7 @@ impl Default for AppState {
             active_track_point: None,
             tracking_in_progress: std::collections::HashSet::new(),
             tracking_progress: std::collections::HashMap::new(),
+            pending_mask_track_link: std::collections::HashMap::new(),
             browser_range_selection: None,
             browser_drag_start: None,
             range_drag: None,
@@ -2042,7 +2701,10 @@ impl Default for AppState {
             show_color_panel: false,
             color_tools_position: ColorToolsPosition::Right,
             selected_node_id: None,
+            selected_node_ids: std::collections::HashSet::new(),
+            graph_descent_path: Vec::new(),
             show_node_strip: false,
+            use_node_graph_v2: true,
             color_tab: ColorTab::default(),
             color_tab_bottom: ColorTab::default(),
             color_grade_drag_start: None,
@@ -2088,16 +2750,21 @@ impl Default for AppState {
             active_grade_still: None,
             grade_still_compare: false,
             color_match_reference: None,
+            color_match_reference_clip: None,
+            node_thumbs: std::collections::HashMap::new(),
+            node_thumbs_gen: 0,
+            last_filmstrip_thumb_send: None,
+            looks: Vec::new(),
             viewer_overlays: ViewerOverlays::default(),
             frame_count: 0,
             false_color_lut: crate::prefs::FalseColorPalette::broadcast().build_lut(),
             pending_false_color_palette: None,
             available_plugins: Vec::new(),
             ladspa_plugins: Vec::new(),
+            disabled_audio_plugins: std::collections::HashSet::new(),
             effect_registry: crate::browser::effect_registry::EffectRegistry::new(),
-            effect_filter_builtin: true,
-            effect_filter_ofx: true,
-            effect_filter_gpu: true,
+            effect_source_filter: crate::browser::effects_tab::SourceFilter::default(),
+            effect_filter_gpu: false,
             effect_filter_hide_unsupported: false,
             preset_manager: crate::effect_presets::PresetManager::new(),
             effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer::default(),
@@ -2171,9 +2838,16 @@ impl Default for AppState {
             auto_create_tracks: true,
             project_auto_filmstrips: None,
             project_auto_skim: None,
+            project_working_colorspace: klipp_core::WorkingColorspace::default(),
             show_media_panel: false,
             show_remove_media_confirm: None,
             show_delete_unused_confirm: None,
+            show_ai_model_uninstall_confirm: None,
+            show_ai_models_bulk_uninstall_confirm: false,
+            show_ai_models_stale_uninstall_confirm: false,
+            custom_model_add: crate::ai_tools::custom_install::CustomInstallState::Idle,
+            show_ai_custom_uninstall_confirm: None,
+            ai_models_dialog: crate::panels::ai_models::AiModelsDialogState::default(),
             export_offline_warning: None,
             media_usage_cache: std::collections::HashMap::new(),
             media_usage_cache_dirty: true,
@@ -2202,10 +2876,12 @@ impl Default for AppState {
             dragging_rubber_band: None,
             dragging_bezier_handle: None,
             dragging_video_bezier_handle: None,
+            dragging_audio_effect_keyframe: None,
+            dragging_audio_effect_bezier_handle: None,
             keyframe_context_menu: None,
             keyframe_clipboard: None,
             selected_keyframe: None,
-            rubber_band_param: AudioParam::Volume,
+            rubber_band_param: RubberBandParam::default(),
             video_rubber_band_param: VideoParam::Opacity,
             audio_fade_overlay_mode: crate::prefs::FadeOverlayMode::default(),
             audio_show_rubber_band: true,
@@ -2229,6 +2905,37 @@ impl Default for AppState {
             show_command_palette: false,
             command_palette_query: String::new(),
             command_palette_selected: 0,
+            model_download: crate::model_download::ModelDownloadState::default(),
+            ai_tools_state: {
+                // Persistent state lives in ~/.config/klipp/ai_tools.toml:
+                // last_picked default model per task + per-model
+                // telemetry + user-added custom models. All three
+                // load here. Custom models are also registered
+                // against the shared registry below so they show up
+                // in the panel dropdown + the AI Models dialog.
+                let mut s = crate::ai_tools::AiToolsState::default();
+                let loaded = crate::ai_tools::persistence::load().into_state_data();
+                s.last_picked_model_per_task = loaded.last_picked_model_per_task;
+                s.model_telemetry = loaded.model_telemetry;
+                s.custom_models = loaded.custom_models;
+                {
+                    let reg = shared_registry.write();
+                    if let Ok(mut r) = reg {
+                        for entry in &s.custom_models {
+                            register_custom_model(&mut r, entry);
+                        }
+                    }
+                }
+                s
+            },
+            // Both views observe the same `Arc<RwLock<ModelRegistry>>`
+            // — runtime install / uninstall through either side
+            // reflects on the other. Tested by
+            // registry::tests::from_shared_views_see_each_others_writes.
+            ai_tools_registry: crate::ai_tools::AiToolsRegistry::from_shared(
+                std::sync::Arc::clone(&shared_registry),
+            ),
+            ml_registry: crate::ai_tools::RegistryHandle::from_shared(shared_registry),
             available_fonts: Vec::new(),
             pending_title_data: None,
             pending_title_preview_clip: None,
@@ -2265,6 +2972,65 @@ impl AppState {
     pub fn sequence_duration(&self) -> Timecode {
         self.sequence().total_duration()
     }
+
+    /// Resolve `selected_clip` to its (track_idx, &Clip) location in
+    /// the active sequence, using the `selected_clip_loc_cache` to
+    /// avoid the O(tracks × clips) walk on every UI render.
+    ///
+    /// Cache contract: stores `(clip_id, track_idx)`. The next call
+    /// checks the cached track first; if the clip is still there it
+    /// returns immediately. Cache misses (clip moved tracks, was
+    /// deleted, or selection changed) trigger a full sequence walk
+    /// and refresh the cache. Self-healing — call sites don't have
+    /// to invalidate after edits.
+    ///
+    /// Returns `None` when no clip is selected, or the selected clip
+    /// id no longer exists in the active sequence (in which case
+    /// the cache is also cleared).
+    pub fn selected_clip_loc(&self) -> Option<(usize, &klipp_timeline::Clip)> {
+        let cid = self.selected_clip?;
+        find_clip_cached(self.sequence(), cid, &self.selected_clip_loc_cache)
+    }
+}
+
+/// Free-function form of the selected-clip cached lookup. Extracted
+/// so the cache-hit / cache-miss / stale / deleted paths can be unit-
+/// tested directly against a `Sequence` + `Cell<...>` pair without
+/// having to materialise a full `AppState`.
+pub(crate) fn find_clip_cached<'a>(
+    seq: &'a klipp_timeline::Sequence,
+    cid: klipp_core::ClipId,
+    cache: &std::cell::Cell<Option<(klipp_core::ClipId, usize)>>,
+) -> Option<(usize, &'a klipp_timeline::Clip)> {
+    // Fast path: cache says this clip lives on `cached_ti`. Verify
+    // it's still there (one Track::find_clip).
+    if let Some((cached_cid, cached_ti)) = cache.get() {
+        if cached_cid == cid {
+            if let Some(track) = seq.tracks.get(cached_ti) {
+                if let Some(clip) = track.find_clip(cid) {
+                    return Some((cached_ti, clip));
+                }
+            }
+            // Same id, cache stale (clip moved tracks or track
+            // deleted). Fall through to the full walk; the
+            // refreshed cache write below covers the next call.
+        }
+        // selected_clip changed since the cache was set —
+        // also fall through.
+    }
+    // Slow path: walk every track. Updates the cache so the next
+    // call hits the fast path.
+    for (ti, track) in seq.tracks.iter().enumerate() {
+        if let Some(clip) = track.find_clip(cid) {
+            cache.set(Some((cid, ti)));
+            return Some((ti, clip));
+        }
+    }
+    // Phantom selection — clip id doesn't exist anywhere. Clear
+    // the cache so we don't keep paying the full-walk cost
+    // searching for a non-existent id.
+    cache.set(None);
+    None
 }
 
 #[cfg(test)]
@@ -2438,5 +3204,212 @@ mod tests {
         let color = layouts.iter().find(|l| l.name == "Color").unwrap();
         assert!(color.show_color_panel);
         assert!(color.color_panel_height.is_some());
+    }
+
+    // ── selected-clip cache (U-11) ──
+
+    fn make_seq_with(clip_specs: &[(usize, klipp_core::ClipId)]) -> klipp_timeline::Sequence {
+        // 4-track sequence; `clip_specs` is a list of (track_idx,
+        // clip_id) entries to populate. Each clip is a 1-second
+        // gap-on-video — content doesn't matter for these tests, only
+        // the (track, id) topology does.
+        let mut seq = klipp_timeline::Sequence::new_default();
+        // new_default has 1 video + 1 audio. Pad with extra video tracks.
+        while seq.tracks.iter().filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video)).count() < 4 {
+            seq.add_video_track(format!("V{}", seq.tracks.len()));
+        }
+        for &(ti, cid) in clip_specs {
+            // Build a minimal Media-kind clip directly so we can
+            // pin the id ourselves (append_clip allocates a fresh id).
+            let one_sec = klipp_core::Timecode { value: 24, rate: 24 };
+            let mut clip = klipp_timeline::Clip {
+                id: cid,
+                kind: klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() },
+                timeline_in: klipp_core::Timecode { value: 0, rate: 24 },
+                timeline_out: one_sec,
+                source_in: klipp_core::Timecode { value: 0, rate: 24 },
+                source_out: one_sec,
+                ..klipp_timeline::Clip::gap(
+                    klipp_core::Timecode { value: 0, rate: 24 },
+                    one_sec,
+                )
+            };
+            // gap() set kind to Gap; restore Media + the ids above.
+            clip.id = cid;
+            clip.kind = klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() };
+            seq.tracks[ti].clips.push(clip);
+        }
+        seq
+    }
+
+    #[test]
+    fn find_clip_cached_warm_path_returns_clip_and_populates_cache() {
+        let cid = klipp_core::ClipId::new();
+        let seq = make_seq_with(&[(2, cid)]);
+        let cache = std::cell::Cell::new(None);
+        let (ti, clip) = find_clip_cached(&seq, cid, &cache).expect("first lookup");
+        assert_eq!(ti, 2, "clip is on track 2");
+        assert_eq!(clip.id, cid);
+        assert_eq!(cache.get(), Some((cid, 2)), "cache populated after first walk");
+    }
+
+    #[test]
+    fn find_clip_cached_fast_path_uses_cache_when_clip_unmoved() {
+        let cid = klipp_core::ClipId::new();
+        let seq = make_seq_with(&[(2, cid)]);
+        // Pre-seed cache with the correct location — this is what
+        // a steady-state UI render sees on every frame after the
+        // first.
+        let cache = std::cell::Cell::new(Some((cid, 2)));
+        let (ti, clip) = find_clip_cached(&seq, cid, &cache).expect("cached lookup");
+        assert_eq!(ti, 2);
+        assert_eq!(clip.id, cid);
+        assert_eq!(cache.get(), Some((cid, 2)), "cache unchanged on fast path");
+    }
+
+    #[test]
+    fn find_clip_cached_self_heals_when_clip_moves_tracks() {
+        let cid = klipp_core::ClipId::new();
+        // Cache says clip is on track 0, but actually it's on track 3
+        // — simulates a "clip dragged to a different track between
+        // frames" without an explicit invalidation.
+        let seq = make_seq_with(&[(3, cid)]);
+        let cache = std::cell::Cell::new(Some((cid, 0)));
+        let (ti, clip) = find_clip_cached(&seq, cid, &cache).expect("self-heal");
+        assert_eq!(ti, 3);
+        assert_eq!(clip.id, cid);
+        assert_eq!(cache.get(), Some((cid, 3)), "cache updated to new track");
+    }
+
+    #[test]
+    fn find_clip_cached_clears_cache_when_clip_deleted() {
+        let cid = klipp_core::ClipId::new();
+        let seq = make_seq_with(&[]); // clip not in any track
+        let cache = std::cell::Cell::new(Some((cid, 1))); // stale cache
+        let result = find_clip_cached(&seq, cid, &cache);
+        assert!(result.is_none(), "deleted clip → None");
+        assert_eq!(cache.get(), None, "cache cleared on phantom id");
+    }
+
+    #[test]
+    fn find_clip_cached_handles_selection_change() {
+        // Cache holds clip A; we now ask about clip B (which exists
+        // on a different track). The helper must walk and update.
+        let a = klipp_core::ClipId::new();
+        let b = klipp_core::ClipId::new();
+        let seq = make_seq_with(&[(0, a), (3, b)]);
+        let cache = std::cell::Cell::new(Some((a, 0)));
+        let (ti, clip) = find_clip_cached(&seq, b, &cache).expect("new selection");
+        assert_eq!(ti, 3);
+        assert_eq!(clip.id, b);
+        assert_eq!(cache.get(), Some((b, 3)), "cache updated to the new clip's location");
+    }
+
+    #[test]
+    fn find_clip_cached_clears_cache_when_track_deleted_under_us() {
+        // Cache holds (cid, track 5) but seq only has 4 tracks now —
+        // the helper's `seq.tracks.get(cached_ti)` returns None and
+        // it falls through to the full walk; if the clip isn't
+        // anywhere else, cache clears. Guards the
+        // tracks-shrink-without-invalidate path.
+        let cid = klipp_core::ClipId::new();
+        let seq = make_seq_with(&[]); // empty
+        let cache = std::cell::Cell::new(Some((cid, 5))); // out-of-range track
+        let result = find_clip_cached(&seq, cid, &cache);
+        assert!(result.is_none());
+        assert_eq!(cache.get(), None);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// RubberBandParam helper tests (Phase B1).
+//
+// The enum is the foundation that lets the audio rubber band display
+// either a clip-level param (Volume/Pan/Gain) or a per-effect param.
+// These tests pin the helpers used by the rubber band's resolver and
+// the popup picker so a future "let me simplify the enum" change
+// can't silently break the routing.
+// ═══════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod rubber_band_param_tests {
+    use super::*;
+
+    #[test]
+    fn default_is_clip_volume() {
+        // Rubber band starts on the clip-level Volume param so existing
+        // muscle memory (open project → see volume rubber band) is
+        // preserved. Changing the default in a future refactor would
+        // surprise every existing project on first open.
+        let rb = RubberBandParam::default();
+        assert_eq!(rb, RubberBandParam::ClipParam(AudioParam::Volume));
+        assert_eq!(rb.as_clip_param(), Some(AudioParam::Volume));
+        assert!(!rb.is_effect());
+    }
+
+    #[test]
+    fn as_clip_param_returns_none_for_effect_variant() {
+        let rb = RubberBandParam::EffectParam {
+            effect_index: 2,
+            param_name: "threshold".to_string(),
+        };
+        assert_eq!(rb.as_clip_param(), None);
+        assert!(rb.is_effect());
+    }
+
+    #[test]
+    fn effect_key_round_trips_via_audio_effect_keyframes_format() {
+        // The effect_key must match the same "{idx}:{name}" key shape
+        // that `clip.audio_effect_keyframes` uses. This is what lets
+        // the rubber band's resolver pull the right kf vec from the
+        // map without re-implementing the format anywhere else.
+        let rb = RubberBandParam::EffectParam {
+            effect_index: 0,
+            param_name: "threshold".to_string(),
+        };
+        assert_eq!(rb.effect_key().as_deref(), Some("0:threshold"));
+
+        // Reserved key names (__bypass / __wetdry) flow through verbatim
+        // so the bypass strip and the rubber band see the same key.
+        let rb_bypass = RubberBandParam::EffectParam {
+            effect_index: 1,
+            param_name: "__bypass".to_string(),
+        };
+        assert_eq!(rb_bypass.effect_key().as_deref(), Some("1:__bypass"));
+
+        let rb_wet = RubberBandParam::EffectParam {
+            effect_index: 1,
+            param_name: "__wetdry".to_string(),
+        };
+        assert_eq!(rb_wet.effect_key().as_deref(), Some("1:__wetdry"));
+    }
+
+    #[test]
+    fn effect_key_returns_none_for_clip_variant() {
+        let rb = RubberBandParam::ClipParam(AudioParam::Pan);
+        assert!(rb.effect_key().is_none());
+    }
+
+    #[test]
+    fn equality_distinguishes_effect_index_and_param_name() {
+        // Pin that two EffectParams with the same name but different
+        // indices are NOT equal — matters for picker state and for the
+        // "is the selected param still on this clip?" check that the
+        // rubber band uses to decide whether to render or fall back.
+        let a = RubberBandParam::EffectParam {
+            effect_index: 0,
+            param_name: "threshold".to_string(),
+        };
+        let b = RubberBandParam::EffectParam {
+            effect_index: 1,
+            param_name: "threshold".to_string(),
+        };
+        let c = RubberBandParam::EffectParam {
+            effect_index: 0,
+            param_name: "ratio".to_string(),
+        };
+        let a_clone = a.clone();
+        assert_ne!(a, b, "different indices must not match");
+        assert_ne!(a, c, "different param names must not match");
+        assert_eq!(a, a_clone, "clone must equal");
     }
 }

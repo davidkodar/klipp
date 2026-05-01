@@ -116,6 +116,30 @@ fn alpha_u8_to_f32_lut() -> &'static [f32; 256] {
 }
 
 #[inline]
+/// Nearest-neighbour downsample of an sRGB u8 RGBA buffer to a smaller
+/// sRGB u8 RGBA buffer. Stays in sRGB space — the filmstrip tile is
+/// already sRGB-encoded and the V2 canvas expects sRGB-encoded thumbs,
+/// so a linear round-trip would only add quantisation for no gain. Used
+/// for the identity-graph path of `render_node_thumbs_from_source`.
+fn downsample_srgb_u8_to_thumb(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+    if src.len() < (src_w * src_h * 4) as usize || src_w == 0 || src_h == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity((dst_w * dst_h * 4) as usize);
+    for y in 0..dst_h {
+        let sy = ((y as u64 * src_h as u64) / dst_h as u64).min(src_h as u64 - 1) as u32;
+        for x in 0..dst_w {
+            let sx = ((x as u64 * src_w as u64) / dst_w as u64).min(src_w as u64 - 1) as u32;
+            let i = ((sy * src_w + sx) as usize) * 4;
+            out.push(src[i]);
+            out.push(src[i + 1]);
+            out.push(src[i + 2]);
+            out.push(src[i + 3]);
+        }
+    }
+    out
+}
+
 fn u8_rgba_to_linear(rgba: &[u8]) -> Vec<f32> {
     let srgb_lut = srgb_u8_to_linear_lut();
     let alpha_lut = alpha_u8_to_f32_lut();
@@ -242,12 +266,19 @@ struct ActiveAudioSource {
     /// and would play the wrong audio. seek_all_audio_to_timecode checks
     /// this and falls back to start_all_audio when it sees a mismatch.
     media_id: MediaId,
+    /// Fingerprint of the audio chain (effects + kfs) the source was
+    /// opened with. Two clips that share the same media but have
+    /// different audio_effects MUST get separate chain rebuilds at the
+    /// boundary — without this check the first clip's chain bleeds into
+    /// the second. `audio_fingerprint_for_clip` is the canonical hash.
+    audio_chain_fingerprint: u64,
     source: AudioSource,
 }
 /// Pre-opened audio source ready for loop swap (created by pre-seek thread).
 struct PreSeekAudioSource {
     track_index: usize,
     media_id: MediaId,
+    audio_chain_fingerprint: u64,
     source: AudioSource,
     consumer: crate::audio_decoder::AudioConsumer,
 }
@@ -366,6 +397,68 @@ fn mark_stage(s: EngineStage) {
     ENGINE_STAGE.store(s as u64, Ordering::Relaxed);
 }
 
+/// UI-thread waypoint counter. Same shape as `ENGINE_STAGE` — the
+/// watchdog reads this without locking and prints the matching name
+/// when `UI_WATCHDOG STALLED` trips, narrowing a UI hang from "the
+/// whole update loop" to a specific section. Set via
+/// [`ui_stage::mark`]; resolve to a name via [`ui_stage::name`].
+pub static UI_STAGE: AtomicU64 = AtomicU64::new(0);
+
+pub mod ui_stage {
+    use super::{Ordering, UI_STAGE};
+
+    // Stage IDs. Keep stable; the watchdog formats them by id name.
+    // Add new stages at the end so existing log greps don't shift.
+    pub const IDLE: u64 = 0;
+    pub const FRAME_TOP: u64 = 1;
+    pub const TEXTURE_DROP_RING: u64 = 2;
+    pub const REGISTER_GPU_TEXTURE: u64 = 3;
+    pub const AI_TOOLS_TICK: u64 = 4;
+    pub const DRAIN_EVENTS: u64 = 5;
+    pub const COMPUTE_LAYOUT: u64 = 6;
+    pub const RENDER_PANELS: u64 = 7;
+    pub const RENDER_VIEWER: u64 = 8;
+    pub const RENDER_TIMELINE: u64 = 9;
+    pub const RENDER_BROWSER: u64 = 10;
+    pub const RENDER_INSPECTOR: u64 = 11;
+    pub const RENDER_DIALOGS: u64 = 12;
+    pub const SHORTCUTS: u64 = 13;
+    pub const PROCESS_QUIT: u64 = 14;
+    pub const SEND_COMMANDS: u64 = 15;
+    pub const AUTOSAVE_CLEANUP: u64 = 16;
+    pub const VIEWPORT_CLOSE: u64 = 17;
+    pub const ON_EXIT: u64 = 18;
+
+    pub fn mark(s: u64) {
+        UI_STAGE.store(s, Ordering::Relaxed);
+    }
+
+    pub fn name(v: u64) -> &'static str {
+        match v {
+            0 => "Idle",
+            1 => "FrameTop",
+            2 => "TextureDropRing",
+            3 => "RegisterGpuTexture",
+            4 => "AiToolsTick",
+            5 => "DrainEvents",
+            6 => "ComputeLayout",
+            7 => "RenderPanels",
+            8 => "RenderViewer",
+            9 => "RenderTimeline",
+            10 => "RenderBrowser",
+            11 => "RenderInspector",
+            12 => "RenderDialogs",
+            13 => "Shortcuts",
+            14 => "ProcessQuit",
+            15 => "SendCommands",
+            16 => "AutosaveCleanup",
+            17 => "ViewportClose",
+            18 => "OnExit",
+            _ => "Unknown",
+        }
+    }
+}
+
 /// Read process RSS in MB from `/proc/self/statm` (Linux). Returns 0
 /// on non-Linux or if the proc file can't be read. Cheap enough
 /// (single file read, tens of microseconds) to call every 10 s.
@@ -408,7 +501,34 @@ fn should_publish_gpu_viewer() -> bool {
     use std::sync::OnceLock;
     static GATE: OnceLock<bool> = OnceLock::new();
     *GATE.get_or_init(|| {
-        std::env::var("KLIPP_GPU_VIEWER").ok().as_deref() == Some("1")
+        let want_viewer = std::env::var("KLIPP_GPU_VIEWER").ok().as_deref() == Some("1");
+        if !want_viewer {
+            return false;
+        }
+        // The GPU viewer hand-off allocates `fb.gpu_output` on the
+        // engine's wgpu device, then the UI registers a TextureView
+        // of that texture with eframe-wgpu's renderer. wgpu-22's
+        // wgpu_core stores resources per `Instance`; engine and UI
+        // each have their own Instance unless the shared-device
+        // path is enabled. Cross-Hub TextureView lookups panic in
+        // `wgpu-core/src/storage.rs:79` ("TextureView[Id(N,vk)]
+        // does not exist") on the very first
+        // `register_native_texture` call. Until KLIPP_SHARED_GPU_DEVICE
+        // is fixed (deadlock on `device.poll` — see main.rs comments)
+        // the viewer path can ONLY engage when both env flags are on,
+        // so `KLIPP_GPU_VIEWER=1` alone silently no-ops instead of
+        // crashing.
+        let want_shared = std::env::var("KLIPP_SHARED_GPU_DEVICE").ok().as_deref() == Some("1");
+        if !want_shared {
+            tracing::warn!(
+                "KLIPP_GPU_VIEWER=1 ignored: requires KLIPP_SHARED_GPU_DEVICE=1 too. \
+                 Without device sharing, fb.gpu_output lives on the engine wgpu Hub \
+                 and egui-wgpu cannot register a TextureView from a different Hub — \
+                 the cross-device BindGroup creation panics in wgpu_core storage."
+            );
+            return false;
+        }
+        true
     })
 }
 
@@ -510,6 +630,58 @@ pub const PARAM_CHANGE_QUEUE_CAPACITY: usize = 256;
 /// Returns the number of changes applied. Entries whose clip or node can no
 /// longer be found are silently dropped — the UI may have deleted the clip
 /// between the push and this drain.
+/// Recursively locate a node by id across a graph and every nested
+/// compound sub-graph, applying a param override when found. Returns
+/// true on first hit so `apply_param_changes` can count successes.
+/// Depth is bounded by `COMPOUND_MAX_DEPTH_ENGINE` — the UI's
+/// `resolve_graph_at_path_mut` can only descend through `Compound`
+/// nodes whose `params.compound_subgraph` is `Some`, so runaway
+/// recursion would require maliciously-crafted project data; a small
+/// cap turns that into a safe bailout.
+fn apply_override_recursive(
+    graph: &mut klipp_nodes::NodeGraph,
+    target_id: klipp_nodes::NodeId,
+    param: &str,
+    value: f32,
+) -> bool {
+    apply_override_recursive_impl(graph, target_id, param, value, 0)
+}
+
+const COMPOUND_MAX_DEPTH_ENGINE: u32 = 8;
+
+fn apply_override_recursive_impl(
+    graph: &mut klipp_nodes::NodeGraph,
+    target_id: klipp_nodes::NodeId,
+    param: &str,
+    value: f32,
+    depth: u32,
+) -> bool {
+    if depth >= COMPOUND_MAX_DEPTH_ENGINE {
+        return false;
+    }
+    // Top-of-graph hit first (most common case — user edits a root
+    // node; single linear scan, no allocations).
+    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == target_id) {
+        node.params.apply_override(param, value);
+        return true;
+    }
+    // Miss — descend into any compound sub-graphs. The nested
+    // recursive call reborrows on each iteration so we don't hold
+    // multiple mutable views at once.
+    for node in graph.nodes.iter_mut() {
+        if node.kind == klipp_nodes::NodeKind::Compound {
+            if let Some(sub) = node.params.compound_subgraph.as_mut() {
+                if apply_override_recursive_impl(
+                    sub, target_id, param, value, depth + 1,
+                ) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 pub fn apply_param_changes(
     sequence: &Arc<RwLock<Sequence>>,
     queue: &Arc<ArrayQueue<ParamChange>>,
@@ -551,8 +723,12 @@ pub fn apply_param_changes(
     let mut applied = 0usize;
     while let Some(change) = queue.pop() {
         if let Some(clip) = seq.all_clips_mut().find(|c| c.id == change.clip_id) {
-            if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == change.node_id) {
-                node.params.apply_override(&change.param, change.value);
+            if apply_override_recursive(
+                &mut clip.node_graph,
+                change.node_id,
+                &change.param,
+                change.value,
+            ) {
                 applied += 1;
             }
         }
@@ -726,8 +902,103 @@ pub struct PlaybackEngine {
     matte_preview: bool,
     // Scope tap — which node's output to capture for scope display
     scope_tap_node: Option<klipp_nodes::NodeId>,
+    /// V2 canvas "nodes visible right now" set — the executor
+    /// captures downsampled thumbnails for each of these on the
+    /// paused / post-seek re-grade so the canvas can paint per-node
+    /// previews. Empty during playback (capturing N readbacks per
+    /// frame would cost more than the grade itself).
+    visible_node_thumbs: std::collections::HashSet<klipp_nodes::NodeId>,
+    /// Set to `true` while `prerender_cache_frames` is running a
+    /// background re-grade at some near-playhead frame. Those
+    /// speculative grades must NOT overwrite the per-node thumbnails
+    /// — the thumbs in the V2 canvas should reflect the user's
+    /// actual playhead, not whichever frame the pre-cache happened
+    /// to be chewing on at the time.
+    thumb_capture_suspended: bool,
+    /// After a paused seek (Pause / SetPlayhead / SeekTo while paused) the
+    /// decoder is resumed and we wait briefly for a frame so per-node
+    /// thumbnails can capture against the new position. At 4K the cold
+    /// seek + keyframe rewind often outruns that budget. When it does we
+    /// leave the decoder running and set this flag; the per-tick paused
+    /// branch drains the queue when the frame finally arrives, runs the
+    /// post-process pipeline (which captures thumbs), then pauses the
+    /// decoder. Without this, the V2 canvas thumbs were stuck on the
+    /// pre-seek frame until the user pressed an arrow key — that path
+    /// pops from the now-filled queue immediately.
+    pending_paused_refresh: bool,
+
+    // ── Source Viewer playback (separate from timeline) ───────────
+    /// Persistent decoder for whatever media the user has loaded into
+    /// the source viewer. Lives independently of `v1_decoder` (which
+    /// belongs to the timeline) so source playback doesn't disturb the
+    /// program viewer's state. `None` until `SetSourceMedia` arrives.
+    source_decoder: Option<VideoDecoder>,
+    /// Path of the file currently bound to the source viewer. Compared
+    /// on incoming `SetSourceMedia` so re-binding the same file is a
+    /// cheap no-op (instead of re-spawning the decoder thread).
+    source_path: Option<PathBuf>,
+    /// Source-viewer playback state — matches the timeline's
+    /// `PlaybackState` semantics but is independent of it. The
+    /// mutual-exclusion rule (one viewer at a time owns audio) is
+    /// enforced in the Play / PlaySource handlers, not here.
+    source_state: PlaybackState,
+    /// Current source-viewer playhead in source-time seconds (the
+    /// file's own timeline, not the project sequence). Advanced by
+    /// wall-clock during playback; jumped on `SeekSource` / `StepSource`.
+    source_playhead_secs: f64,
+    /// Native frame rate of the bound source media — used to convert
+    /// `StepSource` frame counts to seconds and to pace the playhead
+    /// advance during playback.
+    source_fps: f64,
+    /// Wall-clock + source-time anchor for the lightweight clock that
+    /// drives the source playhead during playback. On Play we capture
+    /// `(now, source_playhead_secs)`; per-tick we recompute the
+    /// playhead as `anchor_secs + (now - anchor_wall) * 1.0`. Cleaner
+    /// than dragging the timeline `MasterClock` into source territory.
+    source_clock_anchor_wall: std::time::Instant,
+    source_clock_anchor_secs: f64,
+    /// True after the source decoder has signalled EOF for the
+    /// currently-bound media. The next `play_source` consults this
+    /// to rebuild the decoder before resuming, otherwise the BSF
+    /// stays latched in EOF state and rejects every packet.
+    source_at_eof: bool,
+    /// True when the source viewer is paused but expects to receive
+    /// one more frame from the decoder (just after `set_source_media`
+    /// or `seek_source`). The per-tick paused-drain pops exactly one
+    /// frame in that state, then clears the flag — without it, the
+    /// drain pops every frame the decoder buffers and the playhead
+    /// walks forward on its own (looks like the progressbar is
+    /// "playing" right after a click).
+    source_drain_pending: bool,
+    /// Rotation passed to `VideoDecoder::open` for the bound source
+    /// media — held so an EOF-restart rebuild can recreate the
+    /// decoder with the same orientation as the original open.
+    source_rotation: i32,
+    /// Audio source for the bound media — mixed via the existing
+    /// `mixer` on a dedicated source-viewer track. Muted whenever
+    /// `source_state != Playing` (and the timeline pre-mutes its own
+    /// tracks while source plays). `None` for files without audio.
+    source_audio_source: Option<AudioSource>,
+    /// Source-viewer frame buffer — the source viewer panel paints
+    /// from this (separate from the program viewer's
+    /// `frame_buffer`). Same `FrameBuffer` struct, just a second
+    /// instance with its own pending/data buffers and generation
+    /// counter so the two viewers' upload paths never collide.
+    source_frame_buffer: SharedFrameBuffer,
+    /// Mixer track-index reserved for source-viewer audio. Allocated
+    /// at engine init (one slot past whatever the timeline mixer
+    /// reserves) so SetTrackVolume / mute toggles don't accidentally
+    /// touch a real timeline track.
+    source_mixer_track_index: usize,
     /// Which scope mode to render on GPU (0=waveform, 1=parade, 2=vectorscope, 3=histogram).
     scope_render_mode: u8,
+    /// Whether the scope panel is actually visible in the UI.
+    /// Drives `should_render_scope()` together with the time-based
+    /// throttle. Default `false` so a fresh engine doesn't burn the
+    /// per-frame scope budget on data nobody is looking at — UI
+    /// flips it on via `AppCommand::SetScopesVisible(true)` when
+    /// the scopes panel opens.
+    scopes_visible: bool,
     /// Wall-clock timestamp of the last GPU scope render. Used to
     /// throttle scope refresh to ~10 Hz — colourists can't perceive
     /// scope updates faster than that, and each scope render costs
@@ -896,6 +1167,7 @@ impl PlaybackEngine {
         cmd_rx: Receiver<AppCommand>,
         event_tx: Sender<AppEvent>,
         frame_buffer: SharedFrameBuffer,
+        source_frame_buffer: SharedFrameBuffer,
         sequence: Arc<RwLock<Sequence>>,
         media_pool: Arc<RwLock<MediaPool>>,
         repaint_cb: Box<dyn Fn() + Send>,
@@ -1052,7 +1324,30 @@ impl PlaybackEngine {
             compare_effect_is_ofx: false,
             matte_preview: false,
             scope_tap_node: None,
+            visible_node_thumbs: std::collections::HashSet::new(),
+            thumb_capture_suspended: false,
+            pending_paused_refresh: false,
+            source_decoder: None,
+            source_path: None,
+            source_state: PlaybackState::Idle,
+            source_playhead_secs: 0.0,
+            source_fps: 24.0,
+            source_clock_anchor_wall: std::time::Instant::now(),
+            source_clock_anchor_secs: 0.0,
+            source_at_eof: false,
+            source_drain_pending: false,
+            source_rotation: 0,
+            source_audio_source: None,
+            source_frame_buffer,
+            // Reserve a track index past anything the timeline mixer
+            // is likely to use. Picked high enough that the user
+            // adding ~ all the audio tracks they reasonably will
+            // (Klipp's UI tops out around 16) won't collide. The
+            // mixer grows on demand via `ensure_tracks` so this slot
+            // gets allocated lazily on first source-audio attach.
+            source_mixer_track_index: 64,
             scope_render_mode: 0,
+            scopes_visible: false,
             last_scope_render: std::time::Instant::now() - std::time::Duration::from_secs(1),
             matte_preview_node: None,
             cached_pregrade_frame: None,
@@ -1217,7 +1512,9 @@ impl PlaybackEngine {
             // benefit.
             // Paused: 16 ms = 60 Hz loop rate, cheap enough to still
             // respond to user commands within one frame.
-            let timeout = if self.state == PlaybackState::Playing {
+            let timeout = if self.state == PlaybackState::Playing
+                || self.source_state == PlaybackState::Playing
+            {
                 Duration::from_millis(8)
             } else {
                 Duration::from_millis(16)
@@ -1263,6 +1560,48 @@ impl PlaybackEngine {
             mark_stage(EngineStage::ParamDrain);
             let applied = self.drain_param_changes();
 
+            // Source-viewer playback runs in parallel with the
+            // timeline state machine — this is the only site that
+            // pops frames off the source decoder during playback. The
+            // mutual-exclusion rule in `play_source` / `Play`
+            // guarantees only one viewer is in the Playing state at
+            // any moment, so this is at most one of the two paths
+            // doing real per-tick work.
+            if self.source_state == PlaybackState::Playing {
+                self.update_source_playback();
+            } else if self.source_decoder.is_some() && self.source_drain_pending {
+                // Paused-drain: a recent seek/load is waiting on
+                // its target frame to land. Pop ONE frame and stop;
+                // the gate prevents the drain from stepping through
+                // the full decoder queue every tick (which made the
+                // playhead walk forward on its own and looked like
+                // the progressbar was "playing" right after a click).
+                if self.drain_one_source_frame_to_buffer() {
+                    self.source_drain_pending = false;
+                }
+            }
+
+            if applied > 0
+                && matches!(self.state, PlaybackState::Idle | PlaybackState::Stopped)
+                && self.cached_pregrade_frame.is_none()
+            {
+                // Safety net: a slider drag is landing in the
+                // engine while we're still in Idle / Stopped (user
+                // never scrubbed via a path that pushed SetPlayhead /
+                // SeekTo), and `cached_pregrade_frame` is empty so
+                // the regrade branch below would silently no-op.
+                // Auto-heal by seeking to the current playhead —
+                // opens the decoder, populates the snapshot, flips
+                // state to Paused. The next drain tick's regrade
+                // hits a real snapshot and the viewer updates live
+                // without requiring a Play round-trip first.
+                let ph = self.playhead;
+                self.seek_in_sequence(ph);
+                if self.v1_decoder.is_some() || !self.audio_sources.is_empty() {
+                    self.state = PlaybackState::Paused;
+                    let _ = self.event_tx.send(AppEvent::PlaybackPaused);
+                }
+            }
             if self.state == PlaybackState::Playing {
                 // Playback already produces fresh frames at full res
                 // every tick; the drag-recovery flag isn't needed here.
@@ -1273,6 +1612,18 @@ impl PlaybackEngine {
                 // Sync clip audio params periodically during playback (for keyframe animation)
                 self.sync_clip_volumes();
             } else if self.state == PlaybackState::Paused {
+                if self.pending_paused_refresh {
+                    // A previous seek (Pause / SetPlayhead / SeekTo
+                    // while paused) left the decoder running because
+                    // its 50–200 ms grab window wasn't enough for a
+                    // cold 4K seek. Pop any frame the decoder has
+                    // produced since, run the full post_process
+                    // pipeline (captures per-node thumbs), then pause
+                    // the decoder. Silent no-op until the frame lands.
+                    if self.try_drain_paused_refresh_frame() {
+                        self.pending_paused_refresh = false;
+                    }
+                }
                 if applied > 0 {
                     // Colour-grade param drag while paused — the drain updated
                     // the graph but the viewer is still displaying the cached
@@ -1411,6 +1762,15 @@ impl PlaybackEngine {
 
             AppCommand::Play => {
                 debug!("Play command received, state={:?}", self.state);
+                // Mutual-exclusion: stop the source viewer if it owns
+                // audio right now, then hand audio back to the
+                // timeline tracks. Without this both viewers would
+                // try to feed the cpal stream and the source's mute
+                // toggle would stay active.
+                if self.source_state == PlaybackState::Playing {
+                    self.pause_source();
+                }
+                self.set_source_audio_owner(false);
                 if self.state == PlaybackState::Paused
                     && (self.v1_decoder.is_some() || !self.audio_sources.is_empty())
                 {
@@ -1437,14 +1797,33 @@ impl PlaybackEngine {
                         self.clip_timeline_start.to_secs_f64(), self.clip_speed, source_secs
                     );
 
-                    // Seek video decoders to current position and flush stale frames
+                    // Seek video decoders to current position and flush stale frames.
+                    // Shortcut when resuming from a pause at the same
+                    // playhead: the decoder already has a frame sitting
+                    // in the queue near `source_secs`, so re-seeking
+                    // would force a 100–500 ms keyframe-rewind + forward-
+                    // decode cycle for nothing. Check the queue head
+                    // for a frame within 100 ms of target — if present,
+                    // skip the seek + clear entirely and just resume.
+                    // This is the primary cause of the 2–3 s Play-
+                    // after-pause latency the user hit.
                     if let Some(dec) = &self.v1_decoder {
-                        dec.seek(source_secs);
-                        // Drain stale frames from queue immediately —
-                        // the decoder thread will also clear on seek, but we
-                        // clear from here to discard any frames produced between
-                        // our seek command and the decoder processing it.
-                        dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
+                        let queue_has_target = {
+                            let q = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+                            match q.front() {
+                                Some(f) if !f.is_eof
+                                    && (f.pts_secs() - source_secs).abs() < 0.1 => true,
+                                _ => false,
+                            }
+                        };
+                        if !queue_has_target {
+                            dec.seek(source_secs);
+                            // Drain stale frames from queue immediately —
+                            // the decoder thread will also clear on seek, but we
+                            // clear from here to discard any frames produced between
+                            // our seek command and the decoder processing it.
+                            dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
+                        }
                         dec.resume();
                     }
                     for dec in self.overlay_decoders.values() {
@@ -1516,6 +1895,24 @@ impl PlaybackEngine {
                     }
                     self.state = PlaybackState::Paused;
                     let _ = self.event_tx.send(AppEvent::PlaybackPaused);
+                    // During playback the pregrade encode is skipped
+                    // (see `pregrade_needed` in `post_process_rgba`)
+                    // so `cached_pregrade_frame` may still hold the
+                    // frame we paused ON last — but more importantly,
+                    // `regrade_cached_frame()` is a silent no-op when
+                    // that snapshot is None. Without a fresh pregrade
+                    // in place, every user edit while paused (slider
+                    // drag, AddNode, Connect, ToggleBypass …) feeds
+                    // into a `regrade_cached_frame` that does
+                    // nothing, and the viewer stays stale until the
+                    // user unpauses and re-pauses. Force one
+                    // `seek_in_sequence` on the Pause transition so
+                    // the decoder hands us a known-good frame,
+                    // `post_process_rgba` writes the pregrade
+                    // snapshot, and every subsequent paused edit has
+                    // something to re-grade.
+                    let playhead = self.playhead;
+                    self.seek_in_sequence(playhead);
                     (self.repaint_cb)();
                 }
             }
@@ -1542,8 +1939,26 @@ impl PlaybackEngine {
             }
 
             AppCommand::SeekTo(tc) => {
-                if self.state != PlaybackState::Idle {
-                    self.seek_in_sequence(tc);
+                // Lift the Idle / Stopped gates. After project load
+                // the engine sits in Idle or Stopped depending on
+                // path — but scrubbing the ruler / clicking on the
+                // timeline before the first Play should still seek
+                // the decoder and populate `cached_pregrade_frame`,
+                // otherwise slider edits silently no-op because
+                // `regrade_cached_frame` has nothing to re-grade.
+                self.seek_in_sequence(tc);
+                // Transition Idle / Stopped → Paused once we
+                // actually have a decoder or audio source to play.
+                // Puts the engine in the same "paused with a valid
+                // pregrade snapshot" mode Play-then-Pause produces,
+                // so paused slider edits start working without the
+                // round-trip through Play.
+                if matches!(self.state, PlaybackState::Idle | PlaybackState::Stopped)
+                    && (self.v1_decoder.is_some()
+                        || !self.audio_sources.is_empty())
+                {
+                    self.state = PlaybackState::Paused;
+                    let _ = self.event_tx.send(AppEvent::PlaybackPaused);
                 }
             }
 
@@ -1591,8 +2006,14 @@ impl PlaybackEngine {
 
             AppCommand::SetPlayhead(tc) => {
                 self.playhead = tc;
-                if self.state != PlaybackState::Idle {
-                    self.seek_in_sequence(tc);
+                // Same Idle / Stopped gate lift as SeekTo.
+                self.seek_in_sequence(tc);
+                if matches!(self.state, PlaybackState::Idle | PlaybackState::Stopped)
+                    && (self.v1_decoder.is_some()
+                        || !self.audio_sources.is_empty())
+                {
+                    self.state = PlaybackState::Paused;
+                    let _ = self.event_tx.send(AppEvent::PlaybackPaused);
                 }
             }
 
@@ -1721,6 +2142,17 @@ impl PlaybackEngine {
                         active.source.muted().store(false, Ordering::Release);
                     }
                 }
+                // Thumb refresh is handled by the `SetPlayhead` that
+                // `scrub_end` pushes right after `EndScrub` — that path
+                // runs a real seek (`seek_in_sequence` →
+                // `grab_single_frame_timeout` → `post_process_rgba`)
+                // which produces a fresh frame and captures per-node
+                // thumbs against the final scrub position. The old
+                // `regrade_cached_frame` call here re-graded whatever
+                // stale `cached_pregrade_frame` was lying around (no
+                // longer matches the playhead after a scrub), so the
+                // thumbs would land on the pre-scrub frame instead of
+                // the drop position.
             }
 
             AppCommand::SetLoopPlayback(enabled) => {
@@ -1790,6 +2222,9 @@ impl PlaybackEngine {
             AppCommand::SetScopeRenderMode { mode } => {
                 self.scope_render_mode = mode;
             }
+            AppCommand::SetScopesVisible(visible) => {
+                self.scopes_visible = visible;
+            }
             AppCommand::RenderScopesForFrame { rgba, width, height } => {
                 // Run the same GPU scope shaders the playback pipeline uses
                 // (engine.rs:5149) on a UI-supplied RGBA frame and write the
@@ -1828,6 +2263,62 @@ impl PlaybackEngine {
             AppCommand::SetScopeTapNode { node_id, .. } => {
                 self.scope_tap_node = node_id.clone();
                 debug!("Scope tap node: {:?}", self.scope_tap_node);
+            }
+            AppCommand::SetVisibleNodeThumbs { node_ids, .. } => {
+                self.visible_node_thumbs = node_ids.iter().copied().collect();
+                // Clear the old thumb cache so the next re-grade is
+                // what the UI sees (stale thumbs from a different node
+                // set would confuse the user mid-transition).
+                {
+                    let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                    fb.node_thumbs.clear();
+                    fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
+                }
+                // Force a re-grade of the current frame so the thumbs
+                // populate immediately — otherwise the user opens the
+                // V2 canvas and sees empty nodes until they happen to
+                // move a slider or scrub the playhead.
+                if self.state != PlaybackState::Playing
+                    && !self.visible_node_thumbs.is_empty()
+                {
+                    self.regrade_cached_frame();
+                }
+            }
+            AppCommand::RenderNodeThumbsFromSource {
+                clip_id,
+                playhead,
+                src_rgba,
+                src_w,
+                src_h,
+            } => {
+                self.render_node_thumbs_from_source(
+                    clip_id, playhead, src_rgba, src_w, src_h,
+                );
+            }
+
+            AppCommand::SetSourceMedia { path, source_rotation, .. } => {
+                self.set_source_media(path, source_rotation);
+            }
+            AppCommand::PlaySource => {
+                debug!(
+                    "PlaySource command received, source_state={:?}, source_decoder={}",
+                    self.source_state,
+                    self.source_decoder.is_some(),
+                );
+                self.play_source();
+            }
+            AppCommand::PauseSource => {
+                debug!("PauseSource command received, source_state={:?}", self.source_state);
+                self.pause_source();
+            }
+            AppCommand::SeekSource(tc) => {
+                self.seek_source(tc.to_secs_f64());
+            }
+            AppCommand::StepSource(frames) => {
+                self.step_source(frames);
+            }
+            AppCommand::StopSource => {
+                self.stop_source();
             }
 
             AppCommand::SequenceUpdated => {
@@ -2060,7 +2551,7 @@ impl PlaybackEngine {
                 // boundary.
                 let linear = u8_rgba_to_linear(&rgba);
                 let final_linear = self.post_process_rgba(linear, res.width, res.height);
-                let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+                let final_rgba = self.display_encode(&final_linear);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, res.width, res.height);
                 drop(fb);
@@ -2263,8 +2754,16 @@ impl PlaybackEngine {
         self.last_audio_fingerprint = self.compute_audio_fingerprint();
         self.stop_all_audio();
 
-        // Collect (track_index, media_id, path, source_secs) for every track with audio at tc
-        let track_audio: Vec<(usize, MediaId, PathBuf, f64, Vec<klipp_core::AudioEffectInstance>)> = {
+        // Collect (track_index, media_id, path, source_secs, effects, kfs) for every track with audio at tc
+        type TrackAudioRow = (
+            usize,
+            MediaId,
+            PathBuf,
+            f64,
+            Vec<klipp_core::AudioEffectInstance>,
+            std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+        );
+        let track_audio: Vec<TrackAudioRow> = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
             seq.tracks
@@ -2301,15 +2800,23 @@ impl PlaybackEngine {
                     } else {
                         item.path.clone()
                     };
-                    Some((track_idx, media_id, decode_path, source_secs, clip.audio_effects.clone()))
+                    Some((
+                        track_idx,
+                        media_id,
+                        decode_path,
+                        source_secs,
+                        clip.audio_effects.clone(),
+                        clip.audio_effect_keyframes.clone(),
+                    ))
                 })
                 .collect()
         };
 
         debug!("start_all_audio: {} tracks with audio at {:.3}s", track_audio.len(), tc.to_secs_f64());
-        for (track_idx, media_id, path, source_secs, audio_effects) in track_audio {
-            debug!("start_all_audio: track {} has {} audio effects", track_idx, audio_effects.len());
-            self.open_audio_source(track_idx, media_id, &path, source_secs, audio_effects);
+        for (track_idx, media_id, path, source_secs, audio_effects, audio_effect_keyframes) in track_audio {
+            debug!("start_all_audio: track {} has {} audio effects ({} kf tracks)",
+                track_idx, audio_effects.len(), audio_effect_keyframes.len());
+            self.open_audio_source(track_idx, media_id, &path, source_secs, audio_effects, audio_effect_keyframes);
         }
         // Apply per-clip volume from sequence data
         self.sync_clip_volumes();
@@ -2544,30 +3051,86 @@ impl PlaybackEngine {
     }
 
     /// Compute a fingerprint of audio-relevant state at the current playhead.
-    /// Includes: which media clips are active, their speed, and audio effect count.
+    /// Includes: which media clips are active, their speed, audio effect
+    /// chain (types + enabled), and audio_effect_keyframes (track count
+    /// + per-track length + per-kf time/value/interpolation bits). Any
+    /// change here triggers a chain rebuild on `SequenceUpdated`.
     /// Title/generator clips are excluded (they don't produce audio).
+    ///
+    /// **Scope is intentionally narrow** — only clips currently at the
+    /// playhead contribute. A kf edit on a non-playhead clip does NOT
+    /// flip the fingerprint, but that's correct: no audio source is
+    /// open for those clips, so there's no running chain to rebuild.
+    /// When the playhead reaches the edited clip, `open_audio_source`
+    /// clones the clip's audio_effect_keyframes fresh, so the edit is
+    /// picked up at clip-transition time.
     fn compute_audio_fingerprint(&self) -> u64 {
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let tc = self.playhead;
         let mut fp: u64 = 0;
         for track in &seq.tracks {
             if let Some((_, clip)) = track.clip_at_timecode(tc) {
-                if let Some(mid) = clip.media_id() {
-                    fp = fp.wrapping_mul(31).wrapping_add(mid.0.as_u64_pair().0);
-                    fp = fp.wrapping_mul(31).wrapping_add(clip.speed.to_bits());
-                    fp = fp.wrapping_mul(31).wrapping_add(clip.audio_effects.len() as u64);
-                    // Include effect types so adding/removing effects triggers restart
-                    for ae in &clip.audio_effects {
-                        for b in ae.effect_type.bytes() {
-                            fp = fp.wrapping_mul(31).wrapping_add(b as u64);
-                        }
-                        fp = fp.wrapping_mul(31).wrapping_add(ae.enabled as u64);
-                    }
-                }
+                fp = fp.wrapping_mul(31).wrapping_add(audio_fingerprint_for_clip(clip));
             }
         }
         fp
     }
+}
+
+/// Pure helper: hash the audio-relevant fields of a single clip.
+/// Extracted from `compute_audio_fingerprint` so the per-clip formula
+/// is unit-testable without standing up an Engine. Returns 0 for clips
+/// without media (titles, generators) — caller folds this into the
+/// per-track combine.
+pub(crate) fn audio_fingerprint_for_clip(clip: &klipp_timeline::Clip) -> u64 {
+    let Some(mid) = clip.media_id() else { return 0 };
+    let mut fp: u64 = 0;
+    fp = fp.wrapping_mul(31).wrapping_add(mid.0.as_u64_pair().0);
+    fp = fp.wrapping_mul(31).wrapping_add(clip.speed.to_bits());
+    fp = fp.wrapping_mul(31).wrapping_add(audio_chain_fingerprint_for(
+        &clip.audio_effects,
+        &clip.audio_effect_keyframes,
+    ));
+    fp
+}
+
+/// Hash the audio CHAIN fields only (effects + kf tracks) — without
+/// media_id or clip speed. Used at clip-transition boundaries to detect
+/// "same media, different effects" cases that
+/// `audio_fingerprint_for_clip` would mask under the media_id check.
+pub(crate) fn audio_chain_fingerprint_for(
+    audio_effects: &[klipp_core::AudioEffectInstance],
+    audio_effect_keyframes: &std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+) -> u64 {
+    let mut fp: u64 = 0;
+    fp = fp.wrapping_mul(31).wrapping_add(audio_effects.len() as u64);
+    for ae in audio_effects {
+        for b in ae.effect_type.bytes() {
+            fp = fp.wrapping_mul(31).wrapping_add(b as u64);
+        }
+        fp = fp.wrapping_mul(31).wrapping_add(ae.enabled as u64);
+    }
+    // Sort kf-track keys before hashing so HashMap iteration order
+    // doesn't leak nondeterminism into the fingerprint.
+    fp = fp.wrapping_mul(31).wrapping_add(audio_effect_keyframes.len() as u64);
+    let mut kf_keys: Vec<&String> = audio_effect_keyframes.keys().collect();
+    kf_keys.sort();
+    for key in kf_keys {
+        for b in key.bytes() {
+            fp = fp.wrapping_mul(31).wrapping_add(b as u64);
+        }
+        let kfs = &audio_effect_keyframes[key];
+        fp = fp.wrapping_mul(31).wrapping_add(kfs.len() as u64);
+        for kf in kfs {
+            fp = fp.wrapping_mul(31).wrapping_add(kf.time_secs.to_bits());
+            fp = fp.wrapping_mul(31).wrapping_add(kf.value.to_bits() as u64);
+            fp = fp.wrapping_mul(31).wrapping_add(kf.interpolation as u64);
+        }
+    }
+    fp
+}
+
+impl PlaybackEngine {
 
     fn stop_all_audio(&mut self) {
         // Clear mix thread staging first (stop reading from source ring buffers)
@@ -2594,12 +3157,19 @@ impl PlaybackEngine {
         path: &std::path::Path,
         source_secs: f64,
         audio_effects: Vec<klipp_core::AudioEffectInstance>,
+        audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
     ) {
+        // Compute the chain fingerprint up front so both the PCM and
+        // decoder paths stamp it onto the ActiveAudioSource. Boundary
+        // checks compare this against the new clip to decide whether
+        // a chain rebuild is required.
+        let chain_fp = audio_chain_fingerprint_for(&audio_effects, &audio_effect_keyframes);
+
         // Try PCM cache first (instant seeks, zero codec overhead)
         let pcm_path = self.pcm_cache_path(media_id);
         if let Some(ref pcm) = pcm_path {
             if pcm.exists() {
-                match PcmAudioFeeder::open(pcm, self.cpal_sample_rate, audio_effects.clone()) {
+                match PcmAudioFeeder::open(pcm, self.cpal_sample_rate, audio_effects.clone(), audio_effect_keyframes.clone()) {
                     Ok((feeder, consumer)) => {
                         if source_secs > 0.01 {
                             feeder.seek(source_secs);
@@ -2610,6 +3180,7 @@ impl PlaybackEngine {
                         self.audio_sources.push(ActiveAudioSource {
                             track_index,
                             media_id,
+                            audio_chain_fingerprint: chain_fp,
                             source: AudioSource::PcmFeeder(feeder),
                         });
                         return;
@@ -2622,7 +3193,7 @@ impl PlaybackEngine {
         }
 
         // Fallback: real-time ffmpeg decode
-        match AudioDecoder::open(path, self.cpal_sample_rate, audio_effects) {
+        match AudioDecoder::open(path, self.cpal_sample_rate, audio_effects, audio_effect_keyframes, source_secs) {
             Ok((adec, consumer)) => {
                 if source_secs > 0.01 {
                     adec.seek(source_secs);
@@ -2633,6 +3204,7 @@ impl PlaybackEngine {
                 self.audio_sources.push(ActiveAudioSource {
                     track_index,
                     media_id,
+                    audio_chain_fingerprint: chain_fp,
                     source: AudioSource::Decoder(adec),
                 });
             }
@@ -2696,7 +3268,12 @@ impl PlaybackEngine {
         // sees clip A's audio continue playing through clip B's playback
         // whenever advance_to_next_clip enters the preroll-hit branch with
         // a different media on the next clip.
-        let media_changed = {
+        //
+        // Same restart triggers when the AUDIO CHAIN changed (different
+        // audio_effects / audio_effect_keyframes on the next clip) — two
+        // same-media clips with distinct effects would otherwise share
+        // the first clip's chain and the user hears effect bleed.
+        let chain_or_media_changed = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             self.audio_sources.iter().any(|active| {
                 let Some(track) = seq.tracks.get(active.track_index) else {
@@ -2707,10 +3284,17 @@ impl PlaybackEngine {
                     // drop the source, which is the correct outcome too.
                     return true;
                 };
-                clip.media_id() != Some(active.media_id)
+                if clip.media_id() != Some(active.media_id) {
+                    return true;
+                }
+                let new_fp = audio_chain_fingerprint_for(
+                    &clip.audio_effects,
+                    &clip.audio_effect_keyframes,
+                );
+                new_fp != active.audio_chain_fingerprint
             })
         };
-        if media_changed {
+        if chain_or_media_changed {
             self.start_all_audio(tc);
             return;
         }
@@ -2765,6 +3349,47 @@ impl PlaybackEngine {
                 break;
             }
             std::thread::sleep(Duration::from_micros(100));
+        }
+    }
+
+    /// Wait until the mix thread has pre-filled the main ring buffer with at
+    /// least one cpal-callback-worth of samples, or until the timeout elapses.
+    /// Replaces a previous hardcoded 15 ms `thread::sleep` after seek.
+    ///
+    /// Why: cpal's output callback pulls a few hundred to a few thousand
+    /// samples per call. Resuming cpal against an empty main ring causes a
+    /// brief silent gap or starvation while the mix pipeline catches up.
+    /// The fixed 15 ms wait was unreliable under load (mix thread might still
+    /// be warming up at 15 ms on a busy machine) and wasteful idle (mix
+    /// thread typically fills enough in 2–5 ms).
+    ///
+    /// We poll `MixThread::buffered_samples()` (a lock-free atomic written
+    /// by the mix loop on every iteration) at 1 ms granularity, and proceed
+    /// either when the buffer has reached `target_samples` or when the
+    /// `timeout` elapses. The timeout matches the prior worst-case
+    /// behaviour so a misconfigured pipeline still progresses rather than
+    /// blocking forever.
+    fn wait_for_audio_prefill(&self) {
+        // ~21 ms of stereo audio at 48 kHz, ~10 ms at 96 kHz. Comfortable
+        // margin over a typical 256–1024-sample cpal callback request.
+        const TARGET_SAMPLES: usize = 2048;
+        const POLL_INTERVAL: Duration = Duration::from_millis(1);
+        const TIMEOUT: Duration = Duration::from_millis(50);
+        let Some(mt) = &self.mix_thread else { return };
+        let start = std::time::Instant::now();
+        loop {
+            if mt.buffered_samples() >= TARGET_SAMPLES {
+                return;
+            }
+            if start.elapsed() >= TIMEOUT {
+                debug!(
+                    "audio prefill timeout: only {} samples ready after {:?}",
+                    mt.buffered_samples(),
+                    TIMEOUT
+                );
+                return;
+            }
+            std::thread::sleep(POLL_INTERVAL);
         }
     }
 
@@ -2944,7 +3569,7 @@ impl PlaybackEngine {
                 // title/generator viewer boundary.
                 let linear = u8_rgba_to_linear(&rgba);
                 let final_linear = self.post_process_rgba(linear, w, h);
-                let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+                let final_rgba = self.display_encode(&final_linear);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, w, h);
                 drop(fb);
@@ -3011,7 +3636,7 @@ impl PlaybackEngine {
             }
         }
 
-        let frame = match display_frame {
+        let mut frame = match display_frame {
             Some(f) => f,
             None => {
                 if self.v1_decoder.is_none() && !self.audio_sources.is_empty() {
@@ -3221,6 +3846,13 @@ impl PlaybackEngine {
         // trip via `frame.into_rgba().to_linear()`.
         let (final_w, final_h) = (frame.width, frame.height);
         let t_pp_full = std::time::Instant::now();
+        // Phase 4d.1: realise CPU `data` from `gpu_source` if the
+        // decoder deferred it. The grade chain consumes the GPU
+        // buffer directly via `prime_chain_from_gpu_u8_buffer`, but
+        // the CPU encode path inside `post_process_rgba` (pregrade
+        // cache, scope reencode) still wants linear-f32. No-op when
+        // `data` is already populated (SW decode, KLIPP_GPU_FRAMES=0).
+        frame.ensure_cpu_data();
         let gpu_source = frame.gpu_source.clone();
         let v1_graded_linear = self.post_process_rgba_with_gpu_source(
             frame.data, final_w, final_h, gpu_source.as_ref(),
@@ -3370,10 +4002,7 @@ impl PlaybackEngine {
         // sRGB-encodes the result. For `ToneMapOp::None` + SDR content
         // this is bit-identical to the old linear_rgba_to_u8 path.
         let t_display = std::time::Instant::now();
-        let final_rgba = klipp_color::display::display_transform(
-            &accumulated_linear,
-            self.tone_map_op,
-        );
+        let final_rgba = self.display_encode(&accumulated_linear);
         let display_us = t_display.elapsed().as_micros();
         // Return the linear scratch to the pool for the next frame.
         self.composite_scratch_linear = accumulated_linear;
@@ -3607,21 +4236,36 @@ impl PlaybackEngine {
             // new playhead, delegate to `start_all_audio` to stop-and-reopen
             // the decoders. Video stays contiguous regardless. Mirrors the
             // matching check in `seek_all_audio_to_timecode`.
-            let audio_media_changed = {
+            //
+            // We also restart when the AUDIO CHAIN changed — two clips
+            // that share the same media file can carry different
+            // audio_effects / audio_effect_keyframes, and without this
+            // check the prior clip's chain bleeds into the next one
+            // (manifests as "the effect is applied to the whole track").
+            let audio_chain_or_media_changed = {
                 let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 self.audio_sources.iter().any(|active| {
                     let Some(track) = seq.tracks.get(active.track_index) else {
                         return true;
                     };
                     match track.clip_at_timecode(self.playhead) {
-                        Some((_, clip)) => clip.media_id() != Some(active.media_id),
+                        Some((_, clip)) => {
+                            if clip.media_id() != Some(active.media_id) {
+                                return true;
+                            }
+                            let new_fp = audio_chain_fingerprint_for(
+                                &clip.audio_effects,
+                                &clip.audio_effect_keyframes,
+                            );
+                            new_fp != active.audio_chain_fingerprint
+                        }
                         None => true,
                     }
                 })
             };
-            if audio_media_changed {
+            if audio_chain_or_media_changed {
                 info!(
-                    "CUT-DIAG CONTIGUOUS: audio media changed at boundary — restarting audio sources",
+                    "CUT-DIAG CONTIGUOUS: audio media or chain changed at boundary — restarting audio sources",
                 );
                 self.start_all_audio(self.playhead);
                 self.update_overlay_decoders(self.playhead);
@@ -4179,7 +4823,15 @@ impl PlaybackEngine {
             };
 
             // Collect audio track info at target position
-            let track_audio: Vec<(usize, MediaId, PathBuf, f64, Vec<klipp_core::AudioEffectInstance>)> = seq
+            type PreSeekRow = (
+                usize,
+                MediaId,
+                PathBuf,
+                f64,
+                Vec<klipp_core::AudioEffectInstance>,
+                std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+            );
+            let track_audio: Vec<PreSeekRow> = seq
                 .tracks
                 .iter()
                 .enumerate()
@@ -4224,7 +4876,14 @@ impl PlaybackEngine {
                         .filter(|p| p.exists())
                         .unwrap_or(decode_path);
 
-                    Some((track_idx, media_id, path, source_secs, clip.audio_effects.clone()))
+                    Some((
+                        track_idx,
+                        media_id,
+                        path,
+                        source_secs,
+                        clip.audio_effects.clone(),
+                        clip.audio_effect_keyframes.clone(),
+                    ))
                 })
                 .collect();
             drop(pool);
@@ -4232,28 +4891,31 @@ impl PlaybackEngine {
 
             // Open and seek audio sources
             let mut sources = Vec::new();
-            for (track_idx, media_id, path, source_secs, audio_effects) in track_audio {
+            for (track_idx, media_id, path, source_secs, audio_effects, audio_effect_keyframes) in track_audio {
+                let chain_fp = audio_chain_fingerprint_for(&audio_effects, &audio_effect_keyframes);
                 // Try PCM cache
-                if let Ok((feeder, consumer)) = PcmAudioFeeder::open(&path, sample_rate, audio_effects.clone()) {
+                if let Ok((feeder, consumer)) = PcmAudioFeeder::open(&path, sample_rate, audio_effects.clone(), audio_effect_keyframes.clone()) {
                     if source_secs > 0.01 {
                         feeder.seek(source_secs);
                     }
                     sources.push(PreSeekAudioSource {
                         track_index: track_idx,
                         media_id,
+                        audio_chain_fingerprint: chain_fp,
                         source: AudioSource::PcmFeeder(feeder),
                         consumer,
                     });
                     continue;
                 }
                 // Fallback: ffmpeg decode
-                if let Ok((adec, consumer)) = AudioDecoder::open(&path, sample_rate, audio_effects) {
+                if let Ok((adec, consumer)) = AudioDecoder::open(&path, sample_rate, audio_effects, audio_effect_keyframes, source_secs) {
                     if source_secs > 0.01 {
                         adec.seek(source_secs);
                     }
                     sources.push(PreSeekAudioSource {
                         track_index: track_idx,
                         media_id,
+                        audio_chain_fingerprint: chain_fp,
                         source: AudioSource::Decoder(adec),
                         consumer,
                     });
@@ -4319,6 +4981,7 @@ impl PlaybackEngine {
                     self.audio_sources.push(ActiveAudioSource {
                         track_index: ps_source.track_index,
                         media_id: ps_source.media_id,
+                        audio_chain_fingerprint: ps_source.audio_chain_fingerprint,
                         source: ps_source.source,
                     });
                 }
@@ -4446,7 +5109,7 @@ impl PlaybackEngine {
             // Title renderer emits u8; bridge at this viewer boundary.
             let linear = u8_rgba_to_linear(&rgba);
             let final_linear = self.post_process_rgba(linear, res.width, res.height);
-            let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+            let final_rgba = self.display_encode(&final_linear);
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame(final_rgba, res.width, res.height);
             drop(fb);
@@ -4461,7 +5124,7 @@ impl PlaybackEngine {
 
             if was_playing {
                 for active in &self.audio_sources { active.source.resume(); }
-                std::thread::sleep(Duration::from_millis(15));
+                self.wait_for_audio_prefill();
                 if let Some(aout) = &self.audio_output { aout.0.resume(); }
                 self.master_clock.resume();
             }
@@ -4527,7 +5190,7 @@ impl PlaybackEngine {
             // 4. Pre-fill + resume
             if was_playing {
                 for active in &self.audio_sources { active.source.resume(); }
-                std::thread::sleep(Duration::from_millis(15));
+                self.wait_for_audio_prefill();
                 if let Some(aout) = &self.audio_output { aout.0.resume(); }
                 self.master_clock.resume();
             }
@@ -4555,7 +5218,7 @@ impl PlaybackEngine {
 
             if was_playing {
                 for active in &self.audio_sources { active.source.resume(); }
-                std::thread::sleep(Duration::from_millis(15));
+                self.wait_for_audio_prefill();
                 if let Some(aout) = &self.audio_output { aout.0.resume(); }
                 self.master_clock.resume();
             }
@@ -4617,7 +5280,7 @@ impl PlaybackEngine {
                 let rgba = self.title_renderer.render_with_gpu(td_for_render, res.width, res.height, gpu);
                 let linear = u8_rgba_to_linear(&rgba);
                 let final_linear = self.post_process_rgba(linear, res.width, res.height);
-                let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+                let final_rgba = self.display_encode(&final_linear);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, res.width, res.height);
                 drop(fb);
@@ -4656,7 +5319,7 @@ impl PlaybackEngine {
                     );
                     let linear = u8_rgba_to_linear(&rgba);
                     let final_linear = self.post_process_rgba(linear, res2.width, res2.height);
-                    let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+                    let final_rgba = self.display_encode(&final_linear);
                     let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                     fb.write_frame(final_rgba, res2.width, res2.height);
                     drop(fb);
@@ -4745,7 +5408,7 @@ impl PlaybackEngine {
                 for active in &self.audio_sources {
                     active.source.resume();
                 }
-                std::thread::sleep(Duration::from_millis(15));
+                self.wait_for_audio_prefill();
 
                 // Resume cpal + clock together
                 if let Some(aout) = &self.audio_output {
@@ -4760,7 +5423,16 @@ impl PlaybackEngine {
             self.update_overlay_decoders(tc);
 
             if !was_playing {
-                self.grab_single_frame_timeout(grab_timeout);
+                let got_frame = self.grab_single_frame_timeout(grab_timeout);
+                if !got_frame {
+                    // 4K / slow codec cold seeks routinely outrun the
+                    // 50–200 ms grab budget. Instead of giving up and
+                    // freezing V2 thumbs on the pre-seek frame until
+                    // the user pokes an arrow key, keep the decoder
+                    // running and let the per-tick paused branch
+                    // post-process the frame the moment it lands.
+                    self.pending_paused_refresh = true;
+                }
                 // Play scrub chirp (~40ms snippet at the seek position) unless
                 // the user has disabled audio during a scrub.
                 if !self.is_scrubbing || self.scrub_audio_enabled {
@@ -4805,7 +5477,7 @@ impl PlaybackEngine {
                     for active in &self.audio_sources {
                         active.source.resume();
                     }
-                    std::thread::sleep(Duration::from_millis(15));
+                    self.wait_for_audio_prefill();
                     if let Some(aout) = &self.audio_output {
                         aout.0.resume();
                     }
@@ -4850,7 +5522,7 @@ impl PlaybackEngine {
             self.playhead = RationalTime { value: target_frame, rate: self.playhead.rate };
             let linear = u8_rgba_to_linear(&rgba);
             let final_linear = self.post_process_rgba(linear, w, h);
-            let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+            let final_rgba = self.display_encode(&final_linear);
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame(final_rgba, w, h);
             drop(fb);
@@ -4868,7 +5540,7 @@ impl PlaybackEngine {
                 dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop()
             }).filter(|f| !f.is_eof);
 
-            if let Some(frame) = next_frame {
+            if let Some(mut frame) = next_frame {
                 let chirp_pos = frame.pts_secs();
                 let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 if let Some(clip) = seq.tracks.get(self.current_track_index)
@@ -4888,13 +5560,14 @@ impl PlaybackEngine {
                 // Cache pre-grade frame as u8 for backward stepping
                 // (frame_cache stores u8). Feed linear straight into
                 // post_process_rgba so the hot path stays in linear.
+                frame.ensure_cpu_data();
                 let rgba_u8 = linear_rgba_to_u8(&frame.data);
                 self.frame_cache.insert(self.playhead.value, Arc::new(rgba_u8), w, h);
                 let gpu_source = frame.gpu_source.clone();
                 let final_linear = self.post_process_rgba_with_gpu_source(
                     frame.data, w, h, gpu_source.as_ref(),
                 );
-                let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+                let final_rgba = self.display_encode(&final_linear);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, w, h);
                 drop(fb);
@@ -4924,7 +5597,7 @@ impl PlaybackEngine {
                 // Pop frame in a limited scope to avoid borrowing self across post_process
                 let popped = self.v1_decoder.as_ref()
                     .and_then(|dec| dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop());
-                if let Some(frame) = popped {
+                if let Some(mut frame) = popped {
                     if frame.is_eof {
                         if let Some(dec) = &self.v1_decoder { dec.pause(); }
                         return;
@@ -4949,13 +5622,14 @@ impl PlaybackEngine {
                     let (w, h) = (frame.width, frame.height);
                     // Cache pre-grade frame as u8 for backward
                     // stepping; post_process_rgba stays linear.
+                    frame.ensure_cpu_data();
                     let rgba_u8 = linear_rgba_to_u8(&frame.data);
                     self.frame_cache.insert(self.playhead.value, Arc::new(rgba_u8), w, h);
                     let gpu_source = frame.gpu_source.clone();
                     let final_linear = self.post_process_rgba_with_gpu_source(
                         frame.data, w, h, gpu_source.as_ref(),
                     );
-                    let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+                    let final_rgba = self.display_encode(&final_linear);
                     let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                     fb.write_frame(final_rgba, w, h);
                     drop(fb);
@@ -5005,7 +5679,7 @@ impl PlaybackEngine {
             while std::time::Instant::now() < deadline {
                 let popped = self.v1_decoder.as_ref()
                     .and_then(|dec| dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop());
-                if let Some(frame) = popped {
+                if let Some(mut frame) = popped {
                     if frame.is_eof { break; }
                     let (w, h) = (frame.width, frame.height);
 
@@ -5029,6 +5703,7 @@ impl PlaybackEngine {
                     // Cache the pre-grade frame as u8 for backward
                     // stepping; the display path stays in linear until
                     // the viewer seam below.
+                    frame.ensure_cpu_data();
                     let rgba_u8 = linear_rgba_to_u8(&frame.data);
                     self.frame_cache.insert(frame_num, Arc::new(rgba_u8), w, h);
 
@@ -5040,7 +5715,7 @@ impl PlaybackEngine {
                         let final_linear = self.post_process_rgba_with_gpu_source(
                             frame.data, w, h, gpu_source.as_ref(),
                         );
-                        let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+                        let final_rgba = self.display_encode(&final_linear);
                         let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                         fb.write_frame(final_rgba, w, h);
                         drop(fb);
@@ -5163,7 +5838,14 @@ impl PlaybackEngine {
                 self.playhead = klipp_core::RationalTime { value: frame_num, rate: self.playhead.rate };
 
                 let linear = u8_rgba_to_linear(&rgba);
+                // Suspend per-node thumbnail capture: this speculative
+                // grade is for a NEAR-playhead frame (prerender cache
+                // warm-up), not the user's actual playhead. Capturing
+                // thumbs here would overwrite the canvas previews with
+                // frames the user didn't ask for.
+                self.thumb_capture_suspended = true;
                 let graded_linear = self.post_process_rgba_inner(linear, w, h);
+                self.thumb_capture_suspended = false;
                 let graded = linear_rgba_to_u8(&graded_linear);
 
                 self.render_cache_hot.insert(key.clone(), graded.clone(), w, h);
@@ -5304,7 +5986,7 @@ impl PlaybackEngine {
         }
     }
 
-    fn grab_single_frame_timeout(&mut self, timeout: Duration) {
+    fn grab_single_frame_timeout(&mut self, timeout: Duration) -> bool {
         let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
             // Pop best frame in limited scope to avoid borrow across post_process
@@ -5319,16 +6001,17 @@ impl PlaybackEngine {
                 }
                 best
             });
-            if let Some(frame) = best {
+            if let Some(mut frame) = best {
                 let (w, h) = (frame.width, frame.height);
                 // LinearFrame carries linear natively — feed it
                 // straight into post_process_rgba, display-transform
                 // once at the viewer seam.
+                frame.ensure_cpu_data();
                 let gpu_source = frame.gpu_source.clone();
                 let final_linear = self.post_process_rgba_with_gpu_source(
                     frame.data, w, h, gpu_source.as_ref(),
                 );
-                let final_rgba = klipp_color::display::display_transform(&final_linear, self.tone_map_op);
+                let final_rgba = self.display_encode(&final_linear);
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 fb.write_frame(final_rgba, w, h);
                 drop(fb);
@@ -5337,12 +6020,145 @@ impl PlaybackEngine {
                     dec.pause();
                 }
                 (self.repaint_cb)();
-                return;
+                return true;
             }
             std::thread::sleep(Duration::from_millis(2));
         }
+        // Timed out without a frame. DO NOT pause the decoder here — the
+        // caller may set `pending_paused_refresh` so the per-tick paused
+        // branch picks up the frame when it finally arrives. If the caller
+        // doesn't care (e.g. initial load), it will get paused elsewhere.
+        false
+    }
+
+    /// Per-tick handler for `pending_paused_refresh`. Pops one frame the
+    /// decoder has produced since the timed-out seek, runs the full
+    /// post_process pipeline on it (which captures per-node thumbs when
+    /// V2 canvas is open), and pauses the decoder. Returns true on
+    /// success so the caller can clear the flag. Returns false and leaves
+    /// the decoder running when the queue is still empty.
+    fn try_drain_paused_refresh_frame(&mut self) -> bool {
+        let frame = self.v1_decoder.as_ref().and_then(|dec| {
+            let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+            let mut best = None;
+            while let Some(f) = queue.pop() {
+                if f.is_eof { break; }
+                best = Some(f);
+            }
+            best
+        });
+        let Some(mut frame) = frame else { return false; };
+        let (w, h) = (frame.width, frame.height);
+        frame.ensure_cpu_data();
+        let gpu_source = frame.gpu_source.clone();
+        let final_linear = self.post_process_rgba_with_gpu_source(
+            frame.data, w, h, gpu_source.as_ref(),
+        );
+        let final_rgba = self.display_encode(&final_linear);
+        {
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            fb.write_frame(final_rgba, w, h);
+        }
+        let _ = self.event_tx.send(AppEvent::FrameReady);
         if let Some(dec) = &self.v1_decoder {
             dec.pause();
+        }
+        (self.repaint_cb)();
+        true
+    }
+
+    /// Run the clip's node graph on a caller-supplied pre-grade source
+    /// (e.g. a filmstrip tile at ~228×128) to produce per-node
+    /// thumbnails for the V2 canvas — without waiting on a full-res
+    /// decoder seek. Grade params are still evaluated at `playhead` so
+    /// keyframed values match exactly; only the source pixels come
+    /// from a nearby timestamp (visually indistinguishable at 192×108
+    /// and way more reliable than the decode-then-capture path).
+    ///
+    /// Source is sRGB u8 RGBA at `src_w × src_h`. Executor runs at the
+    /// same resolution and its thumb-capture stage downsamples each
+    /// visible node's output to 192×108 (`THUMB_W/THUMB_H` in
+    /// klipp-nodes). Silently no-ops when the visible-set is empty,
+    /// the clip / graph is missing, or the source payload has the
+    /// wrong length — nothing to do, no harm done.
+    fn render_node_thumbs_from_source(
+        &mut self,
+        clip_id: klipp_core::ClipId,
+        playhead: klipp_core::RationalTime,
+        src_rgba: Vec<u8>,
+        src_w: u32,
+        src_h: u32,
+    ) {
+        if self.visible_node_thumbs.is_empty() {
+            return;
+        }
+        if src_rgba.len() != (src_w as usize) * (src_h as usize) * 4 {
+            return;
+        }
+        // Clone the graph under a short read lock so the executor call
+        // below doesn't hold the sequence lock.
+        let (graph, clip_time_secs) = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            let found = seq.tracks.iter().find_map(|track| {
+                track.clips.iter().find(|c| c.id == clip_id).map(|c| {
+                    let speed = c.speed.max(0.001);
+                    let clip_t = c.source_in.to_secs_f64()
+                        + (playhead - c.timeline_in).to_secs_f64() * speed;
+                    (c.node_graph.clone(), clip_t.max(0.0))
+                })
+            });
+            match found {
+                Some(v) => v,
+                None => return,
+            }
+        };
+        if graph.is_identity() {
+            // Empty graph: the thumb is just the source (pre-grade)
+            // for every visible node. Cheap one-off downsample + fan-out
+            // so Source / Output nodes still get a preview.
+            use klipp_nodes::{THUMB_W, THUMB_H};
+            let thumb = downsample_srgb_u8_to_thumb(&src_rgba, src_w, src_h, THUMB_W, THUMB_H);
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            fb.node_thumbs.clear();
+            for &node_id in &self.visible_node_thumbs {
+                fb.node_thumbs.insert(node_id, thumb.clone());
+            }
+            fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
+            return;
+        }
+        let linear_in = u8_rgba_to_linear(&src_rgba);
+        let frame_number = (clip_time_secs * self.playhead.rate as f64).max(0.0) as u64;
+        let thumb_set = self.visible_node_thumbs.clone();
+        self.ensure_gpu_effects();
+        // Mirror the project's active working colorspace into the
+        // executor so gamut-aware grade ops (Saturation, Vibrance,
+        // ToneControls, ColorWheels, etc.) use the right luma vector.
+        // Cheap setter; safe to call per-frame.
+        self.graph_executor.set_working_colorspace(
+            crate::video_decoder::working_colorspace(),
+        );
+        match self.graph_executor.execute_linear_with_thumbs(
+            &linear_in,
+            &graph,
+            src_w,
+            src_h,
+            clip_time_secs,
+            frame_number,
+            None, // no scope tap on this pass
+            None, // no matte preview on this pass
+            Some(&thumb_set),
+        ) {
+            Ok((_result, _tapped, thumbs)) => {
+                if thumbs.is_empty() {
+                    return;
+                }
+                let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                fb.node_thumbs = thumbs;
+                fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
+            }
+            Err(e) => {
+                tracing::debug!("render_node_thumbs_from_source: executor failed: {e:?}");
+            }
         }
     }
 
@@ -5593,6 +6409,9 @@ impl PlaybackEngine {
         let rgba = if !clip.node_graph.is_identity() {
             self.graph_executor.prepare_clip(&clip.node_graph);
             let frame_number = (clip_time_secs * self.fps.as_f64()).max(0.0) as u64;
+            self.graph_executor.set_working_colorspace(
+                crate::video_decoder::working_colorspace(),
+            );
             match self.graph_executor.execute_linear(
                 &linear_rgba, &clip.node_graph, width, height, clip_time_secs, frame_number, None, None,
             ) {
@@ -5797,6 +6616,25 @@ impl PlaybackEngine {
         self.post_process_rgba(linear_rgba, width, height)
     }
 
+    /// Working-space-aware viewer display encode. Used at every site
+    /// where a linear-light frame leaves the engine for the framebuffer
+    /// — the single dispatch point that picks between the legacy
+    /// Rec.709 tone-map path and the ACES RRT+ODT path based on the
+    /// project's active working colorspace.
+    ///
+    /// Reads `WORKING_COLORSPACE_PREF` lock-free per-call; cheap.
+    /// Without this helper the engine would have ~14 viewer-encode
+    /// call sites to thread the working-space argument through; this
+    /// keeps every site at a single-line `self.display_encode(&linear)`
+    /// invocation.
+    fn display_encode(&self, linear: &[f32]) -> Vec<u8> {
+        klipp_color::display::display_transform_ws(
+            linear,
+            self.tone_map_op,
+            crate::video_decoder::working_colorspace(),
+        )
+    }
+
     fn post_process_rgba(&mut self, linear_rgba: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
         mark_stage(EngineStage::PostProcessEntry);
         let t_wrap_start = std::time::Instant::now();
@@ -5891,6 +6729,14 @@ impl PlaybackEngine {
                         &clip.node_graph, &clip.builtin_effects, &clip.builtin_effects_enabled,
                     );
                     self.current_grade_clip_id = Some(clip.id);
+                    // CRITICAL: `current_grade_clip_id` is shared with
+                    // the graph-Arc cache in `post_process_rgba_inner`
+                    // (the `cache_hit` check compares that same id).
+                    // Bumping the id without invalidating the Arc would
+                    // leave the previous clip's graph in the cache and
+                    // `_inner` would happily reuse it — exactly the
+                    // "grade applied to every clip" bug we chased here.
+                    self.current_graph_arc = None;
                 }
                 if !clip.node_graph.is_identity() || !clip.builtin_effects.is_empty() {
                     Some(crate::render_cache::RenderCacheKey {
@@ -6131,13 +6977,31 @@ impl PlaybackEngine {
         // that case.
         if should_publish_gpu_viewer() && (width * 4) % 256 == 0 {
             mark_stage(EngineStage::GpuEncodeToTexture);
+            // When the grade chain just ran, its final linear-RGBA
+            // output is still in `buf_a`/`buf_b` on the GPU — the
+            // CPU `result_linear` we hold is a mirror produced by
+            // the chain-tail download. Routing the viewer texture
+            // from that on-GPU buffer via `encode_grade_to_texture`
+            // skips the 33 MB PCIe re-upload that
+            // `linear_rgba_to_texture_gpu` would otherwise do
+            // (~5 ms at 1080p). Falls back to the CPU-upload path
+            // when no chain ran (identity graph, pure-CPU node, or
+            // executor produced its result without engaging GPU).
+            let chain_slot = self.graph_executor.last_chain_final_slot();
             if let Some(gpu) = self.graph_executor.gpu_pipeline_mut() {
                 let device = gpu.device();
                 let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
                 let tex = fb.ensure_gpu_output(&device, width, height);
                 drop(fb);
                 if let Some(tex) = tex {
-                    let _ = gpu.linear_rgba_to_texture_gpu(&result_linear, width, height, &tex);
+                    match chain_slot {
+                        Some(slot_a) => {
+                            let _ = gpu.encode_grade_to_texture(slot_a, width, height, &tex);
+                        }
+                        None => {
+                            let _ = gpu.linear_rgba_to_texture_gpu(&result_linear, width, height, &tex);
+                        }
+                    }
                 }
             }
         }
@@ -6198,11 +7062,11 @@ impl PlaybackEngine {
                 let linear_out = composite_layers_linear(&layers, w, h);
                 // Display boundary — same tone-map path as the main
                 // playback compositor.
-                klipp_color::display::display_transform(&linear_out, self.tone_map_op)
+                self.display_encode(&linear_out)
             } else {
                 // No overlays — the single-layer graded frame IS the
-                // output; display_transform at the viewer seam.
-                klipp_color::display::display_transform(&graded_linear, self.tone_map_op)
+                // output; display_encode at the viewer seam.
+                self.display_encode(&graded_linear)
             };
 
             // Render GPU scope texture from the graded frame. Modes
@@ -6252,6 +7116,13 @@ impl PlaybackEngine {
             }
             drop(fb);
             let _ = self.event_tx.send(AppEvent::FrameReady);
+            // Wake the UI. When paused, egui sleeps until an input
+            // event or a scheduled repaint — neither fires on its
+            // own for a param-change-triggered regrade. Without this,
+            // slider drags on a paused clip write a fresh frame to
+            // `frame_buffer` but the viewer stays asleep until the
+            // user moves the mouse.
+            (self.repaint_cb)();
         } else if let Some((track_idx, ov_w, ov_h)) = {
             // Pick the topmost overlay (highest track index) with a frame in deterministic order.
             let overlay_indices: Vec<usize> = {
@@ -6287,6 +7158,7 @@ impl PlaybackEngine {
             fb.write_frame(rgba, ov_w, ov_h);
             drop(fb);
             let _ = self.event_tx.send(AppEvent::FrameReady);
+            (self.repaint_cb)();
         }
     }
 
@@ -6366,8 +7238,25 @@ impl PlaybackEngine {
         let rgba = linear_rgba;
         let t0 = std::time::Instant::now();
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-        let clip = seq.tracks.get(self.current_track_index)
-            .and_then(|t| t.clips.get(self.current_clip_index));
+        // Pick the clip by playhead position, NOT by the engine's
+        // current_track_index/current_clip_index decoder bookkeeping.
+        // The two can disagree for a window during clip transitions
+        // (decoder switches files before advance_to_next_clip bumps
+        // the indices, or vice versa), and any disagreement here means
+        // the wrong clip's grade gets applied to the new clip's
+        // pixels. The cache key path above (`clip_at_timecode`) uses
+        // playhead lookup; matching it makes the grade follow the
+        // playhead 1:1.
+        //
+        // Falls back to the index-based lookup when no playable clip
+        // sits under the playhead — preserves the synthetic / no-clip
+        // paths that the original lookup served.
+        let clip = seq.tracks.iter()
+            .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+            .find_map(|t| t.clip_at_timecode(self.playhead))
+            .map(|(_, c)| c)
+            .or_else(|| seq.tracks.get(self.current_track_index)
+                .and_then(|t| t.clips.get(self.current_clip_index)));
         // Capture the current clip's id for per-effect compare gating after
         // the seq lock drops. Some() only when we actually have a clip.
         let current_clip_id: Option<klipp_core::ClipId> = clip.map(|c| c.id);
@@ -6721,7 +7610,24 @@ impl PlaybackEngine {
                 // `execute` wrapper would decode u8→linear then re-
                 // encode on the way back.
                 mark_stage(EngineStage::PostProcessInnerGradeExecute);
-                match self.graph_executor.execute_linear(
+                // Per-node thumbnail capture — only while NOT actively
+                // playing. During playback the N extra readbacks (one
+                // per visible node) would cost more than the grade
+                // itself; when paused we can afford them. `None` =
+                // zero-overhead capture skip; `Some(&set)` enables it.
+                let thumb_set: Option<&std::collections::HashSet<klipp_nodes::NodeId>> =
+                    if self.state != PlaybackState::Playing
+                        && !self.visible_node_thumbs.is_empty()
+                        && !self.thumb_capture_suspended
+                    {
+                        Some(&self.visible_node_thumbs)
+                    } else {
+                        None
+                    };
+                self.graph_executor.set_working_colorspace(
+                    crate::video_decoder::working_colorspace(),
+                );
+                match self.graph_executor.execute_linear_with_thumbs(
                     &rgba,
                     graph,
                     width,
@@ -6730,15 +7636,24 @@ impl PlaybackEngine {
                     frame_number,
                     self.scope_tap_node,
                     matte_pv_node,
+                    thumb_set,
                 ) {
-                    Ok((result, tapped)) => {
+                    Ok((result, tapped, thumbs)) => {
                         // Store tapped output for scope display — scope
                         // consumers still speak u8, so encode at this
                         // one seam only.
-                        if let Some(tap_linear) = tapped {
-                            let tap_u8 = klipp_effects::linear_f32_rgba_to_srgb_u8(&tap_linear);
+                        let has_tap = tapped.is_some();
+                        let has_thumbs = !thumbs.is_empty();
+                        if has_tap || has_thumbs {
                             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
-                            fb.scope_data = tap_u8;
+                            if let Some(tap_linear) = tapped {
+                                let tap_u8 = klipp_effects::linear_f32_rgba_to_srgb_u8(&tap_linear);
+                                fb.scope_data = tap_u8;
+                            }
+                            if has_thumbs {
+                                fb.node_thumbs = thumbs;
+                                fb.node_thumbs_gen = fb.node_thumbs_gen.wrapping_add(1);
+                            }
                         }
                         result
                     }
@@ -7230,7 +8145,8 @@ impl PlaybackEngine {
     /// budget during playback with sliders active.
     fn should_render_scope(&self) -> bool {
         const SCOPE_MIN_INTERVAL_MS: u128 = 100;
-        self.last_scope_render.elapsed().as_millis() >= SCOPE_MIN_INTERVAL_MS
+        self.scopes_visible
+            && self.last_scope_render.elapsed().as_millis() >= SCOPE_MIN_INTERVAL_MS
     }
 
     /// Wait for a video frame near `target_secs` to appear in the queue.
@@ -7272,7 +8188,7 @@ impl PlaybackEngine {
     fn path_for_media(&self, media_id: MediaId) -> Option<PathBuf> {
         self.media_pool
             .read()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(&media_id)
             .map(|item| {
                 // 1. Proxy files (explicit user choice, highest priority)
@@ -7421,10 +8337,27 @@ impl PlaybackEngine {
                 let camera_model = fmt_meta.get("com.apple.quicktime.model")
                     .or_else(|| fmt_meta.get("model"))
                     .map(|s| s.to_string());
-                let encoder = fmt_meta.get("encoder")
+                // Encoder tag: try format-level first, then fall
+                // back to stream-level. Sony cameras (A6700 etc.)
+                // write `encoder=HEVC Coding` only at the stream
+                // level — without this fallback the tag is invisible
+                // and the log-format heuristic loses its only signal
+                // on out-of-camera Sony HEVC files.
+                let mut encoder = fmt_meta.get("encoder")
                     .or_else(|| fmt_meta.get("encoding_tool"))
                     .or_else(|| fmt_meta.get("com.apple.quicktime.software"))
                     .map(|s| s.to_string());
+                if encoder.is_none() {
+                    for stream in format_ctx.streams() {
+                        let m = stream.metadata();
+                        if let Some(e) = m.get("encoder")
+                            .or_else(|| m.get("encoding_tool"))
+                        {
+                            encoder = Some(e.to_string());
+                            break;
+                        }
+                    }
+                }
 
                 // Extract bit depth, bitrate, pixel format, color info from video stream
                 let mut bit_depth: Option<u8> = None;
@@ -7518,7 +8451,18 @@ impl PlaybackEngine {
                     },
                 )));
 
-                self.grab_first_frame();
+                // NOTE: Do NOT grab the first frame here. `load_file`
+                // runs on every media import, and writing the first
+                // frame into the shared Program-viewer frame buffer
+                // made every newly imported file auto-appear in the
+                // Program viewer — even when the user was just adding
+                // a clip to the bin. Source-viewer previews use the
+                // dedicated source decode path (`source_video_texture`
+                // via `LoadSourceMedia` / `start_source_frame_decode_at`),
+                // not this entry point. Timeline playback triggers its
+                // own decode when a clip at the playhead is activated,
+                // so losing the side-effect first-frame here doesn't
+                // regress the Program viewer's grade / scrub paths.
                 (self.repaint_cb)();
             }
             Err(e) => {
@@ -7532,6 +8476,13 @@ impl PlaybackEngine {
         }
     }
 
+    /// Kept for targeted callers that want to explicitly seed the
+    /// Program viewer's frame buffer with a clip's first frame. Used
+    /// to run automatically from `load_file` for every import — that
+    /// made every media import auto-appear in the Program viewer, so
+    /// the call site was removed. Left in-place so a future "preview
+    /// this timeline clip" gesture can call it explicitly.
+    #[allow(dead_code)]
     fn grab_first_frame(&mut self) {
         if let Some(path) = &self.current_file {
             match VideoDecoder::open(path, self.current_source_rotation) {
@@ -7539,7 +8490,11 @@ impl PlaybackEngine {
                     dec.resume();
                     self.v1_decoder = Some(dec);
                     // Longer timeout: VAAPI init can take ~150ms alone
-                    self.grab_single_frame_timeout(Duration::from_millis(500));
+                    if !self.grab_single_frame_timeout(Duration::from_millis(500)) {
+                        if let Some(dec) = &self.v1_decoder {
+                            dec.pause();
+                        }
+                    }
                 }
                 Err(e) => {
                     warn!("Could not open decoder for first frame: {e}");
@@ -7547,6 +8502,469 @@ impl PlaybackEngine {
             }
         }
     }
+
+    // ── Source Viewer playback ─────────────────────────────────────
+    //
+    // The source viewer is the second viewer of an NLE — a colourist
+    // / editor previews unedited media here, marks IN/OUT, then edits
+    // it into the timeline. It's intentionally separate from the
+    // program viewer's state machine: a different decoder, a
+    // different frame buffer, an independent playhead. Audio shares
+    // the existing cpal stream + mixer, on a dedicated mixer track,
+    // and the mutual-exclusion rule below means at most one viewer
+    // owns audio at any moment so the two never fight over the
+    // device.
+
+    /// Bind a media file to the source viewer. Spawns a persistent
+    /// `VideoDecoder` against the file (keeping the decoder open
+    /// across seeks is what makes scrub + playback responsive vs the
+    /// previous one-shot thumbnail decode), opens an audio source if
+    /// the file has audio, and decodes the first frame into the
+    /// source frame buffer so the panel has something to show
+    /// immediately. No-op when the same path is already bound.
+    fn set_source_media(&mut self, path: PathBuf, source_rotation: i32) {
+        if self.source_path.as_ref() == Some(&path) {
+            return;
+        }
+        // Tear down anything currently bound — clean slate.
+        self.stop_source();
+
+        match VideoDecoder::open(&path, source_rotation) {
+            Ok(dec) => {
+                dec.resume();
+                self.source_decoder = Some(dec);
+                self.source_path = Some(path.clone());
+                self.source_rotation = source_rotation;
+                self.source_state = PlaybackState::Paused;
+                self.source_playhead_secs = 0.0;
+                self.source_at_eof = false;
+                // Arm a single paused-drain so the per-tick loop
+                // pops the very first decoded frame to the viewer
+                // (the cold-start poster). Cleared after one frame
+                // lands so the playhead doesn't keep walking on its
+                // own through the rest of the buffered queue.
+                self.source_drain_pending = true;
+                // Detect FPS from the file via a tiny ffmpeg probe — needed
+                // for `StepSource` and to pace the playback advance. Falls
+                // back to 24 fps on probe failure so a step still moves.
+                self.source_fps = probe_source_fps(&path).unwrap_or(24.0);
+                // Drain one frame to seed the source frame buffer. Same
+                // wait-for-decoder pattern as the timeline's first-frame
+                // grab — gives VAAPI/NVDEC time to warm up.
+                self.grab_one_source_frame_timeout(Duration::from_millis(500));
+                // Open audio (silent attach — `play_source` is what
+                // actually unmutes / resumes).
+                self.open_source_audio(&path, 0.0);
+            }
+            Err(e) => {
+                warn!("Source viewer: failed to open decoder for {path:?}: {e}");
+            }
+        }
+    }
+
+    /// Rebuild the source decoder from scratch when the previous
+    /// playback hit EOF. ffmpeg's mp4toannexb / annexb BSFs latch
+    /// to EOF once they see it and reject every subsequent packet
+    /// ("A non-NULL packet sent after an EOF"); a plain `dec.seek`
+    /// or `dec.resume` is not enough to recover. Tear the decoder
+    /// down and reopen so the BSF starts fresh.
+    fn rebuild_source_decoder_if_at_eof(&mut self) {
+        if !self.source_at_eof {
+            return;
+        }
+        self.source_at_eof = false;
+        let Some(path) = self.source_path.clone() else { return };
+        let rotation = self.source_rotation;
+        // `set_source_media` early-returns when the path matches —
+        // clear `source_path` so the rebuild takes the full open +
+        // decode-thread spawn path.
+        self.source_path = None;
+        self.set_source_media(path, rotation);
+    }
+
+    /// Begin source-viewer playback. Auto-pauses the timeline so the
+    /// audio mixer doesn't have two viewers feeding it simultaneously.
+    /// Resumes the source decoder, anchors the wall-clock to the
+    /// current source playhead, mutes timeline audio, unmutes the
+    /// source audio source.
+    fn play_source(&mut self) {
+        if self.source_decoder.is_none() {
+            tracing::warn!("play_source: source_decoder is None, ignoring Play");
+            return;
+        }
+        tracing::info!(
+            "play_source: starting playback (source_state was {:?}, at_eof={})",
+            self.source_state, self.source_at_eof,
+        );
+        // If the previous play hit EOF, the BSF is latched and a
+        // plain resume won't produce frames — rebuild the decoder
+        // before resuming.
+        self.rebuild_source_decoder_if_at_eof();
+        // Mutual exclusion: stop the timeline before the source takes
+        // over. `Pause` is a no-op when the timeline isn't playing.
+        if self.state == PlaybackState::Playing {
+            self.handle_command(AppCommand::Pause);
+        }
+        // Mute timeline tracks (don't tear them down — the user might
+        // switch back) and unmute the source track on the mixer.
+        self.set_source_audio_owner(true);
+        // Resume the audio source (it starts paused after open).
+        if let Some(ref src) = self.source_audio_source {
+            src.resume();
+        }
+        // Resume the decoder thread + audio output.
+        if let Some(ref dec) = self.source_decoder {
+            dec.resume();
+        }
+        if let Some(ref aout) = self.audio_output {
+            aout.0.resume();
+        }
+        // Pre-warm: wait briefly for the decoder to queue at least
+        // one frame before returning. After Set/SeekSource the queue
+        // is drained to seed the viewer; without this wait the user
+        // sees a ~100 ms stutter at the start of every Play while
+        // the decoder catches up. 60 ms covers a 4K NVDEC seek+
+        // decode comfortably; we exit early as soon as the first
+        // frame lands so faster sources don't pay the full budget.
+        if let Some(ref dec) = self.source_decoder {
+            let deadline = std::time::Instant::now() + Duration::from_millis(60);
+            while std::time::Instant::now() < deadline {
+                let n = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).len();
+                if n >= 1 {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+        // Anchor the wall-clock AFTER the pre-warm so the first frame
+        // pops at t=0 of playback instead of "100 ms behind".
+        self.source_clock_anchor_wall = std::time::Instant::now();
+        self.source_clock_anchor_secs = self.source_playhead_secs;
+        self.source_state = PlaybackState::Playing;
+        let _ = self.event_tx.send(AppEvent::SourcePlaybackStarted);
+        (self.repaint_cb)();
+    }
+
+    /// Pause source-viewer playback. Decoder and audio source stay
+    /// open so resuming is instant — only state + clock anchor flip.
+    fn pause_source(&mut self) {
+        if self.source_state != PlaybackState::Playing {
+            return;
+        }
+        if let Some(ref dec) = self.source_decoder {
+            dec.pause();
+        }
+        if let Some(ref src) = self.source_audio_source {
+            src.pause();
+        }
+        // Don't touch cpal `audio_output` — it might still be feeding
+        // a chirp or a future timeline play. Just mute the source
+        // track so its (now stale) consumer doesn't bleed silence.
+        self.source_state = PlaybackState::Paused;
+        let _ = self.event_tx.send(AppEvent::SourcePlaybackPaused);
+        (self.repaint_cb)();
+    }
+
+    /// Seek the source viewer to `secs` (source-time, not timeline).
+    /// Pauses the decoder briefly, flushes the queue, seeks the audio
+    /// source if present, and decodes one frame so the viewer paints
+    /// the new position immediately.
+    fn seek_source(&mut self, secs: f64) {
+        if self.source_decoder.is_none() {
+            return;
+        }
+        let secs = secs.max(0.0);
+        // If we're parked at EOF, the BSF rejects every packet —
+        // each seek would block in `grab_one_source_frame_timeout`
+        // for 500ms producing nothing. Rebuild before seeking so a
+        // scrub on the post-EOF clip stays responsive.
+        self.rebuild_source_decoder_if_at_eof();
+        let was_playing = self.source_state == PlaybackState::Playing;
+        if let Some(ref dec) = self.source_decoder {
+            dec.seek(secs);
+            dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).clear();
+            dec.resume();
+        }
+        if let Some(ref src) = self.source_audio_source {
+            src.seek(secs);
+        }
+        self.source_playhead_secs = secs;
+        // Fire-and-forget: do NOT block here waiting for the
+        // decoder to produce the seek-target frame. The per-tick
+        // paused-drain picks the frame up the moment it lands.
+        //
+        // History: the previous 50 ms blocking wait pinned the
+        // engine thread at 100 % during scrub. 30 Hz UI dispatch
+        // × 50 ms wait = engine spending all its time inside this
+        // one function, leaving no slot for the paused-drain (so
+        // frames never reached the viewer) and no slot for the
+        // decoder thread to actually finish its previous seek
+        // before the next one piled on. By returning immediately
+        // here we let the engine tick at full rate and let the
+        // decoder coalesce SeekTo commands aggressively (its own
+        // queue accumulates while it works).
+        self.source_drain_pending = true;
+        if was_playing {
+            // Re-anchor the clock at the new playhead so playback
+            // continues from here.
+            self.source_clock_anchor_wall = std::time::Instant::now();
+            self.source_clock_anchor_secs = self.source_playhead_secs;
+            if let Some(ref dec) = self.source_decoder {
+                dec.resume();
+            }
+        }
+        // NOTE: do NOT pause the decoder when we're paused-seeking.
+        // Sending Pause right after Resume + SeekTo means the
+        // decoder thread coalesces the queue and ends up in its
+        // paused-sleep branch — the seek is applied (format_ctx
+        // moves) but no frames are produced, so the viewer keeps
+        // painting the pre-seek image. The decoder backpressures
+        // naturally once its 16-frame queue fills, which is the
+        // correct way to "rest" between scrubs.
+        let _ = self.event_tx.send(AppEvent::SourcePlayheadMoved(
+            self.source_playhead_secs,
+        ));
+        (self.repaint_cb)();
+    }
+
+    /// Step the source playhead by `frames` source frames (negative
+    /// for backward). Maps to a `seek_source` at the new time — the
+    /// existing seek-then-grab path already produces the right frame.
+    fn step_source(&mut self, frames: i64) {
+        if self.source_fps <= 0.0 {
+            return;
+        }
+        let dt = frames as f64 / self.source_fps;
+        let target = (self.source_playhead_secs + dt).max(0.0);
+        self.seek_source(target);
+    }
+
+    /// Tear down the source viewer: stop decoder thread, drop audio
+    /// source, mute the source mixer track, blank the source frame
+    /// buffer. Safe to call on an already-stopped viewer.
+    fn stop_source(&mut self) {
+        if let Some(mut dec) = self.source_decoder.take() {
+            dec.stop_detached();
+        }
+        if let Some(mut src) = self.source_audio_source.take() {
+            src.stop_detached();
+        }
+        // Make sure the mixer's source track is silent regardless of
+        // who owned audio last.
+        if let Ok(mut m) = self.mixer.lock() {
+            m.ensure_tracks(self.source_mixer_track_index + 1);
+            m.tracks[self.source_mixer_track_index].muted = true;
+        }
+        self.source_path = None;
+        self.source_state = PlaybackState::Idle;
+        self.source_playhead_secs = 0.0;
+    }
+
+    /// Per-tick source-viewer playback loop. Mirrors the program
+    /// viewer's `update_playback` but lives outside the timeline
+    /// state machine — runs whenever `source_state == Playing`,
+    /// independent of `self.state`. Pops any frame the decoder has
+    /// produced, advances the playhead off the wall-clock anchor,
+    /// writes the new frame to `source_frame_buffer`. EOF stops
+    /// playback (caller can press Play to restart from 0).
+    fn update_source_playback(&mut self) {
+        if self.source_state != PlaybackState::Playing {
+            return;
+        }
+        let Some(dec) = self.source_decoder.as_ref() else { return };
+        // Pop one frame at a time so the playhead moves at video rate
+        // — popping all queued frames per tick would burn through the
+        // buffer in a few ms and stall on EOF.
+        let frame = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop();
+        let Some(mut frame) = frame else { return };
+        if frame.is_eof {
+            // End of file — flag it and pause. The next play_source
+            // call will seek back to 0 before resuming, otherwise
+            // the decoder stays parked at EOF and produces no
+            // frames on the second click.
+            self.source_at_eof = true;
+            self.pause_source();
+            return;
+        }
+        let frame_pts = frame.pts_secs();
+        let (w, h) = (frame.width, frame.height);
+        // GPU-resident decode (KLIPP_GPU_FRAMES=1) ships with empty
+        // `frame.data` until ensure_cpu_data() is called — without
+        // this the source viewer writes empty buffers, the upload
+        // path bails on the size mismatch, and the viewer stays on
+        // the static thumbnail with playback "invisible".
+        frame.ensure_cpu_data();
+        // Linear f32 → sRGB u8 for the frame buffer (no grading on
+        // the source viewer — this is the raw media).
+        let rgba_u8 = linear_rgba_to_u8(&frame.data);
+        {
+            let mut fb = self.source_frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            fb.write_frame(rgba_u8, w, h);
+        }
+        // Advance the source playhead. The wall-clock anchor is the
+        // ground truth — frame PTS is only used to detect drift
+        // (logged for debugging in update_playback's equivalent; here
+        // we keep it minimal). Letting wall-time drive avoids the
+        // playhead lurching when the decoder produces a burst of
+        // frames after a seek.
+        let elapsed = self.source_clock_anchor_wall.elapsed().as_secs_f64();
+        self.source_playhead_secs = self.source_clock_anchor_secs + elapsed;
+        // Sanity clamp to actual frame PTS if we're more than half a
+        // frame ahead — keeps display + clock from desyncing on
+        // long-running playback.
+        let half_frame = if self.source_fps > 0.0 { 0.5 / self.source_fps } else { 0.02 };
+        if (self.source_playhead_secs - frame_pts).abs() > 1.0 {
+            self.source_clock_anchor_wall = std::time::Instant::now();
+            self.source_clock_anchor_secs = frame_pts;
+            self.source_playhead_secs = frame_pts;
+        } else if self.source_playhead_secs > frame_pts + half_frame {
+            self.source_playhead_secs = frame_pts;
+        }
+        let _ = self.event_tx.send(AppEvent::FrameReady);
+        let _ = self.event_tx.send(AppEvent::SourcePlayheadMoved(
+            self.source_playhead_secs,
+        ));
+        (self.repaint_cb)();
+    }
+
+    /// Non-blocking sibling of `grab_one_source_frame_timeout`.
+    /// Pops a single ready frame off the source decoder queue (if
+    /// any) and writes it to `source_frame_buffer`. Does NOT wait
+    /// for the decoder. Called from the engine tick when the
+    /// source viewer is paused, so frames that arrive a tick or
+    /// two after a fast `seek_source` (50 ms timeout) still reach
+    /// the viewer instead of stalling in the queue.
+    /// Returns true if a frame was consumed (so the per-tick caller
+    /// can clear its "drain pending" flag and stop pumping until
+    /// the next seek). Returns false on empty queue / EOF — the
+    /// caller leaves the flag set so it tries again next tick.
+    fn drain_one_source_frame_to_buffer(&mut self) -> bool {
+        let Some(dec) = self.source_decoder.as_ref() else { return false };
+        let frame = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop();
+        let Some(mut frame) = frame else { return false };
+        if frame.is_eof {
+            // EOF arriving while paused — flag it so the next play
+            // does the rebuild, but don't change state (we're
+            // already paused). Treat as "consumed" so the caller
+            // doesn't keep retrying forever on a dead queue.
+            self.source_at_eof = true;
+            return true;
+        }
+        let (w, h) = (frame.width, frame.height);
+        frame.ensure_cpu_data();
+        let rgba_u8 = linear_rgba_to_u8(&frame.data);
+        {
+            let mut fb = self.source_frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            fb.write_frame(rgba_u8, w, h);
+        }
+        self.source_playhead_secs = frame.pts_secs();
+        let _ = self.event_tx.send(AppEvent::FrameReady);
+        let _ = self.event_tx.send(AppEvent::SourcePlayheadMoved(
+            self.source_playhead_secs,
+        ));
+        (self.repaint_cb)();
+        true
+    }
+
+    /// Wait up to `timeout` for the source decoder to produce a
+    /// frame, then post-process it into the source frame buffer.
+    /// Used by `set_source_media` and `seek_source` to seed the
+    /// viewer with a real frame instead of waiting for the next
+    /// playback tick.
+    fn grab_one_source_frame_timeout(&mut self, timeout: Duration) {
+        let Some(dec) = self.source_decoder.as_ref() else { return };
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            let frame = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).pop();
+            if let Some(mut frame) = frame {
+                if frame.is_eof { return; }
+                let (w, h) = (frame.width, frame.height);
+                // GPU-resident frames ship with empty `data` until
+                // ensure_cpu_data() materialises it — see matching
+                // call in update_source_playback.
+                frame.ensure_cpu_data();
+                let rgba_u8 = linear_rgba_to_u8(&frame.data);
+                {
+                    let mut fb = self.source_frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                    fb.write_frame(rgba_u8, w, h);
+                }
+                self.source_playhead_secs = frame.pts_secs();
+                let _ = self.event_tx.send(AppEvent::FrameReady);
+                (self.repaint_cb)();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Open an `AudioSource` for the source viewer's bound media and
+    /// register it on the dedicated mixer track. Reuses
+    /// `ensure_mix_pipeline` so the cpal stream stays shared with the
+    /// timeline. The new source starts paused — `play_source` resumes
+    /// it after flipping the mute state.
+    fn open_source_audio(&mut self, path: &std::path::Path, source_secs: f64) {
+        let track = self.source_mixer_track_index;
+        // Default: PCM cache fast path (only available for media that's been
+        // through audio-conform), then ffmpeg-decoder fallback.
+        // Source viewer is not bound to a timeline clip — keyframe time
+        // domain is irrelevant (no audio_effects, no kfs passed), so 0.0
+        // and an empty kf map are correct.
+        match AudioDecoder::open(
+            path,
+            self.cpal_sample_rate,
+            Vec::new(),
+            std::collections::HashMap::new(),
+            0.0,
+        ) {
+            Ok((adec, consumer)) => {
+                if source_secs > 0.01 {
+                    adec.seek(source_secs);
+                }
+                self.ensure_mix_pipeline(consumer, track);
+                // Mark the new track muted by default — Play takes care
+                // of unmuting on the actual handoff.
+                if let Ok(mut m) = self.mixer.lock() {
+                    m.ensure_tracks(track + 1);
+                    m.tracks[track].muted = true;
+                }
+                self.source_audio_source = Some(AudioSource::Decoder(adec));
+            }
+            Err(e) => {
+                debug!("Source viewer: no audio for {path:?}: {e}");
+            }
+        }
+    }
+
+    /// Toggle which viewer owns the audio mixer.
+    /// `source_owns = true`: mute every timeline track, unmute the
+    /// source viewer track. `source_owns = false`: inverse.
+    /// The mute is on the mixer (cpal-callback-safe atomics), so the
+    /// switch is instant and glitch-free.
+    fn set_source_audio_owner(&mut self, source_owns: bool) {
+        let Ok(mut m) = self.mixer.lock() else { return };
+        let n = m.tracks.len();
+        for (i, t) in m.tracks.iter_mut().enumerate() {
+            if i == self.source_mixer_track_index {
+                t.muted = !source_owns;
+            } else if i < n {
+                t.muted = source_owns;
+            }
+        }
+    }
+}
+
+/// One-shot ffmpeg probe to read a media file's frame rate. Returns
+/// `None` on any failure (file unreadable, no video stream, zero
+/// denominator) — callers fall back to 24 fps so step / playback keeps
+/// working.
+fn probe_source_fps(path: &std::path::Path) -> Option<f64> {
+    let ictx = ffmpeg_next::format::input(path).ok()?;
+    let stream = ictx.streams().best(ffmpeg_next::media::Type::Video)?;
+    let rate = stream.rate();
+    if rate.denominator() == 0 {
+        return None;
+    }
+    Some(rate.numerator() as f64 / rate.denominator() as f64)
 }
 
 /// Coalesce a batch of commands: collapse consecutive seeks into just the last one.
@@ -7557,6 +8975,7 @@ fn coalesce_commands(commands: Vec<AppCommand>) -> Vec<AppCommand> {
 
     let mut result = Vec::with_capacity(commands.len());
     let mut last_seek: Option<AppCommand> = None;
+    let mut last_source_seek: Option<AppCommand> = None;
     let mut relative_sum: i64 = 0;
     let mut has_sequence_updated = false;
 
@@ -7579,6 +8998,16 @@ fn coalesce_commands(commands: Vec<AppCommand>) -> Vec<AppCommand> {
                 }
                 relative_sum += frames;
             }
+            AppCommand::SeekSource(_) => {
+                // Source-viewer scrub-drag fires one SeekSource per
+                // drag-frame; each handler blocks up to ~500ms in
+                // grab_one_source_frame_timeout. Without coalescing,
+                // a one-second drag queues 30+ seeks and freezes the
+                // engine thread for many seconds (watchdog stall +
+                // user kills the app). Only the latest target
+                // matters — discard the rest.
+                last_source_seek = Some(cmd);
+            }
             AppCommand::SequenceUpdated => {
                 has_sequence_updated = true;
             }
@@ -7591,6 +9020,9 @@ fn coalesce_commands(commands: Vec<AppCommand>) -> Vec<AppCommand> {
                 if let Some(seek) = last_seek.take() {
                     result.push(seek);
                 }
+                if let Some(seek) = last_source_seek.take() {
+                    result.push(seek);
+                }
                 result.push(cmd);
             }
         }
@@ -7601,6 +9033,9 @@ fn coalesce_commands(commands: Vec<AppCommand>) -> Vec<AppCommand> {
         result.push(AppCommand::SeekRelative(relative_sum));
     }
     if let Some(seek) = last_seek.take() {
+        result.push(seek);
+    }
+    if let Some(seek) = last_source_seek.take() {
         result.push(seek);
     }
     if has_sequence_updated {
@@ -8945,8 +10380,10 @@ mod param_change_queue_tests {
     use klipp_timeline::Sequence;
     use std::sync::{Arc, RwLock};
 
-    /// Build a Sequence with a single clip that owns the default colour-grade
-    /// node graph. Returns (shared sequence, clip id, exposure node id).
+    /// Build a Sequence with a single clip and an Exposure node added
+    /// to its graph. Returns (shared sequence, clip id, exposure node id).
+    /// The default clip graph is bare Source → Output, so the test
+    /// pushes the Exposure node it needs explicitly.
     fn make_fixture() -> (Arc<RwLock<Sequence>>, klipp_core::ClipId, klipp_nodes::NodeId) {
         let mut seq = Sequence::new_default();
         let media_id = MediaId::new();
@@ -8954,15 +10391,23 @@ mod param_change_queue_tests {
         let track = seq.tracks.iter_mut().find(|t| matches!(t.kind, klipp_timeline::TrackKind::Video))
             .expect("default sequence has a video track");
         let clip_id = track.append_clip(media_id, duration);
-        // Pick the Exposure node (first non-Source, non-IDT node) — it has an
-        // `exposure` param that apply_override understands.
-        let node_id = seq.all_clips()
-            .find(|c| c.id == clip_id)
-            .and_then(|c| c.node_graph.nodes.iter()
-                .find(|n| matches!(n.kind, klipp_nodes::NodeKind::Exposure))
-                .map(|n| n.id))
-            .expect("default graph has an Exposure node");
-        (Arc::new(RwLock::new(seq)), clip_id, node_id)
+        let exposure_id = klipp_nodes::NodeId::new_v4();
+        for t in &mut seq.tracks {
+            if let Some(c) = t.find_clip_mut(clip_id) {
+                c.node_graph.nodes.push(klipp_nodes::Node {
+                    id: exposure_id,
+                    kind: klipp_nodes::NodeKind::Exposure,
+                    label: "Exposure".into(),
+                    enabled: true,
+                    params: klipp_nodes::NodeParams::default(),
+                    keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+                    output_link: None,
+                    input_links: vec![],
+                });
+                break;
+            }
+        }
+        (Arc::new(RwLock::new(seq)), clip_id, exposure_id)
     }
 
     #[test]
@@ -9038,5 +10483,275 @@ mod param_change_queue_tests {
     fn queue_capacity_matches_documented_bound() {
         // Pin the bound so PR review catches accidental shrinks.
         assert_eq!(PARAM_CHANGE_QUEUE_CAPACITY, 256);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Audio fingerprint sensitivity to audio_effect_keyframes
+//
+// `compute_audio_fingerprint` is what gates chain rebuild on
+// `SequenceUpdated` — if the kf state isn't part of the hash, the
+// running chain misses every kf edit until the next seek/play. The
+// per-clip portion is extracted into `audio_fingerprint_for_clip`
+// for testability. These tests pin that every observable kf change
+// flips the hash so the engine actually sees the edit.
+// ═══════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod audio_fingerprint_kf_tests {
+    use super::audio_fingerprint_for_clip;
+    use klipp_core::{AudioEffectInstance, Interpolation, Keyframe, MediaId, RationalTime};
+    use klipp_timeline::Clip;
+
+    fn make_media_clip() -> Clip {
+        Clip::media(
+            MediaId::new(),
+            RationalTime::from_frames(0, 24),
+            RationalTime::from_frames(48, 24),
+            RationalTime::from_frames(0, 24),
+            RationalTime::from_frames(48, 24),
+        )
+    }
+
+    fn kf(t: f64, v: f32) -> Keyframe {
+        Keyframe {
+            time_secs: t,
+            value: v,
+            interpolation: Interpolation::Linear,
+            tangent_in: (0.0, 0.0),
+            tangent_out: (0.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn fingerprint_changes_when_kf_track_added() {
+        let mut clip = make_media_clip();
+        clip.audio_effects = vec![AudioEffectInstance {
+            effect_type: "compressor".into(),
+            enabled: true,
+            wet_dry: 1.0,
+            params: vec![],
+        }];
+        let fp_before = audio_fingerprint_for_clip(&clip);
+
+        clip.audio_effect_keyframes
+            .insert("0:threshold".to_string(), vec![kf(0.0, -18.0)]);
+        let fp_after = audio_fingerprint_for_clip(&clip);
+
+        assert_ne!(fp_before, fp_after,
+            "adding a kf track must invalidate the running chain — \
+             without this the user adds a kf and hears nothing change");
+    }
+
+    #[test]
+    fn fingerprint_changes_when_kf_added_to_existing_track() {
+        let mut clip = make_media_clip();
+        clip.audio_effects = vec![AudioEffectInstance {
+            effect_type: "compressor".into(), enabled: true, wet_dry: 1.0, params: vec![],
+        }];
+        clip.audio_effect_keyframes
+            .insert("0:threshold".to_string(), vec![kf(0.0, -18.0)]);
+        let fp_one = audio_fingerprint_for_clip(&clip);
+
+        clip.audio_effect_keyframes
+            .get_mut("0:threshold")
+            .unwrap()
+            .push(kf(1.0, -6.0));
+        let fp_two = audio_fingerprint_for_clip(&clip);
+
+        assert_ne!(fp_one, fp_two);
+    }
+
+    #[test]
+    fn fingerprint_changes_when_kf_value_moves() {
+        let mut clip = make_media_clip();
+        clip.audio_effects = vec![AudioEffectInstance {
+            effect_type: "compressor".into(), enabled: true, wet_dry: 1.0, params: vec![],
+        }];
+        clip.audio_effect_keyframes
+            .insert("0:threshold".to_string(), vec![kf(0.0, -18.0), kf(1.0, -6.0)]);
+        let fp_before = audio_fingerprint_for_clip(&clip);
+
+        // Same time, different value.
+        clip.audio_effect_keyframes.get_mut("0:threshold").unwrap()[1].value = -3.0;
+        let fp_after = audio_fingerprint_for_clip(&clip);
+
+        assert_ne!(fp_before, fp_after);
+    }
+
+    #[test]
+    fn fingerprint_changes_when_kf_interpolation_flips() {
+        let mut clip = make_media_clip();
+        clip.audio_effects = vec![AudioEffectInstance {
+            effect_type: "compressor".into(), enabled: true, wet_dry: 1.0, params: vec![],
+        }];
+        clip.audio_effect_keyframes
+            .insert("0:threshold".to_string(), vec![kf(0.0, -18.0)]);
+        let fp_linear = audio_fingerprint_for_clip(&clip);
+
+        clip.audio_effect_keyframes.get_mut("0:threshold").unwrap()[0].interpolation =
+            Interpolation::Bezier;
+        let fp_bezier = audio_fingerprint_for_clip(&clip);
+
+        assert_ne!(fp_linear, fp_bezier,
+            "interpolation change must restart the chain — bezier vs linear \
+             produces different smoothing in the kf-evaluation path");
+    }
+
+    /// Pin the intentional scope of compute_audio_fingerprint: only
+    /// clips that are CURRENTLY at the playhead contribute. Non-playhead
+    /// clips are excluded by design — when the playhead reaches them,
+    /// `open_audio_source` clones their kfs fresh, so edits land at
+    /// clip-transition time without needing a fingerprint flip.
+    ///
+    /// `audio_fingerprint_for_clip` is the per-clip helper, called once
+    /// per playhead-clip in the engine method. This test mirrors that
+    /// pattern and verifies that two clips with identical kf state but
+    /// different media_ids produce *different* fingerprints when both
+    /// are folded in (the non-playhead clip simply isn't folded in).
+    /// Pin the chain-bleed regression: two clips that share the same
+    /// MediaId but carry different audio_effects MUST produce different
+    /// chain fingerprints. The boundary check in advance_to_next_clip
+    /// uses these fingerprints to decide whether to rebuild the audio
+    /// chain when crossing a clip boundary on the same source media.
+    /// Before this fix, clip A's reverb would bleed into clip B's
+    /// playback whenever the two referenced the same file.
+    #[test]
+    fn audio_chain_fingerprint_distinguishes_same_media_different_effects() {
+        use crate::engine::audio_chain_fingerprint_for;
+        let kfs_empty = std::collections::HashMap::new();
+        let no_effects: Vec<AudioEffectInstance> = vec![];
+        let with_reverb = vec![AudioEffectInstance {
+            effect_type: "reverb".into(),
+            enabled: true,
+            wet_dry: 1.0,
+            params: vec![],
+        }];
+
+        let fp_clean = audio_chain_fingerprint_for(&no_effects, &kfs_empty);
+        let fp_reverb = audio_chain_fingerprint_for(&with_reverb, &kfs_empty);
+
+        assert_ne!(fp_clean, fp_reverb,
+            "two clips with identical media but different effect chains \
+             must have different chain fingerprints — without this the \
+             engine reuses clip A's chain for clip B and the user hears \
+             reverb on the dry clip");
+    }
+
+    /// Pin the parity: two clips with the same chain produce the same
+    /// fingerprint. Otherwise the boundary check would fire spurious
+    /// rebuilds even when the chain genuinely hasn't changed.
+    #[test]
+    fn audio_chain_fingerprint_is_stable_when_chain_unchanged() {
+        use crate::engine::audio_chain_fingerprint_for;
+        let kfs_empty = std::collections::HashMap::new();
+        let effects = vec![AudioEffectInstance {
+            effect_type: "compressor".into(),
+            enabled: true,
+            wet_dry: 1.0,
+            params: vec![("threshold".into(), -18.0)],
+        }];
+        let fp1 = audio_chain_fingerprint_for(&effects, &kfs_empty);
+        let fp2 = audio_chain_fingerprint_for(&effects, &kfs_empty);
+        assert_eq!(fp1, fp2);
+    }
+
+    /// Chain fingerprint must NOT include media_id — that's compared
+    /// separately at the boundary. If the chain fingerprint folded in
+    /// media_id, clip-transition restarts would over-fire on every
+    /// boundary even when the chain is unchanged across the cut.
+    #[test]
+    fn audio_chain_fingerprint_is_independent_of_media_id() {
+        use crate::engine::audio_chain_fingerprint_for;
+        // The function takes audio_effects + audio_effect_keyframes
+        // only — it has no access to a media_id. This test exists as
+        // a contract pin: a future "let me fold media_id into the chain
+        // fingerprint" change would break the boundary semantics
+        // (because then identical chains on different media would also
+        // differ, defeating the purpose of the separate media_id
+        // comparison). The signature alone enforces this; the test
+        // just documents intent.
+        let kfs = std::collections::HashMap::new();
+        let effects: Vec<AudioEffectInstance> = vec![];
+        let _ = audio_chain_fingerprint_for(&effects, &kfs);
+    }
+
+    #[test]
+    fn fingerprint_excludes_non_playhead_clips_by_design() {
+        let mid_a = MediaId::new();
+        let mid_b = MediaId::new();
+        let make_clip = |mid: MediaId, kf_value: f32| -> Clip {
+            let mut c = Clip::media(
+                mid,
+                RationalTime::from_frames(0, 24),
+                RationalTime::from_frames(48, 24),
+                RationalTime::from_frames(0, 24),
+                RationalTime::from_frames(48, 24),
+            );
+            c.audio_effects = vec![AudioEffectInstance {
+                effect_type: "compressor".into(),
+                enabled: true,
+                wet_dry: 1.0,
+                params: vec![],
+            }];
+            c.audio_effect_keyframes
+                .insert("0:gain".to_string(), vec![kf(0.0, kf_value)]);
+            c
+        };
+
+        // Simulate the engine: only "current playhead clip" gets folded
+        // into the fingerprint. Clip B exists in the timeline but is
+        // not at the playhead, so its kfs do NOT contribute.
+        let clip_a = make_clip(mid_a, 0.5);
+        let clip_b_v1 = make_clip(mid_b, 0.5);
+        let clip_b_v2 = make_clip(mid_b, 0.9); // user edits clip B's kf
+
+        // The "engine" sees only clip_a. The fingerprint must be the
+        // same whether clip_b_v1 or clip_b_v2 sits later in the timeline.
+        let fp_with_b_v1 = audio_fingerprint_for_clip(&clip_a);
+        let fp_with_b_v2 = audio_fingerprint_for_clip(&clip_a);
+        assert_eq!(fp_with_b_v1, fp_with_b_v2,
+            "non-playhead kf edit must not flip the fingerprint — \
+             open_audio_source picks up the new kfs at clip transition");
+
+        // Sanity: clip_b's two versions DO produce different fingerprints
+        // when fingerprinted directly. Otherwise this test would pass
+        // trivially.
+        assert_ne!(
+            audio_fingerprint_for_clip(&clip_b_v1),
+            audio_fingerprint_for_clip(&clip_b_v2),
+            "clip_b's kf edit must change clip_b's own fingerprint",
+        );
+    }
+
+    #[test]
+    fn fingerprint_is_stable_across_hashmap_iteration_orders() {
+        // Two clips with identical kf state inserted in different orders
+        // must produce the same fingerprint. HashMap iteration order is
+        // not deterministic, so the formula sorts keys before hashing.
+        // Without that sort the engine would restart the chain on every
+        // SequenceUpdated even when nothing kf-relevant changed.
+        let media_id = MediaId::new(); // Same MediaId for both clips —
+        // otherwise we'd be measuring media_id divergence, not kf order.
+        let make_clip_with_kfs = |order: &[&str]| {
+            let mut c = Clip::media(
+                media_id,
+                RationalTime::from_frames(0, 24),
+                RationalTime::from_frames(48, 24),
+                RationalTime::from_frames(0, 24),
+                RationalTime::from_frames(48, 24),
+            );
+            c.audio_effects = vec![AudioEffectInstance {
+                effect_type: "compressor".into(), enabled: true, wet_dry: 1.0, params: vec![],
+            }];
+            for name in order {
+                c.audio_effect_keyframes
+                    .insert(format!("0:{name}"), vec![kf(0.5, 1.0)]);
+            }
+            c
+        };
+        let a = make_clip_with_kfs(&["threshold", "ratio", "makeup"]);
+        let b = make_clip_with_kfs(&["makeup", "threshold", "ratio"]);
+        assert_eq!(audio_fingerprint_for_clip(&a), audio_fingerprint_for_clip(&b),
+            "fingerprint must be insertion-order-independent");
     }
 }

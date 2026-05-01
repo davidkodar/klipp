@@ -122,6 +122,8 @@ fn mk_node(id: NodeId, kind: NodeKind, label: &str, params: NodeParams) -> Node 
         enabled: true,
         params,
         keyframes: NodeKeyframeTracks::default(),
+        output_link: None,
+        input_links: Vec::new(),
     }
 }
 
@@ -139,6 +141,7 @@ fn finalise(nodes: Vec<Node>, edges: Vec<Edge>, output_id: NodeId) -> NodeGraph 
         edges,
         output_node_id: output_id,
         node_positions: positions,
+        working_space_override: None,
     }
 }
 

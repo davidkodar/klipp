@@ -630,6 +630,14 @@ pub struct BrowserPanel {
     /// browser at render-time and diffed back at the end of
     /// `render_browser_panel` (same pattern as `pinned_folders`).
     pub favorite_effects: Vec<String>,
+    /// Recently-applied effects, MRU order (most recent first). Session-only
+    /// — not persisted to prefs. Trimmed to a small cap so the Recent
+    /// pseudo-category in the Library sidebar stays digestible.
+    pub recent_effects: Vec<String>,
+    /// Effects grid layout: thumbnail grid (default) or dense list.
+    pub effect_view_mode: effects_tab::EffectViewMode,
+    /// Effects grid sort key — drives the result-strip sort dropdown.
+    pub effect_sort: effects_tab::EffectSort,
     /// System file-manager bookmarks read once at startup from KDE Places
     /// (`~/.local/share/user-places.xbel`) and GTK plain-text bookmarks
     /// (`~/.config/gtk-{3,4}.0/bookmarks`). Read-only at runtime.
@@ -790,6 +798,9 @@ impl Default for BrowserPanel {
             files_type_filter: FileTypeFilter::default(),
             pinned_folders: Vec::new(),
             favorite_effects: Vec::new(),
+            recent_effects: Vec::new(),
+            effect_view_mode: effects_tab::EffectViewMode::default(),
+            effect_sort: effects_tab::EffectSort::default(),
             system_bookmarks: read_system_bookmarks(),
             files_panel_focused: false,
             type_ahead_buffer: String::new(),
@@ -824,6 +835,19 @@ impl Default for BrowserPanel {
 }
 
 impl BrowserPanel {
+    /// Drop every cached texture this panel owns. Call from
+    /// `eframe::App::on_exit` while wgpu is still alive — the
+    /// browser holds large thumbnail / filmstrip / deferred-drop
+    /// caches that would otherwise drop AFTER wgpu teardown and
+    /// race the device shutdown into a SIGSEGV.
+    pub fn clear_textures_for_shutdown(&mut self) {
+        self.file_thumb_textures.clear();
+        self.file_filmstrip_textures.clear();
+        for bucket in &mut self.deferred_texture_drops {
+            bucket.clear();
+        }
+    }
+
     /// Stash a `TextureHandle` so its underlying wgpu::Texture is
     /// held across the current frame's submit+present cycle.
     /// Matching helper for `AppState::defer_drop_texture` — egui-wgpu
@@ -898,22 +922,30 @@ impl BrowserPanel {
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     let tabs = [
-                        (BrowserTab::Files, "FILES"),
-                        (BrowserTab::Media, "MEDIA"),
-                        (BrowserTab::Library, "LIBRARY"),
+                        (BrowserTab::Files, "FILES", Icon::Folder),
+                        (BrowserTab::Media, "MEDIA", Icon::FilmStrip),
+                        // Library: closest-fit Phosphor — `Sliders` reads as
+                        // an FX/effects vibe. A bespoke "books-stack" glyph
+                        // would be more on-the-nose; flagged for follow-up.
+                        (BrowserTab::Library, "LIBRARY", Icon::Sliders),
                     ];
-                    for (tab, label) in &tabs {
+                    for (tab, label, icon) in &tabs {
                         let is_active = *active_tab == *tab;
-
                         let display_label = label.to_string();
 
-                        // Allocate tab rect manually to avoid egui button hover styling
+                        // Pre-measure label so we know how wide the tab
+                        // needs to be. Letting egui's horizontal layout
+                        // handle positioning means the icon and text
+                        // can't collide regardless of cursor edge cases.
                         let text_galley = ui.painter().layout_no_wrap(
                             display_label.clone(),
                             egui::FontId::proportional(10.0),
                             theme.text_dim,
                         );
-                        let tab_w = text_galley.size().x + 24.0;
+                        let icon_size = 12.0;
+                        let icon_gap = 6.0;
+                        let h_pad = 12.0;
+                        let tab_w = text_galley.size().x + icon_size + icon_gap + h_pad * 2.0;
                         let (tab_rect, resp) = ui.allocate_exact_size(
                             egui::vec2(tab_w, 28.0),
                             egui::Sense::click(),
@@ -927,17 +959,42 @@ impl BrowserPanel {
                             theme.text_dim
                         };
 
-                        ui.painter().text(
-                            tab_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            &display_label,
-                            egui::FontId::proportional(10.0),
-                            text_color,
+                        // Lay out icon + label horizontally inside the tab
+                        // rect using a fresh child UI. Centred vertically;
+                        // egui handles the gap so they can't overlap.
+                        ui.allocate_new_ui(
+                            egui::UiBuilder::new().max_rect(tab_rect),
+                            |ui| {
+                                ui.with_layout(
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.spacing_mut().item_spacing.x = icon_gap;
+                                        ui.add_space(h_pad);
+                                        ui.add(
+                                            icon.image(icon_size)
+                                                .tint(text_color)
+                                                .max_size(egui::vec2(icon_size, icon_size)),
+                                        );
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(&display_label)
+                                                    .size(10.0)
+                                                    .color(text_color),
+                                            )
+                                            .selectable(false),
+                                        );
+                                    },
+                                );
+                            },
                         );
 
                         if is_active {
+                            // Underline accent stripe — full tab width
+                            // minus a small inset, matching the mockup.
+                            let stripe_inset = 8.0;
                             ui.painter().hline(
-                                tab_rect.x_range(),
+                                (tab_rect.min.x + stripe_inset)
+                                    ..=(tab_rect.max.x - stripe_inset),
                                 tab_rect.max.y - 1.0,
                                 egui::Stroke::new(2.0_f32, theme.accent),
                             );
@@ -1161,11 +1218,21 @@ impl BrowserPanel {
                             .frame(false);
                         let resp = ui.add(search);
                         if resp.has_focus() {
+                            // Accent border + soft glow ring. The glow
+                            // sits OUTSIDE the border so the rectangle
+                            // reads as "this input is the keyboard
+                            // target" without competing with the input's
+                            // own outline.
                             let frame_rect = resp.rect.expand2(egui::vec2(9.0, 5.0));
+                            ui.painter().rect_stroke(
+                                frame_rect.expand(2.0),
+                                7.0,
+                                egui::Stroke::new(3.0_f32, theme.accent_subtle),
+                            );
                             ui.painter().rect_stroke(
                                 frame_rect,
                                 5.0,
-                                egui::Stroke::new(1.0_f32, theme.accent_dim),
+                                egui::Stroke::new(1.0_f32, theme.accent),
                             );
                         }
                     });
@@ -1250,11 +1317,21 @@ impl BrowserPanel {
                             .frame(false);
                         let resp = ui.add(search);
                         if resp.has_focus() {
+                            // Accent border + soft glow ring. The glow
+                            // sits OUTSIDE the border so the rectangle
+                            // reads as "this input is the keyboard
+                            // target" without competing with the input's
+                            // own outline.
                             let frame_rect = resp.rect.expand2(egui::vec2(9.0, 5.0));
+                            ui.painter().rect_stroke(
+                                frame_rect.expand(2.0),
+                                7.0,
+                                egui::Stroke::new(3.0_f32, theme.accent_subtle),
+                            );
                             ui.painter().rect_stroke(
                                 frame_rect,
                                 5.0,
-                                egui::Stroke::new(1.0_f32, theme.accent_dim),
+                                egui::Stroke::new(1.0_f32, theme.accent),
                             );
                         }
                     });
@@ -1971,7 +2048,7 @@ impl BrowserPanel {
                 let gh = gw * 9.0 / 16.0;
                 let glyph_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(gw, gh));
                 let glyph_color = if is_active {
-                    egui::Color32::from_rgb(30, 30, 34) // dark on amber
+                    theme.text_on_accent // dark on amber
                 } else {
                     theme.text_secondary
                 };
@@ -1999,7 +2076,7 @@ impl BrowserPanel {
                     (theme.bg_raised, theme.border)
                 };
                 let text_color = if is_active {
-                    egui::Color32::from_rgb(30, 30, 34) // dark on amber
+                    theme.text_on_accent // dark on amber
                 } else {
                     theme.text_dim
                 };
@@ -2036,7 +2113,7 @@ impl BrowserPanel {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let is_pinned = **pinned;
                     let pin_color = if is_pinned {
-                        egui::Color32::from_rgb(30, 30, 34) // dark icon on amber fill
+                        theme.text_on_accent // dark icon on amber fill
                     } else {
                         theme.text_dim
                     };
@@ -2106,7 +2183,7 @@ impl BrowserPanel {
                     let btn = ui.add(
                         egui::Button::new(
                             egui::RichText::new(*label).size(9.0)
-                                .color(if is_current { egui::Color32::from_rgb(30, 30, 34) } else { theme.text_secondary })
+                                .color(if is_current { theme.text_on_accent } else { theme.text_secondary })
                         )
                         .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
                         .stroke(egui::Stroke::new(0.5_f32, if is_current { theme.accent } else { theme.border }))
@@ -2128,7 +2205,7 @@ impl BrowserPanel {
                 let btn = ui.add(
                     egui::Button::new(
                         egui::RichText::new("\u{1F552} Recents").size(9.0)
-                            .color(if is_current { egui::Color32::from_rgb(30, 30, 34) } else { theme.text_secondary })
+                            .color(if is_current { theme.text_on_accent } else { theme.text_secondary })
                     )
                     .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
                     .stroke(egui::Stroke::new(0.5_f32, if is_current { theme.accent } else { theme.border }))
@@ -2167,7 +2244,7 @@ impl BrowserPanel {
                 let btn = ui.add(
                     egui::Button::new(
                         egui::RichText::new(format!("\u{2605} {}", display_name)).size(9.0)
-                            .color(if is_current { egui::Color32::from_rgb(30, 30, 34) } else { theme.text_secondary })
+                            .color(if is_current { theme.text_on_accent } else { theme.text_secondary })
                     )
                     .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
                     .stroke(egui::Stroke::new(0.5_f32, if is_current { theme.accent } else { theme.border }))
@@ -2217,7 +2294,7 @@ impl BrowserPanel {
                 let btn = ui.add(
                     egui::Button::new(
                         egui::RichText::new(label).size(9.0)
-                            .color(if is_current { egui::Color32::from_rgb(30, 30, 34) } else { theme.text_secondary })
+                            .color(if is_current { theme.text_on_accent } else { theme.text_secondary })
                     )
                     .fill(if is_current { theme.accent } else { egui::Color32::TRANSPARENT })
                     .stroke(egui::Stroke::new(0.5_f32, if is_current { theme.accent } else { theme.border }))
@@ -2516,7 +2593,7 @@ impl BrowserPanel {
                 let err_text = err.clone();
                 ui.add_space(16.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(egui::RichText::new("Cannot access folder").size(12.0).color(egui::Color32::from_rgb(210, 60, 60)));
+                    ui.label(egui::RichText::new("Cannot access folder").size(12.0).color(theme.marker_error));
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new(err_text.as_str()).size(10.0).color(theme.text_dim));
                     ui.add_space(8.0);
@@ -2766,7 +2843,7 @@ impl BrowserPanel {
                             .map(|p| ((p.x - thumb_box.min.x) / tile_w).floor() as usize)
                             .map(|i| i.min(tiles.len() - 1));
 
-                        ui.painter().rect_filled(thumb_box, 2.0, egui::Color32::from_rgb(18, 18, 18));
+                        ui.painter().rect_filled(thumb_box, 2.0, theme.bg_void);
                         for (i, tex) in tiles.iter().enumerate() {
                             let tile_rect = egui::Rect::from_min_size(
                                 egui::pos2(thumb_box.min.x + i as f32 * tile_w, thumb_box.min.y),
@@ -2788,7 +2865,7 @@ impl BrowserPanel {
                                 ui.painter().vline(
                                     tile_rect.min.x,
                                     tile_rect.y_range(),
-                                    egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(10, 10, 10)),
+                                    egui::Stroke::new(0.5_f32, theme.bg_void),
                                 );
                             }
                         }
@@ -2801,7 +2878,7 @@ impl BrowserPanel {
                             ui.painter().rect_stroke(
                                 active_rect,
                                 0.0,
-                                egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(0xe8, 0xa0, 0x20)),
+                                egui::Stroke::new(1.5_f32, theme.accent),
                             );
 
                             // Large preview popup — shows the active tile
@@ -2840,8 +2917,8 @@ impl BrowserPanel {
                                     ui.painter().rect(
                                         preview_rect,
                                         4.0,
-                                        egui::Color32::from_rgb(18, 18, 18),
-                                        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0xe8, 0xa0, 0x20)),
+                                        theme.bg_void,
+                                        egui::Stroke::new(1.0_f32, theme.accent),
                                     );
                                     ui.painter().image(
                                         tex.id(),
@@ -2890,7 +2967,7 @@ impl BrowserPanel {
                                     egui::vec2(w, thumb_box.height()),
                                 )
                             };
-                            ui.painter().rect_filled(thumb_box, 2.0, egui::Color32::from_rgb(18, 18, 18));
+                            ui.painter().rect_filled(thumb_box, 2.0, theme.bg_void);
                             ui.painter().image(
                                 tex.id(),
                                 fitted,
@@ -2961,7 +3038,7 @@ impl BrowserPanel {
                             ui.painter().rect_filled(
                                 thumb_box,
                                 2.0,
-                                egui::Color32::from_rgb(18, 18, 18),
+                                theme.bg_void,
                             );
                             let center_y = thumb_box.center().y;
                             let half_h = thumb_box.height() * 0.45; // 90% range, 5% margin top/bottom
@@ -3205,15 +3282,23 @@ impl BrowserPanel {
                 // avoid borrowing `self` while `filtered` still aliases
                 // `self.files_entries`.
 
-                // Double-click: navigate (dir) or import (media file).
+                // Double-click: navigate (dir) or import (media file)
+                // AND open the newly-imported file in the Source
+                // viewer. Previously fired LoadMediaFile only, which
+                // leaked the new file's first frame into the Program
+                // viewer via the engine's shared frame buffer. Using
+                // the same `pending_open_in_source` flow the right-
+                // click "Open in Source Viewer" action uses:
+                //   - LoadMediaFile creates the MediaItem in the pool
+                //   - source_media_id is pre-set to the new id so the
+                //     Source viewer flips to it as soon as the
+                //     MediaItem lands
+                //   - viewer_mode snaps to Source
                 if resp.double_clicked() {
                     if entry.is_dir {
                         pending_navigate = Some(entry.path.clone());
                     } else if entry.is_media {
-                        cmds.push(AppCommand::LoadMediaFile {
-                            path: entry.path.clone(),
-                            media_id: klipp_core::MediaId::new(),
-                        });
+                        pending_open_in_source = Some(vec![entry.path.clone()]);
                     }
                 }
 
@@ -4106,6 +4191,9 @@ impl BrowserPanel {
                     &self.search_query,
                     &mut self.effects_category,
                     &mut self.favorite_effects,
+                    &mut self.recent_effects,
+                    &mut self.effect_view_mode,
+                    &mut self.effect_sort,
                 )
             }
             LibraryCategory::AudioFx => {

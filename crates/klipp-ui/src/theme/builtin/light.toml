@@ -1,0 +1,86 @@
+# Klipp built-in Light theme.
+#
+# Mirror of dark.toml with backgrounds inverted to off-whites/soft greys
+# and text flipped to near-blacks. Accent stays the same warm amber
+# family but with re-tuned glow alpha — translucent amber that reads
+# as a soft glow on dark backgrounds becomes a muddy yellow stain on
+# white at the same opacity, so light-mode glow uses higher alpha
+# with lower RGB to produce a comparable perceptual overlay.
+
+name = "Light"
+
+[colors]
+# ── Backgrounds: lightest (void = window border) → darkest (raised = card surfaces) ──
+# Inverted polarity from Dark, same six-step gradient so depth cues
+# (panel-on-panel layering) still read correctly.
+bg_void       = "#eeeef0"
+bg_deep       = "#f4f4f6"
+bg_panel      = "#fafafc"
+bg_panel_alt  = "#f0f0f3"
+bg_raised     = "#ffffff"
+bg_hover      = "#e6e6ea"
+bg_viewer     = "#e0e0e4"
+
+# ── Borders / dividers ──
+border        = "#cccccc"
+border_light  = "#b8b8c0"
+resizer_idle  = "#b0b0b8"
+
+# ── Accent (warm amber, same family) ──
+# Slightly darker than Dark's accent so it carries enough weight against
+# white surfaces.
+accent        = "#c88610"
+accent_dim    = "#90600c"
+# Glow alphas re-tuned for white background: higher opacity so the hint
+# of accent reads, lower RGB so we don't tint to a muddy yellow.
+accent_glow   = "#2317053c"
+accent_subtle = "#1c12041e"
+# Secondary accent — slightly darker purple than Dark mode so it
+# carries enough weight against white surfaces.
+accent_alt    = "#8a3cc8"
+
+# ── Text ──
+text_primary   = "#18181c"
+text_secondary = "#555560"
+text_dim       = "#888890"
+text_accent    = "#a87010"
+# Same dark text as Dark mode for accent backgrounds — the contrast
+# rule is about contrast vs the accent itself, which is the same
+# colour on both polarities.
+text_on_accent = "#1a1a1e"
+
+# ── Functional marker / status colours ──
+# Slightly darker than the Dark theme equivalents so they carry
+# enough weight against white surfaces; same hue families so the
+# semantic mapping (red = error, green = success, blue = info, amber
+# = warning) reads correctly.
+marker_error   = "#b8302c"
+marker_success = "#3aa05c"
+marker_info    = "#1f5a9c"
+marker_warning = "#a87810"
+
+# ── Scope display tokens ──
+# Light scope traces; grid overlay needs higher alpha to read on
+# white. Source amber (245,180,60) at alpha 64/255 ≈ 25 %.
+scope_grid  = "#3d2d0f40"
+scope_label = "#604c14"
+# Scope display surface stays dark even in Light theme — the trace
+# colours (white luminance, RGB channel hues) are designed to read
+# on dark backgrounds. A theme can override this if it pairs the
+# bg with a custom trace shader; the default is industry-standard
+# "scope on black" regardless of polarity.
+scope_bg    = "#1a1a1c"
+
+# ── Role colours ──
+# Saturated mid-value hues that sit OK on either polarity. Per-role
+# overrides in Preferences still win.
+role_video     = "#2d6fa8"
+role_dialogue  = "#3a8c6e"
+role_music     = "#4285f4"
+role_sfx       = "#a85c2d"
+role_title     = "#c0392b"
+role_broll     = "#4a6ea8"
+role_ambience  = "#9c27b0"
+role_foley     = "#e91e63"
+role_voiceover = "#0096a8"
+role_graphics  = "#c8a010"

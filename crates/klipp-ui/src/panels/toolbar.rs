@@ -96,7 +96,6 @@ impl ToolbarPanel {
             } else {
                 state.active_workspace = Workspace::Color;
                 state.show_color_panel = true;
-                state.show_scopes = true;
             }
         }
 
@@ -202,6 +201,7 @@ impl ToolbarPanel {
                 Self::mark_menu(ui, &mut cmds, state);
                 Self::view_menu(ui, &mut cmds, state);
                 Self::window_menu(ui, &mut cmds, state);
+                Self::tools_menu(ui, &mut cmds, state);
                 Self::help_menu(ui, state);
 
                 sep(ui, theme);
@@ -529,6 +529,23 @@ impl ToolbarPanel {
                     let soloed = state.sequence().all_clips().find(|c| c.id == cid).is_some_and(|c| c.solo);
                     cmds.push(AppCommand::SetClipSolo { clip_id: cid, solo: !soloed });
                 }
+                ui.close_menu();
+            }
+            ui.separator();
+            // Match Frame — finds the source frame for the program
+            // playhead and loads it in the source viewer; the reverse
+            // walks the timeline forward to the next occurrence of
+            // the source viewer's current frame. Both honour speed
+            // ramps + clip.source_in.
+            if ui.add(egui::Button::new("Match Frame").shortcut_text("F")).clicked() {
+                cmds.push(AppCommand::MatchFrameProgramToSource);
+                ui.close_menu();
+            }
+            let has_source = state.source_media_id.is_some();
+            if ui.add_enabled(has_source,
+                egui::Button::new("Match Frame Reverse").shortcut_text("Shift+F"),
+            ).clicked() {
+                cmds.push(AppCommand::MatchFrameSourceToProgram);
                 ui.close_menu();
             }
             ui.separator();
@@ -954,8 +971,60 @@ impl ToolbarPanel {
             if ui.button(toggle_label(state.show_markers_panel, "Markers")).clicked() { state.show_markers_panel = !state.show_markers_panel; ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.show_subtitle_editor, "Subtitle Editor")).shortcut_text("Ctrl+Shift+T")).clicked() { state.show_subtitle_editor = !state.show_subtitle_editor; ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.show_project_notes, "Project Notes")).shortcut_text("Ctrl+Shift+N")).clicked() { state.show_project_notes = !state.show_project_notes; ui.close_menu(); }
+            if ui.add(egui::Button::new(toggle_label(state.ai_tools_state.panel_visible, "AI Tools")).shortcut_text("Alt+A")).clicked() { state.ai_tools_state.panel_visible = !state.ai_tools_state.panel_visible; ui.close_menu(); }
             ui.separator();
+            // Modal dialogs — distinct from panels because they
+            // overlay the editor instead of docking. Plugin-management
+            // dialogs (AI Models, Audio Plugins) live under their own
+            // top-level "Plugins" menu so future LV2 / VST3 sections
+            // have a natural home; they used to live here under
+            // Window but the noun mismatch (modal dialog vs panel)
+            // got worse as more were added.
             if ui.add(egui::Button::new("Command Palette").shortcut_text("Ctrl+K")).clicked() { state.show_command_palette = true; ui.close_menu(); }
+        });
+    }
+
+    /// Tools menu — utilities and managers that don't belong under
+    /// File / Edit / Clip / Timeline / Mark / View / Window.
+    /// Convention follows Avid Media Composer and DaVinci Resolve
+    /// where Tools is the natural home for utility-style dialogs and
+    /// managers.
+    ///
+    /// Two groups separated by a divider:
+    ///   1. Plugin / model managers — Audio Plugins, AI Models
+    ///   2. Project-state utilities — Cache Manager, Render Queue
+    ///
+    /// LV2 / VST3 plugin managers will join group 1; project-doctor /
+    /// consolidate / asset-relink etc. will join group 2.
+    fn tools_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState) {
+        ui.menu_button(egui::RichText::new("Tools").size(11.0), |ui| {
+            if ui.button("Audio Plugins\u{2026}").clicked() {
+                state.show_audio_plugins_dialog = true;
+                state.audio_plugins_dialog.last_scanned_secs = None;
+                ui.close_menu();
+            }
+            if ui.button("AI Models\u{2026}").clicked() {
+                state.show_ai_models_dialog = true;
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Cache Manager\u{2026}").clicked() {
+                cmds.push(AppCommand::OpenCacheManager);
+                ui.close_menu();
+            }
+            if ui.button("Render Queue").clicked() {
+                cmds.push(AppCommand::ShowRenderQueue);
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Project Doctor\u{2026}").clicked() {
+                cmds.push(AppCommand::OpenProjectDoctor);
+                ui.close_menu();
+            }
+            if ui.button("System Probe\u{2026}").clicked() {
+                cmds.push(AppCommand::OpenSystemProbe);
+                ui.close_menu();
+            }
         });
     }
 

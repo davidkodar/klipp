@@ -15,11 +15,15 @@ members = [
     "crates/klipp-validation",
     "crates/klipp-render",
     "crates/klipp-export",
+    "crates/klipp-ml",
+    "crates/klipp-ml-candle",
+    "crates/klipp-ml-ort",
     "crates/klipp-ui",
     "crates/klipp-app",
     "crates/klipp-jobs",
     "crates/klipp-testing",
     "crates/klipp-perf",
+    "crates/klipp-smoke",
 ]
 resolver = "2"
 
@@ -103,6 +107,30 @@ libloading = "0.8"
 flume = "0.11"
 pollster = "0.4"
 
+# TOML parser — model manifest in klipp-ml
+toml = "0.8"
+
+# SHA-256 + hex encoding — model checksum verification
+sha2 = "0.10"
+hex = "0.4"
+
+# Blocking HTTPS client — one-shot model downloads in klipp-ml
+# (reqwest pulls async + extra deps; ureq is lighter for foreground DLs)
+ureq = { version = "2", features = ["tls"] }
+
+# Bit-flag capability sets for klipp-ml's MaskGenerator trait
+# (multiple narrow capabilities matched cleanly via |/&)
+bitflags = { version = "2", features = ["serde"] }
+
+# ONNX Runtime — pinned to 2.0.0-rc.12 (RC since 2024, production-stable).
+# Uses `load-dynamic`: the build never downloads anything; users point at
+# their existing libonnxruntime.so via `ORT_DYLIB_PATH=...`. Distros
+# package onnxruntime; Klipp's release builds ship the .so next to the
+# binary. `download-binaries` was the alternative but rc.12's build
+# script bit-rotted against newer ureq. Lives behind klipp-ml-ort/ort
+# feature flag — default Klipp build does not pull this in.
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-24"] }
+
 # Internal crates
 klipp-core    = { path = "crates/klipp-core" }
 klipp-project = { path = "crates/klipp-project" }
@@ -119,7 +147,11 @@ klipp-nodes   = { path = "crates/klipp-nodes" }
 klipp-title  = { path = "crates/klipp-title" }
 klipp-render  = { path = "crates/klipp-render" }
 klipp-export  = { path = "crates/klipp-export" }
+klipp-ml         = { path = "crates/klipp-ml" }
+klipp-ml-candle  = { path = "crates/klipp-ml-candle" }
+klipp-ml-ort     = { path = "crates/klipp-ml-ort" }
 klipp-ui      = { path = "crates/klipp-ui" }
+klipp-testing = { path = "crates/klipp-testing" }
 
 # ─── Workspace-wide profile settings ────────────────────────────────────────
 [profile.dev]
@@ -137,7 +169,12 @@ opt-level = 3
 lto = "thin"           # Link-time optimization for smaller/faster binary
 codegen-units = 8      # Smaller LLVM units to keep LTO from blowing its stack
                        # (was 1, then 4; klipp-ui growth pushed us to 8).
-strip = true           # Strip debug symbols from release binary
+# Line tables (no full DWARF) so panics produce useful backtraces while
+# we hunt the wgpu TextureView lifetime crash. Adds ~5-10 MB to the
+# binary, no perf cost. Revert to `strip = true` once the crash is
+# fixed and we no longer need release-mode symbols.
+debug = "line-tables-only"
+strip = false
 panic = "abort"        # Smaller binary, no unwinding overhead
 
 [profile.profiling]

@@ -113,6 +113,10 @@ struct ExportDialogState {
     /// Display-boundary tone-map operator picked by the user.
     /// Default Hable matches prior behaviour.
     tone_map_op: klipp_core::ToneMapOp,
+    /// Output Display Transform — picks the delivery-target colour
+    /// space of the rendered file. Default `MatchViewer` mirrors what
+    /// the user has been seeing while editing.
+    odt: klipp_core::OdtChoice,
 }
 
 impl Default for ExportDialogState {
@@ -147,6 +151,7 @@ impl Default for ExportDialogState {
             bit_depth: 0,
             hdr_mode: klipp_core::HdrMode::Sdr,
             tone_map_op: klipp_core::ToneMapOp::Hable,
+            odt: klipp_core::OdtChoice::MatchViewer,
         }
     }
 }
@@ -155,6 +160,11 @@ pub struct KlippApp {
     cmd_tx: Sender<AppCommand>,
     event_rx: Receiver<AppEvent>,
     frame_buffer: SharedFrameBuffer,
+    /// Source-viewer frame buffer — engine writes decoded source
+    /// media frames here during source playback / seek; the source
+    /// viewer panel uploads from it via the same defer-drop pattern
+    /// the program viewer uses.
+    pub(crate) source_frame_buffer: SharedFrameBuffer,
     sequence: Arc<RwLock<Sequence>>,
     media_pool_shared: Arc<RwLock<klipp_media::MediaPool>>,
     state: AppState,
@@ -209,8 +219,19 @@ pub struct KlippApp {
     /// engine command channel at UI fps rate — ~120 commands/sec of
     /// no-op work).
     last_sent_scope_mode: Option<u8>,
+    /// Same change-tracking pattern as `last_sent_scope_mode` for the
+    /// scope-panel visibility flag. The engine uses this to skip the
+    /// per-frame `linear_rgba_to_u8` re-encode and the GPU scope
+    /// shader pass when the panel is hidden — together those cost
+    /// ~12 ms / 1080p frame and were eating most of the playback
+    /// budget for users who don't have scopes open.
+    last_sent_scopes_visible: Option<bool>,
     // GUI redesign
     theme: KlippTheme,
+    /// Loaded once at startup; holds built-in (Dark, Light) themes
+    /// plus any TOML the user dropped in `~/.config/klipp/themes/`.
+    /// `theme` itself is rebuilt from this on every prefs reload.
+    theme_registry: crate::theme::ThemeRegistry,
     layout: LayoutState,
     layout_dirty: bool,
     browser: BrowserPanel,
@@ -239,11 +260,18 @@ pub struct KlippApp {
     suppress_fps_prompt: bool,
     // Node graph and inspector panels (Color workspace)
     node_graph_panel: crate::panels::node_graph::NodeGraphPanel,
+    node_graph_v2_panel: crate::panels::node_graph_v2::NodeGraphV2Panel,
     node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel,
+    looks_panel_state: crate::panels::looks::LooksPanelState,
     /// Pre-edit snapshot for the current color-grading parameter gesture.
     /// Set by `BeginNodeParamEdit`, consumed by `EndNodeParamEdit`. `None`
     /// when no gesture is in progress.
     node_param_edit_snapshot: Option<(klipp_core::ClipId, klipp_nodes::NodeGraph)>,
+    /// Last wall time `sync_and_refresh_frame` ran while a
+    /// node-param-edit gesture was in flight. Used to throttle the
+    /// heavy sequence resync to ~30 Hz during drags so the engine
+    /// command channel doesn't get flooded.
+    last_gesture_sync: std::time::Instant,
     /// CPU-only graph executor for UI-thread re-grading (instant slider feedback).
     /// CPU-only executor for fast reduced-resolution scope previews.
     scope_executor: klipp_nodes::GraphExecutor,
@@ -283,6 +311,7 @@ impl KlippApp {
         cmd_tx: Sender<AppCommand>,
         event_rx: Receiver<AppEvent>,
         frame_buffer: SharedFrameBuffer,
+        source_frame_buffer: SharedFrameBuffer,
         sequence: Arc<RwLock<Sequence>>,
         media_pool_shared: Arc<RwLock<klipp_media::MediaPool>>,
         skim_consumer: klipp_engine::audio_output::SkimConsumer,
@@ -294,6 +323,14 @@ impl KlippApp {
     ) -> Self {
         use klipp_core::startup_timer::LogTimer;
 
+        // AI mask cache LRU sweep — trim
+        // ~/.cache/klipp/ai_masks/ to AI_MASK_CACHE_BYTES_CAP if
+        // it's overgrown. Cheap (stat-only walk + delete oldest)
+        // and runs once at startup so it doesn't cost during
+        // editing. See execute_apply_mask_to_clip for the schema
+        // these files are written under.
+        prune_ai_mask_cache();
+
         let (thumb_tx, thumb_rx) = crossbeam_channel::unbounded();
         let (source_frame_tx, source_frame_rx) = crossbeam_channel::unbounded();
         let (filmstrip_tx, filmstrip_rx) = crossbeam_channel::unbounded();
@@ -304,13 +341,18 @@ impl KlippApp {
             let _t = LogTimer::new("ui: Preferences::load");
             crate::prefs::Preferences::load()
         };
-        let theme = KlippTheme::from_prefs(&prefs.appearance);
+        let theme_registry = {
+            let _t = LogTimer::new("ui: ThemeRegistry::load");
+            crate::theme::ThemeRegistry::load()
+        };
+        let theme = KlippTheme::from_prefs(&prefs.appearance, &theme_registry);
         {
             let _t = LogTimer::new("ui: theme + fonts apply (egui)");
             theme.apply_to_egui(&cc.egui_ctx);
             theme.apply_fonts_with_size(&cc.egui_ctx, prefs.appearance.ui_text_size);
             crate::icons::install(&cc.egui_ctx);
         }
+
 
         // Apply UI scale — Auto (0) detects system DPI via native pixels_per_point
         let scale_pct = prefs.appearance.ui_scale_percent;
@@ -358,6 +400,7 @@ impl KlippApp {
             cmd_tx,
             event_rx,
             frame_buffer,
+            source_frame_buffer,
             sequence,
             media_pool_shared,
             state: {
@@ -404,7 +447,9 @@ impl KlippApp {
             last_scope_preview_refresh: std::time::Instant::now()
                 - std::time::Duration::from_secs(1),
             last_sent_scope_mode: None,
+            last_sent_scopes_visible: None,
             theme,
+            theme_registry,
             layout,
             layout_dirty: false,
             browser: BrowserPanel::default(),
@@ -419,8 +464,11 @@ impl KlippApp {
             framerate_mismatch_dialog: None,
             suppress_fps_prompt: false,
             node_graph_panel: crate::panels::node_graph::NodeGraphPanel::default(),
+            node_graph_v2_panel: crate::panels::node_graph_v2::NodeGraphV2Panel::default(),
             node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel::default(),
+            looks_panel_state: crate::panels::looks::LooksPanelState::default(),
             node_param_edit_snapshot: None,
+            last_gesture_sync: std::time::Instant::now(),
             scope_executor: klipp_nodes::GraphExecutor::new_cpu_only(),
             media_watcher: None,
             curve_editor: crate::panels::curve_editor::CurveEditorPanel::new(),
@@ -651,16 +699,34 @@ impl KlippApp {
             );
         }
 
-        // Discover LADSPA plugins at startup (cheap — dlopen+iterate only).
+        // Discover LADSPA plugins at startup. Uses the on-disk cache when
+        // available — cache hit is ~1–5 ms, cold scan is 50–500 ms depending
+        // on plugin count. Cache invalidates automatically when any LADSPA
+        // search directory's mtime changes (i.e. a plugin was installed,
+        // removed, or renamed).
+        //
+        // Load the user's disabled-plugins set first, then filter it out
+        // before merging into the effect registry — disabled plugins
+        // shouldn't appear in the browser or "+ Add Effect" picker.
         {
             let _t = LogTimer::new("ui: LADSPA discovery");
-            app.state.ladspa_plugins = klipp_audio::ladspa::discover_ladspa_plugins();
-            app.state
-                .effect_registry
-                .merge_ladspa_plugins(&app.state.ladspa_plugins);
+            let cache_dir = dirs::cache_dir().map(|p| p.join("klipp"));
+            app.state.disabled_audio_plugins = crate::audio_plugins_disabled::load();
+            app.state.ladspa_plugins =
+                klipp_audio::ladspa::discover_ladspa_plugins_cached(cache_dir.as_deref());
+            let enabled: Vec<klipp_audio::ladspa::LadspaPluginInfo> = app
+                .state
+                .ladspa_plugins
+                .iter()
+                .filter(|p| !app.state.disabled_audio_plugins.contains(&p.unique_id))
+                .cloned()
+                .collect();
+            app.state.effect_registry.merge_ladspa_plugins(&enabled);
             tracing::info!(
-                "LADSPA: discovered {} plugin(s)",
-                app.state.ladspa_plugins.len()
+                "LADSPA: discovered {} plugin(s) ({} enabled, {} disabled)",
+                app.state.ladspa_plugins.len(),
+                enabled.len(),
+                app.state.disabled_audio_plugins.len()
             );
         }
         klipp_core::startup_timer::mark("KlippApp::new returning");
@@ -801,7 +867,6 @@ impl KlippApp {
                     self.state.playback = PlaybackState::Playing;
                     self.state.playhead_anchor = self.state.playhead;
                     self.state.playhead_anchor_wall = std::time::Instant::now();
-                    // Re-engage playhead follow on play (user scroll disables it)
                     if self.prefs.editing.playhead_follows_playback
                         && self.state.playhead_follow == crate::state::PlayheadFollow::Off
                     {
@@ -813,6 +878,16 @@ impl KlippApp {
                 }
                 AppEvent::PlaybackStopped => {
                     self.state.playback = PlaybackState::Stopped;
+                }
+                AppEvent::SourcePlaybackStarted => {
+                    self.state.source_playback = PlaybackState::Playing;
+                }
+                AppEvent::SourcePlaybackPaused => {
+                    self.state.source_playback = PlaybackState::Paused;
+                }
+                AppEvent::SourcePlayheadMoved(secs) => {
+                    let rate = self.state.fps.rate();
+                    self.state.source_playhead = Timecode::from_secs_f64(secs, rate);
                 }
                 AppEvent::LoopedBack => {
                     // Engine looped back — the following PlayheadMoved carries the new position.
@@ -2121,8 +2196,17 @@ impl KlippApp {
             .map(|e| (e.name.clone(), e.source.clone()))
             .collect();
         self.state.effect_thumbnails.generate_all_if_needed(&effects);
-        // Poll completed thumbnails
-        self.state.effect_thumbnails.poll_and_upload(ctx);
+        // Poll completed thumbnails. Any displaced TextureHandle
+        // (re-render of an effect that already had a thumbnail) is
+        // routed into the deferred-drop bucket so its underlying
+        // wgpu texture survives the current frame's submit — egui
+        // BindGroups in flight still reference it. Hit #5 of the
+        // defer-drop trap (memory: feedback_defer_drop_texture).
+        let drops_slot = self.state.deferred_texture_drops_slot;
+        self.state.effect_thumbnails.poll_and_upload(
+            ctx,
+            &mut self.state.deferred_texture_drops[drops_slot],
+        );
     }
 
     /// Show nearest filmstrip thumbnail as instant viewer preview while full-res decodes.
@@ -2545,6 +2629,8 @@ impl KlippApp {
                     enabled: true,
                     params: klipp_nodes::NodeParams::default(),
                     keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+                    output_link: None,
+                    input_links: Vec::new(),
                 };
                 clip.node_graph.nodes.push(new_node);
                 // Insert the new node just before the output node:
@@ -2634,6 +2720,62 @@ impl KlippApp {
         self.state.pending_title_preview_clip = Some(clip_id);
     }
 
+    /// Lift any newly-decoded source frame from `source_frame_buffer`
+    /// into an egui texture for the source viewer panel. Mirrors the
+    /// Program viewer's `upload_frame_to_egui` but stripped to the
+    /// essentials: no scopes, no compare buffers, no defer-drop ring
+    /// (we re-use existing handles via `set` on size match, defer-
+    /// drop only on size change). Steady-state cost: one mutex check
+    /// + one generation compare per frame.
+    fn upload_source_frame_to_egui(&mut self, ctx: &egui::Context) {
+        let (rgba, w, h, gen) = {
+            let mut fb = self.source_frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            // Promote any pending engine write into `data`. `dirty`
+            // gates whether this method actually does work below.
+            fb.swap_pending();
+            if !fb.dirty {
+                return;
+            }
+            let w = fb.width as usize;
+            let h = fb.height as usize;
+            if fb.data.len() != w * h * 4 {
+                fb.dirty = false;
+                return;
+            }
+            fb.dirty = false;
+            (std::mem::take(&mut fb.data), w, h, fb.generation)
+        };
+        // Skip uploads when this generation already landed — guards
+        // against double-pumping when both source and program viewers
+        // dirty in the same frame.
+        if gen == self.state.source_live_texture_gen
+            && self.state.source_live_texture.is_some()
+        {
+            return;
+        }
+        let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
+        let new_size = egui::vec2(w as f32, h as f32);
+        let needs_alloc = match &self.state.source_live_texture {
+            Some(tex) => tex.size_vec2() != new_size,
+            None => true,
+        };
+        if needs_alloc {
+            // Different dimensions: defer-drop the old handle (egui-wgpu
+            // may still have a submit in flight), then allocate fresh.
+            if let Some(old) = self.state.source_live_texture.take() {
+                self.defer_drop_texture(old);
+            }
+            let tex = ctx.load_texture(
+                "source_live", color_image, egui::TextureOptions::LINEAR,
+            );
+            self.state.source_live_texture = Some(tex);
+        } else if let Some(tex) = self.state.source_live_texture.as_mut() {
+            // Same dimensions: in-place data update reuses the GPU texture.
+            tex.set(color_image, egui::TextureOptions::LINEAR);
+        }
+        self.state.source_live_texture_gen = gen;
+    }
+
     /// Upload title overlay texture if pending. Called from update() where ctx is available.
     fn upload_title_overlay(&mut self, ctx: &egui::Context) {
         // Explicit clear request (e.g. scrub passed beyond a title clip).
@@ -2715,21 +2857,67 @@ impl KlippApp {
         }
     }
 
-    /// Apply the auto-detected log format from the media pool to a clip's InputTransform node.
+    /// Seed the clip's InputTransform node `log_format` from the
+    /// source media. User per-media override (`MediaItem.log_format`,
+    /// set whenever the user picks a format on any clip of this
+    /// media) wins over the heuristic (`detected_log_format`); the
+    /// heuristic wins over Srgb default. Skipped entirely when the
+    /// effective format is Srgb so we don't insert pointless
+    /// `Some(Srgb)` overrides on plain SDR clips.
     fn apply_detected_log_format(&mut self, clip_id: klipp_core::ClipId, media_id: klipp_core::MediaId) {
-        let detected = self.state.media_pool.get(&media_id)
-            .map(|m| m.detected_log_format)
+        let (user_lf, detected_lf) = self.state.media_pool.get(&media_id)
+            .map(|m| (m.log_format, m.detected_log_format))
             .unwrap_or_default();
-        if detected != klipp_core::LogFormat::Srgb {
+        let effective = if user_lf != klipp_core::LogFormat::default() { user_lf } else { detected_lf };
+        if effective != klipp_core::LogFormat::Srgb {
             let seq = &mut self.state.sequences[self.state.active_sequence_idx];
             if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
-                clip.set_input_log_format(detected);
+                clip.set_input_log_format(effective);
             }
         }
     }
 
     fn sync_sequence_to_engine(&self) {
-        let mut seq = self.sequence.write().unwrap_or_else(|e| e.into_inner());
+        // ROOT CAUSE FIX (2026-04-28): a plain `self.sequence.write()`
+        // on Linux uses pthread_rwlock_t, which is reader-preferring
+        // by default. The engine acquires `sequence.read()` every
+        // ~16 ms during `post_process_rgba` for the paused-viewer
+        // redraw; on a busy frame the UI's blocking `write()` here
+        // never gets a turn and the UI thread sits forever at
+        // `stage=SendCommands` (observed: 60+ s stalls right after
+        // project open). Match the same try-write-with-retry pattern
+        // the engine uses in `apply_param_changes` so the UI can
+        // bound the wait, log who's holding the lock when contended,
+        // and (on long contention) yield CPU between attempts so the
+        // engine's read drops promptly.
+        let try_start = std::time::Instant::now();
+        let mut last_log = try_start;
+        let mut seq = loop {
+            match self.sequence.try_write() {
+                Ok(w) => break w,
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    if last_log.elapsed() >= std::time::Duration::from_secs(1) {
+                        let held = klipp_engine::SEQ_WRITE_HOLDER
+                            .load(std::sync::atomic::Ordering::Acquire);
+                        tracing::warn!(
+                            "UI_SEQ_WRITE_BLOCKED {}ms — current holder={}",
+                            try_start.elapsed().as_millis(),
+                            klipp_engine::seq_write_holder_name(held),
+                        );
+                        last_log = std::time::Instant::now();
+                    }
+                    // 1 ms is short enough to catch the engine's
+                    // brief release window between consecutive
+                    // post_process reads, but long enough that we're
+                    // not pure-spinning. yield_now first to let the
+                    // scheduler hand the engine a chance to drop its
+                    // current read.
+                    std::thread::yield_now();
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(std::sync::TryLockError::Poisoned(e)) => break e.into_inner(),
+            }
+        };
         klipp_engine::seq_write_holder_set(klipp_engine::SeqWriteHolder::UiSyncToEngine);
         let active = &self.state.sequences[self.state.active_sequence_idx];
         // Flatten compound clips so the engine receives a plain sequence
@@ -3000,8 +3188,23 @@ impl KlippApp {
         // Prefer the full-sync path when ANY non-slider command needed refresh
         // (structural changes, keyframe edits, etc.). The slider fast path is
         // only taken when SetNodeParam was the sole trigger for refresh.
+        // While a node-param-edit gesture is in flight (mask drag etc.),
+        // throttle the heavy sync to ~30 Hz — without this the per-frame
+        // SetNodeMasks during a mask drag fires sync_sequence_to_engine +
+        // SequenceUpdated at 60+ Hz which floods the engine command channel
+        // and visibly drifts the playhead.
         if needs_refresh {
-            self.sync_and_refresh_frame();
+            let in_gesture = self.node_param_edit_snapshot.is_some();
+            let throttle_hit = in_gesture
+                && self.last_gesture_sync.elapsed() < std::time::Duration::from_millis(33);
+            if !throttle_hit {
+                if in_gesture {
+                    self.last_gesture_sync = std::time::Instant::now();
+                }
+                self.sync_and_refresh_frame();
+            } else {
+                self.refresh_scope_preview_fast();
+            }
         } else if node_param_scrub {
             // Slider scrub only — engine drains param_change_queue itself, so
             // we just need to refresh the scope preview on the UI thread.
@@ -3696,10 +3899,17 @@ impl KlippApp {
                 AppCommand::CreateMulticamClip => {
                     let ph = self.state.playhead;
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    // Find clips at playhead across all video tracks
+                    // Collect video clips at the playhead — one per
+                    // video track. `continue` on non-video tracks
+                    // skips them; using `return` here previously
+                    // silently aborted the whole operation as soon
+                    // as the loop hit the first audio track, so
+                    // multicam never fired on any sequence that had
+                    // an audio track interleaved above the bottom-
+                    // most video track.
                     let mut angle_clips: Vec<(usize, klipp_core::ClipId)> = Vec::new();
                     for (ti, track) in seq.tracks.iter().enumerate() {
-                        if !matches!(track.kind, klipp_timeline::TrackKind::Video) { return true; }
+                        if !matches!(track.kind, klipp_timeline::TrackKind::Video) { continue; }
                         if let Some((_, clip)) = track.clip_at_timecode(ph) {
                             if clip.media_id().is_some() {
                                 angle_clips.push((ti, clip.id));
@@ -3766,31 +3976,52 @@ impl KlippApp {
                         .flat_map(|t| t.clips.iter())
                         .map(|c| c.timeline_out.to_secs_f64())
                         .fold(0.0f64, f64::max);
+                    let avail_w = self.state.last_timeline_content_width;
+                    let raw_zoom = if max_secs > 0.01 { avail_w / (max_secs as f32 * 1.05) } else { 0.0 };
+                    let clamped = raw_zoom.clamp(0.1, 2000.0);
+                    tracing::info!(
+                        "TL_ZOOM FitTimelineToWindow max_secs={:.3} avail_w={:.1} raw_zoom={:.4} clamped={:.4}",
+                        max_secs, avail_w, raw_zoom, clamped
+                    );
                     if max_secs > 0.01 {
-                        // Leave 5% margin on right
-                        let avail_w = self.state.last_timeline_content_width;
-                        let zoom = avail_w / (max_secs as f32 * 1.05);
-                        self.state.timeline_zoom = zoom.clamp(0.1, 2000.0);
+                        self.state.timeline_zoom = clamped;
                         self.state.timeline_scroll_x = 0.0;
                     }
                     return true;
                 }
-                // Set timeline zoom, optionally atomically with scroll_x
-                // (for cursor-anchored Ctrl+wheel zoom).
                 AppCommand::SetTimelineZoom { zoom, scroll_x } => {
-                    self.state.timeline_zoom = zoom.clamp(0.1, 2000.0);
-                    if let Some(sx) = scroll_x {
-                        self.state.timeline_scroll_x = sx.max(0.0);
-                    }
+                    let clamped = zoom.clamp(0.1, 2000.0);
+                    tracing::info!(
+                        "TL_ZOOM SetTimelineZoom requested={:.4} clamped={:.4} scroll_x={:?} prev_zoom={:.4} prev_scroll={:.1}",
+                        zoom, clamped, scroll_x, self.state.timeline_zoom, self.state.timeline_scroll_x
+                    );
+                    self.state.timeline_zoom = clamped;
+                    let target_scroll = scroll_x
+                        .map(|sx| sx.max(0.0))
+                        .unwrap_or(self.state.timeline_scroll_x);
+                    // Clamp scroll to valid range for the NEW zoom.
+                    // Previously the plain zoom-out buttons left the
+                    // old scroll value in place — when that value
+                    // pointed past the end of all content at the new
+                    // (smaller) zoom, the viewport showed nothing and
+                    // every clip was culled HL (left of view).
+                    let total_secs = self.state.sequence_duration().to_secs_f64() as f32;
+                    let content_w = self.state.last_timeline_content_width.max(1.0);
+                    let max_scroll = (total_secs * clamped - content_w).max(0.0);
+                    self.state.timeline_scroll_x = target_scroll.clamp(0.0, max_scroll);
                     return true;
                 }
-                // Fit the timeline to the current visible content width
-                // (used by zoom-fit button and toolbar).
                 AppCommand::ZoomTimelineToFit => {
                     let dur = self.state.sequence_duration().to_secs_f64() as f32;
                     let w = self.state.last_timeline_content_width;
+                    let raw = if dur > 0.0 && w > 0.0 { w / dur } else { 0.0 };
+                    let clamped = raw.clamp(0.1, 2000.0);
+                    tracing::info!(
+                        "TL_ZOOM ZoomTimelineToFit dur={:.3} w={:.1} raw={:.4} clamped={:.4}",
+                        dur, w, raw, clamped
+                    );
                     if dur > 0.0 && w > 0.0 {
-                        self.state.timeline_zoom = (w / dur).clamp(0.1, 2000.0);
+                        self.state.timeline_zoom = clamped;
                         self.state.timeline_scroll_x = 0.0;
                     }
                     return true;
@@ -3965,6 +4196,42 @@ impl KlippApp {
                             self.defer_drop_texture(old);
                         }
                     }
+                    // Bind the engine's source decoder to this media so the
+                    // transport (Play / J / K / L / Space / arrows) drives
+                    // real playback. The legacy `start_source_frame_decode_at`
+                    // call below stays as the cold-start fallback — it
+                    // produces a thumbnail-style first frame in
+                    // `source_video_texture` immediately while the engine
+                    // decoder warms up. Once the engine starts pushing into
+                    // `source_frame_buffer`, the source viewer paints from
+                    // that and the cached `source_video_texture` falls back
+                    // to a placeholder role.
+                    if let Some(item) = self.state.media_pool.get(media_id) {
+                        if !item.offline && item.path.exists()
+                            && !item.video_codec.is_empty()
+                        {
+                            // Prefer the skim file (1080p H.264 8-bit
+                            // all-keyframes) over the source for the
+                            // source viewer's persistent decoder.
+                            // Scrubbing 4K HEVC = 50–100 ms per
+                            // NVDEC seek; 1080p H.264 = 5–15 ms — the
+                            // difference between "9 of 10 frames
+                            // missed" on a drag and a frame-perfect
+                            // scrub. Falls back to the original
+                            // source when the skim hasn't built yet.
+                            let decode_path = item
+                                .skim_file
+                                .as_ref()
+                                .filter(|p| p.exists())
+                                .cloned()
+                                .unwrap_or_else(|| item.path.clone());
+                            let _ = self.cmd_tx.send(AppCommand::SetSourceMedia {
+                                media_id: *media_id,
+                                path: decode_path,
+                                source_rotation: item.source_rotation,
+                            });
+                        }
+                    }
                     self.start_source_frame_decode_at(*media_id, 0.0);
                     return true;
                 }
@@ -3982,7 +4249,32 @@ impl KlippApp {
                         secs.max(0.0)
                     };
                     self.state.source_playhead = Timecode::from_secs_f64(clamped_secs, tc.rate);
-                    self.start_source_frame_decode_at(mid, clamped_secs);
+                    // Engine-only path: the persistent NVDEC decoder
+                    // bound by `SetSourceMedia` is now responsible for
+                    // every seek's decoded frame (lands in
+                    // `source_frame_buffer`). The legacy
+                    // `start_source_frame_decode_at` was spawning a
+                    // SOFTWARE-decode thread per SeekSource — at
+                    // 30 Hz scrub-dispatch that pinned every CPU
+                    // core in fresh-ffmpeg-context-open + software
+                    // HEVC decode + swscale, starving the timeline
+                    // engine to ~1 frame per 3 s. Removed; the
+                    // engine seek alone produces the frame.
+                    let _ = self.cmd_tx.send(AppCommand::SeekSource(
+                        Timecode::from_secs_f64(clamped_secs, tc.rate),
+                    ));
+                    return true;
+                }
+                AppCommand::MatchFrameProgramToSource => {
+                    self.run_match_frame_program_to_source();
+                    return true;
+                }
+                AppCommand::MatchFrameSourceToProgram => {
+                    self.run_match_frame_source_to_program();
+                    return true;
+                }
+                AppCommand::OpenModelDownloadDialog { model_id } => {
+                    self.request_model_download(model_id);
                     return true;
                 }
                 AppCommand::SetSourceInPoint(tc) => {
@@ -4507,6 +4799,362 @@ impl KlippApp {
     /// overrides `duration` to the zone length, and points the subclip at
     /// the same file with its own `default_source_in/out`. Pushes a
     /// `CreateSubclip` undo entry.
+    /// Match Frame: program → source. Find the topmost video clip
+    /// under the program playhead, load its media into the source
+    /// viewer, and seek the source playhead to the source-time
+    /// corresponding to the current program frame. Honours speed
+    /// ramps + `clip.source_in`. No-op (with toast) when no media
+    /// clip sits under the playhead.
+    fn run_match_frame_program_to_source(&mut self) {
+        let playhead = self.state.playhead;
+        let seq = self.state.sequence();
+        let fps = seq.fps.rate() as f64;
+
+        // Layered pick:
+        //   1. If a clip is selected (e.g. user right-clicked it
+        //      and chose Match Frame) AND the playhead is inside
+        //      that clip AND it has media, match against THAT clip.
+        //      This is what makes right-click on an audio clip do
+        //      the obvious thing — load its audio source — instead
+        //      of silently switching to whatever video is at the
+        //      same playhead. Pro NLEs honour the selection here.
+        //   2. Else fall back to the topmost video clip at the
+        //      playhead — this is the keyboard-F path and matches
+        //      the engine's seek_in_sequence convention.
+        //   3. Else walk audio tracks — handles pure-audio
+        //      sequences (music edits, podcasts) where there's no
+        //      video at the playhead at all. Without this fallback,
+        //      F just toasts "no media clip at playhead" for those.
+        let selected_hit = self.state.selected_clip.and_then(|sid| {
+            seq.tracks.iter()
+                .flat_map(|t| t.clips.iter())
+                .find(|c| c.id == sid
+                    && c.timeline_in <= playhead
+                    && playhead < c.timeline_out)
+                .and_then(|clip| {
+                    let mid = clip.media_id()?;
+                    let src = clip.source_time_for_sequence_time(playhead, fps)?;
+                    Some((mid, src))
+                })
+        });
+        let hit = selected_hit.or_else(|| {
+            seq.tracks.iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+                .rev()
+                .find_map(|track| {
+                    track.clip_at_timecode(playhead).and_then(|(_, clip)| {
+                        let mid = clip.media_id()?;
+                        let src = clip.source_time_for_sequence_time(playhead, fps)?;
+                        Some((mid, src))
+                    })
+                })
+        }).or_else(|| {
+            seq.tracks.iter()
+                .filter(|t| t.kind == klipp_timeline::TrackKind::Audio)
+                .rev()
+                .find_map(|track| {
+                    track.clip_at_timecode(playhead).and_then(|(_, clip)| {
+                        let mid = clip.media_id()?;
+                        let src = clip.source_time_for_sequence_time(playhead, fps)?;
+                        Some((mid, src))
+                    })
+                })
+        });
+        let Some((media_id, source_time)) = hit else {
+            self.state.toast.show("Match Frame: no media clip at playhead");
+            return;
+        };
+        // Load the media into the source viewer if it isn't already
+        // bound; LoadSourceMedia is idempotent w.r.t. seeking — it
+        // resets source_playhead to zero — so we always follow it
+        // with an explicit SeekSource.
+        if self.state.source_media_id != Some(media_id) {
+            let _ = self.cmd_tx.send(AppCommand::LoadSourceMedia { media_id });
+        }
+        let _ = self.cmd_tx.send(AppCommand::SeekSource(source_time));
+    }
+
+    /// Match Frame: source → program. Walk every clip in the active
+    /// sequence; for each one whose media matches the loaded source
+    /// media AND whose source range contains the source playhead,
+    /// compute the corresponding sequence time. Sort the matches and
+    /// jump the program playhead to the first one strictly past the
+    /// current playhead — wrapping to the earliest match if none.
+    /// Pressing Shift+F repeatedly cycles through every place the
+    /// source frame appears on the timeline. No-op (with toast) when
+    /// no source media is loaded or no clip uses it at the loaded
+    /// source-time.
+    fn run_match_frame_source_to_program(&mut self) {
+        let Some(media_id) = self.state.source_media_id else {
+            self.state.toast.show("Match Frame: no source media loaded");
+            return;
+        };
+        let source_time = self.state.source_playhead;
+        let current_program_playhead = self.state.playhead;
+        let seq = self.state.sequence();
+        let fps = seq.fps.rate() as f64;
+        // Search every track kind that can hold media — the loaded
+        // source media may be referenced by video clips, audio
+        // clips, or both (a single media file is often used as
+        // both a linked video+audio pair). Walking only video
+        // tracks would miss every occurrence on audio-only or
+        // pure-audio uses of the source.
+        let mut hits: Vec<Timecode> = seq
+            .tracks
+            .iter()
+            .filter(|t| matches!(
+                t.kind,
+                klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Audio
+            ))
+            .flat_map(|track| {
+                track.clips.iter().filter_map(|clip| {
+                    if clip.media_id() != Some(media_id) {
+                        return None;
+                    }
+                    clip.sequence_time_for_source_time(source_time, fps)
+                })
+            })
+            .collect();
+        if hits.is_empty() {
+            self.state.toast.show("Match Frame: source frame not on timeline");
+            return;
+        }
+        hits.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        // Linked video+audio pairs reference the same source file
+        // and produce the same sequence-time hit on both tracks.
+        // Dedup post-sort so Shift+F cycle steps land on distinct
+        // sequence positions instead of bouncing between the V and
+        // A halves of the same pair.
+        hits.dedup_by(|a, b| (a.to_secs_f64() - b.to_secs_f64()).abs() < 1e-6);
+        // Pick the first hit strictly past the current playhead; if
+        // none, wrap to the earliest. That gives a clean cycle: every
+        // press lands on a different occurrence and eventually returns
+        // to the first.
+        let target = hits
+            .iter()
+            .find(|t| **t > current_program_playhead)
+            .copied()
+            .unwrap_or_else(|| hits[0]);
+        let _ = self.cmd_tx.send(AppCommand::SeekTo(target));
+    }
+
+    /// Open the consent dialog for a model identified by its stable
+    /// id in the manifest. No network call yet; the user confirms in
+    /// the dialog before any download starts. Surfaces a toast if
+    /// the manifest doesn't contain the id (typo / version drift).
+    pub fn request_model_download(&mut self, model_id: &str) {
+        // Re-check cache first — if the model is already verified
+        // locally there's nothing to download. Surfaces a toast so
+        // the user gets feedback rather than silence.
+        let manifest = match klipp_ml::load_effective() {
+            Ok(m) => m,
+            Err(e) => {
+                self.state.toast.show(format!("Manifest error: {e}"));
+                return;
+            }
+        };
+        let Some(entry) = manifest.get(model_id) else {
+            self.state.toast.show(format!("Unknown model id: {model_id}"));
+            return;
+        };
+        if let Ok(cache) = klipp_ml::ModelCache::open() {
+            if let Ok(klipp_ml::CachedStatus::Verified) = cache.is_cached(entry) {
+                self.state.toast.show(
+                    format!("'{}' is already downloaded.", entry.display_name),
+                );
+                return;
+            }
+        }
+        self.state.model_download = crate::model_download::ModelDownloadState::Consenting {
+            entry: entry.clone(),
+        };
+    }
+
+    /// Render whichever model-download dialog matches the current
+    /// state. Drains worker events first so progress updates land
+    /// the same frame they arrive.
+    fn render_model_download_dialogs(
+        &mut self,
+        ctx: &egui::Context,
+        _all_cmds: &mut Vec<AppCommand>,
+    ) {
+        use crate::model_download::{
+            fmt_bytes, fmt_rate, poll_download, shorten_hash, spawn_download,
+            ModelDownloadState,
+        };
+
+        // Drain worker events first; transitions take effect this frame.
+        poll_download(&mut self.state.model_download);
+
+        // Snapshot the current variant so we can drop the borrow on
+        // self.state.model_download before mutating it inside the
+        // dialog closures.
+        let current = std::mem::take(&mut self.state.model_download);
+        match current {
+            ModelDownloadState::Idle => {
+                // Nothing to render. Restore so we don't re-init.
+                self.state.model_download = ModelDownloadState::Idle;
+            }
+            ModelDownloadState::Consenting { entry } => {
+                let mut next = ModelDownloadState::Consenting { entry: entry.clone() };
+                let mut close_kind: Option<&'static str> = None;
+                egui::Window::new("Download AI Model")
+                    .collapsible(false)
+                    .resizable(false)
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.set_min_width(420.0);
+                        ui.heading(&entry.display_name);
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "Klipp uses a local AI model to generate object \
+                                 masks. Once downloaded the file stays on your \
+                                 machine and Klipp never re-contacts the network \
+                                 to use it.",
+                            ).small(),
+                        );
+                        ui.add_space(8.0);
+                        egui::Grid::new("model_consent_grid")
+                            .num_columns(2)
+                            .spacing([16.0, 4.0])
+                            .show(ui, |ui| {
+                                ui.label("Size:");
+                                ui.label(fmt_bytes(entry.size_bytes));
+                                ui.end_row();
+                                ui.label("Source:");
+                                ui.label(
+                                    entry.sources.first()
+                                        .map(|s| s.url.as_str())
+                                        .unwrap_or("(none)"),
+                                );
+                                ui.end_row();
+                                ui.label("SHA-256:");
+                                ui.label(
+                                    egui::RichText::new(shorten_hash(&entry.sha256))
+                                        .monospace()
+                                        .small(),
+                                ).on_hover_text(&entry.sha256);
+                                ui.end_row();
+                                ui.label("License:");
+                                ui.label(&entry.license);
+                                ui.end_row();
+                                ui.label("Attribution:");
+                                ui.label(&entry.attribution);
+                                ui.end_row();
+                            });
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "Air-gapped install: drop the file directly into \
+                                 ~/.local/share/klipp/models/ with the SHA-256 \
+                                 above and Klipp will skip the download.",
+                            ).small().italics(),
+                        );
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Cancel").clicked() {
+                                close_kind = Some("cancel");
+                            }
+                            if ui.button(format!("Download ({})", fmt_bytes(entry.size_bytes))).clicked() {
+                                close_kind = Some("start");
+                            }
+                        });
+                    });
+                match close_kind {
+                    Some("cancel") => {
+                        next = ModelDownloadState::Idle;
+                    }
+                    Some("start") => {
+                        let handle = spawn_download(entry.clone(), ctx.clone());
+                        next = ModelDownloadState::Downloading {
+                            entry: entry.clone(),
+                            total: entry.size_bytes,
+                            downloaded: 0,
+                            started_at: std::time::Instant::now(),
+                            handle,
+                        };
+                    }
+                    _ => {}
+                }
+                self.state.model_download = next;
+            }
+            ModelDownloadState::Downloading {
+                entry, total, downloaded, started_at, handle,
+            } => {
+                let elapsed = started_at.elapsed().as_secs_f64().max(0.001);
+                let rate = downloaded as f64 / elapsed;
+                let mut cancelled = false;
+                egui::Window::new("Downloading AI Model")
+                    .collapsible(false)
+                    .resizable(false)
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.set_min_width(380.0);
+                        ui.label(&entry.display_name);
+                        ui.add_space(4.0);
+                        let frac = if total > 0 {
+                            (downloaded as f32 / total as f32).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        ui.add(egui::ProgressBar::new(frac).show_percentage());
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{} / {}",
+                                fmt_bytes(downloaded), fmt_bytes(total)));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(fmt_rate(rate));
+                                },
+                            );
+                        });
+                        ui.add_space(8.0);
+                        if ui.button("Cancel Download").clicked() {
+                            cancelled = true;
+                        }
+                    });
+                if cancelled {
+                    handle.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                self.state.model_download = ModelDownloadState::Downloading {
+                    entry, total, downloaded, started_at, handle,
+                };
+            }
+            ModelDownloadState::Failed { entry_label, error } => {
+                let mut next = ModelDownloadState::Failed {
+                    entry_label: entry_label.clone(),
+                    error: error.clone(),
+                };
+                egui::Window::new("Download Failed")
+                    .collapsible(false)
+                    .resizable(false)
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.set_min_width(380.0);
+                        ui.heading(&entry_label);
+                        ui.add_space(4.0);
+                        ui.label(&error);
+                        ui.add_space(8.0);
+                        if ui.button("Dismiss").clicked() {
+                            next = ModelDownloadState::Idle;
+                        }
+                    });
+                self.state.model_download = next;
+            }
+            ModelDownloadState::Completed { entry_label, path } => {
+                self.state.toast.show(format!(
+                    "Downloaded {entry_label} ({})", path.display(),
+                ));
+                self.state.model_download = ModelDownloadState::Idle;
+            }
+        }
+    }
+
     fn create_subclip_from_zone(&mut self, source_media_id: klipp_core::MediaId, name: Option<String>) {
         // Clone the parent so we can release the immutable borrow before mutating.
         let parent = match self.state.media_pool.get(&source_media_id).cloned() {
@@ -5395,6 +6043,7 @@ impl KlippApp {
                                     multicam_angle: clip.multicam_angle,
                                     multicam_cuts: clip.multicam_cuts.clone(),
                                     audio_effects: clip.audio_effects.clone(),
+                                    audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
                                     stabilization_data: None,
                                     smoothed_trajectory: None,
                                     track_points: Vec::new(),
@@ -5434,6 +6083,7 @@ impl KlippApp {
                             pan_keyframes: clip.pan_keyframes.clone(),
                             gain_keyframes: clip.gain_keyframes.clone(),
                             audio_effects: clip.audio_effects.clone(),
+                            audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
                             opacity_keyframes: clip.opacity_keyframes.clone(),
                             transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
                             transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
@@ -5482,6 +6132,7 @@ impl KlippApp {
                                 clip.pan_keyframes = attrs.pan_keyframes.clone();
                                 clip.gain_keyframes = attrs.gain_keyframes.clone();
                                 clip.audio_effects = attrs.audio_effects.clone();
+                                clip.audio_effect_keyframes = attrs.audio_effect_keyframes.clone();
                             }
                             if *transform {
                                 clip.opacity_keyframes = attrs.opacity_keyframes.clone();
@@ -5557,6 +6208,7 @@ impl KlippApp {
                             multicam_angle: clip.multicam_angle,
                             multicam_cuts: clip.multicam_cuts.clone(),
                             audio_effects: clip.audio_effects.clone(),
+                            audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
                             stabilization_data: None,
                             smoothed_trajectory: None,
                             track_points: Vec::new(),
@@ -7269,6 +7921,37 @@ impl KlippApp {
         }
     }
 
+    /// Push an `EditAudioChain` history entry capturing the before/after
+    /// state of a clip's audio chain. Called by every audio-chain
+    /// mutator (Add/Remove/Update/Toggle/Wet-Dry/Reorder). Skipped when
+    /// the snapshot pair would be identical (defensive — should never
+    /// happen if the caller actually mutated state, but it keeps the
+    /// undo stack tidy in case a no-op slips through).
+    fn push_audio_chain_history(
+        &mut self,
+        clip_id: klipp_core::ClipId,
+        description: &'static str,
+        old_state: Option<crate::history::AudioChainSnapshot>,
+    ) {
+        let Some(old_state) = old_state else { return };
+        let Some(new_state) = self.state.sequences[self.state.active_sequence_idx]
+            .all_clips()
+            .find(|c| c.id == clip_id)
+            .map(crate::history::AudioChainSnapshot::from_clip)
+        else {
+            return;
+        };
+        self.state.history.push(HistoryEntry {
+            sequence_idx: self.state.active_sequence_idx,
+            command: EditCommand::EditAudioChain {
+                clip_id,
+                description,
+                old_state,
+                new_state,
+            },
+        });
+    }
+
 
     fn handle_effect_keyframe_commands(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
@@ -7422,6 +8105,361 @@ impl KlippApp {
                             });
                         }
                     }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::AddAudioEffectKeyframe { clip_id, effect_index, param_name, time_secs, value } => {
+                    let key = format!("{}:{}", effect_index, param_name);
+                    // Same drag key the BeginAudioChainDrag /
+                    // EndAudioChainDrag pair uses — when a slider drag
+                    // is active, the auto-update path
+                    // (`dispatch_audio_kf_response`) fires
+                    // AddAudioEffectKeyframe per drag tick. Without
+                    // this is_dragging gate every tick was pushing a
+                    // separate EditKeyframes entry, replicating the
+                    // 60 Hz "Auto saved" spam on the kf'd-slider path
+                    // (the static-slider path is already gated via
+                    // UpdateAudioEffectParam). The Begin/End pair
+                    // already snapshots the full clip state including
+                    // audio_effect_keyframes, so undo rolls back the
+                    // entire drag in one step.
+                    let drag_key = format!("audio_chain:{}:{}:{}", clip_id.0, effect_index, param_name);
+                    let is_dragging = self.state.history.is_dragging(&drag_key);
+                    let old_state = if !is_dragging {
+                        self.state.sequences[self.state.active_sequence_idx].all_clips()
+                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip)
+                    } else {
+                        None
+                    };
+                    // `__bypass` defaults to Step interpolation (it's an
+                    // on/off toggle); other params default to Linear.
+                    let default_interp = if param_name == "__bypass" {
+                        klipp_core::Interpolation::Step
+                    } else {
+                        klipp_core::Interpolation::Linear
+                    };
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let kf = klipp_core::Keyframe {
+                                time_secs: *time_secs,
+                                value: *value,
+                                interpolation: default_interp,
+                                tangent_out: (0.0, 0.0),
+                                tangent_in: (0.0, 0.0),
+                            };
+                            let keyframes = clip.audio_effect_keyframes.entry(key.clone()).or_default();
+                            keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                            keyframes.push(kf);
+                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            break;
+                        }
+                    }
+                    if !is_dragging {
+                        if let Some(old_snap) = old_state {
+                            if let Some(new_snap) = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                                .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
+                                self.state.history.push(HistoryEntry {
+                                    sequence_idx: self.state.active_sequence_idx,
+                                    command: EditCommand::EditKeyframes {
+                                        clip_id: *clip_id,
+                                        linked_clip_id: None,
+                                        description: "Add Audio Effect Keyframe",
+                                        old_state: old_snap,
+                                        new_state: new_snap,
+                                        old_linked_state: None,
+                                        new_linked_state: None,
+                                    },
+                                });
+                            }
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::RemoveAudioEffectKeyframe { clip_id, effect_index, param_name, time_secs } => {
+                    let key = format!("{}:{}", effect_index, param_name);
+                    // See AddAudioEffectKeyframe above for the
+                    // is_dragging contract — diamond toggles fire this
+                    // path during a drag too (when scrubby_param's
+                    // auto-update detects the user re-crossed an
+                    // existing kf at the playhead and the value is
+                    // being removed in place). Skip the per-tick push
+                    // and let the Begin/End wrap own the history.
+                    let drag_key = format!("audio_chain:{}:{}:{}", clip_id.0, effect_index, param_name);
+                    let is_dragging = self.state.history.is_dragging(&drag_key);
+                    let old_state = if !is_dragging {
+                        self.state.sequences[self.state.active_sequence_idx].all_clips()
+                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip)
+                    } else {
+                        None
+                    };
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
+                                keyframes.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+                                if keyframes.is_empty() {
+                                    clip.audio_effect_keyframes.remove(&key);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if !is_dragging {
+                        if let Some(old_snap) = old_state {
+                            if let Some(new_snap) = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                                .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
+                                self.state.history.push(HistoryEntry {
+                                    sequence_idx: self.state.active_sequence_idx,
+                                    command: EditCommand::EditKeyframes {
+                                        clip_id: *clip_id,
+                                        linked_clip_id: None,
+                                        description: "Remove Audio Effect Keyframe",
+                                        old_state: old_snap,
+                                        new_state: new_snap,
+                                        old_linked_state: None,
+                                        new_linked_state: None,
+                                    },
+                                });
+                            }
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::MoveAudioEffectKeyframe { clip_id, effect_index, param_name, keyframe_index, new_time_secs, new_value } => {
+                    let key = format!("{}:{}", effect_index, param_name);
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
+                                if let Some(kf) = keyframes.get_mut(*keyframe_index) {
+                                    kf.time_secs = *new_time_secs;
+                                    kf.value = *new_value;
+                                }
+                                keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            }
+                            break;
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::SetAudioEffectKeyframeInterpolation { clip_id, effect_index, param_name, keyframe_index, interpolation } => {
+                    let key = format!("{}:{}", effect_index, param_name);
+                    let old_state = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                        .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip);
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
+                                let ki = *keyframe_index;
+                                let len = keyframes.len();
+                                if ki < len {
+                                    keyframes[ki].interpolation = *interpolation;
+                                }
+                                if ki > 0 {
+                                    keyframes[ki - 1].interpolation = *interpolation;
+                                }
+                                if *interpolation == klipp_core::Interpolation::Bezier {
+                                    for idx in [ki.saturating_sub(1), ki] {
+                                        if idx >= len { continue; }
+                                        let prev_t = if idx > 0 { keyframes[idx - 1].time_secs } else { keyframes[idx].time_secs - 1.0 };
+                                        let next_t = if idx + 1 < len { keyframes[idx + 1].time_secs } else { keyframes[idx].time_secs + 1.0 };
+                                        let span_out = (next_t - keyframes[idx].time_secs).abs() * 0.33;
+                                        let span_in = (keyframes[idx].time_secs - prev_t).abs() * 0.33;
+                                        let kf = &mut keyframes[idx];
+                                        if kf.tangent_out == (0.0, 0.0) || kf.tangent_out.0.abs() < 0.5 {
+                                            kf.tangent_out = (span_out, 0.0);
+                                        }
+                                        if kf.tangent_in == (0.0, 0.0) || kf.tangent_in.0.abs() < 0.5 {
+                                            kf.tangent_in = (-span_in, 0.0);
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if let Some(old_snap) = old_state {
+                        if let Some(new_snap) = self.state.sequences[self.state.active_sequence_idx].all_clips()
+                            .find(|c| c.id == *clip_id).map(KeyframeSnapshot::from_clip) {
+                            self.state.history.push(HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: EditCommand::EditKeyframes {
+                                    clip_id: *clip_id,
+                                    linked_clip_id: None,
+                                    description: "Set Audio Keyframe Interpolation",
+                                    old_state: old_snap,
+                                    new_state: new_snap,
+                                    old_linked_state: None,
+                                    new_linked_state: None,
+                                },
+                            });
+                        }
+                    }
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::SetAudioEffectKeyframeTangent { clip_id, effect_index, param_name, keyframe_index, tangent_in, tangent_out } => {
+                    let key = format!("{}:{}", effect_index, param_name);
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
+                                if let Some(kf) = keyframes.get_mut(*keyframe_index) {
+                                    if let Some(ti) = tangent_in { kf.tangent_in = *ti; }
+                                    if let Some(to) = tangent_out { kf.tangent_out = *to; }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    // Tangent edits coalesce through the existing drag
+                    // pipeline (BeginDrag / EndKeyframeDrag) so no
+                    // separate history push here — matches the
+                    // SetAudioKeyframeTangent contract.
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::CopyAudioEffectKeyframes { clip_id, effect_index, param_name } => {
+                    if let Some(clip) = self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips().find(|c| c.id == *clip_id)
+                    {
+                        let key = format!("{effect_index}:{param_name}");
+                        let kfs = clip.audio_effect_keyframes.get(&key).cloned().unwrap_or_default();
+                        self.state.keyframe_clipboard = Some(crate::state::KeyframeClipboard {
+                            keyframes: kfs,
+                            source_duration_secs: clip.duration().to_secs_f64(),
+                        });
+                    }
+                    true
+                }
+                AppCommand::PasteAudioEffectKeyframes { clip_id, effect_index, param_name } => {
+                    if let Some(ref cb) = self.state.keyframe_clipboard.clone() {
+                        let old_state = self.state.sequences[self.state.active_sequence_idx]
+                            .all_clips().find(|c| c.id == *clip_id)
+                            .map(crate::history::AudioChainSnapshot::from_clip);
+                        let target_dur = self.state.sequences[self.state.active_sequence_idx]
+                            .all_clips().find(|c| c.id == *clip_id).map(|c| c.duration().to_secs_f64());
+                        if let Some(target_dur) = target_dur {
+                            let scale = if cb.source_duration_secs > 0.0 { target_dur / cb.source_duration_secs } else { 1.0 };
+                            let mut new_kfs: Vec<klipp_core::Keyframe> = cb.keyframes.iter().map(|kf| {
+                                let mut k = kf.clone();
+                                k.time_secs *= scale;
+                                k
+                            }).collect();
+                            new_kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            let key = format!("{effect_index}:{param_name}");
+                            for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                                if let Some(clip) = track.find_clip_mut(*clip_id) {
+                                    clip.audio_effect_keyframes.insert(key.clone(), new_kfs);
+                                    break;
+                                }
+                            }
+                            self.push_audio_chain_history(*clip_id, "Paste Audio Effect Keyframes", old_state);
+                            self.sync_sequence_to_engine();
+                            let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                            self.state.dirty = true;
+                        }
+                    }
+                    true
+                }
+                AppCommand::ReverseAudioEffectKeyframes { clip_id, effect_index, param_name } => {
+                    let old_state = self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips().find(|c| c.id == *clip_id)
+                        .map(crate::history::AudioChainSnapshot::from_clip);
+                    let key = format!("{effect_index}:{param_name}");
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
+                                if keyframes.len() >= 2 {
+                                    let max_time = keyframes.last().map(|k| k.time_secs).unwrap_or(0.0);
+                                    for kf in keyframes.iter_mut() {
+                                        kf.time_secs = max_time - kf.time_secs;
+                                        let old_in = kf.tangent_in;
+                                        let old_out = kf.tangent_out;
+                                        kf.tangent_in = (-old_out.0, old_out.1);
+                                        kf.tangent_out = (-old_in.0, old_in.1);
+                                    }
+                                    keyframes.reverse();
+                                    keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    self.push_audio_chain_history(*clip_id, "Reverse Audio Effect Keyframes", old_state);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::ScaleAudioEffectKeyframeTiming { clip_id, effect_index, param_name, factor } => {
+                    let old_state = self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips().find(|c| c.id == *clip_id)
+                        .map(crate::history::AudioChainSnapshot::from_clip);
+                    let key = format!("{effect_index}:{param_name}");
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let clip_dur = clip.duration().to_secs_f64();
+                            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
+                                for kf in keyframes.iter_mut() {
+                                    kf.time_secs *= factor;
+                                    kf.tangent_in.0 *= *factor;
+                                    kf.tangent_out.0 *= *factor;
+                                }
+                                keyframes.retain(|kf| kf.time_secs >= 0.0 && kf.time_secs <= clip_dur);
+                                keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            }
+                            break;
+                        }
+                    }
+                    self.push_audio_chain_history(*clip_id, "Scale Audio Effect Keyframe Timing", old_state);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::InsertAudioEffectKeyframeBump { clip_id, effect_index, param_name, center_time, bump_value, base_value, duration_secs, ramp_secs } => {
+                    let old_state = self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips().find(|c| c.id == *clip_id)
+                        .map(crate::history::AudioChainSnapshot::from_clip);
+                    let key = format!("{effect_index}:{param_name}");
+                    let bump_kfs: Vec<(f64, f32)> = vec![
+                        (center_time - duration_secs / 2.0 - ramp_secs, *base_value),
+                        (center_time - duration_secs / 2.0, *bump_value),
+                        (center_time + duration_secs / 2.0, *bump_value),
+                        (center_time + duration_secs / 2.0 + ramp_secs, *base_value),
+                    ];
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let clip_dur = clip.duration().to_secs_f64();
+                            let keyframes = clip.audio_effect_keyframes.entry(key.clone()).or_default();
+                            for &(t, v) in &bump_kfs {
+                                if t >= 0.0 && t <= clip_dur {
+                                    keyframes.push(klipp_core::Keyframe {
+                                        time_secs: t,
+                                        value: v,
+                                        interpolation: klipp_core::Interpolation::Linear,
+                                        tangent_out: (0.0, 0.0),
+                                        tangent_in: (0.0, 0.0),
+                                    });
+                                }
+                            }
+                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            break;
+                        }
+                    }
+                    self.push_audio_chain_history(*clip_id, "Insert Audio Effect Keyframe Bump", old_state);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     self.state.dirty = true;
@@ -7953,6 +8991,58 @@ impl KlippApp {
                 });
                 true
             }
+            AppCommand::BeginAudioChainDrag { ref drag_key, clip_id } => {
+                // Snapshot the clip's audio chain BEFORE the drag so
+                // the merged history entry rolls back to the pre-drag
+                // state on undo. Per-tick UpdateAudioEffectParam /
+                // SetAudioEffectWetDry calls during the drag check
+                // is_dragging(drag_key) and skip their own pushes,
+                // so the entire gesture coalesces into one entry.
+                if let Some(old_state) = self.state.sequences[self.state.active_sequence_idx]
+                    .all_clips()
+                    .find(|c| c.id == *clip_id)
+                    .map(crate::history::AudioChainSnapshot::from_clip)
+                {
+                    self.state.history.begin_drag(
+                        drag_key.clone(),
+                        HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: EditCommand::EditAudioChain {
+                                clip_id: *clip_id,
+                                description: "Edit Audio Effect Param",
+                                old_state: old_state.clone(),
+                                // Placeholder — combine_old_new replaces with end_drag's new_state.
+                                new_state: old_state,
+                            },
+                        },
+                    );
+                }
+                true
+            }
+            AppCommand::EndAudioChainDrag { ref drag_key, clip_id } => {
+                let _ = drag_key; // matched against the pending begin_drag
+                let new_state = self.state.sequences[self.state.active_sequence_idx]
+                    .all_clips()
+                    .find(|c| c.id == *clip_id)
+                    .map(crate::history::AudioChainSnapshot::from_clip);
+                let old_state = self.state.history.pending_old_entry_ref()
+                    .and_then(|e| match &e.command {
+                        EditCommand::EditAudioChain { old_state, .. } => Some(old_state.clone()),
+                        _ => None,
+                    });
+                if let (Some(old_state), Some(new_state)) = (old_state, new_state) {
+                    self.state.history.end_drag(HistoryEntry {
+                        sequence_idx: self.state.active_sequence_idx,
+                        command: EditCommand::EditAudioChain {
+                            clip_id: *clip_id,
+                            description: "Edit Audio Effect Param",
+                            old_state,
+                            new_state,
+                        },
+                    });
+                }
+                true
+            }
             AppCommand::ReorderBuiltinEffect { clip_id, from_index, to_index } => {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -7992,6 +9082,11 @@ impl KlippApp {
 
             // Audio DSP effects
             AppCommand::AddAudioEffect { clip_id, ref effect_type } => {
+                // Snapshot pre-state for undo.
+                let old_state = self.state.sequences[self.state.active_sequence_idx]
+                    .all_clips()
+                    .find(|c| c.id == *clip_id)
+                    .map(crate::history::AudioChainSnapshot::from_clip);
                 // Build default instance from effect descriptors. LADSPA plugins
                 // don't expose `&'static str` param names, so their defaults
                 // come from the discovered plugin info instead of the factory.
@@ -8033,26 +9128,50 @@ impl KlippApp {
                         break;
                     }
                 }
+                self.push_audio_chain_history(*clip_id, "Add Audio Effect", old_state);
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 true
             }
             AppCommand::RemoveAudioEffect { clip_id, effect_index } => {
+                let old_state = self.state.sequences[self.state.active_sequence_idx]
+                    .all_clips()
+                    .find(|c| c.id == *clip_id)
+                    .map(crate::history::AudioChainSnapshot::from_clip);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if *effect_index < clip.audio_effects.len() {
                             clip.audio_effects.remove(*effect_index);
+                            // Drop kf tracks belonging to this effect — keys
+                            // are "{idx}:..." so the prefix tells us. Higher
+                            // indices DO NOT shift here; that's a known
+                            // limitation matching how video effects behave.
+                            let prefix = format!("{}:", effect_index);
+                            clip.audio_effect_keyframes.retain(|k, _| !k.starts_with(&prefix));
                         }
                         break;
                     }
                 }
+                self.push_audio_chain_history(*clip_id, "Remove Audio Effect", old_state);
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 true
             }
             AppCommand::UpdateAudioEffectParam { clip_id, effect_index, ref param_name, value } => {
+                let drag_key = format!("audio_chain:{}:{}:{}", clip_id.0, effect_index, param_name);
+                let is_dragging = self.state.history.is_dragging(&drag_key);
+                // Snapshot only when we'll actually push — saves an
+                // AudioChainSnapshot::clone on every drag tick.
+                let old_state = if !is_dragging {
+                    self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips()
+                        .find(|c| c.id == *clip_id)
+                        .map(crate::history::AudioChainSnapshot::from_clip)
+                } else {
+                    None
+                };
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
@@ -8065,13 +9184,30 @@ impl KlippApp {
                         break;
                     }
                 }
+                // History push only on non-drag updates (text-entry,
+                // single-click reset). During a drag the
+                // BeginAudioChainDrag / EndAudioChainDrag pair owns
+                // history coalescing — without this guard every
+                // 60Hz drag tick pushes a separate entry, bumping
+                // ops_since_save and triggering "Auto saved" toasts
+                // continuously while the user moves a slider.
+                if !is_dragging {
+                    self.push_audio_chain_history(*clip_id, "Edit Audio Effect Param", old_state);
+                }
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
-                // Note: does not send SequenceUpdated — param changes take effect
-                // on next play/seek to avoid audio glitches from pipeline restart.
+                // Param edits emit SequenceUpdated so the running chain rebuilds —
+                // without it the user adjusts a slider and hears nothing change
+                // until the next seek. The fingerprint check skips pointless
+                // restarts when the value is identical.
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 true
             }
             AppCommand::ToggleAudioEffect { clip_id, effect_index } => {
+                let old_state = self.state.sequences[self.state.active_sequence_idx]
+                    .all_clips()
+                    .find(|c| c.id == *clip_id)
+                    .map(crate::history::AudioChainSnapshot::from_clip);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
@@ -8080,12 +9216,26 @@ impl KlippApp {
                         break;
                     }
                 }
+                self.push_audio_chain_history(*clip_id, "Toggle Audio Effect", old_state);
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 true
             }
             AppCommand::SetAudioEffectWetDry { clip_id, effect_index, wet_dry } => {
+                // Same drag-coalesce shape as UpdateAudioEffectParam. The
+                // wet/dry slider is also dragged so per-tick history pushes
+                // would spam autosave too.
+                let drag_key = format!("audio_chain:{}:{}:__wetdry", clip_id.0, effect_index);
+                let is_dragging = self.state.history.is_dragging(&drag_key);
+                let old_state = if !is_dragging {
+                    self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips()
+                        .find(|c| c.id == *clip_id)
+                        .map(crate::history::AudioChainSnapshot::from_clip)
+                } else {
+                    None
+                };
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let Some(inst) = clip.audio_effects.get_mut(*effect_index) {
@@ -8094,11 +9244,19 @@ impl KlippApp {
                         break;
                     }
                 }
+                if !is_dragging {
+                    self.push_audio_chain_history(*clip_id, "Set Wet/Dry", old_state);
+                }
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 true
             }
             AppCommand::ReorderAudioEffect { clip_id, from_index, to_index } => {
+                let old_state = self.state.sequences[self.state.active_sequence_idx]
+                    .all_clips()
+                    .find(|c| c.id == *clip_id)
+                    .map(crate::history::AudioChainSnapshot::from_clip);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         let from = *from_index;
@@ -8110,6 +9268,7 @@ impl KlippApp {
                         break;
                     }
                 }
+                self.push_audio_chain_history(*clip_id, "Reorder Audio Effect", old_state);
                 self.sync_sequence_to_engine();
                 self.state.dirty = true;
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
@@ -8524,6 +9683,16 @@ impl KlippApp {
                                     ac.linked_clip_id = Some(video_clip_id);
                                 }
 
+                                // Seed the IDT with the auto-detected log
+                                // format on the video clip (audio clip has
+                                // no InputTransform path). Without this,
+                                // V+A drag-import lands the camera-log
+                                // footage with no IDT applied — the user
+                                // sees a flat raw-log image and has to
+                                // pick the format manually for every
+                                // imported clip.
+                                self.apply_detected_log_format(video_clip_id, *media_id);
+
                                 self.state.selected_clip = Some(video_clip_id);
                                 self.sync_sequence_to_engine();
                                 self.state.dirty = true;
@@ -8544,6 +9713,12 @@ impl KlippApp {
                                     if let Some(c) = track.find_clip_mut(clip_id) {
                                         c.source_rotation = item.source_rotation;
                                     }
+                                }
+                                // Seed the IDT with the auto-detected log
+                                // format (video-only path; audio has no
+                                // InputTransform).
+                                if has_video {
+                                    self.apply_detected_log_format(clip_id, *media_id);
                                 }
                                 self.state.selected_clip = Some(clip_id);
                                 self.sync_sequence_to_engine();
@@ -9172,6 +10347,7 @@ impl KlippApp {
 
     fn add_color_node(&mut self, clip_id: klipp_core::ClipId, kind: &str, position: (f32, f32), needs_refresh: &mut bool) {
         let node_kind = match kind {
+            "Corrector" => klipp_nodes::NodeKind::Corrector,
             "Exposure" => klipp_nodes::NodeKind::Exposure,
             "Contrast" => klipp_nodes::NodeKind::Contrast,
             "Saturation" => klipp_nodes::NodeKind::Saturation,
@@ -9185,44 +10361,727 @@ impl KlippApp {
             "Qualifier" => klipp_nodes::NodeKind::Qualifier,
             "Mask" => klipp_nodes::NodeKind::Mask,
             "CombineMattes" => klipp_nodes::NodeKind::CombineMattes,
+            "ExternalMatte" => klipp_nodes::NodeKind::ExternalMatte,
             "ApplyMatte" => klipp_nodes::NodeKind::ApplyMatte,
             "Blend" => klipp_nodes::NodeKind::Blend,
             "Layer" => klipp_nodes::NodeKind::Layer,
+            "LayerMixer" => klipp_nodes::NodeKind::LayerMixer,
             "Lut3D" => klipp_nodes::NodeKind::Lut3D,
             "FilmGrain" => klipp_nodes::NodeKind::FilmGrain,
             "ColorMatch" => klipp_nodes::NodeKind::ColorMatch,
             "ColorWarper" => klipp_nodes::NodeKind::ColorWarper,
             "Denoise" => klipp_nodes::NodeKind::Denoise,
+            "Compound" => klipp_nodes::NodeKind::Compound,
+            "RGBSplitter" => klipp_nodes::NodeKind::RGBSplitter,
+            "RGBCombiner" => klipp_nodes::NodeKind::RGBCombiner,
+            "MaskCutout" => klipp_nodes::NodeKind::MaskCutout,
             _ => { return; }
         };
-        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+        self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
+            let new_id = klipp_nodes::NodeId::new_v4();
+            graph.nodes.push(klipp_nodes::Node {
+                id: new_id,
+                kind: node_kind,
+                label: node_kind.display_name().to_string(),
+                enabled: true,
+                params: klipp_nodes::NodeParams::default(),
+                keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+                output_link: None,
+                input_links: Vec::new(),
+            });
+            graph.node_positions.insert(
+                new_id,
+                klipp_nodes::NodePos { x: position.0, y: position.1 },
+            );
+        });
+    }
+
+    /// Collapse a multi-node selection into a single Compound node.
+    /// See `AppCommand::GroupIntoCompound` for the user-visible
+    /// contract; this method is the in-place mutation that captures
+    /// the selected nodes + their internal edges into a sub-graph,
+    /// drops them from the parent graph, and inserts a fresh Compound
+    /// with the sub-graph stashed in `params.compound_subgraph`.
+    /// Walk a descent path from a clip's root `NodeGraph` down into
+    /// nested compounds' `compound_subgraph` fields and return a
+    /// mutable reference to the graph at the leaf. Empty path
+    /// returns the clip's root graph. Errors (missing node, wrong
+    /// kind, empty sub-graph) bubble up so the caller can toast +
+    /// reset the descent path instead of silently editing the wrong
+    /// graph. This is a free function (vs `&mut self` method) so
+    /// callers can hold the returned borrow without locking self.
+    /// Decode a representative RGBA frame (midpoint of the clip's
+    /// source range) for colour-match workflows. Uses
+    /// `generate_thumbnail_at_size` at 480-wide so the caller can feed
+    /// it to `match_colors` without waiting for a full-resolution
+    /// decode. Returns the decoded bytes + dimensions, or a
+    /// human-readable error message.
+    /// Spawn the forward + backward template-match worker for a
+    /// track point. Mirrors the body of `AnalyzeTrackPoint` so the
+    /// `TrackMaskRegion` one-shot workflow can reuse the launcher
+    /// without duplicating the whole handler. Posts
+    /// `TrackingProgress` / `TrackingComplete` events on completion.
+    fn start_track_analysis(&mut self, clip_id: klipp_core::ClipId, point_index: usize) {
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let clip_info = seq.tracks.iter().flat_map(|t| t.clips.iter())
+            .find(|c| c.id == clip_id)
+            .and_then(|c| {
+                let mid = c.media_id()?;
+                let item = self.state.media_pool.get(&mid)?;
+                let fps = item.fps.as_f64();
+                let dur_secs = item.duration.to_secs_f64();
+                let frame_count = (dur_secs * fps).round() as usize;
+                let tp = c.track_points.get(point_index)?;
+                let start_frame = tp.start_frame;
+                let initial_pos = tp.positions.first().copied()?;
+                let search_radius = tp.search_radius;
+                Some((item.path.clone(), fps, frame_count, start_frame, initial_pos, search_radius))
+            });
+        let Some((path, fps, frame_count, ref_frame, initial_pos_norm, search_radius)) = clip_info else { return; };
+        self.state.tracking_in_progress.insert(clip_id);
+        self.state.tracking_progress.insert(clip_id, 0.0);
+        let event_tx = self.proxy_event_tx.clone();
+        let pref_patch_size = self.prefs.editing.track_patch_size;
+        let pref_loss_threshold = self.prefs.editing.track_loss_threshold;
+        std::thread::spawn(move || {
+            let first_frame = klipp_engine::generate_thumbnail_at_size(&path, 0.0, 480);
+            let (sample_w, _sample_h) = match &first_frame {
+                Ok((_, w, h)) => (*w, *h),
+                Err(_) => (960, 540),
+            };
+            let half_w = sample_w / 2;
+            let half_h = _sample_h / 2;
+            let px = initial_pos_norm.0 * half_w as f64;
+            let py = initial_pos_norm.1 * half_h as f64;
+            let forward_result = klipp_effects::stabilization::track_point(
+                (px, py), ref_frame, fps, frame_count,
+                &mut |t| klipp_engine::generate_thumbnail_at_size(&path, t, 480).ok(),
+                search_radius / 2, pref_patch_size, pref_loss_threshold, true,
+                &|p| { let _ = event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: p * 0.5 }); true },
+            );
+            let backward_result = klipp_effects::stabilization::track_point(
+                (px, py), ref_frame, fps, frame_count,
+                &mut |t| klipp_engine::generate_thumbnail_at_size(&path, t, 480).ok(),
+                search_radius / 2, pref_patch_size, pref_loss_threshold, false,
+                &|p| { let _ = event_tx.send(klipp_core::AppEvent::TrackingProgress { clip_id, progress: 0.5 + p * 0.5 }); true },
+            );
+            let mut all_positions: Vec<(usize, f64, f64)> = Vec::new();
+            if let Ok(mut bwd) = backward_result {
+                bwd.reverse();
+                all_positions.extend(bwd);
+            }
+            if let Ok(fwd) = forward_result {
+                for entry in fwd.into_iter().skip(1) { all_positions.push(entry); }
+            }
+            all_positions.sort_by_key(|&(idx, _, _)| idx);
+            let normalized: Vec<(f64, f64)> = all_positions.iter()
+                .map(|&(_, x, y)| (x / half_w as f64, y / half_h as f64))
+                .collect();
+            let start_frame = all_positions.first().map(|&(idx, _, _)| idx).unwrap_or(ref_frame);
+            let _ = event_tx.send(klipp_core::AppEvent::TrackingComplete {
+                clip_id, point_index, positions: normalized, start_frame,
+            });
+        });
+    }
+
+    fn decode_clip_representative_frame(
+        state: &AppState,
+        clip_id: klipp_core::ClipId,
+    ) -> Result<(Vec<u8>, u32, u32), String> {
+        let clip = state.sequences[state.active_sequence_idx]
+            .tracks.iter()
+            .flat_map(|t| t.clips.iter())
+            .find(|c| c.id == clip_id)
+            .ok_or_else(|| "clip not found".to_string())?;
+        let media_id = clip.media_id()
+            .ok_or_else(|| "clip has no media".to_string())?;
+        let item = state.media_pool.get(&media_id)
+            .ok_or_else(|| "media not in pool".to_string())?;
+        let path = item.path.clone();
+        let src_in = clip.source_in.to_secs_f64();
+        let src_out = clip.source_out.to_secs_f64();
+        let mid = (src_in + src_out) * 0.5;
+        klipp_engine::generate_thumbnail_at_size(&path, mid, 480)
+            .map_err(|e| format!("decode: {e}"))
+    }
+
+    fn resolve_graph_at_path_mut<'a>(
+        clip: &'a mut klipp_timeline::Clip,
+        path: &[klipp_nodes::NodeId],
+    ) -> Result<&'a mut klipp_nodes::NodeGraph, String> {
+        let mut current = &mut clip.node_graph;
+        for &node_id in path {
+            let node = current
+                .nodes
+                .iter_mut()
+                .find(|n| n.id == node_id)
+                .ok_or_else(|| format!("node {node_id} not on descent path"))?;
+            if node.kind != klipp_nodes::NodeKind::Compound {
+                return Err(format!(
+                    "node {node_id} is {:?}, not Compound", node.kind
+                ));
+            }
+            current = node
+                .params
+                .compound_subgraph
+                .as_mut()
+                .ok_or_else(|| format!(
+                    "compound {node_id} has no subgraph"
+                ))?;
+        }
+        Ok(current)
+    }
+
+    /// Run `mutate` against the currently-edited `NodeGraph` — root
+    /// or some descent depth, whichever `state.graph_descent_path`
+    /// points at. Snapshots the TOP-LEVEL clip graph before + after
+    /// so the history entry captures the whole clip state (same
+    /// shape undo has used since day one; no path-aware variant
+    /// needed). Refuses gracefully with a toast if the stored
+    /// descent path is invalid — the caller's refresh still runs so
+    /// the UI self-heals on the next render.
+    fn with_current_clip_graph_mut<F>(
+        &mut self,
+        clip_id: klipp_core::ClipId,
+        needs_refresh: &mut bool,
+        mutate: F,
+    ) where
+        F: FnOnce(&mut klipp_nodes::NodeGraph),
+    {
+        let path = self.state.graph_descent_path.clone();
+        let seq_idx = self.state.active_sequence_idx;
+        let mut applied = false;
+        let mut old_top_graph: Option<klipp_nodes::NodeGraph> = None;
+        let mut new_top_graph: Option<klipp_nodes::NodeGraph> = None;
+        let mut path_went_stale = false;
+        for track in &mut self.state.sequences[seq_idx].tracks {
             if let Some(clip) = track.find_clip_mut(clip_id) {
-                let old_graph = clip.node_graph.clone();
-                let new_id = klipp_nodes::NodeId::new_v4();
-                clip.node_graph.nodes.push(klipp_nodes::Node {
-                    id: new_id,
-                    kind: node_kind.clone(),
-                    label: node_kind.display_name().to_string(),
-                    enabled: true,
-                    params: klipp_nodes::NodeParams::default(),
-                    keyframes: klipp_nodes::NodeKeyframeTracks::default(),
-                });
-                clip.node_graph.node_positions.insert(
-                    new_id,
-                    klipp_nodes::NodePos { x: position.0, y: position.1 },
-                );
-                self.state.history.push(crate::history::HistoryEntry {
-                    sequence_idx: self.state.active_sequence_idx,
-                    command: crate::history::EditCommand::SetNodeGraph {
-                        clip_id,
-                        old_graph,
-                        new_graph: clip.node_graph.clone(),
-                    },
-                });
+                let old = clip.node_graph.clone();
+                let resolve = Self::resolve_graph_at_path_mut(clip, &path);
+                match resolve {
+                    Ok(graph) => {
+                        mutate(graph);
+                    }
+                    Err(_e) => {
+                        path_went_stale = true;
+                        break;
+                    }
+                }
+                new_top_graph = Some(clip.node_graph.clone());
+                old_top_graph = Some(old);
+                applied = true;
                 break;
             }
         }
-        *needs_refresh = true;
+        if path_went_stale {
+            // Descent path went stale (upstream remove, clip switch
+            // we missed). Reset to root so future commands hit the
+            // normal path; the user loses nothing except their
+            // current descent position.
+            self.state.graph_descent_path.clear();
+            self.state.selected_node_ids.clear();
+            self.state.selected_node_id = None;
+            return;
+        }
+        if applied {
+            // Skip per-call history push while a node-param edit
+            // gesture is in progress (BeginNodeParamEdit took the
+            // snapshot, EndNodeParamEdit will commit the whole
+            // gesture as ONE entry). Without this guard, dragging a
+            // mask handle on the viewer pushed one full SetNodeGraph
+            // entry per frame — hundreds of clones per second of the
+            // entire graph, which floods the undo stack and triggers
+            // heavy engine resyncs that desync the master clock and
+            // cause "playback walks off on its own" symptoms.
+            let in_gesture = self.node_param_edit_snapshot.is_some();
+            if !in_gesture {
+                if let (Some(old_graph), Some(new_graph)) =
+                    (old_top_graph, new_top_graph)
+                {
+                    self.state.history.push(crate::history::HistoryEntry {
+                        sequence_idx: seq_idx,
+                        command: crate::history::EditCommand::SetNodeGraph {
+                            clip_id,
+                            old_graph,
+                            new_graph,
+                        },
+                    });
+                }
+            }
+            *needs_refresh = true;
+        }
+    }
+
+    /// Single-input / single-output topology only for v1; refuses
+    /// gracefully (toast + no-op) on multi-port selections.
+    fn group_into_compound(
+        &mut self,
+        clip_id: klipp_core::ClipId,
+        node_ids: &[uuid::Uuid],
+        needs_refresh: &mut bool,
+    ) {
+        use std::collections::HashSet;
+        use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeKeyframeTracks, NodeParams, NodePos};
+
+        let inside: HashSet<NodeId> = node_ids.iter().copied().collect();
+        if inside.len() < 2 {
+            return;
+        }
+
+        let path = self.state.graph_descent_path.clone();
+        // Compute the edit against the currently-visible graph (root
+        // or a descended sub-graph). `target_old_graph` is a snapshot
+        // of that graph for validation + sub-graph construction;
+        // `old_root_graph` is the whole clip graph for undo.
+        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+            let Some(clip) = track.find_clip_mut(clip_id) else { continue };
+            let old_root_graph = clip.node_graph.clone();
+            let Ok(target_graph) = Self::resolve_graph_at_path_mut(clip, &path) else {
+                self.state.toast.show("Group: invalid descent path");
+                return;
+            };
+            let old_graph = target_graph.clone();
+
+            // Source / Output are structural for the parent graph —
+            // moving them into a sub-graph would orphan the parent.
+            // Reject the whole gesture if the user selected one.
+            if old_graph.nodes.iter().any(|n| {
+                inside.contains(&n.id)
+                    && matches!(n.kind, NodeKind::Source | NodeKind::Output)
+            }) {
+                self.state.toast.show(
+                    "Group: Source / Output can't be packed into a Compound"
+                );
+                return;
+            }
+
+            // Partition every parent edge by which side(s) of the cut
+            // it sits on. `external_kept` are edges that don't touch
+            // the selection at all and survive the rewire untouched.
+            let mut internal_edges: Vec<Edge> = Vec::new();
+            let mut inbound_edges: Vec<Edge> = Vec::new();
+            let mut outbound_edges: Vec<Edge> = Vec::new();
+            let mut external_kept: Vec<Edge> = Vec::new();
+            for e in &old_graph.edges {
+                let from_in = inside.contains(&e.from_node);
+                let to_in = inside.contains(&e.to_node);
+                match (from_in, to_in) {
+                    (true, true) => internal_edges.push(e.clone()),
+                    (false, true) => inbound_edges.push(e.clone()),
+                    (true, false) => outbound_edges.push(e.clone()),
+                    (false, false) => external_kept.push(e.clone()),
+                }
+            }
+
+            // v1: single-input / single-output compounds only. Multi-
+            // port compounds need port-count plumbing on the
+            // Compound NodeKind itself (stage 6 polish if anyone
+            // actually wants it).
+            if inbound_edges.len() > 1 {
+                self.state.toast.show(
+                    "Group: only one input edge supported in v1"
+                );
+                return;
+            }
+            if outbound_edges.len() > 1 {
+                self.state.toast.show(
+                    "Group: only one output edge supported in v1"
+                );
+                return;
+            }
+
+            // Build the sub-graph: synthetic Source + Output bracket
+            // the selected nodes so the executor recognises it as a
+            // standalone runnable graph (matches the convention every
+            // NodeGraph follows). Selected NodeIds + params clone
+            // through unchanged so keyframes + executor caches keep
+            // working without remap.
+            let sub_source_id = NodeId::new_v4();
+            let sub_output_id = NodeId::new_v4();
+            let mut subgraph = NodeGraph {
+                nodes: Vec::with_capacity(inside.len() + 2),
+                edges: Vec::with_capacity(internal_edges.len() + 2),
+                output_node_id: sub_output_id,
+                node_positions: std::collections::HashMap::new(),
+                working_space_override: None,
+            };
+            subgraph.nodes.push(Node {
+                id: sub_source_id,
+                kind: NodeKind::Source,
+                label: "Source".to_string(),
+                enabled: true,
+                params: NodeParams::default(),
+                keyframes: NodeKeyframeTracks::default(),
+                output_link: None,
+                input_links: Vec::new(),
+            });
+            subgraph.nodes.push(Node {
+                id: sub_output_id,
+                kind: NodeKind::Output,
+                label: "Output".to_string(),
+                enabled: true,
+                params: NodeParams::default(),
+                keyframes: NodeKeyframeTracks::default(),
+                output_link: None,
+                input_links: Vec::new(),
+            });
+            subgraph.node_positions.insert(sub_source_id, NodePos { x: -200.0, y: 0.0 });
+            subgraph.node_positions.insert(sub_output_id, NodePos { x: 800.0, y: 0.0 });
+
+            for node in &old_graph.nodes {
+                if inside.contains(&node.id) {
+                    subgraph.nodes.push(node.clone());
+                    if let Some(pos) = old_graph.node_positions.get(&node.id) {
+                        subgraph.node_positions.insert(node.id, *pos);
+                    }
+                }
+            }
+            subgraph.edges.extend(internal_edges.iter().cloned());
+
+            // Wire the synthetic Source to whichever internal node
+            // was previously the parent's inbound target, and the
+            // synthetic Output from whichever internal node fed the
+            // parent's outbound consumer. Empty selections (no
+            // external edges either way) still build a valid sub-
+            // graph — Source / Output sit unconnected, executor sees
+            // an identity passthrough.
+            if let Some(in_edge) = inbound_edges.first() {
+                subgraph.edges.push(Edge {
+                    from_node: sub_source_id,
+                    from_port: 0,
+                    to_node: in_edge.to_node,
+                    to_port: in_edge.to_port,
+                });
+            }
+            if let Some(out_edge) = outbound_edges.first() {
+                subgraph.edges.push(Edge {
+                    from_node: out_edge.from_node,
+                    from_port: out_edge.from_port,
+                    to_node: sub_output_id,
+                    to_port: 0,
+                });
+            }
+
+            // Cycle check on the sub-graph — cheap insurance against
+            // future bugs that might construct a malformed selection.
+            // Carving a sub-DAG out of a DAG can't introduce a cycle
+            // today, but the validate gives us a clean abort if it
+            // ever can.
+            if subgraph.topo_sort().is_err() {
+                self.state.toast.show("Group: subgraph would cycle — aborted");
+                return;
+            }
+
+            // Centroid placement so the new Compound visually
+            // replaces the cluster the user just collapsed.
+            let mut cx = 0.0_f32;
+            let mut cy = 0.0_f32;
+            let mut count = 0u32;
+            for id in &inside {
+                if let Some(pos) = old_graph.node_positions.get(id) {
+                    cx += pos.x;
+                    cy += pos.y;
+                    count += 1;
+                }
+            }
+            let centroid = if count > 0 {
+                NodePos { x: cx / count as f32, y: cy / count as f32 }
+            } else {
+                NodePos { x: 0.0, y: 0.0 }
+            };
+
+            // Build the new parent graph. Drop selected nodes; insert
+            // the Compound; rewire the surviving external edges
+            // through it.
+            let compound_id = NodeId::new_v4();
+            let mut new_nodes: Vec<Node> = old_graph
+                .nodes
+                .iter()
+                .filter(|n| !inside.contains(&n.id))
+                .cloned()
+                .collect();
+            new_nodes.push(Node {
+                id: compound_id,
+                kind: NodeKind::Compound,
+                label: "Compound".to_string(),
+                enabled: true,
+                params: NodeParams {
+                    compound_subgraph: Some(subgraph),
+                    ..NodeParams::default()
+                },
+                keyframes: NodeKeyframeTracks::default(),
+                output_link: None,
+                input_links: Vec::new(),
+            });
+
+            let mut new_edges: Vec<Edge> = external_kept;
+            if let Some(in_edge) = inbound_edges.first() {
+                new_edges.push(Edge {
+                    from_node: in_edge.from_node,
+                    from_port: in_edge.from_port,
+                    to_node: compound_id,
+                    to_port: 0,
+                });
+            }
+            if let Some(out_edge) = outbound_edges.first() {
+                new_edges.push(Edge {
+                    from_node: compound_id,
+                    from_port: 0,
+                    to_node: out_edge.to_node,
+                    to_port: out_edge.to_port,
+                });
+            }
+
+            let mut new_positions = old_graph.node_positions.clone();
+            for id in &inside {
+                new_positions.remove(id);
+            }
+            new_positions.insert(compound_id, centroid);
+
+            let new_graph = NodeGraph {
+                nodes: new_nodes,
+                edges: new_edges,
+                output_node_id: old_graph.output_node_id,
+                node_positions: new_positions,
+                working_space_override: old_graph.working_space_override,
+            };
+
+            if new_graph.topo_sort().is_err() {
+                self.state.toast.show("Group: parent would cycle — aborted");
+                return;
+            }
+
+            // Write the new graph back into whichever level we came
+            // from (root or a nested sub-graph). `target_graph` is
+            // still the resolved `&mut NodeGraph` borrow from up top.
+            *target_graph = new_graph;
+            // Take a fresh root snapshot now that the mutation is
+            // applied so undo has the whole-clip before/after.
+            let new_root_graph = clip.node_graph.clone();
+
+            // Replace the multi-selection with the new Compound so the
+            // user's next gesture (drag, delete, descend) targets the
+            // collapsed unit instead of the now-vanished originals.
+            self.state.selected_node_ids.clear();
+            self.state.selected_node_ids.insert(compound_id);
+            self.state.selected_node_id = Some(compound_id);
+
+            self.state.history.push(crate::history::HistoryEntry {
+                sequence_idx: self.state.active_sequence_idx,
+                command: crate::history::EditCommand::SetNodeGraph {
+                    clip_id,
+                    old_graph: old_root_graph,
+                    new_graph: new_root_graph,
+                },
+            });
+            *needs_refresh = true;
+            return;
+        }
+    }
+
+    /// Explode a Compound node back into its constituent nodes —
+    /// the inverse of `group_into_compound`. Mirrors Group's edge-
+    /// partitioning logic on the sub-graph (inbound from synthetic
+    /// Source, outbound to synthetic Output, internal edges between
+    /// the kept nodes) and rewires the Compound's external edges
+    /// straight to the previously-internal endpoints. Single-port
+    /// compounds only for v1 (same shape Group accepts). Refuses
+    /// cleanly with a toast if something's off.
+    fn ungroup_compound(
+        &mut self,
+        clip_id: klipp_core::ClipId,
+        compound_id: klipp_nodes::NodeId,
+        needs_refresh: &mut bool,
+    ) {
+        use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind};
+
+        let path = self.state.graph_descent_path.clone();
+        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+            let Some(clip) = track.find_clip_mut(clip_id) else { continue };
+            let old_root_graph = clip.node_graph.clone();
+            let Ok(parent) = Self::resolve_graph_at_path_mut(clip, &path) else {
+                self.state.toast.show("Ungroup: invalid descent path");
+                return;
+            };
+
+            // Locate the target Compound + extract its sub-graph.
+            let Some(compound_idx) = parent.nodes.iter().position(|n| n.id == compound_id) else {
+                self.state.toast.show("Ungroup: compound not found");
+                return;
+            };
+            if parent.nodes[compound_idx].kind != NodeKind::Compound {
+                self.state.toast.show("Ungroup: selection is not a Compound");
+                return;
+            }
+            let Some(subgraph) = parent.nodes[compound_idx]
+                .params
+                .compound_subgraph
+                .clone()
+            else {
+                self.state.toast.show("Ungroup: compound has no sub-graph");
+                return;
+            };
+
+            // Discover which internal nodes the synthetic Source
+            // and Output touched so we know what to rewire the
+            // parent's external edges to. The sub-graph shape Group
+            // builds has exactly one Source and exactly one Output;
+            // any deviation (loaded old project, manual edit)
+            // degrades to "no reconnection" for that side, which is
+            // the least-surprising behaviour.
+            let sub_source_id = subgraph
+                .nodes
+                .iter()
+                .find(|n| n.kind == NodeKind::Source)
+                .map(|n| n.id);
+            let sub_output_id = subgraph.output_node_id;
+            let inner_entry = sub_source_id.and_then(|sid| {
+                subgraph
+                    .edges
+                    .iter()
+                    .find(|e| e.from_node == sid)
+                    .map(|e| (e.to_node, e.to_port))
+            });
+            let inner_exit = subgraph
+                .edges
+                .iter()
+                .find(|e| e.to_node == sub_output_id)
+                .map(|e| (e.from_node, e.from_port));
+
+            // Compound's external in / out (same single-port v1
+            // restriction Group enforces).
+            let compound_in = parent
+                .edges
+                .iter()
+                .find(|e| e.to_node == compound_id)
+                .cloned();
+            let compound_out = parent
+                .edges
+                .iter()
+                .find(|e| e.from_node == compound_id)
+                .cloned();
+
+            // Compute centroid placement around the compound so the
+            // unpacked nodes spread sensibly instead of piling up at
+            // (0, 0) if the sub-graph never got layout. We use the
+            // compound's own position as an anchor + a small offset
+            // per node along the x axis.
+            let anchor = parent
+                .node_positions
+                .get(&compound_id)
+                .copied()
+                .unwrap_or_default();
+
+            // Build the new parent: drop the Compound node, strip
+            // edges touching it, then splice in the sub-graph's
+            // kept nodes + internal edges.
+            let mut new_nodes: Vec<Node> = parent
+                .nodes
+                .iter()
+                .filter(|n| n.id != compound_id)
+                .cloned()
+                .collect();
+            let mut new_edges: Vec<Edge> = parent
+                .edges
+                .iter()
+                .filter(|e| e.from_node != compound_id && e.to_node != compound_id)
+                .cloned()
+                .collect();
+            let mut new_positions = parent.node_positions.clone();
+            new_positions.remove(&compound_id);
+
+            let mut placed = 0i32;
+            for node in &subgraph.nodes {
+                // Skip the synthetic Source / Output wrappers —
+                // they only existed to make the sub-graph runnable.
+                if Some(node.id) == sub_source_id || node.id == sub_output_id {
+                    continue;
+                }
+                new_nodes.push(node.clone());
+                let pos = subgraph.node_positions.get(&node.id).copied();
+                let pos = pos.unwrap_or(klipp_nodes::NodePos {
+                    x: anchor.x + 30.0 * placed as f32,
+                    y: anchor.y + 30.0 * placed as f32,
+                });
+                new_positions.insert(node.id, pos);
+                placed += 1;
+            }
+            for edge in &subgraph.edges {
+                // Skip edges that touch the synthetic Source /
+                // Output — they become external connections.
+                if Some(edge.from_node) == sub_source_id || edge.to_node == sub_output_id {
+                    continue;
+                }
+                new_edges.push(edge.clone());
+            }
+
+            // Wire the parent's external inbound to whatever the
+            // sub-graph's Source fed internally.
+            if let (Some(in_edge), Some((entry_node, entry_port))) =
+                (compound_in.as_ref(), inner_entry)
+            {
+                new_edges.push(Edge {
+                    from_node: in_edge.from_node,
+                    from_port: in_edge.from_port,
+                    to_node: entry_node,
+                    to_port: entry_port,
+                });
+            }
+            // Wire whatever fed the sub-graph's Output to the
+            // parent's external outbound.
+            if let (Some(out_edge), Some((exit_node, exit_port))) =
+                (compound_out.as_ref(), inner_exit)
+            {
+                new_edges.push(Edge {
+                    from_node: exit_node,
+                    from_port: exit_port,
+                    to_node: out_edge.to_node,
+                    to_port: out_edge.to_port,
+                });
+            }
+
+            let new_parent = NodeGraph {
+                nodes: new_nodes,
+                edges: new_edges,
+                output_node_id: parent.output_node_id,
+                node_positions: new_positions,
+                working_space_override: parent.working_space_override,
+            };
+            if new_parent.topo_sort().is_err() {
+                self.state.toast.show("Ungroup: parent would cycle — aborted");
+                return;
+            }
+
+            // Replace the selection with the freshly-unpacked set
+            // so the user can immediately continue editing / group-
+            // again without re-selecting.
+            let unpacked_ids: Vec<NodeId> = subgraph
+                .nodes
+                .iter()
+                .filter(|n| Some(n.id) != sub_source_id && n.id != sub_output_id)
+                .map(|n| n.id)
+                .collect();
+
+            *parent = new_parent;
+            let new_root_graph = clip.node_graph.clone();
+
+            self.state.selected_node_ids.clear();
+            for id in &unpacked_ids {
+                self.state.selected_node_ids.insert(*id);
+            }
+            self.state.selected_node_id = unpacked_ids.first().copied();
+
+            self.state.history.push(crate::history::HistoryEntry {
+                sequence_idx: self.state.active_sequence_idx,
+                command: crate::history::EditCommand::SetNodeGraph {
+                    clip_id,
+                    old_graph: old_root_graph,
+                    new_graph: new_root_graph,
+                },
+            });
+            *needs_refresh = true;
+            return;
+        }
     }
 
     fn handle_color_sampling(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
@@ -9246,82 +11105,153 @@ impl KlippApp {
                 true
             }
             AppCommand::RemoveNode { clip_id, node_id } => {
+                let node_id = *node_id;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    graph.nodes.retain(|n| n.id != node_id);
+                    graph.edges.retain(|e| e.from_node != node_id && e.to_node != node_id);
+                    graph.node_positions.remove(&node_id);
+                });
+                true
+            }
+            AppCommand::GroupIntoCompound { clip_id, node_ids } => {
+                self.group_into_compound(*clip_id, node_ids, needs_refresh);
+                true
+            }
+            AppCommand::UngroupCompound { clip_id, node_id } => {
+                self.ungroup_compound(*clip_id, *node_id, needs_refresh);
+                true
+            }
+            AppCommand::UpdateActiveGradeVersion { clip_id } => {
+                let clip_id = *clip_id;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        let old_graph = clip.node_graph.clone();
-                        clip.node_graph.nodes.retain(|n| n.id != *node_id);
-                        clip.node_graph.edges.retain(|e| e.from_node != *node_id && e.to_node != *node_id);
-                        clip.node_graph.node_positions.remove(node_id);
-                        self.state.history.push(crate::history::HistoryEntry {
-                            sequence_idx: self.state.active_sequence_idx,
-                            command: crate::history::EditCommand::SetNodeGraph {
-                                clip_id: *clip_id,
-                                old_graph,
-                                new_graph: clip.node_graph.clone(),
-                            },
-                        });
+                    if let Some(clip) = track.find_clip_mut(clip_id) {
+                        if let Some(idx) = clip.active_grade_version {
+                            if let Some(v) = clip.grade_versions.get_mut(idx) {
+                                v.node_graph = clip.node_graph.clone();
+                                self.state.dirty = true;
+                            }
+                        }
                         break;
                     }
+                }
+                true
+            }
+            AppCommand::DescendIntoCompound { clip_id, node_id } => {
+                // Resolve the CURRENT graph at the existing descent
+                // path, check that `node_id` is a Compound with a
+                // sub-graph, then append to the path. Clears
+                // selection so the inspector doesn't linger on an
+                // outer-level node the user can no longer see.
+                let path = self.state.graph_descent_path.clone();
+                let seq_idx = self.state.active_sequence_idx;
+                let mut ok = false;
+                for track in &mut self.state.sequences[seq_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        if let Ok(graph) = Self::resolve_graph_at_path_mut(clip, &path) {
+                            let is_compound = graph.nodes.iter().any(|n| {
+                                n.id == *node_id
+                                    && n.kind == klipp_nodes::NodeKind::Compound
+                                    && n.params.compound_subgraph.is_some()
+                            });
+                            if is_compound { ok = true; }
+                        }
+                        break;
+                    }
+                }
+                if ok {
+                    self.state.graph_descent_path.push(*node_id);
+                    self.state.selected_node_ids.clear();
+                    self.state.selected_node_id = None;
                 }
                 *needs_refresh = true;
                 true
             }
             AppCommand::ConnectNodes { clip_id, from, from_port, to, to_port } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        let old_graph = clip.node_graph.clone();
-                        // Remove existing edge to this input port
-                        clip.node_graph.edges.retain(|e| !(e.to_node == *to && e.to_port == *to_port));
-                        clip.node_graph.edges.push(klipp_nodes::Edge {
-                            from_node: *from,
-                            from_port: *from_port,
-                            to_node: *to,
-                            to_port: *to_port,
-                        });
-                        // Validate no cycle
-                        if clip.node_graph.topo_sort().is_err() {
-                            clip.node_graph = old_graph;
-                        } else {
-                            self.state.history.push(crate::history::HistoryEntry {
-                                sequence_idx: self.state.active_sequence_idx,
-                                command: crate::history::EditCommand::SetNodeGraph {
-                                    clip_id: *clip_id,
-                                    old_graph,
-                                    new_graph: clip.node_graph.clone(),
-                                },
-                            });
+                let (from_node, from_port, to_node, to_port) = (*from, *from_port, *to, *to_port);
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    let pre_connect = graph.clone();
+                    // Remove existing edge to this input port — one
+                    // edge per (node, port) pair.
+                    graph.edges.retain(|e| !(e.to_node == to_node && e.to_port == to_port));
+                    graph.edges.push(klipp_nodes::Edge {
+                        from_node, from_port, to_node, to_port,
+                    });
+                    // LayerMixer auto-grow — if the editor dropped a
+                    // wire on a port past the current count, grow the
+                    // params Vec in lockstep so the executor finds a
+                    // setting at that index.
+                    if let Some(target) = graph.nodes.iter_mut().find(|n| n.id == to_node) {
+                        if target.kind == klipp_nodes::NodeKind::LayerMixer {
+                            let needed = (to_port as usize) + 1;
+                            let mixer = target.params.layer_mixer.get_or_insert_with(Default::default);
+                            if mixer.inputs.len() < needed {
+                                mixer.inputs.resize_with(needed, klipp_nodes::LayerMixerInput::default);
+                            }
                         }
-                        break;
                     }
-                }
-                *needs_refresh = true;
+                    // Roll back inside the closure if the new edge
+                    // would introduce a cycle. The outer helper then
+                    // records a no-op history entry (old == new) —
+                    // undo stays consistent.
+                    if graph.topo_sort().is_err() {
+                        *graph = pre_connect;
+                    }
+                });
                 true
             }
             AppCommand::DisconnectEdge { clip_id, to, to_port } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        let old_graph = clip.node_graph.clone();
-                        clip.node_graph.edges.retain(|e| !(e.to_node == *to && e.to_port == *to_port));
-                        self.state.history.push(crate::history::HistoryEntry {
-                            sequence_idx: self.state.active_sequence_idx,
-                            command: crate::history::EditCommand::SetNodeGraph {
-                                clip_id: *clip_id,
-                                old_graph,
-                                new_graph: clip.node_graph.clone(),
-                            },
+                let (to_node, to_port) = (*to, *to_port);
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    graph.edges.retain(|e| !(e.to_node == to_node && e.to_port == to_port));
+                });
+                true
+            }
+            AppCommand::SetNodeOutputLink { clip_id, node_id, label } => {
+                let node_id = *node_id;
+                let label = label.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.output_link = label.as_ref().and_then(|s| {
+                            let t = s.trim();
+                            if t.is_empty() { None } else { Some(t.to_string()) }
                         });
-                        break;
                     }
-                }
-                *needs_refresh = true;
+                });
+                true
+            }
+            AppCommand::SetNodeInputLink { clip_id, node_id, port, label } => {
+                let node_id = *node_id;
+                let port = *port as usize;
+                let label = label.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        if node.input_links.len() <= port {
+                            node.input_links.resize(port + 1, None);
+                        }
+                        node.input_links[port] = label.as_ref().and_then(|s| {
+                            let t = s.trim();
+                            if t.is_empty() { None } else { Some(t.to_string()) }
+                        });
+                        while node.input_links.last().map_or(false, |l| l.is_none()) {
+                            node.input_links.pop();
+                        }
+                    }
+                });
                 true
             }
             AppCommand::MoveNode { clip_id, node_id, delta_x, delta_y } => {
+                // Position-only changes don't go through history —
+                // they fire every drag-frame and would blow out the
+                // undo stack. Still need path-aware resolution so
+                // moves inside a compound stick.
+                let path = self.state.graph_descent_path.clone();
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        let pos = clip.node_graph.node_positions.entry(*node_id).or_default();
-                        pos.x += delta_x;
-                        pos.y += delta_y;
+                        if let Ok(graph) = Self::resolve_graph_at_path_mut(clip, &path) {
+                            let pos = graph.node_positions.entry(*node_id).or_default();
+                            pos.x += delta_x;
+                            pos.y += delta_y;
+                        }
                         break;
                     }
                 }
@@ -9330,53 +11260,68 @@ impl KlippApp {
                 true
             }
             AppCommand::ToggleNodeEnabled { clip_id, node_id } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        let old_graph = clip.node_graph.clone();
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.enabled = !node.enabled;
-                        }
-                        self.state.history.push(crate::history::HistoryEntry {
-                            sequence_idx: self.state.active_sequence_idx,
-                            command: crate::history::EditCommand::SetNodeGraph {
-                                clip_id: *clip_id,
-                                old_graph,
-                                new_graph: clip.node_graph.clone(),
-                            },
-                        });
-                        break;
+                let node_id = *node_id;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.enabled = !node.enabled;
                     }
-                }
-                *needs_refresh = true;
+                });
                 true
             }
             _ => false,
         }
     }
 
+    /// Translate the inspector's `PHANTOM_CORRECTOR_ID` to a real
+    /// Corrector node id on the target clip, materialising the node
+    /// in the graph if it doesn't exist yet. Used at the top of every
+    /// `SetNode*` handler so widgets that rendered against a scratch
+    /// NodeParams (clip has no grade node) can land their first write
+    /// without the inspector having to know whether a real node
+    /// exists. Returns the original id unchanged when it's not the
+    /// phantom sentinel.
+    fn resolve_phantom_node_id(&mut self, clip_id: klipp_core::ClipId, node_id: klipp_nodes::NodeId) -> klipp_nodes::NodeId {
+        if node_id != klipp_nodes::PHANTOM_CORRECTOR_ID {
+            return node_id;
+        }
+        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+            if let Some(clip) = track.find_clip_mut(clip_id) {
+                return clip.node_graph.ensure_corrector();
+            }
+        }
+        node_id
+    }
+
     fn handle_color_node_config(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
             AppCommand::RenameNode { clip_id, node_id, ref label } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.label = label.clone();
-                        }
-                        break;
+                let node_id = *node_id;
+                let label = label.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.label = label;
                     }
-                }
-                *needs_refresh = true;
+                });
                 true
             }
             AppCommand::SetNodeParam { clip_id, node_id, param, value } => {
+                // Lazy-create: if the inspector dispatched with the
+                // phantom Corrector id (no grade node existed on this
+                // clip when the widget rendered), materialise a real
+                // Corrector now and route the write to it.
+                let resolved = self.resolve_phantom_node_id(*clip_id, *node_id);
+                let node_id = &resolved;
                 // Update the UI-local sequence mirror — required so the UI's
                 // own scope-preview re-grade (runs on this thread) sees the
                 // new value. This mutates `self.state.sequences[...]` only,
                 // not the shared `Arc<RwLock<Sequence>>` the engine reads.
+                let path = self.state.graph_descent_path.clone();
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.params.apply_override(param, *value);
+                        if let Ok(graph) = Self::resolve_graph_at_path_mut(clip, &path) {
+                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                                node.params.apply_override(param, *value);
+                            }
                         }
                         break;
                     }
@@ -9478,68 +11423,125 @@ impl KlippApp {
                 false
             }
             AppCommand::SetNodeCurves { clip_id, node_id, curves } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.params.curves = Some(curves.clone());
-                            node.enabled = true;
-                        }
-                        break;
+                let resolved = self.resolve_phantom_node_id(*clip_id, *node_id);
+                let node_id = resolved;
+                let curves = curves.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.curves = Some(curves);
+                        node.enabled = true;
                     }
-                }
-                *needs_refresh = true;
+                });
                 true
             }
             AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.params.huesat = Some(huesat.clone());
-                            node.enabled = true;
-                        }
-                        break;
+                let resolved = self.resolve_phantom_node_id(*clip_id, *node_id);
+                let node_id = resolved;
+                let huesat = huesat.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.huesat = Some(huesat);
+                        node.enabled = true;
                     }
-                }
-                *needs_refresh = true;
+                });
                 true
             }
             AppCommand::SetNodeQualifier { clip_id, node_id, qualifier } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.params.qualifier = Some(qualifier.clone());
-                            node.enabled = true;
-                        }
-                        break;
+                let node_id = *node_id;
+                let qualifier = qualifier.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.qualifier = Some(qualifier);
+                        node.enabled = true;
                     }
-                }
-                *needs_refresh = true;
+                });
                 true
             }
             AppCommand::SetNodeMasks { clip_id, node_id, masks } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.params.masks = Some(masks.clone());
-                            node.enabled = true;
-                        }
-                        break;
+                let node_id = *node_id;
+                let clip_id_val = *clip_id;
+                let masks = masks.clone();
+                let new_len = masks.masks.len();
+                self.with_current_clip_graph_mut(clip_id_val, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.masks = Some(masks);
+                        node.enabled = true;
                     }
+                });
+                // Defensive tracker cleanup: any TrackPoint bound to
+                // (node_id, mask_index) where mask_index now points
+                // past the end of the new mask list is orphaned and
+                // would update a non-existent mask every frame. Drops
+                // those + leaves bindings into the still-valid range
+                // alone. Mirrors the cleanup on `RemoveMaskShape`
+                // and covers every callsite of `SetNodeMasks` that
+                // shrinks the list (whether today's UI ever does so
+                // or not — defending against future regressions).
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id_val) {
+                    clip.track_points.retain(|tp| match tp.linked_mask {
+                        Some((nid, mi)) if nid == node_id => mi < new_len,
+                        _ => true,
+                    });
                 }
-                *needs_refresh = true;
                 true
             }
             AppCommand::SetNodeColorMatch { clip_id, node_id, settings } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.params.color_match = Some(*settings);
-                            node.enabled = true;
-                        }
-                        break;
+                let node_id = *node_id;
+                let settings = *settings;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.color_match = Some(settings);
+                        node.enabled = true;
                     }
-                }
-                *needs_refresh = true;
+                });
+                true
+            }
+            AppCommand::SetExternalMattePath { clip_id, node_id, path } => {
+                let node_id = *node_id;
+                let matte_path = path.clone();
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.matte_image_path = matte_path;
+                    }
+                });
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetExternalMatteChannel { clip_id, node_id, channel, invert } => {
+                let ch = match *channel {
+                    0 => klipp_nodes::MatteChannel::Alpha,
+                    1 => klipp_nodes::MatteChannel::Luminance,
+                    2 => klipp_nodes::MatteChannel::Red,
+                    3 => klipp_nodes::MatteChannel::Green,
+                    4 => klipp_nodes::MatteChannel::Blue,
+                    _ => klipp_nodes::MatteChannel::Luminance,
+                };
+                let node_id = *node_id;
+                let invert = *invert;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        node.params.matte_channel = Some(ch);
+                        node.params.matte_invert = Some(invert);
+                    }
+                });
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetNodeLayerMixerInput { clip_id, node_id, port, input } => {
+                let node_id = *node_id;
+                let port = *port;
+                let input = *input;
+                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        let mixer = node.params.layer_mixer.get_or_insert_with(Default::default);
+                        let needed = (port as usize) + 1;
+                        if mixer.inputs.len() < needed {
+                            mixer.inputs.resize_with(needed, klipp_nodes::LayerMixerInput::default);
+                        }
+                        mixer.inputs[port as usize] = input;
+                    }
+                });
                 true
             }
             AppCommand::CaptureColorMatchReference => {
@@ -9556,6 +11558,166 @@ impl KlippApp {
                     self.state.toast.show(format!("Captured colour reference ({w}×{h})"));
                 } else {
                     self.state.toast.show("No frame to capture — start playback or scrub first");
+                }
+                true
+            }
+            AppCommand::AddMaskShape { clip_id, shape } => {
+                let clip_id = *clip_id;
+                let shape = shape.clone();
+                self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
+                    // ensure_mask_cutout lazy-creates BOTH the Mask
+                    // matte generator and the MaskCutout that
+                    // composites source × matte → Output. Users who
+                    // added a mask from the Color tab see the
+                    // clip-in-shape effect immediately; power users
+                    // can still rewire / delete the cutout in the
+                    // node canvas.
+                    let (mask_node_id, _cutout_id) = graph.ensure_mask_cutout();
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == mask_node_id) {
+                        let masks = node.params.masks.get_or_insert_with(Default::default);
+                        masks.masks.push(klipp_core::Mask {
+                            shape,
+                            ..Default::default()
+                        });
+                    }
+                });
+                true
+            }
+            AppCommand::FocusMaskInspector => {
+                // Edit-workspace user just clicked a mask on the
+                // viewer. Flip their inspector to the Color tab so
+                // the Masks section is visible; also open the color
+                // panel so Color-workspace users see the node /
+                // MASKS section inline too.
+                self.layout.active_inspector_tab = crate::layout_state::InspectorTab::Color;
+                true
+            }
+            AppCommand::RemoveMaskShape { clip_id, mask_index } => {
+                let clip_id = *clip_id;
+                let mask_index = *mask_index;
+                // Capture the Mask node id BEFORE the graph mutation
+                // so we can clean up any TrackPoints bound to this
+                // mask after the removal lands. with_current_clip_graph_mut
+                // wraps the mutation in history, so the tracker
+                // cleanup runs as a separate (non-history) follow-up
+                // — acceptable because trackers don't go through the
+                // node-graph snapshot machinery anyway.
+                let mask_node_id: Option<uuid::Uuid> = self
+                    .state.sequences[self.state.active_sequence_idx]
+                    .tracks.iter().flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == clip_id)
+                    .and_then(|c| c.node_graph.nodes.iter()
+                        .find(|n| n.kind == klipp_nodes::NodeKind::Mask)
+                        .map(|n| n.id));
+                self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
+                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.kind == klipp_nodes::NodeKind::Mask) {
+                        if let Some(masks) = &mut node.params.masks {
+                            if mask_index < masks.masks.len() {
+                                masks.masks.remove(mask_index);
+                            }
+                        }
+                    }
+                });
+                if let Some(nid) = mask_node_id {
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+                        // Drop trackers that were bound to the removed
+                        // mask. Indices on remaining trackers can shift,
+                        // and bindings on OTHER trackers pointing to
+                        // higher mask_index need to slide down by one
+                        // so they keep matching their actual mask after
+                        // the removal.
+                        clip.track_points.retain(|tp| tp.linked_mask != Some((nid, mask_index)));
+                        for tp in &mut clip.track_points {
+                            if let Some((tn, mi)) = tp.linked_mask {
+                                if tn == nid && mi > mask_index {
+                                    tp.linked_mask = Some((tn, mi - 1));
+                                }
+                            }
+                        }
+                    }
+                }
+                true
+            }
+            AppCommand::RemoveMaskTracking { clip_id, node_id, mask_index } => {
+                let clip_id = *clip_id;
+                let node_id = *node_id;
+                let mask_index = *mask_index;
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+                    clip.track_points.retain(|tp| tp.linked_mask != Some((node_id, mask_index)));
+                    if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                        if let Some(masks) = &mut node.params.masks {
+                            if let Some(mask) = masks.masks.get_mut(mask_index) {
+                                mask.keyframes.center_x.clear();
+                                mask.keyframes.center_y.clear();
+                            }
+                        }
+                    }
+                }
+                self.state.dirty = true;
+                *needs_refresh = true;
+                self.state.toast.show("Mask tracking cleared");
+                true
+            }
+            AppCommand::UseClipAsColorMatchReference { clip_id } => {
+                let clip_id = *clip_id;
+                match Self::decode_clip_representative_frame(&self.state, clip_id) {
+                    Ok((bytes, w, h)) => {
+                        self.state.color_match_reference = Some((bytes, w, h));
+                        self.state.color_match_reference_clip = Some(clip_id);
+                        self.state.toast.show(format!(
+                            "Colour reference captured from clip ({w}×{h})"
+                        ));
+                    }
+                    Err(e) => {
+                        self.state.toast.show(format!("Couldn't capture reference: {e}"));
+                    }
+                }
+                true
+            }
+            AppCommand::MatchClipToColorReference { clip_id } => {
+                let clip_id = *clip_id;
+                let Some((ref_bytes, _rw, _rh)) = self.state.color_match_reference.clone() else {
+                    self.state.toast.show(
+                        "Mark a reference clip first (right-click → Use as Colour Reference)"
+                    );
+                    return true;
+                };
+                let source_bytes = match Self::decode_clip_representative_frame(&self.state, clip_id) {
+                    Ok((b, _, _)) => b,
+                    Err(e) => {
+                        self.state.toast.show(format!("Couldn't read target clip: {e}"));
+                        return true;
+                    }
+                };
+                let result = klipp_color::color_match::match_colors(&source_bytes, &ref_bytes);
+                let settings = klipp_core::ColorMatchSettings {
+                    exposure: result.exposure_adjust,
+                    temperature: result.temperature_adjust,
+                    tint: result.tint_adjust,
+                    saturation: result.saturation_adjust,
+                };
+                let mut applied = false;
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(clip_id) {
+                        let node_id = clip.node_graph.ensure_color_match();
+                        if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id) {
+                            node.params.color_match = Some(settings);
+                            node.enabled = true;
+                            applied = true;
+                        }
+                        break;
+                    }
+                }
+                if applied {
+                    *needs_refresh = true;
+                    self.state.toast.show(format!(
+                        "Matched clip to reference: exp {:+.2}, temp {:+.0}, tint {:+.0}, sat {:.2}×",
+                        settings.exposure, settings.temperature, settings.tint, settings.saturation
+                    ));
+                } else {
+                    self.state.toast.show("Target clip not found in active sequence");
                 }
                 true
             }
@@ -9686,7 +11848,14 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
                         if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                            node.keyframes.track_mut(param).set_keyframe(*time_secs, *value);
+                            let track = node.keyframes.track_mut(param);
+                            track.set_keyframe(*time_secs, *value);
+                            if param == klipp_nodes::ENABLED_TRACK {
+                                let epsilon = 0.01;
+                                if let Some(kf) = track.keyframes.iter_mut().find(|kf| (kf.time_secs - *time_secs).abs() < epsilon) {
+                                    kf.interpolation = klipp_core::keyframe::Interpolation::Step;
+                                }
+                            }
                         }
                         break;
                     }
@@ -9776,15 +11945,32 @@ impl KlippApp {
                 true
             }
             AppCommand::SetClipLogFormat { clip_id, log_format } => {
+                let mut media_id_for_writeback: Option<klipp_core::MediaId> = None;
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        // Find the InputTransform node specifically
-                        if let Some(node) = clip.node_graph.nodes.iter_mut()
-                            .find(|n| n.kind == klipp_nodes::NodeKind::InputTransform)
-                        {
-                            node.params.log_format = Some(*log_format);
-                        }
+                        // `set_input_log_format` splices an
+                        // InputTransform into the default Source →
+                        // Corrector → Output graph if one isn't
+                        // present yet — covers the common case
+                        // where the user picks a format on a freshly
+                        // added clip whose default graph has no IDT.
+                        clip.set_input_log_format(*log_format);
+                        media_id_for_writeback = clip.media_id();
                         break;
+                    }
+                }
+                // Promote the user's choice to the source media's
+                // own `log_format` so the next clip imported from
+                // the same media inherits it via
+                // `apply_detected_log_format`. Only write back when
+                // the media is still on the default — don't clobber
+                // a deliberate per-media setting the user has made
+                // elsewhere.
+                if let Some(mid) = media_id_for_writeback {
+                    if let Some(item) = self.state.media_pool.get_mut(&mid) {
+                        if item.log_format == klipp_core::LogFormat::default() {
+                            item.log_format = *log_format;
+                        }
                     }
                 }
                 *needs_refresh = true;
@@ -9804,36 +11990,57 @@ impl KlippApp {
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                     let mut snapshot: Option<klipp_nodes::NodeGraph> = None;
                     let mut committed: Option<klipp_nodes::NodeGraph> = None;
+                    let mut applied = false;
                     for track in &mut seq.tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             snapshot = Some(clip.node_graph.clone());
-                            if let Some(node) = clip.node_graph.nodes.iter_mut()
-                                .find(|n| n.kind == klipp_nodes::NodeKind::ColorBalance)
-                            {
+                            // Prefer the Corrector node for the WB
+                            // write-back — its temperature/tint feed the
+                            // unified colour-grade shader. Fall back to
+                            // the legacy ColorBalance node for graphs
+                            // that don't have a Corrector.
+                            let target_idx = clip.node_graph.nodes.iter().position(|n|
+                                n.kind == klipp_nodes::NodeKind::Corrector
+                            ).or_else(|| clip.node_graph.nodes.iter().position(|n|
+                                n.kind == klipp_nodes::NodeKind::ColorBalance
+                            ));
+                            if let Some(idx) = target_idx {
+                                let node = &mut clip.node_graph.nodes[idx];
                                 node.params.temperature = Some(temp_adj);
                                 node.params.tint = Some(tint_adj);
+                                applied = true;
                             }
                             committed = Some(clip.node_graph.clone());
                             break;
                         }
                     }
-                    if let (Some(old_graph), Some(new_graph)) = (snapshot, committed) {
-                        self.state.history.push(crate::history::HistoryEntry {
-                            sequence_idx: self.state.active_sequence_idx,
-                            command: crate::history::EditCommand::SetNodeGraph {
-                                clip_id: *clip_id,
-                                old_graph,
-                                new_graph,
-                            },
-                        });
-                        self.state.dirty = true;
+                    if applied {
+                        if let (Some(old_graph), Some(new_graph)) = (snapshot, committed) {
+                            self.state.history.push(crate::history::HistoryEntry {
+                                sequence_idx: self.state.active_sequence_idx,
+                                command: crate::history::EditCommand::SetNodeGraph {
+                                    clip_id: *clip_id,
+                                    old_graph,
+                                    new_graph,
+                                },
+                            });
+                            self.state.dirty = true;
+                        }
+                    } else {
+                        self.state.toast.show("Add a Color Balance node to use Auto White Balance");
                     }
                     *needs_refresh = true;
                 }
                 true
             }
             AppCommand::ToggleColorPanel => {
-                // Toggle between Edit and Color workspace
+                // Toggle between Edit and Color workspace.
+                // Entering the Color workspace no longer force-shows
+                // the Scopes panel — the user can toggle Scopes from
+                // the color-workspace toggle bar when they want it.
+                // Force-showing it meant hitting `C` always popped the
+                // full scope UI, even when the user just wanted to see
+                // the grade tabs / node canvas.
                 use crate::state::Workspace;
                 if self.state.active_workspace == Workspace::Color {
                     self.state.active_workspace = Workspace::Edit;
@@ -9841,7 +12048,6 @@ impl KlippApp {
                 } else {
                     self.state.active_workspace = Workspace::Color;
                     self.state.show_color_panel = true;
-                    self.state.show_scopes = true;
                 }
                 true
             }
@@ -10133,6 +12339,81 @@ impl KlippApp {
                 true
             }
 
+            AppCommand::SaveLook { name } => {
+                let Some(clip_id) = self.state.selected_clip else {
+                    self.state.toast.show("Select a clip first to save a Look");
+                    return true;
+                };
+                let snapshot = {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    seq.all_clips().find(|c| c.id == clip_id).map(|c| c.node_graph.clone())
+                };
+                let Some(node_graph) = snapshot else {
+                    self.state.toast.show("Selected clip not found");
+                    return true;
+                };
+                let look = klipp_timeline::Look {
+                    id: uuid::Uuid::new_v4(),
+                    name: name.trim().to_string(),
+                    node_graph,
+                };
+                let label = look.name.clone();
+                self.state.looks.push(look);
+                self.state.dirty = true;
+                self.state.toast.show(format!("Saved Look \"{label}\""));
+                true
+            }
+            AppCommand::ApplyLook { look_id, clip_ids } => {
+                let Some(look) = self.state.looks.iter().find(|l| l.id == *look_id).cloned() else {
+                    self.state.toast.show("Look not found");
+                    return true;
+                };
+                let mut applied = 0_usize;
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                for clip_id in clip_ids {
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
+                        let old_graph = clip.node_graph.clone();
+                        // remap_ids gives the target a fresh set of NodeIds
+                        // so two clips applying the same Look don't collide.
+                        clip.node_graph = look.node_graph.remap_ids();
+                        applied += 1;
+                        self.state.history.push(crate::history::HistoryEntry {
+                            sequence_idx: self.state.active_sequence_idx,
+                            command: crate::history::EditCommand::SetNodeGraph {
+                                clip_id: *clip_id,
+                                old_graph,
+                                new_graph: clip.node_graph.clone(),
+                            },
+                        });
+                    }
+                }
+                if applied > 0 {
+                    self.state.dirty = true;
+                    self.state.toast.show(format!(
+                        "Applied \"{}\" to {applied} clip{}", look.name, if applied == 1 { "" } else { "s" }
+                    ));
+                    *needs_refresh = true;
+                } else {
+                    self.state.toast.show("No matching clips selected");
+                }
+                true
+            }
+            AppCommand::DeleteLook { look_id } => {
+                let before = self.state.looks.len();
+                self.state.looks.retain(|l| l.id != *look_id);
+                if self.state.looks.len() != before {
+                    self.state.dirty = true;
+                }
+                true
+            }
+            AppCommand::RenameLook { look_id, new_name } => {
+                if let Some(look) = self.state.looks.iter_mut().find(|l| l.id == *look_id) {
+                    look.name = new_name.trim().to_string();
+                    self.state.dirty = true;
+                }
+                true
+            }
+
             _ => false,
         }
     }
@@ -10216,6 +12497,7 @@ impl KlippApp {
                     multicam_angle: 0,
                     multicam_cuts: Vec::new(),
                     audio_effects: Vec::new(),
+                    audio_effect_keyframes: std::collections::HashMap::new(),
                     stabilization_data: None,
                     smoothed_trajectory: None,
                     track_points: Vec::new(),
@@ -11914,6 +14196,73 @@ impl KlippApp {
                 self.state.tracking_mode = !self.state.tracking_mode;
                 true
             }
+            AppCommand::TrackMaskRegion { clip_id, node_id, mask_index } => {
+                // One-shot Place + Analyze + Link. Reads the mask
+                // centre at the playhead, drops a track point there,
+                // records the auto-link, and kicks off analysis.
+                // The TrackingComplete event handler later sees the
+                // pending entry and dispatches GenerateKeyframesFromTrack.
+                let clip_id = *clip_id;
+                let node_id = *node_id;
+                let mask_index = *mask_index;
+                let fps = self.state.fps.as_f64();
+                let playhead_secs = self.state.playhead_smooth_secs;
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let mut new_index: Option<usize> = None;
+                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+                    let clip_in_secs = clip.timeline_in.to_secs_f64();
+                    let source_in_secs = clip.source_in.to_secs_f64();
+                    let clip_time = (playhead_secs - clip_in_secs + source_in_secs).max(0.0);
+                    let frame_idx = (clip_time * fps).round() as usize;
+
+                    let centre = clip.node_graph.nodes.iter()
+                        .find(|n| n.id == node_id)
+                        .and_then(|n| n.params.masks.as_ref())
+                        .and_then(|ms| ms.masks.get(mask_index))
+                        .map(|m| {
+                            let evaluated = m.evaluated_at(clip_time);
+                            let (cx, cy) = match &evaluated.shape {
+                                klipp_core::MaskShape::Circle { center_x, center_y, .. } => (*center_x, *center_y),
+                                klipp_core::MaskShape::Rectangle { center_x, center_y, .. } => (*center_x, *center_y),
+                                klipp_core::MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => {
+                                    ((start_x + end_x) * 0.5, (start_y + end_y) * 0.5)
+                                }
+                                klipp_core::MaskShape::Bezier { points } if !points.is_empty() => {
+                                    let n = points.len() as f32;
+                                    let cx = points.iter().map(|p| p.0).sum::<f32>() / n;
+                                    let cy = points.iter().map(|p| p.1).sum::<f32>() / n;
+                                    (cx, cy)
+                                }
+                                _ => (0.5, 0.5),
+                            };
+                            (cx as f64, cy as f64)
+                        });
+                    let Some((cx, cy)) = centre else {
+                        self.state.toast.show("Couldn't read mask centre");
+                        return true;
+                    };
+
+                    let count = clip.track_points.len();
+                    let mut tp = klipp_core::TrackPoint::default();
+                    tp.name = format!("Mask {} tracker", mask_index + 1);
+                    tp.start_frame = frame_idx;
+                    tp.positions = vec![(cx, cy)];
+                    tp.linked_mask = Some((node_id, mask_index));
+                    clip.track_points.push(tp);
+                    new_index = Some(count);
+                }
+                if let Some(idx) = new_index {
+                    self.state.active_track_point = Some(idx);
+                    self.state.pending_mask_track_link.insert(
+                        (clip_id, idx),
+                        klipp_core::TrackTarget::MaskCenter { node_id, mask_index },
+                    );
+                    self.state.toast.show("Tracking mask region\u{2026}");
+                    self.start_track_analysis(clip_id, idx);
+                }
+                self.state.dirty = true;
+                true
+            }
             AppCommand::AddTrackPoint { clip_id, x, y } => {
                 // Create a new track point at the given normalized position
                 let fps = self.state.fps.as_f64();
@@ -12104,6 +14453,9 @@ impl KlippApp {
                                 self.state.toast.show("Generated transform keyframes from tracker");
                             }
                             klipp_core::TrackTarget::MaskCenter { node_id, mask_index } => {
+                                if let Some(tp) = clip.track_points.get_mut(point_index) {
+                                    tp.linked_mask = Some((node_id, mask_index));
+                                }
                                 if let Some(node) = clip.node_graph.nodes.iter_mut().find(|n| n.id == node_id) {
                                     if let Some(mask_stack) = &mut node.params.masks {
                                         if let Some(mask) = mask_stack.masks.get_mut(mask_index) {
@@ -12516,6 +14868,12 @@ impl KlippApp {
                         snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
                     }
                 }
+                // Pin the project working colorspace into the
+                // snapshot so the encoder's display transform reads
+                // the same value the user has been editing under.
+                if let Ok(ref mut snap) = snapshot {
+                    snap.sequence_snapshot.working_colorspace = self.state.project_working_colorspace;
+                }
                 let label = settings.output_path.file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| "Render".into());
@@ -12552,6 +14910,9 @@ impl KlippApp {
                         let seq = &self.state.sequences[self.state.active_sequence_idx];
                         snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
                     }
+                }
+                if let Ok(ref mut snap) = snapshot {
+                    snap.sequence_snapshot.working_colorspace = self.state.project_working_colorspace;
                 }
                 let label = settings.output_path.file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -13342,6 +15703,10 @@ impl KlippApp {
                 }
             };
             snap.sequence_snapshot.export_range = Some((*start_frame, *end_frame));
+            // Pin the project working colorspace so per-segment
+            // exports route through the same display transform as
+            // the rest of the pipeline.
+            snap.sequence_snapshot.working_colorspace = self.state.project_working_colorspace;
 
             let display_label = format!(
                 "{} [{}/{}]",
@@ -13373,7 +15738,7 @@ impl KlippApp {
                 true
             }
             AppCommand::SetRubberBandParam(param) => {
-                self.state.rubber_band_param = *param;
+                self.state.rubber_band_param = crate::state::RubberBandParam::ClipParam(*param);
                 true
             }
             AppCommand::SetVideoRubberBandParam(param) => {
@@ -13504,8 +15869,656 @@ impl KlippApp {
                 self.stop_recording();
                 true
             }
+            AppCommand::OpenAiModelsDialog => {
+                self.state.show_ai_models_dialog = true;
+                true
+            }
+            AppCommand::OpenAudioPluginsDialog => {
+                self.state.show_audio_plugins_dialog = true;
+                // Reset the in-process "last scanned" stamp so the panel
+                // re-stamps itself on first frame (the discovery state
+                // shown is whatever's already in state.ladspa_plugins).
+                self.state.audio_plugins_dialog.last_scanned_secs = None;
+                true
+            }
+            AppCommand::RescanAudioPlugins => {
+                // Drop the on-disk cache so discover_ladspa_plugins_cached
+                // is forced to do a fresh scan — without this the function
+                // would happily return the cached result and our "Rescan"
+                // button would do nothing visible.
+                let cache_dir = dirs::cache_dir().map(|p| p.join("klipp"));
+                if let Some(ref base) = cache_dir {
+                    let cache_file = base.join("ladspa_registry.json");
+                    if cache_file.exists() {
+                        if let Err(e) = std::fs::remove_file(&cache_file) {
+                            tracing::warn!(
+                                "LADSPA rescan: failed to delete cache file {}: {e}",
+                                cache_file.display()
+                            );
+                        }
+                    }
+                }
+                let t0 = std::time::Instant::now();
+                self.state.ladspa_plugins =
+                    klipp_audio::ladspa::discover_ladspa_plugins_cached(cache_dir.as_deref());
+                // Replace the LADSPA section of the effect registry with
+                // the fresh result. The simplest correct way: remove all
+                // existing LADSPA entries, then re-merge.
+                self.state.effect_registry.effects.retain(|e| {
+                    !matches!(
+                        e.source,
+                        crate::browser::effect_registry::EffectSource::Ladspa(_)
+                    )
+                });
+                let enabled: Vec<klipp_audio::ladspa::LadspaPluginInfo> = self
+                    .state
+                    .ladspa_plugins
+                    .iter()
+                    .filter(|p| !self.state.disabled_audio_plugins.contains(&p.unique_id))
+                    .cloned()
+                    .collect();
+                self.state.effect_registry.merge_ladspa_plugins(&enabled);
+                self.state.audio_plugins_dialog.last_scanned_secs = Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                );
+                let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                tracing::info!(
+                    "LADSPA rescan: {} plugin(s) in {:.1} ms",
+                    self.state.ladspa_plugins.len(),
+                    elapsed_ms
+                );
+                self.state.toast.show(format!(
+                    "Rescanned: {} LADSPA plugin(s) in {:.0} ms",
+                    self.state.ladspa_plugins.len(),
+                    elapsed_ms
+                ));
+                true
+            }
+            AppCommand::OpenSystemProbe => {
+                self.state.show_system_probe = true;
+                true
+            }
+            AppCommand::OpenProjectDoctor => {
+                self.state.show_project_doctor = true;
+                true
+            }
+            AppCommand::ClearAllAudioPluginsDisabled => {
+                let cleared = self.state.disabled_audio_plugins.len();
+                if cleared == 0 {
+                    return true;
+                }
+                self.state.disabled_audio_plugins.clear();
+                self.state.effect_registry.effects.retain(|e| {
+                    !matches!(
+                        e.source,
+                        crate::browser::effect_registry::EffectSource::Ladspa(_)
+                    )
+                });
+                self.state
+                    .effect_registry
+                    .merge_ladspa_plugins(&self.state.ladspa_plugins);
+                crate::audio_plugins_disabled::save(&self.state.disabled_audio_plugins);
+                self.state.toast.show(format!(
+                    "Re-enabled {cleared} plugin{}",
+                    if cleared == 1 { "" } else { "s" }
+                ));
+                true
+            }
+            AppCommand::ToggleAudioPluginDisabled { unique_id } => {
+                let now_disabled = if self.state.disabled_audio_plugins.contains(unique_id) {
+                    self.state.disabled_audio_plugins.remove(unique_id);
+                    false
+                } else {
+                    self.state.disabled_audio_plugins.insert(*unique_id);
+                    true
+                };
+                // Rebuild the LADSPA section of the effect registry so
+                // the audio FX browser, inspector picker, and any other
+                // EffectSource::Ladspa consumer see the new filter
+                // applied immediately. No rescan needed; we're filtering
+                // the in-memory `state.ladspa_plugins` list which
+                // already has every discovered plugin.
+                self.state.effect_registry.effects.retain(|e| {
+                    !matches!(
+                        e.source,
+                        crate::browser::effect_registry::EffectSource::Ladspa(_)
+                    )
+                });
+                let enabled: Vec<klipp_audio::ladspa::LadspaPluginInfo> = self
+                    .state
+                    .ladspa_plugins
+                    .iter()
+                    .filter(|p| !self.state.disabled_audio_plugins.contains(&p.unique_id))
+                    .cloned()
+                    .collect();
+                self.state.effect_registry.merge_ladspa_plugins(&enabled);
+                crate::audio_plugins_disabled::save(&self.state.disabled_audio_plugins);
+
+                let label = self
+                    .state
+                    .ladspa_plugins
+                    .iter()
+                    .find(|p| p.unique_id == *unique_id)
+                    .map(|p| {
+                        if p.name.is_empty() {
+                            p.label.clone()
+                        } else {
+                            p.name.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| format!("plugin {unique_id}"));
+                self.state.toast.show(format!(
+                    "{} {}",
+                    if now_disabled { "Disabled" } else { "Enabled" },
+                    label
+                ));
+                true
+            }
+            AppCommand::ShowAiToolsPanel { task } => {
+                self.state.ai_tools_state.panel_visible = true;
+                self.state.ai_tools_state.active_task = Some(ai_tools_task_from_tag(*task));
+                let task_local = ai_tools_task_from_tag(*task);
+                self.state.ai_tools_state.selected_model_id = self
+                    .state
+                    .ai_tools_registry
+                    .models_for(task_local)
+                    .first()
+                    .map(|m| m.id.clone());
+                true
+            }
+            AppCommand::SetAiToolsTask(tag) => {
+                let task_local = ai_tools_task_from_tag(*tag);
+                self.state.ai_tools_state.active_task = Some(task_local);
+                self.state.ai_tools_state.selected_model_id = self
+                    .state
+                    .ai_tools_registry
+                    .models_for(task_local)
+                    .first()
+                    .map(|m| m.id.clone());
+                true
+            }
+            AppCommand::SelectAiToolsModel { model_id } => {
+                if self
+                    .state
+                    .ai_tools_registry
+                    .info(model_id)
+                    .is_some()
+                {
+                    self.state.ai_tools_state.selected_model_id = Some(model_id.clone());
+                }
+                true
+            }
+            AppCommand::RunAiToolsInference => {
+                // Frame-grab + worker dispatch land in a follow-up; for
+                // now we only mark the panel intent so the dispatcher
+                // sees consistent state.
+                self.state.ai_tools_state.pending_run = true;
+                true
+            }
+            AppCommand::CancelAiToolsInference => {
+                self.state.ai_tools_state.inference.cancel();
+                self.state.ai_tools_state.pending_cancel = false;
+                true
+            }
             _ => false,
         }
+    }
+
+    /// Drive the AI Tools dispatch state machine each frame.
+    ///
+    /// Drains `pending_run` / `pending_cancel`, polls the worker
+    /// channel, and triggers a repaint when the inference state
+    /// changes so the panel + viewer overlay refresh promptly.
+    fn tick_ai_tools(&mut self, ctx: &egui::Context) {
+        if self.state.ai_tools_state.pending_cancel {
+            self.state.ai_tools_state.inference.cancel();
+            self.state.ai_tools_state.pending_cancel = false;
+        }
+
+        if self.state.ai_tools_state.pending_run {
+            self.state.ai_tools_state.pending_run = false;
+            self.dispatch_ai_inference(ctx);
+        }
+
+        if self.state.ai_tools_state.inference.poll() {
+            // Inference left Running — clear the start-time stamp
+            // so the panel's progress bar stops ticking. Done's
+            // own duration comes from response.inference_ms.
+            self.state.ai_tools_state.inference_start_time = None;
+            // Record telemetry on the Idle → Done transition. poll()
+            // returns true on every state change (Done / Failed /
+            // Disconnected) but we only want successful runs.
+            if let crate::ai_tools::InferenceState::Done { model_id, response } =
+                &self.state.ai_tools_state.inference
+            {
+                let id = model_id.clone();
+                let ms = response.inference_ms;
+                let candidates = response.candidates.len();
+                let model_display = self
+                    .state
+                    .ai_tools_registry
+                    .info(&id)
+                    .map(|i| i.display_name)
+                    .unwrap_or_else(|| id.clone());
+                self.state
+                    .ai_tools_state
+                    .model_telemetry
+                    .entry(id.clone())
+                    .or_default()
+                    .record_run(ms);
+                // Persist updated telemetry. The file is small
+                // (well under 1 KB even with full telemetry across
+                // every model) and inference itself takes hundreds
+                // of ms, so the per-write cost is invisible. Save
+                // failures are logged + swallowed.
+                crate::ai_tools::persistence::save(
+                    &crate::ai_tools::persistence::AiToolsConfig::from_state(
+                        &self.state.ai_tools_state,
+                    ),
+                );
+                // Push a Recent entry. Thumbnail texture is built
+                // here while we still hold a reference to the
+                // mask buffer; pushed at the front so the panel's
+                // .iter().take(3) shows the freshest first.
+                if let Some(task) = self.state.ai_tools_state.active_task {
+                    let thumbnail = build_recent_thumbnail(
+                        ctx,
+                        &self.state.ai_tools_state.inference,
+                    );
+                    let entry = crate::ai_tools::RecentEntry {
+                        task,
+                        model_id: id,
+                        model_display_name: model_display,
+                        timestamp: std::time::SystemTime::now(),
+                        duration_ms: ms,
+                        candidates_count: candidates,
+                        thumbnail,
+                        prompts: self.state.ai_tools_state.prompts.clone(),
+                    };
+                    self.state.ai_tools_state.recent_inferences.push_front(entry);
+                    while self.state.ai_tools_state.recent_inferences.len() > 20 {
+                        self.state.ai_tools_state.recent_inferences.pop_back();
+                    }
+                }
+            }
+            self.refresh_ai_tools_overlay_texture(ctx);
+            ctx.request_repaint();
+        }
+
+        // Drain the panel's Re-run button. Resets inference back
+        // to Idle while keeping the captured prompts so the user
+        // can tweak + re-fire. Defers the overlay texture drop
+        // through the wgpu-safe path.
+        if self.state.ai_tools_state.pending_rerun {
+            self.state.ai_tools_state.pending_rerun = false;
+            self.state.ai_tools_state.inference =
+                crate::ai_tools::InferenceState::Idle;
+            self.state.ai_tools_state.inference_start_time = None;
+            self.refresh_ai_tools_overlay_texture(ctx);
+            ctx.request_repaint();
+        }
+
+        // Drain the panel's Apply-to-clip button. Writes the mask
+        // PNG to the cache + inserts an ExternalMatte node into
+        // the chosen clip's node graph.
+        if self.state.ai_tools_state.pending_apply_to_clip {
+            self.state.ai_tools_state.pending_apply_to_clip = false;
+            self.execute_apply_mask_to_clip();
+        }
+
+        // Drive the custom-URL paste state machine. Worker thread
+        // delivers progress + completion events; transitioning to
+        // Confirming repaints so the modal flips into the SHA/size
+        // confirmation view.
+        if self.state.custom_model_add.poll() {
+            ctx.request_repaint();
+        }
+    }
+
+    /// Apply the most recent successful mask to a clip's node
+    /// graph. Target clip selection follows the
+    /// selected-then-playhead-fallback rule:
+    ///   1. `state.selected_clip` if set and resolvable.
+    ///   2. Otherwise the topmost video track's clip at the
+    ///      playhead (egui's `find_map` order matches our
+    ///      bottom-up track numbering — first match is highest).
+    ///   3. Otherwise toast "No clip selected".
+    ///
+    /// On success: writes the mask to a metadata-rich filename in
+    /// `~/.cache/klipp/ai_masks/`, inserts an `ExternalMatte`
+    /// node into the clip's graph wired into the existing
+    /// Corrector's matte input (port 1) when one exists, and
+    /// toasts "Mask applied to {track} · {clip_short}".
+    fn execute_apply_mask_to_clip(&mut self) {
+        // Snapshot what we need from inference state without
+        // holding the borrow into mutating ops.
+        let (mask, model_id) = match &self.state.ai_tools_state.inference {
+            crate::ai_tools::InferenceState::Done { model_id, response }
+                if !response.candidates.is_empty() =>
+            {
+                (response.candidates[0].mask.clone(), model_id.clone())
+            }
+            _ => {
+                self.state.toast.show("No mask to apply");
+                return;
+            }
+        };
+
+        // Resolve target clip. Selected first, playhead fallback.
+        let playhead = self.state.playhead;
+        let target = self.state.selected_clip_loc().map(|(t, c)| (t, c.id, c.clone()));
+        let target = target.or_else(|| {
+            self.state
+                .sequence()
+                .tracks
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Video)
+                .find_map(|(i, t)| {
+                    t.clip_at_timecode(playhead).map(|(_, c)| (i, c.id, c.clone()))
+                })
+        });
+        let Some((track_idx, clip_id, clip_snapshot)) = target else {
+            self.state.toast.show(
+                "No clip selected. Select a clip or position the playhead over one.",
+            );
+            return;
+        };
+
+        // Resolve the cache directory + a metadata-rich filename.
+        // Schema: <clip_id>_<frame>_<model_id_hash>_<timestamp>.png
+        // — gives a future cleanup pass enough info to identify
+        // orphans (clip_id parsed against current project) and
+        // dupes (clip+frame+model triple) without re-hashing.
+        let cache_dir = match dirs::cache_dir() {
+            Some(d) => d.join("klipp").join("ai_masks"),
+            None => {
+                self.state.toast.show("Apply failed: no cache dir");
+                return;
+            }
+        };
+        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+            self.state.toast.show(format!("Apply failed: mkdir cache ({e})"));
+            return;
+        }
+        let frame = playhead.value;
+        let model_hash: u64 = {
+            // 64-bit FNV-1a — stable, no extra dep, short enough
+            // to keep the filename readable.
+            let mut h: u64 = 0xcbf29ce484222325;
+            for b in model_id.as_bytes() {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x100000001b3);
+            }
+            h
+        };
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let filename = format!(
+            "{}_{frame}_{:016x}_{timestamp}.png",
+            clip_id.to_string().split('-').next().unwrap_or("clip"),
+            model_hash,
+        );
+        let final_path = cache_dir.join(&filename);
+        let tmp_path = cache_dir.join(format!("{filename}.tmp"));
+
+        // Encode mask as a single-channel grayscale PNG via the
+        // image crate. Atomic write: encode to .tmp then rename
+        // so a crash mid-write doesn't leave a half-written file
+        // referenced by the node.
+        let img = image::GrayImage::from_raw(
+            mask.width,
+            mask.height,
+            mask.alpha.clone(),
+        );
+        let img = match img {
+            Some(i) => i,
+            None => {
+                self.state.toast.show("Apply failed: mask buffer dimensions mismatch");
+                return;
+            }
+        };
+        if let Err(e) = img.save_with_format(&tmp_path, image::ImageFormat::Png) {
+            self.state.toast.show(format!("Apply failed: PNG write ({e})"));
+            return;
+        }
+        if let Err(e) = std::fs::rename(&tmp_path, &final_path) {
+            self.state.toast.show(format!("Apply failed: rename ({e})"));
+            return;
+        }
+        // TODO(cleanup): orphan detection — the schema in this
+        // filename gives a future cleanup pass enough info to
+        // prune AI mask cache entries whose clip_id is no longer
+        // referenced. v1 ships a 2GB LRU sweep on app start
+        // (klipp-app::main) as the disk-pressure safety net.
+
+        // Insert the ExternalMatte node into the clip's graph and
+        // wire it into the existing Corrector's matte input
+        // (port 1) when one exists. If not, the matte hangs in
+        // the graph and the user can wire it manually from the
+        // V2 editor — still better than no apply.
+        let track_name = self
+            .state
+            .sequence()
+            .tracks
+            .get(track_idx)
+            .map(|t| t.name.clone())
+            .unwrap_or_else(|| format!("Track {track_idx}"));
+        let _ = clip_snapshot; // we mutate via sequence_mut below
+
+        let path_for_node = final_path.clone();
+        let mut wired = false;
+        if let Some(track) = self.state.sequence_mut().tracks.get_mut(track_idx) {
+            if let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) {
+                let matte_id = klipp_nodes::NodeId::new_v4();
+                let mut params = klipp_nodes::params::NodeParams::default();
+                params.matte_image_path = Some(path_for_node);
+                params.matte_channel =
+                    Some(klipp_nodes::params::MatteChannel::Luminance);
+                clip.node_graph.nodes.push(klipp_nodes::graph::Node {
+                    id: matte_id,
+                    kind: klipp_nodes::kinds::NodeKind::ExternalMatte,
+                    label: "AI mask".into(),
+                    enabled: true,
+                    params,
+                    keyframes: klipp_nodes::params::NodeKeyframeTracks::default(),
+                    output_link: None,
+                    input_links: Vec::new(),
+                });
+                // Find the first Corrector node — that's where the
+                // default-graph's grade-with-matte expects the
+                // matte input to feed (port 1).
+                let corrector_id = clip
+                    .node_graph
+                    .nodes
+                    .iter()
+                    .find(|n| {
+                        matches!(n.kind, klipp_nodes::kinds::NodeKind::Corrector)
+                    })
+                    .map(|n| n.id);
+                if let Some(corrector_id) = corrector_id {
+                    // Drop any existing matte edge into the
+                    // corrector's port 1 so the new mask wins.
+                    clip.node_graph
+                        .edges
+                        .retain(|e| !(e.to_node == corrector_id && e.to_port == 1));
+                    clip.node_graph.edges.push(klipp_nodes::graph::Edge {
+                        from_node: matte_id,
+                        from_port: 0,
+                        to_node: corrector_id,
+                        to_port: 1,
+                    });
+                    wired = true;
+                }
+            }
+        }
+
+        let clip_short = clip_id
+            .to_string()
+            .split('-')
+            .next()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "clip".into());
+        if wired {
+            self.state.toast.show(format!(
+                "Mask applied to {track_name} · {clip_short}",
+            ));
+        } else {
+            self.state.toast.show(format!(
+                "Mask added to {track_name} · {clip_short} (no Corrector found — \
+                 wire the matte from the V2 editor)",
+            ));
+        }
+    }
+
+    /// Rebuild the cached mask-overlay texture to match the current
+    /// inference state. Routes the previous handle through the
+    /// deferred-drop ring so wgpu doesn't see a destroyed texture
+    /// mid-frame.
+    fn refresh_ai_tools_overlay_texture(&mut self, ctx: &egui::Context) {
+        // Use the multi-detection compositor so RF-DETR-Seg's many
+        // candidates render in distinct palette colors. Falls back
+        // to the single-color path automatically when there's only
+        // one candidate (BiRefNet, MobileSAM single-click).
+        let candidates = self.state.ai_tools_state.inference.candidates();
+        let new_tex = if candidates.is_empty() {
+            None
+        } else {
+            crate::ai_tools::build_multi_detection_texture(
+                ctx,
+                candidates,
+                self.state.ai_tools_state.mask_overlay_color,
+                "ai_tools_mask_overlay",
+            )
+        };
+        let old = std::mem::replace(
+            &mut self.state.ai_tools_state.mask_overlay_texture,
+            new_tex,
+        );
+        if let Some(h) = old {
+            self.defer_drop_texture(h);
+        }
+    }
+
+    /// Build an `OwnedMaskRequest` from the current viewer frame +
+    /// captured prompts and hand it to a worker thread.
+    ///
+    /// Holds the `frame_buffer` mutex only long enough to copy the
+    /// raw sRGB u8 RGBA bytes out (cheap `memcpy`) — sRGB→linear
+    /// f32 conversion runs on the worker thread so a 4K frame
+    /// (~30 M `powf` calls) doesn't freeze the UI for several
+    /// seconds. Watchdog hit this as `stage=AiToolsTick` 30 s+
+    /// stalls when both linearisation AND ML inference were on the
+    /// UI thread under one lock.
+    fn dispatch_ai_inference(&mut self, ctx: &egui::Context) {
+        let Some(model_id) = self.state.ai_tools_state.selected_model_id.clone() else {
+            self.state.toast.show("AI Tools: pick a model first");
+            return;
+        };
+        if self.state.ai_tools_state.inference.is_running() {
+            return;
+        }
+
+        // Snapshot raw u8 RGBA — fast memcpy under the lock.
+        let (w, h, srgb_bytes) = {
+            let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            if fb.width == 0 || fb.height == 0 || fb.data.is_empty() {
+                self.state.toast.show("AI Tools: no frame loaded yet");
+                return;
+            }
+            let expected = (fb.width as usize) * (fb.height as usize) * 4;
+            if fb.data.len() < expected {
+                self.state.toast.show("AI Tools: frame buffer not ready");
+                return;
+            }
+            (fb.width, fb.height, fb.data[..expected].to_vec())
+        };
+
+        let prompts = self.state.ai_tools_state.prompts.build();
+        // Per-model overrides (RF-DETR's score / NMS thresholds when
+        // the user has nudged the panel sliders). Empty default for
+        // models that don't expose any knobs — generators ignore
+        // unrecognised fields.
+        let tunables = self
+            .state
+            .ai_tools_state
+            .model_tunables
+            .get(&model_id)
+            .cloned()
+            .unwrap_or_default();
+        let model_id_for_state = model_id.clone();
+        let registry = self.state.ml_registry.clone();
+        let ctx_for_worker = ctx.clone();
+        let pixel_count = (w as usize) * (h as usize);
+
+        // Spawn a "preparer" thread that does the heavy
+        // linearisation off the UI thread, then hands the
+        // OwnedMaskRequest to spawn_inference. This adds one extra
+        // thread hop but keeps the UI tick under a millisecond.
+        let (handle, _join) = {
+            let (tx, rx) = crossbeam_channel::unbounded::<crate::ai_tools::InferenceEvent>();
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let cancel_for_worker = cancel.clone();
+            let join = std::thread::Builder::new()
+                .name(format!("klipp-ml-prep-{model_id}"))
+                .spawn(move || {
+                    let mut linear = Vec::with_capacity(pixel_count * 4);
+                    for chunk in srgb_bytes.chunks_exact(4) {
+                        linear.push(klipp_color::transfer::srgb_to_linear(chunk[0] as f32 / 255.0));
+                        linear.push(klipp_color::transfer::srgb_to_linear(chunk[1] as f32 / 255.0));
+                        linear.push(klipp_color::transfer::srgb_to_linear(chunk[2] as f32 / 255.0));
+                        linear.push(chunk[3] as f32 / 255.0);
+                    }
+                    if cancel_for_worker.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = tx.send(crate::ai_tools::InferenceEvent::Failed("cancelled".into()));
+                        ctx_for_worker.request_repaint();
+                        return;
+                    }
+                    let req = crate::ai_tools::OwnedMaskRequest {
+                        frame_pixels: std::sync::Arc::new(linear),
+                        frame_width: w,
+                        frame_height: h,
+                        prompts,
+                        temporal: None,
+                        tunables,
+                    };
+                    // Run inference inline on this same prep thread —
+                    // we already paid for the thread spawn, so a
+                    // second hop would be wasteful. Channel + cancel
+                    // mirror what spawn_inference does internally.
+                    let _ = tx.send(crate::ai_tools::InferenceEvent::Started);
+                    ctx_for_worker.request_repaint();
+                    let event = crate::ai_tools::run_inference_blocking(&model_id, &req, &registry);
+                    if cancel_for_worker.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = tx.send(crate::ai_tools::InferenceEvent::Failed("cancelled".into()));
+                    } else {
+                        let _ = tx.send(event);
+                    }
+                    ctx_for_worker.request_repaint();
+                })
+                .expect("spawn klipp-ml prep thread");
+            (
+                crate::ai_tools::InferenceHandle { recv: rx, cancel },
+                join,
+            )
+        };
+
+        self.state.ai_tools_state.inference = crate::ai_tools::InferenceState::Running {
+            model_id: model_id_for_state,
+            frame_width: w,
+            frame_height: h,
+            handle,
+        };
+        // Stamp the start time so the panel's progress bar can
+        // derive a fake percentage from elapsed-vs-telemetry-avg.
+        // Cleared in the poll path when inference resolves.
+        self.state.ai_tools_state.inference_start_time =
+            Some(std::time::Instant::now());
     }
 
     /// Begin capturing audio from the configured input device into a WAV file.
@@ -14392,6 +17405,16 @@ impl KlippApp {
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
             }
+            EditCommand::EditAudioChain { clip_id, old_state, .. } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        old_state.apply_to_clip(clip);
+                        break;
+                    }
+                }
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+            }
         }
     }
 
@@ -14830,6 +17853,16 @@ impl KlippApp {
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SetPlayhead(self.state.playhead));
             }
+            EditCommand::EditAudioChain { clip_id, new_state, .. } => {
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.find_clip_mut(*clip_id) {
+                        new_state.apply_to_clip(clip);
+                        break;
+                    }
+                }
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+            }
         }
     }
 
@@ -15030,6 +18063,7 @@ impl KlippApp {
                 multicam_angle: clip.multicam_angle,
                 multicam_cuts: clip.multicam_cuts.clone(),
                 audio_effects: clip.audio_effects.clone(),
+                audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
                 stabilization_data: None,
                 smoothed_trajectory: None,
                 track_points: Vec::new(),
@@ -15148,6 +18182,7 @@ impl KlippApp {
                 multicam_angle: clip.multicam_angle,
                 multicam_cuts: clip.multicam_cuts.clone(),
                 audio_effects: clip.audio_effects.clone(),
+                audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
                 stabilization_data: None,
                 smoothed_trajectory: None,
                 track_points: Vec::new(),
@@ -15208,6 +18243,7 @@ impl KlippApp {
             track_header_width: self.state.track_header_width,
             auto_generate_filmstrips: self.state.project_auto_filmstrips,
             auto_generate_skim: self.state.project_auto_skim,
+            working_colorspace: self.state.project_working_colorspace,
         };
         let options = klipp_project::consolidate::ConsolidateOptions {
             dest_dir,
@@ -15308,10 +18344,14 @@ impl KlippApp {
             track_header_width: self.state.track_header_width,
             auto_generate_filmstrips: self.state.project_auto_filmstrips,
             auto_generate_skim: self.state.project_auto_skim,
+            working_colorspace: self.state.project_working_colorspace,
         };
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
         match klipp_project::save_project_with_color_and_backups(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x)) {
             Ok(()) => {
+                if let Err(e) = klipp_project::save_looks(path, &self.state.looks) {
+                    tracing::warn!("Failed to persist Looks library: {e}");
+                }
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
                 self.state.history.reset_ops_since_save();
@@ -15387,6 +18427,7 @@ impl KlippApp {
                 self.state.created_at = created_at;
                 self.state.project_notes = notes;
                 self.state.media_pool = media_pool;
+                self.state.looks = klipp_project::load_looks(path);
                 // Restore saved timeline view-state (zoom + scroll). Legacy
                 // project files don't carry these — leave the in-memory
                 // defaults alone in that case.
@@ -15443,6 +18484,17 @@ impl KlippApp {
                 // Restore per-project media generation overrides
                 self.state.project_auto_filmstrips = color_settings.auto_generate_filmstrips;
                 self.state.project_auto_skim = color_settings.auto_generate_skim;
+
+                // Restore the project's working colorspace and push it
+                // into the engine's atomic so the decoder + grade chain
+                // pick the right luma vector. Old project files that
+                // lack the field load as `Rec709Linear` via serde
+                // back-compat — byte-identical to the pre-Phase-E
+                // pipeline.
+                self.state.project_working_colorspace = color_settings.working_colorspace;
+                klipp_engine::video_decoder::set_working_colorspace(
+                    color_settings.working_colorspace,
+                );
 
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
@@ -15621,11 +18673,13 @@ impl KlippApp {
                 ui.label(
                     egui::RichText::new("Your changes will be lost if you don't save them.")
                         .size(11.0)
-                        .color(egui::Color32::from_rgb(160, 160, 165)),
+                        .color(self.theme.text_dim),
                 );
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if ui.button("Don't Save").clicked() {
+                        eprintln!("unsaved dialog: Don't Save clicked");
+                        tracing::info!("unsaved dialog: Don't Save clicked");
                         self.state.dirty = false;
                         self.state.show_unsaved_dialog = false;
                         // Clean up autosave backup since user chose not to save
@@ -15647,15 +18701,34 @@ impl KlippApp {
                             }
                             UnsavedAction::OpenProject(p) => self.do_open_project(&p),
                             UnsavedAction::CloseProject => self.do_close_project(),
-                            UnsavedAction::Quit => cmds.push(AppCommand::Quit),
+                            UnsavedAction::Quit => {
+                                // HARD EXIT — bypass eframe's
+                                // window-close/wgpu-teardown chain
+                                // entirely. After 8+ rounds of
+                                // plugging specific wgpu drop-order
+                                // races, the SIGSEGV during teardown
+                                // turns out to be unfixable from app
+                                // code (engine thread's GpuEffectsPipeline
+                                // drop races eframe's wgpu state). The
+                                // OS reaps us cleanly.
+                                eprintln!(
+                                    "Klipp: Don't Save → exit(0) (skipping eframe teardown to avoid wgpu drop-race SEGV)"
+                                );
+                                self.kill_children_for_exit();
+                                self.layout.save();
+                                std::process::exit(0);
+                            }
                             UnsavedAction::None => {}
                         }
                     }
                     if ui.button("Cancel").clicked() {
+                        tracing::info!("unsaved dialog: Cancel clicked");
                         self.state.show_unsaved_dialog = false;
                         self.state.unsaved_dialog_action = UnsavedAction::None;
                     }
                     if ui.button("Save").clicked() {
+                        eprintln!("unsaved dialog: Save clicked");
+                        tracing::info!("unsaved dialog: Save clicked");
                         self.state.show_unsaved_dialog = false;
                         cmds.push(AppCommand::SaveProject);
                         let action = self.state.unsaved_dialog_action.clone();
@@ -15670,7 +18743,25 @@ impl KlippApp {
                             }
                             UnsavedAction::OpenProject(p) => self.do_open_project(&p),
                             UnsavedAction::CloseProject => self.do_close_project(),
-                            UnsavedAction::Quit => cmds.push(AppCommand::Quit),
+                            UnsavedAction::Quit => {
+                                // Save just got pushed via SaveProject
+                                // cmd above; the engine processes it
+                                // synchronously enough that we can
+                                // safely exit. Same hard-exit as
+                                // Don't Save.
+                                eprintln!(
+                                    "Klipp: Save → exit(0) after SaveProject command queued"
+                                );
+                                self.kill_children_for_exit();
+                                self.layout.save();
+                                // Drain any pending engine command —
+                                // best-effort, give SaveProject a
+                                // chance to actually serialise to disk
+                                // before we exit.
+                                let _ = self.cmd_tx.send(AppCommand::SaveProject);
+                                std::thread::sleep(std::time::Duration::from_millis(200));
+                                std::process::exit(0);
+                            }
                             UnsavedAction::None => {}
                         }
                     }
@@ -15683,24 +18774,6 @@ impl KlippApp {
         }
 
         cmds
-    }
-
-    fn update_window_title(&self, ctx: &egui::Context) {
-        let title = match &self.state.project_path {
-            None => "Klipp".to_string(),
-            Some(p) => {
-                let name = p
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("Untitled");
-                if self.state.dirty {
-                    format!("Klipp \u{2014} {} *", name)
-                } else {
-                    format!("Klipp \u{2014} {}", name)
-                }
-            }
-        };
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
     }
 
     fn handle_global_shortcuts(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
@@ -15720,7 +18793,54 @@ impl KlippApp {
         self.shortcuts_multicam_and_io(ctx, text_editing, &mut cmds);
         self.shortcuts_edit_nav(ctx, &mut cmds);
         self.shortcuts_keyframe_and_zoom(ctx, &mut cmds);
+        self.shortcuts_ai_tools(ctx, &mut cmds);
         cmds
+    }
+
+    fn shortcuts_ai_tools(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        let kb = self.key_bindings.clone();
+        ctx.input(|i| {
+            if kb.is_action_pressed("ai_remove_background", i) {
+                cmds.push(AppCommand::ShowAiToolsPanel {
+                    task: klipp_core::events::AiToolsTaskTag::RemoveBackground,
+                });
+            }
+            if kb.is_action_pressed("ai_isolate_object", i) {
+                cmds.push(AppCommand::ShowAiToolsPanel {
+                    task: klipp_core::events::AiToolsTaskTag::IsolateObject,
+                });
+            }
+            if kb.is_action_pressed("ai_detect_objects", i) {
+                cmds.push(AppCommand::ShowAiToolsPanel {
+                    task: klipp_core::events::AiToolsTaskTag::DetectObjects,
+                });
+            }
+            if kb.is_action_pressed("ai_run_inference", i) {
+                cmds.push(AppCommand::RunAiToolsInference);
+            }
+            if kb.is_action_pressed("ai_cancel_inference", i) {
+                cmds.push(AppCommand::CancelAiToolsInference);
+            }
+            if kb.is_action_pressed("toggle_ai_tools_panel", i) {
+                self.state.ai_tools_state.panel_visible =
+                    !self.state.ai_tools_state.panel_visible;
+                if self.state.ai_tools_state.panel_visible
+                    && self.state.ai_tools_state.active_task.is_none()
+                {
+                    // Default the panel to Isolate Object so the
+                    // open → click → Ctrl+Enter flow works without
+                    // requiring the user to pick a task button first.
+                    let default_task = crate::ai_tools::AiTask::IsolateObject;
+                    self.state.ai_tools_state.active_task = Some(default_task);
+                    self.state.ai_tools_state.selected_model_id = self
+                        .state
+                        .ai_tools_registry
+                        .models_for(default_task)
+                        .first()
+                        .map(|m| m.id.clone());
+                }
+            }
+        });
     }
 
     fn shortcuts_ctrl_global(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
@@ -15979,14 +19099,27 @@ impl KlippApp {
                                 };
                                 kfs.get(sk.keyframe_index).map(|kf| kf.time_secs)
                             }
+                            crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
+                                clip.audio_effect_keyframes
+                                    .get(&format!("{effect_index}:{param_name}"))
+                                    .and_then(|kfs| kfs.get(sk.keyframe_index).map(|kf| kf.time_secs))
+                            }
                         };
                         if let Some(time_secs) = kf_time {
-                            match sk.param_kind {
+                            match &sk.param_kind {
                                 crate::state::KeyframeParamKind::Audio(param) => {
-                                    cmds.push(AppCommand::RemoveAudioKeyframe { clip_id: sk.clip_id, param, time_secs });
+                                    cmds.push(AppCommand::RemoveAudioKeyframe { clip_id: sk.clip_id, param: *param, time_secs });
                                 }
                                 crate::state::KeyframeParamKind::Video(param) => {
-                                    cmds.push(AppCommand::RemoveVideoKeyframe { clip_id: sk.clip_id, param, time_secs });
+                                    cmds.push(AppCommand::RemoveVideoKeyframe { clip_id: sk.clip_id, param: *param, time_secs });
+                                }
+                                crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
+                                    cmds.push(AppCommand::RemoveAudioEffectKeyframe {
+                                        clip_id: sk.clip_id,
+                                        effect_index: *effect_index,
+                                        param_name: param_name.clone(),
+                                        time_secs,
+                                    });
                                 }
                             }
                             keyframe_deleted = true;
@@ -16064,6 +19197,14 @@ impl KlippApp {
             // Ctrl+Alt+B — Extract frame and import into the media bin.
             if kb.is_action_pressed("extract_frame_to_bin", i) {
                 cmds.push(AppCommand::ExtractFrameToBin);
+            }
+            // F — Match Frame (program → source).
+            if kb.is_action_pressed("match_frame_program_to_source", i) {
+                cmds.push(AppCommand::MatchFrameProgramToSource);
+            }
+            // Shift+F — Match Frame (source → program), cycle to next.
+            if kb.is_action_pressed("match_frame_source_to_program", i) {
+                cmds.push(AppCommand::MatchFrameSourceToProgram);
             }
             // Shift+S — Toggle audio scrubbing. Flips the preference and
             // immediately notifies the engine so the next scrub respects it.
@@ -16168,7 +19309,14 @@ impl KlippApp {
                                 }
                                 None => 0,
                             };
-                            self.state.selected_node_id = Some(nodes[next_idx].id);
+                            // Single-select cycle: drop any multi-set
+                            // accumulated from shift-click / box-select
+                            // and replace it with just the new primary.
+                            // Matches every-NLE keyboard-cycle behaviour.
+                            let new_id = nodes[next_idx].id;
+                            self.state.selected_node_id = Some(new_id);
+                            self.state.selected_node_ids.clear();
+                            self.state.selected_node_ids.insert(new_id);
                         }
                     }
                 }
@@ -16554,23 +19702,45 @@ impl KlippApp {
                             let clip_time_secs = playhead_secs - clip_start_secs;
                             let tolerance = 0.02;
                             if track_kind == klipp_timeline::TrackKind::Audio {
-                                let param = self.state.rubber_band_param;
-                                let keyframes = match param {
-                                    klipp_core::AudioParam::Volume => &clip.volume_keyframes,
-                                    klipp_core::AudioParam::Pan => &clip.pan_keyframes,
-                                    klipp_core::AudioParam::Gain => &clip.gain_keyframes,
-                                };
-                                let existing = keyframes.iter().find(|kf| (kf.time_secs - clip_time_secs).abs() < tolerance);
-                                if let Some(kf) = existing {
-                                    cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param, time_secs: kf.time_secs });
-                                } else {
-                                    let default_val = match param {
-                                        klipp_core::AudioParam::Volume => clip.volume,
-                                        klipp_core::AudioParam::Pan => clip.pan,
-                                        klipp_core::AudioParam::Gain => clip.gain,
-                                    };
-                                    let value = klipp_core::keyframe::evaluate(keyframes, clip_time_secs, default_val);
-                                    cmds.push(AppCommand::AddAudioKeyframe { clip_id, param, time_secs: clip_time_secs, value });
+                                match self.state.rubber_band_param.clone() {
+                                    crate::state::RubberBandParam::ClipParam(param) => {
+                                        let keyframes = match param {
+                                            klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                            klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                            klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                        };
+                                        let existing = keyframes.iter().find(|kf| (kf.time_secs - clip_time_secs).abs() < tolerance);
+                                        if let Some(kf) = existing {
+                                            cmds.push(AppCommand::RemoveAudioKeyframe { clip_id, param, time_secs: kf.time_secs });
+                                        } else {
+                                            let default_val = match param {
+                                                klipp_core::AudioParam::Volume => clip.volume,
+                                                klipp_core::AudioParam::Pan => clip.pan,
+                                                klipp_core::AudioParam::Gain => clip.gain,
+                                            };
+                                            let value = klipp_core::keyframe::evaluate(keyframes, clip_time_secs, default_val);
+                                            cmds.push(AppCommand::AddAudioKeyframe { clip_id, param, time_secs: clip_time_secs, value });
+                                        }
+                                    }
+                                    crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+                                        let key = format!("{effect_index}:{param_name}");
+                                        let empty: Vec<klipp_core::Keyframe> = Vec::new();
+                                        let kfs_ref = clip.audio_effect_keyframes.get(&key).unwrap_or(&empty);
+                                        let existing = kfs_ref.iter().find(|kf| (kf.time_secs - clip_time_secs).abs() < tolerance);
+                                        if let Some(kf) = existing {
+                                            cmds.push(AppCommand::RemoveAudioEffectKeyframe {
+                                                clip_id, effect_index, param_name: param_name.clone(), time_secs: kf.time_secs,
+                                            });
+                                        } else {
+                                            let default_val = clip.audio_effects.get(effect_index)
+                                                .and_then(|inst| inst.params.iter().find(|(k, _)| k == &param_name).map(|(_, v)| *v))
+                                                .unwrap_or(0.0);
+                                            let value = klipp_core::keyframe::evaluate(kfs_ref, clip_time_secs, default_val);
+                                            cmds.push(AppCommand::AddAudioEffectKeyframe {
+                                                clip_id, effect_index, param_name, time_secs: clip_time_secs, value,
+                                            });
+                                        }
+                                    }
                                 }
                             } else {
                                 let param = self.state.video_rubber_band_param;
@@ -16637,11 +19807,19 @@ impl KlippApp {
                     });
                     if let Some((clip, track_kind)) = clip_and_kind {
                         let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
-                        let keyframes = if track_kind == klipp_timeline::TrackKind::Audio {
-                            match self.state.rubber_band_param {
-                                klipp_core::AudioParam::Volume => &clip.volume_keyframes,
-                                klipp_core::AudioParam::Pan => &clip.pan_keyframes,
-                                klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                        let empty_kfs: Vec<klipp_core::Keyframe> = Vec::new();
+                        let keyframes: &Vec<klipp_core::Keyframe> = if track_kind == klipp_timeline::TrackKind::Audio {
+                            match &self.state.rubber_band_param {
+                                crate::state::RubberBandParam::ClipParam(param) => match param {
+                                    klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                    klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                    klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                },
+                                crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+                                    clip.audio_effect_keyframes
+                                        .get(&format!("{effect_index}:{param_name}"))
+                                        .unwrap_or(&empty_kfs)
+                                }
                             }
                         } else {
                             match self.state.video_rubber_band_param {
@@ -16673,11 +19851,19 @@ impl KlippApp {
                     });
                     if let Some((clip, track_kind)) = clip_and_kind {
                         let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
-                        let keyframes = if track_kind == klipp_timeline::TrackKind::Audio {
-                            match self.state.rubber_band_param {
-                                klipp_core::AudioParam::Volume => &clip.volume_keyframes,
-                                klipp_core::AudioParam::Pan => &clip.pan_keyframes,
-                                klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                        let empty_kfs: Vec<klipp_core::Keyframe> = Vec::new();
+                        let keyframes: &Vec<klipp_core::Keyframe> = if track_kind == klipp_timeline::TrackKind::Audio {
+                            match &self.state.rubber_band_param {
+                                crate::state::RubberBandParam::ClipParam(param) => match param {
+                                    klipp_core::AudioParam::Volume => &clip.volume_keyframes,
+                                    klipp_core::AudioParam::Pan => &clip.pan_keyframes,
+                                    klipp_core::AudioParam::Gain => &clip.gain_keyframes,
+                                },
+                                crate::state::RubberBandParam::EffectParam { effect_index, param_name } => {
+                                    clip.audio_effect_keyframes
+                                        .get(&format!("{effect_index}:{param_name}"))
+                                        .unwrap_or(&empty_kfs)
+                                }
                             }
                         } else {
                             match self.state.video_rubber_band_param {
@@ -16781,6 +19967,107 @@ impl KlippApp {
             }
         });
     }
+}
+
+/// 2 GB cap on the AI mask cache directory. Bigger than any
+/// realistic short-term workflow (a 1080p mask PNG is ~80–200 KB
+/// — that's 10k+ masks at the high end) but enforces a ceiling
+/// so months of heavy use can't quietly fill the disk.
+const AI_MASK_CACHE_BYTES_CAP: u64 = 2 * 1024 * 1024 * 1024;
+
+/// LRU prune of `~/.cache/klipp/ai_masks/`. Walks the directory,
+/// stats each file's size + mtime, and if the total is over the
+/// cap deletes oldest-first until under cap. Errors at every
+/// step are logged + swallowed — failure to prune is never a
+/// reason to refuse to start the app.
+///
+/// This is the disk-pressure safety net. Proper orphan-detection
+/// (parse filenames, cross-reference with current project's clip
+/// IDs) is filed as a follow-up — the schema documented in
+/// execute_apply_mask_to_clip puts enough metadata in the
+/// filename to support it.
+fn prune_ai_mask_cache() {
+    let Some(cache_root) = dirs::cache_dir() else {
+        return;
+    };
+    let dir = cache_root.join("klipp").join("ai_masks");
+    if !dir.exists() {
+        return;
+    }
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(it) => it,
+        Err(e) => {
+            tracing::debug!(
+                "ai mask cache prune: read_dir failed: {} ({e})",
+                dir.display(),
+            );
+            return;
+        }
+    };
+    let mut files: Vec<(std::path::PathBuf, u64, std::time::SystemTime)> =
+        Vec::new();
+    let mut total: u64 = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let size = meta.len();
+        let mtime = meta
+            .modified()
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        total += size;
+        files.push((path, size, mtime));
+    }
+    if total <= AI_MASK_CACHE_BYTES_CAP {
+        return;
+    }
+    // Oldest-first delete order so the freshest masks (most
+    // likely to be referenced by the current project) survive.
+    files.sort_by_key(|(_, _, mtime)| *mtime);
+    let mut deleted = 0u32;
+    let mut freed = 0u64;
+    for (path, size, _) in files {
+        if total.saturating_sub(freed) <= AI_MASK_CACHE_BYTES_CAP {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            freed += size;
+            deleted += 1;
+        }
+    }
+    if deleted > 0 {
+        tracing::info!(
+            "ai mask cache prune: deleted {} file(s), freed {} bytes (cap {})",
+            deleted,
+            freed,
+            AI_MASK_CACHE_BYTES_CAP,
+        );
+    }
+}
+
+/// Build a small thumbnail of the most recent inference's mask
+/// for the panel's Recent list. Reuses the overlay crate's
+/// `build_mask_texture` and tints with the panel's default
+/// overlay colour so the row thumbnails read as "this was a
+/// mask" at a glance. Returns `None` when the mask is empty /
+/// malformed.
+fn build_recent_thumbnail(
+    ctx: &egui::Context,
+    inference: &crate::ai_tools::InferenceState,
+) -> Option<egui::TextureHandle> {
+    let response = match inference {
+        crate::ai_tools::InferenceState::Done { response, .. } => response,
+        _ => return None,
+    };
+    let first = response.candidates.first()?;
+    crate::ai_tools::build_mask_texture(
+        ctx,
+        &first.mask,
+        crate::ai_tools::DEFAULT_MASK_OVERLAY_COLOR,
+        "ai_recent_thumb",
+    )
 }
 
 impl Drop for KlippApp {
@@ -17145,6 +20432,7 @@ fn build_export_settings(dialog: &ExportDialogState) -> ExportSettings {
         bit_depth: dialog.bit_depth,
         hdr_mode: dialog.hdr_mode,
         tone_map_op: dialog.tone_map_op,
+        odt: dialog.odt,
     }
 }
 
@@ -17221,6 +20509,102 @@ impl KlippApp {
     /// No-op when the engine hasn't published a gpu_output yet, or
     /// when eframe is running without a wgpu render state (glow
     /// fallback). Legacy CPU viewer path is untouched.
+    /// Free GPU resources we registered with eframe-wgpu's renderer
+    /// while we still have `frame: &mut eframe::Frame` access. Called
+    /// from `update()` the moment we know we're going to send
+    /// `ViewportCommand::Close`. Without this, `gpu_texture_id` lives
+    /// in the renderer's BindGroup map until the renderer drops; the
+    /// matching `gpu_texture_view` also lives until KlippApp drops;
+    /// when the wgpu::Device tears down the order ends up wrong and
+    /// the process SIGSEGVs in egui-wgpu's queue.submit.
+    ///
+    /// Idempotent — safe to call multiple times. After this runs,
+    /// the viewer paints fall back to the CPU upload path until the
+    /// app actually exits.
+    /// Kill child processes (proxy ffmpeg, render queue) before
+    /// `process::exit(0)` skips Drop. Idempotent — safe to call from
+    /// any of the close paths.
+    fn kill_children_for_exit(&mut self) {
+        for pid_ref in &self.proxy_children {
+            let pid = pid_ref.load(std::sync::atomic::Ordering::Relaxed);
+            if pid != 0 {
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .status();
+            }
+        }
+        self.state.render_queue.kill_active();
+    }
+
+    /// Free GPU resources we registered with eframe-wgpu's renderer
+    /// while we still have `frame: &mut eframe::Frame` access. Kept
+    /// around — currently unused because the SHUTDOWN-SEGV
+    /// workaround (`std::process::exit(0)`) bypasses the eframe
+    /// close path entirely. When `BUG-SHUTDOWN-SEGV` gets a real
+    /// fix this becomes the canonical pre-close hook.
+    #[allow(dead_code)]
+    fn pre_close_gpu_cleanup(&mut self, frame: &mut eframe::Frame) {
+        tracing::info!("pre_close_gpu_cleanup: freeing GPU-side resources");
+        let t0 = std::time::Instant::now();
+
+        // 1) Free the eframe-wgpu native texture id + its view.
+        if let Some(render_state) = frame.wgpu_render_state() {
+            let mut renderer = render_state.renderer.write();
+            if let Some(old_id) = self.viewer.gpu_texture_id.take() {
+                renderer.free_texture(&old_id);
+            }
+        } else {
+            self.viewer.gpu_texture_id = None;
+        }
+        self.viewer.gpu_texture_view = None;
+        self.viewer.gpu_texture_gen = 0;
+
+        // 2) Drop the engine's GPU output texture. The
+        //    `frame_buffer.gpu_output: Option<Arc<wgpu::Texture>>` is
+        //    shared with the engine; engine has shut down by the time
+        //    we reach the second close pass, so it's safe to take.
+        //    Dropping the Texture HERE (with wgpu device still
+        //    alive) routes the deallocate through a healthy queue;
+        //    leaving it for AppState drop later races teardown.
+        {
+            let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            fb.gpu_output = None;
+            fb.gpu_output_width = 0;
+            fb.gpu_output_height = 0;
+            fb.gpu_output_generation = 0;
+        }
+        {
+            let mut sfb = self.source_frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            sfb.gpu_output = None;
+            sfb.gpu_output_width = 0;
+            sfb.gpu_output_height = 0;
+            sfb.gpu_output_generation = 0;
+        }
+
+        // 3) Drop every egui::TextureHandle we know about now (same
+        //    set on_exit clears, but earlier so there's more
+        //    headroom before wgpu starts tearing down).
+        self.state.ai_tools_state.mask_overlay_texture = None;
+        self.state.source_live_texture = None;
+        self.state.browser_skim_texture = None;
+        self.state.quick_look_texture = None;
+        self.state.file_info_thumb = None;
+        self.state.thumbnail_textures.clear();
+        self.state.filmstrip_textures.clear();
+        self.viewer.video_texture = None;
+        self.viewer.title_overlay_texture = None;
+        self.viewer.logo_texture = None;
+        self.browser.clear_textures_for_shutdown();
+        for bucket in &mut self.state.deferred_texture_drops {
+            bucket.clear();
+        }
+
+        tracing::info!(
+            "pre_close_gpu_cleanup done in {:.1}ms",
+            t0.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+
     fn refresh_gpu_viewer_texture(&mut self, frame: &mut eframe::Frame) {
         // Snapshot the current gpu_output handle + generation.
         let snapshot = {
@@ -17238,20 +20622,35 @@ impl KlippApp {
 
         // Build a view from the Arc'd texture. wgpu::Texture::create_view
         // takes &self, so the Arc holder keeps the underlying texture
-        // alive as long as the view is used.
+        // alive — but the view itself is a separate resource.
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut renderer = render_state.renderer.write();
-        // Free the previously-registered id, if any — egui-wgpu
-        // otherwise accumulates bindings for every resized frame.
+        // Order matters here. egui-wgpu's `register_native_texture`
+        // creates an internal BindGroup that records the new view's
+        // wgpu storage `Id` BUT does NOT take a refcounted clone —
+        // wgpu 22's BindGroup tracks resources by Id only. Free the
+        // previous TextureId FIRST so egui-wgpu drops the old
+        // BindGroup; only after that is it safe to drop the previous
+        // `gpu_texture_view` (handle drop tells wgpu_core to mark
+        // the storage slot Vacant). If we dropped the view before
+        // the BindGroup, the next paint that samples the old id
+        // panics with "TextureView[Id(N,vk)] does not exist" — this
+        // was the recurring "first-frame post compound / first-grade-
+        // tweak" crash documented as GPU-COMPOUND-PANIC.
         if let Some(old_id) = self.viewer.gpu_texture_id.take() {
             renderer.free_texture(&old_id);
+            self.viewer.gpu_texture_view = None;
         }
         let new_id = renderer.register_native_texture(
             &render_state.device,
             &view,
             wgpu::FilterMode::Linear,
         );
+        // Keep the new view alive for as long as the registered id
+        // is used. Replaces the previous view (already dropped above
+        // after the corresponding `free_texture` call).
+        self.viewer.gpu_texture_view = Some(view);
         self.viewer.gpu_texture_id = Some(new_id);
         self.viewer.gpu_texture_gen = gen;
         tracing::debug!("GPU_VIEWER registered id={:?} gen={}", new_id, gen);
@@ -17308,11 +20707,101 @@ pub(crate) fn alloc_texture_logged(
 }
 
 impl eframe::App for KlippApp {
+    /// Called by eframe right before the window closes — wgpu is still
+    /// alive at this point. AppState drops AFTER this returns, by which
+    /// time wgpu has already started tearing down; any GPU-resource
+    /// drop ordered after that races with the device shutdown and
+    /// SIGSEGVs. Drop everything that owns GPU resources HERE while
+    /// the device is still healthy.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::ON_EXIT);
+        // Use eprintln! alongside tracing — when SIGSEGV strikes
+        // before tracing-subscriber flushes the file buffer, the
+        // last few `info!()` lines disappear from klipp-debug.log.
+        // eprintln writes to stderr unbuffered.
+        eprintln!("on_exit ENTER — beginning final GPU-resource cleanup");
+        tracing::info!("on_exit ENTER — beginning final GPU-resource cleanup");
+        let t0 = std::time::Instant::now();
+        // The wgpu-side cleanup (free_texture from the renderer, drop
+        // gpu_texture_view) already ran during `pre_close_gpu_cleanup`
+        // in the last update() — eframe doesn't pass us the wgpu
+        // render state in on_exit. Here we just mop up any
+        // egui::TextureHandle fields and texture caches that don't
+        // need renderer access.
+        // Cancel any in-flight AI inference so the worker thread
+        // sees the cancel signal before its sender disconnects.
+        if let crate::ai_tools::InferenceState::Running { handle, .. } =
+            &self.state.ai_tools_state.inference
+        {
+            handle
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.state.ai_tools_state.mask_overlay_texture = None;
+        self.state.ai_tools_state.inference = crate::ai_tools::InferenceState::Idle;
+
+        // Drop every Option<TextureHandle> on AppState. Each one
+        // owns wgpu resources that need to free while the device
+        // is still healthy.
+        self.state.source_live_texture = None;
+        self.state.browser_skim_texture = None;
+        self.state.quick_look_texture = None;
+        self.state.file_info_thumb = None;
+
+        // Drain texture caches.
+        self.state.thumbnail_textures.clear();
+        self.state.filmstrip_textures.clear();
+
+        // Viewer-panel textures (separate from AppState).
+        self.viewer.video_texture = None;
+        self.viewer.title_overlay_texture = None;
+        self.viewer.logo_texture = None;
+
+        // Browser caches.
+        self.browser.clear_textures_for_shutdown();
+
+        // Empty every bucket of the AppState-side deferred-drop ring;
+        // any handle queued in the last two frames hasn't been
+        // released yet and would otherwise drop after wgpu teardown.
+        for bucket in &mut self.state.deferred_texture_drops {
+            bucket.clear();
+        }
+        let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        eprintln!("on_exit DONE — cleanup took {:.1}ms; exiting via process::exit(0)", elapsed_ms);
+        tracing::info!("on_exit DONE — cleanup took {:.1}ms; exiting via process::exit(0)", elapsed_ms);
+
+        // Kill child processes (proxy ffmpeg, render queue) — this is
+        // normally done by KlippApp::Drop, but we're about to skip
+        // every drop with process::exit, so do it here explicitly.
+        for pid_ref in &self.proxy_children {
+            let pid = pid_ref.load(std::sync::atomic::Ordering::Relaxed);
+            if pid != 0 {
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .status();
+            }
+        }
+        self.state.render_queue.kill_active();
+
+        // PRAGMATIC FIX (after 8+ rounds of plugging specific
+        // wgpu-resource leaks): once eframe is exiting, the
+        // drop-order race between our app state and eframe's wgpu
+        // teardown causes SIGSEGV regardless of how thoroughly we
+        // clear our textures. The OS reaps the process cleanly via
+        // exit(0); the user sees the window disappear immediately
+        // and there are no further side effects we'd be skipping
+        // (autosave delete already runs on a detached thread, child
+        // processes were killed above). This is a known mitigation
+        // pattern for wgpu/eframe + Wayland teardown issues.
+        std::process::exit(0);
+    }
+
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Heartbeat for the freeze watchdog in klipp-app::main. Bumped
         // at the very top so any stall below (layout, viewer paint,
         // node graph layout, mutex wait) freezes the counter.
         klipp_engine::UI_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::FRAME_TOP);
 
         // End-to-end UI tick timing. A single update() that exceeds the
         // 16.6 ms frame budget starves the window of paint events —
@@ -17327,6 +20816,7 @@ impl eframe::App for KlippApp {
         // stashed ~2 frames ago. Two full frames of deferral covers
         // every submit + present cycle a texture could still be
         // referenced by. See the field's docs in state.rs.
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::TEXTURE_DROP_RING);
         let next_slot = (self.state.deferred_texture_drops_slot + 1) % 3;
         self.state.deferred_texture_drops[next_slot].clear();
         self.state.deferred_texture_drops_slot = next_slot;
@@ -17337,7 +20827,14 @@ impl eframe::App for KlippApp {
         // shared device, glow fallback) — the legacy CPU path keeps
         // working. The viewer render code picks up the new
         // `viewer.gpu_texture_id` when present.
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::REGISTER_GPU_TEXTURE);
         self.refresh_gpu_viewer_texture(frame);
+
+        // AI Tools dispatch tick — drains pending_run / pending_cancel
+        // and polls the worker channel.
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::AI_TOOLS_TICK);
+        self.tick_ai_tools(ctx);
+
         // Bump the foreground-activity signal whenever the user
         // *interacts* — clicks, keys, scrolls, drags. Plain pointer
         // motion intentionally does NOT count: a user reading the UI
@@ -17476,14 +20973,14 @@ impl eframe::App for KlippApp {
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     let (rect, _) = ui.allocate_exact_size(screen.size(), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 20));
-                    ui.painter().rect_stroke(rect.shrink(4.0), 8.0, egui::Stroke::new(2.0_f32, egui::Color32::from_rgba_unmultiplied(232, 160, 32, 120)));
+                    ui.painter().rect_filled(rect, 0.0, self.theme.accent_subtle);
+                    ui.painter().rect_stroke(rect.shrink(4.0), 8.0, egui::Stroke::new(2.0_f32, self.theme.accent_glow));
                     ui.painter().text(
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
                         "Drop media files to import",
                         egui::FontId::proportional(18.0),
-                        egui::Color32::from_rgba_unmultiplied(232, 160, 32, 200),
+                        self.theme.text_accent,
                     );
                 });
         }
@@ -17525,6 +21022,7 @@ impl eframe::App for KlippApp {
         }
 
         // 1. Drain events from engine
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::DRAIN_EVENTS);
         self.drain_events(ctx);
 
         // Sync scope mode to engine — only when it actually changed.
@@ -17541,6 +21039,19 @@ impl eframe::App for KlippApp {
             if self.last_sent_scope_mode != Some(mode_byte) {
                 let _ = self.cmd_tx.send(AppCommand::SetScopeRenderMode { mode: mode_byte });
                 self.last_sent_scope_mode = Some(mode_byte);
+            }
+        }
+
+        // Sync scope-panel visibility to the engine — same change-
+        // tracking pattern as the mode sync above. Catches every
+        // mutation site (keyboard toggle, button click, layout
+        // restore) without per-site plumbing because we observe the
+        // current state value once per UI frame.
+        {
+            let visible = self.state.show_scopes;
+            if self.last_sent_scopes_visible != Some(visible) {
+                let _ = self.cmd_tx.send(AppCommand::SetScopesVisible(visible));
+                self.last_sent_scopes_visible = Some(visible);
             }
         }
 
@@ -17608,6 +21119,7 @@ impl eframe::App for KlippApp {
             }
         }
         self.upload_frame_to_egui(ctx);
+        self.upload_source_frame_to_egui(ctx);
         self.upload_title_overlay(ctx);
         self.recompute_char_positions_if_needed();
         self.poll_effect_thumbnails(ctx);
@@ -17744,6 +21256,13 @@ impl eframe::App for KlippApp {
             if let Err(e) = self.prefs.save() {
                 tracing::warn!("Failed to save preferences: {e}");
             }
+            // Live theme reload — picks up Theme dropdown change,
+            // accent colour change, role colour edits without
+            // requiring a restart. Also re-applies egui visuals so
+            // built-in widgets (popups, scrollbars, selection
+            // highlights) match the new palette polarity.
+            self.theme = KlippTheme::from_prefs(&self.prefs.appearance, &self.theme_registry);
+            self.theme.apply_to_egui(ctx);
             self.prefs_dirty = false;
             self.prefs_last_save = std::time::Instant::now();
         }
@@ -17768,10 +21287,14 @@ impl eframe::App for KlippApp {
                     track_header_width: self.state.track_header_width,
                     auto_generate_filmstrips: self.state.project_auto_filmstrips,
                     auto_generate_skim: self.state.project_auto_skim,
+                    working_colorspace: self.state.project_working_colorspace,
                 };
                 let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
                 match klipp_project::save_project_with_color_and_backups(&autosave_path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x)) {
                     Ok(()) => {
+                        if let Err(e) = klipp_project::save_looks(&autosave_path, &self.state.looks) {
+                            tracing::warn!("Auto-save: failed to persist Looks: {e}");
+                        }
                         tracing::info!("Auto-saved to {:?}", autosave_path);
                         self.state.toast.show("Auto-saved");
                         self.state.history.reset_ops_since_save();
@@ -17787,7 +21310,9 @@ impl eframe::App for KlippApp {
         // 8 ms budget under load, so asking the UI for 125 Hz just burns
         // CPU waiting for frames that aren't ready. 60 Hz matches the
         // engine's target and halves UI thread work under grade load.
-        if self.state.playback == PlaybackState::Playing {
+        if self.state.playback == PlaybackState::Playing
+            || self.state.source_playback == PlaybackState::Playing
+        {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
 
@@ -17900,6 +21425,7 @@ impl eframe::App for KlippApp {
         let mut all_cmds = Vec::new();
 
         // 2. Handle global keyboard shortcuts
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::SHORTCUTS);
         let kb_cmds = self.handle_global_shortcuts(ctx);
         all_cmds.extend(kb_cmds);
 
@@ -17910,11 +21436,13 @@ impl eframe::App for KlippApp {
         self.scope_window_runtime.pointer_over = false;
 
         // 4. Unsaved changes dialog
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::RENDER_DIALOGS);
         let dialog_cmds = self.show_unsaved_dialog(ctx);
         all_cmds.extend(dialog_cmds);
 
         self.show_modal_dialogs(ctx, &mut all_cmds);
 
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::RENDER_PANELS);
         self.render_main_layout(ctx, &mut all_cmds);
 
         // Dim UI on play: darken everything outside the viewer rect during
@@ -18007,54 +21535,55 @@ impl eframe::App for KlippApp {
             self.state.show_project_notes = open;
         }
 
-        // Command palette (Ctrl+K)
+        // Command palette (Ctrl+K). Entry list comes from
+        // `crate::command_palette::build` so adding a new entry is a
+        // single edit (and the `palette_anchors_present` test there
+        // catches accidental removals).
         if self.state.show_command_palette {
-            // Build command list
-            let commands: Vec<(&str, &str, Option<AppCommand>)> = vec![
-                ("Save Project", "Ctrl+S", Some(AppCommand::SaveProject)),
-                ("Open Project...", "Ctrl+O", None), // requires dialog
-                ("Import Media...", "Ctrl+I", None),
-                ("Export...", "Ctrl+E", None),
-                ("Undo", "Ctrl+Z", Some(AppCommand::Undo)),
-                ("Redo", "Ctrl+Y", Some(AppCommand::Redo)),
-                ("Split at Playhead", "Ctrl+B", None), // complex
-                ("Duplicate Clip", "Ctrl+D", self.state.selected_clip.map(|id| AppCommand::DuplicateClip { clip_id: id })),
-                ("Select All", "Ctrl+A", Some(AppCommand::SelectAllClips)),
-                ("Deselect All", "Ctrl+Shift+A", Some(AppCommand::SelectClip(None))),
-                ("Select Forward", "", Some(AppCommand::SelectClipsForward)),
-                ("Select Backward", "", Some(AppCommand::SelectClipsBackward)),
-                ("Next Edit Point", "\u{2193}", Some(AppCommand::NextEditPoint)),
-                ("Previous Edit Point", "\u{2191}", Some(AppCommand::PrevEditPoint)),
-                ("Fit Timeline to Window", "", Some(AppCommand::FitTimelineToWindow)),
-                ("Toggle Loop Playback", "Ctrl+L", Some(AppCommand::ToggleLoopPlayback)),
-                ("Frame Grab (Save PNG)", "", Some(AppCommand::FrameGrab)),
-                ("Add Marker", "M", Some(AppCommand::AddMarker { position: self.state.playhead, label: String::new(), color: klipp_core::MarkerColor::Blue })),
-                ("Add Adjustment Layer", "", Some(AppCommand::CreateAdjustmentLayer)),
-                ("Create Multicam Clip", "", Some(AppCommand::CreateMulticamClip)),
-                ("Toggle Snap", "N", Some(AppCommand::SetSnapEnabled(!self.state.snap_enabled))),
-                ("Toggle Performance Overlay", "P", None),
-                ("Preferences...", "Ctrl+,", None),
-                ("Export FCPXML...", "", None),
-                ("Export EDL...", "", None),
-                ("Import Subtitles...", "", None),
-                ("Export Subtitles...", "", None),
-            ];
+            use crate::command_palette::{build as build_palette, dispatch_dialog, PaletteAction};
 
+            // Modal scrim — match the AI Models dialog so the
+            // palette has the same "this layer is the active one"
+            // visual treatment. Captures click + drag so timeline
+            // / browser interactions behind don't fire while the
+            // user is typing a command.
+            let screen_rect = ctx.screen_rect();
+            egui::Area::new(egui::Id::new("command_palette_scrim"))
+                .order(egui::Order::Middle)
+                .fixed_pos(screen_rect.min)
+                .show(ctx, |ui| {
+                    let resp = ui.allocate_rect(screen_rect, egui::Sense::click_and_drag());
+                    ui.painter().rect_filled(
+                        screen_rect,
+                        0.0,
+                        egui::Color32::from_black_alpha(140),
+                    );
+                    if resp.clicked() {
+                        // Click-outside dismisses, matching the
+                        // AI Models dialog convention.
+                        self.state.show_command_palette = false;
+                    }
+                });
+
+            let entries = build_palette(&self.state);
             let query = self.state.command_palette_query.to_lowercase();
-            let filtered: Vec<_> = commands.iter()
-                .filter(|(label, shortcut, _)| {
+            let filtered_idx: Vec<usize> = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| {
                     query.is_empty()
-                        || label.to_lowercase().contains(&query)
-                        || shortcut.to_lowercase().contains(&query)
+                        || e.label.to_lowercase().contains(&query)
+                        || e.shortcut.to_lowercase().contains(&query)
                 })
+                .map(|(i, _)| i)
                 .collect();
 
             let max_visible = 12;
             let sel = &mut self.state.command_palette_selected;
-            if *sel >= filtered.len() { *sel = 0; }
+            if *sel >= filtered_idx.len() { *sel = 0; }
 
             let mut close = false;
-            let mut execute: Option<AppCommand> = None;
+            let mut activate_idx: Option<usize> = None;
 
             egui::Area::new(egui::Id::new("command_palette"))
                 .fixed_pos(egui::pos2(
@@ -18064,14 +21593,13 @@ impl eframe::App for KlippApp {
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     egui::Frame::window(ui.style())
-                        .fill(egui::Color32::from_rgb(0x1a, 0x1a, 0x20))
-                        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x40, 0x40, 0x50)))
+                        .fill(self.theme.bg_panel)
+                        .stroke(egui::Stroke::new(1.0_f32, self.theme.border))
                         .rounding(8.0)
                         .inner_margin(8.0)
                         .show(ui, |ui| {
                             ui.set_min_width(400.0);
 
-                            // Search input
                             let resp = ui.add(
                                 egui::TextEdit::singleline(&mut self.state.command_palette_query)
                                     .hint_text("Type a command...")
@@ -18080,68 +21608,64 @@ impl eframe::App for KlippApp {
                             );
                             resp.request_focus();
 
-                            // Handle keyboard navigation
                             let input = ui.input(|i| (
                                 i.key_pressed(egui::Key::ArrowDown),
                                 i.key_pressed(egui::Key::ArrowUp),
                                 i.key_pressed(egui::Key::Enter),
                                 i.key_pressed(egui::Key::Escape),
                             ));
-                            if input.0 && *sel + 1 < filtered.len() { *sel += 1; }
+                            if input.0 && *sel + 1 < filtered_idx.len() { *sel += 1; }
                             if input.1 && *sel > 0 { *sel -= 1; }
                             if input.3 { close = true; }
                             if input.2 {
-                                if let Some((_, _, cmd)) = filtered.get(*sel) {
-                                    execute = cmd.clone();
+                                if let Some(&entry_idx) = filtered_idx.get(*sel) {
+                                    activate_idx = Some(entry_idx);
                                 }
                                 close = true;
                             }
 
                             ui.add_space(4.0);
 
-                            // Results list
-                            for (i, (label, shortcut, cmd)) in filtered.iter().take(max_visible).enumerate() {
-                                let is_selected = i == *sel;
+                            for (vis_i, &entry_idx) in filtered_idx.iter().take(max_visible).enumerate() {
+                                let entry = &entries[entry_idx];
+                                let is_selected = vis_i == *sel;
                                 let bg = if is_selected {
-                                    egui::Color32::from_rgb(0x30, 0x40, 0x60)
+                                    self.theme.bg_hover
                                 } else {
                                     egui::Color32::TRANSPARENT
                                 };
-                                let text_color = if cmd.is_some() {
-                                    egui::Color32::from_rgb(0xe0, 0xe0, 0xe8)
+                                let text_color = if entry.enabled {
+                                    self.theme.text_primary
                                 } else {
-                                    egui::Color32::from_rgb(0x80, 0x80, 0x90)
+                                    self.theme.text_dim
                                 };
-
-                                {
-                                    let (r, _) = ui.allocate_exact_size(egui::vec2(400.0, 22.0), egui::Sense::click());
-                                    ui.painter().rect_filled(r, 4.0, bg);
+                                let (r, _) = ui.allocate_exact_size(egui::vec2(400.0, 22.0), egui::Sense::click());
+                                ui.painter().rect_filled(r, 4.0, bg);
+                                ui.painter().text(
+                                    egui::pos2(r.left() + 8.0, r.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    entry.label.as_ref(),
+                                    egui::FontId::proportional(12.0),
+                                    text_color,
+                                );
+                                if !entry.shortcut.is_empty() {
                                     ui.painter().text(
-                                        egui::pos2(r.left() + 8.0, r.center().y),
-                                        egui::Align2::LEFT_CENTER,
-                                        label,
-                                        egui::FontId::proportional(12.0),
-                                        text_color,
+                                        egui::pos2(r.right() - 8.0, r.center().y),
+                                        egui::Align2::RIGHT_CENTER,
+                                        entry.shortcut.as_ref(),
+                                        egui::FontId::monospace(10.0),
+                                        self.theme.text_dim,
                                     );
-                                    if !shortcut.is_empty() {
-                                        ui.painter().text(
-                                            egui::pos2(r.right() - 8.0, r.center().y),
-                                            egui::Align2::RIGHT_CENTER,
-                                            shortcut,
-                                            egui::FontId::monospace(10.0),
-                                            egui::Color32::from_rgb(0x60, 0x60, 0x70),
-                                        );
-                                    }
-                                    if ui.rect_contains_pointer(r) && ui.input(|i| i.pointer.primary_clicked()) {
-                                        execute = cmd.clone();
-                                        close = true;
-                                    }
+                                }
+                                if ui.rect_contains_pointer(r) && ui.input(|i| i.pointer.primary_clicked()) {
+                                    activate_idx = Some(entry_idx);
+                                    close = true;
                                 }
                             }
 
-                            if filtered.is_empty() {
+                            if filtered_idx.is_empty() {
                                 ui.colored_label(
-                                    egui::Color32::from_rgb(0x60, 0x60, 0x70),
+                                    self.theme.text_dim,
                                     "No matching commands",
                                 );
                             }
@@ -18151,10 +21675,32 @@ impl eframe::App for KlippApp {
             if close {
                 self.state.show_command_palette = false;
             }
-            if let Some(cmd) = execute {
-                all_cmds.push(cmd);
+            if let Some(idx) = activate_idx {
+                let entry = &entries[idx];
+                if entry.enabled {
+                    match &entry.action {
+                        PaletteAction::Cmd(cmd) => all_cmds.push(cmd.clone()),
+                        PaletteAction::ToggleState(f) | PaletteAction::SetState(f) => {
+                            f(&mut self.state);
+                        }
+                        PaletteAction::OpenDialog(kind) => {
+                            if let Some(cmd) = dispatch_dialog(*kind) {
+                                all_cmds.push(cmd);
+                            }
+                        }
+                        PaletteAction::Custom(f) => {
+                            f(&mut self.state, &mut all_cmds);
+                        }
+                    }
+                }
             }
         }
+
+        // Model-download dialogs (consent + progress + error). Drives
+        // the F-97 SAM2 download flow. The state machine lives on
+        // AppState.model_download; transitions are handled here per
+        // frame.
+        self.render_model_download_dialogs(ctx, &mut all_cmds);
 
         // History panel
         if self.state.show_history_panel {
@@ -18174,7 +21720,7 @@ impl eframe::App for KlippApp {
                             let resp = ui.selectable_label(false,
                                 egui::RichText::new(format!("  {label}"))
                                     .size(11.0)
-                                    .color(egui::Color32::from_rgb(100, 100, 120))
+                                    .color(self.theme.text_dim)
                             );
                             if resp.clicked() {
                                 // Redo (redo_count - i) steps
@@ -18184,7 +21730,7 @@ impl eframe::App for KlippApp {
                             }
                         }
                         // Current state marker
-                        ui.colored_label(egui::Color32::from_rgb(200, 160, 40),
+                        ui.colored_label(self.theme.accent,
                             egui::RichText::new("\u{25B6} Current State").size(11.0));
                         // Undo stack (past states, most recent first)
                         let undo = self.state.history.undo_entries();
@@ -18298,14 +21844,14 @@ impl eframe::App for KlippApp {
                             for (id, filename, path) in &offline_items {
                                 ui.horizontal(|ui| {
                                     ui.colored_label(
-                                        egui::Color32::from_rgb(255, 80, 80),
+                                        self.theme.marker_error,
                                         "OFFLINE",
                                     );
                                     ui.label(filename);
                                     ui.label(
                                         egui::RichText::new(path.to_string_lossy())
                                             .size(10.0)
-                                            .color(egui::Color32::from_rgb(120, 120, 130)),
+                                            .color(self.theme.text_dim),
                                     );
                                     if ui.small_button("Browse...").clicked() {
                                         // Filter the file picker to the original extension when
@@ -18388,10 +21934,12 @@ impl eframe::App for KlippApp {
                 &lufs_history,
                 lufs_target,
                 &spectrum_history,
+                &self.theme,
             );
         }
 
         // 10. Process quit
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::PROCESS_QUIT);
         let has_quit = all_cmds.iter().any(|c| matches!(c, AppCommand::Quit));
 
         // Save layout state on quit
@@ -18400,6 +21948,7 @@ impl eframe::App for KlippApp {
         }
 
         // 11. Send all commands
+        klipp_engine::ui_stage::mark(klipp_engine::ui_stage::SEND_COMMANDS);
         self.send_commands(all_cmds);
 
         // 11.5. Upload title overlay texture if a title property was changed this frame
@@ -18567,8 +22116,8 @@ impl eframe::App for KlippApp {
                         .order(egui::Order::Foreground)
                         .show(ctx, |ui| {
                             egui::Frame::popup(ui.style())
-                                .fill(egui::Color32::from_rgb(35, 35, 42))
-                                .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(70, 70, 85)))
+                                .fill(self.theme.bg_raised)
+                                .stroke(egui::Stroke::new(1.0_f32, self.theme.border))
                                 .rounding(6.0)
                                 .inner_margin(egui::Margin::symmetric(16.0, 10.0))
                                 .show(ui, |ui| {
@@ -18580,18 +22129,18 @@ impl eframe::App for KlippApp {
                                         if is_generating {
                                             ui.label(
                                                 egui::RichText::new(format!("{} — {:.0}%{}", msg_clone, avg_progress * 100.0, eta_str))
-                                                    .color(egui::Color32::from_rgb(200, 200, 210))
+                                                    .color(self.theme.text_primary)
                                                     .size(12.0),
                                             );
                                         } else {
                                             ui.label(
                                                 egui::RichText::new(&msg_clone)
-                                                    .color(egui::Color32::from_rgb(200, 200, 210))
+                                                    .color(self.theme.text_primary)
                                                     .size(12.0),
                                             );
                                         }
                                         ui.add_space(8.0);
-                                        if ui.add(egui::Button::image(Icon::X.image(12.0).tint(egui::Color32::from_rgb(220, 220, 230)))).on_hover_text("Dismiss").clicked() {
+                                        if ui.add(egui::Button::image(Icon::X.image(12.0).tint(self.theme.text_primary))).on_hover_text("Dismiss").clicked() {
                                             self.state.proxy_toast_dismissed = true;
                                         }
                                     });
@@ -18616,25 +22165,51 @@ impl eframe::App for KlippApp {
             }
         }
 
-        // 13. Update window title
-        self.update_window_title(ctx);
-
-        // Intercept window X button close — treat same as File → Quit
+        // Intercept window X button close — treat same as File → Quit.
+        // Gate on `!show_unsaved_dialog` so CancelClose isn't fired
+        // every frame while the dialog is up (egui keeps reporting
+        // close_requested = true until either Close or CancelClose is
+        // actually processed by the OS event loop, which can be a
+        // few frames late). The repeated CancelClose stomps on
+        // egui's viewport state machine and can wedge the input
+        // handler — symptoms include the dialog rendering but
+        // ignoring clicks.
         let window_close_requested = ctx.input(|i| i.viewport().close_requested());
         if window_close_requested {
-            if self.state.dirty && self.state.project_path.is_some() {
+            tracing::info!(
+                "viewport close_requested received (dirty={}, dialog_already_open={})",
+                self.state.dirty,
+                self.state.show_unsaved_dialog,
+            );
+            if self.state.dirty && self.state.project_path.is_some() && !self.state.show_unsaved_dialog {
+                tracing::info!("→ raising unsaved-changes dialog, sending CancelClose");
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.state.show_unsaved_dialog = true;
                 self.state.unsaved_dialog_action = UnsavedAction::Quit;
-            } else {
-                // Not dirty — clean up and allow close
-                if let Some(ref path) = self.state.project_path {
-                    let autosave = autosave_path_for(path);
+            } else if !self.state.dirty || self.state.project_path.is_none() {
+                eprintln!("Klipp: clean close → exit(0)");
+                if let Some(path) = self.state.project_path.clone() {
+                    let autosave = autosave_path_for(&path);
                     if autosave.exists() {
-                        let _ = std::fs::remove_dir_all(&autosave);
+                        std::thread::Builder::new()
+                            .name("klipp-autosave-rm".into())
+                            .spawn(move || {
+                                let _ = std::fs::remove_dir_all(&autosave);
+                            })
+                            .ok();
                     }
                 }
-                // Don't cancel — let the close proceed
+                self.kill_children_for_exit();
+                self.layout.save();
+                std::process::exit(0);
+            } else {
+                // Dialog is already up: dialog buttons drive the
+                // outcome. Send CancelClose once to reject this
+                // window-manager close attempt; egui clears
+                // close_requested next frame on its own, so we
+                // don't loop.
+                tracing::info!("→ dialog already open, rejecting this close request");
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             }
         }
 
@@ -18643,13 +22218,21 @@ impl eframe::App for KlippApp {
                 self.state.show_unsaved_dialog = true;
                 self.state.unsaved_dialog_action = UnsavedAction::Quit;
             } else {
-                if let Some(ref path) = self.state.project_path {
-                    let autosave = autosave_path_for(path);
+                eprintln!("Klipp: has_quit branch → exit(0)");
+                if let Some(path) = self.state.project_path.clone() {
+                    let autosave = autosave_path_for(&path);
                     if autosave.exists() {
-                        let _ = std::fs::remove_dir_all(&autosave);
+                        std::thread::Builder::new()
+                            .name("klipp-autosave-rm".into())
+                            .spawn(move || {
+                                let _ = std::fs::remove_dir_all(&autosave);
+                            })
+                            .ok();
                     }
                 }
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.kill_children_for_exit();
+                self.layout.save();
+                std::process::exit(0);
             }
         }
 
@@ -18686,6 +22269,7 @@ impl eframe::App for KlippApp {
                 self.state.viewer_mode,
             );
         }
+
     }
 }
 
@@ -18715,6 +22299,8 @@ impl KlippApp {
             if item.skim_file.as_ref().is_some_and(|p| p.exists()) {
                 return;
             }
+            // Dedupe by output path is done after `skim_path` is
+            // computed below — see the `skim_in_flight_paths` check.
             let source_path = item.path.clone();
             let duration_secs = item.duration.to_secs_f64();
             let filename = item.filename.clone();
@@ -18779,6 +22365,25 @@ impl KlippApp {
                 return;
             }
 
+            // Already in-flight for this output path? Register as a
+            // waiter and let the originating job's complete event
+            // populate our `item.skim_file` too. Two MediaIds (e.g.
+            // project pool path vs file browser absolute path) can
+            // canonicalize to the same source file and would
+            // otherwise both spawn ffmpeg jobs that race on the
+            // shared parts/ directory.
+            if let Some(waiters) = self.state.skim_in_flight_paths.get_mut(&skim_path) {
+                if !waiters.contains(&media_id) {
+                    waiters.push(media_id);
+                    self.state.skim_transcoding.insert(media_id);
+                    tracing::info!(
+                        "Skim transcode dedupe: {:?} already in flight, registered MediaId({}) as waiter",
+                        skim_path, media_id,
+                    );
+                }
+                return;
+            }
+
             // No cache — skip fresh generation if preference is off
             let skim_enabled = self.state.project_auto_skim
                 .unwrap_or(self.prefs.editing.auto_generate_skim);
@@ -18788,6 +22393,7 @@ impl KlippApp {
             }
 
             self.state.skim_transcoding.insert(media_id);
+            self.state.skim_in_flight_paths.insert(skim_path.clone(), vec![media_id]);
             self.state.skim_transcode_status = Some((filename.clone(), 0.0));
 
             // Wrap the transcode in a SubprocessJob so the global
@@ -19021,8 +22627,24 @@ impl KlippApp {
                 //     case falls back to the previous CPU-only path.
                 //     Cuts a 4K HDR transcode from ~30 min to ~3 min
                 //     on a 4080.
-                let nvenc_vf = format!("scale_cuda=-2:{target_height}");
-                let cpu_vf_sdr = format!("scale=-2:{target_height}");
+                // CRITICAL: `format=yuv420p` forces 8-bit 4:2:0 output
+                // even when the source is 10-bit. Without this, a 10-bit
+                // SDR source (e.g. Sony S-Log3 HEVC Main 10 with BT.709
+                // tags) propagated bit depth through `scale_cuda` →
+                // `h264_nvenc` produced H.264 Hi10P, which NVDEC on
+                // every consumer NVIDIA GPU rejects with "Bit depth 10
+                // with this chroma format is not supported". The skim
+                // then fell back to software decode, defeating its
+                // entire purpose. Forcing yuv420p makes the skim
+                // unambiguously NVDEC-decodable on playback.
+                //
+                // Skims are a browser-preview / hover-scrub artefact,
+                // not a grading source — 8-bit precision is the right
+                // trade. A future iteration could auto-detect 10-bit
+                // input and use `hevc_nvenc -profile:v main10` instead
+                // for users who want 10-bit-preserving skims.
+                let nvenc_vf = format!("scale_cuda=-2:{target_height}:format=yuv420p");
+                let cpu_vf_sdr = format!("scale=-2:{target_height},format=yuv420p");
                 let qp_str = skim_quality.to_string();
                 let start_ss = (resume_from_segment * SEGMENT_DURATION_SECS).to_string();
                 let seg_time = SEGMENT_DURATION_SECS.to_string();
@@ -19076,8 +22698,25 @@ impl KlippApp {
                     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
                     run_ffmpeg(&arg_refs, "skim-encode-hdr")
                 } else {
+                    // `-hwaccel_output_format cuda` is mandatory when
+                    // we want `scale_cuda` (in `nvenc_vf`) to consume
+                    // the decoded frames directly. Without it,
+                    // `-hwaccel cuda` silently downloads each frame
+                    // to a software pixel format (yuv420p10le for a
+                    // 10-bit source), then `scale_cuda` rejects the
+                    // CPU input with "Impossible to convert between
+                    // the formats supported by the filter 'graph -1
+                    // input from stream 0:0' and the filter
+                    // 'auto_scale_0'" — the whole nvenc tier fails
+                    // and we fall through to the libx264 CPU path
+                    // (which is ~10× slower at 4K).
+                    //
+                    // The HDR chain in ffmpeg_caps already passes
+                    // this pair; the SDR hardcoded path was missing
+                    // the output-format flag.
                     run_ffmpeg(&[
                         "-y", "-hwaccel", "cuda",
+                        "-hwaccel_output_format", "cuda",
                         "-ss", &start_ss,
                         "-i", src,
                         "-c:v", "h264_nvenc", "-g", "15", "-preset", "p1",
@@ -19149,6 +22788,7 @@ impl KlippApp {
                         job.mark_done();
                         let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
                             media_id,
+                            path: skim_path.clone(),
                             error: "no segments produced".into(),
                         });
                         return;
@@ -19170,6 +22810,7 @@ impl KlippApp {
                         job.mark_done();
                         let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
                             media_id,
+                            path: skim_path.clone(),
                             error: format!("concat list write: {e}"),
                         });
                         return;
@@ -19281,6 +22922,7 @@ impl KlippApp {
                                 let _ = std::fs::remove_file(&concat_partial);
                                 let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
                                     media_id,
+                                    path: skim_path.clone(),
                                     error: format!("publish rename failed: {e}"),
                                 });
                             } else {
@@ -19321,6 +22963,7 @@ impl KlippApp {
                             let _ = std::fs::remove_file(&concat_partial);
                             let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
                                 media_id,
+                                path: skim_path.clone(),
                                 error: format!("concat ffmpeg exited with {s}"),
                             });
                         }
@@ -19328,6 +22971,7 @@ impl KlippApp {
                             let _ = std::fs::remove_file(&concat_partial);
                             let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
                                 media_id,
+                                path: skim_path.clone(),
                                 error: format!("concat ffmpeg failed: {e}"),
                             });
                         }
@@ -19346,6 +22990,7 @@ impl KlippApp {
                         Err(e) => {
                             let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
                                 media_id,
+                                path: skim_path.clone(),
                                 error: format!("Failed to run ffmpeg: {}", e),
                             });
                         }
@@ -19355,6 +23000,7 @@ impl KlippApp {
                             // for the next attempt to resume.
                             let _ = event_tx.send(AppEvent::SkimTranscodeFailed {
                                 media_id,
+                                path: skim_path.clone(),
                                 error: format!("ffmpeg exited with {s}"),
                             });
                         }
@@ -19422,29 +23068,58 @@ impl KlippApp {
                     self.state.skim_transcode_status = Some((filename, progress));
                 }
                 AppEvent::SkimTranscodeComplete { media_id, path } => {
-                    self.state.skim_transcoding.remove(&media_id);
+                    // Wire skim_file for the originating MediaId AND
+                    // every dedupe waiter that registered against the
+                    // same output path. Without this, a second
+                    // MediaId pointing to the same source file (e.g.
+                    // project pool path vs file browser absolute
+                    // path) would never learn the cache file exists
+                    // and would keep falling back to live source
+                    // decode on hover.
+                    let waiters = self.state.skim_in_flight_paths
+                        .remove(&path)
+                        .unwrap_or_else(|| vec![media_id]);
+                    for mid in &waiters {
+                        self.state.skim_transcoding.remove(mid);
+                        if let Some(item) = self.state.media_pool.get_mut(mid) {
+                            item.skim_file = Some(path.clone());
+                        }
+                    }
                     if self.state.skim_transcoding.is_empty() {
                         self.state.skim_transcode_status = None;
                         self.state.skim_transcode_done_at = Some(std::time::Instant::now());
-                    }
-                    if let Some(item) = self.state.media_pool.get_mut(&media_id) {
-                        item.skim_file = Some(path.clone());
                     }
                     self.sync_media_pool_to_engine();
                     let filename = self.state.media_pool.get(&media_id)
                         .map(|m| m.filename.clone())
                         .unwrap_or_default();
-                    tracing::info!("Skim transcode complete for {}: {}", filename, path.display());
+                    tracing::info!(
+                        "Skim transcode complete for {}: {} ({} media id(s) wired)",
+                        filename, path.display(), waiters.len(),
+                    );
                 }
-                AppEvent::SkimTranscodeFailed { media_id, error } => {
-                    self.state.skim_transcoding.remove(&media_id);
+                AppEvent::SkimTranscodeFailed { media_id, path, error } => {
+                    // Drop the originator AND any dedupe waiters
+                    // from `skim_transcoding`. They'll re-request
+                    // naturally on the next hover/import; we don't
+                    // auto-respawn here because the same race could
+                    // re-trigger.
+                    let waiters = self.state.skim_in_flight_paths
+                        .remove(&path)
+                        .unwrap_or_else(|| vec![media_id]);
+                    for mid in &waiters {
+                        self.state.skim_transcoding.remove(mid);
+                    }
                     if self.state.skim_transcoding.is_empty() {
                         self.state.skim_transcode_status = None;
                     }
                     let filename = self.state.media_pool.get(&media_id)
                         .map(|m| m.filename.clone())
                         .unwrap_or_default();
-                    tracing::warn!("Skim transcode failed for {}: {}", filename, error);
+                    tracing::warn!(
+                        "Skim transcode failed for {}: {} (cleared {} waiter(s))",
+                        filename, error, waiters.len(),
+                    );
                 }
                 AppEvent::BrowserSkimFrameReady { media_id, rgba, width, height, target } => {
                     if !rgba.is_empty() && width > 0 && height > 0 {
@@ -19595,7 +23270,6 @@ impl KlippApp {
                 AppEvent::TrackingComplete { clip_id, point_index, positions, start_frame } => {
                     self.state.tracking_in_progress.remove(&clip_id);
                     self.state.tracking_progress.remove(&clip_id);
-                    // Update the track point with results
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
                         if let Some(tp) = clip.track_points.get_mut(point_index) {
@@ -19603,7 +23277,21 @@ impl KlippApp {
                             tp.start_frame = start_frame;
                         }
                     }
-                    self.state.toast.show("Point tracking complete");
+                    // If TrackMaskRegion registered an auto-link for
+                    // this analysis, consume it now: dispatch
+                    // GenerateKeyframesFromTrack so the mask's centre
+                    // immediately follows the tracked feature.
+                    let pending = self.state.pending_mask_track_link.remove(&(clip_id, point_index));
+                    if let Some(target) = pending {
+                        let mut needs_refresh = false;
+                        let cmd = AppCommand::GenerateKeyframesFromTrack {
+                            clip_id, point_index, target,
+                        };
+                        let _ = self.handle_stabilization_commands(&cmd, &mut needs_refresh);
+                        self.state.toast.show("Mask tracking complete");
+                    } else {
+                        self.state.toast.show("Point tracking complete");
+                    }
                 }
                 AppEvent::TrackingFailed { clip_id, error } => {
                     self.state.tracking_in_progress.remove(&clip_id);
@@ -19900,7 +23588,7 @@ impl KlippApp {
                         // Codec hint
                         ui.label("");
                         ui.colored_label(
-                            egui::Color32::from_rgb(130, 150, 170),
+                            self.theme.text_dim,
                             self.export_dialog.video_codec.hint(),
                         );
                         ui.end_row();
@@ -19986,6 +23674,44 @@ impl KlippApp {
                                 }
                             });
                         ui.end_row();
+
+                        // Output Display Transform — picks the
+                        // delivery-target colour space the rendered
+                        // file lands in. Default `MatchViewer` gives
+                        // back-compat: same pixels the user has been
+                        // seeing while editing. The HDR + DCI cinema
+                        // entries assume an AcesCG-basis grade chain
+                        // (or a Rec.709 project, which the encoder
+                        // walks into AcesCG before applying the ODT).
+                        ui.label("Output transform:");
+                        egui::ComboBox::from_id_salt("export_odt")
+                            .selected_text(self.export_dialog.odt.label())
+                            .show_ui(ui, |ui| {
+                                for choice in klipp_core::OdtChoice::ALL {
+                                    ui.selectable_value(
+                                        &mut self.export_dialog.odt,
+                                        choice,
+                                        choice.label(),
+                                    );
+                                }
+                            });
+                        ui.end_row();
+
+                        // Plain-language hint so the default isn't
+                        // surprising. Only show under MatchViewer —
+                        // the explicit ODTs are self-explanatory by
+                        // their menu labels.
+                        if self.export_dialog.odt == klipp_core::OdtChoice::MatchViewer {
+                            ui.label("");
+                            ui.add(egui::Label::new(
+                                egui::RichText::new(
+                                    "Match Viewer = same colour space your monitor's been showing you while editing.",
+                                )
+                                .small()
+                                .italics(),
+                            ).wrap());
+                            ui.end_row();
+                        }
 
                         // Rate control mode
                         if self.export_dialog.video_codec.uses_crf() {
@@ -20164,7 +23890,7 @@ impl KlippApp {
                         ui.label(
                             egui::RichText::new("Add markers to the timeline to use this mode.")
                                 .small()
-                                .color(egui::Color32::from_rgb(0x80, 0x80, 0x90)),
+                                .color(self.theme.text_dim),
                         );
                     });
                 }
@@ -20214,7 +23940,7 @@ impl KlippApp {
                     {
                         ui.label(
                             egui::RichText::new("\u{26A0} WebM subtitle support varies by player")
-                                .color(egui::Color32::from_rgb(0xc0, 0x90, 0x30))
+                                .color(self.theme.marker_warning)
                                 .size(11.0),
                         );
                     }
@@ -20244,7 +23970,7 @@ impl KlippApp {
                         ui.indent("chapters_hint", |ui| {
                             ui.label(
                                 egui::RichText::new("\u{26A0} No markers in sequence")
-                                    .color(egui::Color32::from_rgb(0xb4, 0x8c, 0x3c))
+                                    .color(self.theme.marker_warning)
                                     .size(11.0),
                             );
                         });
@@ -20273,6 +23999,9 @@ impl KlippApp {
                                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                                 snap.sequence_snapshot.export_range = selected_clips_frame_range(&self.state.selected_clips, seq, snap.sequence_snapshot.fps);
                             }
+                        }
+                        if let Ok(ref mut snap) = snapshot {
+                            snap.sequence_snapshot.working_colorspace = self.state.project_working_colorspace;
                         }
                         let label = path.file_name()
                             .map(|n| n.to_string_lossy().to_string())
@@ -20819,6 +24548,31 @@ impl KlippApp {
         // 4c. Render queue window
         self.show_render_queue_window(ctx);
 
+        // 4c0. AI Tools side panel — only mounted when toggled on.
+        if self.state.ai_tools_state.panel_visible {
+            // egui's SidePanel default `width_range.max` is
+            // `f32::INFINITY`, which means any single-frame
+            // content overflow becomes the new stored width on
+            // the following frame (PanelState stores
+            // inner_response.response.rect). Setting an explicit
+            // max_width hard-caps the panel via clamp_to_range
+            // regardless of what content reports.
+            egui::SidePanel::right("ai_tools_side")
+                .resizable(true)
+                .default_width(340.0)
+                .min_width(300.0)
+                .max_width(500.0)
+                .show(ctx, |ui| {
+                    crate::ai_tools::AiToolsPanel::show(
+                        ui,
+                        &mut self.state.ai_tools_state,
+                        &self.state.ai_tools_registry,
+                        &self.theme,
+                        &mut self.state.show_ai_models_dialog,
+                    );
+                });
+        }
+
         // 4c1. New Project dialog
         if self.state.show_new_project_dialog {
             if let Some(cmd) = self.new_project_dialog.show(
@@ -20934,6 +24688,50 @@ impl KlippApp {
             cmds.extend(dialog_cmds);
         }
 
+        // AI Models management modal — list, status badges, install /
+        // reinstall actions. Drives the existing model_download
+        // consent flow when the user picks Download.
+        crate::panels::ai_models::show_ai_models_dialog(ctx, &mut self.state, &self.theme);
+
+        // Audio Plugins management modal — LADSPA discovery, search
+        // paths, Rescan. Pushes commands onto a local Vec so they go
+        // through the standard `send_commands` dispatch (giving
+        // `handle_playback_commands` first crack at OpenAudioPluginsDialog
+        // / RescanAudioPlugins, same path as OpenAiModelsDialog).
+        let mut audio_plugin_cmds: Vec<klipp_core::AppCommand> = Vec::new();
+        crate::panels::audio_plugins::show_audio_plugins_dialog(
+            ctx,
+            &mut self.state,
+            &self.theme,
+            &mut audio_plugin_cmds,
+        );
+        if !audio_plugin_cmds.is_empty() {
+            self.send_commands(audio_plugin_cmds);
+        }
+
+        // System Probe — read-only diagnostic snapshot. No commands
+        // dispatched from inside, so no Vec needed.
+        crate::panels::system_probe::show_system_probe_dialog(
+            ctx,
+            &mut self.state,
+            &self.theme,
+        );
+
+        // Project Doctor — detect-and-report scan of the loaded
+        // .klipp directory. Pushes commands through the standard
+        // dispatch (today no per-finding fix actions exist; the
+        // Vec is wired so future Fix buttons hook in cleanly).
+        let mut doctor_cmds: Vec<klipp_core::AppCommand> = Vec::new();
+        crate::panels::project_doctor::show_project_doctor_dialog(
+            ctx,
+            &mut self.state,
+            &self.theme,
+            &mut doctor_cmds,
+        );
+        if !doctor_cmds.is_empty() {
+            self.send_commands(doctor_cmds);
+        }
+
         // 4c2. Consolidate Project dialog
         // Copies the project + all referenced media into a NEW self-contained
         // directory. The source project is never modified.
@@ -20964,7 +24762,7 @@ impl KlippApp {
                     ui.label(format!("Media files:  {online_count} online"));
                     if offline_count > 0 {
                         ui.colored_label(
-                            egui::Color32::from_rgb(0xc0, 0x90, 0x30),
+                            self.theme.marker_warning,
                             format!(
                                 "\u{26A0} {offline_count} offline file(s) will be skipped",
                             ),
@@ -21148,6 +24946,8 @@ impl KlippApp {
                 &mut self.prefs,
                 &mut self.prefs_dirty,
                 &mut self.key_bindings,
+                &self.theme_registry,
+                &self.theme,
             );
             cmds.extend(pref_cmds);
             // Sync skim_audio pref → state (checkbox may have changed)
@@ -21353,6 +25153,7 @@ impl KlippApp {
                                 self.state.playback == PlaybackState::Playing,
                                 bottom_scope_cursor,
                                 self.state.scope_cursor_show,
+                                &self.theme,
                             );
                         });
                     }
@@ -21523,7 +25324,7 @@ impl KlippApp {
         // helper — same skim texture, same metadata card, same In/Out
         // markers, same edit buttons users already saw when clicking the
         // old "Source" toggle. No duplicated logic.
-        self.viewer.show_source_viewer(ui, &self.state, video_rect, all_cmds);
+        self.viewer.show_source_viewer(ui, &self.state, &self.theme, video_rect, all_cmds);
 
         // Reuse the same scrub bar + play bar the Program Viewer renders,
         // routing scrub-bar drags and the timecode display to the source
@@ -21622,6 +25423,11 @@ impl KlippApp {
     ) {
         crate::ui_util::allocate_clipped_ui(ui, timeline_rect, |ui| {
             ui.set_min_size(timeline_rect.size());
+            // Stash the active theme into the timeline's thread-local
+            // so leaf render helpers (which fan out across thousands
+            // of paint calls per frame) can pick up the right palette
+            // without a parameter cascade through every signature.
+            crate::panels::timeline::sync_theme(&self.theme);
             let panel_cmds = self.new_timeline.show(
                 ui,
                 &mut self.state,
@@ -21792,23 +25598,99 @@ impl KlippApp {
                         ui.painter().rect_filled(sep_rect2, 0.0, self.theme.border);
                     }
 
-                    if self.state.show_node_strip && self.state.selected_node_id.is_some() {
-                        let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
-                        let panel_cmds = self.node_inspector_panel.show(
-                            ui, &self.state.selected_node_id, &mut clip.node_graph, clip_id, &self.theme, clip_time_secs,
+                    // Looks strip — project-level reusable grades.
+                    // Sits above the tabs; saves the selected clip's
+                    // graph, applies to the timeline selection (or the
+                    // single selected clip when no rubber-band is
+                    // active). Same disjoint-field borrow trick as the
+                    // grade-stills section above.
+                    {
+                        let looks_cmds = crate::panels::looks::show(
+                            ui,
+                            &mut self.looks_panel_state,
+                            &self.state.looks,
+                            self.state.selected_clip,
+                            &self.state.selected_clips,
+                            &self.theme,
                         );
-                        all_cmds.extend(panel_cmds);
+                        all_cmds.extend(looks_cmds);
+                        ui.add_space(2.0);
+                        let sep_rect3 = ui.allocate_space(egui::vec2(avail_w, 1.0)).1;
+                        let sep_rect3 = egui::Rect::from_min_max(
+                            egui::pos2(sep_rect3.min.x + 8.0, sep_rect3.min.y),
+                            sep_rect3.max,
+                        );
+                        ui.painter().rect_filled(sep_rect3, 0.0, self.theme.border);
+                    }
+
+                    // Swap between tabbed grade inspector and per-node
+                    // inspector based on what the user selected in the
+                    // V2 canvas. The tabs cover the primary grade path
+                    // (Corrector + legacy single-purpose grade nodes);
+                    // nodes that have their own dedicated widget
+                    // (Mask, Qualifier, FilmGrain, Lut3D, ColorMatch,
+                    // LayerMixer, ExternalMatte, Denoise, ColorWarper)
+                    // need the per-node inspector when the user clicks
+                    // them — otherwise clicking e.g. an ExternalMatte
+                    // in the canvas would hide its file picker behind
+                    // the grade tabs.
+                    let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+                    // Descent-aware graph: when the user is inside a
+                    // compound, the inspector should read/write the
+                    // sub-graph's nodes. Fall back to the root graph
+                    // if the descent path has gone stale (self-heal
+                    // on the next frame).
+                    let path = self.state.graph_descent_path.clone();
+                    let graph: &mut klipp_nodes::NodeGraph =
+                        match Self::resolve_graph_at_path_mut(clip, &path) {
+                            Ok(g) => g,
+                            Err(_) => &mut clip.node_graph,
+                        };
+                    let use_per_node_inspector = self.state.selected_node_id
+                        .and_then(|nid| graph.nodes.iter().find(|n| n.id == nid))
+                        .map(|n| matches!(n.kind,
+                            klipp_nodes::NodeKind::Mask
+                            | klipp_nodes::NodeKind::Qualifier
+                            | klipp_nodes::NodeKind::FilmGrain
+                            | klipp_nodes::NodeKind::Lut3D
+                            | klipp_nodes::NodeKind::ColorMatch
+                            | klipp_nodes::NodeKind::LayerMixer
+                            | klipp_nodes::NodeKind::ExternalMatte
+                            | klipp_nodes::NodeKind::Denoise
+                            | klipp_nodes::NodeKind::ColorWarper
+                            // Source / Output / composite-only nodes:
+                            // no params, but showing the grade tabs
+                            // for them misleads users into thinking
+                            // clicking one does something. Route to
+                            // the per-node inspector which falls
+                            // through to a plain "No parameters" /
+                            // node-specific placeholder label.
+                            | klipp_nodes::NodeKind::Source
+                            | klipp_nodes::NodeKind::Output
+                            | klipp_nodes::NodeKind::Layer
+                            | klipp_nodes::NodeKind::Blend
+                            | klipp_nodes::NodeKind::CombineMattes
+                            | klipp_nodes::NodeKind::ApplyMatte
+                            | klipp_nodes::NodeKind::Compound
+                            | klipp_nodes::NodeKind::RGBSplitter
+                            | klipp_nodes::NodeKind::RGBCombiner
+                        ))
+                        .unwrap_or(false);
+                    let panel_cmds = if use_per_node_inspector {
+                        self.node_inspector_panel.show(
+                            ui, &self.state.selected_node_id,
+                            graph, clip_id, &self.theme, clip_time_secs,
+                        )
                     } else {
-                        let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
-                        let panel_cmds = self.node_inspector_panel.show_simple(
-                            ui, &mut clip.node_graph, clip_id,
+                        self.node_inspector_panel.show_simple(
+                            ui, graph, clip_id,
                             &mut self.state.selected_node_id,
                             &mut self.state.color_tab,
                             &self.theme,
                             clip_time_secs,
-                        );
-                        all_cmds.extend(panel_cmds);
-                    }
+                        )
+                    };
+                    all_cmds.extend(panel_cmds);
                 }
             } else {
                 let panel_cmds = self.new_inspector.show(
@@ -22041,7 +25923,7 @@ impl KlippApp {
                         egui::Align2::CENTER_CENTER,
                         "\u{1F3B5}",
                         egui::FontId::proportional(64.0),
-                        egui::Color32::from_rgb(0xe8, 0xa0, 0x20),
+                        self.theme.text_accent,
                     );
                 }
 
@@ -22095,7 +25977,7 @@ impl KlippApp {
                     egui::Align2::CENTER_CENTER,
                     &info_text,
                     egui::FontId::proportional(12.0),
-                    egui::Color32::from_rgb(0xd0, 0xd0, 0xd8),
+                    self.theme.text_primary,
                 );
 
                 // ── Dismiss: click backdrop, Escape, or Spacebar ──
@@ -22334,8 +26216,8 @@ impl KlippApp {
                             ("G", egui::Color32::from_rgb(0x40, 0xb0, 0x40), &mut self.state.scope_show_g),
                             ("B", egui::Color32::from_rgb(0x40, 0x50, 0xd0), &mut self.state.scope_show_b),
                         ] {
-                            let bg = if *enabled { color } else { egui::Color32::from_rgb(0x30, 0x30, 0x35) };
-                            let text_c = if *enabled { egui::Color32::WHITE } else { egui::Color32::from_rgb(0x60, 0x60, 0x68) };
+                            let bg = if *enabled { color } else { theme.bg_raised };
+                            let text_c = if *enabled { egui::Color32::WHITE } else { theme.text_dim };
                             let btn = egui::Button::new(egui::RichText::new(label).size(9.0).color(text_c).strong())
                                 .fill(bg)
                                 .min_size(egui::vec2(20.0, 16.0))
@@ -22360,7 +26242,7 @@ impl KlippApp {
                         let picker_active = self.state.scope_cursor_show;
                         let picker_locked = self.state.scope_cursor_locked;
                         let picker_color = if picker_locked {
-                            egui::Color32::from_rgb(0xe8, 0xa0, 0x20)
+                            theme.accent
                         } else if picker_active {
                             theme.text_accent
                         } else {
@@ -22438,8 +26320,14 @@ impl KlippApp {
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
                     let clip_time_secs = self.state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
+                    let path = self.state.graph_descent_path.clone();
+                    let graph: &mut klipp_nodes::NodeGraph =
+                        match Self::resolve_graph_at_path_mut(clip, &path) {
+                            Ok(g) => g,
+                            Err(_) => &mut clip.node_graph,
+                        };
                     let panel_cmds = self.node_inspector_panel.show_simple_horizontal(
-                        ui, &mut clip.node_graph, clip_id,
+                        ui, graph, clip_id,
                         &mut self.state.selected_node_id,
                         &mut self.state.color_tab_bottom,
                         &self.theme,
@@ -22520,6 +26408,7 @@ impl KlippApp {
                 self.state.playback == PlaybackState::Playing,
                 bottom_scope_cursor,
                 self.state.scope_cursor_show,
+                &self.theme,
             );
         });
         // U-6: same guard as render_color_ws_bottom_tools. Scopes only
@@ -22586,6 +26475,19 @@ impl KlippApp {
         nodes_rect: egui::Rect,
         theme: &KlippTheme,
     ) {
+        // Sync per-node thumbs from the engine's FrameBuffer into
+        // AppState at the start of the panel render. Engine bumps
+        // `node_thumbs_gen` whenever it refreshes the map on a paused
+        // / post-seek re-grade; we only clone the HashMap when it
+        // actually advanced, so steady-state costs one lock + one
+        // generation compare per frame.
+        {
+            let fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            if fb.node_thumbs_gen != self.state.node_thumbs_gen {
+                self.state.node_thumbs = fb.node_thumbs.clone();
+                self.state.node_thumbs_gen = fb.node_thumbs_gen;
+            }
+        }
         crate::ui_util::allocate_clipped_ui(ui, nodes_rect, |ui| {
             ui.set_min_size(nodes_rect.size());
             ui.painter().rect_filled(nodes_rect, 0.0, theme.bg_deep);
@@ -22595,10 +26497,102 @@ impl KlippApp {
                 if let Some(clip) = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(cid))
                 {
-                    let panel_cmds = self.node_graph_panel.show(
-                        ui, &mut self.state.selected_node_id,
-                        &mut clip.node_graph, cid, &self.theme,
-                    );
+                    // Self-heal: if any id in the descent path doesn't
+                    // resolve against the current clip's graph (clip
+                    // switch, upstream RemoveNode, etc.) clear the
+                    // path so the V2 panel renders the root graph on
+                    // this frame. Selection clears alongside so the
+                    // inspector doesn't linger on a ghost.
+                    let path_valid = {
+                        let mut cursor = &clip.node_graph;
+                        self.state.graph_descent_path.iter().all(|id| {
+                            match cursor.nodes.iter().find(|n| n.id == *id) {
+                                Some(n) if n.kind == klipp_nodes::NodeKind::Compound => {
+                                    match n.params.compound_subgraph.as_ref() {
+                                        Some(sub) => { cursor = sub; true }
+                                        None => false,
+                                    }
+                                }
+                                _ => false,
+                            }
+                        })
+                    };
+                    if !path_valid {
+                        self.state.graph_descent_path.clear();
+                        self.state.selected_node_ids.clear();
+                        self.state.selected_node_id = None;
+                    }
+                    // Build breadcrumb labels by walking the descent
+                    // path through each compound's subgraph. Done
+                    // BEFORE the mutable resolve so `clip.node_graph`
+                    // can be read cleanly; the vec then survives the
+                    // `Self::resolve_graph_at_path_mut` call.
+                    let breadcrumb_labels: Vec<String> = {
+                        let mut labels = Vec::with_capacity(
+                            self.state.graph_descent_path.len()
+                        );
+                        let mut cursor = &clip.node_graph;
+                        for id in &self.state.graph_descent_path {
+                            if let Some(n) = cursor.nodes.iter().find(|n| n.id == *id) {
+                                labels.push(n.label.clone());
+                                if let Some(sub) = n.params.compound_subgraph.as_ref() {
+                                    cursor = sub;
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        labels
+                    };
+                    let panel_cmds = if self.state.use_node_graph_v2 {
+                        let slot = self.state.deferred_texture_drops_slot;
+                        // Snapshot grade version names + active
+                        // index BEFORE grabbing the mutable graph
+                        // borrow — the panel only needs the labels
+                        // for the dropdown, not the full snapshots
+                        // (which would be expensive to clone per
+                        // render).
+                        let grade_version_names: Vec<String> = clip
+                            .grade_versions
+                            .iter()
+                            .map(|v| v.name.clone())
+                            .collect();
+                        let active_grade_version = clip.active_grade_version;
+                        let clip_time_secs = (self.state.playhead.to_secs_f64()
+                            - clip.timeline_in.to_secs_f64())
+                        .max(0.0);
+                        // Resolve the graph at the current descent
+                        // path. If the path went stale (shouldn't
+                        // happen in normal use — we self-heal), the
+                        // call falls back to the root graph so the
+                        // user isn't stuck on a blank canvas.
+                        let path = self.state.graph_descent_path.clone();
+                        let resolved = Self::resolve_graph_at_path_mut(clip, &path);
+                        let graph = match resolved {
+                            Ok(g) => g,
+                            Err(_) => &mut clip.node_graph,
+                        };
+                        self.node_graph_v2_panel.show(
+                            ui, &mut self.state.selected_node_id,
+                            &mut self.state.selected_node_ids,
+                            graph, cid, &self.theme,
+                            &self.state.node_thumbs,
+                            self.state.node_thumbs_gen,
+                            &mut self.state.deferred_texture_drops[slot],
+                            &mut self.state.graph_descent_path,
+                            &breadcrumb_labels,
+                            &grade_version_names,
+                            active_grade_version,
+                            clip_time_secs,
+                        )
+                    } else {
+                        self.node_graph_panel.show(
+                            ui, &mut self.state.selected_node_id,
+                            &mut clip.node_graph, cid, &self.theme,
+                        )
+                    };
                     all_cmds.extend(panel_cmds);
                 } else {
                     ui.painter().text(
@@ -22606,7 +26600,7 @@ impl KlippApp {
                         egui::Align2::CENTER_CENTER,
                         "Clip not found in sequence",
                         egui::FontId::proportional(12.0),
-                        egui::Color32::from_rgb(100, 100, 110),
+                        self.theme.text_dim,
                     );
                 }
             } else {
@@ -22615,10 +26609,91 @@ impl KlippApp {
                     egui::Align2::CENTER_CENTER,
                     "Select a clip to view its node graph",
                     egui::FontId::proportional(12.0),
-                    egui::Color32::from_rgb(100, 100, 110),
+                    self.theme.text_dim,
                 );
             }
         });
+
+        // Filmstrip-sourced per-node thumbnails (DaVinci-style node
+        // preview). Decouples node-panel thumbs from the 4K decoder
+        // pipeline: we feed the executor a pre-grade filmstrip tile at
+        // ~228×128 instead of the main viewer's full-res frame. That
+        // pass runs in well under a millisecond regardless of source
+        // resolution, and filmstrip tiles are already in memory so
+        // there's zero decode latency. Grade params are still
+        // evaluated at the exact playhead so keyframed values stay
+        // frame-accurate. Deduped via `last_filmstrip_thumb_send` so
+        // the command only fires when something the thumbs depend on
+        // (clip / tile / playhead / grade) actually changed. Pushed
+        // after `panel_cmds` so any `SetVisibleNodeThumbs` from the V2
+        // canvas processes first — the engine needs the visible-set
+        // populated before our `RenderNodeThumbsFromSource` arrives.
+        // While descended into a compound the filmstrip thumb
+        // pipeline would render top-level clip graph outputs for
+        // every node — misleading while the user is editing inside a
+        // sub-graph the executor doesn't recurse into yet (stage 5).
+        // Skip the dispatch for now; the V2 canvas falls back to
+        // whatever thumb bytes are still in state.node_thumbs from
+        // the last root-level capture, which is fine (stale but
+        // consistent with the outer frame).
+        if self.state.use_node_graph_v2 && self.state.graph_descent_path.is_empty() {
+            if let Some(cid) = self.state.selected_clip {
+                let seq_idx = self.state.active_sequence_idx;
+                let clip_info = self.state.sequences[seq_idx].tracks.iter()
+                    .find_map(|t| t.clips.iter().find(|c| c.id == cid).map(|c| (
+                        c.media_id(),
+                        c.source_in.to_secs_f64(),
+                        c.timeline_in,
+                        c.speed,
+                        klipp_engine::render_cache::compute_grade_hash(
+                            &c.node_graph,
+                            &c.builtin_effects,
+                            &c.builtin_effects_enabled,
+                        ),
+                    )));
+                if let Some((Some(media_id), src_in_secs, tl_in, speed, grade_hash)) = clip_info {
+                    let playhead = self.state.playhead;
+                    let src_time = src_in_secs
+                        + (playhead - tl_in).to_secs_f64() * speed.max(0.001);
+                    let tile_idx = self.state.thumbnail_cache.filmstrip(&media_id)
+                        .and_then(|frames| {
+                            if frames.is_empty() { return None; }
+                            let i = match frames.binary_search_by(|f| {
+                                f.time_secs.partial_cmp(&src_time)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            }) {
+                                Ok(i) => i,
+                                Err(i) if i == 0 => 0,
+                                Err(i) if i >= frames.len() => frames.len() - 1,
+                                Err(i) => {
+                                    let before = (src_time - frames[i - 1].time_secs).abs();
+                                    let after = (frames[i].time_secs - src_time).abs();
+                                    if before <= after { i - 1 } else { i }
+                                }
+                            };
+                            Some(i)
+                        });
+                    if let Some(idx) = tile_idx {
+                        let key = (cid, idx, playhead.value, grade_hash);
+                        if self.state.last_filmstrip_thumb_send != Some(key) {
+                            let tile = self.state.thumbnail_cache.filmstrip(&media_id)
+                                .and_then(|frames| frames.get(idx))
+                                .map(|f| (f.rgba.clone(), f.width, f.height));
+                            if let Some((rgba, w, h)) = tile {
+                                all_cmds.push(AppCommand::RenderNodeThumbsFromSource {
+                                    clip_id: cid,
+                                    playhead,
+                                    src_rgba: rgba,
+                                    src_w: w,
+                                    src_h: h,
+                                });
+                                self.state.last_filmstrip_thumb_send = Some(key);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -23671,6 +27746,16 @@ fn generate_youtube_chapters(entries: &[(f64, String)]) -> String {
 
 /// Render marker positions as a DVDStyler / dvdauthor chapter list.
 /// The format is one `HH:MM:SS.mmm` timecode per line — labels are ignored
+fn ai_tools_task_from_tag(tag: klipp_core::events::AiToolsTaskTag) -> crate::ai_tools::AiTask {
+    use klipp_core::events::AiToolsTaskTag;
+    match tag {
+        AiToolsTaskTag::RemoveBackground => crate::ai_tools::AiTask::RemoveBackground,
+        AiToolsTaskTag::IsolateObject => crate::ai_tools::AiTask::IsolateObject,
+        AiToolsTaskTag::DetectObjects => crate::ai_tools::AiTask::DetectObjects,
+        AiToolsTaskTag::TrackObject => crate::ai_tools::AiTask::TrackObject,
+    }
+}
+
 /// by the DVD tooling, so we drop them. DVDStyler expects the very first
 /// chapter at `00:00:00.000`; if the earliest marker isn't within 0.1s of
 /// zero (or there are no markers), a leading `00:00:00.000` line is
@@ -24649,6 +28734,7 @@ mod render_script_tests {
             bit_depth: 0,
             hdr_mode: klipp_core::HdrMode::Sdr,
             tone_map_op: klipp_core::ToneMapOp::Hable,
+            odt: klipp_core::OdtChoice::MatchViewer,
         };
         let script = generate_render_script(&seq, &media_pool, &settings, "/tmp/out.mp4");
         assert!(script.starts_with("#!/usr/bin/env bash\n"), "missing shebang: {script}");

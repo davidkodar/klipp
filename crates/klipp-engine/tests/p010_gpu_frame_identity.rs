@@ -6,11 +6,22 @@
 
 use std::sync::Arc;
 
+use klipp_effects::color_wgsl::IDENTITY_PRIMARIES_MATRIX_PACKED;
 use klipp_effects::p010_gpu::GpuP010Converter;
 use klipp_engine::{Frame, GpuFrame};
 
 const W: u32 = 128;
 const H: u32 = 64;
+
+/// `[range, matrix_id, transfer_id, primaries_id]` for SDR (BT.709
+/// limited) and HDR (BT.2020 PQ). The PQ variant is what triggers the
+/// shader's HDR tone-map branch — the differentiator this test
+/// preserves from its pre-`color_ids` `is_hdr: bool` form. Both call
+/// sites use the same identity primaries matrix; this test verifies
+/// CPU-readback ↔ GPU-resident path consistency, not colorimetric
+/// correctness.
+const COLOR_IDS_BT709_SDR: [u32; 4] = [0, 0, 0, 0];
+const COLOR_IDS_BT2020_PQ: [u32; 4] = [0, 2, 3, 1];
 
 /// Build a synthetic P010 frame. Each 10-bit code value goes into the
 /// upper 10 bits of a 16-bit LE word (P010 layout). The pattern is a
@@ -47,12 +58,15 @@ fn round_trip_matches(is_hdr: bool) {
     };
 
     let (y, uv, y_stride, uv_stride) = make_p010(W, H);
+    let color_ids = if is_hdr { COLOR_IDS_BT2020_PQ } else { COLOR_IDS_BT709_SDR };
 
     let cpu_bytes = conv.convert_p010_to_rgba(
-        &y, &uv, W, H, y_stride, uv_stride, W, H, 0, is_hdr,
+        &y, &uv, W, H, y_stride, uv_stride, W, H, 0,
+        color_ids, IDENTITY_PRIMARIES_MATRIX_PACKED,
     );
     let gpu_buffer = conv.convert_p010_to_rgba_on_gpu(
-        &y, &uv, W, H, y_stride, uv_stride, W, H, 0, is_hdr,
+        &y, &uv, W, H, y_stride, uv_stride, W, H, 0,
+        color_ids, IDENTITY_PRIMARIES_MATRIX_PACKED,
     );
     let frame = Frame::Gpu(GpuFrame::new(conv.device(), conv.queue(), gpu_buffer, W, H));
     let gpu_bytes = frame.into_cpu().data;
@@ -81,7 +95,10 @@ fn p010_successive_gpu_buffers_are_independent() {
         return;
     };
     let (y1, uv1, ys, us) = make_p010(W, H);
-    let buf1 = conv.convert_p010_to_rgba_on_gpu(&y1, &uv1, W, H, ys, us, W, H, 0, false);
+    let buf1 = conv.convert_p010_to_rgba_on_gpu(
+        &y1, &uv1, W, H, ys, us, W, H, 0,
+        COLOR_IDS_BT709_SDR, IDENTITY_PRIMARIES_MATRIX_PACKED,
+    );
 
     // Mutate Y samples (keep them in range). Two distinct inputs must
     // produce two distinct outputs; a reused internal buffer would
@@ -92,7 +109,10 @@ fn p010_successive_gpu_buffers_are_independent() {
         let mutated = v.wrapping_add(0x0200); // shift ~8 codes up
         chunk.copy_from_slice(&mutated.to_le_bytes());
     }
-    let buf2 = conv.convert_p010_to_rgba_on_gpu(&y2, &uv1, W, H, ys, us, W, H, 0, false);
+    let buf2 = conv.convert_p010_to_rgba_on_gpu(
+        &y2, &uv1, W, H, ys, us, W, H, 0,
+        COLOR_IDS_BT709_SDR, IDENTITY_PRIMARIES_MATRIX_PACKED,
+    );
 
     let frame1 = Frame::Gpu(GpuFrame::new(conv.device(), conv.queue(), Arc::clone(&buf1), W, H));
     let frame2 = Frame::Gpu(GpuFrame::new(conv.device(), conv.queue(), Arc::clone(&buf2), W, H));

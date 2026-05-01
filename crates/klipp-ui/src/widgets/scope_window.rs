@@ -3,6 +3,7 @@ use crate::state::{
     ScopeWindowState, VectorscopeScaleStyle, WaveformChannel, WaveformPaintMode,
     WaveformScaleStyle,
 };
+use crate::theme::KlippTheme;
 use klipp_engine::SharedFrameBuffer;
 use std::time::Instant;
 
@@ -85,6 +86,7 @@ pub fn sample_viewer_pixel(
 }
 
 /// Show the floating scope window.
+#[allow(clippy::too_many_arguments)]
 pub fn show_scope_window(
     ctx: &egui::Context,
     state: &mut ScopeWindowState,
@@ -108,6 +110,7 @@ pub fn show_scope_window(
     // (each slice is one `Vec<f32>` of 256 values in 0.0–1.0) for the
     // spectrogram waterfall scope. Collected at the call site.
     spectrum_history: &[Vec<f32>],
+    theme: &KlippTheme,
 ) {
     if !state.open {
         return;
@@ -148,8 +151,8 @@ pub fn show_scope_window(
         .default_pos([100.0, 60.0])
         .show(ctx, |ui| {
             let panel_frame = egui::Frame::none()
-                .fill(egui::Color32::from_rgb(0x1c, 0x1c, 0x20))
-                .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x3a, 0x3a, 0x40)))
+                .fill(theme.bg_panel_alt)
+                .stroke(egui::Stroke::new(1.0_f32, theme.border_light))
                 .rounding(4.0)
                 .inner_margin(0.0)
                 .shadow(egui::Shadow { offset: egui::vec2(0.0, 2.0), blur: 12.0, spread: 0.0, color: egui::Color32::from_black_alpha(100) });
@@ -164,15 +167,15 @@ pub fn show_scope_window(
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 3.0;
                             // Scopes label
-                            ui.label(egui::RichText::new("Scopes").size(11.0).color(egui::Color32::from_rgb(0x90, 0x90, 0x98)));
+                            ui.label(egui::RichText::new("Scopes").size(11.0).color(theme.text_secondary));
                             ui.separator();
                             // Layout buttons
                             for (layout, label) in [(ScopeLayout::OnePane, "1"), (ScopeLayout::TwoPane, "2"),
                                 (ScopeLayout::FourPane, "4"), (ScopeLayout::NinePane, "9")] {
                                 let active = state.layout == layout;
-                                let color = if active { egui::Color32::from_rgb(0xf5, 0xb4, 0x3c) } else { egui::Color32::from_rgb(0x60, 0x60, 0x68) };
+                                let color = if active { theme.accent } else { theme.text_dim };
                                 if ui.add(egui::Button::new(egui::RichText::new(label).size(9.0).color(color))
-                                    .fill(if active { egui::Color32::from_rgb(0x2a, 0x25, 0x18) } else { egui::Color32::TRANSPARENT })
+                                    .fill(if active { theme.accent_subtle } else { egui::Color32::TRANSPARENT })
                                     .min_size(egui::vec2(16.0, 14.0))).clicked() {
                                     state.layout = layout;
                                     state.panes = PaneConfig::default_for_layout(layout);
@@ -182,12 +185,12 @@ pub fn show_scope_window(
                             // Right-aligned: close button
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 if ui.add(egui::Button::new(
-                                    egui::RichText::new("x").size(11.0).color(egui::Color32::from_rgb(0x80, 0x80, 0x88))
+                                    egui::RichText::new("x").size(11.0).color(theme.text_dim)
                                 ).frame(false)).clicked() {
                                     state.open = false;
                                 }
                                 // ··· menu
-                                let dot_color = if runtime.dot_menu_open { egui::Color32::from_rgb(0xf5, 0xb4, 0x3c) } else { egui::Color32::from_rgb(0x70, 0x70, 0x78) };
+                                let dot_color = if runtime.dot_menu_open { theme.accent } else { theme.text_dim };
                                 if ui.add(egui::Button::new(
                                     egui::RichText::new("\u{2022}\u{2022}\u{2022}").size(10.0).color(dot_color)
                                 ).frame(false)).clicked() {
@@ -214,9 +217,9 @@ pub fn show_scope_window(
                                 let y = cursor.y + row as f32 * (pane_h + gap);
                                 let pane_rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(pane_w, pane_h));
                                 ui.painter().rect_stroke(pane_rect, 0.0,
-                                    egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(0x2a, 0x2a, 0x30)));
+                                    egui::Stroke::new(0.5_f32, theme.border));
                                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
-                                draw_pane(&mut child, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history);
+                                draw_pane(&mut child, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme);
                             }
                         }
 
@@ -238,6 +241,7 @@ pub fn show_scope_window(
 
 // ── Per-pane rendering ───────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 fn draw_pane(
     ui: &mut egui::Ui,
     pane_idx: usize,
@@ -252,6 +256,7 @@ fn draw_pane(
     lufs_history: &[f32],
     lufs_target: f32,
     spectrum_history: &[Vec<f32>],
+    theme: &KlippTheme,
 ) {
     let pane_rect = ui.max_rect();
     let scope_type = state.panes[pane_idx].scope_type;
@@ -275,11 +280,16 @@ fn draw_pane(
     // Use painter_at to ensure we can paint anywhere in the pane
     let p = ui.painter_at(pane_rect);
 
-    // Dark background for content
-    p.rect_filled(content_rect, 0.0, egui::Color32::from_rgb(0x04, 0x04, 0x07));
+    // Scope display surface — themed via `scope_bg` so each theme
+    // can pick a backdrop tuned to its trace colours. Dark + Solarized
+    // stay near-black; Light theme uses a softer dark grey so the
+    // scope panel doesn't punch a stark black hole through the
+    // otherwise light UI while still keeping the trace colours
+    // (which are designed for dark backgrounds) legible.
+    p.rect_filled(content_rect, 0.0, theme.scope_bg);
 
     // Header background
-    p.rect_filled(header_rect, 0.0, egui::Color32::from_rgb(0x1a, 0x1a, 0x1e));
+    p.rect_filled(header_rect, 0.0, theme.bg_deep);
 
     // Scope type label (clickable for dropdown)
     let type_text = format!("{} \u{25be}", scope_type.label());
@@ -288,7 +298,7 @@ fn draw_pane(
         egui::Align2::LEFT_CENTER,
         &type_text,
         egui::FontId::proportional(10.0),
-        egui::Color32::from_rgb(0xc0, 0xc0, 0xc8),
+        theme.text_secondary,
     );
     let type_click_rect = egui::Rect::from_min_size(header_rect.min, egui::vec2(header_rect.width() - 24.0, header_h));
     if ui.allocate_rect(type_click_rect, egui::Sense::click()).clicked() {
@@ -304,9 +314,9 @@ fn draw_pane(
         egui::vec2(22.0, header_h),
     );
     let gear_color = if runtime.settings_pane == Some(pane_idx) {
-        egui::Color32::from_rgb(0xf5, 0xb4, 0x3c)
+        theme.accent
     } else {
-        egui::Color32::from_rgb(0x70, 0x70, 0x78)
+        theme.text_dim
     };
     p.text(
         gear_rect.center(), egui::Align2::CENTER_CENTER,
@@ -395,18 +405,18 @@ fn draw_pane(
                     // Close button at the top
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("SETTINGS").size(9.0)
-                            .color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).strong());
+                            .color(theme.text_dim).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.add(egui::Button::new(
                                 egui::RichText::new("x").size(10.0)
-                                    .color(egui::Color32::from_rgb(0x90, 0x90, 0x98))
+                                    .color(theme.text_secondary)
                             ).frame(false)).clicked() {
                                 runtime.settings_pane = None;
                             }
                         });
                     });
                     ui.separator();
-                    draw_pane_settings(ui, pane_idx, state);
+                    draw_pane_settings(ui, pane_idx, state, theme);
                 });
             });
         // Close on click outside the settings panel
@@ -426,9 +436,10 @@ fn draw_pane(
         return;
     }
 
-    render_pane_scope(ui, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, content_rect, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history);
+    render_pane_scope(ui, pane_idx, state, runtime, frame_buffer, skin_tone_angle, is_playing, content_rect, scope_cursor, spectrum_bins, correlation_samples, lufs_history, lufs_target, spectrum_history, theme);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_pane_scope(
     ui: &mut egui::Ui,
     pane_idx: usize,
@@ -444,6 +455,7 @@ fn render_pane_scope(
     lufs_history: &[f32],
     lufs_target: f32,
     spectrum_history: &[Vec<f32>],
+    theme: &KlippTheme,
 ) {
     let pane = &state.panes[pane_idx];
     let render_h: usize = 256; // Smaller for multi-pane to stay fast
@@ -601,7 +613,9 @@ fn render_pane_scope(
             // Saturation rings
             let rings = crate::state::compute_saturation_rings(&pane.settings, side);
             let ring_alpha = crate::state::graticule_alpha(pane.settings.vectorscope_graticule_brightness);
-            let ring_color = egui::Color32::from_rgba_unmultiplied(0xf5, 0xb4, 0x3c, (ring_alpha * 80.0) as u8);
+            let ring_color = egui::Color32::from_rgba_unmultiplied(
+                theme.accent.r(), theme.accent.g(), theme.accent.b(), (ring_alpha * 80.0) as u8,
+            );
             for ring in &rings {
                 painter.circle_stroke(img_rect.center(), ring.radius, egui::Stroke::new(0.5_f32, ring_color));
             }
@@ -609,7 +623,7 @@ fn render_pane_scope(
             // Vectorscope color target labels (R, Mg, B, Cy, G, Yl)
             if pane.scope_type == ScopeType::Vectorscope {
                 let label_font = egui::FontId::monospace(8.0);
-                let label_color = egui::Color32::from_rgb(0x90, 0x78, 0x30);
+                let label_color = theme.scope_label;
                 let cx = img_rect.center().x;
                 let cy = img_rect.center().y;
                 let rad = side / 2.0 - 4.0;
@@ -638,7 +652,9 @@ fn render_pane_scope(
             // ~10 s of rolling window. Five tick labels along the
             // bottom: -10s, -8s, -5s, -2s, now.
             let label_font = egui::FontId::monospace(9.0);
-            let label_color = egui::Color32::from_rgba_unmultiplied(245, 180, 60, 200);
+            let label_color = egui::Color32::from_rgba_unmultiplied(
+                theme.accent.r(), theme.accent.g(), theme.accent.b(), 200,
+            );
             let shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180);
             let bottom_pad = 2.0;
             let ticks: &[(f32, &str)] = &[
@@ -704,12 +720,14 @@ fn render_pane_scope(
             painter.image(tex.id(), img_rect, uv, tint);
 
             let is_parade = pane.scope_type == ScopeType::Parade;
-            super::scopes::draw_scale(ui, r, scale, is_parade, 3);
+            super::scopes::draw_scale(ui, r, scale, is_parade, 3, theme);
 
             // Reference level lines (amber dashed)
             if pane.settings.show_reference_levels {
                 let lines = crate::state::compute_reference_lines(&pane.settings, r.height());
-                let amber_ref = egui::Color32::from_rgba_unmultiplied(0xf5, 0xb4, 0x3c, 140);
+                let amber_ref = egui::Color32::from_rgba_unmultiplied(
+                    theme.accent.r(), theme.accent.g(), theme.accent.b(), 140,
+                );
                 for line in &lines {
                     let y = r.min.y + line.y;
                     let x0 = r.min.x + super::scopes::AXIS_W;
@@ -837,13 +855,13 @@ pub fn draw_scope_cursor_indicator(
 
 // ── Per-pane settings panels ─────────────────────────────────────────────
 
-fn draw_pane_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindowState) {
+fn draw_pane_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindowState, theme: &KlippTheme) {
     let scope_type = state.panes[pane_idx].scope_type;
     match scope_type {
-        ScopeType::Waveform => draw_waveform_settings(ui, pane_idx, state),
-        ScopeType::Parade => draw_parade_settings(ui, pane_idx, state),
-        ScopeType::Vectorscope => draw_vectorscope_settings(ui, pane_idx, state),
-        ScopeType::Histogram => draw_histogram_settings(ui, pane_idx, state),
+        ScopeType::Waveform => draw_waveform_settings(ui, pane_idx, state, theme),
+        ScopeType::Parade => draw_parade_settings(ui, pane_idx, state, theme),
+        ScopeType::Vectorscope => draw_vectorscope_settings(ui, pane_idx, state, theme),
+        ScopeType::Histogram => draw_histogram_settings(ui, pane_idx, state, theme),
         ScopeType::CIEChromaticity => {
             ui.label("No settings available.");
         }
@@ -913,7 +931,7 @@ fn draw_pane_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindo
     }
 }
 
-fn draw_waveform_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindowState) {
+fn draw_waveform_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindowState, theme: &KlippTheme) {
     let s = &mut state.panes[pane_idx].settings;
 
     // Channel selector: Y R G B
@@ -928,9 +946,9 @@ fn draw_waveform_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeW
             let is_sel = s.waveform_channel == *ch;
             let btn = egui::Button::new(
                 egui::RichText::new(ch.label()).size(11.0)
-                    .color(if is_sel { *color } else { egui::Color32::from_rgb(0x60, 0x60, 0x68) })
+                    .color(if is_sel { *color } else { theme.text_dim })
             ).min_size(egui::vec2(30.0, 20.0))
-             .fill(if is_sel { color.linear_multiply(0.2) } else { egui::Color32::from_rgb(0x28, 0x28, 0x2c) });
+             .fill(if is_sel { color.linear_multiply(0.2) } else { theme.bg_panel });
             if ui.add(btn).clicked() {
                 s.waveform_channel = *ch;
             }
@@ -945,7 +963,7 @@ fn draw_waveform_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeW
 
     // Paint mode — monochrome base colour (ignored when Colorize is on).
     ui.label(egui::RichText::new("PAINT MODE").size(9.0)
-        .color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).strong());
+        .color(theme.text_dim).strong());
     ui.radio_value(&mut s.waveform_paint_mode, WaveformPaintMode::Green, "Green");
     ui.radio_value(&mut s.waveform_paint_mode, WaveformPaintMode::Yellow, "Yellow");
     ui.radio_value(&mut s.waveform_paint_mode, WaveformPaintMode::White, "White");
@@ -955,7 +973,7 @@ fn draw_waveform_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeW
 
     // Brightness sliders
     ui.label(egui::RichText::new("DISPLAY").size(9.0)
-        .color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).strong());
+        .color(theme.text_dim).strong());
     ui.horizontal(|ui| {
         ui.label("Waveform");
         ui.add(egui::Slider::new(&mut s.waveform_brightness, 0.0..=1.0).show_value(false));
@@ -973,7 +991,7 @@ fn draw_waveform_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeW
     ui.separator();
 
     ui.label(egui::RichText::new("QUALITY").size(9.0)
-        .color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).strong());
+        .color(theme.text_dim).strong());
     ui.horizontal(|ui| {
         ui.radio_value(&mut s.quality, klipp_core::ScopeQuality::Low, "Draft");
         ui.radio_value(&mut s.quality, klipp_core::ScopeQuality::Medium, "Standard");
@@ -987,26 +1005,24 @@ fn draw_waveform_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeW
     if s.show_reference_levels {
         ui.horizontal(|ui| {
             ui.label("Low");
-            let amber = egui::Color32::from_rgb(0xf5, 0xb4, 0x3c);
             ui.painter().circle_filled(
                 egui::pos2(ui.available_rect_before_wrap().max.x - 20.0, ui.available_rect_before_wrap().center().y),
-                3.0, amber,
+                3.0, theme.accent,
             );
             ui.add(egui::DragValue::new(&mut s.reference_low).range(0.0..=1023.0).speed(1.0));
         });
         ui.horizontal(|ui| {
             ui.label("High");
-            let amber = egui::Color32::from_rgb(0xf5, 0xb4, 0x3c);
             ui.painter().circle_filled(
                 egui::pos2(ui.available_rect_before_wrap().max.x - 20.0, ui.available_rect_before_wrap().center().y),
-                3.0, amber,
+                3.0, theme.accent,
             );
             ui.add(egui::DragValue::new(&mut s.reference_high).range(0.0..=1023.0).speed(1.0));
         });
     }
 }
 
-fn draw_vectorscope_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindowState) {
+fn draw_vectorscope_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindowState, theme: &KlippTheme) {
     let s = &mut state.panes[pane_idx].settings;
 
     // Brightness sliders
@@ -1034,7 +1050,7 @@ fn draw_vectorscope_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut Sco
     ui.separator();
 
     ui.label(egui::RichText::new("ADDITIONAL GAMUT").size(9.0)
-        .color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).strong());
+        .color(theme.text_dim).strong());
     ui.checkbox(&mut s.show_2x_zoom, "Show 2x Zoom");
     ui.checkbox(&mut s.show_skin_tone_indicator, "Show Skin Tone Indicator");
     ui.checkbox(&mut s.show_iq_lines, "Show I/Q Lines")
@@ -1042,11 +1058,11 @@ fn draw_vectorscope_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut Sco
     ui.checkbox(&mut s.show_graticule, "Show Graticule");
 }
 
-fn draw_parade_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindowState) {
+fn draw_parade_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindowState, theme: &KlippTheme) {
     let s = &mut state.panes[pane_idx].settings;
 
     ui.label(egui::RichText::new("DISPLAY").size(9.0)
-        .color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).strong());
+        .color(theme.text_dim).strong());
     ui.checkbox(&mut s.low_pass, "Low Pass Filter");
     ui.checkbox(&mut s.bloom, "Bloom on dense regions");
     ui.checkbox(&mut s.overlay_on_viewer, "Overlay on viewer");
@@ -1054,7 +1070,7 @@ fn draw_parade_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWin
     ui.separator();
 
     ui.label(egui::RichText::new("QUALITY").size(9.0)
-        .color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).strong());
+        .color(theme.text_dim).strong());
     ui.horizontal(|ui| {
         ui.radio_value(&mut s.quality, klipp_core::ScopeQuality::Low, "Draft");
         ui.radio_value(&mut s.quality, klipp_core::ScopeQuality::Medium, "Standard");
@@ -1064,24 +1080,24 @@ fn draw_parade_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWin
     ui.separator();
 
     ui.label(egui::RichText::new("SCALE").size(9.0)
-        .color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).strong());
+        .color(theme.text_dim).strong());
     ui.radio_value(&mut s.scale, ScopeScale::TenBit, "0 \u{2013} 1023 (10-bit)");
     ui.radio_value(&mut s.scale, ScopeScale::Ire, "0 \u{2013} 100 IRE");
     ui.radio_value(&mut s.scale, ScopeScale::Percent, "0 \u{2013} 100%");
 }
 
-fn draw_histogram_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindowState) {
+fn draw_histogram_settings(ui: &mut egui::Ui, pane_idx: usize, state: &mut ScopeWindowState, theme: &KlippTheme) {
     let s = &mut state.panes[pane_idx].settings;
 
     ui.label(egui::RichText::new("DISPLAY").size(9.0)
-        .color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).strong());
+        .color(theme.text_dim).strong());
     ui.checkbox(&mut s.low_pass, "Low Pass Filter");
     ui.checkbox(&mut s.bloom, "Bloom on dense regions");
 
     ui.separator();
 
     ui.label(egui::RichText::new("SCALE").size(9.0)
-        .color(egui::Color32::from_rgb(0x80, 0x80, 0x88)).strong());
+        .color(theme.text_dim).strong());
     ui.radio_value(&mut s.histogram_scale, HistogramScale::Sqrt, "\u{221A} Sqrt (default)");
     ui.radio_value(&mut s.histogram_scale, HistogramScale::Linear, "Linear");
     ui.radio_value(&mut s.histogram_scale, HistogramScale::Log, "Log");

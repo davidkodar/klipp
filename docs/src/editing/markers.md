@@ -4,27 +4,27 @@ Markers are visual reference points placed on the timeline to annotate specific 
 
 ## Adding Markers
 
-Press **M** at the current playhead position to add a marker. The marker appears as a small colored indicator on the timeline ruler.
+Press **M** at the current playhead position to add a marker. The marker appears as a small coloured indicator on the timeline ruler.
 
 ## Editing Markers
 
 Double-click a marker to edit its properties:
 
-- **Name** -- A short label displayed on the marker
-- **Notes** -- Longer description or comments
-- **Color** -- Choose from preset colors for visual categorization
+- **Name** — Short label displayed on the marker
+- **Notes** — Longer description or comments
+- **Color** — Choose from preset colours for visual categorisation
 
-## Color Coding
+## Colour Coding
 
-Assign colors to markers to categorize them visually:
+Assign colours to categorise markers visually. A common convention:
 
-- **Red** -- Needs attention or revision
-- **Yellow** -- Review pending
-- **Green** -- Approved
-- **Blue** -- Notes or reference
-- **Purple** -- Music or audio cue
+- **Red** — Needs attention or revision
+- **Yellow** — Review pending
+- **Green** — Approved
+- **Blue** — Notes or reference
+- **Purple** — Music or audio cue
 
-Color assignments are flexible; use whatever system works for your workflow.
+Colour assignments are flexible; use whatever system works for your workflow.
 
 ## Navigating Between Markers
 
@@ -36,11 +36,11 @@ Color assignments are flexible; use whatever system works for your workflow.
 
 ## Deleting Markers
 
-Select a marker on the timeline ruler and press **Del** to remove it. You can also right-click a marker and choose **Delete Marker** from the context menu.
+Select a marker on the ruler and press **Del** to remove. You can also right-click and choose **Delete Marker**.
 
 ## Markers and Export
 
-Markers are metadata -- they do not affect the exported video. However, chapter markers can be included in certain export formats that support chapters (e.g., MKV, MP4).
+Markers are metadata — they do not affect the exported video. However, *chapter markers* can be included in export formats that support chapters (MKV, MP4). To promote a marker to a chapter, edit its properties and check **Export as chapter**.
 
 ## Clip Markers vs Timeline Markers
 

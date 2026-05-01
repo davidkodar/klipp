@@ -13,10 +13,27 @@
 //! filter recovers that headroom. Phase 0 is the identity tap (so
 //! the output set always includes the original sample value).
 //!
-//! Note on the FIR table: the prompt's hand-rolled coefficient table
-//! was not normalised correctly (phase DC gains drifted from 1.0).
-//! Substituted a runtime-computed Hann-windowed sinc per the prompt's
-//! standing instruction to use a known-good source instead.
+//! ## Substitute-filter caveat (CODE_AUDIT C-6)
+//!
+//! The 48 coefficients we use are **NOT byte-exact** to the reference
+//! table in BS.1770-4 Annex 2 Table 1. We use a runtime-computed
+//! Hann-windowed sinc (a textbook 4× anti-image low-pass) as a stand-
+//! in. The earlier hand-rolled coefficient table had phase DC gains
+//! drifting from 1.0 and was replaced with this known-good prototype.
+//!
+//! For loudness metering inside a video editor — i.e. catching dBTP
+//! values within ~0.5 dB of true so the user can mix to a target —
+//! this is fine. For *byte-exact* BS.1770-4 compliance (e.g. for
+//! third-party audit), the reference coefficient table from the
+//! standard would have to be used instead. Replacing is straight-
+//! forward (drop in 48 numbers, keep the polyphase decomposition);
+//! it just needs the spec PDF in front of the implementer to copy
+//! the table cleanly.
+//!
+//! The bounded-tolerance regression tests at the bottom of this
+//! file pin the current substitute's behaviour on synthesised
+//! reference vectors so a future "let me clean up that FIR" can't
+//! silently regress into something worse than the current filter.
 
 use std::sync::OnceLock;
 
@@ -209,5 +226,152 @@ mod tests {
             let p = det.process(0.0, 0.0);
             assert_eq!(p, 0.0);
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Bounded-tolerance reference tests — closes CODE_AUDIT C-6.
+    //
+    // The four qualitative tests above prove the filter "does
+    // something reasonable". These tests pin the actual numeric
+    // behaviour so a future change to the FIR (e.g. someone tries to
+    // drop in the BS.1770-4 Annex 2 reference table) is checked
+    // against expected outputs on synthesised stress signals.
+    //
+    // Tolerance bands are chosen wide enough that a *byte-exact*
+    // BS.1770-4 reference filter would also satisfy them — so a
+    // future replacement that's compliant won't fail these tests.
+    // They're tight enough to fail if someone breaks the polyphase
+    // decomposition or de-normalises a phase.
+    // ═══════════════════════════════════════════════════════════════
+
+    /// Run a stereo sine through the detector for `n` samples and
+    /// return both the maximum sample-hold amplitude and the
+    /// maximum true-peak the detector reports.
+    fn sweep_sine(amp: f32, freq_hz: f32, sample_rate: f32, n: usize)
+        -> (f32 /* sample-hold */, f32 /* true-peak */)
+    {
+        sweep_sine_phase(amp, freq_hz, sample_rate, 0.0, n)
+    }
+
+    /// Like `sweep_sine` but lets the caller pick the starting phase.
+    /// Useful for the inter-sample-peak test where the phase offset
+    /// is what guarantees samples avoid the actual peak.
+    fn sweep_sine_phase(
+        amp: f32, freq_hz: f32, sample_rate: f32, phase_rad: f32, n: usize,
+    ) -> (f32 /* sample-hold */, f32 /* true-peak */)
+    {
+        use std::f32::consts::PI;
+        let mut det = TruePeakDetector::new();
+        let mut sample_hold: f32 = 0.0;
+        let mut true_peak: f32 = 0.0;
+        for i in 0..n {
+            let t = i as f32 / sample_rate;
+            let s = amp * (2.0 * PI * freq_hz * t + phase_rad).sin();
+            sample_hold = sample_hold.max(s.abs());
+            let tp = det.process(s, s);
+            true_peak = true_peak.max(tp);
+        }
+        (sample_hold, true_peak)
+    }
+
+    /// Convert a linear amplitude ratio to dB.
+    fn db(x: f32) -> f32 { 20.0 * x.log10() }
+
+    #[test]
+    fn ref_low_frequency_sine_recovers_full_amplitude() {
+        // 1 kHz at 48 kHz Fs: well below Nyquist, no inter-sample
+        // peak loss. True peak should be within 0.5 dB of the sine's
+        // amplitude (0.7).
+        let (sample_hold, true_peak) = sweep_sine(0.7, 1000.0, 48000.0, 4800);
+        assert!(true_peak > 0.66 && true_peak < 0.74,
+            "1 kHz sine of amp 0.7: true-peak {} (expected ≈0.7 ± 0.5 dB)", true_peak);
+        // Sample-hold also gets close because sample alignment is
+        // dense (48 samples per cycle).
+        assert!(sample_hold > 0.65,
+            "1 kHz sine should be densely sampled — got sample-hold {}", sample_hold);
+    }
+
+    #[test]
+    fn ref_near_nyquist_sine_recovers_inter_sample_peaks() {
+        use std::f32::consts::PI;
+        // freq = Fs/4 (12 kHz at 48 kHz) gives exactly 4 samples
+        // per cycle. With phase offset π/4 the samples land at
+        // π/4, 3π/4, 5π/4, 7π/4 — i.e. ±sin(π/4) = ±0.7071 — and
+        // NEVER at the actual peak. Sample-hold therefore reads
+        // ~0.707 * amplitude (under by ~3 dB), and a working true-
+        // peak filter must recover most of the missing 3 dB.
+        //
+        // This is the canonical inter-sample-peak stress test: a
+        // longer sweep at e.g. 0.45 × Nyquist would eventually have
+        // *some* sample land near the peak (because the sample
+        // rate and signal frequency aren't commensurate), so
+        // sample-hold reads ≈ amp and the test couldn't tell true-
+        // peak from sample-hold.
+        let amp = 0.5;
+        let (sample_hold, true_peak) =
+            sweep_sine_phase(amp, 12000.0, 48000.0, PI / 4.0, 1024);
+
+        // Sample-hold under-reads by ~3 dB (sin(π/4) ≈ 0.707).
+        let under_read_db = db(sample_hold / amp);
+        assert!(under_read_db < -2.5,
+            "Sample-hold should under-read by ~3 dB at Fs/4 phase=π/4; got {:.2} dB", under_read_db);
+
+        // True-peak should recover within ~1.5 dB. BS.1770-4 would
+        // be tighter (~0.3 dB); our substitute is wider but still
+        // way better than the 3 dB sample-hold loss, which is the
+        // user-visible point.
+        let recovery_db = db(true_peak / amp);
+        assert!(recovery_db > -1.5 && recovery_db < 0.5,
+            "True-peak should recover to within 1.5 dB; got {:.2} dB", recovery_db);
+
+        assert!(true_peak > sample_hold + 0.05,
+            "true-peak ({}) must clearly exceed sample-hold ({}) at Fs/4 phase=π/4", true_peak, sample_hold);
+    }
+
+    #[test]
+    fn ref_impulse_response_settles_near_unity() {
+        // A single 1.0 impulse, then silence: the filter's response
+        // peaks at unity (the centre tap is the maximum coefficient).
+        // After the delay line drains we return to ~0. This pins the
+        // overall gain calibration — a phase that's lost its DC
+        // normalisation would push this peak away from 1.0.
+        let mut det = TruePeakDetector::new();
+        let mut peak: f32 = 0.0;
+        peak = peak.max(det.process(1.0, 1.0));
+        for _ in 0..PROTOTYPE_LEN {
+            peak = peak.max(det.process(0.0, 0.0));
+        }
+        // Tolerance is wide because each phase is DC-normalised, not
+        // peak-normalised — the exact response peak depends on the
+        // window. Anywhere in [0.4, 1.2] is fine; outside means the
+        // FIR has lost its calibration.
+        assert!(peak >= 0.4 && peak <= 1.2,
+            "impulse response peak {} should be near unity (range 0.4..1.2)", peak);
+    }
+
+    #[test]
+    fn ref_zero_amplitude_sine_is_zero_peak() {
+        // Sanity: a sine of amplitude 0 produces zero true-peak.
+        // Catches a regression where the filter biases the output.
+        let (sh, tp) = sweep_sine(0.0, 1000.0, 48000.0, 1024);
+        assert_eq!(sh, 0.0);
+        assert!(tp.abs() < 1e-5,
+            "zero-amplitude sine must produce zero true-peak, got {}", tp);
+    }
+
+    #[test]
+    fn ref_full_scale_sine_does_not_overshoot_significantly() {
+        // 0 dBFS sine at 1 kHz: a well-behaved upsampler shouldn't
+        // generate a true-peak much above 1.0 (the filter's job is
+        // to RECOVER inter-sample peaks, not amplify). At 1 kHz the
+        // inter-sample gain is essentially 1.0, so true-peak ≈ 1.0.
+        // We allow up to 0.5 dB of overshoot — anything more means
+        // the polyphase decomposition has gain error.
+        let (_, true_peak) = sweep_sine(1.0, 1000.0, 48000.0, 4800);
+        assert!(true_peak <= 1.06,
+            "1 kHz 0 dBFS sine: true-peak {} should not overshoot 1.0 by more than ~0.5 dB", true_peak);
+        // And shouldn't be wildly under either.
+        assert!(true_peak >= 0.95,
+            "1 kHz 0 dBFS sine: true-peak {} should be close to 1.0 (not under by more than ~0.5 dB)", true_peak);
     }
 }

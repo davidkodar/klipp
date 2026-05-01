@@ -40,16 +40,19 @@ fn color_balance_graph() -> NodeGraph {
             id: source, kind: NodeKind::Source, label: "Source".into(),
             enabled: true, params: NodeParams::default(),
             keyframes: NodeKeyframeTracks::default(),
+            output_link: None, input_links: vec![],
         },
         Node {
             id: colorbal, kind: NodeKind::ColorBalance, label: "CB".into(),
             enabled: true, params: p,
             keyframes: NodeKeyframeTracks::default(),
+            output_link: None, input_links: vec![],
         },
         Node {
             id: output, kind: NodeKind::Output, label: "Output".into(),
             enabled: true, params: NodeParams::default(),
             keyframes: NodeKeyframeTracks::default(),
+            output_link: None, input_links: vec![],
         },
     ];
     let edges = vec![
@@ -60,7 +63,7 @@ fn color_balance_graph() -> NodeGraph {
     for (i, n) in nodes.iter().enumerate() {
         positions.insert(n.id, NodePos { x: (i as f32) * 180.0, y: 0.0 });
     }
-    NodeGraph { nodes, edges, output_node_id: output, node_positions: positions }
+    NodeGraph { nodes, edges, output_node_id: output, node_positions: positions, working_space_override: None }
 }
 
 fn pattern_u8(width: u32, height: u32) -> Vec<u8> {

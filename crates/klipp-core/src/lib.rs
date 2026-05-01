@@ -30,6 +30,8 @@
 //!   via `klipp-project`; treat any breaking rename as a migration.
 
 pub mod color_grade;
+pub mod color_ids;
+pub mod colorspace;
 pub mod config;
 pub mod events;
 pub mod generator;
@@ -45,10 +47,12 @@ pub mod startup_timer;
 pub mod time;
 pub mod transition_registry;
 pub mod types;
+pub mod working_colorspace;
 
-pub use color_grade::{ColorMatchSettings, ColorWarperParams, CurveSet, FilmGrainSettings, HueSatCurves, Mask, MaskKeyframes, MaskShape, MaskStack, QualifierSettings};
+pub use color_grade::{ColorMatchSettings, ColorWarperParams, CurveSet, FilmGrainSettings, HueSatCurves, LayerMixerInput, Mask, MaskKeyframes, MaskShape, MaskStack, QualifierSettings};
+pub use colorspace::{ColorMatrix, ColorPrimaries, ColorRange, ColorTransfer, SourceColorspace};
 pub use keyframe::{Interpolation, Keyframe};
-pub use events::{AppCommand, AppEvent, AudioParam, ChapterSnapshot, EncoderPreset, ExportAudioCodec, ExportFormat, ExportSettings, ExportVideoCodec, HdrMode, MarkerColor, MediaLoadedPayload, ParamChange, RateControl, ToneMapOp, Tool, TrackTarget, VideoParam, ViewerMode};
+pub use events::{AppCommand, AppEvent, AudioParam, ChapterSnapshot, EncoderPreset, ExportAudioCodec, ExportFormat, ExportSettings, ExportVideoCodec, HdrMode, MarkerColor, MediaLoadedPayload, OdtChoice, ParamChange, RateControl, ToneMapOp, Tool, TrackTarget, VideoParam, ViewerMode};
 pub use export_preset::{ExportPreset, ExportPresetSettings, PresetId, ProxyResolution, builtin_presets};
 pub use id::{BinId, ClipId, GroupId, MarkerId, MediaId, SequenceId, TrackId, TransitionId};
 pub use time::{Fps, RationalTime, TimeRange, Timecode};
@@ -58,3 +62,4 @@ pub use types::{AudioEffectInstance, BlendMode, ChannelConfig, ClipRole, ColorSp
 pub use transition_registry::{TransitionKind, TransitionSpec, TRANSITION_SPECS, spec_for_kind, spec_for_kind_id, spec_for_string_key};
 pub use config::{GpuPreference, LoudnessStandard, MeteringBallistics, PanLaw, PlaybackQuality, ScopeQuality};
 pub use gpu_vendor::GpuVendor;
+pub use working_colorspace::WorkingColorspace;

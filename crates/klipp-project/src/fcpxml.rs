@@ -456,6 +456,7 @@ mod tests {
             speed: 1.0,
             speed_keyframes: Vec::new(),
             audio_effects: Vec::new(),
+            audio_effect_keyframes: Default::default(),
             source_rotation: 0,
             enabled: true,
             solo: false,

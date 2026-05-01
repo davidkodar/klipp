@@ -1,30 +1,71 @@
 # Introduction
 
-Klipp is a non-linear video editor built for Linux. Written in Rust with an egui/eframe interface, it delivers GPU-accelerated editing, color grading, and effects processing without leaving the Linux desktop.
+Klipp is an in-progress non-linear video editor for Linux, written in Rust with an egui/eframe interface. This documentation describes what is currently wired up — not what works reliably, not what is feature-complete, and not what should be relied on for real work.
 
-## Why Klipp?
+## Status
 
-Linux has long lacked a native, fully-featured NLE that takes full advantage of modern hardware. Klipp fills that gap with a ground-up Rust implementation that provides:
+🚧 **Early development.**
 
-- **Hardware-accelerated decode** via CUDA NVDEC, VAAPI, or optimized software fallback
-- **GPU compute effects** through wgpu/Vulkan compute shaders
-- **Low-latency audio** with cpal and PipeWire/ALSA support
-- **Magnetic timeline** editing inspired by Final Cut Pro
-- **Color grading** with wheels, curves, scopes, and multiple color space support
+Many subsystems are stubbed, half-built, or actively changing. There is no stability commitment, no release schedule, no pre-built binaries, and no support. Building from source is currently the only way to run Klipp, and you should expect to hit rough edges, breakage, and incomplete features.
 
-## Key Features
+If you need a Linux NLE you can rely on for actual work today, use [Kdenlive](https://kdenlive.org/), [DaVinci Resolve](https://www.blackmagicdesign.com/products/davinciresolve), or [Olive](https://www.olivevideoeditor.org/). Klipp is not a replacement for any of them.
 
-- **Timeline Editing** -- Multi-track video and audio with magnetic snapping, ripple editing, insert/overwrite modes, and filmstrip thumbnails.
-- **Color Grading** -- Lift/Gamma/Gain/Offset wheels, curves editor, hue/saturation controls, and working color spaces including Rec.709, Rec.2020, and ACEScg.
-- **GPU Effects** -- Opacity, Gaussian Blur, Sharpen, Crop, Transform, Chroma Key, bloom, film grain, and more, all running on Vulkan compute shaders with CPU fallback.
-- **Audio Mixing** -- Per-clip volume, pan, and EQ with loudness metering (EBU R128), keyframeable parameters, and multiple fade curve types.
-- **Hardware Decode** -- CUDA NVDEC for NVIDIA GPUs provides real-time 4K playback with automatic downscaling.
-- **Export** -- H.264, H.265, ProRes, DNxHD output in MP4/MKV/MOV containers, plus FCPXML and EDL interchange.
+## What's Wired Up
 
-## Who Is Klipp For?
+The list below describes which subsystems currently produce output. None of these are claims of quality, completeness, or production readiness — they're just things you can poke at if you build Klipp from source.
 
-Klipp is designed for video editors who work on Linux and want capable editing tools without relying on compatibility layers or web-based apps. Whether you are cutting short films, producing YouTube content, or assembling corporate video, Klipp provides the tools you need with native Linux performance.
+### Timeline editing
+- Multi-track video and audio
+- Magnetic-timeline behaviours (insert / overwrite, ripple, snap)
+- Filmstrip thumbnails on video clips
+- Undo / redo with drag coalescing
 
-## Author and License
+### Colour pipeline
+- Lift / Gamma / Gain / Offset wheels and a curves editor
+- Working colourspaces: Rec.709, Rec.2020, ACEScg
+- Auto-detection for common camera log formats (Sony SLog3, Canon Log, Panasonic V-Log, Apple Log, ARRI Log-C, RED Log3G10) — not validated against reference workflows
+- Output Display Transforms (sRGB, Rec.709, Rec.2020, P3-D65)
+- A per-clip node graph for mattes and correctors
+- Keyframable parameters with several interpolation curves
 
-Klipp is developed by David Bolin and released under the GNU General Public License v3 (GPL-3.0).
+### GPU effects
+- Opacity, Gaussian Blur, Sharpen, Crop, Transform, Chroma Key
+- Vulkan compute shaders via wgpu, with CPU fallback
+
+### AI tools
+- Remove Background (BiRefNet, MIT)
+- Isolate Object (MobileSAM, Apache-2.0)
+- Detect Objects (RF-DETR-Seg, Apache-2.0)
+- All inference runs on-device. NVIDIA CUDA acceleration when the runtime libraries are present; CPU fallback otherwise. AMD and Intel GPU acceleration is not implemented yet.
+
+### Audio
+- Per-clip volume, pan, EQ, fade curves
+- EBU R128 loudness metering
+- Keyframable parameters
+- Output through cpal — PipeWire / ALSA / JACK
+
+### Decode
+- CUDA NVDEC (cuvid path) on NVIDIA hardware
+- Software decode fallback
+- A direct path for 10-bit camera-log YUV that bypasses libswscale's broken RGBA64LE output
+
+### Export
+- H.264 / H.265 / ProRes / DNxHD into MP4 / MKV / MOV
+- FCPXML and CMX 3600 EDL interchange
+- Per-clip ODT override at export time
+
+## What's Missing
+
+A non-exhaustive list of fundamentals that are either stubbed, unfinished, or not yet started:
+
+- Reliability — no extended soak-testing has been done
+- AMD ROCm and Intel OpenVINO for AI inference
+- Pre-built binaries / installers
+- Documentation accuracy under continued churn (this doc may drift)
+- Plugin host (no OFX, no LV2 yet)
+- Auto-captions / speech-to-text
+- Many polish items across audio, effects, and the timeline
+
+## Author and Licence
+
+Klipp is developed by David Bolin and released under the GNU General Public Licence v3 (GPL-3.0). GPL-3.0 is compatible with code under permissive licences (MIT, Apache-2.0); bundled assets such as Phosphor icons (MIT) and the Film Emulation LUT collection (MIT) are redistributed under their original terms.

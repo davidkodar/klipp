@@ -1,17 +1,72 @@
 use crate::state::AppState;
+use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 
 /// Cache for LUT preview thumbnails, stored in egui context data.
 #[derive(Clone, Default)]
 struct LutPreviewCache(std::collections::HashMap<std::path::PathBuf, egui::TextureHandle>);
 
-/// Show the Color tab content: color redirect, global LUT, and LUT presets.
+/// Show the Color tab content: per-clip Masks (if any), color
+/// redirect, global LUT, and LUT presets.
 pub fn show_color_and_luts(
     ui: &mut egui::Ui,
     state: &AppState,
+    theme: &KlippTheme,
     cmds: &mut Vec<AppCommand>,
 ) {
     egui::ScrollArea::vertical().auto_shrink([false; 2]).id_salt("color_lut_scroll").show(ui, |ui| {
+        // ── Masks section ──
+        // Lets Edit-workspace users edit masks without jumping to
+        // the Color workspace. Clicking a mask on the Program
+        // viewer routes inspector focus here via
+        // FocusMaskInspector. Render the full mask editor against a
+        // local clone of the stack — the helper emits SetNodeMasks
+        // on any change so the persistent path matches every other
+        // mask-edit site.
+        if let Some(clip_id) = state.selected_clip {
+            let mask_entry: Option<(klipp_nodes::NodeId, klipp_core::MaskStack, f64, Vec<usize>)> = state
+                .sequences
+                .get(state.active_sequence_idx)
+                .and_then(|seq| seq.tracks.iter()
+                    .flat_map(|t| t.clips.iter())
+                    .find(|c| c.id == clip_id)
+                    .map(|c| {
+                        let clip_time = (state.playhead_smooth_secs
+                            - c.timeline_in.to_secs_f64()).max(0.0);
+                        let mask_node = c.node_graph.nodes.iter()
+                            .find(|n| n.kind == klipp_nodes::NodeKind::Mask);
+                        mask_node.map(|n| {
+                            // Build the list of mask indices that have
+                            // a tracker bound to them, so the Re-track /
+                            // Untrack UI lights up for already-tracked
+                            // masks.
+                            let nid = n.id;
+                            let tracked: Vec<usize> = c.track_points.iter()
+                                .filter_map(|tp| tp.linked_mask
+                                    .filter(|(tn, _)| *tn == nid)
+                                    .map(|(_, mi)| mi))
+                                .collect();
+                            (nid, n.params.masks.clone().unwrap_or_default(), clip_time, tracked)
+                        })
+                    })
+                    .flatten());
+            if let Some((node_id, mut masks, clip_time_secs, tracked)) = mask_entry {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    ui.label(egui::RichText::new("MASKS")
+                        .size(11.0).strong().color(theme.text_primary));
+                });
+                ui.add_space(4.0);
+                crate::panels::node_inspector::NodeInspectorPanel::render_masks_body(
+                    ui, &mut masks, node_id, clip_id, cmds, theme, clip_time_secs, &tracked,
+                );
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+            }
+        }
+
         // Input Color Space selector
         if let Some(clip_id) = state.selected_clip {
             let current_log = state.sequences.get(state.active_sequence_idx)
@@ -26,7 +81,7 @@ pub fn show_color_and_luts(
             ui.horizontal(|ui| {
                 ui.add_space(12.0);
                 ui.label(egui::RichText::new("Input Color Space").size(10.0)
-                    .color(egui::Color32::from_rgb(0x90, 0x90, 0xa0)));
+                    .color(theme.text_dim));
             });
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -69,7 +124,7 @@ pub fn show_color_and_luts(
             if ui.button(
                 egui::RichText::new("Open Color Panel  (C)")
                     .size(11.0)
-                    .color(egui::Color32::from_rgb(0xe8, 0xa0, 0x20)),
+                    .color(theme.accent),
             ).clicked() {
                 cmds.push(AppCommand::ToggleColorPanel);
             }
@@ -92,9 +147,9 @@ pub fn show_color_and_luts(
                     cmds.push(AppCommand::SetGlobalLutEnabled(enabled));
                 }
                 let label_color = if state.global_lut_enabled {
-                    egui::Color32::from_rgb(100, 200, 120)
+                    theme.marker_success
                 } else {
-                    egui::Color32::from_rgb(120, 120, 130)
+                    theme.text_dim
                 };
                 ui.colored_label(label_color, &filename);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -181,9 +236,9 @@ pub fn show_color_and_luts(
                             );
                             // Background: subtle highlight for active, hover for others
                             if is_active {
-                                ui.painter().rect_filled(rect, 2.0, egui::Color32::from_rgba_premultiplied(232, 160, 32, 30));
+                                ui.painter().rect_filled(rect, 2.0, theme.accent_subtle);
                             } else if resp.hovered() {
-                                ui.painter().rect_filled(rect, 2.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 12));
+                                ui.painter().rect_filled(rect, 2.0, theme.bg_hover);
                             }
                             // LUT preview thumbnail (lazy-loaded only when visible)
                             let thumb_rect = egui::Rect::from_min_size(
@@ -199,14 +254,14 @@ pub fn show_color_and_luts(
                                         egui::Color32::WHITE,
                                     );
                                     // Subtle border around thumbnail
-                                    ui.painter().rect_stroke(thumb_rect, 1.0, egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(60, 60, 65)));
+                                    ui.painter().rect_stroke(thumb_rect, 1.0, egui::Stroke::new(0.5_f32, theme.border));
                                 }
                             }
                             // Text: white for active, dim for others
                             let text_color = if is_active {
-                                egui::Color32::from_rgb(255, 255, 255)
+                                theme.text_primary
                             } else {
-                                egui::Color32::from_rgb(180, 180, 190)
+                                theme.text_dim
                             };
                             let text_x = rect.min.x + thumb_size + 12.0;
                             // Active indicator dot
@@ -214,7 +269,7 @@ pub fn show_color_and_luts(
                                 ui.painter().circle_filled(
                                     egui::pos2(text_x, rect.center().y),
                                     3.0,
-                                    egui::Color32::from_rgb(232, 160, 32),
+                                    theme.accent,
                                 );
                             }
                             ui.painter().text(

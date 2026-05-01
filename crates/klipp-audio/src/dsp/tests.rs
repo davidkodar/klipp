@@ -766,3 +766,494 @@ fn normalize_params_roundtrip() {
     assert_eq!(fx2.get_param("target_lufs"), Some(-18.0));
     assert_eq!(fx2.get_param("mode"), Some(0.0));
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Honest-naming regression — closes CODE_AUDIT C-3 and C-5.
+//
+// Two effects had user-facing names that didn't match what the code
+// actually does:
+//
+//   * "Noise Reduction" was an 8-band noise gate (no spectral
+//     subtraction, no noise-profile capture). Renamed to "Multi-band
+//     Gate" — the type_id stays "noise_reduction" so existing .klipp
+//     projects keep loading.
+//   * "Brick-wall limiter" doc comment promised look-ahead behaviour;
+//     the implementation is feed-forward instant-gain-reduction (no
+//     look-ahead). Doc comment now acknowledges the absence; the
+//     display name "Limiter" stays since it's generic.
+//
+// These tests pin the honest names so a future "let me restore the
+// marketing names" surfaces in CI.
+// ═══════════════════════════════════════════════════════════════
+
+#[test]
+fn noise_reduction_type_id_is_stable_for_klipp_project_compat() {
+    // .klipp projects serialise audio_effects by type_id, so renaming
+    // the type_id would break any project saved with the old effect.
+    // The user-facing name() got renamed in the C-3 audit but type_id
+    // MUST stay.
+    let fx = create_effect("noise_reduction", SR).expect("type_id must still resolve");
+    assert_eq!(fx.type_id(), "noise_reduction",
+        "type_id is the saved-project key — must not change");
+}
+
+#[test]
+fn noise_reduction_name_advertises_multiband_gate() {
+    // The display name now matches what the code actually does.
+    let fx = create_effect("noise_reduction", SR).unwrap();
+    assert_eq!(fx.name(), "Multi-band Gate",
+        "user-facing name must be the honest 'Multi-band Gate', NOT the marketing 'Noise Reduction' (no spectral subtraction)");
+}
+
+#[test]
+fn limiter_type_id_and_display_name_are_stable() {
+    // The C-5 fix is doc-comment-only — type_id and display name don't
+    // change. This test pins them so a future doc-cleanup pass that
+    // bundled in a rename would surface in CI.
+    let fx = create_effect("limiter", SR).expect("limiter must register");
+    assert_eq!(fx.type_id(), "limiter");
+    assert_eq!(fx.name(), "Limiter");
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// AudioProcessContext.clip_time_secs forwarding contract
+//
+// The chain receives an `AudioProcessContext` per process() call and
+// must forward `ctx.clip_time_secs` verbatim to each slot's
+// effect.process(). This is the load-bearing field for keyframe
+// evaluation in the audio chain: feeders (pcm_reader, audio_decoder)
+// and the offline mixdown derive a real time from sample-position /
+// PTS / frame-number and hand it to chain.process; effects then sample
+// their kf tracks at that time.
+//
+// Before this contract: all four call sites hardcoded
+// `clip_time_secs: 0.0`, so any future "I'll just smuggle the time
+// in via a side channel" alternative would silently regress automation.
+// The recording-stub effect below is the simplest possible witness:
+// every value the chain receives shows up unchanged in the recorder.
+// ═══════════════════════════════════════════════════════════════════
+
+/// Test-only effect that captures every `ctx.clip_time_secs` value.
+struct RecordingStub {
+    times: std::sync::Arc<std::sync::Mutex<Vec<f64>>>,
+}
+
+impl RecordingStub {
+    fn new() -> (Self, std::sync::Arc<std::sync::Mutex<Vec<f64>>>) {
+        let times = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        (Self { times: times.clone() }, times)
+    }
+}
+
+impl AudioEffect for RecordingStub {
+    fn type_id(&self) -> &'static str { "recording_stub" }
+    fn name(&self) -> &'static str { "Recording Stub" }
+    fn param_descriptors(&self) -> &[AudioParamDescriptor] { &[] }
+    fn get_param(&self, _: &str) -> Option<f32> { None }
+    fn set_param(&mut self, _: &str, _: f32) {}
+    fn process(&mut self, _: &mut [f32], ctx: &AudioProcessContext) {
+        self.times.lock().unwrap().push(ctx.clip_time_secs);
+    }
+    fn reset(&mut self) {}
+    fn serialize_params(&self) -> Vec<(String, f32)> { vec![] }
+    fn deserialize_params(&mut self, _: &[(String, f32)]) {}
+}
+
+#[test]
+fn chain_forwards_clip_time_secs_to_slot_effects() {
+    let (stub, times) = RecordingStub::new();
+    let mut chain = AudioEffectChain::new();
+    chain.push_test_slot(Box::new(stub), true, 1.0);
+
+    let mut buf = vec![0.0f32; 1024];
+    let mk = |t: f64| AudioProcessContext {
+        sample_rate: SR,
+        channels: 2,
+        clip_time_secs: t,
+    };
+    chain.process(&mut buf, &mk(0.0));
+    chain.process(&mut buf, &mk(0.5));
+    chain.process(&mut buf, &mk(1.5));
+    chain.process(&mut buf, &mk(3.25));
+
+    let recorded = times.lock().unwrap().clone();
+    assert_eq!(
+        recorded,
+        vec![0.0, 0.5, 1.5, 3.25],
+        "AudioEffectChain.process must forward ctx.clip_time_secs verbatim — \
+         feeders thread the chunk-start time through this field, and Phase 3 \
+         keyframe evaluation reads it. Hardcoding 0.0 anywhere in the chain \
+         silently kills automation."
+    );
+}
+
+#[test]
+fn chain_forwards_time_even_when_wet_dry_lt_1() {
+    // Wet/dry mixing path is a separate code branch in chain.process —
+    // it builds dry_buffer and only re-routes the buffer through the
+    // effect, but the ctx is the same instance. Pin that the time still
+    // makes it through for partially-wet slots.
+    let (stub, times) = RecordingStub::new();
+    let mut chain = AudioEffectChain::new();
+    chain.push_test_slot(Box::new(stub), true, 0.5); // 50% wet
+
+    let mut buf = vec![0.1f32; 256];
+    chain.process(&mut buf, &AudioProcessContext {
+        sample_rate: SR, channels: 2, clip_time_secs: 2.75,
+    });
+
+    assert_eq!(*times.lock().unwrap(), vec![2.75]);
+}
+
+#[test]
+fn chain_skips_disabled_slots_and_does_not_record_time() {
+    // Disabled slots are skipped entirely — process() on the inner
+    // effect never fires. This pins that "enabled: false" really
+    // bypasses the slot and isn't just a wet/dry=0 mix.
+    let (stub, times) = RecordingStub::new();
+    let mut chain = AudioEffectChain::new();
+    chain.push_test_slot(Box::new(stub), false, 1.0); // disabled
+
+    let mut buf = vec![0.0f32; 256];
+    chain.process(&mut buf, &AudioProcessContext {
+        sample_rate: SR, channels: 2, clip_time_secs: 5.0,
+    });
+
+    assert!(times.lock().unwrap().is_empty(),
+        "disabled slot must not have its process() called");
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Keyframe evaluation in AudioEffectChain
+//
+// The chain's job once kfs are attached: divide the buffer into
+// sub-chunks, evaluate each kf'd value at the slice's start time,
+// and route the values through the effect. The tests below pin the
+// observable contract — given a kf track, what does the buffer look
+// like after process()? — using a tiny gain effect that just scales
+// every sample so the pre-/post-buffer math is obvious.
+// ═══════════════════════════════════════════════════════════════════
+
+/// Test-only effect with a single `gain` param it actually applies.
+/// Useful for asserting kfs reach the slot and produce the right
+/// signal shape.
+struct GainStub {
+    gain: f32,
+    descs: Vec<AudioParamDescriptor>,
+}
+
+impl GainStub {
+    fn new(initial_gain: f32) -> Self {
+        Self {
+            gain: initial_gain,
+            descs: vec![AudioParamDescriptor {
+                name: "gain",
+                label: "Gain",
+                default: 1.0,
+                min: 0.0,
+                max: 4.0,
+                unit: ParamUnit::None,
+            }],
+        }
+    }
+}
+
+impl AudioEffect for GainStub {
+    fn type_id(&self) -> &'static str { "gain_stub" }
+    fn name(&self) -> &'static str { "Gain Stub" }
+    fn param_descriptors(&self) -> &[AudioParamDescriptor] { &self.descs }
+    fn get_param(&self, name: &str) -> Option<f32> {
+        if name == "gain" { Some(self.gain) } else { None }
+    }
+    fn set_param(&mut self, name: &str, value: f32) {
+        if name == "gain" { self.gain = value; }
+    }
+    fn process(&mut self, buffer: &mut [f32], _: &AudioProcessContext) {
+        for s in buffer.iter_mut() {
+            *s *= self.gain;
+        }
+    }
+    fn reset(&mut self) {}
+    fn serialize_params(&self) -> Vec<(String, f32)> {
+        vec![("gain".to_string(), self.gain)]
+    }
+    fn deserialize_params(&mut self, params: &[(String, f32)]) {
+        for (k, v) in params {
+            if k == "gain" { self.gain = *v; }
+        }
+    }
+}
+
+fn linear_kf(t: f64, v: f32) -> klipp_core::Keyframe {
+    klipp_core::Keyframe {
+        time_secs: t,
+        value: v,
+        interpolation: klipp_core::Interpolation::Linear,
+        tangent_in: (0.0, 0.0),
+        tangent_out: (0.0, 0.0),
+    }
+}
+
+fn step_kf(t: f64, v: f32) -> klipp_core::Keyframe {
+    klipp_core::Keyframe {
+        time_secs: t,
+        value: v,
+        interpolation: klipp_core::Interpolation::Step,
+        tangent_in: (0.0, 0.0),
+        tangent_out: (0.0, 0.0),
+    }
+}
+
+#[test]
+fn gain_kf_ramp_quietens_start_and_loud_at_end() {
+    // gain kf: t=0 → 0.0 (silent), t=1.0 → 1.0 (full). On a 1-second
+    // unit signal the first quarter should be near-silent and the last
+    // quarter close to unit RMS. This is the headline contract: kf
+    // values reach the slot's set_param mid-stream and shape the output.
+    let mut chain = AudioEffectChain::new();
+    let mut param_kfs = std::collections::HashMap::new();
+    param_kfs.insert("gain".to_string(), vec![linear_kf(0.0, 0.0), linear_kf(1.0, 1.0)]);
+    chain.push_test_slot_with_kfs(
+        Box::new(GainStub::new(1.0)),
+        true,
+        1.0,
+        param_kfs,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let frames = SR as usize; // 1 second
+    let mut buf = vec![0.5f32; frames * 2]; // unit-ish stereo
+    chain.process(&mut buf, &AudioProcessContext {
+        sample_rate: SR, channels: 2, clip_time_secs: 0.0,
+    });
+
+    let q = frames * 2 / 4;
+    let rms_first = rms(&buf[..q]);
+    let rms_last = rms(&buf[buf.len() - q..]);
+    assert!(rms_first < 0.1,
+        "first quarter must be near-silent (gain ramps from 0): rms={rms_first}");
+    assert!(rms_last > 0.4,
+        "last quarter must approach unit (gain near 1): rms={rms_last}");
+    assert!(rms_last > rms_first * 4.0,
+        "ramp must be visibly increasing: first={rms_first}, last={rms_last}");
+}
+
+#[test]
+fn bypass_kf_step_skips_effect_during_off_window() {
+    // bypass kf (Step): t=0 → 0 (bypassed), t=0.5 → 1 (active). Slot
+    // has gain=0 (would silence). First half of buffer must pass
+    // through unchanged (effect skipped); second half must go silent.
+    let mut chain = AudioEffectChain::new();
+    let bypass_kfs = vec![step_kf(0.0, 0.0), step_kf(0.5, 1.0)];
+    chain.push_test_slot_with_kfs(
+        Box::new(GainStub::new(0.0)), // would silence everything if active
+        true,
+        1.0,
+        std::collections::HashMap::new(),
+        bypass_kfs,
+        Vec::new(),
+    );
+
+    let frames = SR as usize; // 1 second
+    let mut buf = vec![0.5f32; frames * 2];
+    chain.process(&mut buf, &AudioProcessContext {
+        sample_rate: SR, channels: 2, clip_time_secs: 0.0,
+    });
+
+    // First quarter (t<0.5): bypass=0 → effect skipped → buffer unchanged.
+    let q = frames * 2 / 4;
+    let rms_first = rms(&buf[..q]);
+    assert!(rms_first > 0.45,
+        "bypass kf=0 means SKIP the effect, so the unit signal must pass through: rms={rms_first}");
+    // Last quarter (t>=0.5): bypass=1 → effect active → gain=0 silences.
+    let rms_last = rms(&buf[buf.len() - q..]);
+    assert!(rms_last < 0.01,
+        "bypass kf=1 with gain=0 means active+silenced: rms={rms_last}");
+}
+
+#[test]
+fn wet_dry_kf_blends_dry_signal_back_in() {
+    // wet/dry kf: t=0 → 1.0 (full wet), t=1.0 → 0.0 (full dry).
+    // Effect zeroes the signal. Output should ramp from silence (full
+    // wet on a silenced effect) toward the original (full dry).
+    let mut chain = AudioEffectChain::new();
+    let wet_dry_kfs = vec![linear_kf(0.0, 1.0), linear_kf(1.0, 0.0)];
+    chain.push_test_slot_with_kfs(
+        Box::new(GainStub::new(0.0)),
+        true,
+        1.0,
+        std::collections::HashMap::new(),
+        Vec::new(),
+        wet_dry_kfs,
+    );
+
+    let frames = SR as usize; // 1 second
+    let mut buf = vec![0.5f32; frames * 2];
+    chain.process(&mut buf, &AudioProcessContext {
+        sample_rate: SR, channels: 2, clip_time_secs: 0.0,
+    });
+
+    let q = frames * 2 / 4;
+    let rms_first = rms(&buf[..q]); // mostly wet → silenced
+    let rms_last = rms(&buf[buf.len() - q..]); // mostly dry → original
+    assert!(rms_first < 0.1,
+        "first quarter is mostly wet (silenced): rms={rms_first}");
+    assert!(rms_last > 0.3,
+        "last quarter is mostly dry (original signal): rms={rms_last}");
+}
+
+#[test]
+fn static_chain_skips_sub_chunking_when_no_kfs() {
+    // Sanity: when no slot has kfs, the chain falls through to the
+    // single-pass static path (no sub-chunking). The recording stub
+    // captures exactly one process() call regardless of buffer length.
+    let (stub, times) = RecordingStub::new();
+    let mut chain = AudioEffectChain::new();
+    chain.push_test_slot(Box::new(stub), true, 1.0);
+
+    let mut buf = vec![0.0f32; SR as usize * 2]; // 0.5s mono-equivalent
+    chain.process(&mut buf, &AudioProcessContext {
+        sample_rate: SR, channels: 2, clip_time_secs: 1.5,
+    });
+
+    let recorded = times.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 1,
+        "static path must call effect.process exactly once per chain.process — \
+         got {} sub-chunked calls (sub-chunking should only fire with kfs attached)",
+        recorded.len());
+    assert!((recorded[0] - 1.5).abs() < 1e-9);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Sub-chunk seam + edge cases
+//
+// The keyframed-path loop divides the buffer into 64-stereo-frame
+// slices and re-evaluates kfs at each slice's start. Two failure
+// modes the tests below pin against:
+//
+// 1. The final partial sub-chunk — buffers whose length isn't a
+//    multiple of (SUB_CHUNK_FRAMES * channels) must process the tail
+//    correctly, not silently truncate. A naive `while offset + chunk
+//    <= total` would drop the trailing < 64 frames.
+// 2. Cross-slice continuity — for a smooth Linear-interp ramp, the
+//    LAST sample of one slice and the FIRST sample of the next must
+//    differ by ~one slice-step's worth of param movement, not by a
+//    quantised jump. With 64-frame slices at 48kHz the step is ~1.3ms
+//    of ramp progress. Visible discontinuities here would manifest
+//    as zipper noise in real audio.
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn sub_chunk_handles_partial_tail_buffer() {
+    // Pick a buffer length that is NOT a clean multiple of the
+    // sub-chunk size. 64 stereo frames = 128 floats; 200 floats
+    // forces a partial 72-float tail.
+    let (stub, times) = RecordingStub::new();
+    let mut chain = AudioEffectChain::new();
+    let mut param_kfs = std::collections::HashMap::new();
+    param_kfs.insert("dummy".to_string(), vec![linear_kf(0.0, 0.0), linear_kf(1.0, 1.0)]);
+    chain.push_test_slot_with_kfs(
+        Box::new(stub),
+        true,
+        1.0,
+        param_kfs,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let mut buf = vec![0.5f32; 200];
+    chain.process(&mut buf, &AudioProcessContext {
+        sample_rate: SR, channels: 2, clip_time_secs: 0.0,
+    });
+
+    // 200 floats / (64 frames * 2 ch) = 1 full sub-chunk + 1 partial.
+    // RecordingStub::process is called once per sub-chunk slice.
+    let recorded = times.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 2,
+        "200-float buffer = one full sub-chunk + one partial tail = 2 process() calls, got {}",
+        recorded.len());
+    // First slice starts at clip_time_secs 0.0; second at 64/SR ≈ 0.00133.
+    assert!((recorded[0] - 0.0).abs() < 1e-9);
+    let expected_second = 64.0 / SR as f64;
+    assert!((recorded[1] - expected_second).abs() < 1e-9,
+        "second slice time must be exactly 64 frames in: expected {expected_second}, got {}", recorded[1]);
+}
+
+#[test]
+fn sub_chunk_seam_is_continuous_for_linear_ramp() {
+    // A Linear gain ramp 0 → 1 over 1s, processed in one buffer of
+    // 1s. Sample the buffer at the boundary between two sub-chunks
+    // (frame 64 = sample index 128 stereo) and verify the
+    // monotonic, no-jump shape. Without this pin a future "smooth
+    // each sub-chunk" change that broke the boundary continuity
+    // would surface here.
+    let mut chain = AudioEffectChain::new();
+    let mut param_kfs = std::collections::HashMap::new();
+    param_kfs.insert("gain".to_string(), vec![linear_kf(0.0, 0.0), linear_kf(1.0, 1.0)]);
+    chain.push_test_slot_with_kfs(
+        Box::new(GainStub::new(1.0)),
+        true,
+        1.0,
+        param_kfs,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let frames = SR as usize; // 1 second
+    let mut buf = vec![1.0f32; frames * 2];
+    chain.process(&mut buf, &AudioProcessContext {
+        sample_rate: SR, channels: 2, clip_time_secs: 0.0,
+    });
+
+    // At sub-chunk boundaries the gain should advance by ~1.33ms of
+    // ramp progress (≈ 0.0013 in value). Compare last sample of
+    // slice 1 to last sample of slice 2 — they MUST differ in the
+    // expected direction (rising) and not by a wild quantum.
+    let frames_per_chunk = 64;
+    // End of slice 1 = sample index (frames_per_chunk * 2 - 1).
+    let end_slice_1 = (frames_per_chunk * 2 - 1) as usize;
+    // End of slice 2 = sample index (frames_per_chunk * 2 * 2 - 1).
+    let end_slice_2 = (frames_per_chunk * 2 * 2 - 1) as usize;
+    let v1 = buf[end_slice_1];
+    let v2 = buf[end_slice_2];
+    assert!(v2 > v1,
+        "ramp must be monotonic across sub-chunks: v1={v1}, v2={v2}");
+    let step = v2 - v1;
+    // One sub-chunk is 64 samples = 64/48000 ≈ 1.33ms of ramp.
+    // Expected step ≈ 0.00133 * gain_max - the gain is held constant
+    // within a sub-chunk, so v1 = first_sub_chunk_gain and v2 =
+    // second_sub_chunk_gain. Within a sub-chunk values are flat;
+    // across boundaries they step up by exactly one sub-chunk's
+    // worth of ramp progress.
+    let expected_step = 64.0 / SR as f32; // ≈ 0.00133
+    assert!(
+        (step - expected_step).abs() < 0.001,
+        "sub-chunk step must equal one sub-chunk of ramp ({:.6}), got {:.6}",
+        expected_step, step,
+    );
+}
+
+#[test]
+fn sub_chunk_buffer_smaller_than_one_chunk() {
+    // Edge case: buffer is shorter than a single sub-chunk.
+    // The loop must still process it as one (final + only) slice.
+    let (stub, times) = RecordingStub::new();
+    let mut chain = AudioEffectChain::new();
+    let mut param_kfs = std::collections::HashMap::new();
+    param_kfs.insert("dummy".to_string(), vec![linear_kf(0.0, 0.5)]);
+    chain.push_test_slot_with_kfs(
+        Box::new(stub),
+        true,
+        1.0,
+        param_kfs,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let mut buf = vec![0.0f32; 16]; // 8 stereo frames — well below 64
+    chain.process(&mut buf, &AudioProcessContext {
+        sample_rate: SR, channels: 2, clip_time_secs: 0.0,
+    });
+    assert_eq!(times.lock().unwrap().len(), 1);
+}

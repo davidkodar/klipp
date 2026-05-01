@@ -1,58 +1,68 @@
 # Audio Preferences
 
-Access audio preferences from **Edit > Preferences > Audio**.
+Access audio preferences from **Edit → Preferences → Audio**.
 
 ## Pan Law
 
-Select the pan law used for stereo panning. This determines how volume is compensated when audio is panned away from center:
+Determines how volume is compensated when audio is panned away from centre:
 
-- **0 dB** -- No compensation. Center signal at full volume in both channels.
-- **-3 dB (Constant Power)** -- Center attenuated by 3 dB. Maintains perceived loudness as audio moves across the stereo field. This is the default and most common setting.
-- **-4.5 dB** -- Compromise between -3 dB and -6 dB laws.
-- **-6 dB (Linear)** -- Center attenuated by 6 dB. Linear crossfade between channels.
+- **0 dB** — No compensation. Centre signal at full volume in both channels.
+- **−3 dB (Constant Power)** — Centre attenuated by 3 dB. Maintains perceived loudness across the stereo field. Default and most common.
+- **−4.5 dB** — Compromise between −3 dB and −6 dB.
+- **−6 dB (Linear)** — Centre attenuated by 6 dB. Linear crossfade between channels.
 
-Pan law applies globally to all clips. Change it before beginning your audio mix, as switching pan law mid-project alters the balance of all panned clips.
+Pan law applies globally to all clips. Change before beginning your audio mix — switching pan law mid-project alters the balance of all panned clips.
 
 ## Anti-Click Fade
 
-Klipp applies a short crossfade at every clip boundary to prevent audible clicks from discontinuities in the audio waveform.
+Klipp applies a short crossfade at every clip boundary to prevent audible clicks from waveform discontinuities.
 
-- **Duration** -- Length of the anti-click fade in milliseconds (default: 3ms)
-- **Enable/Disable** -- Toggle anti-click fades on or off
+- **Duration** — Length in milliseconds (default: 3 ms)
+- **Enable / Disable**
 
-The anti-click fade is extremely short and inaudible in practice. Disabling it may cause clicks at cut points, especially with music or continuous audio.
+The anti-click fade is extremely short and inaudible in practice. Disabling may cause clicks at cut points, especially on continuous music.
 
 ## Loudness Standard
 
-Select the loudness metering standard for the audio meters:
+Select the loudness metering standard:
 
-- **EBU R128** -- European broadcast standard, target -23 LUFS (default)
-- **ATSC A/85** -- North American broadcast standard, target -24 LKFS
-- **Custom** -- Set a custom target loudness in LUFS
+- **EBU R128** — European broadcast standard, target −23 LUFS (default)
+- **ATSC A/85** — North American broadcast standard, target −24 LKFS
+- **Custom** — set a custom target loudness in LUFS
 
-The selected standard determines the target indicator on the loudness meters and the reference level for integrated loudness measurement.
+The selected standard determines the meter's target indicator and the reference level for integrated loudness measurement.
 
 ## Output Device
 
-Select the audio output device from detected system devices. See [Audio Hardware](../audio/hardware.md) for details.
+Select the audio output device from detected system devices. See [Audio Hardware](../audio/hardware.md) for backend details.
 
 ## Sample Rate
 
 Configure the output sample rate:
 
-- **44,100 Hz** -- CD quality
-- **48,000 Hz** -- Video production standard (default)
-- **96,000 Hz** -- High-resolution audio
+- **44 100 Hz** — CD quality
+- **48 000 Hz** — Video production standard (default)
+- **96 000 Hz** — High-resolution audio
 
-Source audio is automatically resampled to match the output sample rate.
+Source audio is automatically resampled to match the output. The resampler is recreated on seek to avoid stale-buffer artefacts.
 
 ## Buffer Size
 
-Set the audio buffer size to balance latency and stability:
+Trade-off between latency and stability:
 
-- **256 samples** -- Low latency (~5ms at 48kHz)
-- **512 samples** -- Balanced (default)
-- **1024 samples** -- Stable, higher latency
-- **2048 samples** -- Maximum stability
+| Buffer | Latency at 48 kHz |
+|---|---|
+| 256 samples | ~5 ms |
+| 512 samples | ~10 ms (default) |
+| 1024 samples | ~21 ms |
+| 2048 samples | ~42 ms |
 
-Increase the buffer size if you experience audio dropouts or crackling. Decrease it if audio latency is noticeable during scrubbing.
+Increase if you experience dropouts or crackling. Decrease if audio latency is noticeable during scrubbing.
+
+## Audio Backend
+
+Klipp uses cpal, which selects the best available backend:
+
+- **PipeWire** (recommended; default on most modern distros)
+- **ALSA** (fallback)
+- **JACK** via PipeWire's JACK compatibility layer

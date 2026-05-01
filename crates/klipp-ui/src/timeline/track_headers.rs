@@ -141,10 +141,10 @@ pub fn show(
             if num > 0 { format!("{}{}", prefix, num) } else { prefix.to_string() }
         };
         let badge_color = match track.kind {
-            klipp_timeline::TrackKind::Video => egui::Color32::from_rgb(50, 90, 140),
-            klipp_timeline::TrackKind::Audio => egui::Color32::from_rgb(60, 110, 70),
-            klipp_timeline::TrackKind::Text => egui::Color32::from_rgb(140, 110, 50),
-            klipp_timeline::TrackKind::Subtitle => egui::Color32::from_rgb(110, 80, 130),
+            klipp_timeline::TrackKind::Video => theme.role_video,
+            klipp_timeline::TrackKind::Audio => theme.role_dialogue,
+            klipp_timeline::TrackKind::Text => theme.role_title,
+            klipp_timeline::TrackKind::Subtitle => theme.role_title,
         };
         let badge_w = if layer_label.len() > 2 { 22.0 } else { 18.0 };
         let badge_rect = egui::Rect::from_min_size(
@@ -172,9 +172,9 @@ pub fn show(
 
         // Magnetic role badge (small pill after track name)
         let role_badge = match track.magnetic_role {
-            klipp_timeline::TrackRole::Primary => Some(("P", egui::Color32::from_rgb(60, 130, 220))),
-            klipp_timeline::TrackRole::Connected => Some(("C", egui::Color32::from_rgb(200, 150, 40))),
-            klipp_timeline::TrackRole::ConnectedStoryline => Some(("CS", egui::Color32::from_rgb(180, 120, 200))),
+            klipp_timeline::TrackRole::Primary => Some(("P", theme.marker_info)),
+            klipp_timeline::TrackRole::Connected => Some(("C", theme.accent)),
+            klipp_timeline::TrackRole::ConnectedStoryline => Some(("CS", theme.role_graphics)),
             klipp_timeline::TrackRole::Free => None,
         };
         if let Some((label, color)) = role_badge {
@@ -206,18 +206,18 @@ pub fn show(
                 egui::Sense::click_and_drag(),
             );
             // Background
-            ui.painter().rect_filled(slider_rect, 2.0, egui::Color32::from_rgb(30, 30, 38));
+            ui.painter().rect_filled(slider_rect, 2.0, theme.bg_panel_alt);
             // Fill bar
             let fill_w = slider_rect.width() * track.opacity;
             let fill_rect = egui::Rect::from_min_size(
                 slider_rect.left_top(), egui::vec2(fill_w, slider_rect.height()),
             );
-            ui.painter().rect_filled(fill_rect, 2.0, egui::Color32::from_rgb(50, 80, 130));
+            ui.painter().rect_filled(fill_rect, 2.0, theme.role_video);
             // Label
             ui.painter().text(
                 slider_rect.center(), egui::Align2::CENTER_CENTER,
                 format!("{}%", opacity_pct), egui::FontId::proportional(8.0),
-                egui::Color32::from_rgb(180, 180, 200),
+                theme.text_secondary,
             );
             // Interaction
             if slider_resp.double_clicked() {
@@ -242,14 +242,14 @@ pub fn show(
                     // Background
                     ui.painter().rect_filled(
                         egui::Rect::from_min_size(egui::pos2(meter_x, y), egui::vec2(meter_w, bar_h)),
-                        1.0, egui::Color32::from_rgb(25, 25, 30),
+                        1.0, theme.bg_deep,
                     );
                     // Fill
                     let fill_w = (peak.min(1.0) * meter_w).max(0.0);
                     if fill_w > 0.0 {
-                        let color = if peak > 0.9 { egui::Color32::from_rgb(220, 50, 50) }
-                            else if peak > 0.7 { egui::Color32::from_rgb(220, 180, 40) }
-                            else { egui::Color32::from_rgb(50, 180, 70) };
+                        let color = if peak > 0.9 { theme.marker_error }
+                            else if peak > 0.7 { theme.marker_warning }
+                            else { theme.marker_success };
                         ui.painter().rect_filled(
                             egui::Rect::from_min_size(egui::pos2(meter_x, y), egui::vec2(fill_w, bar_h)),
                             1.0, color,
@@ -277,9 +277,9 @@ pub fn show(
             let arm_resp = ui.allocate_rect(arm_rect, egui::Sense::click());
             let arm_active = track.record_armed;
             let arm_color = if arm_active {
-                egui::Color32::from_rgb(232, 50, 50)
+                theme.marker_error
             } else {
-                egui::Color32::from_rgb(130, 50, 50)
+                theme.accent_dim
             };
             ui.painter().rect_filled(
                 arm_rect,
@@ -339,13 +339,13 @@ pub fn show(
         let solo_resp = ui.allocate_rect(solo_rect, egui::Sense::click());
         let solo_active = track.solo;
         let solo_bg = if solo_active {
-            egui::Color32::from_rgb(200, 170, 40) // bright gold when active
+            theme.accent // bright gold when active
         } else if solo_resp.hovered() {
             theme.bg_raised
         } else {
             egui::Color32::TRANSPARENT
         };
-        let solo_text_color = if solo_active { egui::Color32::from_rgb(30, 25, 10) } else { theme.text_dim };
+        let solo_text_color = if solo_active { theme.text_on_accent } else { theme.text_dim };
         ui.painter().rect_filled(solo_rect, 3.0, solo_bg);
         ui.painter().text(
             solo_rect.center(),
@@ -475,7 +475,7 @@ pub fn show(
                     egui::pos2(track_rect.left(), track_rect.max.y - 1.0),
                     egui::pos2(track_rect.right(), track_rect.max.y - 1.0),
                 ],
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(80, 80, 100)),
+                egui::Stroke::new(1.0_f32, theme.border_light),
             );
         }
 

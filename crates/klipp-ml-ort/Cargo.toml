@@ -1,0 +1,29 @@
+[package]
+name = "klipp-ml-ort"
+version = "0.1.0"
+edition = "2021"
+description = "ONNX Runtime backend for klipp-ml — BiRefNet, RF-DETR-Seg, future SAM2 video"
+
+[features]
+default = []
+# Pulls in the real ONNX Runtime library — without this flag the
+# crate compiles as scaffolding only (preprocess + postprocess are
+# pure CPU and always available; `BiRefNetLite::generate` returns
+# MaskError::BackendInit). With the flag, ort 2.0.0-rc.12 is wired
+# in and `generate` runs real inference.
+ort = ["dep:ort"]
+# NVIDIA acceleration via ort's CUDA EP. Requires user-installed
+# CUDA 12.8+/cuDNN 9.19+ at runtime; the build itself just tells ort
+# to enable the EP.
+cuda = ["ort", "ort?/cuda"]
+
+[dependencies]
+klipp-ml    = { workspace = true }
+klipp-color = { workspace = true }
+bitflags    = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+ort         = { workspace = true, optional = true }
+# Used by runtime_resolve to expand `~/.local/lib/onnxruntime/...`
+# candidate paths when probing for libonnxruntime.so.
+dirs        = { workspace = true }

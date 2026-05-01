@@ -1,6 +1,29 @@
 use std::collections::{HashMap, VecDeque};
-use klipp_core::{BinId, ClipId, Keyframe, MediaId, RationalTime};
+use klipp_core::{AudioEffectInstance, BinId, ClipId, Keyframe, MediaId, RationalTime};
 use klipp_timeline::Clip;
+
+/// Snapshot of a clip's audio chain (effects + per-effect kfs). Used by
+/// `EditCommand::EditAudioChain` so add/remove/edit/reorder operations
+/// on the audio chain can be undone atomically.
+#[derive(Debug, Clone)]
+pub struct AudioChainSnapshot {
+    pub audio_effects: Vec<AudioEffectInstance>,
+    pub audio_effect_keyframes: HashMap<String, Vec<Keyframe>>,
+}
+
+impl AudioChainSnapshot {
+    pub fn from_clip(clip: &Clip) -> Self {
+        Self {
+            audio_effects: clip.audio_effects.clone(),
+            audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
+        }
+    }
+
+    pub fn apply_to_clip(&self, clip: &mut Clip) {
+        clip.audio_effects = self.audio_effects.clone();
+        clip.audio_effect_keyframes = self.audio_effect_keyframes.clone();
+    }
+}
 
 /// Snapshot of all keyframe data for a clip (used for undo/redo).
 #[derive(Debug, Clone)]
@@ -14,6 +37,7 @@ pub struct KeyframeSnapshot {
     pub transform_scale_keyframes: Vec<Keyframe>,
     pub transform_rotation_keyframes: Vec<Keyframe>,
     pub effect_keyframes: HashMap<String, Vec<Keyframe>>,
+    pub audio_effect_keyframes: HashMap<String, Vec<Keyframe>>,
     pub speed_keyframes: Vec<Keyframe>,
 }
 
@@ -30,6 +54,7 @@ impl KeyframeSnapshot {
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
             effect_keyframes: HashMap::new(),
+            audio_effect_keyframes: HashMap::new(),
             speed_keyframes: Vec::new(),
         }
     }
@@ -46,6 +71,7 @@ impl KeyframeSnapshot {
             transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
             transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
             effect_keyframes: clip.effect_keyframes.clone(),
+            audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
             speed_keyframes: clip.speed_keyframes.clone(),
         }
     }
@@ -61,6 +87,7 @@ impl KeyframeSnapshot {
         clip.transform_scale_keyframes = self.transform_scale_keyframes.clone();
         clip.transform_rotation_keyframes = self.transform_rotation_keyframes.clone();
         clip.effect_keyframes = self.effect_keyframes.clone();
+        clip.audio_effect_keyframes = self.audio_effect_keyframes.clone();
         clip.speed_keyframes = self.speed_keyframes.clone();
     }
 }
@@ -368,6 +395,19 @@ pub enum EditCommand {
         new_data: klipp_core::GeneratorData,
     },
 
+    // === AUDIO CHAIN ===
+    /// Atomic snapshot-based undo for any edit to a clip's audio
+    /// effect chain — Add / Remove / Update param / Toggle / Wet-Dry /
+    /// Reorder all push one of these. The whole `audio_effects` vec
+    /// plus `audio_effect_keyframes` map are snapshotted on both sides
+    /// so the apply path is a simple "restore the snapshot" without
+    /// per-command branching.
+    EditAudioChain {
+        clip_id: ClipId,
+        description: &'static str,
+        old_state: AudioChainSnapshot,
+        new_state: AudioChainSnapshot,
+    },
 }
 
 impl EditCommand {
@@ -408,6 +448,7 @@ impl EditCommand {
             EditCommand::SetClipSpeed { .. } => "Set Clip Speed",
             EditCommand::EditTitle { description, .. } => description,
             EditCommand::EditGenerator { .. } => "Edit Generator",
+            EditCommand::EditAudioChain { description, .. } => description,
         }
     }
 }
@@ -606,6 +647,15 @@ fn combine_old_new(old_entry: HistoryEntry, new_entry: HistoryEntry) -> HistoryE
             new_state: new_state.clone(),
             old_linked_state: old_linked_state.clone(),
             new_linked_state: new_linked_state.clone(),
+        },
+        (
+            EditCommand::EditAudioChain { clip_id, description, old_state, .. },
+            EditCommand::EditAudioChain { new_state, .. },
+        ) => EditCommand::EditAudioChain {
+            clip_id: *clip_id,
+            description,
+            old_state: old_state.clone(),
+            new_state: new_state.clone(),
         },
         // Unmatched pair: the pre-drag and post-drag commands are different
         // variants, or this is a coalesce-eligible variant someone wired up
@@ -1001,5 +1051,589 @@ mod bin_undo_tests {
         // Undo move
         undo_move_item_to_bin(&mut pool, &move_cmd);
         assert_bin_consistent(&pool, mid, Some("Bin A"), Some(bin_a_id));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Drag-coalesce defensive-path tests — regression-pin CODE_AUDIT U-3
+// and U-4. The two production fixes this guards are:
+//
+//   * combine_old_new — wildcard arm logs + falls back to old command
+//     (was: silently returned new.command.clone(), throwing away
+//     old state, so undo was a no-op for any future variant).
+//   * end_drag — when pending_coalesce_key is Some but
+//     pending_old_entry is None (caller invoked end_drag without
+//     begin_drag, or an intervening path stole the snapshot), the
+//     final state is pushed on its own (was: silently dropped).
+//
+// Both look intentional from the inline comments, but neither was
+// covered by tests. Without these regression tests a future cleanup
+// could re-introduce the original bugs and only surface them the
+// next time a user lost an edit.
+// ═══════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod drag_coalesce_tests {
+    use super::*;
+    use klipp_core::ClipId;
+
+    fn audio_entry(gain: f32) -> HistoryEntry {
+        // Single-variant entry with `gain` propagated to old AND new
+        // sides — callers fold separate "old" and "new" snapshots into
+        // begin_drag / end_drag, so each individual entry just carries
+        // the same value on both sides.
+        HistoryEntry {
+            sequence_idx: 0,
+            command: EditCommand::EditClipAudio {
+                clip_id: ClipId::new(),
+                old_gain: gain, old_volume: gain, old_pan: 0.0,
+                old_fade_in: 0.0, old_fade_out: 0.0,
+                old_channel_config: klipp_core::ChannelConfig::default(),
+                new_gain: gain, new_volume: gain, new_pan: 0.0,
+                new_fade_in: 0.0, new_fade_out: 0.0,
+                new_channel_config: klipp_core::ChannelConfig::default(),
+            },
+        }
+    }
+
+    fn slip_entry() -> HistoryEntry {
+        // A non-coalesce-eligible variant — used to construct a
+        // mismatched (old, new) pair for combine_old_new's wildcard
+        // arm. LegacySlipClip has no matching arm in combine_old_new,
+        // so pairing it with EditClipAudio reaches the fallback.
+        HistoryEntry {
+            sequence_idx: 0,
+            command: EditCommand::LegacySlipClip {
+                clip_id: ClipId::new(),
+                old_source_in: klipp_core::RationalTime::ZERO,
+                old_source_out: klipp_core::RationalTime::ZERO,
+                new_source_in: klipp_core::RationalTime::ZERO,
+                new_source_out: klipp_core::RationalTime::ZERO,
+            },
+        }
+    }
+
+    // ── U-3: combine_old_new ────────────────────────────────────────
+
+    #[test]
+    fn combine_old_new_clip_audio_takes_old_pre_and_new_post() {
+        // Happy path: identical variants on both sides. The combined
+        // entry must carry old_* from `old_entry` and new_* from
+        // `new_entry` so undo rolls back to the pre-drag state and
+        // redo restores the post-drag state.
+        let old = HistoryEntry {
+            sequence_idx: 7,
+            command: EditCommand::EditClipAudio {
+                clip_id: ClipId::new(),
+                old_gain: 1.0, old_volume: 1.0, old_pan: 0.0,
+                old_fade_in: 0.5, old_fade_out: 0.25,
+                old_channel_config: klipp_core::ChannelConfig::default(),
+                new_gain: 1.0, new_volume: 1.0, new_pan: 0.0,
+                new_fade_in: 0.5, new_fade_out: 0.25,
+                new_channel_config: klipp_core::ChannelConfig::default(),
+            },
+        };
+        let new = HistoryEntry {
+            sequence_idx: 7,
+            command: EditCommand::EditClipAudio {
+                clip_id: ClipId::new(),
+                old_gain: 9.0, old_volume: 9.0, old_pan: 0.9,
+                old_fade_in: 9.0, old_fade_out: 9.0,
+                old_channel_config: klipp_core::ChannelConfig::default(),
+                new_gain: 5.0, new_volume: 0.7, new_pan: -0.3,
+                new_fade_in: 1.5, new_fade_out: 0.75,
+                new_channel_config: klipp_core::ChannelConfig::default(),
+            },
+        };
+        let combined = combine_old_new(old, new);
+        assert_eq!(combined.sequence_idx, 7);
+        match combined.command {
+            EditCommand::EditClipAudio {
+                old_gain, old_volume, old_pan, old_fade_in, old_fade_out,
+                new_gain, new_volume, new_pan, new_fade_in, new_fade_out,
+                ..
+            } => {
+                // OLD side comes from `old_entry` (1.0 / 0.5 / 0.25),
+                // NOT from `new_entry`'s old_* (9.0).
+                assert_eq!(old_gain, 1.0);
+                assert_eq!(old_volume, 1.0);
+                assert_eq!(old_pan, 0.0);
+                assert_eq!(old_fade_in, 0.5);
+                assert_eq!(old_fade_out, 0.25);
+                // NEW side comes from `new_entry` (5.0 / 0.7 / -0.3 / 1.5 / 0.75).
+                assert_eq!(new_gain, 5.0);
+                assert_eq!(new_volume, 0.7);
+                assert_eq!(new_pan, -0.3);
+                assert_eq!(new_fade_in, 1.5);
+                assert_eq!(new_fade_out, 0.75);
+            }
+            _ => panic!("expected EditClipAudio after coalesce"),
+        }
+    }
+
+    // The wildcard arm in combine_old_new behaves differently in
+    // debug vs release: debug_assert! fires loudly in debug builds,
+    // and release returns old_entry.command.clone() so the user gets
+    // an undo that at least rolls back to the pre-drag state. Pair
+    // of cfg-gated tests pin both halves of that contract.
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "unhandled variant pair")]
+    fn combine_old_new_unmatched_variants_trips_debug_assert_in_debug() {
+        // Pairing EditClipAudio (coalesce-eligible) with LegacySlipClip
+        // (no matching arm) hits the wildcard. CI in debug catches a
+        // future "I added a new coalesce-eligible variant and forgot
+        // to extend combine_old_new" before it ships.
+        let _ = combine_old_new(audio_entry(1.0), slip_entry());
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn combine_old_new_unmatched_variants_falls_back_to_old_in_release() {
+        // In release the debug_assert is a no-op and the wildcard
+        // falls back to old_entry.command.clone(). The pre-drag
+        // command MUST be carried through so undo rolls back to the
+        // last known-good state — the original U-3 bug was that the
+        // wildcard returned new.command, throwing away old state.
+        let old = audio_entry(1.0);
+        let new = slip_entry();
+        let combined = combine_old_new(old, new);
+        match combined.command {
+            EditCommand::EditClipAudio { old_gain, .. } => {
+                assert_eq!(old_gain, 1.0,
+                    "wildcard fallback must carry the pre-drag command (old), not the post-drag command (new)");
+            }
+            other => panic!("expected EditClipAudio (from old_entry), got {other:?}"),
+        }
+    }
+
+    // ── U-4: end_drag ───────────────────────────────────────────────
+
+    #[test]
+    fn end_drag_pushes_final_when_pending_old_entry_missing() {
+        // Inconsistent state: pending_coalesce_key is Some but
+        // pending_old_entry is None. The defensive else branch must
+        // push final_state on its own so the user's edit survives —
+        // before the fix this dropped the edit on the floor.
+        let mut h = CommandHistory::new();
+        h.pending_coalesce_key = Some("test_key".to_string());
+        h.pending_old_entry = None;
+
+        let final_state = audio_entry(2.5);
+        h.end_drag(final_state);
+
+        assert_eq!(h.undo_stack.len(), 1, "final_state must reach the undo stack");
+        match &h.undo_stack[0].command {
+            EditCommand::EditClipAudio { new_gain, .. } => {
+                assert_eq!(*new_gain, 2.5, "the pushed entry IS the final_state we passed");
+            }
+            other => panic!("expected EditClipAudio, got {other:?}"),
+        }
+        // The stale coalesce state is cleared either way.
+        assert!(h.pending_coalesce_key.is_none());
+        assert!(h.pending_old_entry.is_none());
+    }
+
+    #[test]
+    fn end_drag_no_op_when_no_pending_drag() {
+        // The OTHER path: end_drag called without a prior begin_drag
+        // (e.g. duplicate end_drag firing from two callers). Both
+        // pending_* are None — the function should silently no-op,
+        // NOT push final_state. This pin makes that intentional vs
+        // accidental: changing this behaviour later would surface
+        // here.
+        let mut h = CommandHistory::new();
+        let final_state = audio_entry(7.0);
+        h.end_drag(final_state);
+
+        assert_eq!(h.undo_stack.len(), 0,
+            "no pending drag = no-op; stale duplicate end_drag should not produce a phantom undo entry");
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Audio chain snapshot roundtrip — covers AddAudioEffect /
+// RemoveAudioEffect / UpdateAudioEffectParam / ToggleAudioEffect /
+// SetAudioEffectWetDry / ReorderAudioEffect undo paths. Before this
+// fix, none of these handlers pushed history at all — the user could
+// add an effect and not undo it.
+// ═══════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod audio_chain_snapshot_tests {
+    use super::*;
+    use klipp_core::{AudioEffectInstance, ClipId, Interpolation, MediaId, RationalTime};
+    use std::collections::HashMap;
+
+    fn make_clip() -> Clip {
+        Clip::media(
+            MediaId::new(),
+            RationalTime::from_frames(0, 24),
+            RationalTime::from_frames(48, 24),
+            RationalTime::from_frames(0, 24),
+            RationalTime::from_frames(48, 24),
+        )
+    }
+
+    fn reverb() -> AudioEffectInstance {
+        AudioEffectInstance {
+            effect_type: "reverb".into(),
+            enabled: true,
+            wet_dry: 0.5,
+            params: vec![("room_size".into(), 0.7), ("damping".into(), 0.3)],
+        }
+    }
+
+    #[test]
+    fn snapshot_captures_effects_and_kfs() {
+        let mut clip = make_clip();
+        clip.audio_effects = vec![reverb()];
+        clip.audio_effect_keyframes.insert(
+            "0:room_size".to_string(),
+            vec![Keyframe {
+                time_secs: 0.5,
+                value: 0.9,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
+            }],
+        );
+
+        let snap = AudioChainSnapshot::from_clip(&clip);
+
+        assert_eq!(snap.audio_effects.len(), 1);
+        assert_eq!(snap.audio_effects[0].effect_type, "reverb");
+        assert_eq!(snap.audio_effects[0].wet_dry, 0.5);
+        assert_eq!(snap.audio_effect_keyframes.len(), 1);
+        let kfs = snap.audio_effect_keyframes.get("0:room_size").unwrap();
+        assert_eq!(kfs.len(), 1);
+        assert!((kfs[0].value - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn apply_overwrites_clip_chain_state() {
+        // Build a "before" clip with no effects, snapshot it. Then add
+        // an effect to the clip. Apply the snapshot — the effect must
+        // be removed (clip state restored to "before").
+        let mut clip = make_clip();
+        let snap_empty = AudioChainSnapshot::from_clip(&clip);
+
+        clip.audio_effects.push(reverb());
+        clip.audio_effect_keyframes.insert(
+            "0:room_size".to_string(),
+            vec![Keyframe {
+                time_secs: 0.0, value: 1.0,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            }],
+        );
+
+        snap_empty.apply_to_clip(&mut clip);
+        assert!(clip.audio_effects.is_empty(),
+            "apply must restore the snapshot's empty effect chain");
+        assert!(clip.audio_effect_keyframes.is_empty(),
+            "apply must also restore kf state — leaving stale kfs would \
+             reference a removed effect index");
+    }
+
+    #[test]
+    fn edit_audio_chain_label_uses_description() {
+        let entry = EditCommand::EditAudioChain {
+            clip_id: ClipId::new(),
+            description: "Add Audio Effect",
+            old_state: AudioChainSnapshot {
+                audio_effects: vec![],
+                audio_effect_keyframes: HashMap::new(),
+            },
+            new_state: AudioChainSnapshot {
+                audio_effects: vec![reverb()],
+                audio_effect_keyframes: HashMap::new(),
+            },
+        };
+        assert_eq!(entry.label(), "Add Audio Effect");
+    }
+
+    #[test]
+    fn snapshot_roundtrip_preserves_per_param_kfs() {
+        // Multiple kf tracks — make sure they all survive the round trip
+        // verbatim (sorted insertion order isn't preserved by HashMap,
+        // so we compare keys + values explicitly).
+        let mut clip = make_clip();
+        clip.audio_effects = vec![reverb(), AudioEffectInstance {
+            effect_type: "compressor".into(),
+            enabled: true,
+            wet_dry: 1.0,
+            params: vec![("threshold".into(), -12.0)],
+        }];
+        let kf = |t, v| Keyframe {
+            time_secs: t, value: v,
+            interpolation: Interpolation::Linear,
+            tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+        };
+        clip.audio_effect_keyframes.insert("0:room_size".into(), vec![kf(0.0, 0.5), kf(1.0, 0.9)]);
+        clip.audio_effect_keyframes.insert("1:threshold".into(), vec![kf(0.5, -6.0)]);
+        clip.audio_effect_keyframes.insert("0:__wetdry".into(), vec![kf(0.0, 1.0), kf(2.0, 0.0)]);
+
+        let snap = AudioChainSnapshot::from_clip(&clip);
+
+        // Round-trip: clear clip, then re-apply.
+        clip.audio_effects.clear();
+        clip.audio_effect_keyframes.clear();
+        snap.apply_to_clip(&mut clip);
+
+        assert_eq!(clip.audio_effects.len(), 2);
+        assert_eq!(clip.audio_effect_keyframes.len(), 3);
+        assert_eq!(clip.audio_effect_keyframes["0:room_size"].len(), 2);
+        assert!((clip.audio_effect_keyframes["0:room_size"][1].value - 0.9).abs() < 1e-6);
+        assert!((clip.audio_effect_keyframes["1:threshold"][0].value - (-6.0)).abs() < 1e-6);
+        assert!((clip.audio_effect_keyframes["0:__wetdry"][1].value - 0.0).abs() < 1e-6);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Audio-effect keyframe mutation semantics (Phase B follow-up).
+//
+// Each test mirrors the in-place mutation logic that the
+// Reverse/Scale/Bump/Paste AppCommand handlers in app.rs run on
+// `clip.audio_effect_keyframes["{idx}:{name}"]`. Testing the handlers
+// directly would require standing up the full KlippApp; testing the
+// LOGIC at the data-mutation level catches the same bugs (off-by-
+// one in time math, retain-clamp edge cases, tangent-mirror
+// direction) without that ceremony.
+// ═══════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod audio_effect_kf_ops_tests {
+    use super::*;
+    use klipp_core::{Interpolation, Keyframe, MediaId, RationalTime};
+
+    fn make_clip_with_kfs(track_key: &str, kfs: Vec<Keyframe>) -> Clip {
+        let mut c = Clip::media(
+            MediaId::new(),
+            RationalTime::from_frames(0, 24),
+            RationalTime::from_frames(48, 24), // 2.0s @ 24fps
+            RationalTime::from_frames(0, 24),
+            RationalTime::from_frames(48, 24),
+        );
+        c.audio_effect_keyframes.insert(track_key.to_string(), kfs);
+        c
+    }
+
+    fn kf(t: f64, v: f32) -> Keyframe {
+        Keyframe {
+            time_secs: t, value: v,
+            interpolation: Interpolation::Linear,
+            tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+        }
+    }
+
+    fn kf_bezier(t: f64, v: f32, tin: (f64, f32), tout: (f64, f32)) -> Keyframe {
+        Keyframe {
+            time_secs: t, value: v,
+            interpolation: Interpolation::Bezier,
+            tangent_in: tin, tangent_out: tout,
+        }
+    }
+
+    /// Mirror the Reverse handler's mutation: reflect kf times around
+    /// the max time, swap tangent_in / tangent_out with x-negation.
+    fn reverse_kfs_in_place(kfs: &mut Vec<Keyframe>) {
+        if kfs.len() < 2 { return; }
+        let max_time = kfs.last().map(|k| k.time_secs).unwrap_or(0.0);
+        for k in kfs.iter_mut() {
+            k.time_secs = max_time - k.time_secs;
+            let old_in = k.tangent_in;
+            let old_out = k.tangent_out;
+            k.tangent_in = (-old_out.0, old_out.1);
+            k.tangent_out = (-old_in.0, old_in.1);
+        }
+        kfs.reverse();
+        kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    #[test]
+    fn reverse_two_kfs_swaps_their_times() {
+        let mut clip = make_clip_with_kfs("0:gain", vec![kf(0.0, -6.0), kf(1.0, 0.0)]);
+        let kfs = clip.audio_effect_keyframes.get_mut("0:gain").unwrap();
+        reverse_kfs_in_place(kfs);
+        // After reversal: original t=0,v=-6 becomes t=1,v=-6; original
+        // t=1,v=0 becomes t=0,v=0. The values stay attached to their
+        // original positions on the curve, the TIMES reflect.
+        assert_eq!(kfs.len(), 2);
+        assert!((kfs[0].time_secs - 0.0).abs() < 1e-9);
+        assert!((kfs[0].value - 0.0).abs() < 1e-6);
+        assert!((kfs[1].time_secs - 1.0).abs() < 1e-9);
+        assert!((kfs[1].value - (-6.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reverse_negates_bezier_tangent_x_components() {
+        // Bezier handles must point the right way after a reverse:
+        // an out-handle pointing forward (+x) becomes an in-handle
+        // pointing backward (-x), and vice versa. Without this swap
+        // the curve direction would invert visually.
+        let mut clip = make_clip_with_kfs("0:gain", vec![
+            kf_bezier(0.0, 0.0, (-0.1, 0.0), (0.2, 0.5)),
+            kf_bezier(1.0, 1.0, (-0.3, 0.0), (0.0, 0.0)),
+        ]);
+        let kfs = clip.audio_effect_keyframes.get_mut("0:gain").unwrap();
+        reverse_kfs_in_place(kfs);
+
+        // Original first kf had tangent_out=(0.2, 0.5). After reversal
+        // it sits at the END (time=1.0) and that out-handle becomes
+        // tangent_in=(-0.2, 0.5). y-component preserved (mirror is
+        // around X, not Y).
+        let last = kfs.last().unwrap();
+        assert!((last.time_secs - 1.0).abs() < 1e-9);
+        assert!((last.tangent_in.0 - (-0.2)).abs() < 1e-9,
+            "tangent_in.0 should be -tangent_out.0, got {}", last.tangent_in.0);
+        assert!((last.tangent_in.1 - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn reverse_does_nothing_for_lt_two_kfs() {
+        // Single kf reversal would be visually meaningless; the
+        // handler short-circuits. Pin that.
+        let mut clip = make_clip_with_kfs("0:gain", vec![kf(0.5, 1.0)]);
+        let original = clip.audio_effect_keyframes["0:gain"].clone();
+        let kfs = clip.audio_effect_keyframes.get_mut("0:gain").unwrap();
+        reverse_kfs_in_place(kfs);
+        assert_eq!(kfs[0].time_secs, original[0].time_secs);
+        assert_eq!(kfs[0].value, original[0].value);
+    }
+
+    /// Mirror the ScaleTiming handler.
+    fn scale_kfs_timing_in_place(kfs: &mut Vec<Keyframe>, factor: f64, clip_dur: f64) {
+        for k in kfs.iter_mut() {
+            k.time_secs *= factor;
+            k.tangent_in.0 *= factor;
+            k.tangent_out.0 *= factor;
+        }
+        kfs.retain(|k| k.time_secs >= 0.0 && k.time_secs <= clip_dur);
+        kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    #[test]
+    fn scale_half_speed_compresses_timing() {
+        // Half-speed-button uses factor=2.0 (envelope plays for 2× as
+        // long). Three kfs at 0/1/2s become 0/2/4s; clipped at clip_dur=2s
+        // so the third kf is dropped.
+        let mut clip = make_clip_with_kfs("0:gain", vec![
+            kf(0.0, 0.0), kf(1.0, 1.0), kf(2.0, 0.0),
+        ]);
+        let kfs = clip.audio_effect_keyframes.get_mut("0:gain").unwrap();
+        scale_kfs_timing_in_place(kfs, 2.0, 2.0);
+        assert_eq!(kfs.len(), 2, "kf at t=4s after scale must be retained-clamped: {kfs:?}");
+        assert_eq!(kfs[0].time_secs, 0.0);
+        assert_eq!(kfs[1].time_secs, 2.0);
+    }
+
+    #[test]
+    fn scale_double_speed_stretches_tangent_x() {
+        // Double-speed-button uses factor=0.5. tangent_in.0 / out.0
+        // must scale with the time component or the bezier curve
+        // shape distorts.
+        let mut clip = make_clip_with_kfs("0:gain", vec![
+            kf_bezier(0.0, 0.0, (0.0, 0.0), (0.4, 0.5)),
+            kf_bezier(2.0, 1.0, (-0.4, 0.0), (0.0, 0.0)),
+        ]);
+        let kfs = clip.audio_effect_keyframes.get_mut("0:gain").unwrap();
+        scale_kfs_timing_in_place(kfs, 0.5, 2.0);
+        assert!((kfs[0].tangent_out.0 - 0.2).abs() < 1e-9,
+            "out.0 must scale with time: 0.4 * 0.5 = 0.2, got {}", kfs[0].tangent_out.0);
+        assert!((kfs[1].tangent_in.0 - (-0.2)).abs() < 1e-9,
+            "in.0 must scale: -0.4 * 0.5 = -0.2, got {}", kfs[1].tangent_in.0);
+    }
+
+    /// Mirror the InsertBump handler.
+    fn insert_bump(
+        kfs: &mut Vec<Keyframe>,
+        center_time: f64, bump_value: f32, base_value: f32,
+        duration_secs: f64, ramp_secs: f64, clip_dur: f64,
+    ) {
+        let bump_kfs: Vec<(f64, f32)> = vec![
+            (center_time - duration_secs / 2.0 - ramp_secs, base_value),
+            (center_time - duration_secs / 2.0, bump_value),
+            (center_time + duration_secs / 2.0, bump_value),
+            (center_time + duration_secs / 2.0 + ramp_secs, base_value),
+        ];
+        for (t, v) in bump_kfs {
+            if t >= 0.0 && t <= clip_dur {
+                kfs.push(Keyframe {
+                    time_secs: t, value: v,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                });
+            }
+        }
+        kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    #[test]
+    fn bump_inserts_four_kfs_in_clip_range() {
+        // Center 1.0s, duration 0.5s (bump from 0.75 to 1.25), ramp
+        // 0.15s on each side. Four kfs at 0.6, 0.75, 1.25, 1.4s.
+        let mut clip = make_clip_with_kfs("0:gain", vec![]);
+        let kfs = clip.audio_effect_keyframes.get_mut("0:gain").unwrap();
+        insert_bump(kfs, 1.0, 1.0, 0.0, 0.5, 0.15, 2.0);
+        assert_eq!(kfs.len(), 4);
+        let times: Vec<f64> = kfs.iter().map(|k| k.time_secs).collect();
+        assert!((times[0] - 0.6).abs() < 1e-9, "first ramp-in start: {times:?}");
+        assert!((times[1] - 0.75).abs() < 1e-9);
+        assert!((times[2] - 1.25).abs() < 1e-9);
+        assert!((times[3] - 1.4).abs() < 1e-9);
+        // Bump plateau is at value=1.0; outside ramps are at base_value=0.
+        assert!((kfs[1].value - 1.0).abs() < 1e-6);
+        assert!((kfs[2].value - 1.0).abs() < 1e-6);
+        assert!((kfs[0].value - 0.0).abs() < 1e-6);
+        assert!((kfs[3].value - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn bump_drops_kfs_that_fall_outside_clip_range() {
+        // Center 0.05s with ramp 0.15s — the leading ramp kf would
+        // sit at -0.225s. Must be discarded, not clamped.
+        let mut clip = make_clip_with_kfs("0:gain", vec![]);
+        let kfs = clip.audio_effect_keyframes.get_mut("0:gain").unwrap();
+        insert_bump(kfs, 0.05, 1.0, 0.0, 0.0, 0.15, 2.0);
+        // center=0.05, duration=0 → bump kfs at 0.05-0-0.15=-0.10,
+        // 0.05, 0.05, 0.20. Only three are >= 0.
+        assert_eq!(kfs.len(), 3, "kf at t=-0.10 must be dropped: {kfs:?}");
+    }
+
+    /// Mirror the Paste handler's time-scale logic (when source dur
+    /// differs from target dur).
+    fn paste_kfs_with_scaling(source_kfs: &[Keyframe], source_dur: f64, target_dur: f64) -> Vec<Keyframe> {
+        let scale = if source_dur > 0.0 { target_dur / source_dur } else { 1.0 };
+        let mut new_kfs: Vec<Keyframe> = source_kfs.iter().map(|kf| {
+            let mut k = kf.clone();
+            k.time_secs *= scale;
+            k
+        }).collect();
+        new_kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+        new_kfs
+    }
+
+    #[test]
+    fn paste_scales_kf_times_to_target_clip_duration() {
+        // Source clip 2s, target clip 4s → kfs scale by 2x. A kf at
+        // 1.0s (midpoint of source) should land at 2.0s (midpoint of
+        // target).
+        let source = vec![kf(0.0, 0.0), kf(1.0, 1.0), kf(2.0, 0.0)];
+        let pasted = paste_kfs_with_scaling(&source, 2.0, 4.0);
+        assert_eq!(pasted.len(), 3);
+        assert!((pasted[0].time_secs - 0.0).abs() < 1e-9);
+        assert!((pasted[1].time_secs - 2.0).abs() < 1e-9);
+        assert!((pasted[2].time_secs - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn paste_into_zero_duration_source_uses_identity() {
+        // Defensive: if the clipboard somehow has source_duration=0
+        // (malformed save state, or the source clip was empty), the
+        // scale falls back to 1.0 — a sane no-op rather than NaN'ing
+        // every time_secs.
+        let source = vec![kf(0.5, 1.0)];
+        let pasted = paste_kfs_with_scaling(&source, 0.0, 5.0);
+        assert_eq!(pasted.len(), 1);
+        assert!((pasted[0].time_secs - 0.5).abs() < 1e-9);
     }
 }

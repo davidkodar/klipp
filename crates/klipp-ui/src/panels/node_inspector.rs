@@ -7,6 +7,11 @@ use crate::widgets::curves_editor::{self, CurveChannel};
 use klipp_core::{AppCommand, ClipId};
 use klipp_nodes::{NodeGraph, NodeId, NodeKind, NodeParams};
 
+// `ensure_corrector_node` now lives on `klipp_nodes::NodeGraph` as
+// `ensure_corrector` — called from both this module and the SetNode*
+// handlers in `app.rs` when a phantom-id dispatch materialises a real
+// Corrector.
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // NodeInspectorPanel — per-node parameter editor
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -144,7 +149,7 @@ impl NodeInspectorPanel {
             let painter = ui.painter().clone();
             painter.line_segment(
                 [egui::pos2(tab_rect.min.x, tab_rect.max.y), egui::pos2(tab_rect.max.x, tab_rect.max.y)],
-                egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 18)),
+                egui::Stroke::new(0.5_f32, theme.border),
             );
 
             for (i, (tab, label)) in [
@@ -158,7 +163,7 @@ impl NodeInspectorPanel {
                 let x = tab_rect.min.x + i as f32 * tab_w;
                 let rect = egui::Rect::from_min_size(egui::pos2(x, tab_rect.min.y), egui::vec2(tab_w, tab_h));
 
-                let color = if active { theme.text_accent } else { egui::Color32::from_rgba_premultiplied(255, 255, 255, 107) };
+                let color = if active { theme.text_accent } else { theme.text_secondary };
                 painter.text(rect.center(), egui::Align2::CENTER_CENTER, label,
                     egui::FontId::proportional(11.0), color);
 
@@ -242,7 +247,7 @@ impl NodeInspectorPanel {
 
         match color_tab {
             ColorTab::Adjustments => {
-                self.show_adjustments_tab(ui, graph, clip_id, selected_node, cmds, theme);
+                self.show_adjustments_tab(ui, graph, clip_id, selected_node, cmds, theme, clip_time_secs);
             }
             ColorTab::Wheels if wide_layout => {
                 // Wide layout: combined wheels + sat/bri in unified columns
@@ -256,11 +261,65 @@ impl NodeInspectorPanel {
                     ColorTab::Warper => vec![NodeKind::ColorWarper],
                     _ => vec![],
                 };
+                // Lazy-create flow: if no grade node exists yet, render
+                // the widgets against a scratch NodeParams::default()
+                // using a fixed phantom NodeId. The first widget to
+                // emit a change dispatches its SetNode* command tagged
+                // with that phantom id; the handler in app.rs detects
+                // the id, materialises a real Corrector on the clip,
+                // and reroutes the write. User never sees an empty
+                // state or an "Add" button — they just grade.
+                let any_target_exists = graph.nodes.iter().any(|n|
+                    n.kind == NodeKind::Corrector && n.enabled
+                ) || target_kinds.iter().any(|k|
+                    graph.nodes.iter().any(|n| n.kind == *k && n.enabled)
+                );
+                if !any_target_exists {
+                    let mut scratch_params = klipp_nodes::NodeParams::default();
+                    let mut scratch_enabled = true;
+                    let mut scratch_keyframes = klipp_nodes::NodeKeyframeTracks::default();
+                    for target_kind in &target_kinds {
+                        let node_kind = target_kind.clone();
+                        self.show_inspector_layout(
+                            ui,
+                            klipp_nodes::PHANTOM_CORRECTOR_ID,
+                            &node_kind,
+                            &mut scratch_enabled,
+                            &mut scratch_params,
+                            &mut scratch_keyframes,
+                            clip_id, cmds, theme, clip_time_secs, wide_layout,
+                        );
+                    }
+                    return;
+                }
                 for target_kind in &target_kinds {
-                    if let Some(node) = graph.nodes.iter_mut().find(|n| n.kind == *target_kind && n.enabled) {
-                        let node_id = node.id;
-                        let node_kind = node.kind.clone();
-                        *selected_node = Some(node_id);
+                    // Prefer the Corrector (new default graph). Fall
+                    // back to the dedicated single-purpose node when
+                    // the graph is legacy-shaped.
+                    let target_idx = graph.nodes.iter().position(|n|
+                        n.kind == NodeKind::Corrector && n.enabled
+                    ).or_else(||
+                        graph.nodes.iter().position(|n| n.kind == *target_kind && n.enabled)
+                    );
+                    let Some(idx) = target_idx else { continue; };
+                    {
+                        let node_id = graph.nodes[idx].id;
+                        // The widget code below dispatches on this kind
+                        // — pass the user's TAB choice, not the actual
+                        // node's kind, so a Corrector-backed Wheels tab
+                        // still renders the wheels widgets (which read
+                        // the same fields off the Corrector's params).
+                        let node_kind = target_kind.clone();
+                        // Don't overwrite the user's canvas selection.
+                        // The tabs always write to the Corrector
+                        // regardless of which node is highlighted in
+                        // the V2 canvas; previously we clobbered the
+                        // selection to the Corrector every render,
+                        // which meant clicking Source / Output / Apply
+                        // Matte never looked selected because the
+                        // inspector bumped the highlight back to the
+                        // Corrector immediately.
+                        let node = &mut graph.nodes[idx];
                         let node_enabled = &mut node.enabled;
                         let params = &mut node.params;
                         let keyframes = &mut node.keyframes;
@@ -281,9 +340,37 @@ impl NodeInspectorPanel {
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
     ) {
-        // Find both nodes
-        let wheels_idx = graph.nodes.iter().position(|n| n.kind == NodeKind::ColorWheels && n.enabled);
-        let satbri_idx = graph.nodes.iter().position(|n| n.kind == NodeKind::WheelSatBri && n.enabled);
+        // Prefer the Corrector (it carries both wheel + sat/bri
+        // fields) over the legacy split-node pair. Auto-creating here
+        // would revive a just-deleted Corrector, so when neither is
+        // present just show a hint that a slider touch in a narrow
+        // tab will conjure one. Users drop out of wide layout for
+        // that interaction, which is natural on first use.
+        let corrector_present = graph.nodes.iter().any(|n| n.kind == NodeKind::Corrector);
+        let legacy_present = graph.nodes.iter().any(|n|
+            matches!(n.kind, NodeKind::ColorWheels | NodeKind::WheelSatBri)
+        );
+        if !corrector_present && !legacy_present {
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Touch any slider to start grading this clip."
+                    ).small().color(theme.text_dim)
+                );
+            });
+            return;
+        }
+        let corrector_idx = graph.nodes.iter().position(|n|
+            n.kind == NodeKind::Corrector && n.enabled
+        );
+        let wheels_idx = corrector_idx.or_else(||
+            graph.nodes.iter().position(|n| n.kind == NodeKind::ColorWheels && n.enabled)
+        );
+        let satbri_idx = corrector_idx.or_else(||
+            graph.nodes.iter().position(|n| n.kind == NodeKind::WheelSatBri && n.enabled)
+        );
 
         let avail_w = ui.available_width();
         // 4 columns with 2px gaps between them: 3 gaps = 6px
@@ -382,8 +469,8 @@ impl NodeInspectorPanel {
 
                     let painter = col_ui.painter().clone();
                     let _text_dim = theme.text_dim;
-                    let accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
-                    let track_bg = egui::Color32::from_rgb(0x3a, 0x3a, 0x46);
+                    let accent = theme.accent;
+                    let track_bg = theme.bg_raised;
                     let slider_h = 14.0;
                     let label_h = 12.0;
                     let margin = 12.0;
@@ -401,7 +488,7 @@ impl NodeInspectorPanel {
                         egui::Align2::CENTER_CENTER,
                         "Saturation",
                         egui::FontId::proportional(8.0),
-                        egui::Color32::from_rgb(0x80, 0x80, 0x90),
+                        theme.text_dim,
                     );
                     let sat_track_y = sat_label_y + label_h + 2.0;
                     let sat_track_rect = egui::Rect::from_min_size(
@@ -434,7 +521,7 @@ impl NodeInspectorPanel {
                     let sat_thumb_x = cx + sat_t * track_draw_w;
                     painter.circle_filled(egui::pos2(sat_thumb_x, sat_track_y + slider_h / 2.0), 4.0, accent);
                     let is_default = s.abs() < 0.005;
-                    let val_color = if is_default { egui::Color32::from_rgb(0x90, 0x90, 0xa0) } else { accent };
+                    let val_color = if is_default { theme.text_dim } else { accent };
                     painter.text(
                         egui::pos2(cx + track_draw_w + value_w - 2.0, sat_track_y + slider_h / 2.0),
                         egui::Align2::RIGHT_CENTER,
@@ -450,7 +537,7 @@ impl NodeInspectorPanel {
                         egui::Align2::CENTER_CENTER,
                         "Brightness",
                         egui::FontId::proportional(8.0),
-                        egui::Color32::from_rgb(0x80, 0x80, 0x90),
+                        theme.text_dim,
                     );
                     let bri_track_y = bri_label_y + label_h + 2.0;
                     let bri_track_rect = egui::Rect::from_min_size(
@@ -483,7 +570,7 @@ impl NodeInspectorPanel {
                     let bri_thumb_x = cx + bri_t * track_draw_w;
                     painter.circle_filled(egui::pos2(bri_thumb_x, bri_track_y + slider_h / 2.0), 4.0, accent);
                     let is_default = b.abs() < 0.005;
-                    let val_color = if is_default { egui::Color32::from_rgb(0x90, 0x90, 0xa0) } else { accent };
+                    let val_color = if is_default { theme.text_dim } else { accent };
                     painter.text(
                         egui::pos2(cx + track_draw_w + value_w - 2.0, bri_track_y + slider_h / 2.0),
                         egui::Align2::RIGHT_CENTER,
@@ -497,6 +584,328 @@ impl NodeInspectorPanel {
     }
 
     /// Adjustments tab — matches the HTML mockup layout exactly.
+    /// Render the mask-editor body: "+ Add Mask" menu, per-mask
+    /// header + delete, animatable param sliders with keyframe
+    /// diamonds, invert checkbox. Shared between
+    /// `show_inspector_layout`'s NodeKind::Mask arm (node-canvas
+    /// users), `show_adjustments_tab`'s MASKS section (color-tab
+    /// users who never open the canvas), and the Edit-workspace
+    /// Color inspector (clone-based invocation from
+    /// `show_color_and_luts` — the mutations on the local clone are
+    /// discarded; only the `SetNodeMasks` command at the end
+    /// persists). On any change we push one `SetNodeMasks` so every
+    /// path lands in history identically.
+    pub fn render_masks_body(
+        ui: &mut egui::Ui,
+        masks: &mut klipp_core::MaskStack,
+        node_id: NodeId,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+        clip_time_secs: f64,
+        tracked_mask_indices: &[usize],
+    ) {
+        let mut masks_changed = false;
+
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.menu_button(egui::RichText::new("+ Add Mask").size(11.0), |ui| {
+                if ui.button("Circle").clicked() {
+                    masks.masks.push(klipp_core::Mask {
+                        shape: klipp_core::MaskShape::Circle {
+                            center_x: 0.5, center_y: 0.5, radius: 0.2,
+                        },
+                        ..Default::default()
+                    });
+                    masks_changed = true;
+                    ui.close_menu();
+                }
+                if ui.button("Rectangle").clicked() {
+                    masks.masks.push(klipp_core::Mask {
+                        shape: klipp_core::MaskShape::Rectangle {
+                            center_x: 0.5, center_y: 0.5,
+                            width: 0.4, height: 0.3, rotation: 0.0,
+                        },
+                        ..Default::default()
+                    });
+                    masks_changed = true;
+                    ui.close_menu();
+                }
+                if ui.button("Linear Gradient").clicked() {
+                    masks.masks.push(klipp_core::Mask {
+                        shape: klipp_core::MaskShape::LinearGradient {
+                            start_x: 0.2, start_y: 0.5,
+                            end_x: 0.8, end_y: 0.5,
+                        },
+                        ..Default::default()
+                    });
+                    masks_changed = true;
+                    ui.close_menu();
+                }
+                if ui.button("Bezier").clicked() {
+                    masks.masks.push(klipp_core::Mask {
+                        shape: klipp_core::MaskShape::Bezier {
+                            points: vec![
+                                (0.5, 0.35), (0.65, 0.5),
+                                (0.5, 0.65), (0.35, 0.5),
+                            ],
+                        },
+                        ..Default::default()
+                    });
+                    masks_changed = true;
+                    ui.close_menu();
+                }
+            });
+            if !masks.masks.is_empty() {
+                ui.label(egui::RichText::new(
+                    format!("({} mask{})", masks.masks.len(),
+                        if masks.masks.len() == 1 { "" } else { "s" })
+                ).size(10.0).color(theme.text_dim));
+            }
+        });
+
+        if masks.masks.is_empty() {
+            ui.label(egui::RichText::new(
+                "No masks yet. Use the + Add Mask menu above."
+            ).size(10.0).color(theme.text_dim));
+        }
+        let mask_count = masks.masks.len();
+        for mask_idx in 0..mask_count {
+            let shape_label = match &masks.masks[mask_idx].shape {
+                klipp_core::MaskShape::Circle { .. } => "Circle",
+                klipp_core::MaskShape::Rectangle { .. } => "Rectangle",
+                klipp_core::MaskShape::LinearGradient { .. } => "Linear Gradient",
+                klipp_core::MaskShape::Bezier { .. } => "Bezier",
+            };
+            let mask_enabled = masks.masks[mask_idx].enabled;
+            let animatable_params: Vec<&str> = klipp_core::MaskKeyframes::params_for_shape(&masks.masks[mask_idx].shape).to_vec();
+
+            struct ParamInfo {
+                name: &'static str,
+                display_val: f32,
+                has_keyframes: bool,
+                has_kf_at_playhead: bool,
+                range: std::ops::RangeInclusive<f32>,
+            }
+            let param_infos: Vec<ParamInfo> = animatable_params.iter().map(|&param_name| {
+                let mask = &masks.masks[mask_idx];
+                let static_val = mask.param_value(param_name).unwrap_or(0.0);
+                let track = mask.keyframes.track(param_name);
+                let has_keyframes = track.map_or(false, |t| !t.is_empty());
+                let display_val = if has_keyframes {
+                    klipp_core::keyframe::evaluate(track.unwrap(), clip_time_secs, static_val)
+                } else {
+                    static_val
+                };
+                let has_kf_at_playhead = track.map_or(false, |t| {
+                    t.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-3)
+                });
+                let range = match param_name {
+                    "center_x" | "center_y" | "start_x" | "start_y" | "end_x" | "end_y" => 0.0..=1.0,
+                    "radius" | "width" | "height" | "feather" | "opacity" => 0.0..=1.0,
+                    "rotation" => -180.0..=180.0,
+                    _ => 0.0..=1.0,
+                };
+                ParamInfo { name: param_name, display_val, has_keyframes, has_kf_at_playhead, range }
+            }).collect();
+
+            ui.add_space(4.0);
+            let mut delete_this = false;
+            {
+                let mask = &mut masks.masks[mask_idx];
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    if ui.checkbox(&mut mask.enabled, "").changed() { masks_changed = true; }
+                    ui.label(egui::RichText::new(format!("Mask {} - {}", mask_idx + 1, shape_label))
+                        .size(11.0).color(theme.text_accent));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Push everything well off the right edge so
+                        // the × delete button doesn't overlap the
+                        // ScrollArea's scrollbar gutter — clicking
+                        // there scrolled the panel instead of
+                        // deleting the mask.
+                        ui.add_space(14.0);
+                        if ui.add(
+                            egui::Button::new(
+                                egui::RichText::new("\u{00D7}").size(14.0).color(theme.text_dim)
+                            )
+                            .frame(true)
+                            .min_size(egui::vec2(22.0, 22.0))
+                        ).on_hover_text("Delete mask").clicked() {
+                            delete_this = true;
+                        }
+                        // One-shot mask tracking. When a tracker is
+                        // already bound to this mask, the button flips
+                        // to "Re-track" (overwrites prior keyframes) and
+                        // an Untrack button appears next to it.
+                        let is_tracked = tracked_mask_indices.contains(&mask_idx);
+                        ui.add_space(6.0);
+                        if is_tracked {
+                            if ui.add(egui::Button::new(
+                                egui::RichText::new("\u{1F6AB} Untrack").size(10.0)
+                                    .color(theme.text_dim)
+                            ).frame(true))
+                                .on_hover_text("Remove the tracker bound to this mask + clear its centre keyframes")
+                                .clicked()
+                            {
+                                cmds.push(AppCommand::RemoveMaskTracking {
+                                    clip_id, node_id, mask_index: mask_idx,
+                                });
+                            }
+                            ui.add_space(4.0);
+                        }
+                        let label = if is_tracked { "\u{1F3AF} Re-track" } else { "\u{1F3AF} Track" };
+                        let hover = if is_tracked {
+                            "Re-run tracking from the playhead — overwrites the existing centre keyframes"
+                        } else {
+                            "Track this region across the clip — auto-keyframes the mask centre"
+                        };
+                        if ui.add(egui::Button::new(
+                            egui::RichText::new(label).size(10.0)
+                        ).frame(true))
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
+                            // Re-track: drop the existing tracker first
+                            // so we don't leave duplicates piling up.
+                            if is_tracked {
+                                cmds.push(AppCommand::RemoveMaskTracking {
+                                    clip_id, node_id, mask_index: mask_idx,
+                                });
+                            }
+                            cmds.push(AppCommand::TrackMaskRegion {
+                                clip_id, node_id, mask_index: mask_idx,
+                            });
+                        }
+                    });
+                });
+            }
+            if delete_this {
+                // Route through the AppCommand handler so the
+                // centralized cleanup runs — it drops any TrackPoint
+                // bound to this (mask_node_id, mask_index) and
+                // slides remaining tracker bindings down to match
+                // the post-removal indices. The previous in-place
+                // `masks.masks.remove(mask_idx)` here bypassed all
+                // of that, leaving orphaned trackers attached to a
+                // mask that no longer existed.
+                cmds.push(AppCommand::RemoveMaskShape { clip_id, mask_index: mask_idx });
+                break;
+            }
+            if !mask_enabled { continue; }
+
+            for info in &param_infos {
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    let diamond_color = if info.has_kf_at_playhead {
+                        theme.text_accent
+                    } else if info.has_keyframes {
+                        egui::Color32::from_rgba_premultiplied(255, 191, 0, 128)
+                    } else {
+                        theme.text_dim
+                    };
+                    let diamond_text = if info.has_kf_at_playhead { "\u{25C6}" } else { "\u{25C7}" };
+                    let diamond_resp = ui.add(
+                        egui::Button::new(egui::RichText::new(diamond_text).size(12.0).color(diamond_color))
+                            .frame(false)
+                    );
+                    if diamond_resp.clicked() {
+                        if info.has_kf_at_playhead {
+                            cmds.push(AppCommand::RemoveMaskKeyframe {
+                                clip_id, node_id, mask_index: mask_idx,
+                                param: info.name.to_string(), time_secs: clip_time_secs,
+                            });
+                        } else {
+                            cmds.push(AppCommand::AddMaskKeyframe {
+                                clip_id, node_id, mask_index: mask_idx,
+                                param: info.name.to_string(), time_secs: clip_time_secs,
+                                value: info.display_val,
+                            });
+                        }
+                    }
+                    if info.has_keyframes {
+                        diamond_resp.context_menu(|ui| {
+                            if ui.button("Clear all keyframes").clicked() {
+                                cmds.push(AppCommand::ClearMaskKeyframes {
+                                    clip_id, node_id, mask_index: mask_idx,
+                                    param: info.name.to_string(),
+                                });
+                                ui.close_menu();
+                            }
+                        });
+                    }
+                    diamond_resp.on_hover_text(if info.has_kf_at_playhead {
+                        "Remove keyframe at playhead"
+                    } else {
+                        "Add keyframe at playhead"
+                    });
+                    ui.label(egui::RichText::new(info.name.replace('_', " "))
+                        .size(10.0).color(theme.text_dim));
+                    ui.add_space(4.0);
+                    let mut val = info.display_val;
+                    let resp = ui.add(egui::Slider::new(&mut val, info.range.clone())
+                        .show_value(true)
+                        .custom_formatter(|v, _| format!("{:.3}", v))
+                        .min_decimals(3)
+                    );
+                    if resp.changed() {
+                        if info.has_keyframes {
+                            cmds.push(AppCommand::AddMaskKeyframe {
+                                clip_id, node_id, mask_index: mask_idx,
+                                param: info.name.to_string(), time_secs: clip_time_secs,
+                                value: val,
+                            });
+                        } else {
+                            let mask = &mut masks.masks[mask_idx];
+                            match info.name {
+                                "feather" => mask.feather = val,
+                                "opacity" => mask.opacity = val,
+                                _ => match &mut mask.shape {
+                                    klipp_core::MaskShape::Circle { center_x, center_y, radius } => match info.name {
+                                        "center_x" => *center_x = val,
+                                        "center_y" => *center_y = val,
+                                        "radius" => *radius = val,
+                                        _ => {}
+                                    },
+                                    klipp_core::MaskShape::Rectangle { center_x, center_y, width, height, rotation } => match info.name {
+                                        "center_x" => *center_x = val,
+                                        "center_y" => *center_y = val,
+                                        "width" => *width = val,
+                                        "height" => *height = val,
+                                        "rotation" => *rotation = val,
+                                        _ => {}
+                                    },
+                                    klipp_core::MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => match info.name {
+                                        "start_x" => *start_x = val,
+                                        "start_y" => *start_y = val,
+                                        "end_x" => *end_x = val,
+                                        "end_y" => *end_y = val,
+                                        _ => {}
+                                    },
+                                    _ => {}
+                                }
+                            }
+                            masks_changed = true;
+                        }
+                    }
+                });
+            }
+
+            {
+                let mask = &mut masks.masks[mask_idx];
+                ui.horizontal(|ui| {
+                    ui.add_space(30.0);
+                    if ui.checkbox(&mut mask.invert, egui::RichText::new("Invert").size(10.0)).changed() {
+                        masks_changed = true;
+                    }
+                });
+            }
+        }
+        if masks_changed {
+            cmds.push(AppCommand::SetNodeMasks { clip_id, node_id, masks: masks.clone() });
+        }
+    }
+
     fn show_adjustments_tab(
         &mut self,
         ui: &mut egui::Ui,
@@ -505,15 +914,156 @@ impl NodeInspectorPanel {
         selected_node: &mut Option<NodeId>,
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
+        clip_time_secs: f64,
     ) {
-        // Helper: find a node by kind
+        // When no grade node exists on the clip, the sections below
+        // naturally skip (find_node returns None for every kind).
+        // Show a one-line hint pointing at the tabs that DO support
+        // lazy-create so the user isn't staring at a blank panel.
+        let has_grade_target = graph.nodes.iter().any(|n| matches!(n.kind,
+            NodeKind::Corrector | NodeKind::Exposure | NodeKind::Contrast
+            | NodeKind::Saturation | NodeKind::ToneControls | NodeKind::ColorBalance
+        ));
+        if !has_grade_target {
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Touch any slider in Wheels, Curves, Hue-Sat or Warper to start grading."
+                    ).small().color(theme.text_dim)
+                );
+            });
+            return;
+        }
+
+        // Helper: pick the node each section's sliders should write
+        // to. Priority:
+        //   1. The user-selected node if it matches `kind` — when the
+        //      user explicitly selected a standalone Contrast /
+        //      Exposure / Saturation / etc. node in the canvas, the
+        //      tabs must target THAT node so the selected-node
+        //      feedback loop works (this matters for RGB-split
+        //      chains where a grade node lives on one channel and
+        //      must grade only that channel, not the upstream
+        //      Corrector).
+        //   2. Otherwise, the Corrector — every section-relevant
+        //      param lives on it, so the legacy "all tabs on one
+        //      canonical node" workflow keeps working.
+        //   3. Otherwise, the first node of the requested `kind`.
+        let selected_id = *selected_node;
         let find_node = |graph: &mut NodeGraph, kind: NodeKind| -> Option<(NodeId, bool)> {
-            graph.nodes.iter().find(|n| n.kind == kind).map(|n| (n.id, n.enabled))
+            if let Some(sid) = selected_id {
+                if let Some(n) = graph.nodes.iter().find(|n| n.id == sid && n.kind == kind) {
+                    return Some((n.id, n.enabled));
+                }
+            }
+            graph.nodes.iter()
+                .find(|n| n.kind == NodeKind::Corrector)
+                .map(|n| (n.id, n.enabled))
+                .or_else(||
+                    graph.nodes.iter().find(|n| n.kind == kind).map(|n| (n.id, n.enabled))
+                )
         };
+
+        // Node-bypass strip: targets the user-selected node if any,
+        // else the Corrector. One diamond per inspector view — the
+        // other sections below are just slider groupings against the
+        // same underlying node, so a single bypass control is enough.
+        let bypass_target = selected_id
+            .and_then(|id| graph.nodes.iter().find(|n| n.id == id).map(|n| (n.id, n.label.clone(), n.enabled)))
+            .or_else(|| graph.nodes.iter()
+                .find(|n| n.kind == NodeKind::Corrector)
+                .map(|n| (n.id, n.label.clone(), n.enabled)));
+        if let Some((target_id, target_label, target_enabled)) = bypass_target {
+            let (track_has_kfs, kf_at_playhead, effective_on) = {
+                let node = graph.nodes.iter().find(|n| n.id == target_id);
+                let track = node.and_then(|n| n.keyframes.tracks.iter().find(|t| t.param_name == klipp_nodes::ENABLED_TRACK));
+                let has_kfs = track.map_or(false, |t| !t.keyframes.is_empty());
+                let at_ph = track.map_or(false, |t| t.keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-3));
+                let on = track.and_then(|t| t.evaluate(clip_time_secs))
+                    .map(|v| v >= 0.5)
+                    .unwrap_or(target_enabled);
+                (has_kfs, at_ph, on)
+            };
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                let mut shown = effective_on;
+                if ui.checkbox(&mut shown, "").changed() {
+                    if track_has_kfs {
+                        cmds.push(AppCommand::AddKeyframe {
+                            clip_id, node_id: target_id,
+                            param: klipp_nodes::ENABLED_TRACK.to_string(),
+                            time_secs: clip_time_secs,
+                            value: if shown { 1.0 } else { 0.0 },
+                        });
+                    } else {
+                        cmds.push(AppCommand::ToggleNodeEnabled { clip_id, node_id: target_id });
+                    }
+                }
+                ui.label(egui::RichText::new(format!("Bypass — {target_label}"))
+                    .size(11.0).color(theme.text_dim));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(12.0);
+                    let diamond_color = if kf_at_playhead {
+                        theme.text_accent
+                    } else if track_has_kfs {
+                        egui::Color32::from_rgba_premultiplied(255, 191, 0, 128)
+                    } else {
+                        theme.text_dim
+                    };
+                    let diamond_text = if kf_at_playhead { "\u{25C6}" } else { "\u{25C7}" };
+                    let diamond_resp = ui.add(
+                        egui::Button::new(egui::RichText::new(diamond_text).size(13.0).color(diamond_color))
+                            .frame(false),
+                    );
+                    if diamond_resp.clicked() {
+                        if kf_at_playhead {
+                            cmds.push(AppCommand::RemoveKeyframe {
+                                clip_id, node_id: target_id,
+                                param: klipp_nodes::ENABLED_TRACK.to_string(),
+                                time_secs: clip_time_secs,
+                            });
+                        } else {
+                            cmds.push(AppCommand::AddKeyframe {
+                                clip_id, node_id: target_id,
+                                param: klipp_nodes::ENABLED_TRACK.to_string(),
+                                time_secs: clip_time_secs,
+                                value: if effective_on { 1.0 } else { 0.0 },
+                            });
+                        }
+                    }
+                    if track_has_kfs {
+                        diamond_resp.context_menu(|ui| {
+                            if ui.button("Clear bypass keyframes").clicked() {
+                                cmds.push(AppCommand::ClearKeyframes {
+                                    clip_id, node_id: target_id,
+                                    param: klipp_nodes::ENABLED_TRACK.to_string(),
+                                });
+                                ui.close_menu();
+                            }
+                        });
+                    }
+                    diamond_resp.on_hover_text(if kf_at_playhead {
+                        "Remove bypass keyframe at playhead"
+                    } else {
+                        "Add bypass keyframe at playhead"
+                    });
+                });
+            });
+            ui.add_space(4.0);
+            ui.separator();
+        }
 
         // ── Exposure section ──
         if let Some((nid, enabled)) = find_node(graph, NodeKind::Exposure) {
-            *selected_node = Some(nid);
+            // Intentionally NOT clobbering `*selected_node` here — see
+            // the matching comment in `show_simple_layout`. Clobbering
+            // it made clicking Source/Output/Apply-Matte in the V2
+            // canvas look like selection never happened because the
+            // inspector bumped the highlight back to the grade node
+            // every frame.
             let (reset, is_open) = section_header(ui, "EXPOSURE", enabled, theme);
             if is_open {
                 if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == nid) {
@@ -529,7 +1079,7 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "exposure".into(), value: val });
                     }
                 }
-                section_divider(ui);
+                section_divider(ui, theme);
             }
         }
 
@@ -557,7 +1107,7 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "clarity".into(), value: cval });
                     }
                 }
-                section_divider(ui);
+                section_divider(ui, theme);
             }
         }
 
@@ -585,7 +1135,7 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "vibrance".into(), value: vval });
                     }
                 }
-                section_divider(ui);
+                section_divider(ui, theme);
             }
         }
 
@@ -622,7 +1172,7 @@ impl NodeInspectorPanel {
                         }
                     }
                 }
-                section_divider(ui);
+                section_divider(ui, theme);
             }
         }
 
@@ -681,8 +1231,8 @@ impl NodeInspectorPanel {
                 // Global Mix: subtle grey → white
                 let mut mix = node.params.global_mix.unwrap_or(1.0);
                 if gradient_slider_row(ui, "Global Mix", &mut mix, 0.0..=1.0,
-                    egui::Color32::from_rgba_premultiplied(255, 255, 255, 20),
-                    egui::Color32::from_rgba_premultiplied(255, 255, 255, 90), theme, cmds, clip_id)
+                    theme.overlay(20),
+                    theme.overlay(90), theme, cmds, clip_id)
                 {
                     node.params.global_mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "global_mix".into(), value: mix });
@@ -722,8 +1272,80 @@ impl NodeInspectorPanel {
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id: nid, param: "denoise_radius".into(), value: r as f32 });
                     }
                 }
-                section_divider(ui);
+                section_divider(ui, theme);
             }
+        }
+
+        // ── Masks section ──
+        // Exposed here so Color-workspace users can create + manage
+        // masks without opening the node canvas. Two paths:
+        //   - Mask node exists: route directly to render_masks_body
+        //     so the full editor (shape params, keyframes, feather,
+        //     opacity, invert) is available inline. Same code path
+        //     as the per-node inspector.
+        //   - No Mask node yet: bootstrap menu dispatching
+        //     AddMaskShape, which lazy-creates the Mask node AND
+        //     appends the shape in one history step.
+        let (_, is_open) = section_header(ui, "MASKS", true, theme);
+        if is_open {
+            ui.add_space(4.0);
+            let mask_node_idx = graph.nodes.iter().position(|n| n.kind == NodeKind::Mask);
+            if let Some(idx) = mask_node_idx {
+                let node_id = graph.nodes[idx].id;
+                let masks = graph.nodes[idx].params.masks.get_or_insert_with(Default::default);
+                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, clip_time_secs, &[]);
+            } else {
+                ui.horizontal(|ui| {
+                    ui.add_space(12.0);
+                    ui.menu_button(egui::RichText::new("+ Add Mask").size(11.0), |ui| {
+                        if ui.button("Circle").clicked() {
+                            cmds.push(AppCommand::AddMaskShape {
+                                clip_id,
+                                shape: klipp_core::MaskShape::Circle {
+                                    center_x: 0.5, center_y: 0.5, radius: 0.2,
+                                },
+                            });
+                            ui.close_menu();
+                        }
+                        if ui.button("Rectangle").clicked() {
+                            cmds.push(AppCommand::AddMaskShape {
+                                clip_id,
+                                shape: klipp_core::MaskShape::Rectangle {
+                                    center_x: 0.5, center_y: 0.5,
+                                    width: 0.4, height: 0.3, rotation: 0.0,
+                                },
+                            });
+                            ui.close_menu();
+                        }
+                        if ui.button("Linear Gradient").clicked() {
+                            cmds.push(AppCommand::AddMaskShape {
+                                clip_id,
+                                shape: klipp_core::MaskShape::LinearGradient {
+                                    start_x: 0.2, start_y: 0.5,
+                                    end_x: 0.8, end_y: 0.5,
+                                },
+                            });
+                            ui.close_menu();
+                        }
+                        if ui.button("Bezier").clicked() {
+                            cmds.push(AppCommand::AddMaskShape {
+                                clip_id,
+                                shape: klipp_core::MaskShape::Bezier {
+                                    points: vec![
+                                        (0.5, 0.35), (0.65, 0.5),
+                                        (0.5, 0.65), (0.35, 0.5),
+                                    ],
+                                },
+                            });
+                            ui.close_menu();
+                        }
+                    });
+                    ui.label(egui::RichText::new(
+                        "No masks yet — pick a shape to start."
+                    ).size(10.0).color(theme.text_dim));
+                });
+            }
+            section_divider(ui, theme);
         }
     }
 
@@ -737,13 +1359,13 @@ impl NodeInspectorPanel {
         kind: &NodeKind,
         enabled: &mut bool,
         params: &mut NodeParams,
-        _keyframes: &mut klipp_nodes::NodeKeyframeTracks,
+        keyframes: &mut klipp_nodes::NodeKeyframeTracks,
         clip_id: ClipId,
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
         clip_time_secs: f64,
     ) {
-        self.show_inspector_layout(ui, node_id, kind, enabled, params, _keyframes, clip_id, cmds, theme, clip_time_secs, false)
+        self.show_inspector_layout(ui, node_id, kind, enabled, params, keyframes, clip_id, cmds, theme, clip_time_secs, false)
     }
 
     fn show_inspector_layout(
@@ -753,13 +1375,23 @@ impl NodeInspectorPanel {
         kind: &NodeKind,
         enabled: &mut bool,
         params: &mut NodeParams,
-        _keyframes: &mut klipp_nodes::NodeKeyframeTracks,
+        keyframes: &mut klipp_nodes::NodeKeyframeTracks,
         clip_id: ClipId,
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
         clip_time_secs: f64,
         wide_layout: bool,
     ) {
+        let enabled_track = keyframes.tracks.iter().find(|t| t.param_name == klipp_nodes::ENABLED_TRACK);
+        let bypass_track_has_kfs = enabled_track.map_or(false, |t| !t.keyframes.is_empty());
+        let bypass_kf_at_playhead = enabled_track.map_or(false, |t| {
+            t.keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-3)
+        });
+        let effective_on = enabled_track
+            .and_then(|t| t.evaluate(clip_time_secs))
+            .map(|v| v >= 0.5)
+            .unwrap_or(*enabled);
+
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add_space(12.0);
@@ -767,9 +1399,64 @@ impl NodeInspectorPanel {
                 .size(12.0).color(theme.text_accent).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(12.0);
-                if ui.checkbox(enabled, "").changed() {
-                    cmds.push(AppCommand::ToggleNodeEnabled { clip_id, node_id });
+                let mut shown = effective_on;
+                if ui.checkbox(&mut shown, "").changed() {
+                    if bypass_track_has_kfs {
+                        cmds.push(AppCommand::AddKeyframe {
+                            clip_id, node_id,
+                            param: klipp_nodes::ENABLED_TRACK.to_string(),
+                            time_secs: clip_time_secs,
+                            value: if shown { 1.0 } else { 0.0 },
+                        });
+                    } else {
+                        cmds.push(AppCommand::ToggleNodeEnabled { clip_id, node_id });
+                    }
                 }
+                ui.add_space(4.0);
+                let diamond_color = if bypass_kf_at_playhead {
+                    theme.text_accent
+                } else if bypass_track_has_kfs {
+                    egui::Color32::from_rgba_premultiplied(255, 191, 0, 128)
+                } else {
+                    theme.text_dim
+                };
+                let diamond_text = if bypass_kf_at_playhead { "\u{25C6}" } else { "\u{25C7}" };
+                let diamond_resp = ui.add(
+                    egui::Button::new(egui::RichText::new(diamond_text).size(12.0).color(diamond_color))
+                        .frame(false),
+                );
+                if diamond_resp.clicked() {
+                    if bypass_kf_at_playhead {
+                        cmds.push(AppCommand::RemoveKeyframe {
+                            clip_id, node_id,
+                            param: klipp_nodes::ENABLED_TRACK.to_string(),
+                            time_secs: clip_time_secs,
+                        });
+                    } else {
+                        cmds.push(AppCommand::AddKeyframe {
+                            clip_id, node_id,
+                            param: klipp_nodes::ENABLED_TRACK.to_string(),
+                            time_secs: clip_time_secs,
+                            value: if effective_on { 1.0 } else { 0.0 },
+                        });
+                    }
+                }
+                if bypass_track_has_kfs {
+                    diamond_resp.context_menu(|ui| {
+                        if ui.button("Clear bypass keyframes").clicked() {
+                            cmds.push(AppCommand::ClearKeyframes {
+                                clip_id, node_id,
+                                param: klipp_nodes::ENABLED_TRACK.to_string(),
+                            });
+                            ui.close_menu();
+                        }
+                    });
+                }
+                diamond_resp.on_hover_text(if bypass_kf_at_playhead {
+                    "Remove bypass keyframe at playhead"
+                } else {
+                    "Add bypass keyframe at playhead"
+                });
             });
         });
         ui.add_space(2.0);
@@ -779,31 +1466,31 @@ impl NodeInspectorPanel {
         match kind {
             NodeKind::Exposure => {
                 let mut val = params.exposure.unwrap_or(0.0);
-                if grade_slider(ui, "Exposure", &mut val, -3.0..=3.0, "stops", cmds, clip_id) {
+                if grade_slider(ui, "Exposure", &mut val, -3.0..=3.0, "stops", cmds, clip_id, theme) {
                     params.exposure = Some(val);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "exposure".into(), value: val });
                 }
             }
             NodeKind::Contrast => {
                 let mut val = params.contrast.unwrap_or(0.0);
-                if grade_slider(ui, "Contrast", &mut val, -1.0..=1.0, "", cmds, clip_id) {
+                if grade_slider(ui, "Contrast", &mut val, -1.0..=1.0, "", cmds, clip_id, theme) {
                     params.contrast = Some(val);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "contrast".into(), value: val });
                 }
                 let mut cval = params.clarity.unwrap_or(0.0);
-                if grade_slider(ui, "Clarity", &mut cval, -1.0..=1.0, "", cmds, clip_id) {
+                if grade_slider(ui, "Clarity", &mut cval, -1.0..=1.0, "", cmds, clip_id, theme) {
                     params.clarity = Some(cval);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "clarity".into(), value: cval });
                 }
             }
             NodeKind::Saturation => {
                 let mut val = params.saturation.unwrap_or(1.0);
-                if grade_slider(ui, "Saturation", &mut val, 0.0..=2.0, "", cmds, clip_id) {
+                if grade_slider(ui, "Saturation", &mut val, 0.0..=2.0, "", cmds, clip_id, theme) {
                     params.saturation = Some(val);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "saturation".into(), value: val });
                 }
                 let mut vval = params.vibrance.unwrap_or(0.0);
-                if grade_slider(ui, "Vibrance", &mut vval, -1.0..=1.0, "", cmds, clip_id) {
+                if grade_slider(ui, "Vibrance", &mut vval, -1.0..=1.0, "", cmds, clip_id, theme) {
                     params.vibrance = Some(vval);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "vibrance".into(), value: vval });
                 }
@@ -816,7 +1503,7 @@ impl NodeInspectorPanel {
                     ("Blacks", params.blacks.unwrap_or(0.0), "blacks"),
                 ] {
                     let mut val = field;
-                    if grade_slider(ui, label, &mut val, -1.0..=1.0, "", cmds, clip_id) {
+                    if grade_slider(ui, label, &mut val, -1.0..=1.0, "", cmds, clip_id, theme) {
                         params.apply_override(param_name, val);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: param_name.into(), value: val });
                     }
@@ -1047,7 +1734,7 @@ impl NodeInspectorPanel {
                                 params.apply_override(bri_name, b);
                                 cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.into(), value: b });
                             }
-                            section_divider(ui);
+                            section_divider(ui, theme);
                         }
                     }
                 }
@@ -1085,11 +1772,11 @@ impl NodeInspectorPanel {
                         let active = self.active_curve_channel == ch;
                         let size = egui::vec2(26.0, 22.0);
                         let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-                        let bg = if active { color } else { egui::Color32::from_rgba_premultiplied(255, 255, 255, 18) };
-                        let text_color = if active { egui::Color32::from_rgb(0x1a, 0x1a, 0x1c) } else { color };
+                        let bg = if active { color } else { theme.overlay(18) };
+                        let text_color = if active { theme.text_on_accent } else { color };
                         ui.painter().rect_filled(rect, 4.0, bg);
                         ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(0.5_f32,
-                            egui::Color32::from_rgba_premultiplied(255, 255, 255, 30)));
+                            theme.overlay(30)));
                         ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER,
                             label, egui::FontId::proportional(11.0), text_color);
                         if resp.clicked() { self.active_curve_channel = ch; }
@@ -1103,7 +1790,7 @@ impl NodeInspectorPanel {
                         let icon_tint = if resp.hovered() {
                             theme.text_accent
                         } else {
-                            egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)
+                            theme.overlay(100)
                         };
                         let icon_rect = egui::Rect::from_center_size(r.center(), egui::vec2(12.0, 12.0));
                         Icon::Eyedropper.image(12.0).tint(icon_tint).paint_at(ui, icon_rect);
@@ -1138,7 +1825,7 @@ impl NodeInspectorPanel {
                     ui.add_space(PAD);
                     let mut preserve = params.curves_preserve_luma.unwrap_or(false);
                     if ui.checkbox(&mut preserve, egui::RichText::new("Preserve Luma").size(11.0)
-                        .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 140))).changed()
+                        .color(theme.overlay(140))).changed()
                     {
                         params.curves_preserve_luma = Some(preserve);
                     }
@@ -1180,7 +1867,7 @@ impl NodeInspectorPanel {
                         ui.painter().circle_filled(dot_rect.center(), 4.0, *color);
                         // Label
                         ui.label(egui::RichText::new(*label).size(10.0)
-                            .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 180)));
+                            .color(theme.overlay(180)));
 
                         // Push icons to the right
                         let remaining = ui.available_width() - PAD;
@@ -1195,7 +1882,7 @@ impl NodeInspectorPanel {
                             let ed_tint = if ed_resp.hovered() {
                                 theme.text_accent
                             } else {
-                                egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)
+                                theme.overlay(100)
                             };
                             let ed_icon_rect = egui::Rect::from_center_size(ed_resp.rect.center(), egui::vec2(12.0, 12.0));
                             Icon::Eyedropper.image(12.0).tint(ed_tint).paint_at(ui, ed_icon_rect);
@@ -1211,7 +1898,7 @@ impl NodeInspectorPanel {
                             let rs_tint = if rs_resp.hovered() {
                                 theme.text_accent
                             } else {
-                                egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)
+                                theme.overlay(100)
                             };
                             let rs_icon_rect = egui::Rect::from_center_size(rs_resp.rect.center(), egui::vec2(12.0, 12.0));
                             Icon::ArrowCounterClockwise.image(12.0).tint(rs_tint).paint_at(ui, rs_icon_rect);
@@ -1260,7 +1947,7 @@ impl NodeInspectorPanel {
                     ui.add_space(PAD);
                     let mut preserve = params.curves_preserve_luma.unwrap_or(false);
                     if ui.checkbox(&mut preserve, egui::RichText::new("Preserve Luma").size(11.0)
-                        .color(egui::Color32::from_rgba_premultiplied(255, 255, 255, 128))).changed()
+                        .color(theme.overlay(128))).changed()
                     {
                         params.curves_preserve_luma = Some(preserve);
                     }
@@ -1282,7 +1969,7 @@ impl NodeInspectorPanel {
                     ("Global Mix", "global_mix", params.global_mix.unwrap_or(1.0), 0.0..=1.0),
                 ] {
                     let mut v = val;
-                    if grade_slider(ui, label, &mut v, range, "", cmds, clip_id) {
+                    if grade_slider(ui, label, &mut v, range, "", cmds, clip_id, theme) {
                         params.apply_override(pname, v);
                         cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: pname.into(), value: v });
                     }
@@ -1297,224 +1984,45 @@ impl NodeInspectorPanel {
                 ui.checkbox(&mut qual.enabled, "Enabled");
                 if qual.enabled {
                     let mut hc = qual.hue_center;
-                    if grade_slider(ui, "Hue Center", &mut hc, 0.0..=360.0, "deg", cmds, clip_id) { qual.hue_center = hc; }
+                    if grade_slider(ui, "Hue Center", &mut hc, 0.0..=360.0, "deg", cmds, clip_id, theme) { qual.hue_center = hc; }
                     let mut hw = qual.hue_width;
-                    if grade_slider(ui, "Hue Width", &mut hw, 0.0..=180.0, "deg", cmds, clip_id) { qual.hue_width = hw; }
+                    if grade_slider(ui, "Hue Width", &mut hw, 0.0..=180.0, "deg", cmds, clip_id, theme) { qual.hue_width = hw; }
                     let mut hs = qual.hue_soft;
-                    if grade_slider(ui, "Hue Soft", &mut hs, 0.0..=90.0, "deg", cmds, clip_id) { qual.hue_soft = hs; }
+                    if grade_slider(ui, "Hue Soft", &mut hs, 0.0..=90.0, "deg", cmds, clip_id, theme) { qual.hue_soft = hs; }
                     ui.add_space(4.0);
                     let mut sl = qual.sat_low;
-                    if grade_slider(ui, "Sat Low", &mut sl, 0.0..=1.0, "", cmds, clip_id) { qual.sat_low = sl; }
+                    if grade_slider(ui, "Sat Low", &mut sl, 0.0..=1.0, "", cmds, clip_id, theme) { qual.sat_low = sl; }
                     let mut sh = qual.sat_high;
-                    if grade_slider(ui, "Sat High", &mut sh, 0.0..=1.0, "", cmds, clip_id) { qual.sat_high = sh; }
+                    if grade_slider(ui, "Sat High", &mut sh, 0.0..=1.0, "", cmds, clip_id, theme) { qual.sat_high = sh; }
                     let mut ss = qual.sat_soft;
-                    if grade_slider(ui, "Sat Soft", &mut ss, 0.0..=1.0, "", cmds, clip_id) { qual.sat_soft = ss; }
+                    if grade_slider(ui, "Sat Soft", &mut ss, 0.0..=1.0, "", cmds, clip_id, theme) { qual.sat_soft = ss; }
                     ui.add_space(4.0);
                     let mut ll = qual.lum_low;
-                    if grade_slider(ui, "Lum Low", &mut ll, 0.0..=1.0, "", cmds, clip_id) { qual.lum_low = ll; }
+                    if grade_slider(ui, "Lum Low", &mut ll, 0.0..=1.0, "", cmds, clip_id, theme) { qual.lum_low = ll; }
                     let mut lh = qual.lum_high;
-                    if grade_slider(ui, "Lum High", &mut lh, 0.0..=1.0, "", cmds, clip_id) { qual.lum_high = lh; }
+                    if grade_slider(ui, "Lum High", &mut lh, 0.0..=1.0, "", cmds, clip_id, theme) { qual.lum_high = lh; }
                     let mut ls = qual.lum_soft;
-                    if grade_slider(ui, "Lum Soft", &mut ls, 0.0..=1.0, "", cmds, clip_id) { qual.lum_soft = ls; }
+                    if grade_slider(ui, "Lum Soft", &mut ls, 0.0..=1.0, "", cmds, clip_id, theme) { qual.lum_soft = ls; }
                     ui.checkbox(&mut qual.invert, "Invert");
                     cmds.push(AppCommand::SetNodeQualifier { clip_id, node_id, qualifier: qual.clone() });
                 }
             }
             NodeKind::Mask => {
                 let masks = params.masks.get_or_insert_with(Default::default);
-                if masks.masks.is_empty() {
-                    ui.label(egui::RichText::new("No masks. Add masks in the viewer.").size(10.0).color(theme.text_dim));
-                }
-                let mut masks_changed = false;
-                let mask_count = masks.masks.len();
-                for mask_idx in 0..mask_count {
-                    // Gather read-only data from the mask before the mutable borrow phase
-                    let shape_label = match &masks.masks[mask_idx].shape {
-                        klipp_core::MaskShape::Circle { .. } => "Circle",
-                        klipp_core::MaskShape::Rectangle { .. } => "Rectangle",
-                        klipp_core::MaskShape::LinearGradient { .. } => "Linear Gradient",
-                        klipp_core::MaskShape::Bezier { .. } => "Bezier",
-                    };
-                    let mask_enabled = masks.masks[mask_idx].enabled;
-                    let animatable_params: Vec<&str> = klipp_core::MaskKeyframes::params_for_shape(&masks.masks[mask_idx].shape).to_vec();
-
-                    // Pre-compute per-param display info to avoid holding borrows across UI calls
-                    struct ParamInfo {
-                        name: &'static str,
-                        display_val: f32,
-                        has_keyframes: bool,
-                        has_kf_at_playhead: bool,
-                        range: std::ops::RangeInclusive<f32>,
-                    }
-                    let param_infos: Vec<ParamInfo> = animatable_params.iter().map(|&param_name| {
-                        let mask = &masks.masks[mask_idx];
-                        let static_val = mask.param_value(param_name).unwrap_or(0.0);
-                        let track = mask.keyframes.track(param_name);
-                        let has_keyframes = track.map_or(false, |t| !t.is_empty());
-                        let display_val = if has_keyframes {
-                            klipp_core::keyframe::evaluate(track.unwrap(), clip_time_secs, static_val)
-                        } else {
-                            static_val
-                        };
-                        let has_kf_at_playhead = track.map_or(false, |t| {
-                            t.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-3)
-                        });
-                        let range = match param_name {
-                            "center_x" | "center_y" | "start_x" | "start_y" | "end_x" | "end_y" => 0.0..=1.0,
-                            "radius" | "width" | "height" | "feather" | "opacity" => 0.0..=1.0,
-                            "rotation" => -180.0..=180.0,
-                            _ => 0.0..=1.0,
-                        };
-                        ParamInfo { name: param_name, display_val, has_keyframes, has_kf_at_playhead, range }
-                    }).collect();
-
-                    ui.add_space(4.0);
-                    // Header row with enabled checkbox
-                    {
-                        let mask = &mut masks.masks[mask_idx];
-                        ui.horizontal(|ui| {
-                            ui.add_space(8.0);
-                            if ui.checkbox(&mut mask.enabled, "").changed() { masks_changed = true; }
-                            ui.label(egui::RichText::new(format!("Mask {} - {}", mask_idx + 1, shape_label))
-                                .size(11.0).color(theme.text_accent));
-                        });
-                    }
-                    if !mask_enabled { continue; }
-
-                    // Parameter sliders with keyframe diamonds
-                    for info in &param_infos {
-                        ui.horizontal(|ui| {
-                            ui.add_space(14.0);
-
-                            // Keyframe diamond button
-                            let diamond_color = if info.has_kf_at_playhead {
-                                theme.text_accent
-                            } else if info.has_keyframes {
-                                egui::Color32::from_rgba_premultiplied(255, 191, 0, 128)
-                            } else {
-                                theme.text_dim
-                            };
-                            let diamond_text = if info.has_kf_at_playhead { "\u{25C6}" } else { "\u{25C7}" };
-                            let diamond_resp = ui.add(
-                                egui::Button::new(egui::RichText::new(diamond_text).size(12.0).color(diamond_color))
-                                    .frame(false)
-                            );
-                            if diamond_resp.clicked() {
-                                if info.has_kf_at_playhead {
-                                    cmds.push(AppCommand::RemoveMaskKeyframe {
-                                        clip_id, node_id, mask_index: mask_idx,
-                                        param: info.name.to_string(), time_secs: clip_time_secs,
-                                    });
-                                } else {
-                                    cmds.push(AppCommand::AddMaskKeyframe {
-                                        clip_id, node_id, mask_index: mask_idx,
-                                        param: info.name.to_string(), time_secs: clip_time_secs,
-                                        value: info.display_val,
-                                    });
-                                }
-                            }
-                            // Context menu for clearing keyframes
-                            if info.has_keyframes {
-                                diamond_resp.context_menu(|ui| {
-                                    if ui.button("Clear all keyframes").clicked() {
-                                        cmds.push(AppCommand::ClearMaskKeyframes {
-                                            clip_id, node_id, mask_index: mask_idx,
-                                            param: info.name.to_string(),
-                                        });
-                                        ui.close_menu();
-                                    }
-                                });
-                            }
-                            diamond_resp.on_hover_text(if info.has_kf_at_playhead {
-                                "Remove keyframe at playhead"
-                            } else {
-                                "Add keyframe at playhead"
-                            });
-
-                            // Label
-                            ui.label(egui::RichText::new(info.name.replace('_', " "))
-                                .size(10.0).color(theme.text_dim));
-                            ui.add_space(4.0);
-
-                            // Slider
-                            let mut val = info.display_val;
-                            let resp = ui.add(egui::Slider::new(&mut val, info.range.clone())
-                                .show_value(true)
-                                .custom_formatter(|v, _| format!("{:.3}", v))
-                                .min_decimals(3)
-                            );
-                            if resp.changed() {
-                                if info.has_keyframes {
-                                    // When keyframed, editing the slider adds/updates a keyframe at playhead
-                                    cmds.push(AppCommand::AddMaskKeyframe {
-                                        clip_id, node_id, mask_index: mask_idx,
-                                        param: info.name.to_string(), time_secs: clip_time_secs,
-                                        value: val,
-                                    });
-                                } else {
-                                    // Static: update the mask param directly via command
-                                    let mask = &mut masks.masks[mask_idx];
-                                    match info.name {
-                                        "feather" => mask.feather = val,
-                                        "opacity" => mask.opacity = val,
-                                        _ => match &mut mask.shape {
-                                            klipp_core::MaskShape::Circle { center_x, center_y, radius } => match info.name {
-                                                "center_x" => *center_x = val,
-                                                "center_y" => *center_y = val,
-                                                "radius" => *radius = val,
-                                                _ => {}
-                                            },
-                                            klipp_core::MaskShape::Rectangle { center_x, center_y, width, height, rotation } => match info.name {
-                                                "center_x" => *center_x = val,
-                                                "center_y" => *center_y = val,
-                                                "width" => *width = val,
-                                                "height" => *height = val,
-                                                "rotation" => *rotation = val,
-                                                _ => {}
-                                            },
-                                            klipp_core::MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => match info.name {
-                                                "start_x" => *start_x = val,
-                                                "start_y" => *start_y = val,
-                                                "end_x" => *end_x = val,
-                                                "end_y" => *end_y = val,
-                                                _ => {}
-                                            },
-                                            _ => {}
-                                        }
-                                    }
-                                    masks_changed = true;
-                                }
-                            }
-                        });
-                    }
-
-                    // Invert checkbox
-                    {
-                        let mask = &mut masks.masks[mask_idx];
-                        ui.horizontal(|ui| {
-                            ui.add_space(30.0);
-                            if ui.checkbox(&mut mask.invert, egui::RichText::new("Invert").size(10.0)).changed() {
-                                masks_changed = true;
-                            }
-                        });
-                    }
-                }
-                if masks_changed {
-                    cmds.push(AppCommand::SetNodeMasks { clip_id, node_id, masks: masks.clone() });
-                }
+                Self::render_masks_body(ui, masks, node_id, clip_id, cmds, theme, clip_time_secs, &[]);
             }
             NodeKind::FilmGrain => {
                 let grain = params.grain.get_or_insert_with(Default::default);
                 ui.checkbox(&mut grain.enabled, "Enabled");
                 if grain.enabled {
                     let mut a = grain.amount;
-                    if grade_slider(ui, "Amount", &mut a, 0.0..=1.0, "", cmds, clip_id) { grain.amount = a; }
+                    if grade_slider(ui, "Amount", &mut a, 0.0..=1.0, "", cmds, clip_id, theme) { grain.amount = a; }
                     let mut s = grain.size;
-                    if grade_slider(ui, "Size", &mut s, 0.5..=3.0, "", cmds, clip_id) { grain.size = s; }
+                    if grade_slider(ui, "Size", &mut s, 0.5..=3.0, "", cmds, clip_id, theme) { grain.size = s; }
                     let mut sh = grain.shadows;
-                    if grade_slider(ui, "Shadows", &mut sh, 0.0..=1.0, "", cmds, clip_id) { grain.shadows = sh; }
+                    if grade_slider(ui, "Shadows", &mut sh, 0.0..=1.0, "", cmds, clip_id, theme) { grain.shadows = sh; }
                     let mut hi = grain.highlights;
-                    if grade_slider(ui, "Highlights", &mut hi, 0.0..=1.0, "", cmds, clip_id) { grain.highlights = hi; }
+                    if grade_slider(ui, "Highlights", &mut hi, 0.0..=1.0, "", cmds, clip_id, theme) { grain.highlights = hi; }
                     ui.checkbox(&mut grain.monochrome, "Monochrome");
                 }
             }
@@ -1525,31 +2033,49 @@ impl NodeInspectorPanel {
                     ui.label(egui::RichText::new("No LUT loaded").size(10.0).color(theme.text_dim));
                 }
                 let mut opacity = params.lut_opacity.unwrap_or(1.0);
-                if grade_slider(ui, "Opacity", &mut opacity, 0.0..=1.0, "", cmds, clip_id) {
+                if grade_slider(ui, "Opacity", &mut opacity, 0.0..=1.0, "", cmds, clip_id, theme) {
                     params.lut_opacity = Some(opacity);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "lut_opacity".into(), value: opacity });
                 }
+                // Colorspace tags. `.cube` and friends carry no
+                // standardised colorspace metadata, so the loader
+                // defaults to Rec.709 / sRGB on both sides; the user
+                // re-tags here when the LUT was authored against a
+                // different working space (e.g. an ACES-AP1-tagged
+                // LUT loaded into a Rec.709 project, or vice versa).
+                lut_colorspace_dropdown(
+                    ui, theme, "Input space",
+                    "lut_input_space",
+                    &mut params.lut_input_space,
+                    cmds, clip_id, node_id,
+                );
+                lut_colorspace_dropdown(
+                    ui, theme, "Output space",
+                    "lut_output_space",
+                    &mut params.lut_output_space,
+                    cmds, clip_id, node_id,
+                );
             }
             NodeKind::Blend | NodeKind::ApplyMatte => {
                 let mut mix = params.mix.unwrap_or(1.0);
-                if grade_slider(ui, "Mix", &mut mix, 0.0..=1.0, "", cmds, clip_id) {
+                if grade_slider(ui, "Mix", &mut mix, 0.0..=1.0, "", cmds, clip_id, theme) {
                     params.mix = Some(mix);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "mix".into(), value: mix });
                 }
             }
             NodeKind::Denoise => {
                 let mut luma = params.denoise_luma.unwrap_or(0.0);
-                if grade_slider(ui, "Luma Strength", &mut luma, 0.0..=1.0, "", cmds, clip_id) {
+                if grade_slider(ui, "Luma Strength", &mut luma, 0.0..=1.0, "", cmds, clip_id, theme) {
                     params.denoise_luma = Some(luma);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_luma".into(), value: luma });
                 }
                 let mut chroma = params.denoise_chroma.unwrap_or(0.0);
-                if grade_slider(ui, "Chroma Strength", &mut chroma, 0.0..=1.0, "", cmds, clip_id) {
+                if grade_slider(ui, "Chroma Strength", &mut chroma, 0.0..=1.0, "", cmds, clip_id, theme) {
                     params.denoise_chroma = Some(chroma);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_chroma".into(), value: chroma });
                 }
                 let mut radius = params.denoise_radius.unwrap_or(3) as f32;
-                if grade_slider(ui, "Radius", &mut radius, 1.0..=7.0, "px", cmds, clip_id) {
+                if grade_slider(ui, "Radius", &mut radius, 1.0..=7.0, "px", cmds, clip_id, theme) {
                     let r = radius.round() as u32;
                     params.denoise_radius = Some(r);
                     cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: "denoise_radius".into(), value: r as f32 });
@@ -1559,13 +2085,233 @@ impl NodeInspectorPanel {
                 self.show_warper_widget(ui, node_id, params, clip_id, cmds, theme);
             }
             NodeKind::CombineMattes => { ui.label("Multiplies two matte inputs"); }
+            NodeKind::ExternalMatte => {
+                self.show_external_matte_widget(ui, node_id, params, clip_id, cmds, theme);
+            }
             NodeKind::ColorMatch => {
                 self.show_color_match_widget(ui, node_id, params, clip_id, cmds, theme);
             }
+            NodeKind::LayerMixer => {
+                self.show_layer_mixer_widget(ui, node_id, params, clip_id, cmds, theme);
+            }
+            NodeKind::Corrector => {
+                // Corrector params are surfaced through the colour-grade
+                // tabs (Adjustments / Wheels / Curves / Hue-Sat / Warper)
+                // — those tabs already prefer the Corrector when present.
+                // Selecting the Corrector node directly in the V2 editor
+                // points the user at the right place rather than
+                // duplicating the widgets here.
+                ui.label(
+                    egui::RichText::new(
+                        "Edit this node via the Adjustments / Wheels / Curves / Hue-Sat / Warper tabs."
+                    ).color(theme.text_dim).small()
+                );
+            }
             NodeKind::Source | NodeKind::Output | NodeKind::Layer
+            | NodeKind::RGBSplitter | NodeKind::RGBCombiner
+            | NodeKind::MaskCutout
             | NodeKind::Unknown => {
                 ui.label(egui::RichText::new("No parameters").color(theme.text_dim));
             }
+            NodeKind::PrimariesMatrix => {
+                ui.label(
+                    egui::RichText::new(
+                        "Linear-light 3×3 primaries conversion. Set by the project's \
+                         working-colorspace migration; safe to leave alone unless you're \
+                         hand-building a custom IDT."
+                    )
+                    .color(theme.text_dim)
+                    .small(),
+                );
+                let label_for = |ws: Option<klipp_core::WorkingColorspace>| -> &'static str {
+                    match ws {
+                        None => "(unset — passthrough)",
+                        Some(klipp_core::WorkingColorspace::Rec709Linear) => "Rec.709 / sRGB linear",
+                        Some(klipp_core::WorkingColorspace::AcesCG) => "ACEScg (AP1)",
+                        Some(klipp_core::WorkingColorspace::Bt2020Linear) => "BT.2020 linear",
+                    }
+                };
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("From:").color(theme.text_dim).small());
+                    ui.label(label_for(params.primaries_from));
+                });
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("To:").color(theme.text_dim).small());
+                    ui.label(label_for(params.primaries_to));
+                });
+            }
+            NodeKind::Compound => {
+                // Compound nodes hold a sub-graph; the parameters
+                // panel is intentionally minimal — editing the sub-
+                // graph happens via descend (stage 4 will wire the
+                // double-click + breadcrumb). For now we just tell
+                // the user how many nodes are nested so the inspector
+                // isn't a blank panel.
+                let count = params.compound_subgraph
+                    .as_ref()
+                    .map(|g| g.nodes.len())
+                    .unwrap_or(0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Compound subgraph — {count} node{}",
+                        if count == 1 { "" } else { "s" },
+                    ))
+                    .color(theme.text_dim),
+                );
+                ui.label(
+                    egui::RichText::new("Double-click to descend (coming soon)")
+                        .small()
+                        .color(theme.text_dim),
+                );
+            }
+        }
+    }
+
+    /// Inspector for `ExternalMatte`: file picker, channel selector,
+    /// invert toggle. The path + channel are stored in NodeParams;
+    /// the executor decodes + caches per node edit.
+    fn show_external_matte_widget(
+        &mut self,
+        ui: &mut egui::Ui,
+        node_id: klipp_nodes::NodeId,
+        params: &mut klipp_nodes::NodeParams,
+        clip_id: klipp_core::ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &crate::theme::KlippTheme,
+    ) {
+        // File picker.
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            let label = match &params.matte_image_path {
+                Some(p) => p.file_name().map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| p.to_string_lossy().to_string()),
+                None => "(none selected)".to_string(),
+            };
+            ui.label(
+                egui::RichText::new(label).small().color(theme.text_dim)
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            if ui.button("Choose image…").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Image", &["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"])
+                    .pick_file()
+                {
+                    params.matte_image_path = Some(path.clone());
+                    cmds.push(AppCommand::SetExternalMattePath {
+                        clip_id, node_id, path: Some(path),
+                    });
+                }
+            }
+            if params.matte_image_path.is_some()
+                && ui.button("Clear").clicked()
+            {
+                params.matte_image_path = None;
+                cmds.push(AppCommand::SetExternalMattePath {
+                    clip_id, node_id, path: None,
+                });
+            }
+        });
+
+        ui.add_space(4.0);
+
+        // Channel selector.
+        let current_channel = params.matte_channel.unwrap_or_default();
+        let invert = params.matte_invert.unwrap_or(false);
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Source").small().color(theme.text_dim));
+            let mut new_channel = current_channel;
+            egui::ComboBox::from_id_salt(("ext_matte_channel", node_id))
+                .selected_text(new_channel.display_name())
+                .show_ui(ui, |ui| {
+                    for &candidate in &klipp_nodes::MatteChannel::ALL {
+                        if ui.selectable_label(new_channel == candidate, candidate.display_name()).clicked() {
+                            new_channel = candidate;
+                        }
+                    }
+                });
+            if new_channel != current_channel {
+                params.matte_channel = Some(new_channel);
+                cmds.push(AppCommand::SetExternalMatteChannel {
+                    clip_id, node_id,
+                    channel: new_channel as u8,
+                    invert,
+                });
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            let mut inv = invert;
+            if ui.checkbox(&mut inv, "Invert").changed() {
+                params.matte_invert = Some(inv);
+                cmds.push(AppCommand::SetExternalMatteChannel {
+                    clip_id, node_id,
+                    channel: current_channel as u8,
+                    invert: inv,
+                });
+            }
+        });
+    }
+
+    /// Inspector for `LayerMixer`: one row per input port, with an
+    /// opacity slider and a blend-mode dropdown. Port 0 is shown at
+    /// the top to match the editor's stack-order ("port 0 sits on top
+    /// of the composite"). Empty state hint when no ports have been
+    /// wired yet — the user has to drop a wire on the node first.
+    fn show_layer_mixer_widget(
+        &mut self,
+        ui: &mut egui::Ui,
+        node_id: klipp_nodes::NodeId,
+        params: &mut klipp_nodes::NodeParams,
+        clip_id: klipp_core::ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &crate::theme::KlippTheme,
+    ) {
+        let mixer = params.layer_mixer.get_or_insert_with(Default::default);
+        if mixer.inputs.is_empty() {
+            ui.label(
+                egui::RichText::new(
+                    "Wire inputs into this node — drop a wire on the left edge to add a port."
+                ).color(theme.text_dim).small()
+            );
+            return;
+        }
+        let count = mixer.inputs.len();
+        for port in 0..count {
+            let input_settings = mixer.inputs[port];
+            let label = if port == 0 { "Input 1 (top)".to_string() }
+                else { format!("Input {}", port + 1) };
+            ui.label(egui::RichText::new(label).strong().small());
+            let mut opacity = input_settings.opacity;
+            let resp = ui.add(
+                egui::Slider::new(&mut opacity, 0.0..=1.0)
+                    .text("Opacity")
+                    .fixed_decimals(2),
+            );
+            let mut blend = input_settings.blend_mode;
+            let mut blend_changed = false;
+            egui::ComboBox::from_id_salt(("layer_mixer_blend", node_id, port))
+                .selected_text(blend.display_name())
+                .show_ui(ui, |ui| {
+                    for &candidate in &klipp_core::BlendMode::ALL {
+                        if ui.selectable_label(blend == candidate, candidate.display_name()).clicked() {
+                            blend = candidate;
+                            blend_changed = true;
+                        }
+                    }
+                });
+            if resp.changed() || blend_changed {
+                mixer.inputs[port] = klipp_core::LayerMixerInput { opacity, blend_mode: blend };
+                cmds.push(AppCommand::SetNodeLayerMixerInput {
+                    clip_id,
+                    node_id,
+                    port: port as u8,
+                    input: mixer.inputs[port],
+                });
+            }
+            ui.add_space(6.0);
         }
     }
 
@@ -1654,22 +2400,22 @@ impl NodeInspectorPanel {
         let painter = ui.painter();
 
         // Background circle
-        painter.circle_filled(center, radius + 4.0, egui::Color32::from_rgb(0x18, 0x18, 0x20));
-        painter.circle_stroke(center, radius, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x30, 0x30, 0x38)));
+        painter.circle_filled(center, radius + 4.0, theme.bg_deep);
+        painter.circle_stroke(center, radius, egui::Stroke::new(1.0_f32, theme.border));
 
         // Crosshair lines
         painter.line_segment(
             [egui::pos2(center.x - radius, center.y), egui::pos2(center.x + radius, center.y)],
-            egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 15)),
+            egui::Stroke::new(0.5_f32, theme.overlay(15)),
         );
         painter.line_segment(
             [egui::pos2(center.x, center.y - radius), egui::pos2(center.x, center.y + radius)],
-            egui::Stroke::new(0.5_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 15)),
+            egui::Stroke::new(0.5_f32, theme.overlay(15)),
         );
 
         // Inner reference circles at 33% and 66% radius
-        painter.circle_stroke(center, radius * 0.33, egui::Stroke::new(0.3_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 10)));
-        painter.circle_stroke(center, radius * 0.66, egui::Stroke::new(0.3_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 10)));
+        painter.circle_stroke(center, radius * 0.33, egui::Stroke::new(0.3_f32, theme.overlay(10)));
+        painter.circle_stroke(center, radius * 0.66, egui::Stroke::new(0.3_f32, theme.overlay(10)));
 
         let sector_labels = ["R", "O", "Y", "YG", "G", "CG", "C", "CB", "B", "BM", "M", "MR"];
         let neutral_r = radius * 0.7;
@@ -1688,7 +2434,7 @@ impl NodeInspectorPanel {
             let ly1 = center.y - line_angle.sin() * radius;
             painter.line_segment(
                 [egui::pos2(lx0, ly0), egui::pos2(lx1, ly1)],
-                egui::Stroke::new(0.3_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 12)),
+                egui::Stroke::new(0.3_f32, theme.overlay(12)),
             );
 
             // Subtle hue dot at center of each sector
@@ -2001,7 +2747,7 @@ fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTh
         egui::Align2::CENTER_CENTER,
         caret,
         egui::FontId::proportional(10.0),
-        egui::Color32::from_rgba_premultiplied(255, 255, 255, 100),
+        theme.overlay(100),
     );
 
     // Section title
@@ -2015,7 +2761,7 @@ fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTh
 
     // Enabled dot
     let dot_x = rect.max.x - PAD - 22.0;
-    let dot_color = if enabled { theme.text_accent } else { egui::Color32::from_rgba_premultiplied(255, 255, 255, 46) };
+    let dot_color = if enabled { theme.text_accent } else { theme.overlay(46) };
     ui.painter().circle_filled(egui::pos2(dot_x, cy), 3.0, dot_color);
 
     // Reset button
@@ -2025,7 +2771,7 @@ fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTh
     let reset_tint = if reset_resp.hovered() {
         theme.text_accent
     } else {
-        egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)
+        theme.overlay(100)
     };
     let icon_rect = egui::Rect::from_center_size(egui::pos2(icon_x, cy), egui::vec2(12.0, 12.0));
     Icon::ArrowCounterClockwise.image(12.0).tint(reset_tint).paint_at(ui, icon_rect);
@@ -2046,11 +2792,11 @@ fn section_header(ui: &mut egui::Ui, title: &str, enabled: bool, theme: &KlippTh
 }
 
 /// 0.5px divider line between sections
-fn section_divider(ui: &mut egui::Ui) {
+fn section_divider(ui: &mut egui::Ui, theme: &crate::theme::KlippTheme) {
     ui.add_space(4.0);
     let avail_w = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(egui::vec2(avail_w, 1.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 18));
+    ui.painter().rect_filled(rect, 0.0, theme.overlay(18));
     ui.add_space(4.0);
 }
 
@@ -2080,7 +2826,7 @@ fn inspector_row(
     let (row_rect, resp) = ui.allocate_exact_size(egui::vec2(avail_w, ROW_H), egui::Sense::hover());
 
     if resp.hovered() {
-        ui.painter().rect_filled(row_rect, 0.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 13));
+        ui.painter().rect_filled(row_rect, 0.0, theme.overlay(13));
     }
 
     let cy = row_rect.center().y;
@@ -2095,7 +2841,7 @@ fn inspector_row(
             egui::Align2::LEFT_CENTER,
             label,
             egui::FontId::proportional(11.0),
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 107),
+            theme.overlay(107),
         );
 
         // Slider track
@@ -2120,7 +2866,7 @@ fn inspector_row(
             painter.rect_filled(
                 egui::Rect::from_min_size(egui::pos2(unfill_x, track_y), egui::vec2(unfill_w, 3.0)),
                 1.5,
-                egui::Color32::from_rgba_premultiplied(255, 255, 255, 26),
+                theme.overlay(26),
             );
         }
 
@@ -2139,7 +2885,7 @@ fn inspector_row(
             egui::Align2::LEFT_CENTER,
             format!("{:.2}", *value),
             egui::FontId::proportional(11.0),
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 166),
+            theme.overlay(166),
         );
 
         // Suffix
@@ -2149,7 +2895,7 @@ fn inspector_row(
                 egui::Align2::LEFT_CENTER,
                 suffix,
                 egui::FontId::proportional(10.0),
-                egui::Color32::from_rgba_premultiplied(255, 255, 255, 107),
+                theme.overlay(107),
             );
         }
     }
@@ -2208,7 +2954,7 @@ fn gradient_slider_row(
     range: std::ops::RangeInclusive<f32>,
     color_left: egui::Color32,
     color_right: egui::Color32,
-    _theme: &KlippTheme,
+    theme: &KlippTheme,
     cmds: &mut Vec<AppCommand>,
     clip_id: ClipId,
 ) -> bool {
@@ -2221,7 +2967,7 @@ fn gradient_slider_row(
 
     let (row_rect, resp) = ui.allocate_exact_size(egui::vec2(avail_w, ROW_H), egui::Sense::hover());
     if resp.hovered() {
-        ui.painter().rect_filled(row_rect, 0.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 13));
+        ui.painter().rect_filled(row_rect, 0.0, theme.overlay(13));
     }
     let cy = row_rect.center().y;
     let slider_x = row_rect.min.x + PAD + label_w;
@@ -2231,7 +2977,7 @@ fn gradient_slider_row(
 
         painter.text(egui::pos2(row_rect.min.x + PAD, cy), egui::Align2::LEFT_CENTER,
             label, egui::FontId::proportional(11.0),
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 107));
+            theme.overlay(107));
 
         // Gradient track — draw pixel by pixel horizontally
         let track_h = 6.0;
@@ -2260,7 +3006,7 @@ fn gradient_slider_row(
         // Value
         painter.text(egui::pos2(slider_x + slider_w + 8.0, cy), egui::Align2::LEFT_CENTER,
             format!("{:.2}", *value), egui::FontId::proportional(11.0),
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 166));
+            theme.overlay(166));
     }
 
     let interact_rect = egui::Rect::from_min_size(
@@ -2287,7 +3033,7 @@ fn hue_slider_row(
     ui: &mut egui::Ui,
     label: &str,
     value: &mut f32,
-    _theme: &KlippTheme,
+    theme: &KlippTheme,
     cmds: &mut Vec<AppCommand>,
     clip_id: ClipId,
 ) -> bool {
@@ -2299,7 +3045,7 @@ fn hue_slider_row(
 
     let (row_rect, resp) = ui.allocate_exact_size(egui::vec2(avail_w, ROW_H), egui::Sense::hover());
     if resp.hovered() {
-        ui.painter().rect_filled(row_rect, 0.0, egui::Color32::from_rgba_premultiplied(255, 255, 255, 13));
+        ui.painter().rect_filled(row_rect, 0.0, theme.overlay(13));
     }
     let cy = row_rect.center().y;
     let slider_x = row_rect.min.x + PAD + label_w;
@@ -2309,7 +3055,7 @@ fn hue_slider_row(
 
         painter.text(egui::pos2(row_rect.min.x + PAD, cy), egui::Align2::LEFT_CENTER,
             label, egui::FontId::proportional(11.0),
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 107));
+            theme.overlay(107));
 
         // Rainbow spectrum track
         let track_h = 6.0;
@@ -2333,7 +3079,7 @@ fn hue_slider_row(
         // Value
         painter.text(egui::pos2(slider_x + slider_w + 8.0, cy), egui::Align2::LEFT_CENTER,
             format!("{:.2}", *value), egui::FontId::proportional(11.0),
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 166));
+            theme.overlay(166));
     }
 
     let interact_rect = egui::Rect::from_min_size(
@@ -2355,6 +3101,95 @@ fn hue_slider_row(
     changed
 }
 
+/// Per-node colorspace dropdown for the Lut3D inspector. Renders a
+/// 4-option ComboBox (Use LUT default / Rec.709 linear / ACEScg /
+/// BT.2020) wired to a `Option<WorkingColorspace>` field on
+/// `NodeParams`. "Use LUT default" maps to `None` — the executor
+/// falls back to whatever tag the LUT carries internally (always
+/// `Rec709Linear` for parser-loaded `.cube` files until a tagged
+/// LUT format ships).
+///
+/// The `param_key` argument is passed through as the `SetNodeParam`
+/// command's parameter name so the existing
+/// `param_key → NodeParams field` dispatch in `klipp_nodes::params`
+/// handles persistence + history. WorkingColorspace is encoded as
+/// its `as_u8` tag, then dispatched as f32 — matches the pattern
+/// already used by `curves_preserve_luma` etc. that reuse the
+/// `f32 → bool` shape.
+fn lut_colorspace_dropdown(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    label: &str,
+    param_key: &str,
+    field: &mut Option<klipp_core::WorkingColorspace>,
+    cmds: &mut Vec<AppCommand>,
+    clip_id: ClipId,
+    node_id: NodeId,
+) {
+    use klipp_core::WorkingColorspace;
+    // Sentinel u8 = 255: "use LUT default". Anything in 0..=2 is a
+    // real working space tag; the dispatcher's defensive bounds
+    // check turns out-of-range values back into None.
+    const USE_LUT_DEFAULT: u8 = 255;
+    let label_text = match *field {
+        None => "Use LUT default",
+        Some(WorkingColorspace::Rec709Linear) => "Rec.709 / sRGB",
+        Some(WorkingColorspace::AcesCG) => "ACEScg",
+        Some(WorkingColorspace::Bt2020Linear) => "BT.2020",
+    };
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!("{label}:"))
+                .size(11.0)
+                .color(theme.text_dim),
+        );
+        let mut current_tag: u8 = field.map(|w| w.as_u8()).unwrap_or(USE_LUT_DEFAULT);
+        let prev_tag = current_tag;
+        egui::ComboBox::from_id_salt((param_key, node_id))
+            .width(150.0)
+            .selected_text(label_text)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut current_tag, USE_LUT_DEFAULT, "Use LUT default");
+                ui.selectable_value(
+                    &mut current_tag,
+                    WorkingColorspace::Rec709Linear.as_u8(),
+                    "Rec.709 / sRGB",
+                );
+                ui.selectable_value(
+                    &mut current_tag,
+                    WorkingColorspace::AcesCG.as_u8(),
+                    "ACEScg",
+                );
+                ui.selectable_value(
+                    &mut current_tag,
+                    WorkingColorspace::Bt2020Linear.as_u8(),
+                    "BT.2020",
+                );
+            });
+        if current_tag != prev_tag {
+            *field = if current_tag == USE_LUT_DEFAULT {
+                None
+            } else {
+                Some(WorkingColorspace::from_u8(current_tag))
+            };
+            // Encode for the dispatcher: 255 sentinel maps to None
+            // via the defensive bounds check (>= 256 OR == 255 both
+            // route through to `None`); 0/1/2 round-trip cleanly.
+            let value = if current_tag == USE_LUT_DEFAULT {
+                f32::INFINITY
+            } else {
+                current_tag as f32
+            };
+            cmds.push(AppCommand::SetNodeParam {
+                clip_id,
+                node_id,
+                param: param_key.into(),
+                value,
+            });
+        }
+    });
+}
+
 /// Legacy grade_slider for non-Adjustments tabs. Takes `cmds` + `clip_id` so
 /// drag gestures are wrapped in `BeginNodeParamEdit` / `EndNodeParamEdit` and
 /// enter the undo history as a single step.
@@ -2366,6 +3201,7 @@ fn grade_slider(
     suffix: &str,
     cmds: &mut Vec<AppCommand>,
     clip_id: ClipId,
+    theme: &crate::theme::KlippTheme,
 ) -> bool {
     let pad = 14.0;
     let w = (ui.available_width() - pad * 2.0).max(60.0);
@@ -2382,7 +3218,7 @@ fn grade_slider(
     ui.horizontal(|ui| {
         ui.add_space(pad);
         ui.label(egui::RichText::new(label).size(11.0).color(
-            egui::Color32::from_rgba_premultiplied(255, 255, 255, 107)));
+            theme.overlay(107)));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(pad);
             let resp = ui.add(

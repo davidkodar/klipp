@@ -131,20 +131,53 @@ files are never preferred over a loud failure. Export is currently
 **not atomic** (writes directly to the target path); a
 `.tmp` + rename refactor is tracked.
 
-### Colour pipeline — known limitation
+### Colour pipeline
 
-The entire colour pipeline currently operates on 8-bit sRGB-encoded
-bytes. Exposure above ~+1 stop blows out midtones; Rec.709 luma
-coefficients in saturation / qualifier are applied to gamma-encoded
-values; `apply_input_transform` linearises camera log only to
-re-encode it to sRGB before the grade (the IDT defeats itself). The
-fundamental fix is a linear-light pipeline (f16 or f32 intermediate
-plumbed engine → render → viewer, display transform as the final op).
-Treated as a multi-week architectural project, tracked separately.
+The colour pipeline is linear-light end-to-end: decoders emit f32
+RGBA in the project working space, the grade chain operates on those
+linear values, and a single display transform at the end of the chain
+encodes for the viewer or the export. Working space is a per-project
+choice — `klipp_core::WorkingColorspace` selects between
+`Rec709Linear` (default), `AcesCG` (AP1 primaries), and `Bt2020Linear`
+(stub today, aliased to Rec.709 in display).
+
+`klipp-color` houses the maths: the ACES 1.3 RRT line-for-line, four
+Output Display Transforms (Rec.709 SDR cinema, Rec.2100 PQ at 1000 /
+4000 nit, DCI-P3 D65 48 nit), primaries matrices between every
+working-space pair (numerical f64 inverses so round-trips are exact),
+and per-working-space luma coefficients for all gamut-aware grade ops
+(saturation, vibrance, tone controls, lift/gamma/gain, log wheels,
+etc.) Each op has a `_ws` variant; the `_bt709` form is a thin
+wrapper kept for byte-identity with pre-Phase-E code.
 
 Camera-log decoders (`klipp-color::transforms`) are whitepaper-correct
-where verified — Apple Log, LogC3/4, SLog2/3, PQ, HLG. Nikon N-Log and
-a few others are still pending verification against reference material.
+where verified — Apple Log, LogC3/4, SLog2/3, PQ, HLG. Nikon N-Log
+and a few others are still pending verification against reference
+material. The IDT lifts log-encoded YUV / RGB straight to the
+project working space — no sRGB re-encode round-trip.
+
+The grade graph (`klipp-nodes`) carries an optional per-chain
+`working_space_override`. When set, the executor swaps its active
+working colorspace + GPU luma uniform for the duration of that
+chain's execution and restores on every exit. The migration node
+`PrimariesMatrix` applies a fixed 3×3 matrix between any two working
+spaces; the project-info "Convert grades" button wraps each clip's
+chain with `Source → PM(new→old) → ... → PM(old→new) → Output` and
+pins the override so an existing grade keeps producing the same
+pixels after a working-space switch.
+
+Export (`klipp-render`) carries a delivery-target ODT choice
+(`klipp_core::OdtChoice`) on `ExportSettings`. The default
+`MatchViewer` mirrors the viewer's display path; explicit Rec.709 SDR
+/ HDR PQ / DCI-P3 D65 ODTs route through the AcesCG-basis chain (with
+a BT.709 → AP1 walk when the project is Rec.709-linear so the ODT
+sees the right basis).
+
+LUTs in `klipp-color::lut` carry input/output working-space tags on
+`LutData`; `apply_3d_lut_linear_ws` brackets the trilinear lookup
+with the right primaries matrices so a Rec.709-authored .cube applied
+to an AcesCG project doesn't silently shift gamut. The Lut3D
+inspector node exposes both tags as dropdowns.
 
 ### OFX plugin host
 

@@ -120,7 +120,9 @@ impl KeyBindings {
         bind(&mut b, "delete_clip", vec![KeyCombo::new("Delete"), KeyCombo::new("Backspace")]);
         bind(&mut b, "lift_clip", vec![KeyCombo::shift("Delete"), KeyCombo::shift("Backspace")]);
         bind(&mut b, "split_at_playhead", vec![KeyCombo::ctrl("B")]);
-        bind(&mut b, "freeze_frame", vec![KeyCombo::shift("F")]);
+        // Freeze Frame moved off Shift+F so the NLE-standard
+        // Match Frame Reverse can claim it.
+        bind(&mut b, "freeze_frame", vec![KeyCombo::alt("H")]);
         bind(&mut b, "group_clips", vec![KeyCombo::ctrl("G")]);
         bind(&mut b, "ungroup_clips", vec![KeyCombo::ctrl_shift("G")]);
 
@@ -166,7 +168,9 @@ impl KeyBindings {
         bind(&mut b, "toggle_loop", vec![KeyCombo::ctrl("L")]);
 
         // Viewer
-        bind(&mut b, "toggle_fullscreen", vec![KeyCombo::new("F")]);
+        // Fullscreen toggle moved off F (which is the NLE-standard
+        // Match Frame shortcut) onto F11 (the OS convention).
+        bind(&mut b, "toggle_fullscreen", vec![KeyCombo::new("F11")]);
         bind(&mut b, "toggle_before_after", vec![KeyCombo::new("B")]);
         bind(&mut b, "toggle_color_panel", vec![KeyCombo::new("C")]);
         bind(&mut b, "toggle_scopes", vec![KeyCombo::new("V")]);
@@ -188,6 +192,13 @@ impl KeyBindings {
         bind(&mut b, "zoom_to_selection", vec![KeyCombo::shift("Z")]);
         bind(&mut b, "zoom_in", vec![KeyCombo::new("=")]);
         bind(&mut b, "zoom_out", vec![KeyCombo::new("-")]);
+
+        // Match Frame — NLE staple. F finds the source frame
+        // corresponding to the program playhead and loads it in the
+        // source viewer; Shift+F walks the timeline forward to the
+        // next occurrence of the source viewer's current frame.
+        bind(&mut b, "match_frame_program_to_source", vec![KeyCombo::new("F")]);
+        bind(&mut b, "match_frame_source_to_program", vec![KeyCombo::shift("F")]);
 
         // Markers & Keyframes
         bind(&mut b, "add_marker", vec![KeyCombo::new("M")]);
@@ -215,6 +226,28 @@ impl KeyBindings {
         bind(&mut b, "toggle_node_bypass", vec![KeyCombo::alt("D")]);
         bind(&mut b, "reset_current_node", vec![KeyCombo::ctrl_shift("R")]);
         bind(&mut b, "cycle_scope_mode", vec![KeyCombo::shift("V")]);
+
+        // AI Tools — task launchers + run/cancel.
+        // Conflict notes:
+        //   * `B` is `blade_tool` and `toggle_before_after` already, so the
+        //     AI launchers all use Shift+<letter>. Shift+B / Shift+J /
+        //     Shift+D are otherwise unbound. Shift+F is taken by
+        //     match_frame_source_to_program — we deliberately don't reuse it.
+        //   * Ctrl+A is `select_all` and Ctrl+Shift+A is `deselect_all`,
+        //     so the panel toggle uses Alt+A (otherwise free) instead.
+        //   * Escape is implicitly used everywhere (close dialog / deselect
+        //     / exit fullscreen) and the keybinding system is global, so
+        //     we bind cancel to Ctrl+. (Ctrl+period, otherwise unbound)
+        //     and rely on a UI button as the primary cancel surface.
+        //   * Ctrl+Enter is unbound elsewhere — picked as "run with
+        //     current settings" because it mirrors the "submit form"
+        //     muscle memory.
+        bind(&mut b, "ai_remove_background", vec![KeyCombo::shift("B")]);
+        bind(&mut b, "ai_isolate_object", vec![KeyCombo::shift("J")]);
+        bind(&mut b, "ai_detect_objects", vec![KeyCombo::shift("D")]);
+        bind(&mut b, "ai_run_inference", vec![KeyCombo::ctrl("Enter")]);
+        bind(&mut b, "ai_cancel_inference", vec![KeyCombo::ctrl(".")]);
+        bind(&mut b, "toggle_ai_tools_panel", vec![KeyCombo::alt("A")]);
 
         // Misc
         bind(&mut b, "create_title", vec![KeyCombo::ctrl("T")]);
@@ -392,6 +425,12 @@ impl KeyBindings {
             "create_title" => "Create Title Clip",
             "connect_clip" => "Connect to Primary",
             "disconnect_clip" => "Disconnect from Primary",
+            "ai_remove_background" => "AI: Remove Background",
+            "ai_isolate_object" => "AI: Isolate Object",
+            "ai_detect_objects" => "AI: Detect Objects",
+            "ai_run_inference" => "AI: Run Inference",
+            "ai_cancel_inference" => "AI: Cancel Inference",
+            "toggle_ai_tools_panel" => "Toggle AI Tools Panel",
             _ => action,
         }
     }
@@ -414,6 +453,7 @@ impl KeyBindings {
                 "multicam_angle_7", "multicam_angle_8", "multicam_angle_9",
                 "create_multicam"]),
             ("Color", &["prev_color_node", "next_color_node", "toggle_node_bypass", "reset_current_node", "cycle_scope_mode"]),
+            ("AI Tools", &["ai_remove_background", "ai_isolate_object", "ai_detect_objects", "ai_run_inference", "ai_cancel_inference", "toggle_ai_tools_panel"]),
             ("Other", &["create_title", "connect_clip", "disconnect_clip"]),
         ]
     }

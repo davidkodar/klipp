@@ -21,14 +21,14 @@ pub struct SliderEditState {
 /// Click the value label to type an exact number (requires `edit_state` and `slider_id`).
 pub fn color_slider(
     ui: &mut egui::Ui,
-    _theme: &KlippTheme,
+    theme: &KlippTheme,
     label: &str,
     value: &mut f32,
     range: RangeInclusive<f32>,
     default_value: f32,
     format_fn: fn(f32) -> String,
 ) -> ColorSliderResponse {
-    color_slider_with_edit(ui, _theme, label, value, range, default_value, format_fn, None)
+    color_slider_with_edit(ui, theme, label, value, range, default_value, format_fn, None)
 }
 
 /// Like `color_slider` but with optional numeric edit support.
@@ -36,7 +36,7 @@ pub fn color_slider(
 #[allow(clippy::too_many_arguments)]
 pub fn color_slider_with_edit(
     ui: &mut egui::Ui,
-    _theme: &KlippTheme,
+    theme: &KlippTheme,
     label: &str,
     value: &mut f32,
     range: RangeInclusive<f32>,
@@ -104,12 +104,12 @@ pub fn color_slider_with_edit(
     let painter = ui.painter_at(rect);
 
     // Colors
-    let text_dim = egui::Color32::from_rgb(0x90, 0x90, 0xa0);
-    let text_accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
-    let track_bg = egui::Color32::from_rgb(0x2a, 0x2a, 0x32);
+    let text_dim = theme.text_dim;
+    let text_accent = theme.accent;
+    let track_bg = theme.bg_raised;
     let fill_color = text_accent;
-    let thumb_fill = egui::Color32::from_rgb(0xe8, 0xe8, 0xee);
-    let glow_color = egui::Color32::from_rgba_unmultiplied(0xe8, 0xa0, 0x20, 38);
+    let thumb_fill = theme.text_primary;
+    let glow_color = theme.accent_glow;
 
     // Label (11px, left-aligned)
     painter.text(
@@ -171,7 +171,7 @@ pub fn color_slider_with_edit(
             );
 
             // Background for edit field
-            painter.rect_filled(edit_rect, 2.0, egui::Color32::from_rgb(0x1a, 0x1a, 0x22));
+            painter.rect_filled(edit_rect, 2.0, theme.bg_deep);
             painter.rect_stroke(edit_rect, 2.0, egui::Stroke::new(1.0_f32, text_accent));
 
             let edit_resp = ui.allocate_new_ui(

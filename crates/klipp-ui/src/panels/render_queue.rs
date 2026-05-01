@@ -21,23 +21,23 @@ impl RenderQueuePanel {
     fn status_badge_colors(status: &RenderJobStatus, theme: &KlippTheme) -> (egui::Color32, egui::Color32) {
         match status {
             RenderJobStatus::Queued => (
-                egui::Color32::from_rgb(0x3a, 0x3a, 0x44),
+                theme.bg_raised,
                 theme.text_secondary,
             ),
             RenderJobStatus::Rendering => (
-                egui::Color32::from_rgb(0x6a, 0x50, 0x10),
+                theme.accent_dim,
                 theme.accent,
             ),
             RenderJobStatus::Complete => (
-                egui::Color32::from_rgb(0x1a, 0x42, 0x28),
-                egui::Color32::from_rgb(0x5c, 0xd0, 0x78),
+                theme.bg_raised,
+                theme.marker_success,
             ),
             RenderJobStatus::Failed => (
-                egui::Color32::from_rgb(0x4a, 0x1a, 0x1a),
-                egui::Color32::from_rgb(0xff, 0x6b, 0x6b),
+                theme.bg_raised,
+                theme.marker_error,
             ),
             RenderJobStatus::Cancelled => (
-                egui::Color32::from_rgb(0x2a, 0x2a, 0x30),
+                theme.bg_panel_alt,
                 theme.text_dim,
             ),
         }
@@ -89,7 +89,7 @@ impl RenderQueuePanel {
                     }
                     if complete > 0 {
                         ui.colored_label(
-                            egui::Color32::from_rgb(0x5c, 0xd0, 0x78),
+                            theme.marker_success,
                             format!("{complete} done"),
                         );
                     }
@@ -239,9 +239,9 @@ impl RenderQueuePanel {
                         let btn = egui::Button::new(
                             egui::RichText::new("Cancel")
                                 .size(11.0)
-                                .color(egui::Color32::from_rgb(0xff, 0x6b, 0x6b)),
+                                .color(theme.marker_error),
                         )
-                        .fill(egui::Color32::from_rgb(0x3a, 0x1a, 0x1a));
+                        .fill(theme.bg_raised);
                         if ui.add(btn).clicked() {
                             actions.push(RenderQueueAction::CancelJob(job.id));
                         }
@@ -274,7 +274,7 @@ impl RenderQueuePanel {
         let painter = ui.painter_at(bar_rect);
 
         // Background track
-        painter.rect_filled(bar_rect, 3.0, egui::Color32::from_rgb(0x20, 0x22, 0x28));
+        painter.rect_filled(bar_rect, 3.0, theme.bg_deep);
 
         // Fill
         let fill_width = bar_rect.width() * job.progress;
@@ -283,9 +283,9 @@ impl RenderQueuePanel {
                 egui::Rect::from_min_size(bar_rect.min, egui::vec2(fill_width, Self::BAR_HEIGHT));
             let fill_color = match job.status {
                 RenderJobStatus::Rendering => theme.accent_dim,
-                RenderJobStatus::Complete => egui::Color32::from_rgb(0x2a, 0x80, 0x4a),
-                RenderJobStatus::Failed => egui::Color32::from_rgb(0x80, 0x2a, 0x2a),
-                _ => egui::Color32::from_rgb(0x40, 0x42, 0x4a),
+                RenderJobStatus::Complete => theme.marker_success,
+                RenderJobStatus::Failed => theme.marker_error,
+                _ => theme.bg_hover,
             };
             painter.rect_filled(fill_rect, 3.0, fill_color);
         }
@@ -298,7 +298,7 @@ impl RenderQueuePanel {
             egui::Align2::CENTER_CENTER,
             &bar_text,
             font.clone(),
-            egui::Color32::from_rgb(0, 0, 0),
+            egui::Color32::BLACK,
         );
         painter.text(
             text_pos,
@@ -373,7 +373,7 @@ impl RenderQueuePanel {
         if let Some(err) = &job.error {
             ui.label(
                 egui::RichText::new(err)
-                    .color(egui::Color32::from_rgb(0xff, 0x6b, 0x6b))
+                    .color(theme.marker_error)
                     .size(11.0),
             );
         }

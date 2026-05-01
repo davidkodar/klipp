@@ -216,17 +216,33 @@ impl Sequence {
         // Collect IDs of clips being removed so we can unlink them
         let removed_ids: Vec<ClipId> = self.tracks[pos].clips.iter().map(|c| c.id).collect();
         self.tracks.remove(pos);
-        // Clear dangling linked_clip_id references
+        self.purge_dangling_linked_clip_ids(&removed_ids);
+        Ok(())
+    }
+
+    /// Clear `linked_clip_id` on every clip whose link target is in
+    /// `removed`. Use this from any code path that removes clips
+    /// permanently (track removal, ripple_delete) so other clips on
+    /// surviving tracks don't keep dangling references.
+    ///
+    /// Closes CODE_AUDIT T-3. The asymmetric-link case (third-party
+    /// clip C points at deleted clip A while A's own linked_clip_id
+    /// points at unrelated clip B) used to leak dangling refs from
+    /// ripple_delete. Centralising the sweep here means every clip
+    /// removal path sees the same cleanup.
+    pub fn purge_dangling_linked_clip_ids(&mut self, removed: &[ClipId]) {
+        if removed.is_empty() {
+            return;
+        }
         for track in &mut self.tracks {
             for clip in &mut track.clips {
                 if let Some(linked) = clip.linked_clip_id {
-                    if removed_ids.contains(&linked) {
+                    if removed.contains(&linked) {
                         clip.linked_clip_id = None;
                     }
                 }
             }
         }
-        Ok(())
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -442,6 +458,7 @@ impl Track {
             speed: 1.0,
             speed_keyframes: Vec::new(),
             audio_effects: Vec::new(),
+            audio_effect_keyframes: std::collections::HashMap::new(),
             source_rotation: 0,
             enabled: true,
             solo: false,
@@ -609,6 +626,19 @@ impl Track {
             }
         }
 
+        // Split audio-effect keyframes at the cut point
+        let mut audio_effect_kfs_a = std::collections::HashMap::new();
+        let mut audio_effect_kfs_b = std::collections::HashMap::new();
+        for (key, kfs) in &clip.audio_effect_keyframes {
+            let (a, b) = split_kfs(kfs);
+            if !a.is_empty() {
+                audio_effect_kfs_a.insert(key.clone(), a);
+            }
+            if !b.is_empty() {
+                audio_effect_kfs_b.insert(key.clone(), b);
+            }
+        }
+
         // Split clip markers at the cut point
         let mut markers_a = Vec::new();
         let mut markers_b = Vec::new();
@@ -667,6 +697,7 @@ impl Track {
             multicam_angle: clip.multicam_angle,
             multicam_cuts: clip.multicam_cuts.clone(),
             audio_effects: clip.audio_effects.clone(),
+            audio_effect_keyframes: audio_effect_kfs_a,
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
@@ -716,6 +747,7 @@ impl Track {
             multicam_angle: clip.multicam_angle,
             multicam_cuts: clip.multicam_cuts.clone(),
             audio_effects: clip.audio_effects,
+            audio_effect_keyframes: audio_effect_kfs_b,
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
@@ -760,6 +792,17 @@ pub enum TrackKind {
 /// A named snapshot of a clip's node graph (color grade).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GradeVersion {
+    pub name: String,
+    pub node_graph: klipp_nodes::NodeGraph,
+}
+
+/// A project-level reusable colour grade. The user saves the current
+/// clip's node graph as a named "Look" and applies it to other clips
+/// later. Persisted under `.klipp/looks/{id}.json`. Distinct from
+/// `GradeVersion`, which is per-clip undo-style versioning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Look {
+    pub id: uuid::Uuid,
     pub name: String,
     pub node_graph: klipp_nodes::NodeGraph,
 }
@@ -881,6 +924,10 @@ pub struct Clip {
     /// Per-clip audio effect chain (EQ, compressor, reverb, etc.)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub audio_effects: Vec<AudioEffectInstance>,
+    /// Per-audio-effect keyframes: maps "{effect_index}:{param_name}" to keyframe track.
+    /// Reserved param names: "__bypass" (0/1, step) and "__wetdry" (0..1, linear).
+    #[serde(default)]
+    pub audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
     /// Pre-computed stabilization data. Not serialized — reanalysis needed on load.
     #[serde(skip)]
     pub stabilization_data: Option<klipp_effects::stabilization::StabilizationData>,
@@ -939,8 +986,70 @@ impl Clip {
         speed_integral_keyframes(&self.speed_keyframes, timeline_elapsed_secs, fps, self.speed)
     }
 
-    /// Set the InputTransform node's log_format on this clip's node graph.
-    /// If the format is Srgb (default), does nothing.
+    /// Map a sequence time (timeline-space) to the corresponding source
+    /// time on this clip's media. Honours `clip.source_in` plus the
+    /// constant `speed` field plus any `speed_keyframes` envelope.
+    /// Returns `None` if `seq_time` falls outside the clip's timeline
+    /// range — caller should treat that as "no source time at this
+    /// position".
+    ///
+    /// Inverse of [`sequence_time_for_source_time`]. The two map cleanly
+    /// in both directions for monotonic speed curves; the round-trip
+    /// drift is bounded by the integration step (~1 frame at the
+    /// project framerate).
+    pub fn source_time_for_sequence_time(
+        &self,
+        seq_time: Timecode,
+        fps: f64,
+    ) -> Option<Timecode> {
+        if seq_time < self.timeline_in || seq_time >= self.timeline_out {
+            return None;
+        }
+        let timeline_elapsed = (seq_time - self.timeline_in).to_secs_f64().max(0.0);
+        let source_offset = self.speed_integral(timeline_elapsed, fps);
+        let source_secs = self.source_in.to_secs_f64() + source_offset;
+        Some(Timecode::from_secs_f64(source_secs, self.source_in.rate))
+    }
+
+    /// Map a source time on this clip's media back to its sequence
+    /// time. Inverse of [`source_time_for_sequence_time`]. Returns
+    /// `None` if `source_time` falls outside `[clip.source_in,
+    /// clip.source_out)`.
+    ///
+    /// For variable-speed clips this calls the same Riemann-integral
+    /// search the duration helpers use, so the timeline_elapsed it
+    /// returns is the t at which the speed integral first reaches the
+    /// target source offset.
+    pub fn sequence_time_for_source_time(
+        &self,
+        source_time: Timecode,
+        fps: f64,
+    ) -> Option<Timecode> {
+        if source_time < self.source_in || source_time >= self.source_out {
+            return None;
+        }
+        let source_offset = (source_time - self.source_in).to_secs_f64().max(0.0);
+        let timeline_elapsed = effective_timeline_duration_for_keyframes(
+            &self.speed_keyframes,
+            source_offset,
+            fps,
+            self.speed,
+        );
+        let timeline_secs = self.timeline_in.to_secs_f64() + timeline_elapsed;
+        // Clamp to the clip's timeline range so a near-edge round-trip
+        // doesn't land 1 sample past timeline_out.
+        let clamped = timeline_secs.min(self.timeline_out.to_secs_f64() - 1e-9);
+        Some(Timecode::from_secs_f64(clamped, self.timeline_in.rate))
+    }
+
+    /// Set the InputTransform node's log_format on this clip's node
+    /// graph. If the format is Srgb (default), does nothing. If no
+    /// InputTransform node exists (current default graph is Source
+    /// → Corrector → Output and ships without one), splice a fresh
+    /// IDT in immediately after Source so the IDT runs before any
+    /// grading. Without this splice, calling this method on a
+    /// default-graph clip silently no-ops and the user sees flat
+    /// log footage in the program viewer.
     pub fn set_input_log_format(&mut self, format: klipp_core::LogFormat) {
         if format == klipp_core::LogFormat::Srgb {
             return;
@@ -949,7 +1058,63 @@ impl Clip {
             .find(|n| n.kind == klipp_nodes::NodeKind::InputTransform)
         {
             node.params.log_format = Some(format);
+            return;
         }
+        // No IDT — splice one in after the Source node. We need the
+        // existing Source → next-node edge so we can re-route it
+        // through the new IDT.
+        let source_id = match self.node_graph.nodes.iter()
+            .find(|n| n.kind == klipp_nodes::NodeKind::Source)
+            .map(|n| n.id)
+        {
+            Some(id) => id,
+            None => return, // graph has no Source — bail rather than corrupt it
+        };
+        let new_idt_id = klipp_nodes::NodeId::new_v4();
+        let mut idt_node = klipp_nodes::Node {
+            id: new_idt_id,
+            kind: klipp_nodes::NodeKind::InputTransform,
+            label: "Input Transform".into(),
+            enabled: true,
+            params: klipp_nodes::NodeParams::default(),
+            keyframes: klipp_nodes::NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        };
+        idt_node.params.log_format = Some(format);
+        // Re-route every edge that started at Source to start at the
+        // new IDT instead, then add the Source → IDT bridge. Keeps
+        // every downstream consumer wired exactly as before, just
+        // with one extra node in front.
+        for edge in self.node_graph.edges.iter_mut() {
+            if edge.from_node == source_id {
+                edge.from_node = new_idt_id;
+            }
+        }
+        self.node_graph.edges.push(klipp_nodes::Edge {
+            from_node: source_id,
+            from_port: 0,
+            to_node: new_idt_id,
+            to_port: 0,
+        });
+        // Insert the new node right after Source so editor layout
+        // reads top-to-bottom in the expected order. Position it
+        // halfway between Source and the next node so the V2 editor
+        // doesn't draw it on top of an existing node.
+        let source_idx = self.node_graph.nodes.iter()
+            .position(|n| n.id == source_id)
+            .unwrap_or(0);
+        self.node_graph.nodes.insert(source_idx + 1, idt_node);
+        // Position the new node 110 px right of Source — same step
+        // size the default graph layout uses.
+        let source_pos = self.node_graph.node_positions
+            .get(&source_id)
+            .copied()
+            .unwrap_or(klipp_nodes::NodePos { x: 0.0, y: 0.0 });
+        self.node_graph.node_positions.insert(
+            new_idt_id,
+            klipp_nodes::NodePos { x: source_pos.x + 110.0, y: source_pos.y },
+        );
     }
 
     /// Create a gap placeholder clip with the given timeline extent.
@@ -1005,6 +1170,7 @@ impl Clip {
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
             audio_effects: Vec::new(),
+            audio_effect_keyframes: std::collections::HashMap::new(),
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
@@ -1064,6 +1230,7 @@ impl Clip {
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
             audio_effects: Vec::new(),
+            audio_effect_keyframes: std::collections::HashMap::new(),
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
@@ -1122,6 +1289,7 @@ impl Clip {
             multicam_angle: 0,
             multicam_cuts: Vec::new(),
             audio_effects: Vec::new(),
+            audio_effect_keyframes: std::collections::HashMap::new(),
             stabilization_data: None,
             smoothed_trajectory: None,
             track_points: Vec::new(),
@@ -1417,6 +1585,80 @@ mod tests {
         assert!(track.blade_at(id0, tc(1)).is_none());
         // Cut at 1 frame from end
         assert!(track.blade_at(id0, tc(47)).is_none());
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // audio_effect_keyframes split round-trip — Phase 1 of audio
+    // keyframe support. Mirrors the existing video `effect_keyframes`
+    // split logic at sequence.rs:618-626. The whole point of Option B
+    // (separate field) is that audio kfs travel through every clip
+    // operation just like video kfs do — blade is the most rigorous
+    // exercise because it has to split the kf track at the cut and
+    // shift the right half's times back to the new clip's source_in.
+    // ═══════════════════════════════════════════════════════════════
+    #[test]
+    fn blade_splits_audio_effect_keyframes() {
+        use klipp_core::{Interpolation, Keyframe};
+        let mut c0 = make_clip(0, 48, 0, 48);
+        // Three keyframes on `0:gain` at clip-relative times 0.25s, 0.75s,
+        // 1.5s. Cut is at frame 24 (= 1.0s @ 24fps), so the first two
+        // belong to clip_a and the third to clip_b (with time shifted to
+        // 0.5s relative to the new clip).
+        let mk = |t: f64, v: f32| Keyframe {
+            time_secs: t,
+            value: v,
+            interpolation: Interpolation::Linear,
+            tangent_in: (0.0, 0.0),
+            tangent_out: (0.0, 0.0),
+        };
+        c0.audio_effect_keyframes.insert(
+            "0:gain".to_string(),
+            vec![mk(0.25, 0.5), mk(0.75, 0.7), mk(1.5, 0.9)],
+        );
+        // Bypass kf on the second-half side only (at 1.25s = 0.25s into clip_b).
+        c0.audio_effect_keyframes.insert(
+            "0:__bypass".to_string(),
+            vec![mk(1.25, 1.0)],
+        );
+        let id0 = c0.id;
+        let mut track = make_track(vec![c0]);
+
+        let result = track.blade_at(id0, tc(24));
+        assert!(result.is_some(), "blade should succeed at frame 24");
+        assert_eq!(track.clips.len(), 2);
+
+        // clip_a: keeps the first two `gain` kfs, no bypass kf.
+        let a_gain = track.clips[0].audio_effect_keyframes.get("0:gain")
+            .expect("clip_a must keep the gain track");
+        assert_eq!(a_gain.len(), 2, "clip_a gets the two pre-cut kfs");
+        assert!((a_gain[0].time_secs - 0.25).abs() < 1e-9);
+        assert!((a_gain[1].time_secs - 0.75).abs() < 1e-9);
+        assert!(track.clips[0].audio_effect_keyframes.get("0:__bypass").is_none(),
+            "clip_a must not carry the bypass kf (it sits past the cut)");
+
+        // clip_b: the third gain kf, with time shifted back by 1.0s
+        // (the cut point), and the bypass kf shifted likewise.
+        let b_gain = track.clips[1].audio_effect_keyframes.get("0:gain")
+            .expect("clip_b must inherit the post-cut gain kf");
+        assert_eq!(b_gain.len(), 1);
+        assert!((b_gain[0].time_secs - 0.5).abs() < 1e-9,
+            "clip_b's kf time must be shifted: 1.5s - 1.0s = 0.5s, got {}", b_gain[0].time_secs);
+        let b_bypass = track.clips[1].audio_effect_keyframes.get("0:__bypass")
+            .expect("clip_b must carry the bypass kf");
+        assert!((b_bypass[0].time_secs - 0.25).abs() < 1e-9,
+            "bypass kf time must be 1.25s - 1.0s = 0.25s, got {}", b_bypass[0].time_secs);
+    }
+
+    #[test]
+    fn blade_with_no_audio_effect_keyframes_leaves_both_halves_empty() {
+        // Sanity: clips without audio kfs split into two clips that also
+        // have empty maps — no spurious keys, no panics.
+        let c0 = make_clip(0, 48, 0, 48);
+        let id0 = c0.id;
+        let mut track = make_track(vec![c0]);
+        track.blade_at(id0, tc(24));
+        assert!(track.clips[0].audio_effect_keyframes.is_empty());
+        assert!(track.clips[1].audio_effect_keyframes.is_empty());
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -1768,5 +2010,102 @@ mod tests {
         let t = qw_track();
         // Playhead well past the last clip (which ends at 96).
         assert!(t.clip_with_in_at_or_after(&tc(200)).is_none());
+    }
+
+    // ─── source_time_for_sequence_time / sequence_time_for_source_time ──
+
+    /// Convert a Timecode → frame count at RATE for ergonomic
+    /// assertions. Production code can use `to_secs_f64()` directly.
+    fn tc_to_frames(t: Timecode) -> i64 {
+        (t.to_secs_f64() * RATE as f64).round() as i64
+    }
+
+    #[test]
+    fn match_frame_constant_speed_unity_round_trips() {
+        // Clip on timeline frames [24, 72), source [0, 48), speed 1.0.
+        // Mid-clip (frame 48 sequence ↔ frame 24 source) round-trips.
+        let clip = make_clip(24, 72, 0, 48);
+        let src = clip.source_time_for_sequence_time(tc(48), 24.0).unwrap();
+        assert_eq!(tc_to_frames(src), 24, "1×: seq frame 48 → src frame 24");
+        let back = clip.sequence_time_for_source_time(src, 24.0).unwrap();
+        assert_eq!(tc_to_frames(back), 48, "round-trip preserves seq frame 48");
+    }
+
+    #[test]
+    fn match_frame_constant_speed_2x_doubles_source_offset() {
+        // Clip on timeline [24, 48), source [10, 58), speed 2.0
+        // (24-frame timeline span covers 48 source frames).
+        let mut clip = make_clip(24, 48, 10, 58);
+        clip.speed = 2.0;
+        // Sequence frame 36 (= 12 frames into the clip on timeline) →
+        // source frame 10 + 24 = 34 at 2× speed.
+        let src = clip.source_time_for_sequence_time(tc(36), 24.0).unwrap();
+        assert_eq!(tc_to_frames(src), 34, "2×: seq frame 36 → src frame 34");
+        let back = clip.sequence_time_for_source_time(src, 24.0).unwrap();
+        assert_eq!(tc_to_frames(back), 36, "2× round-trip preserves seq frame 36");
+    }
+
+    #[test]
+    fn match_frame_constant_speed_half_halves_source_offset() {
+        // Speed 0.5 — clip plays 24 source frames over 48 timeline
+        // frames. Sequence frame 48 (= 24 frames into clip) → source
+        // frame 0 + 12 = 12.
+        let mut clip = make_clip(24, 72, 0, 24);
+        clip.speed = 0.5;
+        let src = clip.source_time_for_sequence_time(tc(48), 24.0).unwrap();
+        assert_eq!(tc_to_frames(src), 12, "0.5×: seq frame 48 → src frame 12");
+        let back = clip.sequence_time_for_source_time(src, 24.0).unwrap();
+        assert_eq!(tc_to_frames(back), 48, "0.5× round-trip preserves seq frame 48");
+    }
+
+    #[test]
+    fn match_frame_outside_clip_returns_none() {
+        // Both directions must reject out-of-range times. Match Frame's
+        // caller relies on this to skip non-matching tracks instead of
+        // wrapping silently to a clamped value.
+        let clip = make_clip(24, 72, 0, 48);
+        assert!(clip.source_time_for_sequence_time(tc(0), 24.0).is_none(),
+            "before timeline_in must be None");
+        assert!(clip.source_time_for_sequence_time(tc(72), 24.0).is_none(),
+            "at timeline_out (exclusive) must be None");
+        assert!(clip.source_time_for_sequence_time(tc(120), 24.0).is_none(),
+            "after timeline_out must be None");
+        assert!(clip.sequence_time_for_source_time(tc(48), 24.0).is_none(),
+            "at source_out (exclusive) must be None");
+        assert!(clip.sequence_time_for_source_time(tc(60), 24.0).is_none(),
+            "after source_out must be None");
+    }
+
+    #[test]
+    fn match_frame_variable_speed_round_trips_within_one_frame() {
+        // A 2-frame ramp from 0.5× to 2.0× over a 48-frame clip.
+        // Round-trip drift is bounded by the integration step at the
+        // project fps (~1/24 s) — well within one frame.
+        let mut clip = make_clip(0, 48, 0, 48);
+        clip.speed_keyframes = vec![kf(0.0, 0.5), kf(2.0, 2.0)];
+        for seq_frame in [6, 12, 24, 36] {
+            let src = clip.source_time_for_sequence_time(tc(seq_frame), 24.0)
+                .expect("in-range");
+            let back = clip.sequence_time_for_source_time(src, 24.0)
+                .expect("inverse in-range");
+            let drift = (tc_to_frames(back) - seq_frame).abs();
+            assert!(
+                drift <= 1,
+                "seq frame {seq_frame} drifted by {drift} frames in round-trip \
+                 ({} → {} → {})",
+                seq_frame, tc_to_frames(src), tc_to_frames(back),
+            );
+        }
+    }
+
+    #[test]
+    fn match_frame_at_clip_start_lands_on_source_in() {
+        // The clip's first sequence frame must map exactly to source_in
+        // — that's the contract that lets Match Frame land on a
+        // discoverable head frame in the source viewer.
+        let mut clip = make_clip(120, 168, 36, 84);
+        clip.speed = 1.5;
+        let src = clip.source_time_for_sequence_time(tc(120), 24.0).unwrap();
+        assert_eq!(tc_to_frames(src), 36, "first seq frame must hit source_in");
     }
 }

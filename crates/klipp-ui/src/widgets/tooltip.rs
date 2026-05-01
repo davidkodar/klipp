@@ -9,8 +9,12 @@ pub fn styled_tooltip(
     shortcut: Option<&str>,
 ) {
     response.clone().on_hover_ui_at_pointer(|ui| {
+        // Tooltip bg uses bg_raised so it stays readable on both
+        // dark and light themes — was hardcoded 0x1e1e26 (always
+        // dark) which paired with theme.text_primary turned into
+        // dark-on-dark on light themes.
         egui::Frame::none()
-            .fill(egui::Color32::from_rgb(0x1e, 0x1e, 0x26))
+            .fill(theme.bg_raised)
             .stroke(egui::Stroke::new(1.0_f32, theme.border_light))
             .rounding(5.0)
             .inner_margin(egui::Margin::symmetric(10.0, 5.0))
@@ -23,8 +27,13 @@ pub fn styled_tooltip(
                             .color(theme.text_primary),
                     );
                     if let Some(key) = shortcut {
+                        // Shortcut badge sits on top of the tooltip
+                        // surface, so it needs to step DOWN one
+                        // elevation rather than stay equal — pick
+                        // bg_panel_alt for the inverse of the
+                        // previous always-bg_raised choice.
                         egui::Frame::none()
-                            .fill(theme.bg_raised)
+                            .fill(theme.bg_panel_alt)
                             .stroke(egui::Stroke::new(1.0_f32, theme.border_light))
                             .rounding(3.0)
                             .inner_margin(egui::Margin::symmetric(4.0, 1.0))

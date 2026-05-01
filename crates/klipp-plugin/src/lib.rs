@@ -112,3 +112,75 @@ pub use host::{
 };
 pub use param::{ParamDescriptor, ParamType, ParamValue};
 pub use image_effect::FrameProviderFn;
+
+#[cfg(test)]
+mod check_non_null_tests {
+    // ═══════════════════════════════════════════════════════════════
+    // CRIT-4 regression — closes CODE_AUDIT CRIT-4.
+    //
+    // The original tracker entry called out ~70 OFX callbacks where
+    // `*out = value` ran without a null-check, so a buggy plugin
+    // passing a null pointer would write to address 0 and SIGSEGV
+    // the host. The 2026-04-16 fix introduced check_non_null! and
+    // applied it at every entry point. These tests pin the macro's
+    // contract — null short-circuits with K_OFX_STAT_ERR_VALUE,
+    // non-null falls through — so a future "let me simplify this
+    // macro" cleanup can't silently re-open the SIGSEGV vector.
+    // ═══════════════════════════════════════════════════════════════
+
+    use crate::ffi::{OfxStatus, K_OFX_STAT_ERR_VALUE, K_OFX_STAT_OK};
+
+    /// Mirrors the structure of every OFX callback that takes one
+    /// pointer arg: check_non_null! at the top, then proceed.
+    fn one_arg_callback(p: *const u8) -> OfxStatus {
+        check_non_null!(p);
+        K_OFX_STAT_OK
+    }
+
+    /// Multi-arg form — matches OFX callbacks that receive several
+    /// pointer args at once (e.g. property suite get/set fns).
+    fn multi_arg_callback(a: *const u8, b: *mut u8, c: *const i32) -> OfxStatus {
+        check_non_null!(a, b, c);
+        K_OFX_STAT_OK
+    }
+
+    #[test]
+    fn check_non_null_returns_err_value_on_null_single_arg() {
+        let result = one_arg_callback(std::ptr::null());
+        assert_eq!(result, K_OFX_STAT_ERR_VALUE,
+            "null pointer must short-circuit with K_OFX_STAT_ERR_VALUE");
+    }
+
+    #[test]
+    fn check_non_null_proceeds_when_pointer_is_non_null() {
+        let dummy: u8 = 42;
+        let result = one_arg_callback(&dummy as *const u8);
+        assert_eq!(result, K_OFX_STAT_OK,
+            "non-null pointer must fall through to the body");
+    }
+
+    #[test]
+    fn check_non_null_short_circuits_on_first_null_in_multi_arg_form() {
+        // Mixed: middle arg is null. The macro must return as soon
+        // as it sees the first null, not "any null".
+        let dummy_a: u8 = 1;
+        let dummy_c: i32 = 3;
+        let result = multi_arg_callback(
+            &dummy_a as *const u8,
+            std::ptr::null_mut(),
+            &dummy_c as *const i32,
+        );
+        assert_eq!(result, K_OFX_STAT_ERR_VALUE,
+            "any null arg in the multi-arg form must trigger ERR_VALUE");
+    }
+
+    #[test]
+    fn check_non_null_proceeds_when_all_args_non_null() {
+        let a: u8 = 1;
+        let mut b: u8 = 2;
+        let c: i32 = 3;
+        let result = multi_arg_callback(&a, &mut b, &c);
+        assert_eq!(result, K_OFX_STAT_OK,
+            "all-non-null multi-arg call must fall through");
+    }
+}

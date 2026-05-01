@@ -32,8 +32,10 @@
 //! and export. Analyse went from 10–15 min to ~18 s on 4K through the
 //! decoder optimisation.
 
+pub mod aces_rrt_wgsl;
 pub mod blur;
 mod chroma_key;
+pub mod color_wgsl;
 mod crop;
 pub mod gpu;
 pub mod gpu_context;

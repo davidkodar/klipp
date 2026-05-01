@@ -43,6 +43,13 @@ pub struct SequenceSnapshot {
     /// already shifted into export-range-relative coordinates when a
     /// zone export is active, and markers outside the range are dropped.
     pub chapters: Vec<klipp_core::ChapterSnapshot>,
+    /// Project working colorspace at the moment of snapshot. Read
+    /// alongside `ExportSettings.odt` by the encoder's display
+    /// transform to dispatch the right linear → display path.
+    /// Defaults to [`Rec709Linear`] for back-compat with snapshot
+    /// constructors that pre-date the field.
+    #[doc(hidden)]
+    pub working_colorspace: klipp_core::WorkingColorspace,
 }
 
 #[derive(Clone)]
@@ -81,6 +88,8 @@ pub struct ClipSnapshot {
     pub smoothed_trajectory: Option<SmoothedTrajectory>,
     /// Per-effect keyframes: maps "{effect_index}:{param_name}" to keyframe track.
     pub effect_keyframes: HashMap<String, Vec<Keyframe>>,
+    /// Per-audio-effect keyframes: maps "{effect_index}:{param_name}" to keyframe track.
+    pub audio_effect_keyframes: HashMap<String, Vec<Keyframe>>,
     /// Clip-level opacity keyframes.
     pub opacity_keyframes: Vec<Keyframe>,
     /// Transform position X keyframes.
@@ -120,6 +129,8 @@ pub struct AudioClipSnapshot {
     pub path: PathBuf,
     /// Per-clip audio DSP effects (EQ, compressor, reverb, etc.)
     pub audio_effects: Vec<klipp_core::AudioEffectInstance>,
+    /// Per-audio-effect keyframes: maps "{effect_index}:{param_name}" to keyframe track.
+    pub audio_effect_keyframes: HashMap<String, Vec<Keyframe>>,
 }
 
 #[derive(Debug, Clone)]
@@ -325,6 +336,12 @@ impl SequenceSnapshot {
             global_lut_path,
             subtitle_tracks,
             chapters,
+            // Default; the caller layer (klipp-app's export-job
+            // dispatch) overrides this to match the project's active
+            // working colorspace before kicking the job. Doing it
+            // there keeps the snapshot construction free of any
+            // dependency on the engine's atomic.
+            working_colorspace: klipp_core::WorkingColorspace::default(),
         })
     }
 
@@ -494,6 +511,7 @@ fn flatten_multicam_video_clips(
             stabilization_data: angle_clip.stabilization_data.clone(),
             smoothed_trajectory: angle_clip.smoothed_trajectory.clone(),
             effect_keyframes: angle_clip.effect_keyframes.clone(),
+            audio_effect_keyframes: angle_clip.audio_effect_keyframes.clone(),
             opacity_keyframes: angle_clip.opacity_keyframes.clone(),
             transform_pos_x_keyframes: angle_clip.transform_pos_x_keyframes.clone(),
             transform_pos_y_keyframes: angle_clip.transform_pos_y_keyframes.clone(),
@@ -576,6 +594,7 @@ fn snapshot_audio_track(
                         source_start_secs: clip.source_in.to_secs_f64(),
                         path: media.path.clone(),
                         audio_effects: clip.audio_effects.clone(),
+                        audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
                     });
                 }
             }
@@ -620,6 +639,7 @@ fn flatten_compound_audio_clips(
             source_start_secs: clip.source_in.to_secs_f64(),
             path: media.path.clone(),
             audio_effects: clip.audio_effects.clone(),
+            audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
         });
     }
     Ok(())
@@ -690,6 +710,7 @@ fn flatten_multicam_audio_clips(
             source_start_secs,
             path: media.path.clone(),
             audio_effects: angle_clip.audio_effects.clone(),
+            audio_effect_keyframes: angle_clip.audio_effect_keyframes.clone(),
         });
     }
 
@@ -735,6 +756,7 @@ fn snapshot_clip(
         stabilization_data: clip.stabilization_data.clone(),
         smoothed_trajectory: clip.smoothed_trajectory.clone(),
         effect_keyframes: clip.effect_keyframes.clone(),
+        audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
         opacity_keyframes: clip.opacity_keyframes.clone(),
         transform_pos_x_keyframes: clip.transform_pos_x_keyframes.clone(),
         transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
@@ -860,7 +882,8 @@ mod tests {
             audio_codec: ExportAudioCodec::Aac,
             audio_bitrate_kbps: Some(192), video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
             burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, embed_chapters: false,
-            bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable }
+            bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable,
+            odt: klipp_core::OdtChoice::MatchViewer }
     }
 
     #[test]
@@ -1309,6 +1332,71 @@ mod tests {
         assert!(sc.transform_pos_x_keyframes.is_empty());
         assert!(sc.transform_pos_y_keyframes.is_empty());
         assert!(sc.transform_rotation_keyframes.is_empty());
+    }
+
+    #[test]
+    fn snapshot_carries_audio_effect_keyframes() {
+        // Mirrors snapshot_carries_effect_keyframes for the audio chain:
+        // both ClipSnapshot.audio_effect_keyframes (video-track snapshot
+        // path) and AudioClipSnapshot.audio_effect_keyframes (audio-track
+        // snapshot path) must round-trip the source clip's data so the
+        // offline mixdown path sees the same kfs as live playback.
+        let media_id = MediaId::new();
+        let mut pool = MediaPool::new();
+        pool.add(make_media_item(media_id, "/media/clip1.mp4"));
+
+        let mk_kf = |t: f64, v: f32| klipp_core::Keyframe {
+            time_secs: t,
+            value: v,
+            interpolation: klipp_core::Interpolation::Linear,
+            tangent_out: (0.0, 0.0),
+            tangent_in: (0.0, 0.0),
+        };
+
+        let mut audio_effect_keyframes = std::collections::HashMap::new();
+        audio_effect_keyframes.insert(
+            "0:gain".to_string(),
+            vec![mk_kf(0.0, -6.0), mk_kf(1.0, 0.0)],
+        );
+        audio_effect_keyframes.insert(
+            "0:__bypass".to_string(),
+            vec![mk_kf(0.5, 1.0)],
+        );
+
+        let mut clip = Clip::gap(make_rational(0, 24), make_rational(48, 24));
+        clip.kind = ClipKind::Media { media_id };
+        clip.source_in = make_rational(0, 24);
+        clip.source_out = make_rational(48, 24);
+        clip.audio_effect_keyframes = audio_effect_keyframes;
+
+        let mut seq = make_sequence();
+        // Mirror onto both video and audio tracks so we exercise BOTH
+        // snapshot paths (ClipSnapshot via video lane, AudioClipSnapshot
+        // via audio lane).
+        seq.tracks[0].clips.push(clip.clone());
+        seq.tracks[1].clips.push(clip);
+
+        let settings = make_settings();
+        let snap = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false).unwrap();
+
+        // Video-side ClipSnapshot must carry the field.
+        let v1 = snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap();
+        let sc = &v1.clips[0];
+        assert_eq!(sc.audio_effect_keyframes.len(), 2,
+            "ClipSnapshot must carry both kf tracks");
+        assert!(sc.audio_effect_keyframes.contains_key("0:gain"));
+        assert!(sc.audio_effect_keyframes.contains_key("0:__bypass"));
+        assert_eq!(sc.audio_effect_keyframes["0:gain"].len(), 2);
+
+        // Audio-side AudioClipSnapshot (offline mixdown path) must carry
+        // the same data.
+        assert_eq!(snap.audio_tracks.len(), 1);
+        let ac = &snap.audio_tracks[0].clips[0];
+        assert_eq!(ac.audio_effect_keyframes.len(), 2,
+            "AudioClipSnapshot must carry both kf tracks for offline mixdown");
+        assert!((ac.audio_effect_keyframes["0:gain"][0].value - (-6.0)).abs() < 1e-6);
+        assert!((ac.audio_effect_keyframes["0:gain"][1].value - 0.0).abs() < 1e-6);
+        assert!((ac.audio_effect_keyframes["0:__bypass"][0].time_secs - 0.5).abs() < 1e-9);
     }
 
     #[test]

@@ -8,9 +8,11 @@ Complete reference for all menus and items in Klipp.
 |------|----------|-------------|
 | New Project | Ctrl+N | Create a new empty project |
 | Open Project | Ctrl+O | Open an existing .klipp project |
+| Open Recent | — | Reopen a recent project |
 | Save | Ctrl+S | Save the current project |
 | Save As | Ctrl+Shift+S | Save to a new location |
 | Import Media | Ctrl+I | Import video, audio, or image files |
+| Import FCPXML | — | Import a Final Cut Pro project as a sequence |
 | Export | Ctrl+E | Open the export dialog |
 | Quit | Ctrl+Q | Exit Klipp |
 
@@ -35,20 +37,23 @@ Complete reference for all menus and items in Klipp.
 | Enable/Disable | E | Toggle clip visibility |
 | Solo | S | Solo the selected clip |
 | Split at Playhead | Ctrl+B | Split the clip under the playhead |
-| Speed | -- | Open speed controls for the clip |
-| Motion Presets | -- | Apply Ken Burns or other motion presets |
-| Copy Attributes | -- | Copy effects/attributes to other clips |
+| Speed | — | Open speed controls for the clip |
+| Stabilize | — | Run motion stabilisation analysis on the clip |
+| Detect Scenes | — | Run scene-change detection on the clip |
+| Motion Presets | — | Apply Ken Burns or other motion presets |
+| Copy Attributes | — | Copy effects/attributes to other clips |
 
 ## Timeline
 
 | Item | Shortcut | Description |
 |------|----------|-------------|
-| Add Video Track | -- | Add a new video track above |
-| Add Audio Track | -- | Add a new audio track below |
+| Add Video Track | — | Add a new video track above |
+| Add Audio Track | — | Add a new audio track below |
 | Insert Edit | W | Insert clip at playhead, rippling later clips |
 | Overwrite Edit | D | Overwrite at playhead position |
-| Generators | -- | Add titles, solid colors, or gradients |
+| Generators | — | Add titles, solid colours, or gradients |
 | Toggle Snapping | N | Enable/disable magnetic snapping |
+| Toggle Magnetic | — | Toggle the magnetic timeline behaviour |
 
 ## Mark
 
@@ -69,28 +74,31 @@ Complete reference for all menus and items in Klipp.
 | Zoom In | Ctrl+= | Zoom into the timeline |
 | Zoom Out | Ctrl+- | Zoom out of the timeline |
 | Zoom to Fit | Shift+Z | Fit entire timeline in view |
-| Overlays | -- | Toggle safe areas, grid, zebra, false color |
-| Scopes | -- | Show waveform, vectorscope, histogram, parade |
-| Color Panel | C | Toggle the color grading panel |
+| Overlays | — | Toggle safe areas, grid, zebra, false colour |
+| Scopes | — | Show waveform, vectorscope, histogram, parade |
+| Color Panel | C | Toggle the colour grading panel |
 | Performance Overlay | P | Show decode stats and FPS |
+| Toggle Source Viewer | — | Show or hide the source viewer |
 
 ## Window
 
 | Item | Shortcut | Description |
 |------|----------|-------------|
-| Default Workspace | -- | Switch to default layout |
-| Color Grading Workspace | -- | Switch to color-focused layout |
-| Audio Mixing Workspace | -- | Switch to audio-focused layout |
-| Toggle Viewer | -- | Show/hide the viewer panel |
-| Toggle Browser | -- | Show/hide the media browser |
-| Toggle Inspector | -- | Show/hide the inspector |
-| Toggle Timeline | -- | Show/hide the timeline |
+| Default Workspace | — | Switch to default layout |
+| Color Grading Workspace | — | Switch to colour-focused layout |
+| Audio Mixing Workspace | — | Switch to audio-focused layout |
+| Toggle Viewer | — | Show/hide the viewer panel |
+| Toggle Browser | — | Show/hide the media browser |
+| Toggle Inspector | — | Show/hide the inspector |
+| Toggle Timeline | — | Show/hide the timeline |
+| AI Tools Panel | Alt+A | Open the AI tools panel |
+| AI Models | — | Open the AI Models dialog |
 | Command Palette | Ctrl+Shift+P | Open the command palette |
 
 ## Help
 
 | Item | Shortcut | Description |
 |------|----------|-------------|
-| Documentation | F1 | Open the documentation |
-| Keyboard Shortcuts | -- | Show the shortcuts reference |
-| About Klipp | -- | Version and license information |
+| Documentation | F1 | Open this documentation |
+| Keyboard Shortcuts | — | Show the shortcuts reference |
+| About Klipp | — | Version and licence information |

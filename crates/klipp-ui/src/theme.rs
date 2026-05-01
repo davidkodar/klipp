@@ -1,7 +1,21 @@
 use egui::Color32;
+use serde::{Deserialize, Serialize};
+
+mod color_serde;
+mod registry;
+
+pub use color_serde::HexColor;
+pub use registry::{ThemeId, ThemeRegistry, ThemeSource, BUILTIN_DARK, BUILTIN_LIGHT};
 
 /// All design tokens for the Klipp GUI. Every colour, size, and spacing
 /// constant lives here — do not hardcode `Color32` literals elsewhere.
+///
+/// `KlippTheme` is the in-memory, runtime form. Themes themselves are
+/// authored as TOML against [`ThemeColors`] (see `theme/builtin/*.toml`
+/// and `~/.config/klipp/themes/*.toml`); the registry deserialises
+/// each TOML into a `ThemeColors` and `KlippTheme::from_colors`
+/// promotes it to this runtime representation. Adding a new theme is
+/// dropping a TOML file — no code change.
 ///
 /// # Contrast Rule
 ///
@@ -10,7 +24,7 @@ use egui::Color32;
 /// The accent color (`#e8a020`) works great as TEXT on dark backgrounds, but when used
 /// as a BACKGROUND fill, all text on top must be dark (`#1a1a1e` or black).
 /// Violating this makes text nearly unreadable.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct KlippTheme {
     // Backgrounds — darkest to lightest
     pub bg_void: Color32,
@@ -35,6 +49,16 @@ pub struct KlippTheme {
     pub accent_dim: Color32,
     pub accent_glow: Color32,
     pub accent_subtle: Color32,
+    /// Secondary accent — used for things that need to read as
+    /// "different from the primary accent" without taking on a
+    /// status meaning. Examples in the codebase: per-effect A/B
+    /// compare highlight, Title-clip identity badge, drag-drop
+    /// highlight on Effect / Title payloads (where the primary
+    /// accent's amber would clash with the orange Effect / red
+    /// Title role colours). A theme can pick any colour here as
+    /// long as it's perceptually distinct from `accent` on its
+    /// background polarity.
+    pub accent_alt: Color32,
 
     // Text
     pub text_primary: Color32,
@@ -44,6 +68,37 @@ pub struct KlippTheme {
     /// Dark text for use ON accent-colored backgrounds (amber buttons, badges).
     /// RULE: Any amber/gold background MUST use this color for text, never light text.
     pub text_on_accent: Color32,
+
+    // Functional marker / status colours.
+    //
+    // FUNCTIONAL naming (`marker_error`, `marker_success`, …) rather
+    // than visual (`red`, `green`, …) so future themes can map these
+    // signals onto whatever palette they want. A high-contrast theme
+    // might pick magenta for `marker_error`; a colour-blind-friendly
+    // theme might pick orange and blue instead of green and red.
+    pub marker_error: Color32,
+    pub marker_success: Color32,
+    pub marker_info: Color32,
+    pub marker_warning: Color32,
+
+    // Scope display tokens.
+    //
+    // `scope_grid` is a translucent overlay drawn on top of the scope
+    // trace; its alpha is polarity-dependent (a low-alpha amber that
+    // reads as a hint on dark scopes turns into a stripe on light
+    // scopes), so each theme tunes its own alpha.
+    // `scope_label` is the small text label drawn next to scope ticks.
+    pub scope_grid: Color32,
+    pub scope_label: Color32,
+    /// Background fill of the scope display surface (waveform /
+    /// parade / vectorscope / histogram canvas). Industry-standard
+    /// NLEs (Resolve, Premiere, FCP) keep this near-black even in
+    /// their Light themes because the trace colours (white / RGB
+    /// channel hues / luminance gradients) are designed to read on
+    /// dark backgrounds. A future light-friendly trace shader could
+    /// let this pick up the surrounding panel polarity, but until
+    /// then themes that try to invert it will lose trace legibility.
+    pub scope_bg: Color32,
 
     // Role colours — one per clip/track role
     pub role_video: Color32,
@@ -58,66 +113,168 @@ pub struct KlippTheme {
     pub role_graphics: Color32,
 }
 
-impl Default for KlippTheme {
-    fn default() -> Self {
+/// Serde-friendly mirror of [`KlippTheme`]. Every field is a hex
+/// colour string (`"#rrggbb"` or `"#rrggbbaa"`) so themes round-trip
+/// through TOML without bespoke encoders. Built-in palettes ship as
+/// embedded TOML files (`theme/builtin/dark.toml`, `light.toml`); user
+/// themes drop into `~/.config/klipp/themes/*.toml`.
+///
+/// Keep this struct in sync with `KlippTheme` field-for-field — the
+/// `From<ThemeColors> for KlippTheme` conversion is a 1:1 mapping.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThemeColors {
+    pub bg_void: HexColor,
+    pub bg_deep: HexColor,
+    pub bg_panel: HexColor,
+    pub bg_panel_alt: HexColor,
+    pub bg_raised: HexColor,
+    pub bg_hover: HexColor,
+    pub bg_viewer: HexColor,
+
+    pub border: HexColor,
+    pub border_light: HexColor,
+    pub resizer_idle: HexColor,
+
+    pub accent: HexColor,
+    pub accent_dim: HexColor,
+    pub accent_glow: HexColor,
+    pub accent_subtle: HexColor,
+    pub accent_alt: HexColor,
+
+    pub text_primary: HexColor,
+    pub text_secondary: HexColor,
+    pub text_dim: HexColor,
+    pub text_accent: HexColor,
+    pub text_on_accent: HexColor,
+
+    pub marker_error: HexColor,
+    pub marker_success: HexColor,
+    pub marker_info: HexColor,
+    pub marker_warning: HexColor,
+
+    pub scope_grid: HexColor,
+    pub scope_label: HexColor,
+    pub scope_bg: HexColor,
+
+    pub role_video: HexColor,
+    pub role_dialogue: HexColor,
+    pub role_music: HexColor,
+    pub role_sfx: HexColor,
+    pub role_title: HexColor,
+    pub role_broll: HexColor,
+    pub role_ambience: HexColor,
+    pub role_foley: HexColor,
+    pub role_voiceover: HexColor,
+    pub role_graphics: HexColor,
+}
+
+impl From<ThemeColors> for KlippTheme {
+    fn from(c: ThemeColors) -> Self {
         Self {
-            bg_void: Color32::from_rgb(0x0a, 0x0a, 0x0c),
-            bg_deep: Color32::from_rgb(0x11, 0x11, 0x14),
-            bg_panel: Color32::from_rgb(0x16, 0x16, 0x1a),
-            bg_panel_alt: Color32::from_rgb(0x1c, 0x1c, 0x21),
-            bg_raised: Color32::from_rgb(0x22, 0x22, 0x28),
-            bg_hover: Color32::from_rgb(0x2a, 0x2a, 0x32),
-            bg_viewer: Color32::from_rgb(28, 28, 30),
-
-            border: Color32::from_rgb(0x2a, 0x2a, 0x32),
-            border_light: Color32::from_rgb(0x36, 0x36, 0x40),
-            resizer_idle: Color32::from_rgb(55, 55, 65),
-
-            accent: Color32::from_rgb(0xe8, 0xa0, 0x20),
-            accent_dim: Color32::from_rgb(0xa0, 0x6e, 0x14),
-            // CONTRAST RULE: These are used as BACKGROUNDS. With premultiplied alpha,
-            // RGB channels must be <= alpha. Previous values (R=232 > A=46) were invalid
-            // and rendered as near-solid amber, making light text unreadable.
-            accent_glow: Color32::from_rgba_premultiplied(33, 23, 5, 46),   // ~18% alpha amber
-            accent_subtle: Color32::from_rgba_premultiplied(21, 14, 3, 23), // ~9% alpha amber
-
-            text_primary: Color32::from_rgb(0xe8, 0xe8, 0xee),
-            text_secondary: Color32::from_rgb(0x90, 0x90, 0xa0),
-            text_dim: Color32::from_rgb(0x50, 0x50, 0x60),
-            text_accent: Color32::from_rgb(0xe8, 0xa0, 0x20),
-            text_on_accent: Color32::from_rgb(0x1a, 0x1a, 0x1e),
-
-            role_video: Color32::from_rgb(0x2d, 0x6f, 0xa8),
-            role_dialogue: Color32::from_rgb(0x3a, 0x8c, 0x6e),
-            role_music: Color32::from_rgb(0x42, 0x85, 0xf4),
-            role_sfx: Color32::from_rgb(0xa8, 0x5c, 0x2d),
-            role_title: Color32::from_rgb(0xc0, 0x39, 0x2b),
-            role_broll: Color32::from_rgb(0x4a, 0x6e, 0xa8),
-            role_ambience: Color32::from_rgb(0x9c, 0x27, 0xb0),
-            role_foley: Color32::from_rgb(0xe9, 0x1e, 0x63),
-            role_voiceover: Color32::from_rgb(0x00, 0xbc, 0xd4),
-            role_graphics: Color32::from_rgb(0xff, 0xeb, 0x3b),
+            bg_void: c.bg_void.0,
+            bg_deep: c.bg_deep.0,
+            bg_panel: c.bg_panel.0,
+            bg_panel_alt: c.bg_panel_alt.0,
+            bg_raised: c.bg_raised.0,
+            bg_hover: c.bg_hover.0,
+            bg_viewer: c.bg_viewer.0,
+            border: c.border.0,
+            border_light: c.border_light.0,
+            resizer_idle: c.resizer_idle.0,
+            accent: c.accent.0,
+            accent_dim: c.accent_dim.0,
+            accent_glow: c.accent_glow.0,
+            accent_subtle: c.accent_subtle.0,
+            accent_alt: c.accent_alt.0,
+            text_primary: c.text_primary.0,
+            text_secondary: c.text_secondary.0,
+            text_dim: c.text_dim.0,
+            text_accent: c.text_accent.0,
+            text_on_accent: c.text_on_accent.0,
+            marker_error: c.marker_error.0,
+            marker_success: c.marker_success.0,
+            marker_info: c.marker_info.0,
+            marker_warning: c.marker_warning.0,
+            scope_grid: c.scope_grid.0,
+            scope_label: c.scope_label.0,
+            scope_bg: c.scope_bg.0,
+            role_video: c.role_video.0,
+            role_dialogue: c.role_dialogue.0,
+            role_music: c.role_music.0,
+            role_sfx: c.role_sfx.0,
+            role_title: c.role_title.0,
+            role_broll: c.role_broll.0,
+            role_ambience: c.role_ambience.0,
+            role_foley: c.role_foley.0,
+            role_voiceover: c.role_voiceover.0,
+            role_graphics: c.role_graphics.0,
         }
     }
 }
 
+impl Default for KlippTheme {
+    /// Default theme = the built-in Dark palette, parsed from the
+    /// embedded `theme/builtin/dark.toml`. Every other theme
+    /// (built-in or user-supplied) is loaded the same way through
+    /// [`ThemeRegistry`].
+    fn default() -> Self {
+        registry::parse_builtin(BUILTIN_DARK)
+            .expect("embedded dark theme parses")
+            .into()
+    }
+}
+
 impl KlippTheme {
-    /// Build theme from appearance preferences, keeping backgrounds/text as default dark theme.
-    pub fn from_prefs(prefs: &crate::prefs::AppearancePrefs) -> Self {
+    /// Build a theme by name from `registry`, then layer the user's
+    /// accent + role colour overrides on top. Falls back to the Dark
+    /// built-in if the named theme is missing (e.g. user deleted the
+    /// TOML file referenced in their preferences).
+    ///
+    /// The accent override scales the embedded `accent_glow` /
+    /// `accent_subtle` translucent overlays so the accent stays
+    /// visually consistent on whatever bg polarity the picked theme
+    /// uses — light themes need a slightly more opaque glow to read
+    /// against white, dark themes keep their softer glow. The
+    /// per-theme glow alpha hint comes from the deserialised
+    /// `accent_glow` itself.
+    pub fn from_prefs(
+        prefs: &crate::prefs::AppearancePrefs,
+        registry: &ThemeRegistry,
+    ) -> Self {
+        let mut t: KlippTheme = registry
+            .get(&prefs.theme_name)
+            .or_else(|| registry.get(registry::DEFAULT_NAME))
+            .cloned()
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    "ThemeRegistry has no theme '{}' AND no default '{}' — falling back to compiled Dark",
+                    prefs.theme_name, registry::DEFAULT_NAME,
+                );
+                KlippTheme::default()
+            });
+
+        // Apply user accent override.
         let [ar, ag, ab] = prefs.accent_color;
         let accent = Color32::from_rgb(ar, ag, ab);
-        let mut t = Self::default();
         t.accent = accent;
-        t.accent_dim = Color32::from_rgb(ar.saturating_sub(0x48), ag.saturating_sub(0x32), ab.saturating_sub(0x0c));
-        // CONTRAST RULE: premultiplied alpha requires RGB <= alpha.
-        // Scale RGB by (alpha/255) to get correct translucent tint.
-        let glow_a = 46u8;
-        let sub_a = 23u8;
+        t.accent_dim = Color32::from_rgb(
+            ar.saturating_sub(0x48),
+            ag.saturating_sub(0x32),
+            ab.saturating_sub(0x0c),
+        );
+        // The theme's embedded accent_glow / accent_subtle carry the
+        // alpha that suits its polarity. Reuse those alphas, but
+        // recolour to the user's accent so the glow tint follows the
+        // accent picker.
+        let glow_a = t.accent_glow.a();
+        let sub_a = t.accent_subtle.a();
         let pm = |c: u8, a: u8| (c as u16 * a as u16 / 255) as u8;
         t.accent_glow = Color32::from_rgba_premultiplied(pm(ar, glow_a), pm(ag, glow_a), pm(ab, glow_a), glow_a);
         t.accent_subtle = Color32::from_rgba_premultiplied(pm(ar, sub_a), pm(ag, sub_a), pm(ab, sub_a), sub_a);
         t.text_accent = accent;
-        // Role colors from prefs
+
+        // Role colours — user prefs always win (themes specify role
+        // defaults but the per-clip-role picker is universal).
         let c = |rgb: [u8; 3]| Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
         t.role_video = c(prefs.role_video);
         t.role_dialogue = c(prefs.role_dialogue);
@@ -130,6 +287,27 @@ impl KlippTheme {
         t.role_voiceover = c(prefs.role_voiceover);
         t.role_graphics = c(prefs.role_graphics);
         t
+    }
+
+    /// Polarity-aware "soft chrome overlay" — translucent white on
+    /// dark themes, translucent black on light themes, at the
+    /// requested alpha (0-255). Use anywhere the previous code
+    /// hardcoded `Color32::from_rgba_premultiplied(255, 255, 255, N)`
+    /// for "subtle white veil over the panel" — section dividers,
+    /// dim text on amber rows, faint icon tints, etc. Light theme
+    /// flips polarity so the overlay still reads as a soft grey
+    /// against the bg instead of being invisible (white-on-white).
+    ///
+    /// Premultiplied alpha format: RGB == alpha (so the colour is
+    /// pre-blended with its own opacity). On dark, that's a fully
+    /// premultiplied translucent white; on light, fully
+    /// premultiplied translucent black (RGB = 0, alpha = N).
+    pub fn overlay(&self, alpha: u8) -> Color32 {
+        if self.is_light() {
+            Color32::from_rgba_premultiplied(0, 0, 0, alpha)
+        } else {
+            Color32::from_rgba_premultiplied(alpha, alpha, alpha, alpha)
+        }
     }
 
     /// Return the theme color for a clip role.
@@ -147,9 +325,27 @@ impl KlippTheme {
         }
     }
 
+    /// True iff this palette is the light-mode variant (text_primary
+    /// is darker than bg_panel). Used to pick polarity-aware values
+    /// for egui's built-in widgets that don't track our theme tokens
+    /// directly (selection bg fill, etc.).
+    fn is_light(&self) -> bool {
+        // Average channel value of text_primary vs bg_panel — if text
+        // is darker than bg, we're light-mode.
+        let avg = |c: Color32| (c.r() as u32 + c.g() as u32 + c.b() as u32) / 3;
+        avg(self.text_primary) < avg(self.bg_panel)
+    }
+
     /// Apply theme colours to egui's global visuals.
     pub fn apply_to_egui(&self, ctx: &egui::Context) {
-        let mut visuals = egui::Visuals::dark();
+        // Pick the right base — egui uses the base to colour widgets
+        // we don't override (popups, tooltips, scrollbar handles…)
+        // and to pick reasonable defaults for everything else.
+        let mut visuals = if self.is_light() {
+            egui::Visuals::light()
+        } else {
+            egui::Visuals::dark()
+        };
 
         visuals.window_fill = self.bg_void;
         visuals.panel_fill = self.bg_panel;
@@ -180,11 +376,19 @@ impl KlippTheme {
         visuals.widgets.active.bg_stroke =
             egui::Stroke::new(1.0_f32, self.accent_dim);
 
-        // CONTRAST RULE: selection.bg_fill is used for selected dropdown items,
-        // text selections, etc. egui renders TEXT on this background using fg_stroke
-        // (light text). Therefore this MUST be a dark color — never solid amber/gold.
-        // Use a dark warm tint so light text stays readable.
-        visuals.selection.bg_fill = Color32::from_rgb(0x38, 0x2c, 0x14);
+        // CONTRAST RULE: selection.bg_fill is what egui paints behind
+        // selected dropdown items, text selections, etc. egui draws
+        // TEXT on this background using fg_stroke (text_primary). So
+        // the selection bg has to contrast with text_primary, which
+        // means dark in dark-mode (so light text reads) and light in
+        // light-mode (so dark text reads). Both variants use a warm
+        // tint — same accent family, different polarity — to mark
+        // selection without dominating the panel.
+        visuals.selection.bg_fill = if self.is_light() {
+            Color32::from_rgb(0xf2, 0xe6, 0xc8)
+        } else {
+            Color32::from_rgb(0x38, 0x2c, 0x14)
+        };
         visuals.selection.stroke = egui::Stroke::new(1.0_f32, self.accent);
 
         visuals.window_stroke = egui::Stroke::new(1.0_f32, self.border);

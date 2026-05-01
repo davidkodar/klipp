@@ -28,7 +28,7 @@ pub fn channel_color(channel: CurveChannel) -> egui::Color32 {
 /// `height` controls the canvas height. `histogram_bins` is optional 256-entry histogram data.
 pub fn curves_editor_sized(
     ui: &mut egui::Ui,
-    _theme: &KlippTheme,
+    theme: &KlippTheme,
     channel: CurveChannel,
     points: &mut Vec<[f32; 2]>,
     height: f32,
@@ -46,8 +46,8 @@ pub fn curves_editor_sized(
     let drag_ended = response.drag_stopped();
 
     let painter = ui.painter_at(rect);
-    let bg_color = egui::Color32::from_rgb(0x1e, 0x1e, 0x22);
-    let border_color = egui::Color32::from_rgb(0x34, 0x34, 0x3c);
+    let bg_color = theme.bg_panel_alt;
+    let border_color = theme.border;
 
     // Background
     painter.rect_filled(rect, 4.0, bg_color);
@@ -75,7 +75,7 @@ pub fn curves_editor_sized(
     }
 
     // Grid lines (25% intervals)
-    let grid_color = egui::Color32::from_rgb(0x2c, 0x2c, 0x38);
+    let grid_color = theme.border_light;
     for i in 1..4 {
         let t = i as f32 / 4.0;
         let x = rect.min.x + t * rect.width();
@@ -94,7 +94,7 @@ pub fn curves_editor_sized(
     // This is the unmodified straight line so user can see deviation
     painter.line_segment(
         [egui::pos2(rect.min.x, rect.max.y), egui::pos2(rect.max.x, rect.min.y)],
-        egui::Stroke::new(1.2_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 50)),
+        egui::Stroke::new(1.2_f32, theme.overlay(50)),
     );
 
     // Ensure minimum identity endpoints exist — empty curves get [0,0] and [1,1]
@@ -234,7 +234,7 @@ pub fn curves_editor_sized(
         let px = rect.min.x + pt[0] * rect.width();
         let py = rect.max.y - pt[1] * rect.height();
         let center = egui::pos2(px, py);
-        painter.circle_filled(center, 5.0, egui::Color32::from_rgb(0x14, 0x14, 0x1a));
+        painter.circle_filled(center, 5.0, theme.bg_deep);
         painter.circle_stroke(center, 5.0, egui::Stroke::new(1.5_f32, curve_color));
     }
 

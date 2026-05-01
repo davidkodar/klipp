@@ -190,6 +190,7 @@ fn show_bin_media_video(
         multicam_angle: 0,
         multicam_cuts: Vec::new(),
         audio_effects: Vec::new(),
+        audio_effect_keyframes: std::collections::HashMap::new(),
         stabilization_data: None,
         smoothed_trajectory: None,
         track_points: Vec::new(),
@@ -333,9 +334,9 @@ fn show_clip_video(
             );
             let reset_resp = ui.interact(reset_rect, ui.id().with("transform_reset"), egui::Sense::click());
             let tint = if reset_resp.hovered() {
-                egui::Color32::from_rgb(220, 220, 225)
+                theme.text_primary
             } else {
-                egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)
+                egui::Color32::from_rgba_premultiplied(theme.text_dim.r(), theme.text_dim.g(), theme.text_dim.b(), 100)
             };
             let icon_rect = egui::Rect::from_center_size(reset_rect.center(), egui::vec2(12.0, 12.0));
             crate::icons::Icon::ArrowCounterClockwise.image(12.0).tint(tint).paint_at(ui, icon_rect);
@@ -784,7 +785,7 @@ fn show_clip_video(
                     let gp = ui.painter_at(graph_rect);
 
                     // Background
-                    gp.rect_filled(graph_rect, 4.0, egui::Color32::from_rgb(0x12, 0x12, 0x16));
+                    gp.rect_filled(graph_rect, 4.0, theme.bg_deep);
                     gp.rect_stroke(graph_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border));
 
                     let clip_dur = clip.duration().to_secs_f64();
@@ -828,7 +829,7 @@ fn show_clip_video(
                         }
 
                         // Draw evaluated speed curve (smooth)
-                        let spd_color = egui::Color32::from_rgb(100, 200, 255);
+                        let spd_color = theme.marker_info;
                         let num_pts = (inner.width() as usize / 2).clamp(2, 200);
                         let mut curve_pts: Vec<egui::Pos2> = Vec::with_capacity(num_pts);
                         for i in 0..num_pts {
@@ -844,7 +845,7 @@ fn show_clip_video(
                             fill_pts.push(egui::pos2(inner.left(), inner.bottom()));
                             gp.add(egui::Shape::convex_polygon(
                                 fill_pts,
-                                egui::Color32::from_rgba_unmultiplied(100, 200, 255, 15),
+                                egui::Color32::from_rgba_unmultiplied(theme.marker_info.r(), theme.marker_info.g(), theme.marker_info.b(), 15),
                                 egui::Stroke::NONE,
                             ));
                         }
@@ -1049,7 +1050,7 @@ fn show_clip_video(
                         }
 
                         if ui.add(egui::Button::new(btn("Reset"))
-                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(180, 80, 80)))
+                            .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.marker_error))
                             .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
                         ).on_hover_text("Clear all speed keyframes").clicked() {
                             cmds.push(AppCommand::SetSpeedKeyframes {
@@ -1154,7 +1155,7 @@ fn show_clip_video(
                         // Keyframe diamond
                         let diamond_x = rx - 5.0;
                         draw_keyframe_diamond(ui, egui::pos2(diamond_x, cy),
-                            egui::Color32::from_rgba_premultiplied(120, 120, 130, 90), false);
+                            egui::Color32::from_rgba_premultiplied(theme.text_dim.r(), theme.text_dim.g(), theme.text_dim.b(), 90), false);
                     });
 
                     // Out speed
@@ -1170,7 +1171,7 @@ fn show_clip_video(
                         );
                         let diamond_x = rx - 5.0;
                         draw_keyframe_diamond(ui, egui::pos2(diamond_x, cy),
-                            egui::Color32::from_rgba_premultiplied(120, 120, 130, 90), false);
+                            egui::Color32::from_rgba_premultiplied(theme.text_dim.r(), theme.text_dim.g(), theme.text_dim.b(), 90), false);
                     });
 
                     // Ease dropdown
@@ -1229,12 +1230,12 @@ fn show_tracking_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState
             .show(ui, |ui| {
                 // "Place Tracker" button
                 let btn_color = if state.tracking_mode {
-                    egui::Color32::from_rgb(0xe8, 0xa0, 0x20) // amber when active
+                    theme.accent // amber when active
                 } else {
                     theme.bg_deep
                 };
                 let btn_text_color = if state.tracking_mode {
-                    egui::Color32::from_rgb(0x1a, 0x1a, 0x1a) // dark on amber
+                    theme.text_on_accent // dark on amber
                 } else {
                     theme.text_primary
                 };
@@ -1366,7 +1367,7 @@ fn show_tracking_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState
                             bar_rect.min,
                             egui::vec2(bar_w * progress, 4.0),
                         );
-                        ui.painter().rect_filled(fill_rect, 2.0, egui::Color32::from_rgb(0xe8, 0xa0, 0x20));
+                        ui.painter().rect_filled(fill_rect, 2.0, theme.accent);
                     });
                 }
 
@@ -1503,7 +1504,7 @@ fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cm
                         });
                     }
                     if has_transform_kfs && ui.add(egui::Button::new(btn_text("Remove"))
-                        .fill(egui::Color32::from_rgb(60, 30, 30)).stroke(egui::Stroke::new(0.5_f32, theme.border))
+                        .fill(theme.bg_raised).stroke(egui::Stroke::new(0.5_f32, theme.border))
                         .rounding(3.0).min_size(egui::vec2(0.0, 20.0))
                     ).on_hover_text("Clear all transform keyframes").clicked() {
                         cmds.push(AppCommand::ClearTransformKeyframes { clip_id });
@@ -1701,7 +1702,7 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
 
         info_row(ui, theme, pad, row_h, w, "Colour space", |ui, rx, cy| {
             let badge_text = "SDR";
-            let badge_color = egui::Color32::from_rgb(60, 120, 200);
+            let badge_color = theme.marker_info;
             let sub_text = "BT.709";
             let dim = theme.text_dim;
 
@@ -1852,9 +1853,9 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         stat_card(ui, theme, egui::Rect::from_min_size(egui::pos2(x0, y1), egui::vec2(card_w, card_h)),
             "TOTAL CLIPS", &total_clips.to_string(), theme.text_primary);
         let missing_color = if missing_media == 0 {
-            egui::Color32::from_rgb(100, 200, 120)
+            theme.marker_success
         } else {
-            egui::Color32::from_rgb(220, 80, 80)
+            theme.marker_error
         };
         stat_card(ui, theme, egui::Rect::from_min_size(egui::pos2(x0 + card_w + 8.0, y1), egui::vec2(card_w, card_h)),
             "MISSING MEDIA", &missing_media.to_string(), missing_color);
@@ -1903,7 +1904,7 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
 
         info_row(ui, theme, pad, row_h, w, "Proxy mode", |ui, rx, cy| {
             let text = if state.use_proxies { "On" } else { "Off" };
-            let color = if state.use_proxies { egui::Color32::from_rgb(100, 200, 120) } else { theme.text_primary };
+            let color = if state.use_proxies { theme.marker_success } else { theme.text_primary };
             ui.painter().text(
                 egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
                 text, egui::FontId::proportional(13.0), color,
@@ -1990,11 +1991,11 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         });
 
         let free_color = if free_bytes < 1_000_000_000 {
-            egui::Color32::from_rgb(210, 60, 60) // red if < 1GB
+            theme.marker_error // red if < 1GB
         } else if free_bytes < 10_000_000_000 {
             theme.accent // amber if < 10GB
         } else {
-            egui::Color32::from_rgb(80, 200, 120) // green
+            theme.marker_success // green
         };
         info_row(ui, theme, pad, row_h, w, "Free space", |ui, rx, cy| {
             ui.painter().text(
@@ -2015,14 +2016,14 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         let bx = bar_rect.min.x + pad;
         let by = bar_rect.center().y - bar_h / 2.0;
         let full_bar = egui::Rect::from_min_size(egui::pos2(bx, by), egui::vec2(bar_w, bar_h));
-        ui.painter().rect_filled(full_bar, 3.0, egui::Color32::from_rgb(60, 60, 65));
+        ui.painter().rect_filled(full_bar, 3.0, theme.bg_hover);
         // Project portion (blue)
         let pw = (bar_w * project_frac).max(if project_bytes > 0 { 2.0 } else { 0.0 });
         if pw > 0.0 {
             ui.painter().rect_filled(
                 egui::Rect::from_min_size(egui::pos2(bx, by), egui::vec2(pw, bar_h)),
                 egui::Rounding { nw: 3.0, ne: 0.0, sw: 3.0, se: 0.0 },
-                egui::Color32::from_rgb(60, 120, 200),
+                theme.marker_info,
             );
         }
         // Cache portion (orange)
@@ -2031,7 +2032,7 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
             ui.painter().rect_filled(
                 egui::Rect::from_min_size(egui::pos2(bx + pw, by), egui::vec2(cw, bar_h)),
                 0.0,
-                egui::Color32::from_rgb(200, 150, 60),
+                theme.accent,
             );
         }
 
@@ -2042,9 +2043,9 @@ fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppSt
         let mut lx = legend_rect.min.x + pad;
         let dot_r = 4.0;
         let legend_items = [
-            ("Project", egui::Color32::from_rgb(60, 120, 200)),
-            ("Cache", egui::Color32::from_rgb(200, 150, 60)),
-            ("Free", egui::Color32::from_rgb(60, 60, 65)),
+            ("Project", theme.marker_info),
+            ("Cache", theme.accent),
+            ("Free", theme.bg_hover),
         ];
         for (label, color) in &legend_items {
             ui.painter().circle_filled(egui::pos2(lx + dot_r, ly), dot_r, *color);

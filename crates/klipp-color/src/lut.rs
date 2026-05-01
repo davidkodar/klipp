@@ -1,10 +1,60 @@
 use std::path::Path;
 
+use klipp_core::WorkingColorspace;
+
 /// 3D LUT data — trilinear interpolation lookup table.
+///
+/// `input_space` and `output_space` describe what colorspace the
+/// LUT's domain (input) and range (output) live in. Most legacy
+/// `.cube` files were authored in BT.709 / sRGB and don't carry
+/// metadata; they're loaded as `Rec709Linear` on both sides by
+/// default. ACES-AP1-tagged LUTs that arrive without metadata can
+/// be re-tagged via the Inspector dropdown. When the active project
+/// working space differs from the LUT's input or output space, the
+/// applicator brackets the LUT with the appropriate primaries-
+/// conversion matrices (see [`apply_3d_lut_linear_ws`]).
 #[derive(Debug, Clone)]
 pub struct LutData {
     pub size: usize,
     pub data: Vec<f32>, // r,g,b interleaved, size^3 * 3 floats
+    /// Colorspace of the LUT's input domain (the values you index in
+    /// with). Defaults to [`WorkingColorspace::Rec709Linear`] for the
+    /// existing "untagged .cube" convention.
+    pub input_space: WorkingColorspace,
+    /// Colorspace of the LUT's output range. Same default.
+    pub output_space: WorkingColorspace,
+}
+
+impl LutData {
+    /// Identity LUT of the given size (each grid point maps to its own
+    /// position in the unit cube). Used as the passthrough fallback when
+    /// `load_lut` fails — see `klipp-nodes/src/executor.rs` Lut3D paths.
+    /// `size = 2` is the minimum (the 8 corners of the unit cube); since
+    /// identity is linear, trilinear interpolation between the corners
+    /// reproduces the identity exactly.
+    ///
+    /// Identity LUTs are colorspace-neutral (they don't change the
+    /// signal), so they default to `Rec709Linear` on both sides — same
+    /// as the parser-loaded default.
+    pub fn identity(size: usize) -> Self {
+        let mut data = Vec::with_capacity(size * size * size * 3);
+        let n1 = (size.saturating_sub(1).max(1)) as f32;
+        for b in 0..size {
+            for g in 0..size {
+                for r in 0..size {
+                    data.push(r as f32 / n1);
+                    data.push(g as f32 / n1);
+                    data.push(b as f32 / n1);
+                }
+            }
+        }
+        LutData {
+            size,
+            data,
+            input_space: WorkingColorspace::Rec709Linear,
+            output_space: WorkingColorspace::Rec709Linear,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -95,7 +145,15 @@ pub fn parse_cube(text: &str) -> Result<LutData, LutError> {
     // Truncate to exact size (ignore extra)
     data.truncate(expected * 3);
 
-    Ok(LutData { size, data })
+    Ok(LutData {
+        size,
+        data,
+        // Untagged .cube/.csp/.3dl files are conventionally authored
+        // in BT.709 / sRGB. Users override via the Inspector when
+        // they know the LUT was authored in a different space.
+        input_space: WorkingColorspace::Rec709Linear,
+        output_space: WorkingColorspace::Rec709Linear,
+    })
 }
 
 /// Load any supported LUT format by file extension (.cube, .3dl, .csp).
@@ -183,7 +241,15 @@ pub fn parse_3dl(text: &str) -> Result<LutData, LutError> {
     }
 
     data.truncate(size * size * size * 3);
-    Ok(LutData { size, data })
+    Ok(LutData {
+        size,
+        data,
+        // Untagged .cube/.csp/.3dl files are conventionally authored
+        // in BT.709 / sRGB. Users override via the Inspector when
+        // they know the LUT was authored in a different space.
+        input_space: WorkingColorspace::Rec709Linear,
+        output_space: WorkingColorspace::Rec709Linear,
+    })
 }
 
 /// Parse Rising Sun Research .csp LUT format.
@@ -280,7 +346,15 @@ pub fn parse_csp(text: &str) -> Result<LutData, LutError> {
     }
     data.truncate(expected * 3);
 
-    Ok(LutData { size, data })
+    Ok(LutData {
+        size,
+        data,
+        // Untagged .cube/.csp/.3dl files are conventionally authored
+        // in BT.709 / sRGB. Users override via the Inspector when
+        // they know the LUT was authored in a different space.
+        input_space: WorkingColorspace::Rec709Linear,
+        output_space: WorkingColorspace::Rec709Linear,
+    })
 }
 
 /// Generate a small reference image (64x64 RGBA) with color ramps for LUT preview.
@@ -467,6 +541,125 @@ pub fn apply_3d_lut_tetrahedral(rgba: &mut [u8], lut: &LutData, opacity: f32) {
     }
 }
 
+/// Apply a 3D LUT to a linear-light RGBA buffer, with working-space
+/// bracketing.
+///
+/// **Pipeline:**
+///   1. If `working_space != lut.input_space`, convert each pixel
+///      from the working space to the LUT's input space via the
+///      primaries-conversion matrix.
+///   2. Trilinear-interpolate the LUT (input clamped to `[0, 1]` for
+///      the lookup; output is the LUT's natural range).
+///   3. If `working_space != lut.output_space`, convert the LUT
+///      output back into the working space.
+///   4. Mix with the original input by `opacity`, in the working
+///      space.
+///
+/// `rgba_linear` is `&mut [f32]` RGBA in linear-light values, with
+/// alpha left untouched. Values outside `[0, 1]` are tolerated on the
+/// way in (clamped only for the LUT lookup itself); the post-LUT
+/// signal can re-overshoot if the LUT is bake-graded into headroom.
+///
+/// For untagged LUTs (the common case — both `input_space` and
+/// `output_space` default to `Rec709Linear` after parsing) and a
+/// `Rec709Linear` working space, this reduces to the trilinear LUT
+/// apply you already had — no matmul cost. The bracketing kicks in
+/// only when one of the three colorspaces differs.
+pub fn apply_3d_lut_linear_ws(
+    rgba_linear: &mut [f32],
+    lut: &LutData,
+    opacity: f32,
+    working_space: WorkingColorspace,
+) {
+    apply_3d_lut_linear_ws_with_overrides(
+        rgba_linear, lut, opacity, working_space,
+        lut.input_space, lut.output_space,
+    )
+}
+
+/// `apply_3d_lut_linear_ws` with explicit per-call overrides for the
+/// LUT's input and output colorspace tags. Used when the user has
+/// re-tagged a LUT via the Inspector dropdown — the underlying
+/// `LutData` (which may be `Arc`-cached and shared across clips)
+/// stays untouched, and the caller's override drives the bracketing
+/// matrices.
+///
+/// Pass `lut.input_space` / `lut.output_space` directly to recover
+/// the un-overridden behaviour.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_3d_lut_linear_ws_with_overrides(
+    rgba_linear: &mut [f32],
+    lut: &LutData,
+    opacity: f32,
+    working_space: WorkingColorspace,
+    input_space: WorkingColorspace,
+    output_space: WorkingColorspace,
+) {
+    if opacity <= 0.0 {
+        return;
+    }
+    let n = lut.size;
+    if n < 2 {
+        return;
+    }
+    let n1 = (n - 1) as f32;
+    let pre = crate::primaries::working_space_conversion_matrix(working_space, input_space);
+    let post = crate::primaries::working_space_conversion_matrix(output_space, working_space);
+
+    for pixel in rgba_linear.chunks_exact_mut(4) {
+        let original = [pixel[0], pixel[1], pixel[2]];
+
+        let lut_in = if let Some(m) = pre {
+            crate::primaries::matrix3_mul_vec(m, original)
+        } else {
+            original
+        };
+
+        let r_idx = (lut_in[0] * n1).clamp(0.0, n1);
+        let g_idx = (lut_in[1] * n1).clamp(0.0, n1);
+        let b_idx = (lut_in[2] * n1).clamp(0.0, n1);
+        let r0 = (r_idx.floor() as usize).min(n - 2);
+        let g0 = (g_idx.floor() as usize).min(n - 2);
+        let b0 = (b_idx.floor() as usize).min(n - 2);
+        let r1 = r0 + 1;
+        let g1 = g0 + 1;
+        let b1 = b0 + 1;
+        let rf = r_idx - r0 as f32;
+        let gf = g_idx - g0 as f32;
+        let bf = b_idx - b0 as f32;
+        let idx = |ri: usize, gi: usize, bi: usize| (bi * n * n + gi * n + ri) * 3;
+
+        let mut lut_out = [0.0_f32; 3];
+        for (ch, slot) in lut_out.iter_mut().enumerate() {
+            let c000 = lut.data[idx(r0, g0, b0) + ch];
+            let c100 = lut.data[idx(r1, g0, b0) + ch];
+            let c010 = lut.data[idx(r0, g1, b0) + ch];
+            let c110 = lut.data[idx(r1, g1, b0) + ch];
+            let c001 = lut.data[idx(r0, g0, b1) + ch];
+            let c101 = lut.data[idx(r1, g0, b1) + ch];
+            let c011 = lut.data[idx(r0, g1, b1) + ch];
+            let c111 = lut.data[idx(r1, g1, b1) + ch];
+            let c00 = c000 + (c100 - c000) * rf;
+            let c01 = c001 + (c101 - c001) * rf;
+            let c10 = c010 + (c110 - c010) * rf;
+            let c11 = c011 + (c111 - c011) * rf;
+            let c0 = c00 + (c10 - c00) * gf;
+            let c1 = c01 + (c11 - c01) * gf;
+            *slot = c0 + (c1 - c0) * bf;
+        }
+
+        let post_rgb = if let Some(m) = post {
+            crate::primaries::matrix3_mul_vec(m, lut_out)
+        } else {
+            lut_out
+        };
+
+        pixel[0] = original[0] + (post_rgb[0] - original[0]) * opacity;
+        pixel[1] = original[1] + (post_rgb[1] - original[1]) * opacity;
+        pixel[2] = original[2] + (post_rgb[2] - original[2]) * opacity;
+    }
+}
+
 /// Bake a color grade into a 3D LUT by running every RGB triplet through the
 /// primary grade pipeline. Does NOT capture qualifier, masks, or keyframe
 /// animation — those are spatial/temporal and cannot be represented in a 3D LUT.
@@ -530,18 +723,10 @@ mod tests {
     use super::*;
 
     fn identity_lut(size: usize) -> LutData {
-        let mut data = Vec::with_capacity(size * size * size * 3);
-        let n1 = (size - 1) as f32;
-        for b in 0..size {
-            for g in 0..size {
-                for r in 0..size {
-                    data.push(r as f32 / n1);
-                    data.push(g as f32 / n1);
-                    data.push(b as f32 / n1);
-                }
-            }
-        }
-        LutData { size, data }
+        // Existing tests below use this local helper; it now just defers
+        // to the public LutData::identity so the public path stays
+        // exercised by the same passthrough assertions.
+        LutData::identity(size)
     }
 
     #[test]
@@ -602,6 +787,35 @@ mod tests {
     }
 
     #[test]
+    fn identity_lut_size2_is_passthrough() {
+        // CODE_AUDIT C-9: size=2 is the smallest identity LUT and is
+        // what executor.rs uses as the load-failure fallback. Pin that
+        // it really is passthrough (vs the previous all-zero-data
+        // fallback that silently rendered black).
+        let lut = LutData::identity(2);
+        assert_eq!(lut.size, 2);
+        assert_eq!(lut.data.len(), 2 * 2 * 2 * 3);
+        for sample in [
+            [0u8, 0, 0, 255],
+            [50, 100, 150, 255],
+            [128, 128, 128, 255],
+            [200, 50, 25, 255],
+            [255, 255, 255, 255],
+        ] {
+            let mut px = sample.to_vec();
+            apply_3d_lut(&mut px, &lut, 1.0);
+            for ch in 0..3 {
+                assert!(
+                    (px[ch] as i16 - sample[ch] as i16).unsigned_abs() <= 1,
+                    "size=2 identity LUT must be passthrough; ch {}: got {}, expected {}",
+                    ch, px[ch], sample[ch]
+                );
+            }
+            assert_eq!(px[3], sample[3], "alpha must be untouched");
+        }
+    }
+
+    #[test]
     fn identity_lut_is_passthrough() {
         let lut = identity_lut(33);
         let mut px = vec![100, 150, 200, 255];
@@ -620,7 +834,11 @@ mod tests {
     fn lut_zero_opacity_is_passthrough() {
         // Even a non-identity LUT at opacity 0 should not change pixels
         let data = vec![0.0f32; 2 * 2 * 2 * 3]; // all-black LUT
-        let lut = LutData { size: 2, data };
+        let lut = LutData {
+            size: 2, data,
+            input_space: WorkingColorspace::Rec709Linear,
+            output_space: WorkingColorspace::Rec709Linear,
+        };
         let mut px = vec![128, 128, 128, 255];
         let orig = px.clone();
         apply_3d_lut(&mut px, &lut, 0.0);
@@ -631,7 +849,11 @@ mod tests {
     fn lut_full_opacity_applies() {
         // All-black LUT should make everything black
         let data = vec![0.0f32; 2 * 2 * 2 * 3];
-        let lut = LutData { size: 2, data };
+        let lut = LutData {
+            size: 2, data,
+            input_space: WorkingColorspace::Rec709Linear,
+            output_space: WorkingColorspace::Rec709Linear,
+        };
         let mut px = vec![200, 200, 200, 255];
         apply_3d_lut(&mut px, &lut, 1.0);
         assert_eq!(px[0], 0);
@@ -643,7 +865,11 @@ mod tests {
     #[test]
     fn lut_half_opacity_blends() {
         let data = vec![0.0f32; 2 * 2 * 2 * 3]; // all-black LUT
-        let lut = LutData { size: 2, data };
+        let lut = LutData {
+            size: 2, data,
+            input_space: WorkingColorspace::Rec709Linear,
+            output_space: WorkingColorspace::Rec709Linear,
+        };
         let mut px = vec![200, 200, 200, 255];
         apply_3d_lut(&mut px, &lut, 0.5);
         assert_eq!(px[0], 100);
@@ -654,7 +880,11 @@ mod tests {
     #[test]
     fn lut_alpha_unchanged() {
         let data = vec![0.0f32; 2 * 2 * 2 * 3];
-        let lut = LutData { size: 2, data };
+        let lut = LutData {
+            size: 2, data,
+            input_space: WorkingColorspace::Rec709Linear,
+            output_space: WorkingColorspace::Rec709Linear,
+        };
         let mut px = vec![200, 200, 200, 42];
         apply_3d_lut(&mut px, &lut, 1.0);
         assert_eq!(px[3], 42);
@@ -836,5 +1066,269 @@ mod tests {
             }
         }
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ─── Working-space-aware LUT apply (Phase E S6) ─────────────
+
+    fn approx_eq(a: f32, b: f32, tol: f32) -> bool {
+        (a - b).abs() <= tol
+    }
+
+    /// Identity LUT + matching working-space tags + zero-conversion
+    /// path = pure passthrough at any opacity. Sanity check on the
+    /// inner trilinear loop.
+    #[test]
+    fn ws_aware_apply_identity_lut_rec709_passthrough() {
+        let lut = LutData::identity(33);
+        let mut pixels: Vec<f32> = vec![
+            0.10, 0.30, 0.70, 1.0,
+            0.50, 0.50, 0.50, 1.0,
+            0.99, 0.01, 0.50, 1.0,
+        ];
+        let original = pixels.clone();
+        apply_3d_lut_linear_ws(&mut pixels, &lut, 1.0, WorkingColorspace::Rec709Linear);
+        for i in 0..pixels.len() {
+            assert!(approx_eq(pixels[i], original[i], 1e-3),
+                "identity LUT at index {i}: {} → {}", original[i], pixels[i]);
+        }
+    }
+
+    /// LUT tagged Rec709/Rec709, working space AcesCG. Pre-bracket
+    /// converts AcesCG → Rec709, post-bracket converts Rec709 →
+    /// AcesCG. Net effect on an identity LUT for IN-GAMUT inputs:
+    /// AcesCG → Rec709 → (identity) → AcesCG = identity (within
+    /// float + LUT-grid precision).
+    ///
+    /// AcesCG values that fall outside the BT.709 triangle map to
+    /// negative Rec.709 channels (the wider AP1 gamut spilling
+    /// beyond Rec.709). The trilinear LUT lookup clamps its input to
+    /// `[0, 1]`, so those out-of-gamut channels won't survive — that's
+    /// inherent to running an SDR-Rec.709 LUT against wide-gamut
+    /// content, not a bracketing bug. The test fixtures here use
+    /// neutral-ish AcesCG values that stay in-gamut on both sides.
+    #[test]
+    fn ws_aware_identity_lut_with_mismatched_working_space_round_trips() {
+        let lut = LutData::identity(33);
+        // All values close to neutral grey + mild deviations that
+        // produce non-negative Rec.709 channels (verified by hand).
+        let mut pixels: Vec<f32> = vec![
+            0.50, 0.50, 0.50, 1.0,
+            0.30, 0.30, 0.30, 1.0,
+            0.55, 0.50, 0.45, 1.0,
+            0.40, 0.45, 0.50, 1.0,
+        ];
+        let original = pixels.clone();
+        apply_3d_lut_linear_ws(&mut pixels, &lut, 1.0, WorkingColorspace::AcesCG);
+        // Tolerance: 33-grid trilinear adds ~3e-4, AcesCG ↔ Rec709
+        // round-trip ~1e-7 in f32. 5e-3 covers both cleanly with
+        // headroom for the value range we're testing (~0.3 to 0.55).
+        for i in 0..pixels.len() {
+            assert!(approx_eq(pixels[i], original[i], 5e-3),
+                "round-trip with bracketed identity LUT at {i}: {} → {}",
+                original[i], pixels[i]);
+        }
+    }
+
+    /// Adversarial: an AcesCG value that maps OUTSIDE the BT.709
+    /// gamut (one Rec.709 channel goes negative). The Rec.709-tagged
+    /// identity LUT clamps the negative channel to zero at lookup
+    /// time — this is the documented limitation, pinned here so a
+    /// future "let's auto-detect and reroute" change has a known
+    /// baseline to compare against.
+    #[test]
+    fn ws_aware_out_of_gamut_acescg_input_to_rec709_lut_clamps_at_lookup() {
+        let lut = LutData::identity(33);
+        // (0.1, 0.3, 0.7) AcesCG → Rec.709 has a negative R channel
+        // (out of BT.709 red gamut on the wide-blue side).
+        let mut pixels: Vec<f32> = vec![0.10, 0.30, 0.70, 1.0];
+        apply_3d_lut_linear_ws(&mut pixels, &lut, 1.0, WorkingColorspace::AcesCG);
+        // The LUT clamp lifts the input to a non-negative neighbourhood,
+        // which the post-bracket maps back to AcesCG. Output must be
+        // measurably different from the input on at least one channel
+        // (the negative excursion lost information).
+        let drift = (pixels[0] - 0.10).abs();
+        assert!(drift > 0.01,
+            "LUT clamp on out-of-gamut input should produce visible drift; got {drift}");
+        // But the output must still be finite and well-bounded —
+        // clamping should have prevented blow-up.
+        for c in pixels.iter().take(3) {
+            assert!(c.is_finite() && *c > -1.0 && *c < 2.0);
+        }
+    }
+
+    /// Untagged LUT (input/output both Rec709) under Rec709 working
+    /// space — should produce byte-identical output to a manual LUT
+    /// apply with no bracketing. The conversion-matrix lookup
+    /// returns `None` and the matmul is skipped entirely.
+    #[test]
+    fn ws_aware_no_op_when_all_three_spaces_match() {
+        // A trivially non-identity LUT: scales each channel by 0.5
+        // via the LUT entries.
+        let mut data = Vec::new();
+        for b in 0..2 {
+            for g in 0..2 {
+                for r in 0..2 {
+                    data.push(r as f32 * 0.5);
+                    data.push(g as f32 * 0.5);
+                    data.push(b as f32 * 0.5);
+                }
+            }
+        }
+        let lut = LutData {
+            size: 2, data,
+            input_space: WorkingColorspace::Rec709Linear,
+            output_space: WorkingColorspace::Rec709Linear,
+        };
+        let mut pixels: Vec<f32> = vec![1.0, 1.0, 1.0, 1.0];
+        apply_3d_lut_linear_ws(&mut pixels, &lut, 1.0, WorkingColorspace::Rec709Linear);
+        assert!(approx_eq(pixels[0], 0.5, 1e-3), "got {}", pixels[0]);
+        assert!(approx_eq(pixels[1], 0.5, 1e-3));
+        assert!(approx_eq(pixels[2], 0.5, 1e-3));
+        assert_eq!(pixels[3], 1.0);
+    }
+
+    /// Opacity blending happens in the working space (the natural
+    /// interpretation: "blend the LUT's contribution with the
+    /// untouched signal"). Verify with a black LUT at half opacity:
+    /// output should be half the input.
+    #[test]
+    fn ws_aware_opacity_blends_in_working_space() {
+        let zero_lut = LutData {
+            size: 2,
+            data: vec![0.0; 2 * 2 * 2 * 3],
+            input_space: WorkingColorspace::Rec709Linear,
+            output_space: WorkingColorspace::Rec709Linear,
+        };
+        let mut pixels: Vec<f32> = vec![0.8, 0.6, 0.4, 1.0];
+        apply_3d_lut_linear_ws(&mut pixels, &zero_lut, 0.5, WorkingColorspace::Rec709Linear);
+        assert!(approx_eq(pixels[0], 0.4, 1e-3));
+        assert!(approx_eq(pixels[1], 0.3, 1e-3));
+        assert!(approx_eq(pixels[2], 0.2, 1e-3));
+    }
+
+    /// Opacity = 0 short-circuits — input passes through completely
+    /// untouched (no bracketing matmul, no LUT lookup, no mix).
+    #[test]
+    fn ws_aware_zero_opacity_is_passthrough() {
+        let zero_lut = LutData {
+            size: 2,
+            data: vec![0.0; 2 * 2 * 2 * 3],
+            input_space: WorkingColorspace::Rec709Linear,
+            output_space: WorkingColorspace::AcesCG, // mismatched, would mangle if applied
+        };
+        let mut pixels: Vec<f32> = vec![0.8, 0.6, 0.4, 1.0];
+        let original = pixels.clone();
+        apply_3d_lut_linear_ws(&mut pixels, &zero_lut, 0.0, WorkingColorspace::AcesCG);
+        assert_eq!(pixels, original);
+    }
+
+    /// New `LutData` instances created via parsers default to
+    /// Rec709Linear on both sides — back-compat with every existing
+    /// `.cube` file on disk.
+    #[test]
+    fn parser_defaults_lut_to_rec709_linear() {
+        let text = "LUT_3D_SIZE 2\n\
+                     0.0 0.0 0.0\n\
+                     1.0 0.0 0.0\n\
+                     0.0 1.0 0.0\n\
+                     1.0 1.0 0.0\n\
+                     0.0 0.0 1.0\n\
+                     1.0 0.0 1.0\n\
+                     0.0 1.0 1.0\n\
+                     1.0 1.0 1.0\n";
+        let lut = parse_cube(text).unwrap();
+        assert_eq!(lut.input_space, WorkingColorspace::Rec709Linear);
+        assert_eq!(lut.output_space, WorkingColorspace::Rec709Linear);
+    }
+
+    /// `LutData::identity` ditto.
+    #[test]
+    fn identity_lut_defaults_to_rec709_linear() {
+        let lut = LutData::identity(17);
+        assert_eq!(lut.input_space, WorkingColorspace::Rec709Linear);
+        assert_eq!(lut.output_space, WorkingColorspace::Rec709Linear);
+    }
+
+    /// Override mode: pass `lut.input_space` and `lut.output_space`
+    /// directly through the with-overrides API and verify the result
+    /// matches the no-overrides API exactly. Pins the wrapper /
+    /// underlying-impl equivalence.
+    #[test]
+    fn with_overrides_matches_default_when_passing_lut_tags() {
+        let lut = LutData::identity(33);
+        let mut a = vec![0.50, 0.50, 0.50, 1.0, 0.30, 0.20, 0.40, 1.0];
+        let mut b = a.clone();
+        apply_3d_lut_linear_ws(&mut a, &lut, 1.0, WorkingColorspace::AcesCG);
+        apply_3d_lut_linear_ws_with_overrides(
+            &mut b, &lut, 1.0,
+            WorkingColorspace::AcesCG,
+            lut.input_space, lut.output_space,
+        );
+        assert_eq!(a, b);
+    }
+
+    /// User re-tags an untagged Rec.709-default LUT as ACEScg-input
+    /// while the project working space is also ACEScg. Pre/post
+    /// brackets disappear (no conversion needed); output should be
+    /// the LUT applied directly. With an identity LUT this is
+    /// passthrough.
+    #[test]
+    fn override_input_to_match_working_space_skips_pre_bracket() {
+        let lut = LutData::identity(33);
+        let mut pixels: Vec<f32> = vec![0.50, 0.50, 0.50, 1.0, 0.30, 0.45, 0.55, 1.0];
+        let original = pixels.clone();
+        apply_3d_lut_linear_ws_with_overrides(
+            &mut pixels, &lut, 1.0,
+            WorkingColorspace::AcesCG,
+            // User says: this LUT is ACEScg-tagged. Working space
+            // is also ACEScg. → no conversion either side, identity
+            // LUT → passthrough.
+            WorkingColorspace::AcesCG,
+            WorkingColorspace::AcesCG,
+        );
+        for i in 0..pixels.len() {
+            assert!((pixels[i] - original[i]).abs() < 1e-3,
+                "passthrough drift at {i}: {} → {}", original[i], pixels[i]);
+        }
+    }
+
+    /// Override mode actually changes behaviour: tagging an identity
+    /// LUT as Rec.709-input under an AcesCG working space introduces
+    /// the AP1 → BT.709 → (identity) → BT.709 → AP1 round-trip.
+    /// Result should differ measurably from the no-conversion case
+    /// above on saturated inputs (where round-trip isn't perfectly
+    /// identity due to LUT clamping at [0, 1]).
+    #[test]
+    fn overrides_actually_drive_bracketing_choice() {
+        let lut = LutData::identity(33);
+        // Saturated red — clearly out of BT.709 gamut on the AP1
+        // side, so the AP1 → BT.709 conversion produces negative
+        // channels that the LUT clamps. Output diverges from the
+        // no-bracket path measurably.
+        let pixels_in: Vec<f32> = vec![0.7, 0.05, 0.0, 1.0];
+
+        let mut acescg_lut_path = pixels_in.clone();
+        apply_3d_lut_linear_ws_with_overrides(
+            &mut acescg_lut_path, &lut, 1.0,
+            WorkingColorspace::AcesCG,
+            WorkingColorspace::AcesCG,    // no pre/post conversion
+            WorkingColorspace::AcesCG,
+        );
+
+        let mut rec709_lut_path = pixels_in.clone();
+        apply_3d_lut_linear_ws_with_overrides(
+            &mut rec709_lut_path, &lut, 1.0,
+            WorkingColorspace::AcesCG,
+            WorkingColorspace::Rec709Linear,  // brackets in
+            WorkingColorspace::Rec709Linear,
+        );
+
+        // Expect divergence on at least one channel — the bracket
+        // does real work even on identity LUTs.
+        let diff = (acescg_lut_path[0] - rec709_lut_path[0]).abs()
+            + (acescg_lut_path[1] - rec709_lut_path[1]).abs()
+            + (acescg_lut_path[2] - rec709_lut_path[2]).abs();
+        assert!(diff > 0.01,
+            "override bracketing should produce visible divergence; got total RGB delta {diff}");
     }
 }

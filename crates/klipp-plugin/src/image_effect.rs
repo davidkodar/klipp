@@ -602,3 +602,96 @@ pub static IMAGE_EFFECT_SUITE_V1: OfxImageEffectSuiteV1 = OfxImageEffectSuiteV1 
     image_memory_lock: image_memory_lock_fn,
     image_memory_unlock: image_memory_unlock_fn,
 };
+
+#[cfg(test)]
+mod img_mem_handle_tests {
+    // ═══════════════════════════════════════════════════════════════
+    // CRIT-6 regression — closes CODE_AUDIT CRIT-6.
+    //
+    // The original tracker entry called out a real handle-collision
+    // bug: image_memory_alloc_fn keyed its IMG_MEM_STORE HashMap on
+    // `Vec::as_ptr()`, which has two collision classes:
+    //   1. Zero-byte allocs all return NonNull::dangling() (typically
+    //      0x1) — every zero-byte handle was the same key, so the
+    //      second insert silently replaced the first.
+    //   2. Allocator address reuse — a freed Vec's address can be
+    //      reissued to a fresh alloc, also colliding.
+    //
+    // The 2026-04-16 fix replaced the ptr-as-key with a monotonic
+    // AtomicUsize counter (IMG_MEM_NEXT_HANDLE). These tests pin
+    // the contract so a future "let me put the ptr back, it's
+    // simpler" cleanup can't re-open the collision.
+    // ═══════════════════════════════════════════════════════════════
+
+    use super::*;
+    use crate::ffi::{
+        OfxImageEffectHandle, OfxImageMemoryHandle, K_OFX_STAT_OK,
+    };
+    use std::collections::HashSet;
+
+    /// Helper: drive the private `image_memory_alloc_fn` once,
+    /// returning the handle it produced.
+    fn alloc_one(n_bytes: usize) -> OfxImageMemoryHandle {
+        let mut handle: OfxImageMemoryHandle = std::ptr::null_mut();
+        let effect: OfxImageEffectHandle = std::ptr::null_mut();
+        let status = unsafe {
+            image_memory_alloc_fn(effect, n_bytes, &mut handle as *mut _)
+        };
+        assert_eq!(status, K_OFX_STAT_OK, "alloc must succeed");
+        handle
+    }
+
+    /// Helper: free a handle produced by `alloc_one` so we leave the
+    /// store clean between tests (parallel test runs share the
+    /// process-wide IMG_MEM_STORE).
+    fn free_one(handle: OfxImageMemoryHandle) {
+        let status = unsafe { image_memory_free_fn(handle) };
+        assert_eq!(status, K_OFX_STAT_OK, "free must succeed");
+    }
+
+    #[test]
+    fn zero_byte_allocs_get_distinct_handles() {
+        // The exact CRIT-6 scenario: two zero-byte allocations under
+        // the old ptr-as-key impl would both be 0x1 (Vec::as_ptr() of
+        // an empty Vec → NonNull::dangling()). The second insert
+        // would silently overwrite the first. The counter-based fix
+        // gives each call a unique, monotonically-incrementing
+        // handle.
+        let h1 = alloc_one(0);
+        let h2 = alloc_one(0);
+        let h3 = alloc_one(0);
+        assert_ne!(h1, h2, "two zero-byte allocs must produce distinct handles");
+        assert_ne!(h2, h3, "three zero-byte allocs must produce three distinct handles");
+        assert_ne!(h1, h3);
+        free_one(h1);
+        free_one(h2);
+        free_one(h3);
+    }
+
+    #[test]
+    fn handles_are_never_zero_so_zero_can_mean_null_in_ofx_abi() {
+        // The counter starts at 1 specifically so 0 can continue to
+        // mean "null / invalid handle" in the OFX ABI. Pin that
+        // contract.
+        let h = alloc_one(64);
+        assert_ne!(h as usize, 0,
+            "an allocated handle must never be 0 (0 is reserved for null in OFX)");
+        free_one(h);
+    }
+
+    #[test]
+    fn many_allocs_in_a_row_are_all_distinct() {
+        // Stress: 100 consecutive allocs (mix of zero and non-zero
+        // sizes). Every handle should be unique. A regression that
+        // re-introduced ptr-as-key would surface here as a HashSet
+        // contains() hit.
+        let sizes = (0..100usize).map(|i| if i % 3 == 0 { 0 } else { i });
+        let handles: Vec<_> = sizes.map(alloc_one).collect();
+        let unique: HashSet<usize> = handles.iter().map(|h| *h as usize).collect();
+        assert_eq!(unique.len(), 100,
+            "all 100 handles must be unique; got {} unique out of 100", unique.len());
+        for h in handles {
+            free_one(h);
+        }
+    }
+}

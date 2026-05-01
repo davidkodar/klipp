@@ -1,9 +1,9 @@
 use crate::format::*;
 use crate::path_util::{atomic_write, to_project_relative};
 use klipp_media::{MediaItem, MediaPool};
-use klipp_timeline::{ClipKind, Sequence, TrackKind};
+use klipp_timeline::{ClipKind, Look, Sequence, TrackKind};
 use std::path::Path;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Project-level settings persisted alongside sequence data.
 #[derive(Debug, Clone)]
@@ -16,6 +16,10 @@ pub struct ColorSettings {
     pub auto_generate_filmstrips: Option<bool>,
     /// Per-project: generate skim transcodes on import. None = use global pref.
     pub auto_generate_skim: Option<bool>,
+    /// Working colorspace the grade chain operates in. Defaults to
+    /// `Rec709Linear` for back-compat (every existing project file
+    /// has no `working_colorspace` field; serde fills the default).
+    pub working_colorspace: klipp_core::WorkingColorspace,
 }
 
 impl Default for ColorSettings {
@@ -27,6 +31,7 @@ impl Default for ColorSettings {
             track_header_width: 160.0,
             auto_generate_filmstrips: None,
             auto_generate_skim: None,
+            working_colorspace: klipp_core::WorkingColorspace::default(),
         }
     }
 }
@@ -87,6 +92,7 @@ pub fn save_project_with_color_and_backups(
         notes: notes.to_string(),
         timeline_zoom,
         timeline_scroll_x,
+        working_colorspace: color.working_colorspace,
     };
 
     let project_json = serde_json::to_string_pretty(&project)
@@ -235,6 +241,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         source_rotation: if c.source_rotation == 0 { None } else { Some(c.source_rotation) },
                         enabled: if c.enabled { None } else { Some(false) },
                         audio_effects: if c.audio_effects.is_empty() { None } else { Some(c.audio_effects.clone()) },
+                        audio_effect_keyframes: c.audio_effect_keyframes.clone(),
                         multicam_group: c.multicam_group.map(|g| g.to_string()),
                         multicam_angle: if c.multicam_angle == 0 { None } else { Some(c.multicam_angle) },
                         multicam_cuts: c.multicam_cuts.clone(),
@@ -393,6 +400,16 @@ fn media_item_to_json(item: &MediaItem, project_dir: &Path) -> MediaItemJson {
         color_label: item.color_label.to_u8(),
         colour_space: item.colour_space.to_u8(),
         source_rotation: if item.source_rotation == 0 { None } else { Some(item.source_rotation) },
+        camera_make: item.camera_make.clone(),
+        camera_model: item.camera_model.clone(),
+        encoder: item.encoder.clone(),
+        bit_depth: item.bit_depth,
+        video_bitrate_kbps: item.video_bitrate_kbps,
+        audio_bitrate_kbps: item.audio_bitrate_kbps,
+        color_primaries: item.color_primaries.clone(),
+        color_transfer: item.color_transfer.clone(),
+        pixel_format: item.pixel_format.clone(),
+        log_format: item.log_format,
     }
 }
 
@@ -416,5 +433,54 @@ fn rotate_backups(path: &Path, max_backups: u32) {
     let bak1 = path.with_extension("json.bak.1");
     if let Ok(data) = std::fs::read(path) {
         let _ = atomic_write(&bak1, &data);
+    }
+}
+
+/// Save the project's Looks library to `<dir>/looks/{id}.json`. One
+/// file per Look — keeps the diffs small when the user edits a single
+/// Look in a project tracked by version control. Stale files (Looks
+/// the user deleted in the session) are pruned on save so the on-disk
+/// library matches in-memory state.
+pub fn save_looks(dir: &Path, looks: &[Look]) -> Result<(), String> {
+    let looks_dir = dir.join("looks");
+    if looks.is_empty() {
+        // Nothing to save — leave an empty looks/ directory if it
+        // already exists, otherwise skip the mkdir entirely.
+        if looks_dir.exists() {
+            prune_stale_looks(&looks_dir, &[]);
+        }
+        return Ok(());
+    }
+    std::fs::create_dir_all(&looks_dir)
+        .map_err(|e| format!("Failed to create looks dir: {e}"))?;
+    for look in looks {
+        let json = serde_json::to_string_pretty(look)
+            .map_err(|e| format!("Failed to serialize Look {}: {e}", look.name))?;
+        let path = looks_dir.join(format!("{}.json", look.id));
+        atomic_write(&path, json.as_bytes())
+            .map_err(|e| format!("Failed to write Look {}: {e}", look.name))?;
+    }
+    let kept_ids: Vec<String> = looks.iter().map(|l| l.id.to_string()).collect();
+    prune_stale_looks(&looks_dir, &kept_ids);
+    Ok(())
+}
+
+/// Remove `looks/*.json` files whose UUID isn't in `kept_ids`. Deleted
+/// Looks shouldn't reappear after the next save just because their
+/// file lingers on disk.
+fn prune_stale_looks(looks_dir: &Path, kept_ids: &[String]) {
+    let Ok(entries) = std::fs::read_dir(looks_dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().map_or(true, |e| e != "json") { continue; }
+        let stem = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s,
+            None => continue,
+        };
+        if !kept_ids.iter().any(|id| id == stem) {
+            if let Err(e) = std::fs::remove_file(&path) {
+                warn!("Failed to remove stale look {:?}: {e}", path);
+            }
+        }
     }
 }

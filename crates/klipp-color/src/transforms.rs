@@ -579,11 +579,19 @@ pub fn log_to_linear(v: f32, format: klipp_core::LogFormat) -> f32 {
             }
         }
         LogFormat::NLog => {
-            // Nikon N-Log → linear
-            if v >= 328.0 / 1023.0 {
-                ((v.powf(1.0 / 3.0) - 0.0928) / 0.6007).exp()
+            // Nikon N-Log → linear. Two-segment per Nikon's 2018
+            // reference: cube-root toe inverse below the V-space
+            // breakpoint Vₜ ≈ 0.5101 (= toe at linear x=0.328),
+            // exp log inverse above. Mirrors
+            // `klipp_color::camera_log::nlog_to_linear` exactly.
+            // Previous body used `((v.powf(1/3) - 0.0928)/0.6007).exp()`
+            // and a `v / 1000.0` toe — neither matches any published
+            // Nikon N-Log curve.
+            if v < 0.5101 {
+                let t = (v - 0.0928) / 0.6007;
+                t * t * t - 0.0075
             } else {
-                v / 1000.0
+                ((v - 0.619) / 0.14).exp()
             }
         }
         LogFormat::FLog => {

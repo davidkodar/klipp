@@ -37,7 +37,15 @@ pub mod params;
 pub mod defaults;
 pub mod executor;
 
-pub use graph::{Edge, Node, NodeGraph, NodeId, NodePos};
-pub use kinds::NodeKind;
-pub use params::{NodeKeyframeTrack, NodeKeyframeTracks, NodeParams};
-pub use executor::{ExecutorError, GraphExecutor, bake_graph_to_lut};
+pub use graph::{Edge, Node, NodeGraph, NodeId, NodePos, PHANTOM_CORRECTOR_ID};
+pub use kinds::{NodeKind, PortRole};
+pub use params::{
+    LayerMixerParams, MatteChannel, NodeKeyframeTrack, NodeKeyframeTracks, NodeParams,
+};
+// Re-exported from klipp_core; surfaced here so callers writing to
+// node params don't need to reach across crates.
+pub use klipp_core::{BlendMode, LayerMixerInput};
+pub use executor::{
+    ExecutorError, GraphExecutor, bake_graph_to_lut, effective_enabled, ENABLED_TRACK, THUMB_W,
+    THUMB_H,
+};

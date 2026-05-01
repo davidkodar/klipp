@@ -355,6 +355,24 @@ impl AudioOutput {
                         "klipp-cpal-output",
                         &OUTPUT_CALLBACK_PANIC_LOGGED,
                         || {
+                            // CODE_AUDIT C-4: flush denormals once per
+                            // cpal-thread first call. The callback runs
+                            // on a dedicated thread (see LAST_GEN below),
+                            // so this thread_local once is sufficient.
+                            // Defensive — the mixer threads upstream
+                            // already flush, but the callback does its
+                            // own volume/pan math that can produce
+                            // denormals in-place.
+                            thread_local! {
+                                static FTZ_INIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+                            }
+                            FTZ_INIT.with(|f| {
+                                if !f.get() {
+                                    klipp_audio::flush_denormals_to_zero();
+                                    f.set(true);
+                                }
+                            });
+
                             // Check for seek — if generation changed, drain stale buffer
                             let current_gen = seek_gen_flag.load(Ordering::Acquire);
                             // Use a thread-local to track last seen generation
@@ -667,6 +685,7 @@ mod device_enum_tests {
     }
 
     #[test]
+    #[ignore = "cpal+ALSA dmix/dsnoop contention under parallel test execution; run with --ignored --test-threads=1 (TEST-CPAL-PARALLEL-HANG)"]
     fn cached_output_devices_returns_consistent_results() {
         // Two consecutive calls without explicit refresh should return
         // the same set of device names (the cache is stable between
@@ -679,6 +698,7 @@ mod device_enum_tests {
     }
 
     #[test]
+    #[ignore = "cpal+ALSA dmix/dsnoop contention under parallel test execution; run with --ignored --test-threads=1 (TEST-CPAL-PARALLEL-HANG)"]
     fn refresh_audio_devices_cache_returns_a_vec() {
         // Same shape contract as enumerate_output_devices — the result
         // may be empty but must not panic and must update the cache.
@@ -692,6 +712,7 @@ mod device_enum_tests {
     }
 
     #[test]
+    #[ignore = "cpal+ALSA dmix/dsnoop contention under parallel test execution; run with --ignored --test-threads=1 (TEST-CPAL-PARALLEL-HANG)"]
     fn prime_is_idempotent_and_does_not_panic() {
         prime_audio_devices_cache();
         prime_audio_devices_cache();

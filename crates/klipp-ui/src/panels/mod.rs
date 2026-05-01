@@ -1,11 +1,20 @@
+pub mod ai_models;
 pub mod audio_mixer;
+pub mod audio_plugins;
+pub mod project_doctor;
+pub mod system_probe;
 pub mod batch_rename_dialog;
 pub mod cache_manager;
 pub mod clip_properties;
 pub mod curve_editor;
 pub mod preset_manager;
-pub mod inspector;
+// `panels::inspector` was a legacy single-file module that exposed
+// `show_color_and_luts`. It has been migrated into
+// `crate::inspector::color_and_luts` to live alongside the rest of
+// the inspector. See CODE_AUDIT R-DEL-INSPECTOR.
+pub mod looks;
 pub mod node_graph;
+pub mod node_graph_v2;
 pub mod node_inspector;
 pub mod launch_screen;
 pub mod markers;

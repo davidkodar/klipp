@@ -59,7 +59,131 @@ pub enum ToneMapOp {
     Aces,
 }
 
-#[derive(Debug, Clone)]
+/// Delivery-target Output Display Transform for the export pipeline.
+///
+/// Picks which display-encoded colour space the rendered file lands
+/// in. Lives in `klipp-core` next to [`ExportSettings`] so the
+/// runtime export type can carry it without pulling in `klipp-color`;
+/// the actual ODT curves live in [`klipp_color::aces`] and the
+/// dispatch in [`klipp_color::display::display_transform_for_export`].
+///
+/// # When each variant is right
+///
+/// * [`Self::MatchViewer`] — default. Mirrors the viewer's display
+///   path so the exported file matches what the user has been seeing
+///   while editing. With a Rec.709 working space this is byte-
+///   identical to every export produced before this setting existed
+///   (sRGB encode of the linear master). With ACEScg it routes
+///   through the Rec.709 SDR ODT (RRT + ODT + BT.1886 inverse) — same
+///   pipeline the viewer runs.
+/// * [`Self::Rec709Sdr`] — explicit Rec.709 SDR cinema (RRT + Rec.709
+///   ODT). Picks the same curve as `MatchViewer` under ACEScg, but
+///   forces it on regardless of the project's working space (a
+///   Rec.709-linear project still gets the cinema look).
+/// * [`Self::Rec2100Pq1000`] / [`Self::Rec2100Pq4000`] — HDR10 PQ
+///   (SMPTE ST 2084) at 1000 / 4000 nit peak luminance, BT.2020
+///   primaries. Pick the one that matches the calibrated peak of the
+///   target display.
+/// * [`Self::DciP3D65_48`] — DCI-P3 D65 cinema, 48 cd/m² peak. The
+///   theatrical-projection target.
+/// * [`Self::Srgb`] — legacy sRGB encode with no ACES RRT/ODT. The
+///   pre-Phase-E export path, kept addressable for users who don't
+///   want any opinionated tone mapping. Byte-identical to the export
+///   pipeline as it shipped before delivery-target ODTs landed.
+///
+/// # Wire stability
+///
+/// `as_u8` / `from_u8` pin the wire tags so a future enum reorder
+/// can't silently change the meaning of an already-stored value.
+/// Unknown tags fall back to [`Self::MatchViewer`] so a corrupted or
+/// future-version setting never produces a wider-gamut surprise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum OdtChoice {
+    /// Mirror the viewer's display path. Default — matches what the
+    /// user has been seeing while editing.
+    #[default]
+    MatchViewer,
+    /// Rec.709 SDR cinema — RRT + Rec.709 ODT + BT.1886 inverse.
+    /// Explicit form of the viewer's path under an ACEScg project.
+    Rec709Sdr,
+    /// Rec.2100 PQ at 1000 cd/m² peak. HDR10 deliverable.
+    Rec2100Pq1000,
+    /// Rec.2100 PQ at 4000 cd/m² peak. HDR10 deliverable for high-
+    /// nit reference monitors.
+    Rec2100Pq4000,
+    /// DCI-P3 D65 at 48 cd/m² peak. Theatrical cinema deliverable.
+    DciP3D65_48,
+    /// Legacy sRGB encode — no ACES RRT/ODT, just sRGB inverse EOTF
+    /// on the linear master. The pre-delivery-target export path.
+    Srgb,
+    /// Forwards-compat sentinel: any future tag we don't recognise
+    /// deserialises here. Treated by the dispatch as MatchViewer so
+    /// older builds opening a project with a newer ODT stay safe.
+    #[serde(other)]
+    Unknown,
+}
+
+impl OdtChoice {
+    /// Wire-stable u8 tag — used by FFI / atomic packers that need a
+    /// fixed-width representation. Discriminants are pinned so a
+    /// future enum reorder can't silently change the meaning of a
+    /// stored value.
+    #[inline]
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            OdtChoice::MatchViewer => 0,
+            OdtChoice::Rec709Sdr => 1,
+            OdtChoice::Rec2100Pq1000 => 2,
+            OdtChoice::Rec2100Pq4000 => 3,
+            OdtChoice::DciP3D65_48 => 4,
+            OdtChoice::Srgb => 5,
+            OdtChoice::Unknown => 255,
+        }
+    }
+
+    /// Inverse of [`Self::as_u8`]. Unknown tags fall back to
+    /// [`Self::MatchViewer`] — the safe default that mirrors viewer
+    /// behaviour, so a corrupted atomic / FFI integer never produces
+    /// a delivery-target surprise.
+    #[inline]
+    pub const fn from_u8(tag: u8) -> Self {
+        match tag {
+            1 => OdtChoice::Rec709Sdr,
+            2 => OdtChoice::Rec2100Pq1000,
+            3 => OdtChoice::Rec2100Pq4000,
+            4 => OdtChoice::DciP3D65_48,
+            5 => OdtChoice::Srgb,
+            _ => OdtChoice::MatchViewer,
+        }
+    }
+
+    /// Iteration order for menus (matches the discriminant order of
+    /// the supported variants — `Unknown` is excluded; it's a serde
+    /// sentinel, not a user choice).
+    pub const ALL: [OdtChoice; 6] = [
+        OdtChoice::MatchViewer,
+        OdtChoice::Rec709Sdr,
+        OdtChoice::Rec2100Pq1000,
+        OdtChoice::Rec2100Pq4000,
+        OdtChoice::DciP3D65_48,
+        OdtChoice::Srgb,
+    ];
+
+    /// Human-readable label for menus.
+    pub const fn label(self) -> &'static str {
+        match self {
+            OdtChoice::MatchViewer => "Match Viewer",
+            OdtChoice::Rec709Sdr => "Rec.709 SDR",
+            OdtChoice::Rec2100Pq1000 => "Rec.2100 PQ (1000 nit)",
+            OdtChoice::Rec2100Pq4000 => "Rec.2100 PQ (4000 nit)",
+            OdtChoice::DciP3D65_48 => "DCI-P3 D65 (48 nit)",
+            OdtChoice::Srgb => "sRGB (legacy)",
+            OdtChoice::Unknown => "Unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportSettings {
     pub output_path: PathBuf,
     pub format: ExportFormat,
@@ -96,6 +220,14 @@ pub struct ExportSettings {
     /// setting existed. ACES is the alternative for users who want
     /// hue-preserving highlight roll-off.
     pub tone_map_op: ToneMapOp,
+    /// Output Display Transform — picks the delivery-target colour
+    /// space the rendered file lands in. Defaults to
+    /// [`OdtChoice::MatchViewer`] so existing projects without the
+    /// field deserialise to the same pixels they'd render in the
+    /// viewer. `#[serde(default)]` keeps pre-S8 settings files
+    /// loadable.
+    #[serde(default)]
+    pub odt: OdtChoice,
 }
 
 impl Default for ExportSettings {
@@ -119,6 +251,7 @@ impl Default for ExportSettings {
             bit_depth: 0,
             hdr_mode: HdrMode::default(),
             tone_map_op: ToneMapOp::default(),
+            odt: OdtChoice::default(),
         }
     }
 }
@@ -363,6 +496,25 @@ impl RateControl {
             Self::Vbr => "VBR (Variable Bitrate)",
         }
     }
+}
+
+/// Identifies which AI Tools task a palette/keybinding action targets.
+/// Lives in `klipp-core` because [`AppCommand`] does — `klipp-core` is
+/// not allowed to depend on `klipp-ml`, so we mirror the task discriminator
+/// here as a plain enum and let the consumer (`klipp-ui` / `klipp-ml`)
+/// resolve it back to the manifest task type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AiToolsTaskTag {
+    /// Background removal (alpha matte). Maps to SAM2 / RMBG-class
+    /// models in the manifest.
+    RemoveBackground,
+    /// Mask the user-selected object using a click/box prompt.
+    IsolateObject,
+    /// Run a one-shot detector and surface bounding boxes / labels.
+    DetectObjects,
+    /// Track a chosen object across the clip's frame range.
+    TrackObject,
 }
 
 #[derive(Debug, Clone)]
@@ -682,6 +834,52 @@ pub enum AppCommand {
     /// Updates `source_playhead` and triggers a frame re-decode at that
     /// position so the source viewer's display follows the scrub.
     SeekSource(RationalTime),
+
+    /// Match Frame — program → source. Find the topmost video clip
+    /// under the program playhead, load its media into the source
+    /// viewer, and seek the source playhead to the source-time
+    /// corresponding to the current program frame. NLE staple bound
+    /// to the `F` shortcut. Honours speed-ramped clips and
+    /// `clip.source_in`. No-op (toast) when no media clip sits under
+    /// the program playhead.
+    MatchFrameProgramToSource,
+
+    /// Open the consent dialog for the model identified by its
+    /// stable id in `assets/models.toml`. The handler checks the
+    /// local cache first — already-cached models surface a toast
+    /// instead of a dialog. The dialog lets the user confirm before
+    /// any network call; on confirm the download runs on a worker
+    /// thread with progress + cancel UI.
+    OpenModelDownloadDialog { model_id: String },
+
+    /// Open the AI Tools panel pre-selected on the given task. If the
+    /// panel is already open, this just switches the active task.
+    /// Surfaces the model picker + run/cancel controls.
+    ShowAiToolsPanel { task: AiToolsTaskTag },
+    /// Run the active AI Tools task on the current frame using the
+    /// currently-selected model. No-op (toast) when no task is active
+    /// or no model is selected.
+    RunAiToolsInference,
+    /// Cancel an in-progress AI Tools inference. Idempotent — no-op
+    /// when nothing is running.
+    CancelAiToolsInference,
+    /// Set the active AI Tools task without forcing the panel open.
+    /// The panel still updates its UI to reflect the new task.
+    SetAiToolsTask(AiToolsTaskTag),
+    /// Pick a specific model (by its `assets/models.toml` id) for the
+    /// currently active task. The handler validates the model is
+    /// compatible with the active task type before applying.
+    SelectAiToolsModel { model_id: String },
+
+    /// Reverse Match Frame — source → program. Given the source
+    /// viewer's currently-loaded media + playhead, find the next
+    /// occurrence on the timeline (first occurrence whose timeline_in
+    /// is strictly past the program playhead, wrapping to the
+    /// earliest occurrence if none). Bound to `Shift+F`. Lets the
+    /// user repeat-press to cycle through every place a source frame
+    /// appears in the edit. No-op (toast) when the source media
+    /// isn't on the timeline at the loaded source-time.
+    MatchFrameSourceToProgram,
     /// Create a subclip from the source media's current IN/OUT zone. The new
     /// MediaItem inherits codec/fps/resolution from the parent, reuses the
     /// parent's path, and carries its own default_source_in/out matching the
@@ -713,6 +911,45 @@ pub enum AppCommand {
     /// Handled by flipping `AppState::show_cache_manager` to true after
     /// calling `refresh_cache_categories`.
     OpenCacheManager,
+    /// Open the AI Models management modal. Lists every model in the
+    /// manifest, install status, and per-model install / reinstall
+    /// actions. Handled by flipping `AppState::show_ai_models_dialog`.
+    OpenAiModelsDialog,
+    /// Open the Audio Plugins management modal. Lists every discovered
+    /// LADSPA plugin grouped by maker, the search paths that were
+    /// scanned, and exposes a Rescan action that clears the disk cache
+    /// and re-runs discovery. Handled by flipping
+    /// `AppState::show_audio_plugins_dialog`.
+    OpenAudioPluginsDialog,
+    /// Drop the on-disk LADSPA discovery cache and re-run
+    /// `discover_ladspa_plugins`. Used by the Audio Plugins dialog's
+    /// Rescan button. Engine doesn't need to know — this is a UI-side
+    /// operation that updates `state.ladspa_plugins` and the
+    /// `effect_registry`.
+    RescanAudioPlugins,
+    /// Toggle the enabled/disabled state of a LADSPA plugin keyed on
+    /// its `unique_id`. The Audio Plugins dialog dispatches this from
+    /// the per-row toggle. Updates `state.disabled_audio_plugins`,
+    /// rebuilds the LADSPA section of `effect_registry`, and persists
+    /// the new disabled set to disk. Existing AudioEffectInstance
+    /// entries on saved clips continue to work; the disable only
+    /// blocks the plugin from the browser / "+ Add Effect" picker.
+    ToggleAudioPluginDisabled { unique_id: u64 },
+    /// Re-enable every disabled audio plugin in one shot. Issued from
+    /// the Audio Plugins dialog's "Clear all disabled" footer button
+    /// (with a confirmation prompt rendered there). Persists the
+    /// now-empty disabled set and rebuilds the registry.
+    ClearAllAudioPluginsDisabled,
+    /// Open the System Probe modal — read-only summary of GPU
+    /// vendor, ONNX Runtime status, audio backend, build features,
+    /// Klipp version. Single-shot snapshot intended to paste into
+    /// bug reports.
+    OpenSystemProbe,
+    /// Open the Project Doctor modal — scans the currently-loaded
+    /// `.klipp` directory for missing media, missing LADSPA
+    /// plugins, missing AI mask files, and other inconsistencies.
+    /// Read-only report in v1; per-issue Fix actions are queued.
+    OpenProjectDoctor,
     BeginScrub,
     /// End timeline scrubbing — engine restores full-res decode.
     EndScrub,
@@ -728,14 +965,71 @@ pub enum AppCommand {
     // Node graph (color grading)
     AddNode { clip_id: ClipId, kind: String, position: (f32, f32) },
     RemoveNode { clip_id: ClipId, node_id: uuid::Uuid },
+    /// Collapse a multi-node selection into a single Compound node.
+    /// The Compound's `params.compound_subgraph` captures the selected
+    /// nodes + their internal edges (wrapped with synthetic Source +
+    /// Output so the executor recognises it as a runnable graph). The
+    /// parent graph rewires its inbound external edge to the Compound's
+    /// input and its outbound external edge to whatever consumed the
+    /// old subgraph's output. Single-input / single-output topology
+    /// only for v1; the handler refuses (toast + no-op) when the
+    /// selection has more than one external in-edge target or more
+    /// than one external out-edge source.
+    GroupIntoCompound {
+        clip_id: ClipId,
+        node_ids: Vec<uuid::Uuid>,
+    },
+    /// Navigate the V2 canvas into a Compound node's sub-graph.
+    /// Appends `node_id` to `AppState::graph_descent_path`; the
+    /// canvas then renders `compound.params.compound_subgraph`
+    /// instead of the parent. Selection is cleared on descent so the
+    /// inspector doesn't show a stale node from the outer level.
+    /// No-op when `node_id` isn't a Compound with a sub-graph.
+    DescendIntoCompound {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+    },
+    /// Explode a Compound node back into its constituent nodes in
+    /// the parent graph. The sub-graph's synthetic Source + Output
+    /// are discarded; everything else is cloned out and the
+    /// external edges that ran through the Compound are rewired
+    /// directly to the nodes that previously fed / received the
+    /// sub-graph's Source / Output internally. Single-port compounds
+    /// only in v1 (same shape Group accepts). Selection is replaced
+    /// with the freshly-unpacked set so the user can immediately
+    /// continue editing.
+    UngroupCompound {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+    },
+
+    /// Overwrite the currently-active grade version with the
+    /// clip's live `node_graph`. For "I tweaked V1, save my
+    /// changes into V1" workflows. No-op when no version is active.
+    UpdateActiveGradeVersion { clip_id: ClipId },
     ConnectNodes { clip_id: ClipId, from: uuid::Uuid, from_port: u8, to: uuid::Uuid, to_port: u8 },
     DisconnectEdge { clip_id: ClipId, to: uuid::Uuid, to_port: u8 },
+    /// Wireless-link sender label on a node's primary output. `None`
+    /// clears it.
+    SetNodeOutputLink { clip_id: ClipId, node_id: uuid::Uuid, label: Option<String> },
+    /// Wireless-link receiver label on a node's input port. `None`
+    /// clears it — the port falls back to normal wired-edge
+    /// resolution.
+    SetNodeInputLink { clip_id: ClipId, node_id: uuid::Uuid, port: u8, label: Option<String> },
     MoveNode { clip_id: ClipId, node_id: uuid::Uuid, delta_x: f32, delta_y: f32 },
     ToggleNodeEnabled { clip_id: ClipId, node_id: uuid::Uuid },
     RenameNode { clip_id: ClipId, node_id: uuid::Uuid, label: String },
     SetScopeTapNode { clip_id: ClipId, node_id: Option<uuid::Uuid> },
     /// Set which scope mode the engine should render (0=waveform, 1=parade, 3=histogram).
     SetScopeRenderMode { mode: u8 },
+    /// Tell the engine whether the scope panel is actually visible
+    /// in the UI. The engine uses this to skip the per-frame
+    /// `linear_rgba_to_u8` re-encode and the GPU scope shader pass —
+    /// both fire from `post_process_rgba` regardless of mode and
+    /// cost ~12 ms / 1080p frame on CPU. Without the flag the
+    /// engine has no way to know the scope panel is hidden and
+    /// burns the budget on data nobody is looking at.
+    SetScopesVisible(bool),
     /// Render the engine's GPU scope shaders against an arbitrary RGBA frame
     /// (used for media-browser hover skim and timeline scrub) and write the
     /// resulting 720×256 texture into `frame_buffer.scope_texture`. Same code
@@ -762,12 +1056,77 @@ pub enum AppCommand {
     /// The node's executor then applies the adjustments via the
     /// unified grade shader.
     SetNodeColorMatch { clip_id: ClipId, node_id: uuid::Uuid, settings: crate::color_grade::ColorMatchSettings },
+    /// Point an ExternalMatte node at a new image file.
+    SetExternalMattePath { clip_id: ClipId, node_id: uuid::Uuid, path: Option<std::path::PathBuf> },
+    /// Tell the engine which nodes the V2 canvas currently has
+    /// visible — the executor captures a downsampled thumbnail of
+    /// each of them on the paused / post-seek re-grade so the canvas
+    /// can paint per-node previews. Empty list disables thumb capture.
+    /// Sent when the viewport's node set changes (pan / zoom / add /
+    /// remove). Playback path skips capture entirely to avoid the N
+    /// extra GPU readbacks per frame.
+    SetVisibleNodeThumbs { clip_id: ClipId, node_ids: Vec<uuid::Uuid> },
+    /// Render per-node thumbnails by running the clip's node graph on a
+    /// caller-supplied pre-grade source bitmap (typically the filmstrip
+    /// tile nearest the playhead). Used by the V2 canvas to populate
+    /// node previews without waiting on a full-res decoder seek. Source
+    /// is sRGB u8 RGBA at the given width × height; engine evaluates
+    /// time-keyed grade params at `playhead` so keyframes remain
+    /// frame-accurate even though the source bitmap came from a
+    /// slightly different timestamp.
+    RenderNodeThumbsFromSource {
+        clip_id: ClipId,
+        playhead: crate::RationalTime,
+        src_rgba: Vec<u8>,
+        src_w: u32,
+        src_h: u32,
+    },
+    /// Change which channel of the ExternalMatte image becomes the
+    /// matte signal (Alpha / Luminance / Red / Green / Blue) and
+    /// whether the output is inverted.
+    SetExternalMatteChannel { clip_id: ClipId, node_id: uuid::Uuid, channel: u8, invert: bool },
+    /// Update one input slot on a `LayerMixer` node (port = index into
+    /// `LayerMixerParams.inputs`). The handler grows the params Vec as
+    /// needed so a fresh slot can be set without an explicit AddPort
+    /// command.
+    SetNodeLayerMixerInput {
+        clip_id: ClipId,
+        node_id: uuid::Uuid,
+        port: u8,
+        input: crate::color_grade::LayerMixerInput,
+    },
     /// Capture the currently displayed program-viewer frame as the
     /// reference for the next ColorMatch compute. Stores raw RGBA in
     /// `AppState.color_match_reference`. Held in RAM only; the resulting
     /// `ColorMatchSettings` (4 floats) is what gets persisted on the
     /// node when `ApplyColorMatch` runs.
     CaptureColorMatchReference,
+    /// Use a specific clip's representative frame as the colour-match
+    /// reference. Replaces any previously captured reference. The
+    /// handler decodes a mid-clip thumbnail so the user doesn't have
+    /// to scrub the playhead onto the clip first.
+    UseClipAsColorMatchReference { clip_id: ClipId },
+    /// Run `match_colors` against the clip's mid-frame and the current
+    /// colour reference, ensuring a ColorMatch node exists on the
+    /// clip's graph and writing the resulting settings to it. No-op
+    /// with a toast if no reference has been captured.
+    MatchClipToColorReference { clip_id: ClipId },
+    /// Lazy-create a Mask node (if absent) on the clip's graph and
+    /// append a new shape to its mask stack. Used by the Color
+    /// workspace "+ Add Mask" control so users who don't open the
+    /// node canvas can still land a mask directly.
+    AddMaskShape { clip_id: ClipId, shape: crate::color_grade::MaskShape },
+    /// Remove mask at `mask_index` from the first Mask node on the
+    /// clip's graph. No-op if index out of range.
+    RemoveMaskShape { clip_id: ClipId, mask_index: usize },
+    /// Route inspector focus to the mask-editor view. Fired when the
+    /// user interacts with a mask on the Program viewer (click a
+    /// handle / grab to move) — without this the Edit-workspace user
+    /// sees the circle overlay but clicking it doesn't bring up the
+    /// mask params, because the Edit inspector defaults to Video /
+    /// Info tabs. The handler sets the active inspector tab to Color
+    /// so the Masks section is visible.
+    FocusMaskInspector,
     /// Run `klipp_color::match_colors(source, reference)` against the
     /// last-captured reference frame and the clip's pre-grade frame
     /// at the playhead, then store the result on the named ColorMatch
@@ -1267,6 +1626,19 @@ pub enum AppCommand {
     // Point tracking
     /// Add a new track point to a clip at the given normalized position.
     AddTrackPoint { clip_id: ClipId, x: f64, y: f64 },
+    /// One-shot "track this mask region" workflow: takes the mask's
+    /// current centre (evaluated at the playhead), spawns a track
+    /// point there, kicks off analysis, and on completion auto-links
+    /// the resulting positions back into the mask's centre keyframes.
+    /// Closes the 3-step Place / Analyze / Link dance into a single
+    /// gesture for the common case "I want this mask to follow the
+    /// thing under it".
+    TrackMaskRegion { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize },
+    /// Remove the tracker bound to this mask plus the mask's centre
+    /// keyframes — gives the user a clean "untrack" gesture without
+    /// leaving an orphan tracker behind. No-op when no tracker is
+    /// linked to the mask.
+    RemoveMaskTracking { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize },
     /// Remove a track point by index.
     RemoveTrackPoint { clip_id: ClipId, index: usize },
     /// Analyze a track point (forward and backward from current frame).
@@ -1288,6 +1660,18 @@ pub enum AppCommand {
     /// Rename a grade version.
     RenameGradeVersion { clip_id: ClipId, version_index: usize, name: String },
 
+    // Looks (project-wide reusable colour grades)
+    /// Snapshot the selected clip's node graph as a new project-level
+    /// Look. The handler reads the clip's current graph; this command
+    /// just supplies the user-facing name.
+    SaveLook { name: String },
+    /// Apply a saved Look to one or more target clips. The Look's
+    /// node graph replaces each target's `node_graph` (with fresh
+    /// node IDs via `remap_ids`).
+    ApplyLook { look_id: uuid::Uuid, clip_ids: Vec<ClipId> },
+    DeleteLook { look_id: uuid::Uuid },
+    RenameLook { look_id: uuid::Uuid, new_name: String },
+
     // Grade stills (reference frame comparison)
     /// Capture the current viewer frame as a grade reference still.
     CaptureGradeStill { name: String },
@@ -1297,6 +1681,101 @@ pub enum AppCommand {
     SetActiveGradeStill { index: Option<usize> },
     /// Toggle split-view comparison with the active grade still.
     ToggleGradeStillCompare,
+
+    // ── Source Viewer playback ─────────────────────────────────────
+    /// Bind a media file to the source viewer. Opens a persistent
+    /// `VideoDecoder` (and audio source if the file has audio) so the
+    /// transport can drive real playback without re-decoding per seek.
+    /// `path` is the raw media file; `media_id` is the MediaPool id —
+    /// engine uses the path directly to avoid a MediaPool lookup on
+    /// the engine thread. `source_rotation` is media-metadata rotation
+    /// (0 / 90 / 180 / 270) so portrait sources display upright.
+    SetSourceMedia {
+        media_id: MediaId,
+        path: std::path::PathBuf,
+        source_rotation: i32,
+    },
+    /// Begin source-viewer playback. Auto-pauses the timeline so the
+    /// audio mixer doesn't fight: at most one viewer is the active
+    /// audio owner at any moment.
+    PlaySource,
+    /// Pause source-viewer playback. Decoder stays open; Play resumes
+    /// from the current source playhead.
+    PauseSource,
+    /// Step the source viewer forward (positive) or backward (negative)
+    /// by `frames` source frames. Mirrors timeline `SeekRelative` for
+    /// J/K/L → arrow-key parity in the source viewer.
+    StepSource(i64),
+    /// Tear down the source viewer's decoder and audio. Frees the
+    /// NVDEC slot and releases the audio source from the mixer. Used
+    /// when the user closes the source viewer or loads a new clip.
+    StopSource,
+
+    // Audio effect keyframes — automate per-effect params, the bypass
+    // toggle, and the wet/dry mix. `param_name` follows the same
+    // convention as the chain: any descriptor name routes to that
+    // param's track; the reserved `__bypass` name routes to the
+    // slot's bypass-keyframe track and `__wetdry` to wet/dry.
+    AddAudioEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, time_secs: f64, value: f32 },
+    RemoveAudioEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, time_secs: f64 },
+    MoveAudioEffectKeyframe { clip_id: ClipId, effect_index: usize, param_name: String, keyframe_index: usize, new_time_secs: f64, new_value: f32 },
+    SetAudioEffectKeyframeInterpolation { clip_id: ClipId, effect_index: usize, param_name: String, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
+    /// Bezier tangent edit on an audio EFFECT keyframe. Either side
+    /// can be left None to keep its current value (matches the
+    /// SetAudioKeyframeTangent contract).
+    SetAudioEffectKeyframeTangent {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+        keyframe_index: usize,
+        tangent_in: Option<(f64, f32)>,
+        tangent_out: Option<(f64, f32)>,
+    },
+    /// Copy a single audio-effect param's keyframe vec into the
+    /// clipboard so the user can paste it onto another (clip, effect,
+    /// param). Mirrors `CopyAudioKeyframes` for clip-level params.
+    CopyAudioEffectKeyframes { clip_id: ClipId, effect_index: usize, param_name: String },
+    /// Paste the keyframe clipboard into a target audio-effect param.
+    /// Time-scales the kfs to the target clip's duration if it differs
+    /// from the source clip's recorded duration (matches
+    /// `PasteAudioKeyframes`).
+    PasteAudioEffectKeyframes { clip_id: ClipId, effect_index: usize, param_name: String },
+    /// Reverse the keyframe order on an audio-effect param track —
+    /// mirrors the kf times around the midpoint of the track's range.
+    ReverseAudioEffectKeyframes { clip_id: ClipId, effect_index: usize, param_name: String },
+    /// Scale every kf time on an audio-effect param track by a
+    /// constant factor. `factor < 1.0` compresses the envelope
+    /// (faster), `factor > 1.0` stretches it (slower).
+    ScaleAudioEffectKeyframeTiming {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+        factor: f64,
+    },
+    /// Insert a "bump" envelope (rise → hold → fall) on an audio-
+    /// effect param at `center_time`. `duration_secs` is the total
+    /// width; `ramp_secs` is the rise/fall ramp duration. Matches
+    /// `InsertAudioKeyframeBump` for clip-level params.
+    InsertAudioEffectKeyframeBump {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+        center_time: f64,
+        bump_value: f32,
+        base_value: f32,
+        duration_secs: f64,
+        ramp_secs: f64,
+    },
+    /// Drag-coalesce envelope begin: snapshot the clip's audio chain
+    /// state before a slider drag begins. Per-tick UpdateAudioEffectParam
+    /// / SetAudioEffectWetDry calls during the drag skip their history
+    /// push so a single drag becomes one undo step (and one ops_since_save
+    /// bump, not 60+/second of autosave triggers).
+    BeginAudioChainDrag { drag_key: String, clip_id: ClipId },
+    /// Drag-coalesce envelope end: snapshot the clip's audio chain
+    /// state after the drag and commit a single EditAudioChain entry
+    /// covering the entire gesture.
+    EndAudioChainDrag { drag_key: String, clip_id: ClipId },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1402,6 +1881,13 @@ pub enum AppEvent {
     PlayheadMoved(Timecode),
     LoopedBack,
 
+    // Source viewer playback state — separate so the UI can keep its
+    // `state.source_playback` field in sync without conflating with
+    // the timeline transport.
+    SourcePlaybackStarted,
+    SourcePlaybackPaused,
+    SourcePlayheadMoved(f64),
+
     // Media. T-4: the payload is carried by a separate struct behind
     // a Box so the AppEvent enum stays small — 25 fields (8× Option<String>)
     // inlined made every variant ~344 B, including the 60 Hz
@@ -1469,7 +1955,7 @@ pub enum AppEvent {
     // Skim transcode
     SkimTranscodeProgress { media_id: MediaId, progress: f32 },
     SkimTranscodeComplete { media_id: MediaId, path: PathBuf },
-    SkimTranscodeFailed { media_id: MediaId, error: String },
+    SkimTranscodeFailed { media_id: MediaId, path: PathBuf, error: String },
 
     // Browser skim frame
     BrowserSkimFrameReady { media_id: MediaId, rgba: Vec<u8>, width: u32, height: u32, target: ViewerMode },
@@ -1529,4 +2015,85 @@ pub struct ParamChange {
     pub node_id: uuid::Uuid,
     pub param: String,
     pub value: f32,
+}
+
+#[cfg(test)]
+mod odt_choice_tests {
+    use super::*;
+
+    #[test]
+    fn default_is_match_viewer() {
+        // Default must match the viewer's display path so projects
+        // produced before delivery-target ODTs landed render exactly
+        // the same pixels they did before. Pinned here and in the
+        // ExportSettings default below.
+        assert_eq!(OdtChoice::default(), OdtChoice::MatchViewer);
+    }
+
+    #[test]
+    fn variants_distinct() {
+        // Cheap guard against an accidental enum dedupe via macro.
+        for (i, a) in OdtChoice::ALL.iter().enumerate() {
+            for b in &OdtChoice::ALL[i + 1..] {
+                assert_ne!(a, b, "duplicate variants in OdtChoice::ALL");
+            }
+        }
+    }
+
+    #[test]
+    fn u8_round_trip_for_all_supported_variants() {
+        // Every variant the menu exposes must survive the u8 wire
+        // round-trip. Unknown is the serde sentinel, exercised
+        // separately below.
+        for choice in OdtChoice::ALL {
+            assert_eq!(OdtChoice::from_u8(choice.as_u8()), choice);
+        }
+    }
+
+    #[test]
+    fn u8_tags_are_stable() {
+        // Pin the wire tags. Reordering the enum or inserting a new
+        // variant must not silently change these — atomic stores and
+        // FFI consumers depend on them.
+        assert_eq!(OdtChoice::MatchViewer.as_u8(), 0);
+        assert_eq!(OdtChoice::Rec709Sdr.as_u8(), 1);
+        assert_eq!(OdtChoice::Rec2100Pq1000.as_u8(), 2);
+        assert_eq!(OdtChoice::Rec2100Pq4000.as_u8(), 3);
+        assert_eq!(OdtChoice::DciP3D65_48.as_u8(), 4);
+        assert_eq!(OdtChoice::Srgb.as_u8(), 5);
+        assert_eq!(OdtChoice::Unknown.as_u8(), 255);
+    }
+
+    #[test]
+    fn unknown_u8_falls_back_to_match_viewer() {
+        // A corrupted atomic / FFI integer must default to the safe
+        // viewer path — never produce a delivery-target surprise.
+        for tag in [6u8, 7, 42, 100, 200, 254] {
+            assert_eq!(OdtChoice::from_u8(tag), OdtChoice::MatchViewer);
+        }
+    }
+
+    #[test]
+    fn export_settings_default_carries_match_viewer() {
+        // Pin the back-compat contract: every project that goes
+        // through `ExportSettings::default()` (the entry point for
+        // every export-dialog open + every legacy site that builds
+        // a settings struct) starts with `odt = MatchViewer`. If
+        // this default ever shifts, an existing user's export
+        // pixels silently change at the next build.
+        let s = ExportSettings::default();
+        assert_eq!(s.odt, OdtChoice::MatchViewer);
+    }
+
+    #[test]
+    fn label_covers_every_variant_including_sentinel() {
+        // The menu only iterates `ALL`, but the Inspector / debug
+        // logs may print `Unknown` if a future-version project
+        // file is opened. Catch the missing-arm case here so we
+        // don't hit a `match` panic at runtime.
+        for choice in OdtChoice::ALL {
+            assert!(!choice.label().is_empty());
+        }
+        assert_eq!(OdtChoice::Unknown.label(), "Unknown");
+    }
 }

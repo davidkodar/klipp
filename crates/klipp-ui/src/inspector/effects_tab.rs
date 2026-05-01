@@ -119,8 +119,8 @@ pub fn show(
     );
     let card_rounding = 6.0;
     let header_h = 32.0;
-    let badge_green = egui::Color32::from_rgb(60, 160, 80);
-    let badge_gray = egui::Color32::from_rgb(100, 110, 130);
+    let badge_green = theme.marker_success;
+    let badge_gray = theme.text_dim;
 
     for (i, effect) in clip.builtin_effects.iter().enumerate() {
         let name = builtin_effect_name(effect);
@@ -215,9 +215,9 @@ pub fn show(
             .on_hover_text(if is_enabled { "Disable effect" } else { "Enable effect" });
         let eye_icon = if is_enabled { Icon::Eye } else { Icon::EyeSlash };
         let tint = if is_enabled {
-            egui::Color32::from_rgb(200, 200, 210)
+            theme.text_primary
         } else {
-            egui::Color32::from_rgb(120, 120, 130)
+            theme.text_dim
         };
         eye_icon.image(14.0).tint(tint).paint_at(ui, toggle_rect);
         let toggle_clicked = toggle_resp.clicked();
@@ -240,11 +240,11 @@ pub fn show(
             .interact(compare_rect, ui.id().with(("bfx_cmp", i)), egui::Sense::click())
             .on_hover_text(if compare_active { "Stop A/B compare" } else { "A/B compare: bypass vs applied" });
         let compare_tint = if compare_active {
-            egui::Color32::from_rgb(0xc8, 0x78, 0xff)
+            theme.accent_alt
         } else if compare_resp.hovered() {
-            egui::Color32::from_rgb(200, 200, 210)
+            theme.text_primary
         } else {
-            egui::Color32::from_rgb(120, 120, 130)
+            theme.text_dim
         };
         ui.painter().text(
             compare_rect.center(),
@@ -478,9 +478,9 @@ pub fn show(
             .on_hover_text(if enabled { "Disable effect" } else { "Enable effect" });
         let eye_icon = if enabled { Icon::Eye } else { Icon::EyeSlash };
         let tint = if enabled {
-            egui::Color32::from_rgb(200, 200, 210)
+            theme.text_primary
         } else {
-            egui::Color32::from_rgb(120, 120, 130)
+            theme.text_dim
         };
         eye_icon.image(14.0).tint(tint).paint_at(ui, toggle_rect);
         let toggle_clicked = toggle_resp.clicked();
@@ -505,11 +505,11 @@ pub fn show(
             .interact(compare_rect, ui.id().with(("ofx_cmp", i)), egui::Sense::click())
             .on_hover_text(if compare_active { "Stop A/B compare" } else { "A/B compare: bypass vs applied" });
         let compare_tint = if compare_active {
-            egui::Color32::from_rgb(0xc8, 0x78, 0xff)
+            theme.accent_alt
         } else if compare_resp.hovered() {
-            egui::Color32::from_rgb(200, 200, 210)
+            theme.text_primary
         } else {
-            egui::Color32::from_rgb(120, 120, 130)
+            theme.text_dim
         };
         ui.painter().text(
             compare_rect.center(),
@@ -564,7 +564,7 @@ pub fn show(
                     || effect.plugin_name.contains("ContactSheet");
                 if is_float_plugin {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("CPU only").size(9.0).color(egui::Color32::from_rgb(220, 160, 60)).strong());
+                        ui.label(egui::RichText::new("CPU only").size(9.0).color(theme.marker_warning).strong());
                         ui.label(egui::RichText::new("\u{2014} adjust while paused, apply on export").size(9.0).color(theme.text_dim));
                     });
                     ui.add_space(2.0);
@@ -577,7 +577,7 @@ pub fn show(
                     || effect.plugin_name.contains("TimeOffset");
                 if is_temporal {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Render only").size(9.0).color(egui::Color32::from_rgb(200, 100, 100)).strong());
+                        ui.label(egui::RichText::new("Render only").size(9.0).color(theme.marker_error).strong());
                         ui.label(egui::RichText::new("\u{2014} not real-time, applied on export").size(9.0).color(theme.text_dim));
                     });
                     ui.add_space(2.0);
@@ -596,7 +596,7 @@ pub fn show(
                     || effect.plugin_name.contains("SideBySide");
                 if is_stereo {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Requires multi-view").size(9.0).color(egui::Color32::from_rgb(180, 80, 80)).strong());
+                        ui.label(egui::RichText::new("Requires multi-view").size(9.0).color(theme.marker_error).strong());
                         ui.label(egui::RichText::new("\u{2014} stereo 3D not supported yet").size(9.0).color(theme.text_dim));
                     });
                     ui.add_space(2.0);
@@ -849,7 +849,7 @@ fn show_drag_hint(ui: &mut egui::Ui, theme: &KlippTheme, total_effects: usize) {
 
 fn show_ofx_param(
     ui: &mut egui::Ui,
-    _theme: &KlippTheme,
+    theme: &KlippTheme,
     clip_id: klipp_core::ClipId,
     effect_index: usize,
     effect: &klipp_plugin::AppliedEffect,
@@ -862,7 +862,7 @@ fn show_ofx_param(
         ui.label(
             egui::RichText::new(&desc.label)
                 .size(10.0)
-                .color(egui::Color32::from_rgb(160, 160, 170)),
+                .color(theme.text_dim),
         );
         ui.add_space(4.0);
 
@@ -1102,7 +1102,7 @@ fn show_ofx_param(
                 ui.label(
                     egui::RichText::new(format!("{:?}", desc.param_type))
                         .size(10.0)
-                        .color(egui::Color32::from_rgb(100, 100, 110)),
+                        .color(theme.text_dim),
                 );
             }
         }
@@ -1347,7 +1347,7 @@ fn show_builtin_effect_params(
     let presets = state.preset_manager.presets_for(effect_key);
     if !presets.is_empty() {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Preset").size(10.0).color(egui::Color32::from_rgb(160, 160, 170)));
+            ui.label(egui::RichText::new("Preset").size(10.0).color(theme.text_dim));
             ui.add_space(4.0);
             let combo_id = ui.make_persistent_id(format!("preset_combo_{clip_id:?}_{effect_index}"));
             egui::ComboBox::from_id_salt(combo_id)
@@ -1445,7 +1445,7 @@ fn show_builtin_effect_params(
     } else {
         // No presets available, still show save button
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Preset").size(10.0).color(egui::Color32::from_rgb(160, 160, 170)));
+            ui.label(egui::RichText::new("Preset").size(10.0).color(theme.text_dim));
             ui.add_space(4.0);
             let save_popup_id = ui.make_persistent_id(format!("save_preset_{clip_id:?}_{effect_index}"));
             let save_btn = ui.small_button("Save...");
@@ -1793,7 +1793,7 @@ fn show_builtin_effect_params(
                 }
             } else if has_data {
                 ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::from_rgb(100, 200, 120), "Analysis complete");
+                    ui.colored_label(theme.marker_success, "Analysis complete");
                     if ui.small_button("Re-analyze").clicked() {
                         cmds.push(AppCommand::AnalyzeStabilization { clip_id });
                     }
@@ -1810,13 +1810,13 @@ fn show_builtin_effect_params(
                     let pct = smoothed.jitter_reduction_pct();
                     let (label_color, headline) = if smoothed.raw_jitter_px < 0.25 {
                         // Source was already smooth — nothing to remove.
-                        (egui::Color32::from_rgb(170, 170, 180), "Source already smooth — minimal shake detected".to_string())
+                        (theme.text_dim, "Source already smooth — minimal shake detected".to_string())
                     } else if pct >= 60.0 {
-                        (egui::Color32::from_rgb(120, 210, 140), format!("Shake reduced by {pct:.0}%"))
+                        (theme.marker_success, format!("Shake reduced by {pct:.0}%"))
                     } else if pct >= 25.0 {
-                        (egui::Color32::from_rgb(220, 200, 110), format!("Shake reduced by {pct:.0}%"))
+                        (theme.marker_warning, format!("Shake reduced by {pct:.0}%"))
                     } else {
-                        (egui::Color32::from_rgb(220, 140, 110), format!("Shake reduced by {pct:.0}%"))
+                        (theme.marker_error, format!("Shake reduced by {pct:.0}%"))
                     };
                     ui.colored_label(label_color, egui::RichText::new(headline).size(11.0));
                     ui.label(
@@ -1825,7 +1825,7 @@ fn show_builtin_effect_params(
                             smoothed.raw_jitter_px, smoothed.smoothed_jitter_px
                         ))
                         .size(9.5)
-                        .color(egui::Color32::from_rgb(140, 140, 150)),
+                        .color(theme.text_dim),
                     );
 
                     // Trajectory graph: raw camera tx (jagged) vs smoothed tx (clean).
@@ -1841,8 +1841,8 @@ fn show_builtin_effect_params(
                             );
                             let p = ui.painter_at(rect);
                             // Background
-                            p.rect_filled(rect, 3.0, egui::Color32::from_rgb(22, 22, 26));
-                            p.rect_stroke(rect, 3.0, egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(50, 50, 58)));
+                            p.rect_filled(rect, 3.0, theme.bg_deep);
+                            p.rect_stroke(rect, 3.0, egui::Stroke::new(0.5_f32, theme.border));
 
                             // Y range covers both lines with small padding.
                             let mut lo = f32::INFINITY;
@@ -1867,13 +1867,13 @@ fn show_builtin_effect_params(
                             let mid_y = inner.bottom() - ((mid - lo) / span) * inner.height();
                             p.line_segment(
                                 [egui::pos2(inner.left(), mid_y), egui::pos2(inner.right(), mid_y)],
-                                egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(45, 45, 52)),
+                                egui::Stroke::new(0.5_f32, theme.border),
                             );
 
                             let raw_pts: Vec<egui::Pos2> = raw.iter().enumerate().map(|(i, &v)| to_pt(i, v)).collect();
                             let smooth_pts: Vec<egui::Pos2> = smooth.iter().enumerate().map(|(i, &v)| to_pt(i, v)).collect();
                             // Raw trajectory: dim, thin
-                            p.add(egui::Shape::line(raw_pts, egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(120, 120, 135))));
+                            p.add(egui::Shape::line(raw_pts, egui::Stroke::new(1.0_f32, theme.text_dim)));
                             // Smoothed trajectory: bright accent, thicker
                             p.add(egui::Shape::line(smooth_pts, egui::Stroke::new(1.6_f32, theme.accent)));
 
@@ -1883,7 +1883,7 @@ fn show_builtin_effect_params(
                                 egui::Align2::LEFT_TOP,
                                 "raw",
                                 egui::FontId::proportional(8.5),
-                                egui::Color32::from_rgb(120, 120, 135),
+                                theme.text_dim,
                             );
                             p.text(
                                 egui::pos2(rect.left() + 28.0, rect.top() + 4.0),

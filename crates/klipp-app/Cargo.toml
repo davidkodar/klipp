@@ -3,6 +3,18 @@ name = "klipp-app"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# AI features ship by default so `cargo r` produces a fully-loaded
+# Klipp without env prefixes or extra flags. Opt into CUDA tiers
+# explicitly with `--features ai-ort-cuda,ai-candle-cuda` (or a
+# single one) when the local toolchain has nvcc. Strip everything
+# AI with `--no-default-features`.
+default = ["ai-ort", "ai-candle"]
+ai-ort = ["klipp-ui/ai-ort"]
+ai-ort-cuda = ["klipp-ui/ai-ort-cuda"]
+ai-candle = ["klipp-ui/ai-candle"]
+ai-candle-cuda = ["klipp-ui/ai-candle-cuda"]
+
 [dependencies]
 klipp-core = { workspace = true }
 klipp-ui = { workspace = true }
@@ -19,4 +31,5 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 ffmpeg-next = { workspace = true }
-png = "0.17"
+png = "0.18"
+libc = "0.2"

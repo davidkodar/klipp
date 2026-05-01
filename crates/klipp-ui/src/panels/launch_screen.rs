@@ -1546,7 +1546,11 @@ fn relative_time(iso: &str) -> String {
 fn image_from_png(data: &[u8]) -> Result<egui::ColorImage, String> {
     let decoder = png::Decoder::new(std::io::Cursor::new(data));
     let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
-    let mut buf = vec![0u8; reader.output_buffer_size()];
+    // png 0.18: output_buffer_size returns None when the dimensions
+    // would overflow usize. Treat that as a decode failure.
+    let buf_size = reader.output_buffer_size()
+        .ok_or_else(|| "PNG dimensions overflow buffer size".to_string())?;
+    let mut buf = vec![0u8; buf_size];
     let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
     let bytes = &buf[..info.buffer_size()];
 

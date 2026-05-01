@@ -117,7 +117,15 @@ impl PcmAudioFeeder {
     /// Open a PCM cache file and create a feeder + ring buffer consumer.
     /// The PCM file must be 48kHz stereo f32 interleaved (as produced by conform_audio).
     /// `audio_effects` are the per-clip DSP effects to apply before ring buffer push.
-    pub fn open(pcm_path: &Path, output_rate: u32, audio_effects: Vec<AudioEffectInstance>) -> Result<(Self, AudioConsumer), PcmFeederError> {
+    /// `audio_effect_keyframes` are the per-clip param/bypass/wet-dry keyframe
+    /// tracks (`clip.audio_effect_keyframes`); when non-empty the chain runs
+    /// in sub-chunked evaluation mode.
+    pub fn open(
+        pcm_path: &Path,
+        output_rate: u32,
+        audio_effects: Vec<AudioEffectInstance>,
+        audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+    ) -> Result<(Self, AudioConsumer), PcmFeederError> {
         let pcm_bytes = std::fs::read(pcm_path)
             .map_err(|e| PcmFeederError::Open(format!("read {:?}: {e}", pcm_path)))?;
 
@@ -210,6 +218,7 @@ impl PcmAudioFeeder {
                         fg,
                         ac,
                         audio_effects,
+                        audio_effect_keyframes,
                     );
                 });
             })
@@ -325,25 +334,34 @@ fn pcm_feed_thread(
     _fade_gain: Arc<AtomicU32>,
     anti_click: Arc<AtomicBool>,
     audio_effects: Vec<AudioEffectInstance>,
+    audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
 ) {
+    // CODE_AUDIT C-4: flush denormals on this DSP thread — same reason
+    // as in audio_decoder. A silent PCM region with biquads engaged
+    // would otherwise accumulate denormal state and stall the FPU.
+    klipp_audio::flush_denormals_to_zero();
+
     // PCM data already comes in as `Vec<f32>` (converted at open() time so
     // the buffer is guaranteed 4-byte aligned — see the comment in
     // `PcmAudioFeeder::open`). No per-thread cast needed.
     let samples: &[f32] = &pcm_data;
     let total_floats = samples.len();
 
-    // Build audio effect chain from per-clip effects
+    // Build audio effect chain from per-clip effects + keyframe tracks.
     let mut effect_chain = if !audio_effects.is_empty() {
-        let chain = AudioEffectChain::from_instances(&audio_effects, output_rate);
-        debug!("pcm_feed: {} audio effects active", chain.slot_count());
+        let chain = AudioEffectChain::from_instances_with_kfs(
+            &audio_effects,
+            &audio_effect_keyframes,
+            output_rate,
+        );
+        debug!(
+            "pcm_feed: {} audio effects active ({} kf tracks)",
+            chain.slot_count(),
+            audio_effect_keyframes.len(),
+        );
         Some(chain)
     } else {
         None
-    };
-    let fx_ctx = AudioProcessContext {
-        sample_rate: output_rate,
-        channels: CHANNELS as u32,
-        clip_time_secs: 0.0,
     };
 
     let mut paused = true;
@@ -495,8 +513,17 @@ fn pcm_feed_thread(
                         pair.iter().map(move |s| s * mult)
                     })
                     .collect();
-                // Apply audio effects chain after volume/fade
+                // Apply audio effects chain after volume/fade.
+                // clip_time_secs = source position - clip's source_in, so
+                // keyframe tracks store time relative to clip start (matches
+                // the video keyframe convention in keyframe.rs:18-19).
                 if let Some(ref mut chain) = effect_chain {
+                    let chunk_start_src_secs = (read_pos / CHANNELS) as f64 / SAMPLE_RATE as f64;
+                    let fx_ctx = AudioProcessContext {
+                        sample_rate: output_rate,
+                        channels: CHANNELS as u32,
+                        clip_time_secs: (chunk_start_src_secs - src_in).max(0.0),
+                    };
                     chain.process(&mut scaled, &fx_ctx);
                 }
                 producer.push_slice(&scaled);
@@ -528,8 +555,16 @@ fn pcm_feed_thread(
             }
 
             if !buf.is_empty() {
-                // Apply audio effects chain after resample + volume/fade
+                // Apply audio effects chain after resample + volume/fade.
+                // Time domain matches the fast path: source-position seconds
+                // minus clip's source_in.
                 if let Some(ref mut chain) = effect_chain {
+                    let chunk_start_src_secs = (read_pos / CHANNELS) as f64 / SAMPLE_RATE as f64;
+                    let fx_ctx = AudioProcessContext {
+                        sample_rate: output_rate,
+                        channels: CHANNELS as u32,
+                        clip_time_secs: (chunk_start_src_secs - src_in).max(0.0),
+                    };
                     chain.process(&mut buf, &fx_ctx);
                 }
                 producer.push_slice(&buf);

@@ -1,7 +1,41 @@
 use crate::icons::Icon;
 use crate::state::AppState;
-use klipp_core::{AppCommand, Fps, RationalTime};
+use crate::theme::KlippTheme;
+use klipp_core::{AppCommand, Fps, RationalTime, ViewerMode};
 use klipp_engine::PlaybackState;
+
+/// Re-route a timeline-targeted transport command to the source
+/// viewer when `mode == Source`. Lets transport callers stay source-
+/// agnostic: push the timeline command, wrap through this function,
+/// and the right variant lands in the command queue. Commands with
+/// no source equivalent (multi-clip edits, timeline-specific ops)
+/// pass through unchanged — the source viewer just ignores them.
+pub fn route_command_for_viewer(cmd: AppCommand, mode: ViewerMode) -> AppCommand {
+    if mode == ViewerMode::Program {
+        return cmd;
+    }
+    match cmd {
+        AppCommand::Play => AppCommand::PlaySource,
+        AppCommand::Pause => AppCommand::PauseSource,
+        AppCommand::SeekRelative(frames) => AppCommand::StepSource(frames),
+        AppCommand::SeekTo(tc) => AppCommand::SeekSource(tc),
+        // SetSpeed has no source equivalent (source plays at 1× only).
+        // Drop it by returning a no-op — we use PauseSource as the
+        // harmless noop since the engine ignores it when already
+        // paused. Cleaner than adding a NoOp variant.
+        AppCommand::SetSpeed(_) => AppCommand::PauseSource,
+        other => other,
+    }
+}
+
+/// Convenience wrapper: route based on the user's currently-focused
+/// viewer (`state.viewer_mode`). Used by the global transport bar
+/// and keyboard handlers that don't already know which viewer they
+/// belong to. Per-viewer playbars should use `route_command_for_viewer`
+/// directly with their own `viewer_kind`.
+fn route_for_viewer(cmd: AppCommand, state: &AppState) -> AppCommand {
+    route_command_for_viewer(cmd, state.viewer_mode)
+}
 
 pub struct TransportBar;
 
@@ -12,7 +46,7 @@ impl Default for TransportBar {
 }
 
 impl TransportBar {
-    pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState) -> Vec<AppCommand> {
+    pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
         // Transport is enabled if there's something to play: either the engine
         // has a file loaded (Stopped/Paused/Playing) or the timeline has clips
@@ -27,7 +61,7 @@ impl TransportBar {
         ui.horizontal_centered(|ui| {
             ui.add_space(16.0);
 
-            let icon_tint = egui::Color32::from_rgb(220, 220, 230);
+            let icon_tint = theme.text_primary;
 
             // Go to start
             if ui
@@ -35,7 +69,10 @@ impl TransportBar {
                 .on_hover_text("Go to start")
                 .clicked()
             {
-                cmds.push(AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate())));
+                cmds.push(route_for_viewer(
+                    AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate())),
+                    state,
+                ));
             }
 
             // -10s
@@ -44,7 +81,7 @@ impl TransportBar {
                 .on_hover_text("-10s")
                 .clicked()
             {
-                cmds.push(AppCommand::SeekRelative(-(fps_val * 10.0) as i64));
+                cmds.push(route_for_viewer(AppCommand::SeekRelative(-(fps_val * 10.0) as i64), state));
             }
 
             // Step back (one frame)
@@ -53,11 +90,18 @@ impl TransportBar {
                 .on_hover_text("Step back 1 frame")
                 .clicked()
             {
-                cmds.push(AppCommand::SeekRelative(-1));
+                cmds.push(route_for_viewer(AppCommand::SeekRelative(-1), state));
             }
 
-            // Play / Pause
-            let play_icon = if state.playback == PlaybackState::Playing {
+            // Play / Pause — icon reflects whichever viewer currently
+            // has focus so the button accurately advertises what
+            // clicking it will do.
+            let focus_playback_for_icon = if state.viewer_mode == ViewerMode::Source {
+                state.source_playback
+            } else {
+                state.playback
+            };
+            let play_icon = if focus_playback_for_icon == PlaybackState::Playing {
                 Icon::Pause
             } else {
                 Icon::Play
@@ -70,10 +114,15 @@ impl TransportBar {
                 .on_hover_text("Play/Pause")
                 .clicked()
             {
-                if state.playback == PlaybackState::Playing {
-                    cmds.push(AppCommand::Pause);
+                let focus_playback = if state.viewer_mode == ViewerMode::Source {
+                    state.source_playback
                 } else {
-                    cmds.push(AppCommand::Play);
+                    state.playback
+                };
+                if focus_playback == PlaybackState::Playing {
+                    cmds.push(route_for_viewer(AppCommand::Pause, state));
+                } else {
+                    cmds.push(route_for_viewer(AppCommand::Play, state));
                 }
             }
 
@@ -83,7 +132,7 @@ impl TransportBar {
                 .on_hover_text("Step forward 1 frame")
                 .clicked()
             {
-                cmds.push(AppCommand::SeekRelative(1));
+                cmds.push(route_for_viewer(AppCommand::SeekRelative(1), state));
             }
 
             // Record button (#60).
@@ -93,9 +142,9 @@ impl TransportBar {
             // if none exists, so the button is always enabled.
             {
                 let rec_color = if state.is_recording {
-                    egui::Color32::from_rgb(232, 50, 50)
+                    theme.marker_error
                 } else {
-                    egui::Color32::from_rgb(150, 50, 50)
+                    theme.accent_dim
                 };
                 // U+25CF BLACK CIRCLE — renders in egui's default font set.
                 // U+23FA (the proper "record" glyph) is in Misc Technical and
@@ -132,6 +181,7 @@ impl TransportBar {
             let jog_frames = crate::widgets::jog_wheel::jog_wheel(
                 ui,
                 &mut state.jog_wheel_state,
+                theme,
                 16.0,
             );
             if jog_frames != 0 {
@@ -145,7 +195,7 @@ impl TransportBar {
                 .on_hover_text("+10s")
                 .clicked()
             {
-                cmds.push(AppCommand::SeekRelative((fps_val * 10.0) as i64));
+                cmds.push(route_for_viewer(AppCommand::SeekRelative((fps_val * 10.0) as i64), state));
             }
 
             // Go to end
@@ -155,7 +205,7 @@ impl TransportBar {
                 .clicked()
             {
                 let dur = state.sequence_duration();
-                cmds.push(AppCommand::SeekTo(dur));
+                cmds.push(route_for_viewer(AppCommand::SeekTo(dur), state));
             }
 
             // Loop button
@@ -167,11 +217,11 @@ impl TransportBar {
                     egui::Sense::click(),
                 );
                 let (bg, fg) = if loop_active {
-                    (egui::Color32::from_rgb(232, 160, 32), egui::Color32::BLACK)
+                    (theme.accent, theme.text_on_accent)
                 } else if resp.hovered() {
-                    (egui::Color32::from_rgb(42, 42, 50), egui::Color32::from_rgb(200, 200, 210))
+                    (theme.bg_raised, theme.text_secondary)
                 } else {
-                    (egui::Color32::TRANSPARENT, egui::Color32::from_rgb(100, 100, 110))
+                    (egui::Color32::TRANSPARENT, theme.text_dim)
                 };
                 ui.painter().rect_filled(rect, rect.height() / 2.0, bg);
                 // Loop icon: 270° arc + arrowhead
@@ -222,7 +272,7 @@ impl TransportBar {
                         egui::RichText::new(&playhead_str)
                             .monospace()
                             .size(18.0)
-                            .color(egui::Color32::WHITE),
+                            .color(theme.text_primary),
                     )
                     .sense(egui::Sense::click()),
                 );
@@ -239,7 +289,7 @@ impl TransportBar {
                 egui::RichText::new(format!(" / {}", duration_str))
                     .monospace()
                     .size(14.0)
-                    .color(egui::Color32::from_rgb(100, 100, 110)),
+                    .color(theme.text_dim),
             );
 
             // Range display (only when in or out is set)
@@ -249,8 +299,8 @@ impl TransportBar {
                 ui.separator();
                 ui.add_space(4.0);
 
-                let amber = egui::Color32::from_rgb(232, 160, 32);
-                let dim = egui::Color32::from_rgb(120, 120, 130);
+                let amber = theme.accent;
+                let dim = theme.text_dim;
 
                 if let Some(in_pt) = state.sequence().in_point {
                     ui.label(egui::RichText::new("In ").size(10.0).color(dim));
@@ -291,11 +341,11 @@ impl TransportBar {
             ui.add_space(24.0);
 
             // Master volume slider + mute
-            ui.label(egui::RichText::new("Master").size(10.0).color(egui::Color32::from_rgb(120, 120, 130)));
+            ui.label(egui::RichText::new("Master").size(10.0).color(theme.text_dim));
             let mute_color = if state.master_muted {
-                egui::Color32::from_rgb(255, 80, 80)
+                theme.marker_error
             } else {
-                egui::Color32::from_rgb(100, 100, 110)
+                theme.text_dim
             };
             let mute_icon = if state.master_muted { Icon::SpeakerSlash } else { Icon::SpeakerHigh };
             if ui.add(egui::Button::image(mute_icon.image(12.0).tint(mute_color))
@@ -313,7 +363,7 @@ impl TransportBar {
                 cmds.push(AppCommand::SetMasterVolume(effective));
             }
             let vol_pct = (state.master_volume * 100.0) as u32;
-            ui.label(egui::RichText::new(format!("{}%", vol_pct)).size(10.0).color(egui::Color32::from_rgb(140, 140, 150)));
+            ui.label(egui::RichText::new(format!("{}%", vol_pct)).size(10.0).color(theme.text_dim));
 
             // ── System audio mute warning ──
             // When the OS-level app stream is muted (e.g. user clicked
@@ -325,8 +375,8 @@ impl TransportBar {
                     egui::RichText::new("\u{26a0} MUTED BY SYSTEM")
                         .size(9.0)
                         .strong()
-                        .color(egui::Color32::from_rgb(255, 60, 60))
-                        .background_color(egui::Color32::from_rgba_unmultiplied(255, 60, 60, 30)),
+                        .color(theme.marker_error)
+                        .background_color(egui::Color32::from_rgba_unmultiplied(theme.marker_error.r(), theme.marker_error.g(), theme.marker_error.b(), 30)),
                 )
                 .on_hover_text(
                     "Klipp's audio is muted at the OS level.\n\
@@ -344,15 +394,15 @@ impl TransportBar {
                     egui::pos2(vu_rect.left(), vu_rect.top() + ch as f32 * (vu_h + 1.0)),
                     egui::vec2(vu_w, vu_h),
                 );
-                painter.rect_filled(bar, 1.0, egui::Color32::from_rgb(20, 20, 25));
+                painter.rect_filled(bar, 1.0, theme.bg_deep);
                 let fill = (peak.min(1.0) * vu_w).max(0.0);
                 if fill > 0.0 {
                     let color = if peak > 0.9 {
-                        egui::Color32::from_rgb(220, 50, 50)
+                        theme.marker_error
                     } else if peak > 0.7 {
-                        egui::Color32::from_rgb(220, 180, 40)
+                        theme.marker_warning
                     } else {
-                        egui::Color32::from_rgb(50, 180, 70)
+                        theme.marker_success
                     };
                     painter.rect_filled(
                         egui::Rect::from_min_size(bar.left_top(), egui::vec2(fill, vu_h)),
@@ -371,7 +421,7 @@ impl TransportBar {
                 ui.label(
                     egui::RichText::new(format!("Rendering: {} {}%", label, pct))
                         .size(11.0)
-                        .color(egui::Color32::from_rgb(200, 180, 60)),
+                        .color(theme.accent),
                 );
 
                 // Mini progress bar
@@ -379,18 +429,18 @@ impl TransportBar {
                 let bar_h = 8.0;
                 let (bar_rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
                 let painter = ui.painter();
-                painter.rect_filled(bar_rect, 2.0, egui::Color32::from_rgb(30, 30, 35));
+                painter.rect_filled(bar_rect, 2.0, theme.bg_panel_alt);
                 let fill_w = (progress * bar_w).max(0.0).min(bar_w);
                 if fill_w > 0.0 {
                     painter.rect_filled(
                         egui::Rect::from_min_size(bar_rect.left_top(), egui::vec2(fill_w, bar_h)),
                         2.0,
-                        egui::Color32::from_rgb(200, 180, 60),
+                        theme.accent,
                     );
                 }
 
                 // Cancel button
-                if ui.add(egui::Button::image(Icon::XCircle.bold(14.0).tint(egui::Color32::from_rgb(200, 80, 80)))
+                if ui.add(egui::Button::image(Icon::XCircle.bold(14.0).tint(theme.marker_error))
                     .min_size(egui::vec2(18.0, 18.0))).on_hover_text("Cancel render").clicked() {
                     cmds.push(AppCommand::CancelExport);
                 }
@@ -431,35 +481,45 @@ impl TransportBar {
             // Spacebar is gated on this flag; J/K/L, arrows, and other
             // transport keys work regardless of browser focus so the user
             // doesn't lose audio during file browsing.
+            // Which transport state the user's eyes are on — the
+            // focused viewer. Space / JKL decisions (toggle play, set
+            // speed) read from here so the source viewer doesn't
+            // react to the timeline's state and vice versa.
+            let focus_playback = if state.viewer_mode == ViewerMode::Source {
+                state.source_playback
+            } else {
+                state.playback
+            };
             if !text_editing && !state.files_panel_focused && i.key_pressed(egui::Key::Space) {
-                if state.playback == PlaybackState::Playing {
-                    cmds.push(AppCommand::Pause);
+                if focus_playback == PlaybackState::Playing {
+                    cmds.push(route_for_viewer(AppCommand::Pause, state));
                 } else {
-                    cmds.push(AppCommand::Play);
+                    cmds.push(route_for_viewer(AppCommand::Play, state));
                 }
             }
             if !text_editing && i.key_pressed(egui::Key::ArrowLeft) && !i.modifiers.alt {
                 if i.modifiers.shift {
-                    // Shift+Left = 1 second back
-                    cmds.push(AppCommand::SeekRelative(-fps_rate));
+                    cmds.push(route_for_viewer(AppCommand::SeekRelative(-fps_rate), state));
                 } else {
-                    cmds.push(AppCommand::SeekRelative(-1));
+                    cmds.push(route_for_viewer(AppCommand::SeekRelative(-1), state));
                 }
             }
             if !text_editing && i.key_pressed(egui::Key::ArrowRight) && !i.modifiers.alt {
                 if i.modifiers.shift {
-                    // Shift+Right = 1 second forward
-                    cmds.push(AppCommand::SeekRelative(fps_rate));
+                    cmds.push(route_for_viewer(AppCommand::SeekRelative(fps_rate), state));
                 } else {
-                    cmds.push(AppCommand::SeekRelative(1));
+                    cmds.push(route_for_viewer(AppCommand::SeekRelative(1), state));
                 }
             }
             if !text_editing && i.key_pressed(egui::Key::Home) {
-                cmds.push(AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate())));
+                cmds.push(route_for_viewer(
+                    AppCommand::SeekTo(klipp_core::RationalTime::from_frames(0, state.fps.rate())),
+                    state,
+                ));
             }
             if !text_editing && i.key_pressed(egui::Key::End) {
                 let dur = state.sequence_duration();
-                cmds.push(AppCommand::SeekTo(dur));
+                cmds.push(route_for_viewer(AppCommand::SeekTo(dur), state));
             }
             // J — reverse/faster reverse
             if !text_editing && i.key_pressed(egui::Key::J) {
@@ -468,15 +528,15 @@ impl TransportBar {
                     else if s == -2.0 { -4.0 }
                     else if s == -4.0 { -8.0 }
                     else { -2.0 };
-                cmds.push(AppCommand::SetSpeed(new_speed));
-                if state.playback != PlaybackState::Playing {
-                    cmds.push(AppCommand::Play);
+                cmds.push(route_for_viewer(AppCommand::SetSpeed(new_speed), state));
+                if focus_playback != PlaybackState::Playing {
+                    cmds.push(route_for_viewer(AppCommand::Play, state));
                 }
             }
             // K — pause, reset speed
             if !text_editing && i.key_pressed(egui::Key::K) {
-                cmds.push(AppCommand::SetSpeed(1.0));
-                cmds.push(AppCommand::Pause);
+                cmds.push(route_for_viewer(AppCommand::SetSpeed(1.0), state));
+                cmds.push(route_for_viewer(AppCommand::Pause, state));
             }
             // L — forward/faster forward
             if !text_editing && i.key_pressed(egui::Key::L) {
@@ -485,9 +545,9 @@ impl TransportBar {
                     else if s == 2.0 { 4.0 }
                     else if s == 4.0 { 8.0 }
                     else { 2.0 };
-                cmds.push(AppCommand::SetSpeed(new_speed));
-                if state.playback != PlaybackState::Playing {
-                    cmds.push(AppCommand::Play);
+                cmds.push(route_for_viewer(AppCommand::SetSpeed(new_speed), state));
+                if focus_playback != PlaybackState::Playing {
+                    cmds.push(route_for_viewer(AppCommand::Play, state));
                 }
             }
         });

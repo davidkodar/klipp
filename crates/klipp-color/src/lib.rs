@@ -40,6 +40,8 @@
 //! full-resolution GPU pass. Both use BT.709 coefficients on sRGB code
 //! values, matching Resolve's non-linear scope convention.
 
+pub mod aces;
+pub mod camera_log;
 pub mod color_match;
 pub mod curves;
 pub mod denoise;
@@ -49,6 +51,7 @@ pub mod huesat;
 pub mod linear;
 pub mod lut;
 pub mod masks;
+pub mod primaries;
 pub mod qualifier;
 pub mod pipeline;
 pub mod scopes;
@@ -57,7 +60,7 @@ pub mod transforms;
 pub mod warper;
 pub mod wheels;
 
-pub use lut::{apply_3d_lut, apply_3d_lut_tetrahedral, bake_grade_to_lut, generate_lut_preview, generate_lut_reference_image, load_cube, load_lut, parse_3dl, parse_csp, parse_cube, write_cube, LutData, LutError};
+pub use lut::{apply_3d_lut, apply_3d_lut_linear_ws, apply_3d_lut_linear_ws_with_overrides, apply_3d_lut_tetrahedral, bake_grade_to_lut, generate_lut_preview, generate_lut_reference_image, load_cube, load_lut, parse_3dl, parse_csp, parse_cube, write_cube, LutData, LutError};
 pub use pipeline::{ColorGradeParams, ColorPipeline};
 pub use transforms::*;
 pub use warper::apply_color_warper;

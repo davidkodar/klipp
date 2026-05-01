@@ -33,6 +33,12 @@ pub struct ProjectJson {
     /// Last horizontal timeline scroll position when saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeline_scroll_x: Option<f32>,
+    /// Working colorspace for this project's grade chain. Old project
+    /// files written before Phase E lack this field; serde default
+    /// gives them `Rec709Linear`, matching the pipeline's behaviour
+    /// before the upgrade so existing projects open unchanged.
+    #[serde(default)]
+    pub working_colorspace: klipp_core::WorkingColorspace,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -209,6 +215,8 @@ pub struct ClipJson {
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_effects: Option<Vec<klipp_core::AudioEffectInstance>>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multicam_group: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -473,6 +481,39 @@ pub struct MediaItemJson {
     pub colour_space: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_rotation: Option<i32>,
+    // Probed metadata — preserved across save/load so the log-format
+    // heuristic (`MediaItem::detect_log_format`) still works on
+    // re-load. Without these the project file forgets the camera
+    // tags and every reopen falls back to Srgb on cameras whose
+    // make/model isn't tagged in the container (Sony A6700, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_make: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bit_depth: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_bitrate_kbps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_bitrate_kbps: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_primaries: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_transfer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pixel_format: Option<String>,
+    /// User's per-media log format choice. Promoted from the
+    /// Inspector dropdown when the user picks a format on a clip
+    /// whose source media is still on the Srgb default — see
+    /// `apply_detected_log_format` in app.rs.
+    #[serde(default, skip_serializing_if = "is_default_log_format")]
+    pub log_format: klipp_core::LogFormat,
+}
+
+fn is_default_log_format(f: &klipp_core::LogFormat) -> bool {
+    *f == klipp_core::LogFormat::default()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -490,4 +531,224 @@ pub struct MarkerJson {
 
 fn default_marker_color_str() -> String {
     "Blue".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `.klipp` project.json from before Phase E (no `working_colorspace`
+    /// field) must deserialise as `Rec709Linear` — that's the
+    /// back-compat contract for any existing project on disk.
+    #[test]
+    fn legacy_project_json_defaults_working_colorspace_to_rec709_linear() {
+        let legacy = r#"{
+            "version": "1.0.0",
+            "klipp_version_min": "0.1.0",
+            "sequences": []
+        }"#;
+        let project: ProjectJson = serde_json::from_str(legacy)
+            .expect("legacy project.json should deserialise");
+        assert_eq!(
+            project.working_colorspace,
+            klipp_core::WorkingColorspace::Rec709Linear,
+            "old projects without working_colorspace must default to Rec709Linear",
+        );
+    }
+
+    /// Round-trip with a non-default value to confirm serde writes
+    /// and reads the field correctly. `AcesCG` is the value that
+    /// distinguishes a wide-gamut working space from the legacy default.
+    #[test]
+    fn working_colorspace_round_trips_when_set() {
+        let project = ProjectJson {
+            version: "1.0.0".to_string(),
+            klipp_version_min: "0.1.0".to_string(),
+            klipp_version: None,
+            saved_at: None,
+            created_at: None,
+            platform: None,
+            sequences: vec![],
+            active_sequence_id: None,
+            notes: String::new(),
+            timeline_zoom: None,
+            timeline_scroll_x: None,
+            working_colorspace: klipp_core::WorkingColorspace::AcesCG,
+        };
+        let serialised = serde_json::to_string(&project).expect("serialise");
+        let back: ProjectJson = serde_json::from_str(&serialised).expect("deserialise");
+        assert_eq!(
+            back.working_colorspace,
+            klipp_core::WorkingColorspace::AcesCG,
+        );
+    }
+
+    /// Pin the on-disk variant names. The string tags are part of the
+    /// `.klipp` file format contract — a future enum rename must
+    /// migrate, not silently break old projects on load.
+    #[test]
+    fn working_colorspace_serialises_to_stable_names() {
+        use klipp_core::WorkingColorspace;
+        assert_eq!(
+            serde_json::to_string(&WorkingColorspace::Rec709Linear).unwrap(),
+            "\"Rec709Linear\"",
+        );
+        assert_eq!(
+            serde_json::to_string(&WorkingColorspace::AcesCG).unwrap(),
+            "\"AcesCG\"",
+        );
+        assert_eq!(
+            serde_json::to_string(&WorkingColorspace::Bt2020Linear).unwrap(),
+            "\"Bt2020Linear\"",
+        );
+    }
+
+    /// JSON round-trip for `audio_effect_keyframes` on `ClipJson`. Phase 1
+    /// of the audio-keyframe support: storing the field on a clip is
+    /// useless if save/load drops it on the floor, so we pin the
+    /// behaviour with a focused serde roundtrip.
+    ///
+    /// Three properties pinned here:
+    /// 1. The field round-trips with values intact (kf time + value + interp).
+    /// 2. The reserved `__bypass` and `__wetdry` keys survive (they're
+    ///    plain strings to serde — no special handling).
+    /// 3. An empty map skips serialisation (`skip_serializing_if`) so old
+    ///    projects don't grow a noisy empty field on every save.
+    #[test]
+    fn audio_effect_keyframes_round_trip_through_clip_json() {
+        let mut audio_kfs: std::collections::HashMap<String, Vec<klipp_core::Keyframe>> =
+            std::collections::HashMap::new();
+        audio_kfs.insert(
+            "0:gain".to_string(),
+            vec![
+                klipp_core::Keyframe {
+                    time_secs: 0.0,
+                    value: -6.0,
+                    interpolation: klipp_core::Interpolation::Linear,
+                    tangent_in: (0.0, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+                klipp_core::Keyframe {
+                    time_secs: 1.5,
+                    value: 0.0,
+                    interpolation: klipp_core::Interpolation::Bezier,
+                    tangent_in: (-0.3, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+            ],
+        );
+        audio_kfs.insert(
+            "0:__bypass".to_string(),
+            vec![klipp_core::Keyframe {
+                time_secs: 0.5,
+                value: 1.0,
+                interpolation: klipp_core::Interpolation::Step,
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
+            }],
+        );
+
+        let clip = ClipJson {
+            id: "test-clip".to_string(),
+            media_id: None,
+            kind: None,
+            timeline_in: 0,
+            timeline_out: 48,
+            source_in: 0,
+            source_out: 48,
+            rate: 24,
+            node_graph: None,
+            color_grade: None,
+            effects: vec![],
+            builtin_effects: None,
+            linked_clip_id: None,
+            group_id: None,
+            gain: None, volume: None, pan: None,
+            fade_in_secs: None, fade_out_secs: None,
+            fade_in_curve: None, fade_out_curve: None,
+            channel_config: None,
+            volume_keyframes: None, pan_keyframes: None, gain_keyframes: None,
+            opacity_keyframes: None,
+            transform_pos_x_keyframes: None, transform_pos_y_keyframes: None,
+            transform_scale_keyframes: None, transform_rotation_keyframes: None,
+            clip_markers: None,
+            effect_keyframes: None,
+            role: None,
+            param_modifiers: None,
+            speed: None, speed_keyframes: None,
+            source_rotation: None,
+            enabled: None,
+            audio_effects: None,
+            audio_effect_keyframes: audio_kfs.clone(),
+            multicam_group: None, multicam_angle: None,
+            multicam_cuts: vec![],
+            solo: None,
+            grade_versions: vec![],
+            active_grade_version: None,
+            track_points: vec![],
+        };
+
+        let serialised = serde_json::to_string(&clip).expect("serialise clip");
+        let back: ClipJson = serde_json::from_str(&serialised).expect("deserialise clip");
+
+        // 1. Both kf tracks survived.
+        assert_eq!(back.audio_effect_keyframes.len(), 2);
+        assert!(back.audio_effect_keyframes.contains_key("0:gain"));
+        assert!(back.audio_effect_keyframes.contains_key("0:__bypass"));
+
+        // 2. Values intact, including bezier tangents.
+        let gain = &back.audio_effect_keyframes["0:gain"];
+        assert_eq!(gain.len(), 2);
+        assert!((gain[0].value - (-6.0)).abs() < 1e-6);
+        assert!((gain[1].time_secs - 1.5).abs() < 1e-9);
+        assert!(matches!(gain[1].interpolation, klipp_core::Interpolation::Bezier));
+        assert!((gain[1].tangent_in.0 - (-0.3)).abs() < 1e-9);
+
+        // 3. Reserved bypass key keeps its Step interp.
+        let bypass = &back.audio_effect_keyframes["0:__bypass"];
+        assert_eq!(bypass.len(), 1);
+        assert!(matches!(bypass[0].interpolation, klipp_core::Interpolation::Step));
+        assert!((bypass[0].value - 1.0).abs() < 1e-6);
+    }
+
+    /// `skip_serializing_if = "HashMap::is_empty"` keeps the on-disk
+    /// representation lean: a clip with no audio kfs must not write the
+    /// field at all. This pins that — if someone "cleans up" the attr
+    /// later the JSON will get noisier and this test will catch it.
+    #[test]
+    fn audio_effect_keyframes_empty_map_is_omitted_from_json() {
+        let clip = ClipJson {
+            id: "test-clip".to_string(),
+            media_id: None, kind: None,
+            timeline_in: 0, timeline_out: 24,
+            source_in: 0, source_out: 24, rate: 24,
+            node_graph: None, color_grade: None,
+            effects: vec![], builtin_effects: None,
+            linked_clip_id: None, group_id: None,
+            gain: None, volume: None, pan: None,
+            fade_in_secs: None, fade_out_secs: None,
+            fade_in_curve: None, fade_out_curve: None,
+            channel_config: None,
+            volume_keyframes: None, pan_keyframes: None, gain_keyframes: None,
+            opacity_keyframes: None,
+            transform_pos_x_keyframes: None, transform_pos_y_keyframes: None,
+            transform_scale_keyframes: None, transform_rotation_keyframes: None,
+            clip_markers: None,
+            effect_keyframes: None,
+            role: None, param_modifiers: None,
+            speed: None, speed_keyframes: None,
+            source_rotation: None, enabled: None,
+            audio_effects: None,
+            audio_effect_keyframes: std::collections::HashMap::new(),
+            multicam_group: None, multicam_angle: None,
+            multicam_cuts: vec![],
+            solo: None,
+            grade_versions: vec![],
+            active_grade_version: None,
+            track_points: vec![],
+        };
+        let serialised = serde_json::to_string(&clip).expect("serialise");
+        assert!(!serialised.contains("audio_effect_keyframes"),
+            "empty audio_effect_keyframes must be skipped, got: {serialised}");
+    }
 }

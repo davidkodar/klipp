@@ -1,0 +1,81 @@
+# Klipp built-in Solarized Dark theme.
+#
+# Palette by Ethan Schoonover (https://ethanschoonover.com/solarized).
+# Demonstrates that the registry works: every token populated from
+# the canonical Solarized base + accent palette, no code changes
+# required. User themes drop into ~/.config/klipp/themes/*.toml using
+# the same schema; built-ins live here.
+
+name = "Solarized Dark"
+
+[colors]
+# ── Backgrounds ──
+# Solarized base03 / base02 form the two darkest neutral tones; we
+# stack them across the six bg slots with small interpolated steps
+# so panel-on-panel layering still reads.
+bg_void       = "#001f27"
+bg_deep       = "#002b36"
+bg_panel      = "#073642"
+bg_panel_alt  = "#0a4250"
+bg_raised     = "#0c4b59"
+bg_hover      = "#155864"
+bg_viewer     = "#001f27"
+
+# ── Borders ──
+# base01 / base02 dividers — subtle on the dark cyan-tinted bgs.
+border        = "#0e4554"
+border_light  = "#1a6376"
+resizer_idle  = "#2a7a8e"
+
+# ── Accent (Solarized yellow — same family as our default amber) ──
+# yellow #b58900 reads cleanly against the cyan-tinted neutrals.
+# Glow alphas tuned similarly to Dark.toml — translucent yellow at
+# ~18 % opacity, premultiplied (RGB scaled to alpha).
+accent        = "#b58900"
+accent_dim    = "#7d5e00"
+accent_glow   = "#1f17002e"
+accent_subtle = "#150f0017"
+# Solarized magenta — distinct from the warm yellow accent for
+# A/B-compare highlights and Title-clip identity.
+accent_alt    = "#d33682"
+
+# ── Text ──
+# Solarized base1 (light text) on dark; base0 / base01 for secondary
+# and dim respectively.
+text_primary   = "#93a1a1"
+text_secondary = "#839496"
+text_dim       = "#586e75"
+text_accent    = "#b58900"
+# Dark text on yellow accent fills.
+text_on_accent = "#002b36"
+
+# ── Functional marker colours ──
+# Direct Solarized accent palette mapping: red/green/blue/orange.
+marker_error   = "#dc322f"
+marker_success = "#859900"
+marker_info    = "#268bd2"
+marker_warning = "#cb4b16"
+
+# ── Scope display tokens ──
+# Translucent yellow grid (matches the accent), darker yellow tick
+# labels.
+scope_grid  = "#170f0020"
+scope_label = "#7d5e00"
+# Slight cyan tint on the scope bg — matches Solarized's overall
+# tone while staying dark enough for the trace colours.
+scope_bg    = "#001017"
+
+# ── Role colours ──
+# Solarized accent palette — every clip role gets a distinct hue
+# from the canonical Solarized accent set. Per-role overrides in
+# Preferences still win; these are the theme's defaults.
+role_video     = "#268bd2"
+role_dialogue  = "#859900"
+role_music     = "#2aa198"
+role_sfx       = "#cb4b16"
+role_title     = "#dc322f"
+role_broll     = "#6c71c4"
+role_ambience  = "#d33682"
+role_foley     = "#dc322f"
+role_voiceover = "#2aa198"
+role_graphics  = "#b58900"

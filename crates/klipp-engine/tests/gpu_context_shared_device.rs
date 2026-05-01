@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use klipp_effects::{
+    color_wgsl::IDENTITY_PRIMARIES_MATRIX_PACKED,
     gpu_context::GpuContext,
     nv12_gpu::GpuNv12Converter,
     p010_gpu::GpuP010Converter,
@@ -19,6 +20,11 @@ use klipp_engine::{Frame, GpuFrame};
 
 const W: u32 = 128;
 const H: u32 = 64;
+
+/// `[range, matrix_id, transfer_id, primaries_id]` for a BT.709
+/// limited-range SDR source — the colourspace the synthesised test
+/// fixtures represent. Identity primaries matrix follows.
+const COLOR_IDS_BT709_SDR: [u32; 4] = [0, 0, 0, 0];
 
 fn make_nv12(width: u32, height: u32) -> (Vec<u8>, Vec<u8>) {
     let mut y = Vec::with_capacity((width * height) as usize);
@@ -71,8 +77,14 @@ fn nv12_with_context_matches_private_device() {
     let Some(mut shared) = GpuNv12Converter::with_context(&ctx) else { return; };
 
     let (y, uv) = make_nv12(W, H);
-    let priv_bytes = private.convert_nv12_to_rgba(&y, &uv, W, H, W, W, W, H, 0);
-    let shared_bytes = shared.convert_nv12_to_rgba(&y, &uv, W, H, W, W, W, H, 0);
+    let priv_bytes = private.convert_nv12_to_rgba(
+        &y, &uv, W, H, W, W, W, H, 0,
+        COLOR_IDS_BT709_SDR, IDENTITY_PRIMARIES_MATRIX_PACKED,
+    );
+    let shared_bytes = shared.convert_nv12_to_rgba(
+        &y, &uv, W, H, W, W, W, H, 0,
+        COLOR_IDS_BT709_SDR, IDENTITY_PRIMARIES_MATRIX_PACKED,
+    );
     assert_eq!(priv_bytes, shared_bytes,
         "shared-context NV12 converter diverges from private-device converter");
 }
@@ -90,10 +102,16 @@ fn p010_with_context_matches_private_device() {
     let (y, uv) = make_p010(W, H);
     let y_stride = W * 2;
     let uv_stride = W * 2;
-    let priv_bytes = private.convert_p010_to_rgba(&y, &uv, W, H, y_stride, uv_stride, W, H, 0, true);
-    let shared_bytes = shared.convert_p010_to_rgba(&y, &uv, W, H, y_stride, uv_stride, W, H, 0, true);
+    let priv_bytes = private.convert_p010_to_rgba(
+        &y, &uv, W, H, y_stride, uv_stride, W, H, 0,
+        COLOR_IDS_BT709_SDR, IDENTITY_PRIMARIES_MATRIX_PACKED,
+    );
+    let shared_bytes = shared.convert_p010_to_rgba(
+        &y, &uv, W, H, y_stride, uv_stride, W, H, 0,
+        COLOR_IDS_BT709_SDR, IDENTITY_PRIMARIES_MATRIX_PACKED,
+    );
     assert_eq!(priv_bytes, shared_bytes,
-        "shared-context P010 converter diverges from private-device converter (HDR)");
+        "shared-context P010 converter diverges from private-device converter");
 }
 
 /// The foundation-stone test: a buffer produced by the NV12 converter
@@ -113,8 +131,14 @@ fn shared_context_buffer_is_readable_via_frame() {
     };
 
     let (y, uv) = make_nv12(W, H);
-    let expected = conv.convert_nv12_to_rgba(&y, &uv, W, H, W, W, W, H, 0);
-    let buf = conv.convert_nv12_to_rgba_on_gpu(&y, &uv, W, H, W, W, W, H, 0);
+    let expected = conv.convert_nv12_to_rgba(
+        &y, &uv, W, H, W, W, W, H, 0,
+        COLOR_IDS_BT709_SDR, IDENTITY_PRIMARIES_MATRIX_PACKED,
+    );
+    let buf = conv.convert_nv12_to_rgba_on_gpu(
+        &y, &uv, W, H, W, W, W, H, 0,
+        COLOR_IDS_BT709_SDR, IDENTITY_PRIMARIES_MATRIX_PACKED,
+    );
 
     // Build the Frame using the CONTEXT's device + queue, not the
     // converter's accessors. Proves the buffer lives on `ctx.device`

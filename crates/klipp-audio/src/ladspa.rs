@@ -85,9 +85,92 @@ pub struct LadspaDescriptor {
 pub type LadspaDescriptorFunction =
     unsafe extern "C" fn(c_ulong) -> *const LadspaDescriptor;
 
+// ─── Descriptor iteration cap ──────────────────────────────────────────────
+//
+// LADSPA bundles in practice expose 1–50 descriptors. The plugin's
+// `ladspa_descriptor(i)` is supposed to return null when the iterator
+// runs out, but a buggy or malicious plugin can return non-null
+// forever. The host must bound the walk so it can't hang.
+//
+// Used by both the discovery walk (`scan_path`) and the find-by-label
+// walk in `LadspaEffect::new` — see CODE_AUDIT C-7.
+pub(crate) const LADSPA_DESCRIPTOR_CAP: usize = 4096;
+
+/// Outcome of a bounded descriptor walk that's looking for a specific label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DescriptorLookup {
+    /// Plugin returned a descriptor whose label matched at this index.
+    FoundAt(usize),
+    /// Plugin returned null before the cap (normal termination).
+    NotFound,
+    /// Cap was reached without a null OR a match — the plugin is misbehaving.
+    CapHit,
+}
+
+/// Walk a plugin's descriptor list looking for one whose label matches.
+///
+/// `label_at(i)` returns `Some(label)` for a descriptor at index `i`, or
+/// `None` if the plugin's `ladspa_descriptor(i)` returned null at that
+/// index (the documented end-of-iteration sentinel).
+///
+/// Bounded by `cap` so a non-terminating plugin can't hang the host.
+pub(crate) fn find_descriptor_index_by_label<F>(
+    cap: usize,
+    label: &str,
+    mut label_at: F,
+) -> DescriptorLookup
+where
+    F: FnMut(usize) -> Option<String>,
+{
+    for i in 0..cap {
+        match label_at(i) {
+            None => return DescriptorLookup::NotFound,
+            Some(this_label) => {
+                if this_label == label {
+                    return DescriptorLookup::FoundAt(i);
+                }
+            }
+        }
+    }
+    DescriptorLookup::CapHit
+}
+
+// ─── LADSPA latency-port readback policy ───────────────────────────────────
+//
+// LADSPA v1 has no dedicated latency field. The de-facto convention is a
+// control-OUTPUT port literally named "latency" that the plugin writes on
+// every `run()` call. The host-side policy below converts the most recent
+// f32 sample-count the plugin wrote into a u32 the host can use for
+// alignment, with three guards:
+//
+//   * No latency port at all (`slot == None`) → 0.
+//   * Slot index out of bounds (defensive — should never happen in
+//     practice since `control_out_sinks` is sized once at construction
+//     and indexed by an enum-checked slot) → 0.
+//   * Plugin wrote NaN, +∞, or a negative value (some misbehaving
+//     plugins emit garbage when the calc isn't ready) → 0.
+//   * Otherwise: round half-up to u32 (some plugins report fractional
+//     samples for look-ahead windows).
+//
+// CODE_AUDIT C-8 — extracted as a free function so the policy is
+// pinned by unit tests without needing to construct a real LadspaEffect
+// (which requires a .so + libloading + audio thread).
+pub(crate) fn read_latency_samples(slot: Option<usize>, control_out_sinks: &[f32]) -> u32 {
+    let s = match slot {
+        Some(s) if s < control_out_sinks.len() => s,
+        _ => return 0,
+    };
+    let samples = control_out_sinks[s];
+    if samples.is_finite() && samples > 0.0 {
+        (samples + 0.5) as u32
+    } else {
+        0
+    }
+}
+
 // ─── Discovery types ───────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LadspaControlPort {
     pub index: usize,
     pub name: String,
@@ -99,13 +182,19 @@ pub struct LadspaControlPort {
     pub is_toggle: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LadspaPluginInfo {
     pub path: PathBuf,
     pub unique_id: u64,
     pub label: String,
     pub name: String,
     pub maker: String,
+    /// LADSPA `copyright` field — typically a short licence phrase like
+    /// "GPL" or "MIT/X11". Empty when the plugin author left it blank.
+    /// `#[serde(default)]` so old cache files (pre-v2 schema) load
+    /// cleanly with this field empty; a rescan fills it in.
+    #[serde(default)]
+    pub copyright: String,
     pub port_count: usize,
     pub control_inputs: Vec<LadspaControlPort>,
     pub audio_inputs: usize,
@@ -229,6 +318,153 @@ pub fn discover_ladspa_plugins() -> Vec<LadspaPluginInfo> {
     out
 }
 
+/// Cached-on-disk variant of [`discover_ladspa_plugins`].
+///
+/// Caches the result of a successful scan in a JSON file so subsequent
+/// launches skip the dlopen/iterate cost (50–500 ms depending on plugin
+/// count) and return in 1–5 ms. Cache validity is checked by snapshotting
+/// the mtime of every search directory at scan time and comparing on
+/// load — adding / removing / renaming a `.so` inside one of these dirs
+/// bumps the parent dir's mtime, so the cache invalidates automatically.
+///
+/// Mirrors the disk-cache pattern used by the title crate's font registry.
+///
+/// `cache_dir` is the base under which the cache file lives (the actual
+/// path is `<cache_dir>/ladspa_registry.json`). Pass `None` to disable
+/// caching and always do a fresh scan; otherwise pass something like
+/// `dirs::cache_dir().map(|p| p.join("klipp"))`.
+///
+/// Failures during cache read or write are non-fatal — they fall through
+/// to a fresh scan. The cache is purely an optimisation; correctness
+/// always depends on the live scan path.
+pub fn discover_ladspa_plugins_cached(cache_dir: Option<&Path>) -> Vec<LadspaPluginInfo> {
+    let dirs = ladspa_search_paths();
+
+    if let Some(base) = cache_dir {
+        if let Some(plugins) = ladspa_cache::load(base, &dirs) {
+            tracing::info!(
+                "LADSPA: loaded {} plugin(s) from disk cache",
+                plugins.len()
+            );
+            return plugins;
+        }
+    }
+
+    let plugins = discover_ladspa_plugins();
+
+    if let Some(base) = cache_dir {
+        if let Err(e) = ladspa_cache::save(base, &dirs, &plugins) {
+            tracing::warn!("LADSPA: failed to write cache: {e}");
+        }
+    }
+
+    plugins
+}
+
+// ─── Disk cache ────────────────────────────────────────────────────────────
+//
+// Persisted at `<cache_dir>/ladspa_registry.json`. The cache is a JSON
+// document containing a schema-version number, a per-search-directory
+// mtime snapshot, and the discovered plugins. On load we recompute the
+// mtime snapshot and compare; any difference invalidates the cache.
+
+mod ladspa_cache {
+    use super::LadspaPluginInfo;
+    use serde::{Deserialize, Serialize};
+    use std::path::{Path, PathBuf};
+    use std::time::SystemTime;
+
+    /// Bump when [`LadspaPluginInfo`] or [`super::LadspaControlPort`]
+    /// gain or lose fields, so old caches don't deserialise into the new
+    /// shape with default-zero fields and confuse downstream code.
+    ///
+    /// History:
+    ///   1 — initial schema
+    ///   2 — added LadspaPluginInfo::copyright (safe to load v1 with
+    ///       serde default = "", but a rescan fills the new field
+    ///       with real values, which the dialog needs to surface)
+    const SCHEMA_VERSION: u32 = 2;
+
+    const FILE_NAME: &str = "ladspa_registry.json";
+
+    #[derive(Serialize, Deserialize)]
+    struct DiskCache {
+        version: u32,
+        dir_signatures: Vec<DirSig>,
+        plugins: Vec<LadspaPluginInfo>,
+    }
+
+    #[derive(Serialize, Deserialize, PartialEq, Eq)]
+    struct DirSig {
+        path: String,
+        /// Mtime in seconds since UNIX epoch. `None` for directories that
+        /// don't exist; that absence is part of the signature so a future
+        /// install of plugins into a previously-empty path forces a
+        /// rescan.
+        mtime_secs: Option<u64>,
+    }
+
+    fn cache_file(base: &Path) -> PathBuf {
+        base.join(FILE_NAME)
+    }
+
+    fn collect_signatures(dirs: &[PathBuf]) -> Vec<DirSig> {
+        dirs.iter()
+            .map(|d| {
+                let mtime_secs = std::fs::metadata(d)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs());
+                DirSig {
+                    path: d.to_string_lossy().into_owned(),
+                    mtime_secs,
+                }
+            })
+            .collect()
+    }
+
+    /// Try to read the on-disk cache. Returns `Some(plugins)` only if
+    /// (a) the file exists and parses, (b) the schema version matches,
+    /// and (c) the recorded directory mtimes match the current ones.
+    pub fn load(base: &Path, dirs: &[PathBuf]) -> Option<Vec<LadspaPluginInfo>> {
+        let path = cache_file(base);
+        let data = std::fs::read_to_string(&path).ok()?;
+        let cache: DiskCache = serde_json::from_str(&data).ok()?;
+        if cache.version != SCHEMA_VERSION {
+            tracing::debug!(
+                "LADSPA cache: schema mismatch ({} vs {}), rescanning",
+                cache.version,
+                SCHEMA_VERSION
+            );
+            return None;
+        }
+        if cache.dir_signatures != collect_signatures(dirs) {
+            tracing::debug!("LADSPA cache: directory mtime changed, rescanning");
+            return None;
+        }
+        Some(cache.plugins)
+    }
+
+    /// Persist the scan result to disk. Creates the cache directory if
+    /// it doesn't exist. Failures bubble up so callers can log them but
+    /// they never alter the behaviour of a fresh scan.
+    pub fn save(
+        base: &Path,
+        dirs: &[PathBuf],
+        plugins: &[LadspaPluginInfo],
+    ) -> std::io::Result<()> {
+        std::fs::create_dir_all(base)?;
+        let cache = DiskCache {
+            version: SCHEMA_VERSION,
+            dir_signatures: collect_signatures(dirs),
+            plugins: plugins.to_vec(),
+        };
+        let json = serde_json::to_string(&cache).map_err(std::io::Error::other)?;
+        std::fs::write(cache_file(base), json)
+    }
+}
+
 /// Open a single `.so`, iterate its descriptors, and return one info record
 /// per plugin that has at least one audio input AND one audio output.
 pub fn scan_ladspa_library(path: &Path) -> Vec<LadspaPluginInfo> {
@@ -251,10 +487,8 @@ pub fn scan_ladspa_library(path: &Path) -> Vec<LadspaPluginInfo> {
 
     // Guard descriptor iteration with catch_unwind so a single broken plugin
     // inside a bundle-style .so doesn't abort the whole discovery walk.
-    // Upper bound: LADSPA bundles in practice expose 1-50 descriptors;
-    // cap at 4096 so a broken or malicious plugin that returns non-null
-    // for every index can't hang discovery indefinitely.
-    const LADSPA_DESCRIPTOR_CAP: usize = 4096;
+    // The iteration is bounded by LADSPA_DESCRIPTOR_CAP — see the
+    // module-scope const for the rationale.
     let path_buf = path.to_path_buf();
     let df = *descriptor_fn;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -355,6 +589,7 @@ unsafe fn extract_plugin_info(
         label: cstr_to_string(desc.label),
         name: cstr_to_string(desc.name),
         maker: cstr_to_string(desc.maker),
+        copyright: cstr_to_string(desc.copyright),
         port_count,
         control_inputs,
         audio_inputs: audio_in,
@@ -425,22 +660,45 @@ impl LadspaEffect {
             unsafe { lib.get(b"ladspa_descriptor\0") }
                 .map_err(|_| "ladspa_descriptor symbol missing".to_string())?;
 
-        // Find descriptor with matching label.
+        // Find descriptor with matching label. Bounded by
+        // LADSPA_DESCRIPTOR_CAP — a buggy plugin that returns non-null
+        // for every index would otherwise loop ~4 billion times before
+        // the host realised the label wasn't there. See CODE_AUDIT C-7.
         let mut descriptor_ptr: *const LadspaDescriptor = std::ptr::null();
-        for i in 0..u32::MAX as usize {
-            let raw = unsafe { descriptor_fn(i as c_ulong) };
-            if raw.is_null() {
-                break;
+        let lookup = find_descriptor_index_by_label(
+            LADSPA_DESCRIPTOR_CAP,
+            label,
+            |i| {
+                let raw = unsafe { descriptor_fn(i as c_ulong) };
+                if raw.is_null() {
+                    None
+                } else {
+                    let d = unsafe { &*raw };
+                    let dl = unsafe { cstr_to_string(d.label) };
+                    if dl == label {
+                        // Capture the matching pointer so the caller can
+                        // instantiate from it after the lookup returns.
+                        descriptor_ptr = raw;
+                    }
+                    Some(dl)
+                }
+            },
+        );
+        match lookup {
+            DescriptorLookup::FoundAt(_) => { /* descriptor_ptr is set */ }
+            DescriptorLookup::NotFound => {
+                return Err(format!("label '{label}' not found in {}", path.display()));
             }
-            let d = unsafe { &*raw };
-            let dl = unsafe { cstr_to_string(d.label) };
-            if dl == label {
-                descriptor_ptr = raw;
-                break;
+            DescriptorLookup::CapHit => {
+                tracing::warn!(
+                    "LADSPA: hit {}-descriptor cap looking for '{}' in {} — plugin may be non-terminating",
+                    LADSPA_DESCRIPTOR_CAP, label, path.display(),
+                );
+                return Err(format!(
+                    "label '{label}' not found within descriptor cap in {}",
+                    path.display()
+                ));
             }
-        }
-        if descriptor_ptr.is_null() {
-            return Err(format!("label '{label}' not found in {}", path.display()));
         }
 
         // Rebuild an info record from the selected descriptor so we own our
@@ -707,20 +965,12 @@ impl AudioEffect for LadspaEffect {
         // scan port names and remember the slot (if any); here we read
         // the most recent value the plugin wrote there.
         //
-        // The value is in samples. Some plugins report fractional
-        // latency (look-ahead windows); round half-up and clamp to
-        // non-negative. Plugins without a latency port report 0.
-        match self.latency_slot {
-            Some(slot) => {
-                let samples = self.control_out_sinks[slot];
-                if samples.is_finite() && samples > 0.0 {
-                    (samples + 0.5) as u32
-                } else {
-                    0
-                }
-            }
-            None => 0,
-        }
+        // See `read_latency_samples` (free function below) for the
+        // readback policy — NaN/infinity/negative guards, half-up
+        // rounding to u32, slot-out-of-bounds guard. Extracted so the
+        // policy is unit-testable without constructing a real
+        // LadspaEffect.
+        read_latency_samples(self.latency_slot, &self.control_out_sinks)
     }
 
     fn serialize_params(&self) -> Vec<(String, f32)> {
@@ -900,5 +1150,264 @@ mod tests {
         assert_eq!(unit_hint_for_port_name("Delay Time"), ParamUnit::Ms);
         assert_eq!(unit_hint_for_port_name("Ratio"), ParamUnit::Ratio);
         assert_eq!(unit_hint_for_port_name("Dry/Wet"), ParamUnit::None);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // find_descriptor_index_by_label — closes CODE_AUDIT C-7.
+    //
+    // The find-by-label walk in LadspaEffect::new previously did
+    //   for i in 0..u32::MAX as usize { … }
+    // which would loop ~4 billion times on a buggy plugin that returns
+    // non-null for every index without a matching label. The fix
+    // bounds the walk by LADSPA_DESCRIPTOR_CAP (the same constant
+    // already used by the discovery loop). These tests exercise the
+    // four reachable outcomes via stub closures so the loop's
+    // termination logic is testable without loading a real .so.
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn descriptor_cap_is_bounded_and_reasonable() {
+        // Future "let me bump this back to u32::MAX" surfaces in CI.
+        assert!(LADSPA_DESCRIPTOR_CAP <= 8192,
+            "cap must stay bounded so a buggy plugin can't hang the host");
+        assert!(LADSPA_DESCRIPTOR_CAP >= 256,
+            "cap must allow legitimately large LADSPA bundles (some expose 100+)");
+    }
+
+    #[test]
+    fn find_descriptor_returns_first_match_and_short_circuits() {
+        // Plugin returns labels "a", "b", "c", "target", "more" then null.
+        let labels = vec!["a", "b", "c", "target", "more"];
+        let mut visited = 0usize;
+        let result = find_descriptor_index_by_label(
+            LADSPA_DESCRIPTOR_CAP,
+            "target",
+            |i| {
+                visited = visited.max(i + 1);
+                labels.get(i).map(|s| s.to_string())
+            },
+        );
+        assert_eq!(result, DescriptorLookup::FoundAt(3));
+        assert_eq!(visited, 4, "must short-circuit on match — index 4 should not be probed");
+    }
+
+    #[test]
+    fn find_descriptor_returns_not_found_when_plugin_terminates() {
+        // Plugin returns labels "a", "b", "c" then null at index 3.
+        // Cap is huge but null arrives first — we should NOT report cap-hit.
+        let labels = vec!["a", "b", "c"];
+        let result = find_descriptor_index_by_label(
+            LADSPA_DESCRIPTOR_CAP,
+            "missing",
+            |i| labels.get(i).map(|s| s.to_string()),
+        );
+        assert_eq!(result, DescriptorLookup::NotFound);
+    }
+
+    #[test]
+    fn find_descriptor_returns_cap_hit_on_non_terminating_plugin() {
+        // The exact bug C-7 calls out: plugin returns non-null for every
+        // index AND the label never matches. Without the cap this would
+        // loop ~4 billion times. With the cap it must report CapHit and
+        // call count must equal cap.
+        let mut call_count = 0usize;
+        let cap = 16; // small cap to keep the test fast
+        let result = find_descriptor_index_by_label(
+            cap,
+            "needle",
+            |_i| {
+                call_count += 1;
+                Some("haystack".to_string())
+            },
+        );
+        assert_eq!(result, DescriptorLookup::CapHit);
+        assert_eq!(call_count, cap,
+            "non-terminating plugin must be probed exactly `cap` times — neither more (loop bound bug) nor fewer (early exit bug)");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // read_latency_samples — closes CODE_AUDIT C-8.
+    //
+    // The 2026-04-20 array entry claimed the latency port-name scan
+    // shipped, and today's audit confirmed the production code (port
+    // scan at construction, control_out_sinks readback at query) is
+    // present and correct. These tests pin the readback policy so a
+    // future "let me drop the NaN/negative guards" or "let me change
+    // the rounding" surfaces in CI rather than as wrong A/V alignment
+    // when an audio effect with a latency port is engaged.
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn latency_returns_zero_when_plugin_has_no_latency_port() {
+        // Slot=None is the common case: most LADSPA plugins don't
+        // expose a "latency" control output. The host must report 0
+        // delay so A/V sync isn't perturbed by a phantom shift.
+        assert_eq!(read_latency_samples(None, &[]), 0);
+        assert_eq!(read_latency_samples(None, &[42.0, 7.0]), 0);
+    }
+
+    #[test]
+    fn latency_reads_the_correct_slot() {
+        // Slot points into control_out_sinks; the value at that slot
+        // is the plugin's last-written latency in samples.
+        let sinks = vec![0.0, 64.0, 0.0]; // slot 1 holds the latency
+        assert_eq!(read_latency_samples(Some(1), &sinks), 64);
+    }
+
+    #[test]
+    fn latency_rounds_fractional_samples_half_up() {
+        // Look-ahead limiters / FFT plugins often report fractional
+        // sample latency. Half-up matches the comment in the production
+        // body and keeps the host's alignment within ±0.5 sample.
+        assert_eq!(read_latency_samples(Some(0), &[5.5]), 6,
+            "5.5 must round to 6 (half-up)");
+        assert_eq!(read_latency_samples(Some(0), &[5.4]), 5,
+            "5.4 must round to 5");
+        assert_eq!(read_latency_samples(Some(0), &[5.0]), 5,
+            "exact 5.0 stays 5");
+    }
+
+    #[test]
+    fn latency_clamps_garbage_values_to_zero() {
+        // Some plugins emit NaN or +/-inf during the first few run()
+        // calls before their internal state stabilises. The host
+        // refuses to propagate that into A/V alignment.
+        assert_eq!(read_latency_samples(Some(0), &[f32::NAN]), 0,
+            "NaN latency must clamp to 0, not panic");
+        assert_eq!(read_latency_samples(Some(0), &[f32::INFINITY]), 0,
+            "+inf latency must clamp to 0");
+        assert_eq!(read_latency_samples(Some(0), &[f32::NEG_INFINITY]), 0,
+            "-inf latency must clamp to 0");
+        assert_eq!(read_latency_samples(Some(0), &[-3.0]), 0,
+            "negative latency is nonsensical → 0");
+        assert_eq!(read_latency_samples(Some(0), &[0.0]), 0,
+            "exactly 0.0 → 0 (not interesting; just pinning behaviour)");
+    }
+
+    #[test]
+    fn latency_with_out_of_bounds_slot_returns_zero_no_panic() {
+        // Defensive: the latency_slot is set at construction from
+        // control_out_indices.len(), which equals control_out_sinks.len()
+        // for the lifetime of LadspaEffect, so an out-of-bounds slot is
+        // unreachable in normal flow. But pinning the guard means a
+        // future refactor that desyncs the two can't crash the audio
+        // thread. The original inline match would have indexed
+        // control_out_sinks[slot] and panicked.
+        assert_eq!(read_latency_samples(Some(99), &[0.0, 0.0]), 0);
+        assert_eq!(read_latency_samples(Some(0), &[]), 0);
+    }
+
+    #[test]
+    fn find_descriptor_handles_empty_plugin() {
+        // Plugin returns null at index 0 — empty descriptor list.
+        let result = find_descriptor_index_by_label(
+            LADSPA_DESCRIPTOR_CAP,
+            "anything",
+            |_i| None,
+        );
+        assert_eq!(result, DescriptorLookup::NotFound);
+    }
+
+    // ─── Disk cache round-trip ───────────────────────────────────────
+
+    fn fixture_plugin(unique_id: u64, name: &str) -> LadspaPluginInfo {
+        LadspaPluginInfo {
+            path: PathBuf::from(format!("/tmp/fake/{name}.so")),
+            unique_id,
+            label: name.to_string(),
+            name: name.to_string(),
+            maker: "Test Suite".to_string(),
+            copyright: "GPL".to_string(),
+            port_count: 4,
+            control_inputs: vec![LadspaControlPort {
+                index: 0,
+                name: "Gain".to_string(),
+                default: 1.0,
+                min: 0.0,
+                max: 2.0,
+                is_integer: false,
+                is_logarithmic: false,
+                is_toggle: false,
+            }],
+            audio_inputs: 1,
+            audio_outputs: 1,
+        }
+    }
+
+    fn unique_tmp(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "klipp-test-ladspa-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ))
+    }
+
+    #[test]
+    fn cache_roundtrips_plugins() {
+        let tmp = unique_tmp("roundtrip");
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let dirs = vec![tmp.clone()];
+        let plugins = vec![fixture_plugin(1, "alpha"), fixture_plugin(2, "beta")];
+        ladspa_cache::save(&tmp, &dirs, &plugins).expect("save");
+
+        let loaded = ladspa_cache::load(&tmp, &dirs).expect("load");
+        assert_eq!(loaded.len(), plugins.len());
+        assert_eq!(loaded[0].unique_id, 1);
+        assert_eq!(loaded[0].name, "alpha");
+        assert_eq!(loaded[0].control_inputs.len(), 1);
+        assert_eq!(loaded[0].control_inputs[0].name, "Gain");
+        assert_eq!(loaded[1].unique_id, 2);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn cache_invalidates_when_dir_signature_differs() {
+        // Save against one dir, load against a different dir → miss.
+        // Simulates the "user installed a new plugin pack into a previously-
+        // empty path" case (or removed plugins from one of the dirs).
+        let base = unique_tmp("mtime");
+        let dir_a = base.join("a");
+        let dir_b = base.join("b");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+
+        let plugins = vec![fixture_plugin(42, "stable")];
+        ladspa_cache::save(&base, &[dir_a.clone()], &plugins).expect("save");
+
+        let same = ladspa_cache::load(&base, &[dir_a.clone()]);
+        assert!(same.is_some(), "same-dir load should hit");
+
+        let different = ladspa_cache::load(&base, &[dir_b.clone()]);
+        assert!(
+            different.is_none(),
+            "different-dir signature should miss the cache"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cache_load_missing_file_returns_none() {
+        let tmp = unique_tmp("missing");
+        // Don't create the dir — cache file definitely doesn't exist.
+        let result = ladspa_cache::load(&tmp, &[tmp.clone()]);
+        assert!(result.is_none(), "missing cache file → None");
+    }
+
+    #[test]
+    fn cache_load_corrupt_json_returns_none() {
+        let tmp = unique_tmp("corrupt");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("ladspa_registry.json"), "{not valid json").unwrap();
+
+        let result = ladspa_cache::load(&tmp, &[tmp.clone()]);
+        assert!(result.is_none(), "corrupt cache → None, not panic");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

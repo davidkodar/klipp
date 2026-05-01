@@ -123,6 +123,8 @@ fn realistic_grade_graph() -> NodeGraph {
             enabled: true,
             params,
             keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
         }
     }
     fn e(from: NodeId, to: NodeId) -> Edge {
@@ -201,7 +203,7 @@ fn realistic_grade_graph() -> NodeGraph {
         node_positions.insert(node.id, NodePos { x: i as f32 * 200.0, y: 0.0 });
     }
 
-    NodeGraph { nodes, edges, output_node_id: output, node_positions }
+    NodeGraph { nodes, edges, output_node_id: output, node_positions, working_space_override: None }
 }
 
 fn make_gradient_frame(w: u32, h: u32) -> Vec<f32> {

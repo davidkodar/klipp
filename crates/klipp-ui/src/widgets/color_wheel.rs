@@ -16,19 +16,19 @@ pub struct WheelResponse {
 pub fn color_wheel(
     ui: &mut egui::Ui,
     state: &mut ColorWheelState,
-    _theme: &KlippTheme,
+    theme: &KlippTheme,
     label: &str,
     offset: &mut [f32; 2],
     master: &mut f32,
 ) -> WheelResponse {
-    color_wheel_sized(ui, state, _theme, label, offset, master, 108.0, None)
+    color_wheel_sized(ui, state, theme, label, offset, master, 108.0, None)
 }
 
 /// Like `color_wheel` but with a custom diameter (in pixels).
 pub fn color_wheel_sized(
     ui: &mut egui::Ui,
     state: &mut ColorWheelState,
-    _theme: &KlippTheme,
+    theme: &KlippTheme,
     label: &str,
     offset: &mut [f32; 2],
     master: &mut f32,
@@ -61,7 +61,7 @@ pub fn color_wheel_sized(
     let center_x = full_rect.center().x;
 
     // ── Label ──
-    let text_accent = egui::Color32::from_rgb(0xe8, 0xa0, 0x20);
+    let text_accent = theme.accent;
     let painter = ui.painter_at(full_rect);
     painter.text(
         egui::pos2(center_x, full_rect.min.y + label_h / 2.0),
@@ -179,7 +179,7 @@ pub fn color_wheel_sized(
         (rgb_b, egui::Color32::from_rgb(0x40, 0x40, 0x90), egui::Color32::from_rgb(0x70, 0x70, 0xe0)),
     ];
 
-    let neutral_text = egui::Color32::from_rgb(0x90, 0x90, 0xa0);
+    let neutral_text = theme.text_dim;
 
     for (i, &(val, border_c, text_c)) in pill_colors.iter().enumerate() {
         let px = pills_left + i as f32 * (pill_w + pill_gap);
@@ -187,9 +187,9 @@ pub fn color_wheel_sized(
             egui::pos2(px, rgb_top),
             egui::vec2(pill_w, pill_h),
         );
-        let bg = egui::Color32::from_rgb(0x16, 0x16, 0x1a);
+        let bg = theme.bg_deep;
         let is_zero = val.abs() < 0.005;
-        let border = if is_zero { egui::Color32::from_rgb(0x2a, 0x2a, 0x32) } else { border_c };
+        let border = if is_zero { theme.border } else { border_c };
         let text = if is_zero { neutral_text } else { text_c };
         painter.rect_filled(pill_rect, 3.0, bg);
         painter.rect_stroke(pill_rect, 3.0, egui::Stroke::new(0.5_f32, border));
@@ -209,7 +209,7 @@ pub fn color_wheel_sized(
     let track_left = center_x - pills_total / 2.0 + m_label_w + 2.0;
     let track_w = (pills_total - m_label_w - m_value_w - 4.0).max(20.0);
     let track_y = master_top + master_row_h / 2.0;
-    let track_bg = egui::Color32::from_rgb(0x2a, 0x2a, 0x32);
+    let track_bg = theme.bg_raised;
 
     // "M" label
     painter.text(
@@ -217,7 +217,7 @@ pub fn color_wheel_sized(
         egui::Align2::LEFT_CENTER,
         "M",
         egui::FontId::proportional(9.0),
-        egui::Color32::from_rgb(0x50, 0x50, 0x60),
+        theme.text_dim,
     );
 
     // Track

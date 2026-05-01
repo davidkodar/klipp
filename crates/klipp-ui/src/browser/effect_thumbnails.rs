@@ -16,7 +16,11 @@ static REFERENCE_PNG: &[u8] = include_bytes!("../../../../assets/effect_preview_
 fn load_embedded_reference() -> Option<ReferenceFrame> {
     let decoder = png::Decoder::new(std::io::Cursor::new(REFERENCE_PNG));
     let mut reader = decoder.read_info().ok()?;
-    let mut buf = vec![0u8; reader.output_buffer_size()];
+    // png 0.18 returns Option<usize> for output_buffer_size —
+    // None means the buffer would overflow. The embedded reference
+    // PNG is small and known-good; on overflow, just give up.
+    let buf_size = reader.output_buffer_size()?;
+    let mut buf = vec![0u8; buf_size];
     let info = reader.next_frame(&mut buf).ok()?;
     let w = info.width;
     let h = info.height;
@@ -207,7 +211,20 @@ impl ThumbnailRenderer {
     }
 
     /// Poll for completed thumbnails and upload as egui textures.
-    pub fn poll_and_upload(&mut self, ctx: &egui::Context) {
+    ///
+    /// Any `TextureHandle` displaced from `self.textures` (i.e., a
+    /// re-render arrived for an effect that already had a thumbnail)
+    /// is appended to `displaced` instead of being dropped inline.
+    /// Caller pushes them into the app's deferred-drop bucket so the
+    /// underlying wgpu texture survives the current frame's submit —
+    /// dropping a `TextureHandle` mid-`update()` panics on the next
+    /// queue.submit when an in-flight egui BindGroup still references
+    /// the dying texture (`feedback_defer_drop_texture` memory).
+    pub fn poll_and_upload(
+        &mut self,
+        ctx: &egui::Context,
+        displaced: &mut Vec<egui::TextureHandle>,
+    ) {
         let mut received_any = false;
         while let Ok(result) = self.rx.try_recv() {
             self.ofx_pending.remove(&result.effect_name);
@@ -230,7 +247,17 @@ impl ThumbnailRenderer {
                 image,
                 egui::TextureOptions::LINEAR,
             );
-            self.textures.insert(result.effect_name, texture);
+            // Defer-drop the previous handle for this effect, if any.
+            // HashMap::insert drops the displaced value at end of stmt
+            // — exactly the mid-frame TextureHandle drop the
+            // defer-drop pattern exists to prevent.
+            if let Some(old) = self.textures.insert(result.effect_name, texture) {
+                tracing::debug!(
+                    "TEX_DEFER_DROP id={:?} name=fx_thumb_re_render reason=re-rendered",
+                    old.id(),
+                );
+                displaced.push(old);
+            }
             received_any = true;
         }
 
