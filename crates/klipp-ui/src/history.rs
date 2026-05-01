@@ -1,6 +1,29 @@
 use std::collections::{HashMap, VecDeque};
-use klipp_core::{BinId, ClipId, Keyframe, MediaId, RationalTime};
+use klipp_core::{AudioEffectInstance, BinId, ClipId, Keyframe, MediaId, RationalTime};
 use klipp_timeline::Clip;
+
+/// Snapshot of a clip's audio chain (effects + per-effect kfs). Used by
+/// `EditCommand::EditAudioChain` so add/remove/edit/reorder operations
+/// on the audio chain can be undone atomically.
+#[derive(Debug, Clone)]
+pub struct AudioChainSnapshot {
+    pub audio_effects: Vec<AudioEffectInstance>,
+    pub audio_effect_keyframes: HashMap<String, Vec<Keyframe>>,
+}
+
+impl AudioChainSnapshot {
+    pub fn from_clip(clip: &Clip) -> Self {
+        Self {
+            audio_effects: clip.audio_effects.clone(),
+            audio_effect_keyframes: clip.audio_effect_keyframes.clone(),
+        }
+    }
+
+    pub fn apply_to_clip(&self, clip: &mut Clip) {
+        clip.audio_effects = self.audio_effects.clone();
+        clip.audio_effect_keyframes = self.audio_effect_keyframes.clone();
+    }
+}
 
 /// Snapshot of all keyframe data for a clip (used for undo/redo).
 #[derive(Debug, Clone)]
@@ -372,6 +395,19 @@ pub enum EditCommand {
         new_data: klipp_core::GeneratorData,
     },
 
+    // === AUDIO CHAIN ===
+    /// Atomic snapshot-based undo for any edit to a clip's audio
+    /// effect chain — Add / Remove / Update param / Toggle / Wet-Dry /
+    /// Reorder all push one of these. The whole `audio_effects` vec
+    /// plus `audio_effect_keyframes` map are snapshotted on both sides
+    /// so the apply path is a simple "restore the snapshot" without
+    /// per-command branching.
+    EditAudioChain {
+        clip_id: ClipId,
+        description: &'static str,
+        old_state: AudioChainSnapshot,
+        new_state: AudioChainSnapshot,
+    },
 }
 
 impl EditCommand {
@@ -412,6 +448,7 @@ impl EditCommand {
             EditCommand::SetClipSpeed { .. } => "Set Clip Speed",
             EditCommand::EditTitle { description, .. } => description,
             EditCommand::EditGenerator { .. } => "Edit Generator",
+            EditCommand::EditAudioChain { description, .. } => description,
         }
     }
 }
@@ -1202,5 +1239,143 @@ mod drag_coalesce_tests {
 
         assert_eq!(h.undo_stack.len(), 0,
             "no pending drag = no-op; stale duplicate end_drag should not produce a phantom undo entry");
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Audio chain snapshot roundtrip — covers AddAudioEffect /
+// RemoveAudioEffect / UpdateAudioEffectParam / ToggleAudioEffect /
+// SetAudioEffectWetDry / ReorderAudioEffect undo paths. Before this
+// fix, none of these handlers pushed history at all — the user could
+// add an effect and not undo it.
+// ═══════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod audio_chain_snapshot_tests {
+    use super::*;
+    use klipp_core::{AudioEffectInstance, ClipId, Interpolation, MediaId, RationalTime};
+    use std::collections::HashMap;
+
+    fn make_clip() -> Clip {
+        Clip::media(
+            MediaId::new(),
+            RationalTime::from_frames(0, 24),
+            RationalTime::from_frames(48, 24),
+            RationalTime::from_frames(0, 24),
+            RationalTime::from_frames(48, 24),
+        )
+    }
+
+    fn reverb() -> AudioEffectInstance {
+        AudioEffectInstance {
+            effect_type: "reverb".into(),
+            enabled: true,
+            wet_dry: 0.5,
+            params: vec![("room_size".into(), 0.7), ("damping".into(), 0.3)],
+        }
+    }
+
+    #[test]
+    fn snapshot_captures_effects_and_kfs() {
+        let mut clip = make_clip();
+        clip.audio_effects = vec![reverb()];
+        clip.audio_effect_keyframes.insert(
+            "0:room_size".to_string(),
+            vec![Keyframe {
+                time_secs: 0.5,
+                value: 0.9,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
+            }],
+        );
+
+        let snap = AudioChainSnapshot::from_clip(&clip);
+
+        assert_eq!(snap.audio_effects.len(), 1);
+        assert_eq!(snap.audio_effects[0].effect_type, "reverb");
+        assert_eq!(snap.audio_effects[0].wet_dry, 0.5);
+        assert_eq!(snap.audio_effect_keyframes.len(), 1);
+        let kfs = snap.audio_effect_keyframes.get("0:room_size").unwrap();
+        assert_eq!(kfs.len(), 1);
+        assert!((kfs[0].value - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn apply_overwrites_clip_chain_state() {
+        // Build a "before" clip with no effects, snapshot it. Then add
+        // an effect to the clip. Apply the snapshot — the effect must
+        // be removed (clip state restored to "before").
+        let mut clip = make_clip();
+        let snap_empty = AudioChainSnapshot::from_clip(&clip);
+
+        clip.audio_effects.push(reverb());
+        clip.audio_effect_keyframes.insert(
+            "0:room_size".to_string(),
+            vec![Keyframe {
+                time_secs: 0.0, value: 1.0,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            }],
+        );
+
+        snap_empty.apply_to_clip(&mut clip);
+        assert!(clip.audio_effects.is_empty(),
+            "apply must restore the snapshot's empty effect chain");
+        assert!(clip.audio_effect_keyframes.is_empty(),
+            "apply must also restore kf state — leaving stale kfs would \
+             reference a removed effect index");
+    }
+
+    #[test]
+    fn edit_audio_chain_label_uses_description() {
+        let entry = EditCommand::EditAudioChain {
+            clip_id: ClipId::new(),
+            description: "Add Audio Effect",
+            old_state: AudioChainSnapshot {
+                audio_effects: vec![],
+                audio_effect_keyframes: HashMap::new(),
+            },
+            new_state: AudioChainSnapshot {
+                audio_effects: vec![reverb()],
+                audio_effect_keyframes: HashMap::new(),
+            },
+        };
+        assert_eq!(entry.label(), "Add Audio Effect");
+    }
+
+    #[test]
+    fn snapshot_roundtrip_preserves_per_param_kfs() {
+        // Multiple kf tracks — make sure they all survive the round trip
+        // verbatim (sorted insertion order isn't preserved by HashMap,
+        // so we compare keys + values explicitly).
+        let mut clip = make_clip();
+        clip.audio_effects = vec![reverb(), AudioEffectInstance {
+            effect_type: "compressor".into(),
+            enabled: true,
+            wet_dry: 1.0,
+            params: vec![("threshold".into(), -12.0)],
+        }];
+        let kf = |t, v| Keyframe {
+            time_secs: t, value: v,
+            interpolation: Interpolation::Linear,
+            tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+        };
+        clip.audio_effect_keyframes.insert("0:room_size".into(), vec![kf(0.0, 0.5), kf(1.0, 0.9)]);
+        clip.audio_effect_keyframes.insert("1:threshold".into(), vec![kf(0.5, -6.0)]);
+        clip.audio_effect_keyframes.insert("0:__wetdry".into(), vec![kf(0.0, 1.0), kf(2.0, 0.0)]);
+
+        let snap = AudioChainSnapshot::from_clip(&clip);
+
+        // Round-trip: clear clip, then re-apply.
+        clip.audio_effects.clear();
+        clip.audio_effect_keyframes.clear();
+        snap.apply_to_clip(&mut clip);
+
+        assert_eq!(clip.audio_effects.len(), 2);
+        assert_eq!(clip.audio_effect_keyframes.len(), 3);
+        assert_eq!(clip.audio_effect_keyframes["0:room_size"].len(), 2);
+        assert!((clip.audio_effect_keyframes["0:room_size"][1].value - 0.9).abs() < 1e-6);
+        assert!((clip.audio_effect_keyframes["1:threshold"][0].value - (-6.0)).abs() < 1e-6);
+        assert!((clip.audio_effect_keyframes["0:__wetdry"][1].value - 0.0).abs() < 1e-6);
     }
 }

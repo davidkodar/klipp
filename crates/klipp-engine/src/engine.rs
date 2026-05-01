@@ -266,12 +266,19 @@ struct ActiveAudioSource {
     /// and would play the wrong audio. seek_all_audio_to_timecode checks
     /// this and falls back to start_all_audio when it sees a mismatch.
     media_id: MediaId,
+    /// Fingerprint of the audio chain (effects + kfs) the source was
+    /// opened with. Two clips that share the same media but have
+    /// different audio_effects MUST get separate chain rebuilds at the
+    /// boundary — without this check the first clip's chain bleeds into
+    /// the second. `audio_fingerprint_for_clip` is the canonical hash.
+    audio_chain_fingerprint: u64,
     source: AudioSource,
 }
 /// Pre-opened audio source ready for loop swap (created by pre-seek thread).
 struct PreSeekAudioSource {
     track_index: usize,
     media_id: MediaId,
+    audio_chain_fingerprint: u64,
     source: AudioSource,
     consumer: crate::audio_decoder::AudioConsumer,
 }
@@ -3080,25 +3087,39 @@ pub(crate) fn audio_fingerprint_for_clip(clip: &klipp_timeline::Clip) -> u64 {
     let mut fp: u64 = 0;
     fp = fp.wrapping_mul(31).wrapping_add(mid.0.as_u64_pair().0);
     fp = fp.wrapping_mul(31).wrapping_add(clip.speed.to_bits());
-    fp = fp.wrapping_mul(31).wrapping_add(clip.audio_effects.len() as u64);
-    for ae in &clip.audio_effects {
+    fp = fp.wrapping_mul(31).wrapping_add(audio_chain_fingerprint_for(
+        &clip.audio_effects,
+        &clip.audio_effect_keyframes,
+    ));
+    fp
+}
+
+/// Hash the audio CHAIN fields only (effects + kf tracks) — without
+/// media_id or clip speed. Used at clip-transition boundaries to detect
+/// "same media, different effects" cases that
+/// `audio_fingerprint_for_clip` would mask under the media_id check.
+pub(crate) fn audio_chain_fingerprint_for(
+    audio_effects: &[klipp_core::AudioEffectInstance],
+    audio_effect_keyframes: &std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+) -> u64 {
+    let mut fp: u64 = 0;
+    fp = fp.wrapping_mul(31).wrapping_add(audio_effects.len() as u64);
+    for ae in audio_effects {
         for b in ae.effect_type.bytes() {
             fp = fp.wrapping_mul(31).wrapping_add(b as u64);
         }
         fp = fp.wrapping_mul(31).wrapping_add(ae.enabled as u64);
     }
-    // Audio effect keyframes: any add/remove/move/interp change must
-    // invalidate the running chain. Hash the sorted (key → kfs) pairs
-    // deterministically — HashMap iteration order would otherwise leak
-    // nondeterminism into the fingerprint and cause spurious restarts.
-    fp = fp.wrapping_mul(31).wrapping_add(clip.audio_effect_keyframes.len() as u64);
-    let mut kf_keys: Vec<&String> = clip.audio_effect_keyframes.keys().collect();
+    // Sort kf-track keys before hashing so HashMap iteration order
+    // doesn't leak nondeterminism into the fingerprint.
+    fp = fp.wrapping_mul(31).wrapping_add(audio_effect_keyframes.len() as u64);
+    let mut kf_keys: Vec<&String> = audio_effect_keyframes.keys().collect();
     kf_keys.sort();
     for key in kf_keys {
         for b in key.bytes() {
             fp = fp.wrapping_mul(31).wrapping_add(b as u64);
         }
-        let kfs = &clip.audio_effect_keyframes[key];
+        let kfs = &audio_effect_keyframes[key];
         fp = fp.wrapping_mul(31).wrapping_add(kfs.len() as u64);
         for kf in kfs {
             fp = fp.wrapping_mul(31).wrapping_add(kf.time_secs.to_bits());
@@ -3138,6 +3159,12 @@ impl PlaybackEngine {
         audio_effects: Vec<klipp_core::AudioEffectInstance>,
         audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
     ) {
+        // Compute the chain fingerprint up front so both the PCM and
+        // decoder paths stamp it onto the ActiveAudioSource. Boundary
+        // checks compare this against the new clip to decide whether
+        // a chain rebuild is required.
+        let chain_fp = audio_chain_fingerprint_for(&audio_effects, &audio_effect_keyframes);
+
         // Try PCM cache first (instant seeks, zero codec overhead)
         let pcm_path = self.pcm_cache_path(media_id);
         if let Some(ref pcm) = pcm_path {
@@ -3153,6 +3180,7 @@ impl PlaybackEngine {
                         self.audio_sources.push(ActiveAudioSource {
                             track_index,
                             media_id,
+                            audio_chain_fingerprint: chain_fp,
                             source: AudioSource::PcmFeeder(feeder),
                         });
                         return;
@@ -3176,6 +3204,7 @@ impl PlaybackEngine {
                 self.audio_sources.push(ActiveAudioSource {
                     track_index,
                     media_id,
+                    audio_chain_fingerprint: chain_fp,
                     source: AudioSource::Decoder(adec),
                 });
             }
@@ -3239,7 +3268,12 @@ impl PlaybackEngine {
         // sees clip A's audio continue playing through clip B's playback
         // whenever advance_to_next_clip enters the preroll-hit branch with
         // a different media on the next clip.
-        let media_changed = {
+        //
+        // Same restart triggers when the AUDIO CHAIN changed (different
+        // audio_effects / audio_effect_keyframes on the next clip) — two
+        // same-media clips with distinct effects would otherwise share
+        // the first clip's chain and the user hears effect bleed.
+        let chain_or_media_changed = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             self.audio_sources.iter().any(|active| {
                 let Some(track) = seq.tracks.get(active.track_index) else {
@@ -3250,10 +3284,17 @@ impl PlaybackEngine {
                     // drop the source, which is the correct outcome too.
                     return true;
                 };
-                clip.media_id() != Some(active.media_id)
+                if clip.media_id() != Some(active.media_id) {
+                    return true;
+                }
+                let new_fp = audio_chain_fingerprint_for(
+                    &clip.audio_effects,
+                    &clip.audio_effect_keyframes,
+                );
+                new_fp != active.audio_chain_fingerprint
             })
         };
-        if media_changed {
+        if chain_or_media_changed {
             self.start_all_audio(tc);
             return;
         }
@@ -4195,21 +4236,36 @@ impl PlaybackEngine {
             // new playhead, delegate to `start_all_audio` to stop-and-reopen
             // the decoders. Video stays contiguous regardless. Mirrors the
             // matching check in `seek_all_audio_to_timecode`.
-            let audio_media_changed = {
+            //
+            // We also restart when the AUDIO CHAIN changed — two clips
+            // that share the same media file can carry different
+            // audio_effects / audio_effect_keyframes, and without this
+            // check the prior clip's chain bleeds into the next one
+            // (manifests as "the effect is applied to the whole track").
+            let audio_chain_or_media_changed = {
                 let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 self.audio_sources.iter().any(|active| {
                     let Some(track) = seq.tracks.get(active.track_index) else {
                         return true;
                     };
                     match track.clip_at_timecode(self.playhead) {
-                        Some((_, clip)) => clip.media_id() != Some(active.media_id),
+                        Some((_, clip)) => {
+                            if clip.media_id() != Some(active.media_id) {
+                                return true;
+                            }
+                            let new_fp = audio_chain_fingerprint_for(
+                                &clip.audio_effects,
+                                &clip.audio_effect_keyframes,
+                            );
+                            new_fp != active.audio_chain_fingerprint
+                        }
                         None => true,
                     }
                 })
             };
-            if audio_media_changed {
+            if audio_chain_or_media_changed {
                 info!(
-                    "CUT-DIAG CONTIGUOUS: audio media changed at boundary — restarting audio sources",
+                    "CUT-DIAG CONTIGUOUS: audio media or chain changed at boundary — restarting audio sources",
                 );
                 self.start_all_audio(self.playhead);
                 self.update_overlay_decoders(self.playhead);
@@ -4836,6 +4892,7 @@ impl PlaybackEngine {
             // Open and seek audio sources
             let mut sources = Vec::new();
             for (track_idx, media_id, path, source_secs, audio_effects, audio_effect_keyframes) in track_audio {
+                let chain_fp = audio_chain_fingerprint_for(&audio_effects, &audio_effect_keyframes);
                 // Try PCM cache
                 if let Ok((feeder, consumer)) = PcmAudioFeeder::open(&path, sample_rate, audio_effects.clone(), audio_effect_keyframes.clone()) {
                     if source_secs > 0.01 {
@@ -4844,6 +4901,7 @@ impl PlaybackEngine {
                     sources.push(PreSeekAudioSource {
                         track_index: track_idx,
                         media_id,
+                        audio_chain_fingerprint: chain_fp,
                         source: AudioSource::PcmFeeder(feeder),
                         consumer,
                     });
@@ -4857,6 +4915,7 @@ impl PlaybackEngine {
                     sources.push(PreSeekAudioSource {
                         track_index: track_idx,
                         media_id,
+                        audio_chain_fingerprint: chain_fp,
                         source: AudioSource::Decoder(adec),
                         consumer,
                     });
@@ -4922,6 +4981,7 @@ impl PlaybackEngine {
                     self.audio_sources.push(ActiveAudioSource {
                         track_index: ps_source.track_index,
                         media_id: ps_source.media_id,
+                        audio_chain_fingerprint: ps_source.audio_chain_fingerprint,
                         source: ps_source.source,
                     });
                 }
@@ -10548,6 +10608,73 @@ mod audio_fingerprint_kf_tests {
     /// pattern and verifies that two clips with identical kf state but
     /// different media_ids produce *different* fingerprints when both
     /// are folded in (the non-playhead clip simply isn't folded in).
+    /// Pin the chain-bleed regression: two clips that share the same
+    /// MediaId but carry different audio_effects MUST produce different
+    /// chain fingerprints. The boundary check in advance_to_next_clip
+    /// uses these fingerprints to decide whether to rebuild the audio
+    /// chain when crossing a clip boundary on the same source media.
+    /// Before this fix, clip A's reverb would bleed into clip B's
+    /// playback whenever the two referenced the same file.
+    #[test]
+    fn audio_chain_fingerprint_distinguishes_same_media_different_effects() {
+        use crate::engine::audio_chain_fingerprint_for;
+        let kfs_empty = std::collections::HashMap::new();
+        let no_effects: Vec<AudioEffectInstance> = vec![];
+        let with_reverb = vec![AudioEffectInstance {
+            effect_type: "reverb".into(),
+            enabled: true,
+            wet_dry: 1.0,
+            params: vec![],
+        }];
+
+        let fp_clean = audio_chain_fingerprint_for(&no_effects, &kfs_empty);
+        let fp_reverb = audio_chain_fingerprint_for(&with_reverb, &kfs_empty);
+
+        assert_ne!(fp_clean, fp_reverb,
+            "two clips with identical media but different effect chains \
+             must have different chain fingerprints — without this the \
+             engine reuses clip A's chain for clip B and the user hears \
+             reverb on the dry clip");
+    }
+
+    /// Pin the parity: two clips with the same chain produce the same
+    /// fingerprint. Otherwise the boundary check would fire spurious
+    /// rebuilds even when the chain genuinely hasn't changed.
+    #[test]
+    fn audio_chain_fingerprint_is_stable_when_chain_unchanged() {
+        use crate::engine::audio_chain_fingerprint_for;
+        let kfs_empty = std::collections::HashMap::new();
+        let effects = vec![AudioEffectInstance {
+            effect_type: "compressor".into(),
+            enabled: true,
+            wet_dry: 1.0,
+            params: vec![("threshold".into(), -18.0)],
+        }];
+        let fp1 = audio_chain_fingerprint_for(&effects, &kfs_empty);
+        let fp2 = audio_chain_fingerprint_for(&effects, &kfs_empty);
+        assert_eq!(fp1, fp2);
+    }
+
+    /// Chain fingerprint must NOT include media_id — that's compared
+    /// separately at the boundary. If the chain fingerprint folded in
+    /// media_id, clip-transition restarts would over-fire on every
+    /// boundary even when the chain is unchanged across the cut.
+    #[test]
+    fn audio_chain_fingerprint_is_independent_of_media_id() {
+        use crate::engine::audio_chain_fingerprint_for;
+        // The function takes audio_effects + audio_effect_keyframes
+        // only — it has no access to a media_id. This test exists as
+        // a contract pin: a future "let me fold media_id into the chain
+        // fingerprint" change would break the boundary semantics
+        // (because then identical chains on different media would also
+        // differ, defeating the purpose of the separate media_id
+        // comparison). The signature alone enforces this; the test
+        // just documents intent.
+        let kfs = std::collections::HashMap::new();
+        let effects: Vec<AudioEffectInstance> = vec![];
+        let _ = audio_chain_fingerprint_for(&effects, &kfs);
+    }
+
     #[test]
     fn fingerprint_excludes_non_playhead_clips_by_design() {
         let mid_a = MediaId::new();
