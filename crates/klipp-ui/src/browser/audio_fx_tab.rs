@@ -11,18 +11,32 @@ use klipp_core::AppCommand;
 /// display label doesn't reshuffle the visual layout.
 fn tile_color(entry: &EffectEntry, theme: &KlippTheme) -> egui::Color32 {
     match &entry.source {
-        EffectSource::Audio(type_id) => match type_id.as_str() {
-            "eq" | "pitch_shift" => egui::Color32::from_rgb(0x2d, 0x6f, 0xa8), // blue
-            "compressor" | "limiter" | "gate" | "deesser" | "normalize"
-            | "multiband_compressor" | "noise_reduction" => {
-                egui::Color32::from_rgb(0x3a, 0x8c, 0x6e) // green
-            }
-            "reverb" | "delay" => egui::Color32::from_rgb(0x4a, 0x6e, 0xa8), // light-blue
-            "chorus" => egui::Color32::from_rgb(0x4a, 0x6e, 0xa8),
-            "declick" => egui::Color32::from_rgb(0x7a, 0x4f, 0xa8), // purple
-            _ => egui::Color32::from_rgb(0x50, 0x50, 0x60),
-        },
+        EffectSource::Audio(type_id) => audio_effect_color_for_type(type_id, theme),
         EffectSource::Ladspa(_) => theme.accent,
+        _ => egui::Color32::from_rgb(0x50, 0x50, 0x60),
+    }
+}
+
+/// Public colour mapping for audio effect type IDs — keyed off the same
+/// type_id strings used throughout the audio chain. The tile in the
+/// FX library, the timeline bypass strips, and any future automation
+/// indicators all share this palette so a "Reverb" looks the same
+/// everywhere. LADSPA plugins fall back to `theme.accent` (single hue
+/// for the whole class — distinguishing 100+ third-party plugins by
+/// colour would just produce noise).
+pub fn audio_effect_color_for_type(type_id: &str, theme: &KlippTheme) -> egui::Color32 {
+    if type_id.starts_with("ladspa:") {
+        return theme.accent;
+    }
+    match type_id {
+        "eq" | "pitch_shift" => egui::Color32::from_rgb(0x2d, 0x6f, 0xa8), // blue
+        "compressor" | "limiter" | "gate" | "deesser" | "normalize"
+        | "multiband_compressor" | "noise_reduction" => {
+            egui::Color32::from_rgb(0x3a, 0x8c, 0x6e) // green
+        }
+        "reverb" | "delay" => egui::Color32::from_rgb(0x4a, 0x6e, 0xa8), // light-blue
+        "chorus" => egui::Color32::from_rgb(0x4a, 0x6e, 0xa8),
+        "declick" => egui::Color32::from_rgb(0x7a, 0x4f, 0xa8), // purple
         _ => egui::Color32::from_rgb(0x50, 0x50, 0x60),
     }
 }

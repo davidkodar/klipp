@@ -49,6 +49,78 @@ fn theme() -> KlippTheme {
 const TRACK_HEADER_MIN_WIDTH: f32 = 80.0;
 const TRACK_HEADER_MAX_WIDTH: f32 = 320.0;
 const RULER_HEIGHT: f32 = 24.0;
+
+/// Human-readable display name for an audio effect type id. Matches
+/// the FX library's display labels so a user sees the same string in
+/// the bypass-strip tooltip as in the "+ Add Effect" picker. LADSPA
+/// plugins fall back to the path's last segment.
+fn effect_display_name(type_id: &str) -> String {
+    if let Some(rest) = type_id.strip_prefix("ladspa:") {
+        // "ladspa:/path/to/lib.so:LabelName" — take everything after
+        // the last `:`. Path may contain colons (rare) so split from
+        // the right.
+        if let Some(label) = rest.rsplit(':').next() {
+            return label.to_string();
+        }
+    }
+    match type_id {
+        "eq" => "EQ".into(),
+        "compressor" => "Compressor".into(),
+        "limiter" => "Limiter".into(),
+        "gate" => "Gate".into(),
+        "deesser" => "De-esser".into(),
+        "normalize" => "Normalize".into(),
+        "reverb" => "Reverb".into(),
+        "delay" => "Delay".into(),
+        "chorus" => "Chorus".into(),
+        "declick" => "Declick".into(),
+        "noise_reduction" => "Multi-band Gate".into(),
+        "multiband_compressor" => "Multi-band Compressor".into(),
+        "pitch_shift" => "Pitch Shift".into(),
+        other => other.to_string(),
+    }
+}
+
+/// Formatted active/bypass time-range summary for a `__bypass` kf
+/// track over a clip of `clip_dur_secs`. Implicit baseline is "active"
+/// before the first kf. Used in the bypass-strip hover tooltip.
+fn bypass_envelope_summary(
+    kfs: &[klipp_core::Keyframe],
+    clip_dur_secs: f64,
+) -> String {
+    if kfs.is_empty() {
+        return "active throughout".into();
+    }
+    let fmt = |t: f64| -> String {
+        if t < 60.0 { format!("{t:.2}s") } else {
+            let m = (t / 60.0) as i64;
+            let s = t - (m as f64) * 60.0;
+            format!("{m}:{s:05.2}")
+        }
+    };
+    let mut parts: Vec<String> = Vec::new();
+    // Implicit "active" segment before the first kf.
+    let first_t = kfs[0].time_secs.max(0.0).min(clip_dur_secs);
+    if first_t > 0.001 {
+        parts.push(format!("active {}–{}", fmt(0.0), fmt(first_t)));
+    }
+    for (i, kf) in kfs.iter().enumerate() {
+        let next_t = if i + 1 < kfs.len() {
+            kfs[i + 1].time_secs.min(clip_dur_secs)
+        } else {
+            clip_dur_secs
+        };
+        let t0 = kf.time_secs.max(0.0).min(clip_dur_secs);
+        if next_t <= t0 + 0.001 { continue; }
+        let label = if kf.value > 0.5 { "active" } else { "bypassed" };
+        parts.push(format!("{label} {}–{}", fmt(t0), fmt(next_t)));
+    }
+    if parts.is_empty() {
+        "active throughout".into()
+    } else {
+        parts.join(", ")
+    }
+}
 // Default track heights — overridable via prefs.timeline (synced to state.timeline_prefs)
 pub(crate) const VIDEO_TRACK_HEIGHT: f32 = 50.0;
 pub(crate) const AUDIO_TRACK_HEIGHT: f32 = 48.0;
@@ -4446,6 +4518,171 @@ impl TimelinePanel {
 
     /// Draw audio fade in/out visual indicators on clips.
     #[allow(clippy::too_many_arguments)]
+    /// Draw thin bottom-edge strips on an audio clip that has bypass
+    /// keyframes — one strip per kf'd effect (capped at 3, "+N" pill
+    /// for overflow). Filled = effect active at that time, empty =
+    /// bypassed. Implicit baseline before the first kf is "active",
+    /// which matches NLE convention (a kf at t=2s with value 0 means
+    /// "bypass starting from t=2s", not "always bypassed").
+    fn draw_audio_bypass_strips(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        clip_rect: egui::Rect,
+        clip: &klipp_timeline::Clip,
+        track_kind: klipp_timeline::TrackKind,
+        pointer_pos: Option<egui::Pos2>,
+    ) {
+        if track_kind != TrackKind::Audio { return; }
+        if clip_rect.width() < 8.0 || clip.kind.is_gap() { return; }
+        let clip_dur_secs = clip.duration().to_secs_f64();
+        if clip_dur_secs <= 0.0 { return; }
+
+        // Find non-empty bypass kf tracks; sort deterministically by
+        // effect index so visual order matches the inspector chain.
+        let mut bypass_tracks: Vec<(usize, &Vec<klipp_core::Keyframe>)> = clip.audio_effect_keyframes
+            .iter()
+            .filter_map(|(k, kfs)| {
+                if kfs.is_empty() { return None; }
+                let rest = k.strip_suffix(":__bypass")?;
+                let idx: usize = rest.parse().ok()?;
+                Some((idx, kfs))
+            })
+            .collect();
+        if bypass_tracks.is_empty() { return; }
+        bypass_tracks.sort_by_key(|(idx, _)| *idx);
+
+        const STRIP_HEIGHT: f32 = 3.0;
+        const STRIP_GAP: f32 = 1.0;
+        const MAX_VISIBLE: usize = 3;
+        let visible: usize = bypass_tracks.len().min(MAX_VISIBLE);
+        let total_h = visible as f32 * STRIP_HEIGHT + (visible.saturating_sub(1)) as f32 * STRIP_GAP;
+        let strips_top_y = clip_rect.bottom() - total_h - 1.0; // 1px gap from clip bottom
+
+        let theme = theme();
+        let time_to_x = |t: f64| -> f32 {
+            let frac = (t / clip_dur_secs).clamp(0.0, 1.0) as f32;
+            clip_rect.left() + frac * clip_rect.width()
+        };
+
+        // Hover-tooltip target: track which strip the pointer sits on
+        // so we can render the tooltip for its effect.
+        let mut hover_target: Option<(usize, &Vec<klipp_core::Keyframe>, egui::Rect)> = None;
+
+        for (i, (effect_idx, kfs)) in bypass_tracks.iter().take(MAX_VISIBLE).enumerate() {
+            let strip_y = strips_top_y + i as f32 * (STRIP_HEIGHT + STRIP_GAP);
+            let strip_rect = egui::Rect::from_min_size(
+                egui::pos2(clip_rect.left(), strip_y),
+                egui::vec2(clip_rect.width(), STRIP_HEIGHT),
+            );
+
+            // Resolve effect's stable colour from its type_id (matches
+            // the FX library tile colour).
+            let effect_color = clip.audio_effects.get(*effect_idx)
+                .map(|inst| crate::browser::audio_fx_tab::audio_effect_color_for_type(&inst.effect_type, &theme))
+                .unwrap_or(theme.accent);
+
+            // Faint background so the strip is visible even when bypassed
+            // throughout. Without this, an all-bypass strip would render
+            // invisibly.
+            painter.rect_filled(
+                strip_rect,
+                0.0,
+                egui::Color32::from_rgba_premultiplied(
+                    effect_color.r() / 4,
+                    effect_color.g() / 4,
+                    effect_color.b() / 4,
+                    24,
+                ),
+            );
+
+            // Implicit baseline = active before first kf. So segment
+            // [0, kf[0].time] is filled regardless of kf[0].value.
+            let first_t = kfs[0].time_secs.max(0.0).min(clip_dur_secs);
+            if first_t > 0.001 {
+                let seg = egui::Rect::from_min_max(
+                    egui::pos2(time_to_x(0.0), strip_y),
+                    egui::pos2(time_to_x(first_t), strip_y + STRIP_HEIGHT),
+                );
+                painter.rect_filled(seg, 0.0, effect_color);
+            }
+
+            // For each consecutive (kf[i], kf[i+1]) pair: segment value
+            // is kf[i].value (Step interp default for __bypass; works
+            // for Linear too since we only check > 0.5). Last kf holds
+            // forward to clip end.
+            for (k_idx, kf) in kfs.iter().enumerate() {
+                let next_t = if k_idx + 1 < kfs.len() {
+                    kfs[k_idx + 1].time_secs.min(clip_dur_secs)
+                } else {
+                    clip_dur_secs
+                };
+                let seg_x0 = time_to_x(kf.time_secs.max(0.0));
+                let seg_x1 = time_to_x(next_t.max(kf.time_secs));
+                if seg_x1 > seg_x0 && kf.value > 0.5 {
+                    let seg = egui::Rect::from_min_max(
+                        egui::pos2(seg_x0, strip_y),
+                        egui::pos2(seg_x1, strip_y + STRIP_HEIGHT),
+                    );
+                    painter.rect_filled(seg, 0.0, effect_color);
+                }
+            }
+
+            // Subtle border to make the strip readable on busy waveforms.
+            painter.rect_stroke(
+                strip_rect,
+                0.0,
+                egui::Stroke::new(0.5_f32, effect_color.linear_multiply(0.6)),
+            );
+
+            // Pointer hover within ±2px vertically (small strips need
+            // forgiving hit boxes).
+            if let Some(p) = pointer_pos {
+                let hot = egui::Rect::from_min_max(
+                    egui::pos2(strip_rect.left(), strip_rect.top() - 1.0),
+                    egui::pos2(strip_rect.right(), strip_rect.bottom() + 1.0),
+                );
+                if hot.contains(p) {
+                    hover_target = Some((*effect_idx, kfs, strip_rect));
+                }
+            }
+        }
+
+        // Overflow indicator — the user can still see all kf'd effects
+        // in the inspector / curve editor.
+        if bypass_tracks.len() > MAX_VISIBLE {
+            let n = bypass_tracks.len() - MAX_VISIBLE;
+            painter.text(
+                egui::pos2(clip_rect.right() - 2.0, strips_top_y - 1.0),
+                egui::Align2::RIGHT_BOTTOM,
+                format!("+{n}"),
+                egui::FontId::proportional(7.0),
+                theme.text_dim,
+            );
+        }
+
+        // Hover tooltip — formatted summary of the active/bypass ranges.
+        if let Some((effect_idx, kfs, _rect)) = hover_target {
+            let effect_name = clip.audio_effects.get(effect_idx)
+                .map(|inst| effect_display_name(&inst.effect_type))
+                .unwrap_or_else(|| format!("FX {effect_idx}"));
+            let summary = bypass_envelope_summary(kfs, clip_dur_secs);
+            ui.ctx().output_mut(|out| {
+                out.cursor_icon = egui::CursorIcon::Help;
+            });
+            egui::show_tooltip_at(
+                ui.ctx(),
+                ui.layer_id(),
+                egui::Id::new(("audio_bypass_tooltip", clip.id)),
+                pointer_pos.unwrap_or(clip_rect.center_bottom()),
+                |ui| {
+                    ui.label(egui::RichText::new(effect_name).strong().size(11.0));
+                    ui.label(egui::RichText::new(summary).size(10.0));
+                },
+            );
+        }
+    }
+
     fn draw_audio_fade_overlay(
         &self,
         painter: &egui::Painter,
@@ -8674,6 +8911,7 @@ impl TimelinePanel {
                 let clip = &state.sequence().tracks[track_idx].clips[clip_index];
                 self.draw_audio_fade_overlay(painter, clip_rect, clip, state, track_kind);
                 self.draw_fade_drag_handles(ui, painter, clip_rect, clip, state, track_kind, content_rect, pointer_pos);
+                self.draw_audio_bypass_strips(ui, painter, clip_rect, clip, track_kind, pointer_pos);
             }
 
             // Mutating method.
@@ -12732,5 +12970,102 @@ mod compound_filmstrip_tests {
             &compound, cid, 0.5, TrackKind::Audio, &[child.clone()]
         );
         assert!(resolved.is_none(), "audio parent must skip video-only inner");
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Audio bypass strip — pure helper tests. Painting itself needs egui
+// to spin up and isn't worth a full integration test, but the parsing
+// + summary logic is the load-bearing part: a wrong tooltip range
+// would mislead the user about WHEN the effect is bypassed.
+// ═══════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod bypass_strip_helper_tests {
+    use super::{bypass_envelope_summary, effect_display_name};
+    use klipp_core::{Interpolation, Keyframe};
+
+    fn step(t: f64, v: f32) -> Keyframe {
+        Keyframe {
+            time_secs: t, value: v,
+            interpolation: Interpolation::Step,
+            tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn display_name_humanises_builtins() {
+        assert_eq!(effect_display_name("compressor"), "Compressor");
+        assert_eq!(effect_display_name("eq"), "EQ");
+        assert_eq!(effect_display_name("noise_reduction"), "Multi-band Gate");
+    }
+
+    #[test]
+    fn display_name_extracts_ladspa_label() {
+        // The user sees the plugin's own label, not the path.
+        let name = effect_display_name("ladspa:/usr/lib/ladspa/calf.so:Reverb");
+        assert_eq!(name, "Reverb");
+    }
+
+    #[test]
+    fn summary_shows_active_throughout_when_no_kfs() {
+        // No kfs → effect runs the whole clip statically.
+        assert_eq!(bypass_envelope_summary(&[], 5.0), "active throughout");
+    }
+
+    #[test]
+    fn summary_baseline_is_active_before_first_kf() {
+        // First click at t=2.0 with value 0.0 ("bypass starting here")
+        // means [0, 2s] active, [2s, end] bypassed. Implicit baseline
+        // matches NLE convention.
+        let kfs = [step(2.0, 0.0)];
+        let s = bypass_envelope_summary(&kfs, 5.0);
+        assert!(s.contains("active 0.00s–2.00s"),
+            "implicit baseline must show as active 0–first_kf, got: {s}");
+        assert!(s.contains("bypassed 2.00s–5.00s"));
+    }
+
+    #[test]
+    fn summary_walks_alternating_kfs() {
+        // Two kfs alternating: bypass at t=1, re-enable at t=3.
+        let kfs = [step(1.0, 0.0), step(3.0, 1.0)];
+        let s = bypass_envelope_summary(&kfs, 5.0);
+        assert!(s.contains("active 0.00s–1.00s"));
+        assert!(s.contains("bypassed 1.00s–3.00s"));
+        assert!(s.contains("active 3.00s–5.00s"));
+    }
+
+    #[test]
+    fn summary_clamps_kfs_past_clip_end() {
+        // A kf placed beyond the clip's end (e.g. user trimmed the
+        // clip after laying down the kf) must still produce a sane
+        // tooltip — clamp to clip_dur.
+        let kfs = [step(1.0, 0.0), step(10.0, 1.0)];
+        let s = bypass_envelope_summary(&kfs, 5.0);
+        assert!(s.contains("active 0.00s–1.00s"));
+        assert!(s.contains("bypassed 1.00s–5.00s"));
+        // 10s kf is past the clip end; "active" segment from 10..5 is
+        // skipped (next_t <= t0).
+        assert!(!s.contains("10.00"),
+            "kf past clip end must not leak into the tooltip: {s}");
+    }
+
+    #[test]
+    fn summary_uses_minutes_format_above_60_seconds() {
+        let kfs = [step(75.0, 0.0)];
+        let s = bypass_envelope_summary(&kfs, 120.0);
+        assert!(s.contains("1:15.00"),
+            "75s should render as 1:15.00, got: {s}");
+        assert!(s.contains("2:00.00"));
+    }
+
+    #[test]
+    fn summary_handles_kf_at_exact_zero() {
+        // Kf at t=0 means "from the very start". No "implicit baseline"
+        // segment to prepend — the first kf IS the start.
+        let kfs = [step(0.0, 0.0)];
+        let s = bypass_envelope_summary(&kfs, 3.0);
+        assert!(!s.contains("active 0.00s–0.00s"),
+            "kf at t=0 must not produce a zero-width baseline segment");
+        assert!(s.contains("bypassed 0.00s–3.00s"));
     }
 }
