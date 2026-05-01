@@ -301,14 +301,25 @@ pub fn show(
                                             .strong()
                                             .color(theme.text_primary),
                                     );
-                                    if matches!(entry.source, EffectSource::Ladspa(_)) {
-                                        ui.add_space(4.0);
-                                        ui.label(
-                                            egui::RichText::new("LADSPA")
-                                                .size(8.0)
-                                                .strong()
-                                                .color(theme.accent),
-                                        );
+                                    ui.add_space(4.0);
+                                    match &entry.source {
+                                        EffectSource::Ladspa(_) => {
+                                            ui.label(
+                                                egui::RichText::new("LADSPA")
+                                                    .size(8.0)
+                                                    .strong()
+                                                    .color(theme.accent),
+                                            );
+                                        }
+                                        EffectSource::Audio(_) => {
+                                            ui.label(
+                                                egui::RichText::new("BUILT-IN")
+                                                    .size(8.0)
+                                                    .strong()
+                                                    .color(theme.text_dim),
+                                            );
+                                        }
+                                        _ => {}
                                     }
                                 });
                                 ui.label(
