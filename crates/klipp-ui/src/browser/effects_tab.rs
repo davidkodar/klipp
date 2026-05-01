@@ -1,5 +1,6 @@
 use crate::browser::effect_registry::EffectSource;
 use crate::drag_drop::DragPayload;
+use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
@@ -9,6 +10,12 @@ pub enum EffectCategory {
     /// UI-only pseudo-category: shows only effects the user has starred.
     /// Not stored on `EffectEntry`; the filter reads from prefs.
     Favourites,
+    /// UI-only pseudo-category: shows the most recently applied effects
+    /// (session-only, MRU order). Backed by `BrowserPanel::recent_effects`.
+    Recent,
+    /// UI-only pseudo-category: shows every effect the registry knows
+    /// about, video and audio combined.
+    Installed,
     All,
     Blur,
     Color,
@@ -23,7 +30,22 @@ pub enum EffectCategory {
     AudioReverb,
 }
 
-const CATEGORY_SIDEBAR_W: f32 = 110.0;
+/// Mutually-exclusive source filter. Replaces the previous three
+/// competing colored toggles (Built-in / OFX / Hide unsupported) with a
+/// single segmented control. "Hide unsupported" remains a separate
+/// AppState bool — its toggle UI lands in a follow-up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceFilter {
+    All,
+    Builtin,
+    Ofx,
+}
+
+impl Default for SourceFilter {
+    fn default() -> Self { SourceFilter::All }
+}
+
+const CATEGORY_SIDEBAR_W: f32 = 168.0;
 
 pub fn show(
     ui: &mut egui::Ui,
@@ -32,12 +54,13 @@ pub fn show(
     search_query: &str,
     active_category: &mut EffectCategory,
     favorite_effects: &mut Vec<String>,
+    recent_effects: &mut Vec<String>,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
     let avail = ui.available_rect_before_wrap();
 
     // ── Split: category sidebar (left) | thumbnail grid (right) ──
-    let sidebar_w = CATEGORY_SIDEBAR_W.min(avail.width() * 0.35);
+    let sidebar_w = CATEGORY_SIDEBAR_W.min(avail.width() * 0.40);
     let sidebar_rect = egui::Rect::from_min_size(
         avail.min,
         egui::vec2(sidebar_w, avail.height()),
@@ -47,11 +70,12 @@ pub fn show(
         avail.max,
     );
 
-    // ── Category sidebar ──
+    // ── Category sidebar (3 sections: General / Video FX / Audio FX) ──
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
         ui.set_min_size(sidebar_rect.size());
 
-        // Subtle right border
+        // Soft sidebar fill that lifts above the panel base.
+        ui.painter().rect_filled(sidebar_rect, 0.0, theme.bg_panel);
         ui.painter().vline(
             sidebar_rect.max.x,
             sidebar_rect.y_range(),
@@ -62,252 +86,208 @@ pub fn show(
             .id_salt("effects_category_scroll")
             .show(ui, |ui| {
                 ui.add_space(6.0);
-                ui.spacing_mut().indent = 8.0; // left padding from window edge
-                ui.indent("cat_indent", |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
 
-                // ── FAVOURITES pseudo-category ──
-                // Pinned at the top (Kdenlive convention). Filters the grid
-                // to only effects the user has starred. Count read from the
-                // favorites list directly — no registry scan needed.
-                {
-                    let is_active = *active_category == EffectCategory::Favourites;
-                    let count = favorite_effects.len();
-                    let row_resp = ui.horizontal(|ui| {
-                        let hovered = ui.rect_contains_pointer(ui.max_rect());
-                        let text_color = if is_active {
-                            theme.accent
-                        } else if hovered {
-                            theme.text_primary
-                        } else {
-                            theme.text_secondary
-                        };
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new("\u{2605} Favourites")
-                                    .size(11.0)
-                                    .color(text_color),
-                            )
-                            .selectable(false),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add_space(12.0);
-                            let badge_color = if is_active {
-                                theme.bg_hover
-                            } else {
-                                theme.bg_raised
-                            };
-                            let badge = egui::Button::new(
-                                egui::RichText::new(format!("{}", count))
-                                    .size(9.0)
-                                    .color(theme.text_dim),
-                            )
-                            .fill(badge_color)
-                            .rounding(8.0)
-                            .min_size(egui::vec2(24.0, 16.0));
-                            ui.add(badge);
-                        });
-                    });
-                    let row_rect = row_resp.response.rect;
-                    let click_resp = ui.interact(
-                        row_rect,
-                        ui.id().with("cat_click_favourites"),
-                        egui::Sense::click(),
-                    );
-                    if is_active {
-                        let bar_rect = egui::Rect::from_min_size(
-                            egui::pos2(row_rect.min.x - 4.0, row_rect.min.y + 2.0),
-                            egui::vec2(2.0, row_rect.height() - 4.0),
-                        );
-                        ui.painter().rect_filled(bar_rect, 1.0, theme.accent);
-                    }
-                    if click_resp.clicked() {
-                        *active_category = EffectCategory::Favourites;
-                    }
-                }
-                ui.add_space(6.0);
-                ui.separator();
-                ui.add_space(4.0);
+                // Counts that don't depend on the search query — sidebar
+                // numbers reflect the registry, not the current filter.
+                let video_total = state
+                    .effect_registry
+                    .filtered_with_favorites(EffectCategory::All, "", &[])
+                    .len();
+                let audio_total = state
+                    .effect_registry
+                    .filtered_with_favorites(EffectCategory::AudioAll, "", &[])
+                    .len();
+                let installed_total = state.effect_registry.effects.len();
 
-                // ── VIDEO section ──
-                ui.label(
-                    egui::RichText::new("VIDEO")
-                        .size(10.0)
-                        .strong()
-                        .color(theme.text_secondary),
+                // ── General section: Favorites / Recent / Installed ──
+                sidebar_row(
+                    ui,
+                    theme,
+                    Some(Icon::Star),
+                    "Favorites",
+                    favorite_effects.len(),
+                    *active_category == EffectCategory::Favourites,
+                    "general_favourites",
+                    &mut |c| *active_category = c,
+                    EffectCategory::Favourites,
                 );
-                ui.add_space(2.0);
+                sidebar_row(
+                    ui,
+                    theme,
+                    // No clock icon in the bundled Phosphor set —
+                    // ArrowCounterClockwise reads as "history" until a
+                    // proper Clock SVG lands. Flagged as TODO.
+                    Some(Icon::ArrowCounterClockwise),
+                    "Recent",
+                    recent_effects.len(),
+                    *active_category == EffectCategory::Recent,
+                    "general_recent",
+                    &mut |c| *active_category = c,
+                    EffectCategory::Recent,
+                );
+                sidebar_row(
+                    ui,
+                    theme,
+                    // No download/install icon in the bundled set;
+                    // UploadSimple is closest in shape. TODO: drop in a
+                    // proper Phosphor `download-simple` SVG.
+                    Some(Icon::UploadSimple),
+                    "Installed",
+                    installed_total,
+                    *active_category == EffectCategory::Installed,
+                    "general_installed",
+                    &mut |c| *active_category = c,
+                    EffectCategory::Installed,
+                );
 
-                let categories = [
-                    (EffectCategory::All, "All"),
-                    (EffectCategory::Blur, "Blur"),
-                    (EffectCategory::Color, "Color"),
-                    (EffectCategory::Stylize, "Stylize"),
-                    (EffectCategory::Keying, "Keying"),
-                    (EffectCategory::Distort, "Distort"),
-                    (EffectCategory::Light, "Light"),
-                ];
-
-                for (cat, label) in &categories {
-                    let is_active = *active_category == *cat;
-                    let count = state.effect_registry.filtered(*cat, "").len();
-
-                    // Category row — entire row is clickable
-                    let row_resp = ui.horizontal(|ui| {
-                        let hovered = ui.rect_contains_pointer(ui.max_rect());
-                        let text_color = if is_active {
-                            theme.accent
-                        } else if hovered {
-                            theme.text_primary
-                        } else {
-                            theme.text_secondary
-                        };
-                        ui.add(egui::Label::new(egui::RichText::new(*label).size(11.0).color(text_color)).selectable(false));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add_space(12.0);
-                            let badge_color = if is_active {
-                                theme.bg_hover
-                            } else {
-                                theme.bg_raised
-                            };
-                            let badge = egui::Button::new(
-                                egui::RichText::new(format!("{}", count))
-                                    .size(9.0)
-                                    .color(theme.text_dim)
-                            ).fill(badge_color).rounding(8.0).min_size(egui::vec2(24.0, 16.0));
-                            ui.add(badge);
-                        });
-                    });
-                    // Make the whole row clickable
-                    let row_rect = row_resp.response.rect;
-                    let click_resp = ui.interact(row_rect, ui.id().with(("cat_click", *cat as u8)), egui::Sense::click());
-
-                    if is_active {
-                        let bar_rect = egui::Rect::from_min_size(
-                            egui::pos2(row_rect.min.x - 4.0, row_rect.min.y + 2.0),
-                            egui::vec2(2.0, row_rect.height() - 4.0),
-                        );
-                        ui.painter().rect_filled(bar_rect, 1.0, theme.accent);
-                    }
-
-                    if click_resp.clicked() {
-                        *active_category = *cat;
-                    }
-                }
-
-                // ── Divider ──
                 ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
+                sidebar_section_separator(ui, theme);
 
-                // ── AUDIO section ──
-                ui.label(
-                    egui::RichText::new("AUDIO")
-                        .size(10.0)
-                        .strong()
-                        .color(theme.text_secondary),
-                );
-                ui.add_space(2.0);
+                // ── VIDEO FX section ──
+                sidebar_section_header(ui, theme, Some(Icon::FilmStrip), "Video FX");
 
-                let audio_categories = [
-                    (EffectCategory::AudioAll, "All"),
-                    (EffectCategory::AudioEQ, "EQ"),
-                    (EffectCategory::AudioDynamics, "Dynamics"),
-                    (EffectCategory::AudioReverb, "Reverb"),
+                let video_categories: [(EffectCategory, &str, Option<Icon>); 7] = [
+                    (EffectCategory::All, "All", Some(Icon::List)),
+                    // No drop/blur icon — leaving blank reads cleaner than
+                    // a wrong-fit stand-in. TODO: bespoke blur glyph.
+                    (EffectCategory::Blur, "Blur", None),
+                    (EffectCategory::Color, "Color", Some(Icon::Eyedropper)),
+                    (EffectCategory::Stylize, "Stylize", Some(Icon::Sliders)),
+                    // No keying-specific icon — leaving blank. TODO.
+                    (EffectCategory::Keying, "Keying", None),
+                    (EffectCategory::Distort, "Distort", Some(Icon::ArrowsOut)),
+                    (EffectCategory::Light, "Light", Some(Icon::Lightning)),
                 ];
-
-                for (cat, label) in &audio_categories {
-                    let is_active = *active_category == *cat;
-                    let count = state.effect_registry.filtered(*cat, "").len();
-
-                    let row_resp = ui.horizontal(|ui| {
-                        let hovered = ui.rect_contains_pointer(ui.max_rect());
-                        let text_color = if is_active {
-                            theme.accent
-                        } else if hovered {
-                            theme.text_primary
-                        } else {
-                            theme.text_secondary
-                        };
-                        ui.add(egui::Label::new(egui::RichText::new(*label).size(11.0).color(text_color)).selectable(false));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add_space(12.0);
-                            let badge_color = if is_active {
-                                theme.bg_hover
-                            } else {
-                                theme.bg_raised
-                            };
-                            let badge = egui::Button::new(
-                                egui::RichText::new(format!("{}", count)).size(9.0).color(theme.text_dim)
-                            ).fill(badge_color).rounding(8.0).min_size(egui::vec2(24.0, 16.0));
-                            ui.add(badge);
-                        });
-                    });
-                    let row_rect = row_resp.response.rect;
-                    let click_resp = ui.interact(row_rect, ui.id().with(("audio_cat_click", *cat as u8)), egui::Sense::click());
-
-                    if is_active {
-                        let bar_rect = egui::Rect::from_min_size(
-                            egui::pos2(row_rect.min.x - 4.0, row_rect.min.y + 2.0),
-                            egui::vec2(2.0, row_rect.height() - 4.0),
-                        );
-                        ui.painter().rect_filled(bar_rect, 1.0, theme.accent);
-                    }
-
-                    if click_resp.clicked() {
-                        *active_category = *cat;
-                    }
+                for (cat, label, icon) in &video_categories {
+                    let count = if *cat == EffectCategory::All {
+                        video_total
+                    } else {
+                        state.effect_registry.filtered_with_favorites(*cat, "", &[]).len()
+                    };
+                    sidebar_row(
+                        ui,
+                        theme,
+                        *icon,
+                        label,
+                        count,
+                        *active_category == *cat,
+                        &format!("video_cat_{:?}", cat),
+                        &mut |c| *active_category = c,
+                        *cat,
+                    );
                 }
-                }); // close indent
+
+                ui.add_space(8.0);
+                sidebar_section_separator(ui, theme);
+
+                // ── AUDIO FX section ──
+                sidebar_section_header(ui, theme, Some(Icon::Waveform), "Audio FX");
+
+                let audio_categories: [(EffectCategory, &str, Option<Icon>); 4] = [
+                    (EffectCategory::AudioAll, "All", Some(Icon::List)),
+                    (EffectCategory::AudioEQ, "EQ", Some(Icon::Equalizer)),
+                    (EffectCategory::AudioDynamics, "Dynamics", Some(Icon::Waveform)),
+                    (EffectCategory::AudioReverb, "Reverb", Some(Icon::SpeakerHigh)),
+                ];
+                for (cat, label, icon) in &audio_categories {
+                    let count = if *cat == EffectCategory::AudioAll {
+                        audio_total
+                    } else {
+                        state.effect_registry.filtered_with_favorites(*cat, "", &[]).len()
+                    };
+                    sidebar_row(
+                        ui,
+                        theme,
+                        *icon,
+                        label,
+                        count,
+                        *active_category == *cat,
+                        &format!("audio_cat_{:?}", cat),
+                        &mut |c| *active_category = c,
+                        *cat,
+                    );
+                }
+                ui.add_space(8.0);
             });
     });
 
-    // ── Thumbnail grid ──
+    // ── Thumbnail grid pane ──
     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(grid_rect), |ui| {
         ui.set_min_size(grid_rect.size());
 
-        // ── Filter toggles ──
+        // ── Filter row: segmented source filter (All / Built-in / OFX) ──
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            let pill = |ui: &mut egui::Ui, label: &str, active: &mut bool, color: egui::Color32| {
-                let bg = if *active { color } else { theme.bg_raised };
-                let text_color = if *active { egui::Color32::WHITE } else { theme.text_dim };
-                let resp = ui.add(
-                    egui::Button::new(egui::RichText::new(label).size(9.0).color(text_color))
-                        .fill(bg)
-                        .rounding(10.0)
-                        .min_size(egui::vec2(0.0, 18.0)),
-                );
-                if resp.clicked() { *active = !*active; }
-            };
-            // Count effects by type
-            let all_effects = state.effect_registry.filtered_with_favorites(*active_category, search_query, favorite_effects);
-            let builtin_count = all_effects.iter().filter(|fx| matches!(fx.source, crate::browser::effect_registry::EffectSource::Builtin(_) | crate::browser::effect_registry::EffectSource::Audio(_))).count();
-            let ofx_count = all_effects.iter().filter(|fx| matches!(fx.source, crate::browser::effect_registry::EffectSource::Ofx(_))).count();
+            ui.add_space(6.0);
 
-            pill(ui, &format!("Built-in ({})", builtin_count), &mut state.effect_filter_builtin, theme.marker_success);
-            if ofx_count > 0 {
-                pill(ui, &format!("OFX ({})", ofx_count), &mut state.effect_filter_ofx, theme.marker_info);
-            }
-            pill(ui, "Hide unsupported", &mut state.effect_filter_hide_unsupported, theme.marker_error);
+            // Counts feed the segmented control's embedded badges. They
+            // honour the active category + search query (and recents/favs)
+            // so the user can always see how many entries each segment
+            // would return at the current scope.
+            let scoped = state
+                .effect_registry
+                .filtered_full(*active_category, search_query, favorite_effects, recent_effects);
+            let all_count = scoped.len();
+            let builtin_count = scoped
+                .iter()
+                .filter(|fx| {
+                    matches!(
+                        fx.source,
+                        EffectSource::Builtin(_)
+                            | EffectSource::Audio(_)
+                            | EffectSource::Ladspa(_)
+                    )
+                })
+                .count();
+            let ofx_count = scoped
+                .iter()
+                .filter(|fx| matches!(fx.source, EffectSource::Ofx(_)))
+                .count();
+
+            segmented_source_filter(
+                ui,
+                theme,
+                &mut state.effect_source_filter,
+                all_count,
+                builtin_count,
+                ofx_count,
+            );
         });
-        ui.add_space(2.0);
+        ui.add_space(6.0);
 
         // Apply filters
-        let filtered: Vec<&_> = state.effect_registry.filtered_with_favorites(*active_category, search_query, favorite_effects)
+        let filtered: Vec<&_> = state
+            .effect_registry
+            .filtered_full(*active_category, search_query, favorite_effects, recent_effects)
             .into_iter()
             .filter(|fx| {
-                let is_builtin = matches!(fx.source, crate::browser::effect_registry::EffectSource::Builtin(_) | crate::browser::effect_registry::EffectSource::Audio(_));
-                let is_ofx = matches!(fx.source, crate::browser::effect_registry::EffectSource::Ofx(_));
+                let is_builtin = matches!(
+                    fx.source,
+                    EffectSource::Builtin(_) | EffectSource::Audio(_) | EffectSource::Ladspa(_)
+                );
+                let is_ofx = matches!(fx.source, EffectSource::Ofx(_));
 
-                // Source type filter
-                if is_builtin && !state.effect_filter_builtin { return false; }
-                if is_ofx && !state.effect_filter_ofx { return false; }
+                // Source filter (mutually exclusive: All / Builtin / Ofx)
+                match state.effect_source_filter {
+                    SourceFilter::All => {}
+                    SourceFilter::Builtin => {
+                        if !is_builtin {
+                            return false;
+                        }
+                    }
+                    SourceFilter::Ofx => {
+                        if !is_ofx {
+                            return false;
+                        }
+                    }
+                }
 
-                // Hide unsupported (stereo, render-only)
+                // Hide unsupported (stereo, render-only) — toggle UI
+                // ships in a follow-up; the AppState bool stays so the
+                // filter logic is in place.
                 if state.effect_filter_hide_unsupported {
                     let id = match &fx.source {
-                        crate::browser::effect_registry::EffectSource::Ofx(id) => id.as_str(),
+                        EffectSource::Ofx(id) => id.as_str(),
                         _ => "",
                     };
                     if id.contains("anaglyph") || id.contains("joinView") || id.contains("mixView")
@@ -690,10 +670,13 @@ fn effect_card(
 
 fn category_color(cat: EffectCategory, theme: &KlippTheme) -> egui::Color32 {
     match cat {
-        // Favourites is a pseudo-category for filtering only; cards still
-        // paint using their real category colour via `EffectEntry.category`.
-        // Use a generic dim tint here as a harmless fallback.
-        EffectCategory::Favourites => theme.text_dim,
+        // Favourites / Recent / Installed are pseudo-categories for
+        // filtering only; cards still paint using their real category
+        // colour via `EffectEntry.category`. Use a generic dim tint here
+        // as a harmless fallback.
+        EffectCategory::Favourites
+        | EffectCategory::Recent
+        | EffectCategory::Installed => theme.text_dim,
         EffectCategory::All => theme.text_dim,
         EffectCategory::Blur => egui::Color32::from_rgb(0x4a, 0x9a, 0xde),
         EffectCategory::Color => theme.accent,
@@ -705,6 +688,283 @@ fn category_color(cat: EffectCategory, theme: &KlippTheme) -> egui::Color32 {
         EffectCategory::AudioEQ => egui::Color32::from_rgb(0x50, 0xb0, 0x70),
         EffectCategory::AudioDynamics => egui::Color32::from_rgb(0x40, 0xa0, 0x90),
         EffectCategory::AudioReverb => egui::Color32::from_rgb(0x60, 0x90, 0xb0),
+    }
+}
+
+// ────────────────────────────── Sidebar widgets ──────────────────────────────
+
+/// Single category row: leading icon (or reserved blank space when
+/// `icon` is `None`), label, right-aligned count badge, full-row click
+/// target, and a 2px accent stripe + accent_subtle fill when active.
+fn sidebar_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    icon: Option<Icon>,
+    label: &str,
+    count: usize,
+    is_active: bool,
+    id_salt: &str,
+    on_click: &mut dyn FnMut(EffectCategory),
+    target_cat: EffectCategory,
+) {
+    let row_h = 22.0;
+    let avail_w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(avail_w, row_h),
+        egui::Sense::click(),
+    );
+    let click_resp = ui.interact(rect, ui.id().with(id_salt), egui::Sense::click());
+
+    let hovered = resp.hovered() || click_resp.hovered();
+    let painter = ui.painter();
+
+    // Active fill — translucent accent overlay matching the mockup's
+    // `--accent-soft` recipe. Hover is a softer panel-raised tint so it
+    // never competes with the active state visually.
+    if is_active {
+        painter.rect_filled(rect, 0.0, theme.accent_subtle);
+        let stripe_rect = egui::Rect::from_min_size(
+            rect.min,
+            egui::vec2(2.0, rect.height()),
+        );
+        painter.rect_filled(stripe_rect, 0.0, theme.accent);
+    } else if hovered {
+        painter.rect_filled(rect, 0.0, theme.bg_raised);
+    }
+
+    // Layout: indent · icon (13px) · gap · label · …badge
+    let indent = 14.0;
+    let icon_size = 13.0;
+    let icon_gap = 8.0;
+    let label_x = rect.min.x + indent + icon_size + icon_gap;
+    let label_color = if is_active {
+        theme.text_primary
+    } else if hovered {
+        theme.text_primary
+    } else {
+        theme.text_secondary
+    };
+    let icon_tint = if is_active { theme.accent } else { theme.text_dim };
+
+    if let Some(icon) = icon {
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.min.x + indent, rect.center().y - icon_size * 0.5),
+            egui::vec2(icon_size, icon_size),
+        );
+        let img = icon.image(icon_size).tint(icon_tint);
+        ui.allocate_new_ui(
+            egui::UiBuilder::new().max_rect(icon_rect),
+            |ui| {
+                ui.add(img);
+            },
+        );
+    }
+
+    // Label, vertically centered.
+    let label_galley = ui.painter().layout_no_wrap(
+        label.to_string(),
+        egui::FontId::proportional(11.5),
+        label_color,
+    );
+    ui.painter().galley(
+        egui::pos2(label_x, rect.center().y - label_galley.size().y * 0.5),
+        label_galley,
+        label_color,
+    );
+
+    // Right-aligned count, monospace tabular-nums for stable column edge.
+    let count_str = format!("{}", count);
+    let count_color = if is_active { theme.accent } else { theme.text_dim };
+    let count_galley = ui.painter().layout_no_wrap(
+        count_str,
+        egui::FontId::monospace(10.0),
+        count_color,
+    );
+    let count_pos = egui::pos2(
+        rect.max.x - 14.0 - count_galley.size().x,
+        rect.center().y - count_galley.size().y * 0.5,
+    );
+    ui.painter().galley(count_pos, count_galley, count_color);
+
+    if click_resp.clicked() || resp.clicked() {
+        on_click(target_cat);
+    }
+}
+
+/// Section header (e.g. "VIDEO FX") with leading icon. Renders above the
+/// rows in that section. Visually quiet — uppercase, dim, small.
+fn sidebar_section_header(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    icon: Option<Icon>,
+    label: &str,
+) {
+    let row_h = 18.0;
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), row_h),
+        egui::Sense::hover(),
+    );
+    let indent = 14.0;
+    let icon_size = 11.0;
+    let icon_gap = 6.0;
+    let label_x = if icon.is_some() {
+        rect.min.x + indent + icon_size + icon_gap
+    } else {
+        rect.min.x + indent
+    };
+
+    if let Some(icon) = icon {
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.min.x + indent, rect.center().y - icon_size * 0.5),
+            egui::vec2(icon_size, icon_size),
+        );
+        let img = icon.image(icon_size).tint(theme.text_dim);
+        ui.allocate_new_ui(
+            egui::UiBuilder::new().max_rect(icon_rect),
+            |ui| {
+                ui.add(img);
+            },
+        );
+    }
+
+    ui.painter().text(
+        egui::pos2(label_x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label.to_uppercase(),
+        egui::FontId::proportional(9.5),
+        theme.text_dim,
+    );
+}
+
+fn sidebar_section_separator(ui: &mut egui::Ui, theme: &KlippTheme) {
+    let avail_w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(avail_w, 1.0),
+        egui::Sense::hover(),
+    );
+    ui.painter().hline(
+        (rect.min.x + 8.0)..=(rect.max.x - 8.0),
+        rect.center().y,
+        egui::Stroke::new(1.0_f32, theme.border),
+    );
+    ui.add_space(4.0);
+}
+
+// ───────────────────────────── Source segmented ─────────────────────────────
+
+/// Single coherent segmented control replacing the previous three
+/// competing colored pills. Three buttons share an outer pill body; the
+/// active segment paints with `bg_raised` to lift out of the bg_panel
+/// trough. Embedded count badges in tabular monospace.
+fn segmented_source_filter(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    filter: &mut SourceFilter,
+    all_count: usize,
+    builtin_count: usize,
+    ofx_count: usize,
+) {
+    let outer_h = 24.0;
+    let pad = 2.0;
+    let segments = [
+        (SourceFilter::All, "All", all_count),
+        (SourceFilter::Builtin, "Built-in", builtin_count),
+        (SourceFilter::Ofx, "OFX", ofx_count),
+    ];
+
+    // Pre-measure each segment so total width is known before allocating.
+    let mut seg_widths = [0.0f32; 3];
+    let mut total_w = pad * 2.0;
+    for (i, (_, label, count)) in segments.iter().enumerate() {
+        let label_galley = ui.painter().layout_no_wrap(
+            (*label).to_string(),
+            egui::FontId::proportional(10.5),
+            theme.text_secondary,
+        );
+        let count_galley = ui.painter().layout_no_wrap(
+            format!("{}", count),
+            egui::FontId::monospace(9.5),
+            theme.text_dim,
+        );
+        let w = label_galley.size().x + 5.0 + count_galley.size().x + 18.0;
+        seg_widths[i] = w;
+        total_w += w + 1.0;
+    }
+    total_w -= 1.0; // no trailing gap
+
+    let (outer_rect, _) = ui.allocate_exact_size(
+        egui::vec2(total_w, outer_h),
+        egui::Sense::hover(),
+    );
+
+    ui.painter().rect_filled(outer_rect, 5.0, theme.bg_panel);
+    ui.painter().rect_stroke(
+        outer_rect,
+        5.0,
+        egui::Stroke::new(1.0_f32, theme.border),
+    );
+
+    let mut x = outer_rect.min.x + pad;
+    for (i, (variant, label, count)) in segments.iter().enumerate() {
+        let seg_rect = egui::Rect::from_min_size(
+            egui::pos2(x, outer_rect.min.y + pad),
+            egui::vec2(seg_widths[i], outer_h - pad * 2.0),
+        );
+        let resp = ui.interact(
+            seg_rect,
+            ui.id().with(("source_seg", i)),
+            egui::Sense::click(),
+        );
+        let is_active = *filter == *variant;
+        let hovered = resp.hovered();
+
+        if is_active {
+            ui.painter().rect_filled(seg_rect, 3.0, theme.bg_raised);
+        } else if hovered {
+            ui.painter().rect_filled(seg_rect, 3.0, theme.accent_subtle);
+        }
+
+        let label_color = if is_active {
+            theme.text_primary
+        } else if hovered {
+            theme.text_primary
+        } else {
+            theme.text_secondary
+        };
+        let count_color = if is_active { theme.accent } else { theme.text_dim };
+
+        let label_galley = ui.painter().layout_no_wrap(
+            (*label).to_string(),
+            egui::FontId::proportional(10.5),
+            label_color,
+        );
+        let count_galley = ui.painter().layout_no_wrap(
+            format!("{}", count),
+            egui::FontId::monospace(9.5),
+            count_color,
+        );
+
+        let inner_w = label_galley.size().x + 5.0 + count_galley.size().x;
+        let lx = seg_rect.center().x - inner_w * 0.5;
+        ui.painter().galley(
+            egui::pos2(lx, seg_rect.center().y - label_galley.size().y * 0.5),
+            label_galley.clone(),
+            label_color,
+        );
+        ui.painter().galley(
+            egui::pos2(
+                lx + label_galley.size().x + 5.0,
+                seg_rect.center().y - count_galley.size().y * 0.5,
+            ),
+            count_galley,
+            count_color,
+        );
+
+        if resp.clicked() {
+            *filter = *variant;
+        }
+
+        x += seg_widths[i] + 1.0;
     }
 }
 

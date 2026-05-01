@@ -630,6 +630,10 @@ pub struct BrowserPanel {
     /// browser at render-time and diffed back at the end of
     /// `render_browser_panel` (same pattern as `pinned_folders`).
     pub favorite_effects: Vec<String>,
+    /// Recently-applied effects, MRU order (most recent first). Session-only
+    /// — not persisted to prefs. Trimmed to a small cap so the Recent
+    /// pseudo-category in the Library sidebar stays digestible.
+    pub recent_effects: Vec<String>,
     /// System file-manager bookmarks read once at startup from KDE Places
     /// (`~/.local/share/user-places.xbel`) and GTK plain-text bookmarks
     /// (`~/.config/gtk-{3,4}.0/bookmarks`). Read-only at runtime.
@@ -790,6 +794,7 @@ impl Default for BrowserPanel {
             files_type_filter: FileTypeFilter::default(),
             pinned_folders: Vec::new(),
             favorite_effects: Vec::new(),
+            recent_effects: Vec::new(),
             system_bookmarks: read_system_bookmarks(),
             files_panel_focused: false,
             type_ahead_buffer: String::new(),
@@ -911,22 +916,30 @@ impl BrowserPanel {
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     let tabs = [
-                        (BrowserTab::Files, "FILES"),
-                        (BrowserTab::Media, "MEDIA"),
-                        (BrowserTab::Library, "LIBRARY"),
+                        (BrowserTab::Files, "FILES", Icon::Folder),
+                        (BrowserTab::Media, "MEDIA", Icon::FilmStrip),
+                        // Library: closest-fit Phosphor — `Sliders` reads as
+                        // an FX/effects vibe. A bespoke "books-stack" glyph
+                        // would be more on-the-nose; flagged for follow-up.
+                        (BrowserTab::Library, "LIBRARY", Icon::Sliders),
                     ];
-                    for (tab, label) in &tabs {
+                    for (tab, label, icon) in &tabs {
                         let is_active = *active_tab == *tab;
-
                         let display_label = label.to_string();
 
-                        // Allocate tab rect manually to avoid egui button hover styling
+                        // Pre-measure label so we know how wide the tab
+                        // needs to be. Letting egui's horizontal layout
+                        // handle positioning means the icon and text
+                        // can't collide regardless of cursor edge cases.
                         let text_galley = ui.painter().layout_no_wrap(
                             display_label.clone(),
                             egui::FontId::proportional(10.0),
                             theme.text_dim,
                         );
-                        let tab_w = text_galley.size().x + 24.0;
+                        let icon_size = 12.0;
+                        let icon_gap = 6.0;
+                        let h_pad = 12.0;
+                        let tab_w = text_galley.size().x + icon_size + icon_gap + h_pad * 2.0;
                         let (tab_rect, resp) = ui.allocate_exact_size(
                             egui::vec2(tab_w, 28.0),
                             egui::Sense::click(),
@@ -940,17 +953,42 @@ impl BrowserPanel {
                             theme.text_dim
                         };
 
-                        ui.painter().text(
-                            tab_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            &display_label,
-                            egui::FontId::proportional(10.0),
-                            text_color,
+                        // Lay out icon + label horizontally inside the tab
+                        // rect using a fresh child UI. Centred vertically;
+                        // egui handles the gap so they can't overlap.
+                        ui.allocate_new_ui(
+                            egui::UiBuilder::new().max_rect(tab_rect),
+                            |ui| {
+                                ui.with_layout(
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.spacing_mut().item_spacing.x = icon_gap;
+                                        ui.add_space(h_pad);
+                                        ui.add(
+                                            icon.image(icon_size)
+                                                .tint(text_color)
+                                                .max_size(egui::vec2(icon_size, icon_size)),
+                                        );
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(&display_label)
+                                                    .size(10.0)
+                                                    .color(text_color),
+                                            )
+                                            .selectable(false),
+                                        );
+                                    },
+                                );
+                            },
                         );
 
                         if is_active {
+                            // Underline accent stripe — full tab width
+                            // minus a small inset, matching the mockup.
+                            let stripe_inset = 8.0;
                             ui.painter().hline(
-                                tab_rect.x_range(),
+                                (tab_rect.min.x + stripe_inset)
+                                    ..=(tab_rect.max.x - stripe_inset),
                                 tab_rect.max.y - 1.0,
                                 egui::Stroke::new(2.0_f32, theme.accent),
                             );
@@ -4127,6 +4165,7 @@ impl BrowserPanel {
                     &self.search_query,
                     &mut self.effects_category,
                     &mut self.favorite_effects,
+                    &mut self.recent_effects,
                 )
             }
             LibraryCategory::AudioFx => {

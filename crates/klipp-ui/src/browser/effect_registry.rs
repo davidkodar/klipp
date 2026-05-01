@@ -631,14 +631,21 @@ impl EffectRegistry {
         search: &str,
         favorite_names: &[String],
     ) -> Vec<&EffectEntry> {
+        self.filtered_full(category, search, favorite_names, &[])
+    }
+
+    /// Like [`filtered_with_favorites`] but also accepts a `recent_names`
+    /// slice that backs the [`EffectCategory::Recent`] pseudo-category.
+    /// MRU order is preserved when `category == Recent`; every other
+    /// category keeps the alphabetical sort the rest of the UI expects.
+    pub fn filtered_full(
+        &self,
+        category: EffectCategory,
+        search: &str,
+        favorite_names: &[String],
+        recent_names: &[String],
+    ) -> Vec<&EffectEntry> {
         let search_lower = search.to_lowercase();
-        let _is_audio_cat = matches!(
-            category,
-            EffectCategory::AudioAll
-                | EffectCategory::AudioEQ
-                | EffectCategory::AudioDynamics
-                | EffectCategory::AudioReverb
-        );
         let mut result: Vec<&EffectEntry> = self
             .effects
             .iter()
@@ -654,6 +661,9 @@ impl EffectRegistry {
                     // video or audio alike. Empty favorites list → empty
                     // grid (handled naturally by the contains() check).
                     EffectCategory::Favourites => favorite_names.contains(&e.name),
+                    EffectCategory::Recent => recent_names.contains(&e.name),
+                    // Installed = every registered effect, video + audio.
+                    EffectCategory::Installed => true,
                     EffectCategory::All => !e_is_audio, // All = all video effects
                     EffectCategory::AudioAll => e_is_audio, // AudioAll = all audio effects
                     _ => e.category == category,
@@ -665,7 +675,19 @@ impl EffectRegistry {
                         || e.description.to_lowercase().contains(&search_lower))
             })
             .collect();
-        result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        if category == EffectCategory::Recent {
+            // MRU order — most-recently-used first. Preserve the caller's
+            // slice ordering instead of sorting alphabetically so users
+            // see their last pick at the top.
+            result.sort_by_key(|e| {
+                recent_names
+                    .iter()
+                    .position(|n| n == &e.name)
+                    .unwrap_or(usize::MAX)
+            });
+        } else {
+            result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        }
         result
     }
 }

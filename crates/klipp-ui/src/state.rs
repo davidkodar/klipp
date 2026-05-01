@@ -1322,9 +1322,11 @@ pub struct AppState {
 
     // Unified effects registry (built-in + OFX merged)
     pub effect_registry: crate::browser::effect_registry::EffectRegistry,
-    /// Effect browser filters
-    pub effect_filter_builtin: bool,
-    pub effect_filter_ofx: bool,
+    /// Mutually-exclusive source filter: All / Built-in / OFX. Replaces
+    /// the previous pair of `effect_filter_builtin` + `effect_filter_ofx`
+    /// bools that backed three competing colored pills.
+    pub effect_source_filter: crate::browser::effects_tab::SourceFilter,
+    /// Reserved for the GPU-only filter pill — wired in a follow-up.
     pub effect_filter_gpu: bool,
     pub effect_filter_hide_unsupported: bool,
     /// Effect presets (built-in + user-created)
@@ -2672,9 +2674,8 @@ impl Default for AppState {
             ladspa_plugins: Vec::new(),
             disabled_audio_plugins: std::collections::HashSet::new(),
             effect_registry: crate::browser::effect_registry::EffectRegistry::new(),
-            effect_filter_builtin: true,
-            effect_filter_ofx: true,
-            effect_filter_gpu: true,
+            effect_source_filter: crate::browser::effects_tab::SourceFilter::default(),
+            effect_filter_gpu: false,
             effect_filter_hide_unsupported: false,
             preset_manager: crate::effect_presets::PresetManager::new(),
             effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer::default(),
