@@ -6502,7 +6502,13 @@ impl TimelinePanel {
                     cmds.push(AppCommand::CreateCompoundClip { name: "Compound Clip".into() });
                     ui.close_menu();
                 }
-                if ui.button("Create Multicam Clip").clicked() {
+                // Multicam is video-track-only in Klipp's current
+                // model — the handler scans video tracks at the
+                // playhead and bundles 2+ video clips into a
+                // multicam group; audio is not part of the bundle.
+                // Showing this on an audio clip would be misleading
+                // (the right-clicked clip isn't even examined).
+                if is_video_track && ui.button("Create Multicam Clip").clicked() {
                     cmds.push(AppCommand::CreateMulticamClip);
                     ui.close_menu();
                 }

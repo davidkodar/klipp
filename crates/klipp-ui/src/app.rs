@@ -3899,10 +3899,17 @@ impl KlippApp {
                 AppCommand::CreateMulticamClip => {
                     let ph = self.state.playhead;
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    // Find clips at playhead across all video tracks
+                    // Collect video clips at the playhead — one per
+                    // video track. `continue` on non-video tracks
+                    // skips them; using `return` here previously
+                    // silently aborted the whole operation as soon
+                    // as the loop hit the first audio track, so
+                    // multicam never fired on any sequence that had
+                    // an audio track interleaved above the bottom-
+                    // most video track.
                     let mut angle_clips: Vec<(usize, klipp_core::ClipId)> = Vec::new();
                     for (ti, track) in seq.tracks.iter().enumerate() {
-                        if !matches!(track.kind, klipp_timeline::TrackKind::Video) { return true; }
+                        if !matches!(track.kind, klipp_timeline::TrackKind::Video) { continue; }
                         if let Some((_, clip)) = track.clip_at_timecode(ph) {
                             if clip.media_id().is_some() {
                                 angle_clips.push((ti, clip.id));
