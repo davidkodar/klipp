@@ -1731,6 +1731,41 @@ pub enum AppCommand {
         tangent_in: Option<(f64, f32)>,
         tangent_out: Option<(f64, f32)>,
     },
+    /// Copy a single audio-effect param's keyframe vec into the
+    /// clipboard so the user can paste it onto another (clip, effect,
+    /// param). Mirrors `CopyAudioKeyframes` for clip-level params.
+    CopyAudioEffectKeyframes { clip_id: ClipId, effect_index: usize, param_name: String },
+    /// Paste the keyframe clipboard into a target audio-effect param.
+    /// Time-scales the kfs to the target clip's duration if it differs
+    /// from the source clip's recorded duration (matches
+    /// `PasteAudioKeyframes`).
+    PasteAudioEffectKeyframes { clip_id: ClipId, effect_index: usize, param_name: String },
+    /// Reverse the keyframe order on an audio-effect param track —
+    /// mirrors the kf times around the midpoint of the track's range.
+    ReverseAudioEffectKeyframes { clip_id: ClipId, effect_index: usize, param_name: String },
+    /// Scale every kf time on an audio-effect param track by a
+    /// constant factor. `factor < 1.0` compresses the envelope
+    /// (faster), `factor > 1.0` stretches it (slower).
+    ScaleAudioEffectKeyframeTiming {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+        factor: f64,
+    },
+    /// Insert a "bump" envelope (rise → hold → fall) on an audio-
+    /// effect param at `center_time`. `duration_secs` is the total
+    /// width; `ramp_secs` is the rise/fall ramp duration. Matches
+    /// `InsertAudioKeyframeBump` for clip-level params.
+    InsertAudioEffectKeyframeBump {
+        clip_id: ClipId,
+        effect_index: usize,
+        param_name: String,
+        center_time: f64,
+        bump_value: f32,
+        base_value: f32,
+        duration_secs: f64,
+        ramp_secs: f64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

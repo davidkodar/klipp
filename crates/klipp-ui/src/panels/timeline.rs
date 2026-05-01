@@ -989,17 +989,8 @@ impl TimelinePanel {
                                     })
                                     .unwrap_or(false);
 
-                                // Copy/Paste/Reverse aren't wired for AudioEffect kfs yet;
-                                // hide those menu items when the right-click target is
-                                // an effect-param diamond. Users can still copy/paste
-                                // via the curve editor or by manually duplicating.
-                                let is_clip_kind = !matches!(
-                                    ctx_menu.param_kind,
-                                    crate::state::KeyframeParamKind::AudioEffect { .. }
-                                );
-
                                 // Copy Keyframes (only if keyframes exist)
-                                if is_clip_kind && has_kfs
+                                if has_kfs
                                     && ui.add(egui::Button::new("  Copy Keyframes").frame(false)).clicked() {
                                         match &ctx_menu.param_kind {
                                             crate::state::KeyframeParamKind::Audio(param) => {
@@ -1014,15 +1005,19 @@ impl TimelinePanel {
                                                     param: *param,
                                                 });
                                             }
-                                            crate::state::KeyframeParamKind::AudioEffect { .. } => {
-                                                // Filtered above by is_clip_kind.
+                                            crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
+                                                cmds.push(AppCommand::CopyAudioEffectKeyframes {
+                                                    clip_id: ctx_menu.clip_id,
+                                                    effect_index: *effect_index,
+                                                    param_name: param_name.clone(),
+                                                });
                                             }
                                         }
                                         close_menu = true;
                                     }
 
                                 // Paste Keyframes (only if clipboard has data)
-                                if is_clip_kind && state.keyframe_clipboard.is_some()
+                                if state.keyframe_clipboard.is_some()
                                     && ui.add(egui::Button::new("  Paste Keyframes").frame(false)).clicked() {
                                         match &ctx_menu.param_kind {
                                             crate::state::KeyframeParamKind::Audio(param) => {
@@ -1037,8 +1032,12 @@ impl TimelinePanel {
                                                     param: *param,
                                                 });
                                             }
-                                            crate::state::KeyframeParamKind::AudioEffect { .. } => {
-                                                // Filtered above by is_clip_kind.
+                                            crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
+                                                cmds.push(AppCommand::PasteAudioEffectKeyframes {
+                                                    clip_id: ctx_menu.clip_id,
+                                                    effect_index: *effect_index,
+                                                    param_name: param_name.clone(),
+                                                });
                                             }
                                         }
                                         close_menu = true;
@@ -1074,7 +1073,7 @@ impl TimelinePanel {
                                     })
                                     .unwrap_or(false);
 
-                                if is_clip_kind && has_enough
+                                if has_enough
                                     && ui.add(egui::Button::new("  Reverse Keyframes").frame(false)).clicked() {
                                         match &ctx_menu.param_kind {
                                             crate::state::KeyframeParamKind::Audio(param) => {
@@ -1089,8 +1088,12 @@ impl TimelinePanel {
                                                     param: *param,
                                                 });
                                             }
-                                            crate::state::KeyframeParamKind::AudioEffect { .. } => {
-                                                // Filtered above by is_clip_kind.
+                                            crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
+                                                cmds.push(AppCommand::ReverseAudioEffectKeyframes {
+                                                    clip_id: ctx_menu.clip_id,
+                                                    effect_index: *effect_index,
+                                                    param_name: param_name.clone(),
+                                                });
                                             }
                                         }
                                         close_menu = true;
@@ -1297,13 +1300,6 @@ impl TimelinePanel {
                             ui.separator();
                             ui.label(egui::RichText::new("Timing").small().strong());
 
-                            // Re-declare in this scope — the one above is inside
-                            // the Copy/Paste/Reverse `{ ... }` block.
-                            let is_clip_kind = !matches!(
-                                ctx_menu.param_kind,
-                                crate::state::KeyframeParamKind::AudioEffect { .. }
-                            );
-
                             // Gather clip data for timing operations
                             let clip_data: Option<(f64, f64)> = state.sequence().tracks.iter()
                                 .flat_map(|t| t.clips.iter())
@@ -1335,10 +1331,7 @@ impl TimelinePanel {
                                     (clip_dur, max_t)
                                 });
 
-                            // Timing scale ops are clip-only; AudioEffect kfs need
-                            // a parallel ScaleAudioEffectKeyframeTiming command — not
-                            // wired yet, hide the buttons for AudioEffect.
-                            if is_clip_kind && ui.add(egui::Button::new("  Half Speed (0.5x)").frame(false)).clicked() {
+                            if ui.add(egui::Button::new("  Half Speed (0.5x)").frame(false)).clicked() {
                                 match &ctx_menu.param_kind {
                                     crate::state::KeyframeParamKind::Audio(param) => {
                                         cmds.push(AppCommand::ScaleAudioKeyframeTiming {
@@ -1350,13 +1343,18 @@ impl TimelinePanel {
                                             clip_id: ctx_menu.clip_id, param: *param, factor: 2.0,
                                         });
                                     }
-                                    crate::state::KeyframeParamKind::AudioEffect { .. } => {
-                                        // Filtered above by is_clip_kind.
+                                    crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
+                                        cmds.push(AppCommand::ScaleAudioEffectKeyframeTiming {
+                                            clip_id: ctx_menu.clip_id,
+                                            effect_index: *effect_index,
+                                            param_name: param_name.clone(),
+                                            factor: 2.0,
+                                        });
                                     }
                                 }
                                 close_menu = true;
                             }
-                            if is_clip_kind && ui.add(egui::Button::new("  Double Speed (2x)").frame(false)).clicked() {
+                            if ui.add(egui::Button::new("  Double Speed (2x)").frame(false)).clicked() {
                                 match &ctx_menu.param_kind {
                                     crate::state::KeyframeParamKind::Audio(param) => {
                                         cmds.push(AppCommand::ScaleAudioKeyframeTiming {
@@ -1368,36 +1366,44 @@ impl TimelinePanel {
                                             clip_id: ctx_menu.clip_id, param: *param, factor: 0.5,
                                         });
                                     }
-                                    crate::state::KeyframeParamKind::AudioEffect { .. } => {
-                                        // Filtered above by is_clip_kind.
+                                    crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
+                                        cmds.push(AppCommand::ScaleAudioEffectKeyframeTiming {
+                                            clip_id: ctx_menu.clip_id,
+                                            effect_index: *effect_index,
+                                            param_name: param_name.clone(),
+                                            factor: 0.5,
+                                        });
                                     }
                                 }
                                 close_menu = true;
                             }
                             // Fit to Clip: scale so max keyframe time == clip duration
-                            if is_clip_kind {
-                                if let Some((clip_dur, max_t)) = clip_data {
-                                    let can_fit = max_t > 0.001 && clip_dur > 0.001;
-                                    let btn = egui::Button::new("  Fit to Clip").frame(false);
-                                    if ui.add_enabled(can_fit, btn).clicked() {
-                                        let fit_factor = clip_dur / max_t;
-                                        match &ctx_menu.param_kind {
-                                            crate::state::KeyframeParamKind::Audio(param) => {
-                                                cmds.push(AppCommand::ScaleAudioKeyframeTiming {
-                                                    clip_id: ctx_menu.clip_id, param: *param, factor: fit_factor,
-                                                });
-                                            }
-                                            crate::state::KeyframeParamKind::Video(param) => {
-                                                cmds.push(AppCommand::ScaleVideoKeyframeTiming {
-                                                    clip_id: ctx_menu.clip_id, param: *param, factor: fit_factor,
-                                                });
-                                            }
-                                            crate::state::KeyframeParamKind::AudioEffect { .. } => {
-                                                // Filtered above by is_clip_kind.
-                                            }
+                            if let Some((clip_dur, max_t)) = clip_data {
+                                let can_fit = max_t > 0.001 && clip_dur > 0.001;
+                                let btn = egui::Button::new("  Fit to Clip").frame(false);
+                                if ui.add_enabled(can_fit, btn).clicked() {
+                                    let fit_factor = clip_dur / max_t;
+                                    match &ctx_menu.param_kind {
+                                        crate::state::KeyframeParamKind::Audio(param) => {
+                                            cmds.push(AppCommand::ScaleAudioKeyframeTiming {
+                                                clip_id: ctx_menu.clip_id, param: *param, factor: fit_factor,
+                                            });
                                         }
-                                        close_menu = true;
+                                        crate::state::KeyframeParamKind::Video(param) => {
+                                            cmds.push(AppCommand::ScaleVideoKeyframeTiming {
+                                                clip_id: ctx_menu.clip_id, param: *param, factor: fit_factor,
+                                            });
+                                        }
+                                        crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
+                                            cmds.push(AppCommand::ScaleAudioEffectKeyframeTiming {
+                                                clip_id: ctx_menu.clip_id,
+                                                effect_index: *effect_index,
+                                                param_name: param_name.clone(),
+                                                factor: fit_factor,
+                                            });
+                                        }
                                     }
+                                    close_menu = true;
                                 }
                             }
 
@@ -1469,49 +1475,60 @@ impl TimelinePanel {
                                         (playhead_rel, base_val, clip_dur)
                                     });
 
-                                if is_clip_kind {
-                                    if let Some((center_time, base_val, _clip_dur)) = bump_data {
-                                        // Compute a sensible bump target: +20% of param range
-                                        let bump_val = match &ctx_menu.param_kind {
-                                            crate::state::KeyframeParamKind::Audio(p) => match p {
-                                                klipp_core::AudioParam::Volume => (base_val + 0.2).min(2.0),
-                                                klipp_core::AudioParam::Pan => (base_val + 0.2).min(1.0),
-                                                klipp_core::AudioParam::Gain => (base_val + 3.0).min(24.0),
-                                            },
-                                            crate::state::KeyframeParamKind::Video(p) => match p {
-                                                klipp_core::VideoParam::Opacity => (base_val + 0.2).min(1.0),
-                                                klipp_core::VideoParam::PositionX => base_val + 0.05,
-                                                klipp_core::VideoParam::PositionY => base_val + 0.05,
-                                                klipp_core::VideoParam::Scale => (base_val * 1.2).max(base_val + 0.1),
-                                                klipp_core::VideoParam::Rotation => base_val + 15.0,
-                                            },
-                                            crate::state::KeyframeParamKind::AudioEffect { .. } => {
-                                                // Filtered above by is_clip_kind.
-                                                base_val
+                                if let Some((center_time, base_val, _clip_dur)) = bump_data {
+                                    // Compute a sensible bump target: +20% of param range
+                                    let bump_val = match &ctx_menu.param_kind {
+                                        crate::state::KeyframeParamKind::Audio(p) => match p {
+                                            klipp_core::AudioParam::Volume => (base_val + 0.2).min(2.0),
+                                            klipp_core::AudioParam::Pan => (base_val + 0.2).min(1.0),
+                                            klipp_core::AudioParam::Gain => (base_val + 3.0).min(24.0),
+                                        },
+                                        crate::state::KeyframeParamKind::Video(p) => match p {
+                                            klipp_core::VideoParam::Opacity => (base_val + 0.2).min(1.0),
+                                            klipp_core::VideoParam::PositionX => base_val + 0.05,
+                                            klipp_core::VideoParam::PositionY => base_val + 0.05,
+                                            klipp_core::VideoParam::Scale => (base_val * 1.2).max(base_val + 0.1),
+                                            klipp_core::VideoParam::Rotation => base_val + 15.0,
+                                        },
+                                        crate::state::KeyframeParamKind::AudioEffect { param_name, .. } => match param_name.as_str() {
+                                            // Reserved keys are 0..1 toggles; bumping
+                                            // from 0 → 1 makes "punch in this effect for
+                                            // this region" feel right.
+                                            "__bypass" => 1.0_f32,
+                                            "__wetdry" => (base_val + 0.2).min(1.0),
+                                            // Generic param: bump by ~20% of the
+                                            // current value's magnitude with a 0.5
+                                            // floor for very small values.
+                                            _ => base_val + base_val.abs().max(0.5) * 0.2,
+                                        },
+                                    };
+                                    if ui.add(egui::Button::new("  Insert Bump").frame(false)).clicked() {
+                                        match &ctx_menu.param_kind {
+                                            crate::state::KeyframeParamKind::Audio(param) => {
+                                                cmds.push(AppCommand::InsertAudioKeyframeBump {
+                                                    clip_id: ctx_menu.clip_id, param: *param,
+                                                    center_time, bump_value: bump_val, base_value: base_val,
+                                                    duration_secs: 0.5, ramp_secs: 0.15,
+                                                });
                                             }
-                                        };
-                                        if ui.add(egui::Button::new("  Insert Bump").frame(false)).clicked() {
-                                            match &ctx_menu.param_kind {
-                                                crate::state::KeyframeParamKind::Audio(param) => {
-                                                    cmds.push(AppCommand::InsertAudioKeyframeBump {
-                                                        clip_id: ctx_menu.clip_id, param: *param,
-                                                        center_time, bump_value: bump_val, base_value: base_val,
-                                                        duration_secs: 0.5, ramp_secs: 0.15,
-                                                    });
-                                                }
-                                                crate::state::KeyframeParamKind::Video(param) => {
-                                                    cmds.push(AppCommand::InsertVideoKeyframeBump {
-                                                        clip_id: ctx_menu.clip_id, param: *param,
-                                                        center_time, bump_value: bump_val, base_value: base_val,
-                                                        duration_secs: 0.5, ramp_secs: 0.15,
-                                                    });
-                                                }
-                                                crate::state::KeyframeParamKind::AudioEffect { .. } => {
-                                                    // Filtered above by is_clip_kind.
-                                                }
+                                            crate::state::KeyframeParamKind::Video(param) => {
+                                                cmds.push(AppCommand::InsertVideoKeyframeBump {
+                                                    clip_id: ctx_menu.clip_id, param: *param,
+                                                    center_time, bump_value: bump_val, base_value: base_val,
+                                                    duration_secs: 0.5, ramp_secs: 0.15,
+                                                });
                                             }
-                                            close_menu = true;
+                                            crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
+                                                cmds.push(AppCommand::InsertAudioEffectKeyframeBump {
+                                                    clip_id: ctx_menu.clip_id,
+                                                    effect_index: *effect_index,
+                                                    param_name: param_name.clone(),
+                                                    center_time, bump_value: bump_val, base_value: base_val,
+                                                    duration_secs: 0.5, ramp_secs: 0.15,
+                                                });
+                                            }
                                         }
+                                        close_menu = true;
                                     }
                                 }
                             }

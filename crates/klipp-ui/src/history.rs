@@ -1379,3 +1379,252 @@ mod audio_chain_snapshot_tests {
         assert!((clip.audio_effect_keyframes["0:__wetdry"][1].value - 0.0).abs() < 1e-6);
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Audio-effect keyframe mutation semantics (Phase B follow-up).
+//
+// Each test mirrors the in-place mutation logic that the
+// Reverse/Scale/Bump/Paste AppCommand handlers in app.rs run on
+// `clip.audio_effect_keyframes["{idx}:{name}"]`. Testing the handlers
+// directly would require standing up the full KlippApp; testing the
+// LOGIC at the data-mutation level catches the same bugs (off-by-
+// one in time math, retain-clamp edge cases, tangent-mirror
+// direction) without that ceremony.
+// ═══════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod audio_effect_kf_ops_tests {
+    use super::*;
+    use klipp_core::{Interpolation, Keyframe, MediaId, RationalTime};
+
+    fn make_clip_with_kfs(track_key: &str, kfs: Vec<Keyframe>) -> Clip {
+        let mut c = Clip::media(
+            MediaId::new(),
+            RationalTime::from_frames(0, 24),
+            RationalTime::from_frames(48, 24), // 2.0s @ 24fps
+            RationalTime::from_frames(0, 24),
+            RationalTime::from_frames(48, 24),
+        );
+        c.audio_effect_keyframes.insert(track_key.to_string(), kfs);
+        c
+    }
+
+    fn kf(t: f64, v: f32) -> Keyframe {
+        Keyframe {
+            time_secs: t, value: v,
+            interpolation: Interpolation::Linear,
+            tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+        }
+    }
+
+    fn kf_bezier(t: f64, v: f32, tin: (f64, f32), tout: (f64, f32)) -> Keyframe {
+        Keyframe {
+            time_secs: t, value: v,
+            interpolation: Interpolation::Bezier,
+            tangent_in: tin, tangent_out: tout,
+        }
+    }
+
+    /// Mirror the Reverse handler's mutation: reflect kf times around
+    /// the max time, swap tangent_in / tangent_out with x-negation.
+    fn reverse_kfs_in_place(kfs: &mut Vec<Keyframe>) {
+        if kfs.len() < 2 { return; }
+        let max_time = kfs.last().map(|k| k.time_secs).unwrap_or(0.0);
+        for k in kfs.iter_mut() {
+            k.time_secs = max_time - k.time_secs;
+            let old_in = k.tangent_in;
+            let old_out = k.tangent_out;
+            k.tangent_in = (-old_out.0, old_out.1);
+            k.tangent_out = (-old_in.0, old_in.1);
+        }
+        kfs.reverse();
+        kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    #[test]
+    fn reverse_two_kfs_swaps_their_times() {
+        let mut clip = make_clip_with_kfs("0:gain", vec![kf(0.0, -6.0), kf(1.0, 0.0)]);
+        let kfs = clip.audio_effect_keyframes.get_mut("0:gain").unwrap();
+        reverse_kfs_in_place(kfs);
+        // After reversal: original t=0,v=-6 becomes t=1,v=-6; original
+        // t=1,v=0 becomes t=0,v=0. The values stay attached to their
+        // original positions on the curve, the TIMES reflect.
+        assert_eq!(kfs.len(), 2);
+        assert!((kfs[0].time_secs - 0.0).abs() < 1e-9);
+        assert!((kfs[0].value - 0.0).abs() < 1e-6);
+        assert!((kfs[1].time_secs - 1.0).abs() < 1e-9);
+        assert!((kfs[1].value - (-6.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reverse_negates_bezier_tangent_x_components() {
+        // Bezier handles must point the right way after a reverse:
+        // an out-handle pointing forward (+x) becomes an in-handle
+        // pointing backward (-x), and vice versa. Without this swap
+        // the curve direction would invert visually.
+        let mut clip = make_clip_with_kfs("0:gain", vec![
+            kf_bezier(0.0, 0.0, (-0.1, 0.0), (0.2, 0.5)),
+            kf_bezier(1.0, 1.0, (-0.3, 0.0), (0.0, 0.0)),
+        ]);
+        let kfs = clip.audio_effect_keyframes.get_mut("0:gain").unwrap();
+        reverse_kfs_in_place(kfs);
+
+        // Original first kf had tangent_out=(0.2, 0.5). After reversal
+        // it sits at the END (time=1.0) and that out-handle becomes
+        // tangent_in=(-0.2, 0.5). y-component preserved (mirror is
+        // around X, not Y).
+        let last = kfs.last().unwrap();
+        assert!((last.time_secs - 1.0).abs() < 1e-9);
+        assert!((last.tangent_in.0 - (-0.2)).abs() < 1e-9,
+            "tangent_in.0 should be -tangent_out.0, got {}", last.tangent_in.0);
+        assert!((last.tangent_in.1 - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn reverse_does_nothing_for_lt_two_kfs() {
+        // Single kf reversal would be visually meaningless; the
+        // handler short-circuits. Pin that.
+        let mut clip = make_clip_with_kfs("0:gain", vec![kf(0.5, 1.0)]);
+        let original = clip.audio_effect_keyframes["0:gain"].clone();
+        let kfs = clip.audio_effect_keyframes.get_mut("0:gain").unwrap();
+        reverse_kfs_in_place(kfs);
+        assert_eq!(kfs[0].time_secs, original[0].time_secs);
+        assert_eq!(kfs[0].value, original[0].value);
+    }
+
+    /// Mirror the ScaleTiming handler.
+    fn scale_kfs_timing_in_place(kfs: &mut Vec<Keyframe>, factor: f64, clip_dur: f64) {
+        for k in kfs.iter_mut() {
+            k.time_secs *= factor;
+            k.tangent_in.0 *= factor;
+            k.tangent_out.0 *= factor;
+        }
+        kfs.retain(|k| k.time_secs >= 0.0 && k.time_secs <= clip_dur);
+        kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    #[test]
+    fn scale_half_speed_compresses_timing() {
+        // Half-speed-button uses factor=2.0 (envelope plays for 2× as
+        // long). Three kfs at 0/1/2s become 0/2/4s; clipped at clip_dur=2s
+        // so the third kf is dropped.
+        let mut clip = make_clip_with_kfs("0:gain", vec![
+            kf(0.0, 0.0), kf(1.0, 1.0), kf(2.0, 0.0),
+        ]);
+        let kfs = clip.audio_effect_keyframes.get_mut("0:gain").unwrap();
+        scale_kfs_timing_in_place(kfs, 2.0, 2.0);
+        assert_eq!(kfs.len(), 2, "kf at t=4s after scale must be retained-clamped: {kfs:?}");
+        assert_eq!(kfs[0].time_secs, 0.0);
+        assert_eq!(kfs[1].time_secs, 2.0);
+    }
+
+    #[test]
+    fn scale_double_speed_stretches_tangent_x() {
+        // Double-speed-button uses factor=0.5. tangent_in.0 / out.0
+        // must scale with the time component or the bezier curve
+        // shape distorts.
+        let mut clip = make_clip_with_kfs("0:gain", vec![
+            kf_bezier(0.0, 0.0, (0.0, 0.0), (0.4, 0.5)),
+            kf_bezier(2.0, 1.0, (-0.4, 0.0), (0.0, 0.0)),
+        ]);
+        let kfs = clip.audio_effect_keyframes.get_mut("0:gain").unwrap();
+        scale_kfs_timing_in_place(kfs, 0.5, 2.0);
+        assert!((kfs[0].tangent_out.0 - 0.2).abs() < 1e-9,
+            "out.0 must scale with time: 0.4 * 0.5 = 0.2, got {}", kfs[0].tangent_out.0);
+        assert!((kfs[1].tangent_in.0 - (-0.2)).abs() < 1e-9,
+            "in.0 must scale: -0.4 * 0.5 = -0.2, got {}", kfs[1].tangent_in.0);
+    }
+
+    /// Mirror the InsertBump handler.
+    fn insert_bump(
+        kfs: &mut Vec<Keyframe>,
+        center_time: f64, bump_value: f32, base_value: f32,
+        duration_secs: f64, ramp_secs: f64, clip_dur: f64,
+    ) {
+        let bump_kfs: Vec<(f64, f32)> = vec![
+            (center_time - duration_secs / 2.0 - ramp_secs, base_value),
+            (center_time - duration_secs / 2.0, bump_value),
+            (center_time + duration_secs / 2.0, bump_value),
+            (center_time + duration_secs / 2.0 + ramp_secs, base_value),
+        ];
+        for (t, v) in bump_kfs {
+            if t >= 0.0 && t <= clip_dur {
+                kfs.push(Keyframe {
+                    time_secs: t, value: v,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                });
+            }
+        }
+        kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    #[test]
+    fn bump_inserts_four_kfs_in_clip_range() {
+        // Center 1.0s, duration 0.5s (bump from 0.75 to 1.25), ramp
+        // 0.15s on each side. Four kfs at 0.6, 0.75, 1.25, 1.4s.
+        let mut clip = make_clip_with_kfs("0:gain", vec![]);
+        let kfs = clip.audio_effect_keyframes.get_mut("0:gain").unwrap();
+        insert_bump(kfs, 1.0, 1.0, 0.0, 0.5, 0.15, 2.0);
+        assert_eq!(kfs.len(), 4);
+        let times: Vec<f64> = kfs.iter().map(|k| k.time_secs).collect();
+        assert!((times[0] - 0.6).abs() < 1e-9, "first ramp-in start: {times:?}");
+        assert!((times[1] - 0.75).abs() < 1e-9);
+        assert!((times[2] - 1.25).abs() < 1e-9);
+        assert!((times[3] - 1.4).abs() < 1e-9);
+        // Bump plateau is at value=1.0; outside ramps are at base_value=0.
+        assert!((kfs[1].value - 1.0).abs() < 1e-6);
+        assert!((kfs[2].value - 1.0).abs() < 1e-6);
+        assert!((kfs[0].value - 0.0).abs() < 1e-6);
+        assert!((kfs[3].value - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn bump_drops_kfs_that_fall_outside_clip_range() {
+        // Center 0.05s with ramp 0.15s — the leading ramp kf would
+        // sit at -0.225s. Must be discarded, not clamped.
+        let mut clip = make_clip_with_kfs("0:gain", vec![]);
+        let kfs = clip.audio_effect_keyframes.get_mut("0:gain").unwrap();
+        insert_bump(kfs, 0.05, 1.0, 0.0, 0.0, 0.15, 2.0);
+        // center=0.05, duration=0 → bump kfs at 0.05-0-0.15=-0.10,
+        // 0.05, 0.05, 0.20. Only three are >= 0.
+        assert_eq!(kfs.len(), 3, "kf at t=-0.10 must be dropped: {kfs:?}");
+    }
+
+    /// Mirror the Paste handler's time-scale logic (when source dur
+    /// differs from target dur).
+    fn paste_kfs_with_scaling(source_kfs: &[Keyframe], source_dur: f64, target_dur: f64) -> Vec<Keyframe> {
+        let scale = if source_dur > 0.0 { target_dur / source_dur } else { 1.0 };
+        let mut new_kfs: Vec<Keyframe> = source_kfs.iter().map(|kf| {
+            let mut k = kf.clone();
+            k.time_secs *= scale;
+            k
+        }).collect();
+        new_kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+        new_kfs
+    }
+
+    #[test]
+    fn paste_scales_kf_times_to_target_clip_duration() {
+        // Source clip 2s, target clip 4s → kfs scale by 2x. A kf at
+        // 1.0s (midpoint of source) should land at 2.0s (midpoint of
+        // target).
+        let source = vec![kf(0.0, 0.0), kf(1.0, 1.0), kf(2.0, 0.0)];
+        let pasted = paste_kfs_with_scaling(&source, 2.0, 4.0);
+        assert_eq!(pasted.len(), 3);
+        assert!((pasted[0].time_secs - 0.0).abs() < 1e-9);
+        assert!((pasted[1].time_secs - 2.0).abs() < 1e-9);
+        assert!((pasted[2].time_secs - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn paste_into_zero_duration_source_uses_identity() {
+        // Defensive: if the clipboard somehow has source_duration=0
+        // (malformed save state, or the source clip was empty), the
+        // scale falls back to 1.0 — a sane no-op rather than NaN'ing
+        // every time_secs.
+        let source = vec![kf(0.5, 1.0)];
+        let pasted = paste_kfs_with_scaling(&source, 0.0, 5.0);
+        assert_eq!(pasted.len(), 1);
+        assert!((pasted[0].time_secs - 0.5).abs() < 1e-9);
+    }
+}

@@ -8237,6 +8237,141 @@ impl KlippApp {
                     self.state.dirty = true;
                     true
                 }
+                AppCommand::CopyAudioEffectKeyframes { clip_id, effect_index, param_name } => {
+                    if let Some(clip) = self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips().find(|c| c.id == *clip_id)
+                    {
+                        let key = format!("{effect_index}:{param_name}");
+                        let kfs = clip.audio_effect_keyframes.get(&key).cloned().unwrap_or_default();
+                        self.state.keyframe_clipboard = Some(crate::state::KeyframeClipboard {
+                            keyframes: kfs,
+                            source_duration_secs: clip.duration().to_secs_f64(),
+                        });
+                    }
+                    true
+                }
+                AppCommand::PasteAudioEffectKeyframes { clip_id, effect_index, param_name } => {
+                    if let Some(ref cb) = self.state.keyframe_clipboard.clone() {
+                        let old_state = self.state.sequences[self.state.active_sequence_idx]
+                            .all_clips().find(|c| c.id == *clip_id)
+                            .map(crate::history::AudioChainSnapshot::from_clip);
+                        let target_dur = self.state.sequences[self.state.active_sequence_idx]
+                            .all_clips().find(|c| c.id == *clip_id).map(|c| c.duration().to_secs_f64());
+                        if let Some(target_dur) = target_dur {
+                            let scale = if cb.source_duration_secs > 0.0 { target_dur / cb.source_duration_secs } else { 1.0 };
+                            let mut new_kfs: Vec<klipp_core::Keyframe> = cb.keyframes.iter().map(|kf| {
+                                let mut k = kf.clone();
+                                k.time_secs *= scale;
+                                k
+                            }).collect();
+                            new_kfs.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            let key = format!("{effect_index}:{param_name}");
+                            for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                                if let Some(clip) = track.find_clip_mut(*clip_id) {
+                                    clip.audio_effect_keyframes.insert(key.clone(), new_kfs);
+                                    break;
+                                }
+                            }
+                            self.push_audio_chain_history(*clip_id, "Paste Audio Effect Keyframes", old_state);
+                            self.sync_sequence_to_engine();
+                            let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                            self.state.dirty = true;
+                        }
+                    }
+                    true
+                }
+                AppCommand::ReverseAudioEffectKeyframes { clip_id, effect_index, param_name } => {
+                    let old_state = self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips().find(|c| c.id == *clip_id)
+                        .map(crate::history::AudioChainSnapshot::from_clip);
+                    let key = format!("{effect_index}:{param_name}");
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
+                                if keyframes.len() >= 2 {
+                                    let max_time = keyframes.last().map(|k| k.time_secs).unwrap_or(0.0);
+                                    for kf in keyframes.iter_mut() {
+                                        kf.time_secs = max_time - kf.time_secs;
+                                        let old_in = kf.tangent_in;
+                                        let old_out = kf.tangent_out;
+                                        kf.tangent_in = (-old_out.0, old_out.1);
+                                        kf.tangent_out = (-old_in.0, old_in.1);
+                                    }
+                                    keyframes.reverse();
+                                    keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    self.push_audio_chain_history(*clip_id, "Reverse Audio Effect Keyframes", old_state);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::ScaleAudioEffectKeyframeTiming { clip_id, effect_index, param_name, factor } => {
+                    let old_state = self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips().find(|c| c.id == *clip_id)
+                        .map(crate::history::AudioChainSnapshot::from_clip);
+                    let key = format!("{effect_index}:{param_name}");
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let clip_dur = clip.duration().to_secs_f64();
+                            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
+                                for kf in keyframes.iter_mut() {
+                                    kf.time_secs *= factor;
+                                    kf.tangent_in.0 *= *factor;
+                                    kf.tangent_out.0 *= *factor;
+                                }
+                                keyframes.retain(|kf| kf.time_secs >= 0.0 && kf.time_secs <= clip_dur);
+                                keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            }
+                            break;
+                        }
+                    }
+                    self.push_audio_chain_history(*clip_id, "Scale Audio Effect Keyframe Timing", old_state);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    true
+                }
+                AppCommand::InsertAudioEffectKeyframeBump { clip_id, effect_index, param_name, center_time, bump_value, base_value, duration_secs, ramp_secs } => {
+                    let old_state = self.state.sequences[self.state.active_sequence_idx]
+                        .all_clips().find(|c| c.id == *clip_id)
+                        .map(crate::history::AudioChainSnapshot::from_clip);
+                    let key = format!("{effect_index}:{param_name}");
+                    let bump_kfs: Vec<(f64, f32)> = vec![
+                        (center_time - duration_secs / 2.0 - ramp_secs, *base_value),
+                        (center_time - duration_secs / 2.0, *bump_value),
+                        (center_time + duration_secs / 2.0, *bump_value),
+                        (center_time + duration_secs / 2.0 + ramp_secs, *base_value),
+                    ];
+                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                        if let Some(clip) = track.find_clip_mut(*clip_id) {
+                            let clip_dur = clip.duration().to_secs_f64();
+                            let keyframes = clip.audio_effect_keyframes.entry(key.clone()).or_default();
+                            for &(t, v) in &bump_kfs {
+                                if t >= 0.0 && t <= clip_dur {
+                                    keyframes.push(klipp_core::Keyframe {
+                                        time_secs: t,
+                                        value: v,
+                                        interpolation: klipp_core::Interpolation::Linear,
+                                        tangent_out: (0.0, 0.0),
+                                        tangent_in: (0.0, 0.0),
+                                    });
+                                }
+                            }
+                            keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                            break;
+                        }
+                    }
+                    self.push_audio_chain_history(*clip_id, "Insert Audio Effect Keyframe Bump", old_state);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.dirty = true;
+                    true
+                }
             _ => false,
         }
     }
