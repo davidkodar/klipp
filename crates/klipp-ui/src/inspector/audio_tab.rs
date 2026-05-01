@@ -970,7 +970,14 @@ fn show_clip_audio(
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
             .show(ui, |ui| {
-                super::audio_fx_inspector::show_content(ui, theme, clip_id, &clip.audio_effects, &state.ladspa_plugins, cmds);
+                let clip_timeline_in_secs = clip.timeline_in.to_secs_f64();
+                let clip_rate = clip.timeline_in.rate;
+                super::audio_fx_inspector::show_content(
+                    ui, theme, clip_id,
+                    &clip.audio_effects, &clip.audio_effect_keyframes,
+                    clip_time_secs, clip_timeline_in_secs, clip_rate,
+                    &state.ladspa_plugins, cmds,
+                );
             });
         ui.add_space(4.0);
     });

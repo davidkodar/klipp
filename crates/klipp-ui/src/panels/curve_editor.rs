@@ -11,8 +11,13 @@ pub enum CurveParam {
     Video(VideoParam),
     /// Playback speed envelope.
     Speed,
-    /// Effect parameter keyframe track, identified by "{effect_index}:{param_name}".
+    /// Video effect parameter keyframe track, identified by
+    /// "{effect_index}:{param_name}".
     Effect(String),
+    /// Audio effect parameter keyframe track, identified by
+    /// "{effect_index}:{param_name}". Reserved param names: "__bypass"
+    /// and "__wetdry".
+    AudioEffect(String),
 }
 
 impl CurveParam {
@@ -34,6 +39,18 @@ impl CurveParam {
                     format!("FX: {key}")
                 }
             }
+            CurveParam::AudioEffect(key) => {
+                if let Some((_idx, name)) = key.split_once(':') {
+                    let pretty = match name {
+                        "__bypass" => "Bypass",
+                        "__wetdry" => "Wet/Dry",
+                        other => other,
+                    };
+                    format!("Audio FX: {pretty}")
+                } else {
+                    format!("Audio FX: {key}")
+                }
+            }
         }
     }
 
@@ -50,6 +67,18 @@ impl CurveParam {
             CurveParam::Video(VideoParam::Rotation) => (-360.0, 360.0, 0.0),
             CurveParam::Speed => (0.1, 4.0, 1.0),
             CurveParam::Effect(_) => (0.0, 1.0, 0.5),
+            CurveParam::AudioEffect(key) => {
+                // Reserved keys have known ranges; per-param ranges are
+                // unknowable here without the AudioEffect descriptor (we
+                // don't construct effects on hot UI paths). Fall back to
+                // a generous default — the inspector's diamond rows
+                // already enforce min/max via the descriptor.
+                match key.split(':').last() {
+                    Some("__bypass") => (0.0, 1.0, 1.0),
+                    Some("__wetdry") => (0.0, 1.0, 1.0),
+                    _ => (-30.0, 30.0, 0.0),
+                }
+            }
         }
     }
 }
@@ -283,6 +312,19 @@ impl CurveEditorPanel {
                                 }
                             }
                         }
+                        CurveParam::AudioEffect(key) => {
+                            if let Some((idx_str, param_name)) = key.split_once(':') {
+                                if let Ok(effect_index) = idx_str.parse::<usize>() {
+                                    cmds.push(AppCommand::AddAudioEffectKeyframe {
+                                        clip_id,
+                                        effect_index,
+                                        param_name: param_name.to_string(),
+                                        time_secs: t,
+                                        value: v,
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -366,6 +408,7 @@ impl CurveEditorPanel {
                     CurveParam::Video(VideoParam::Rotation) => clip.transform_rotation_keyframes.clone(),
                     CurveParam::Speed => clip.speed_keyframes.clone(),
                     CurveParam::Effect(key) => clip.effect_keyframes.get(key).cloned().unwrap_or_default(),
+                    CurveParam::AudioEffect(key) => clip.audio_effect_keyframes.get(key).cloned().unwrap_or_default(),
                 };
             }
         }
@@ -403,6 +446,12 @@ impl CurveEditorPanel {
                 effect_keys.sort();
                 for key in effect_keys {
                     params.push(CurveParam::Effect(key));
+                }
+                let mut audio_effect_keys: Vec<String> =
+                    clip.audio_effect_keyframes.keys().cloned().collect();
+                audio_effect_keys.sort();
+                for key in audio_effect_keys {
+                    params.push(CurveParam::AudioEffect(key));
                 }
             }
         }
@@ -934,7 +983,9 @@ impl CurveEditorPanel {
                                             new_value: new_v,
                                         });
                                     }
-                                    CurveParam::Speed | CurveParam::Effect(_) => {
+                                    CurveParam::Speed
+                                    | CurveParam::Effect(_)
+                                    | CurveParam::AudioEffect(_) => {
                                         // Speed/effect keyframe move not yet wired to commands
                                     }
                                 }
@@ -969,7 +1020,9 @@ impl CurveEditorPanel {
                                             tangent_out,
                                         });
                                     }
-                                    CurveParam::Speed | CurveParam::Effect(_) => {
+                                    CurveParam::Speed
+                                    | CurveParam::Effect(_)
+                                    | CurveParam::AudioEffect(_) => {
                                         // Tangent editing not yet wired for speed/effects
                                     }
                                 }
@@ -991,7 +1044,9 @@ impl CurveEditorPanel {
         match &self.param {
             CurveParam::Audio(p) => KeyframeParamKind::Audio(*p),
             CurveParam::Video(p) => KeyframeParamKind::Video(*p),
-            CurveParam::Speed | CurveParam::Effect(_) => KeyframeParamKind::Video(VideoParam::Opacity), // fallback
+            CurveParam::Speed
+            | CurveParam::Effect(_)
+            | CurveParam::AudioEffect(_) => KeyframeParamKind::Video(VideoParam::Opacity), // fallback
         }
     }
 
@@ -1039,5 +1094,49 @@ fn format_value(v: f32, range: f32) -> String {
         format!("{:.2}", v)
     } else {
         format!("{:.3}", v)
+    }
+}
+
+#[cfg(test)]
+mod curve_param_tests {
+    use super::*;
+
+    #[test]
+    fn audio_effect_label_humanizes_reserved_keys() {
+        // The picker shows reserved kf tracks under friendly names so
+        // "0:__bypass" reads as "Audio FX: Bypass" not "Audio FX: __bypass".
+        assert_eq!(
+            CurveParam::AudioEffect("0:__bypass".into()).label(),
+            "Audio FX: Bypass",
+        );
+        assert_eq!(
+            CurveParam::AudioEffect("2:__wetdry".into()).label(),
+            "Audio FX: Wet/Dry",
+        );
+    }
+
+    #[test]
+    fn audio_effect_label_passes_through_real_param_names() {
+        assert_eq!(
+            CurveParam::AudioEffect("1:threshold".into()).label(),
+            "Audio FX: threshold",
+        );
+        assert_eq!(
+            CurveParam::AudioEffect("0:gain".into()).label(),
+            "Audio FX: gain",
+        );
+    }
+
+    #[test]
+    fn audio_effect_range_uses_zero_one_for_reserved_keys() {
+        // Bypass and wet/dry are clamped 0..1 on the chain side;
+        // pin the picker matches so the curve editor doesn't draw
+        // out-of-range handles.
+        let (min, max, _default) = CurveParam::AudioEffect("0:__bypass".into()).range();
+        assert_eq!(min, 0.0);
+        assert_eq!(max, 1.0);
+        let (min, max, _default) = CurveParam::AudioEffect("0:__wetdry".into()).range();
+        assert_eq!(min, 0.0);
+        assert_eq!(max, 1.0);
     }
 }

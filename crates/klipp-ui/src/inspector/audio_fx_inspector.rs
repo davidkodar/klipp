@@ -1,6 +1,155 @@
 use crate::theme::KlippTheme;
+use crate::widgets::scrubby_param::{scrubby_param_row, KeyframeState};
 use klipp_audio::ladspa::LadspaPluginInfo;
-use klipp_core::{AppCommand, AudioEffectInstance, ClipId};
+use klipp_core::{AppCommand, AudioEffectInstance, ClipId, Keyframe};
+use std::collections::HashMap;
+
+/// Tolerance for "is there a kf at the playhead?" — same as
+/// `inspector::effects_tab::effect_keyframe_state`. ~20ms wide so a
+/// scrub jitter doesn't cause the diamond to flip on/off.
+const KF_TOLERANCE_SECS: f64 = 0.02;
+
+/// Build the KeyframeState the scrubby_param widget needs for one
+/// audio-effect param. Mirrors `effect_keyframe_state` in the video
+/// inspector, but reads from the clip's audio_effect_keyframes map.
+fn audio_kf_state(
+    audio_effect_keyframes: &HashMap<String, Vec<Keyframe>>,
+    effect_index: usize,
+    param_name: &str,
+    clip_time_secs: f64,
+) -> KeyframeState {
+    let key = format!("{effect_index}:{param_name}");
+    let kfs = audio_effect_keyframes
+        .get(&key)
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+    KeyframeState {
+        has_keyframe_at_playhead: kfs.iter().any(|k| (k.time_secs - clip_time_secs).abs() < KF_TOLERANCE_SECS),
+        has_any_keyframes: !kfs.is_empty(),
+        prev_keyframe_time: kfs
+            .iter()
+            .rfind(|k| k.time_secs < clip_time_secs - KF_TOLERANCE_SECS)
+            .map(|k| k.time_secs),
+        next_keyframe_time: kfs
+            .iter()
+            .find(|k| k.time_secs > clip_time_secs + KF_TOLERANCE_SECS)
+            .map(|k| k.time_secs),
+        current_interpolation: kfs
+            .iter()
+            .find(|k| (k.time_secs - clip_time_secs).abs() < KF_TOLERANCE_SECS)
+            .map(|k| k.interpolation),
+    }
+}
+
+/// Evaluate a kf'd audio-effect param at the playhead, falling back to
+/// the static value when no kfs exist.
+fn audio_kf_eval(
+    audio_effect_keyframes: &HashMap<String, Vec<Keyframe>>,
+    effect_index: usize,
+    param_name: &str,
+    clip_time_secs: f64,
+    default: f32,
+) -> f32 {
+    let key = format!("{effect_index}:{param_name}");
+    if let Some(kfs) = audio_effect_keyframes.get(&key) {
+        if !kfs.is_empty() {
+            return klipp_core::keyframe::evaluate(kfs, clip_time_secs, default);
+        }
+    }
+    default
+}
+
+fn has_audio_kfs(
+    audio_effect_keyframes: &HashMap<String, Vec<Keyframe>>,
+    effect_index: usize,
+    param_name: &str,
+) -> bool {
+    let key = format!("{effect_index}:{param_name}");
+    audio_effect_keyframes.get(&key).is_some_and(|kfs| !kfs.is_empty())
+}
+
+/// Wire a scrubby_param row's response to the AudioEffectKeyframe
+/// command family — auto-update, diamond toggle, prev/next nav. Mirrors
+/// the post-loop block in `inspector::effects_tab::show_builtin_effect_params`.
+fn dispatch_audio_kf_response(
+    resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+    value: f32,
+    audio_effect_keyframes: &HashMap<String, Vec<Keyframe>>,
+    clip_id: ClipId,
+    effect_index: usize,
+    param_name: &str,
+    clip_time_secs: f64,
+    clip_timeline_in_secs: f64,
+    clip_rate: u32,
+    cmds: &mut Vec<AppCommand>,
+) {
+    // Auto-update: when the user drags the value and kfs exist, lay
+    // down a kf at the playhead so the change actually animates.
+    if resp.changed && has_audio_kfs(audio_effect_keyframes, effect_index, param_name) {
+        cmds.push(AppCommand::AddAudioEffectKeyframe {
+            clip_id,
+            effect_index,
+            param_name: param_name.to_string(),
+            time_secs: clip_time_secs,
+            value,
+        });
+    }
+
+    if resp.keyframe_toggled {
+        let key = format!("{effect_index}:{param_name}");
+        let has_at_playhead = audio_effect_keyframes
+            .get(&key)
+            .is_some_and(|kfs| kfs.iter().any(|k| (k.time_secs - clip_time_secs).abs() < KF_TOLERANCE_SECS));
+        if has_at_playhead {
+            cmds.push(AppCommand::RemoveAudioEffectKeyframe {
+                clip_id,
+                effect_index,
+                param_name: param_name.to_string(),
+                time_secs: clip_time_secs,
+            });
+        } else {
+            cmds.push(AppCommand::AddAudioEffectKeyframe {
+                clip_id,
+                effect_index,
+                param_name: param_name.to_string(),
+                time_secs: clip_time_secs,
+                value,
+            });
+        }
+    }
+
+    if resp.keyframe_nav_prev {
+        let key = format!("{effect_index}:{param_name}");
+        if let Some(kfs) = audio_effect_keyframes.get(&key) {
+            if let Some(prev_t) = kfs
+                .iter()
+                .rfind(|k| k.time_secs < clip_time_secs - KF_TOLERANCE_SECS)
+                .map(|k| k.time_secs)
+            {
+                cmds.push(AppCommand::SeekTo(klipp_core::Timecode::from_secs_f64(
+                    clip_timeline_in_secs + prev_t,
+                    clip_rate,
+                )));
+            }
+        }
+    }
+
+    if resp.keyframe_nav_next {
+        let key = format!("{effect_index}:{param_name}");
+        if let Some(kfs) = audio_effect_keyframes.get(&key) {
+            if let Some(next_t) = kfs
+                .iter()
+                .find(|k| k.time_secs > clip_time_secs + KF_TOLERANCE_SECS)
+                .map(|k| k.time_secs)
+            {
+                cmds.push(AppCommand::SeekTo(klipp_core::Timecode::from_secs_f64(
+                    clip_timeline_in_secs + next_t,
+                    clip_rate,
+                )));
+            }
+        }
+    }
+}
 
 /// Render the body of the "+ Add Effect" popup. Contents:
 ///   - Search box (filters by name; for LADSPA also matches maker + label)
@@ -175,11 +324,16 @@ fn add_effect_picker(
 
 /// Show the audio effects chain for a clip.
 /// Returns commands for the app to process.
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
     clip_id: ClipId,
     audio_effects: &[AudioEffectInstance],
+    audio_effect_keyframes: &HashMap<String, Vec<Keyframe>>,
+    clip_time_secs: f64,
+    clip_timeline_in_secs: f64,
+    clip_rate: u32,
     ladspa_plugins: &[LadspaPluginInfo],
     cmds: &mut Vec<AppCommand>,
 ) {
@@ -217,16 +371,31 @@ pub fn show(
 
     ui.add_space(4.0);
 
-    show_content(ui, theme, clip_id, audio_effects, ladspa_plugins, cmds);
+    show_content(
+        ui, theme, clip_id, audio_effects, audio_effect_keyframes,
+        clip_time_secs, clip_timeline_in_secs, clip_rate,
+        ladspa_plugins, cmds,
+    );
 }
 
 /// Show the audio effects content without the section header.
 /// Used when the header is provided by a section_card wrapper.
+///
+/// `audio_effect_keyframes` is `clip.audio_effect_keyframes` — passed
+/// through so per-param diamonds can read kf state and the bypass +
+/// wet/dry diamonds can read their reserved tracks. `clip_time_secs`
+/// is clip-relative time at the playhead. `clip_timeline_in_secs` and
+/// `clip_rate` are for prev/next-keyframe seek dispatch.
+#[allow(clippy::too_many_arguments)]
 pub fn show_content(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
     clip_id: ClipId,
     audio_effects: &[AudioEffectInstance],
+    audio_effect_keyframes: &HashMap<String, Vec<Keyframe>>,
+    clip_time_secs: f64,
+    clip_timeline_in_secs: f64,
+    clip_rate: u32,
     ladspa_plugins: &[LadspaPluginInfo],
     cmds: &mut Vec<AppCommand>,
 ) {
@@ -365,6 +534,53 @@ pub fn show_content(
                                 effect_index: idx,
                             });
                         }
+
+                        // Bypass-keyframe diamond, just left of the enabled
+                        // checkbox. Reads the reserved __bypass kf track;
+                        // clicking adds/removes a kf at the playhead with
+                        // value mirroring the current enabled state.
+                        let bypass_kfs = audio_effect_keyframes
+                            .get(&format!("{idx}:__bypass"));
+                        let has_any_bypass = bypass_kfs.is_some_and(|v| !v.is_empty());
+                        let has_at_playhead = bypass_kfs.is_some_and(|v| {
+                            v.iter().any(|k| (k.time_secs - clip_time_secs).abs() < KF_TOLERANCE_SECS)
+                        });
+                        let diamond_color = if has_at_playhead {
+                            theme.accent
+                        } else if has_any_bypass {
+                            theme.accent_dim
+                        } else {
+                            theme.text_dim
+                        };
+                        let dia_resp = ui.add(
+                            egui::Label::new(
+                                egui::RichText::new("\u{25C6}")
+                                    .size(11.0)
+                                    .color(diamond_color),
+                            )
+                            .sense(egui::Sense::click()),
+                        );
+                        if dia_resp.clicked() {
+                            if has_at_playhead {
+                                cmds.push(AppCommand::RemoveAudioEffectKeyframe {
+                                    clip_id,
+                                    effect_index: idx,
+                                    param_name: "__bypass".to_string(),
+                                    time_secs: clip_time_secs,
+                                });
+                            } else {
+                                // 1.0 = active, 0.0 = bypassed; mirror current enabled state.
+                                let value = if inst.enabled { 1.0 } else { 0.0 };
+                                cmds.push(AppCommand::AddAudioEffectKeyframe {
+                                    clip_id,
+                                    effect_index: idx,
+                                    param_name: "__bypass".to_string(),
+                                    time_secs: clip_time_secs,
+                                    value,
+                                });
+                            }
+                        }
+                        dia_resp.on_hover_text("Toggle bypass keyframe at playhead");
                     });
                 });
 
@@ -373,7 +589,11 @@ pub fn show_content(
 
                     // ── Parameters ──
                     if let Some(info) = ladspa_info {
-                        render_ladspa_params(ui, theme, clip_id, idx, inst, info, cmds);
+                        render_ladspa_params(
+                            ui, theme, clip_id, idx, inst, info,
+                            audio_effect_keyframes, clip_time_secs,
+                            clip_timeline_in_secs, clip_rate, cmds,
+                        );
                     } else if inst.effect_type.starts_with("ladspa:") {
                         ui.label(
                             egui::RichText::new(format!(
@@ -388,12 +608,20 @@ pub fn show_content(
                     {
                         let descs = effect.param_descriptors();
                         for desc in descs {
-                            let current_value = inst.params.iter()
+                            let static_value = inst.params.iter()
                                 .find(|(k, _)| k == desc.name)
                                 .map(|(_, v)| *v)
                                 .unwrap_or(desc.default);
 
-                            let mut val = current_value;
+                            // Display the kf-evaluated value when kfs exist
+                            // so the slider reflects the actual signal.
+                            let mut val = audio_kf_eval(
+                                audio_effect_keyframes,
+                                idx,
+                                desc.name,
+                                clip_time_secs,
+                                static_value,
+                            );
                             let unit_suffix = match desc.unit {
                                 klipp_audio::dsp::ParamUnit::Db => " dB",
                                 klipp_audio::dsp::ParamUnit::Hz => " Hz",
@@ -403,67 +631,85 @@ pub fn show_content(
                                 klipp_audio::dsp::ParamUnit::None => "",
                             };
 
-                            // Determine drag speed based on range
                             let range = desc.max - desc.min;
-                            let speed = range * 0.003;
+                            let speed = (range * 0.003) as f64;
                             let decimals = if range > 100.0 { 0 } else if range > 10.0 { 1 } else { 2 };
+                            let kf_state = if desc.is_keyframable() {
+                                Some(audio_kf_state(audio_effect_keyframes, idx, desc.name, clip_time_secs))
+                            } else {
+                                None
+                            };
 
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(desc.label)
-                                        .size(10.0)
-                                        .color(theme.text_secondary),
-                                );
+                            let resp = scrubby_param_row(
+                                ui,
+                                desc.label,
+                                &mut val,
+                                desc.min..=desc.max,
+                                desc.default,
+                                speed,
+                                decimals,
+                                unit_suffix,
+                                kf_state,
+                            );
 
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    let drag = ui.add(
-                                        egui::DragValue::new(&mut val)
-                                            .range(desc.min..=desc.max)
-                                            .speed(speed)
-                                            .max_decimals(decimals)
-                                            .suffix(unit_suffix),
-                                    );
-                                    if drag.changed() {
-                                        cmds.push(AppCommand::UpdateAudioEffectParam {
-                                            clip_id,
-                                            effect_index: idx,
-                                            param_name: desc.name.to_string(),
-                                            value: val,
-                                        });
-                                    }
+                            // Plain drag with no kfs → static param update.
+                            // Drag with kfs → AddAudioEffectKeyframe at the
+                            // playhead (handled inside dispatch_audio_kf_response).
+                            if resp.changed && !has_audio_kfs(audio_effect_keyframes, idx, desc.name) {
+                                cmds.push(AppCommand::UpdateAudioEffectParam {
+                                    clip_id,
+                                    effect_index: idx,
+                                    param_name: desc.name.to_string(),
+                                    value: val,
                                 });
-                            });
+                            }
+                            dispatch_audio_kf_response(
+                                &resp, val, audio_effect_keyframes,
+                                clip_id, idx, desc.name,
+                                clip_time_secs, clip_timeline_in_secs, clip_rate, cmds,
+                            );
                         }
                     }
 
                     ui.add_space(4.0);
 
-                    // ── Wet/Dry slider ──
-                    let mut wet_dry = inst.wet_dry;
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Wet/Dry")
-                                .size(10.0)
-                                .color(theme.text_secondary),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let wd = ui.add(
-                                egui::DragValue::new(&mut wet_dry)
-                                    .range(0.0..=1.0)
-                                    .speed(0.005)
-                                    .max_decimals(2)
-                                    .suffix("%")
-                                    .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-                            );
-                            if wd.changed() {
-                                cmds.push(AppCommand::SetAudioEffectWetDry {
-                                    clip_id,
-                                    effect_index: idx,
-                                    wet_dry,
-                                });
-                            }
+                    // ── Wet/Dry slider with keyframe diamond ──
+                    // Reserved param key __wetdry routes to the slot's
+                    // wet/dry-keyframe track in the chain.
+                    let static_wet_dry = inst.wet_dry;
+                    let mut wet_dry = audio_kf_eval(
+                        audio_effect_keyframes,
+                        idx,
+                        "__wetdry",
+                        clip_time_secs,
+                        static_wet_dry,
+                    );
+                    let kf_state = Some(audio_kf_state(
+                        audio_effect_keyframes, idx, "__wetdry", clip_time_secs,
+                    ));
+                    let resp = scrubby_param_row(
+                        ui,
+                        "Wet/Dry",
+                        &mut wet_dry,
+                        0.0..=1.0,
+                        1.0,
+                        0.005,
+                        2,
+                        "",
+                        kf_state,
+                    );
+                    if resp.changed && !has_audio_kfs(audio_effect_keyframes, idx, "__wetdry") {
+                        cmds.push(AppCommand::SetAudioEffectWetDry {
+                            clip_id,
+                            effect_index: idx,
+                            wet_dry,
                         });
-                    });
+                    }
+                    dispatch_audio_kf_response(
+                        &resp, wet_dry, audio_effect_keyframes,
+                        clip_id, idx, "__wetdry",
+                        clip_time_secs, clip_timeline_in_secs, clip_rate, cmds,
+                    );
                 }
             });
     }
@@ -487,7 +733,10 @@ fn parse_ladspa_type_id(type_id: &str) -> Option<(&str, &str)> {
 
 /// Render parameter sliders for a LADSPA plugin. Uses the port metadata
 /// from discovery (min / max / integer / logarithmic / toggle) to pick
-/// an appropriate widget per port.
+/// an appropriate widget per port. Toggle ports stay as plain
+/// checkboxes (no obvious kf semantic). All other ports get the
+/// keyframe-aware scrubby_param row.
+#[allow(clippy::too_many_arguments)]
 fn render_ladspa_params(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -495,6 +744,10 @@ fn render_ladspa_params(
     effect_index: usize,
     inst: &AudioEffectInstance,
     info: &LadspaPluginInfo,
+    audio_effect_keyframes: &HashMap<String, Vec<Keyframe>>,
+    clip_time_secs: f64,
+    clip_timeline_in_secs: f64,
+    clip_rate: u32,
     cmds: &mut Vec<AppCommand>,
 ) {
     if info.control_inputs.is_empty() {
@@ -507,7 +760,7 @@ fn render_ladspa_params(
     }
 
     for port in &info.control_inputs {
-        let current_value = inst
+        let static_value = inst
             .params
             .iter()
             .find(|(k, _)| k == &port.name)
@@ -520,71 +773,191 @@ fn render_ladspa_params(
             port.name.clone()
         };
 
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(&label)
-                    .size(10.0)
-                    .color(theme.text_secondary),
-            );
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let mut val = current_value;
-
-                if port.is_toggle {
-                    let mut on = val >= 0.5;
+        if port.is_toggle {
+            // Toggles get a checkbox — no kf for binary state (use
+            // bypass-kf at the slot level instead).
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(&label)
+                        .size(10.0)
+                        .color(theme.text_secondary),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut on = static_value >= 0.5;
                     let resp = ui.checkbox(&mut on, "");
                     if resp.changed() {
-                        let new_val = if on { 1.0 } else { 0.0 };
                         cmds.push(AppCommand::UpdateAudioEffectParam {
                             clip_id,
                             effect_index,
                             param_name: port.name.clone(),
-                            value: new_val,
+                            value: if on { 1.0 } else { 0.0 },
                         });
                     }
-                    return;
-                }
-
-                let range = (port.max - port.min).max(f32::EPSILON);
-                let speed = (range * 0.003).max(0.0001);
-                let decimals = if port.is_integer {
-                    0
-                } else if range > 100.0 {
-                    1
-                } else if range > 10.0 {
-                    2
-                } else {
-                    3
-                };
-
-                let unit_suffix = match klipp_audio::ladspa::unit_hint_for_port_name(&port.name) {
-                    klipp_audio::dsp::ParamUnit::Db => " dB",
-                    klipp_audio::dsp::ParamUnit::Hz => " Hz",
-                    klipp_audio::dsp::ParamUnit::Ms => " ms",
-                    klipp_audio::dsp::ParamUnit::Percent => "%",
-                    klipp_audio::dsp::ParamUnit::Ratio => ":1",
-                    klipp_audio::dsp::ParamUnit::None => "",
-                };
-
-                let mut drag = egui::DragValue::new(&mut val)
-                    .range(port.min..=port.max)
-                    .speed(speed)
-                    .max_decimals(decimals)
-                    .suffix(unit_suffix);
-                if port.is_integer {
-                    drag = drag.fixed_decimals(0);
-                }
-
-                let resp = ui.add(drag);
-                if resp.changed() {
-                    cmds.push(AppCommand::UpdateAudioEffectParam {
-                        clip_id,
-                        effect_index,
-                        param_name: port.name.clone(),
-                        value: val,
-                    });
-                }
+                });
             });
-        });
+            continue;
+        }
+
+        // Non-toggle ports: keyframable scrubby_param row.
+        let mut val = audio_kf_eval(
+            audio_effect_keyframes,
+            effect_index,
+            &port.name,
+            clip_time_secs,
+            static_value,
+        );
+        let range = (port.max - port.min).max(f32::EPSILON);
+        let speed = (range * 0.003).max(0.0001) as f64;
+        let decimals = if port.is_integer {
+            0
+        } else if range > 100.0 {
+            1
+        } else if range > 10.0 {
+            2
+        } else {
+            3
+        };
+        let unit_suffix = match klipp_audio::ladspa::unit_hint_for_port_name(&port.name) {
+            klipp_audio::dsp::ParamUnit::Db => " dB",
+            klipp_audio::dsp::ParamUnit::Hz => " Hz",
+            klipp_audio::dsp::ParamUnit::Ms => " ms",
+            klipp_audio::dsp::ParamUnit::Percent => "%",
+            klipp_audio::dsp::ParamUnit::Ratio => ":1",
+            klipp_audio::dsp::ParamUnit::None => "",
+        };
+        let kf_state = Some(audio_kf_state(
+            audio_effect_keyframes, effect_index, &port.name, clip_time_secs,
+        ));
+
+        let resp = scrubby_param_row(
+            ui,
+            &label,
+            &mut val,
+            port.min..=port.max,
+            port.default,
+            speed,
+            decimals,
+            unit_suffix,
+            kf_state,
+        );
+
+        if resp.changed && !has_audio_kfs(audio_effect_keyframes, effect_index, &port.name) {
+            cmds.push(AppCommand::UpdateAudioEffectParam {
+                clip_id,
+                effect_index,
+                param_name: port.name.clone(),
+                value: val,
+            });
+        }
+        dispatch_audio_kf_response(
+            &resp, val, audio_effect_keyframes,
+            clip_id, effect_index, &port.name,
+            clip_time_secs, clip_timeline_in_secs, clip_rate, cmds,
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Helper logic tests — diamond rendering itself needs egui to spin
+// up which makes a full UI unit test heavy. Pin the pure helpers
+// (state lookup, kf evaluation, has-kfs check) so the diamond's
+// behavior is correct even when the visual smoke test isn't run.
+// ═══════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+    use klipp_core::Interpolation;
+
+    fn kf(t: f64, v: f32) -> Keyframe {
+        Keyframe {
+            time_secs: t, value: v,
+            interpolation: Interpolation::Linear,
+            tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn has_audio_kfs_reports_correctly() {
+        let mut map: HashMap<String, Vec<Keyframe>> = HashMap::new();
+        assert!(!has_audio_kfs(&map, 0, "gain"));
+        map.insert("0:gain".to_string(), vec![kf(0.0, 1.0)]);
+        assert!(has_audio_kfs(&map, 0, "gain"));
+        // Different effect index — must not match.
+        assert!(!has_audio_kfs(&map, 1, "gain"));
+        // Different param name — must not match.
+        assert!(!has_audio_kfs(&map, 0, "threshold"));
+        // Empty Vec at the right key still counts as "no kfs" — the
+        // handler should clean these up but UI must not over-report.
+        map.insert("0:threshold".to_string(), vec![]);
+        assert!(!has_audio_kfs(&map, 0, "threshold"));
+    }
+
+    #[test]
+    fn audio_kf_eval_falls_back_to_default_when_no_track() {
+        let map: HashMap<String, Vec<Keyframe>> = HashMap::new();
+        assert_eq!(audio_kf_eval(&map, 0, "gain", 0.5, 0.7), 0.7);
+    }
+
+    #[test]
+    fn audio_kf_eval_uses_track_value_when_present() {
+        let mut map: HashMap<String, Vec<Keyframe>> = HashMap::new();
+        map.insert("0:gain".to_string(), vec![kf(0.0, 0.0), kf(1.0, 1.0)]);
+        // Linear ramp 0 → 1 over [0, 1]; midpoint = 0.5.
+        let v = audio_kf_eval(&map, 0, "gain", 0.5, 99.0);
+        assert!((v - 0.5).abs() < 1e-3, "expected ~0.5, got {v}");
+    }
+
+    #[test]
+    fn audio_kf_state_at_playhead_detects_within_tolerance() {
+        let mut map: HashMap<String, Vec<Keyframe>> = HashMap::new();
+        map.insert("0:gain".to_string(), vec![kf(0.5, 0.5)]);
+        // Within 20ms — must register as "at playhead"
+        let s = audio_kf_state(&map, 0, "gain", 0.51);
+        assert!(s.has_keyframe_at_playhead);
+        assert!(s.has_any_keyframes);
+        // Outside tolerance — must not register
+        let s = audio_kf_state(&map, 0, "gain", 0.6);
+        assert!(!s.has_keyframe_at_playhead);
+        assert!(s.has_any_keyframes);
+    }
+
+    #[test]
+    fn audio_kf_state_finds_prev_and_next() {
+        let mut map: HashMap<String, Vec<Keyframe>> = HashMap::new();
+        map.insert("0:gain".to_string(), vec![kf(0.0, 0.0), kf(1.0, 1.0), kf(2.0, 2.0)]);
+        let s = audio_kf_state(&map, 0, "gain", 1.5);
+        assert_eq!(s.prev_keyframe_time, Some(1.0));
+        assert_eq!(s.next_keyframe_time, Some(2.0));
+        // At the very start of the track, prev is None.
+        let s = audio_kf_state(&map, 0, "gain", 0.0);
+        assert_eq!(s.prev_keyframe_time, None);
+        assert_eq!(s.next_keyframe_time, Some(1.0));
+    }
+
+    #[test]
+    fn audio_kf_state_reports_no_kfs_for_unknown_param() {
+        let map: HashMap<String, Vec<Keyframe>> = HashMap::new();
+        let s = audio_kf_state(&map, 0, "gain", 0.0);
+        assert!(!s.has_any_keyframes);
+        assert!(!s.has_keyframe_at_playhead);
+        assert!(s.prev_keyframe_time.is_none());
+        assert!(s.next_keyframe_time.is_none());
+    }
+
+    #[test]
+    fn audio_kf_eval_works_for_reserved_keys() {
+        // The reserved __bypass and __wetdry tracks use the same
+        // namespace as regular params; eval must work transparently.
+        let mut map: HashMap<String, Vec<Keyframe>> = HashMap::new();
+        map.insert("0:__bypass".to_string(), vec![
+            Keyframe { time_secs: 0.0, value: 0.0, interpolation: Interpolation::Step,
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) },
+            Keyframe { time_secs: 1.0, value: 1.0, interpolation: Interpolation::Step,
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) },
+        ]);
+        // Step interp before second kf: still 0.0
+        assert_eq!(audio_kf_eval(&map, 0, "__bypass", 0.5, 1.0), 0.0);
+        // After second kf: 1.0
+        assert_eq!(audio_kf_eval(&map, 0, "__bypass", 1.5, 0.0), 1.0);
     }
 }
