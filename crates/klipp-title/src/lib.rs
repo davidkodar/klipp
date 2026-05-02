@@ -109,6 +109,24 @@ pub struct CharPosition {
     pub height: f32,
 }
 
+/// One entry in `TitleRenderer`'s rasterized-frame cache. Keyed by
+/// the full `TitleData` value + output dimensions; on a hit we
+/// memcpy the cached `Arc<Vec<u8>>` into the caller's buffer instead
+/// of re-running the cosmic-text shaping + glyph rasterisation, the
+/// outline / glow / extrusion compositing, and the texture-fill pass.
+///
+/// For a 1920×1080 RGBA buffer that's ~8 MB of memcpy vs ~10–30 ms
+/// of CPU work — the difference shows up directly as smooth vs
+/// stuttering playback for any title whose CONTENT doesn't change
+/// frame-to-frame (everything except `Typewriter`, where `write_on`
+/// advances per frame and naturally invalidates the cache).
+struct CachedRender {
+    title: TitleData,
+    width: u32,
+    height: u32,
+    buffer: std::sync::Arc<Vec<u8>>,
+}
+
 /// Renders title clips to RGBA pixel buffers.
 pub struct TitleRenderer {
     fallback_font: Font,
@@ -119,7 +137,14 @@ pub struct TitleRenderer {
     font_registry: font_discovery::FontRegistry,
     /// Cached texture fill image: (path, rgba_data, width, height)
     texture_fill_cache: Option<(String, Vec<u8>, u32, u32)>,
+    /// Small LRU of recently-rasterized titles. Capped at
+    /// `RENDER_CACHE_CAP` so memory stays bounded even when many
+    /// title clips are visited (e.g. scrubbing across a long credits
+    /// sequence).
+    render_cache: Vec<CachedRender>,
 }
+
+const RENDER_CACHE_CAP: usize = 4;
 
 impl Default for TitleRenderer {
     fn default() -> Self {
@@ -141,6 +166,7 @@ impl TitleRenderer {
             font_cache: HashMap::new(),
             font_registry: registry,
             texture_fill_cache: None,
+            render_cache: Vec::with_capacity(RENDER_CACHE_CAP),
         }
     }
 
@@ -801,14 +827,32 @@ impl TitleRenderer {
     }
 
     /// Render a `TitleData` to an RGBA buffer of `width x height` pixels (backward compat).
+    ///
+    /// Hits the per-renderer LRU when the same title content lands at
+    /// the same size — the common case during playback (scrolling
+    /// credits, crawling tickers, slide / fade animations all keep
+    /// `TitleData` constant frame-to-frame and only animate via
+    /// downstream `transform_pos_*` keyframes). Cache miss cost is
+    /// the full shaping + rasterisation; cache hit cost is one
+    /// memcpy of the rasterised buffer.
     pub fn render(&mut self, title: &TitleData, width: u32, height: u32) -> Vec<u8> {
+        if let Some(buf) = self.cache_lookup(title, width, height) {
+            return buf;
+        }
         let layout = self.render_layout(title, width, height);
         let mut buf = Self::compose(&layout, title, width, height, None);
         self.apply_texture_fill(&mut buf, &layout, title, width, height);
+        self.cache_store(title.clone(), width, height, buf.clone());
         buf
     }
 
     /// Render with optional GPU-accelerated alpha mask processing.
+    ///
+    /// Cache is keyed only by `(title, width, height)` — the GPU
+    /// argument is a runtime processor, not part of the visual
+    /// output, so a cached buffer from a CPU render is safe to
+    /// return on the GPU path too. Hitting the cache means the GPU
+    /// processor runs zero work for that frame.
     pub fn render_with_gpu(
         &mut self,
         title: &TitleData,
@@ -816,10 +860,54 @@ impl TitleRenderer {
         height: u32,
         gpu: Option<&mut dyn AlphaMaskProcessor>,
     ) -> Vec<u8> {
+        if let Some(buf) = self.cache_lookup(title, width, height) {
+            return buf;
+        }
         let layout = self.render_layout(title, width, height);
         let mut buf = Self::compose(&layout, title, width, height, gpu);
         self.apply_texture_fill(&mut buf, &layout, title, width, height);
+        self.cache_store(title.clone(), width, height, buf.clone());
         buf
+    }
+
+    /// Look up a cached rasterised buffer for the given title +
+    /// dimensions. On hit, moves the entry to the front of the LRU
+    /// (most-recently-used end) and returns a memcpy of the buffer.
+    fn cache_lookup(&mut self, title: &TitleData, width: u32, height: u32) -> Option<Vec<u8>> {
+        let pos = self.render_cache.iter().position(|c| {
+            c.width == width && c.height == height && &c.title == title
+        })?;
+        // Move to front (LRU).
+        let entry = self.render_cache.remove(pos);
+        let buf = (*entry.buffer).clone();
+        self.render_cache.insert(0, entry);
+        Some(buf)
+    }
+
+    /// Insert a freshly-rendered buffer into the cache, evicting the
+    /// least-recently-used entry if at capacity.
+    fn cache_store(&mut self, title: TitleData, width: u32, height: u32, buffer: Vec<u8>) {
+        if self.render_cache.len() >= RENDER_CACHE_CAP {
+            self.render_cache.pop();
+        }
+        self.render_cache.insert(
+            0,
+            CachedRender {
+                title,
+                width,
+                height,
+                buffer: std::sync::Arc::new(buffer),
+            },
+        );
+    }
+
+    /// Drop every cached rasterised buffer. Useful when the host
+    /// changes a font on disk or wants to free the render-cache
+    /// memory (e.g. exporting a different project). Not currently
+    /// invoked anywhere — the LRU bound (4 entries × 1920×1080×4 ≈
+    /// 32 MB) is small enough to live indefinitely.
+    pub fn invalidate_cache(&mut self) {
+        self.render_cache.clear();
     }
 
     /// Compute character positions for the given title text, using the same layout

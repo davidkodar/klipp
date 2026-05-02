@@ -1403,6 +1403,11 @@ pub enum AppCommand {
     ConfirmDeleteUnusedMedia,
     /// Export despite offline media (user confirmed from warning dialog).
     ForceExportSequence { settings: Box<ExportSettings> },
+    /// Bypasses the source-overwrite guard. Sent by the warning
+    /// dialog's "Overwrite Anyway" button when the user explicitly
+    /// confirms they want to write the export to the same path as
+    /// a clip in the project's media pool.
+    ForceExportSequenceOverwrite { settings: Box<ExportSettings> },
 
     // Bins
     CreateBin { name: String },

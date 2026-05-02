@@ -1611,6 +1611,13 @@ pub struct AppState {
     pub ai_models_dialog: crate::panels::ai_models::AiModelsDialogState,
     /// Export offline warning: list of (filename, timecode_string) for offline clips
     pub export_offline_warning: Option<(Vec<(String, String)>, Box<klipp_core::ExportSettings>)>,
+    /// Export-target collides with a project media file — guard
+    /// against silently overwriting source media mid-render.
+    /// Tuple = (matching media filename, settings to re-dispatch on
+    /// confirm). Surfaced as the "Export Will Overwrite Source"
+    /// dialog with three options: pick another file, auto-rename
+    /// with a numeric suffix, or overwrite anyway.
+    pub export_source_overwrite_warning: Option<(String, Box<klipp_core::ExportSettings>)>,
 
     // Usage count cache: MediaId → number of clips referencing it.
     // Rebuilt lazily when media_usage_cache_dirty is set (after any timeline edit).
@@ -2879,6 +2886,7 @@ impl Default for AppState {
             show_ai_custom_uninstall_confirm: None,
             ai_models_dialog: crate::panels::ai_models::AiModelsDialogState::default(),
             export_offline_warning: None,
+            export_source_overwrite_warning: None,
             media_usage_cache: std::collections::HashMap::new(),
             media_usage_cache_dirty: true,
             show_new_project_dialog: false,

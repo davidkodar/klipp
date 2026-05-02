@@ -1,7 +1,7 @@
 use crate::error::RenderError;
 use crate::snapshot::SequenceSnapshot;
 use klipp_color::hdr::LightLevelStats;
-use klipp_core::{ExportSettings, ExportVideoCodec};
+use klipp_core::{ExportFormat, ExportSettings, ExportVideoCodec};
 use std::path::Path;
 use tracing::{debug, info, warn};
 
@@ -177,24 +177,35 @@ impl Encoder {
         settings: &ExportSettings,
         snapshot: &SequenceSnapshot,
     ) -> Result<Self, RenderError> {
-        // Force the correct container format based on codec.
-        // ProRes and DNxHD require MOV; H.264/H.265 work in MP4/MKV/MOV.
+        // Force the correct container format ALWAYS — never let
+        // ffmpeg auto-detect from the filename extension. This
+        // breaks when the export job writes to a `.partial` sibling
+        // (R-5 atomic-rename strategy in `export_job.rs`): ffmpeg
+        // looks at the trailing extension and `.partial` isn't a
+        // registered muxer, so the entire encoder context fails to
+        // build with "Invalid argument".
+        //
+        // ProRes / DNxHD codecs override the user's container choice
+        // because they only mux into MOV. Everything else maps
+        // directly from `settings.format`.
         let forced_format = match settings.video_codec {
             ExportVideoCodec::ProRes422
             | ExportVideoCodec::ProRes422HQ
             | ExportVideoCodec::ProRes4444
             | ExportVideoCodec::DNxHD115
-            | ExportVideoCodec::DNxHD145 => Some("mov"),
-            _ => None,
+            | ExportVideoCodec::DNxHD145 => "mov",
+            _ => match settings.format {
+                ExportFormat::Mp4 => "mp4",
+                ExportFormat::Mkv => "matroska",
+                ExportFormat::Mov => "mov",
+                ExportFormat::WebM => "webm",
+            },
         };
 
-        let mut output_ctx = if let Some(fmt) = forced_format {
-            ffmpeg_next::format::output_as(output_path, fmt)
-                .map_err(|e| RenderError::Encode(format!("output context (forced {fmt}): {e}")))?
-        } else {
-            ffmpeg_next::format::output(output_path)
-                .map_err(|e| RenderError::Encode(format!("output context: {e}")))?
-        };
+        let mut output_ctx = ffmpeg_next::format::output_as(output_path, forced_format)
+            .map_err(|e| {
+                RenderError::Encode(format!("output context (forced {forced_format}): {e}"))
+            })?;
 
         // ═══════════════════════════════════════════════════════════
         // VIDEO ENCODER

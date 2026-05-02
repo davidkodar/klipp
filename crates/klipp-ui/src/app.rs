@@ -12540,7 +12540,14 @@ impl KlippApp {
                 // Apply baked-in title animation keyframes
                 if let Some(anim_str) = self.state.pending_title_animation.take() {
                     let clip_dur = 5.0_f64;
-                    apply_title_animation(&mut clip, &anim_str, clip_dur);
+                    let res = self.state.sequences[self.state.active_sequence_idx].resolution;
+                    apply_title_animation(
+                        &mut clip,
+                        &anim_str,
+                        clip_dur,
+                        res.width as f32,
+                        res.height as f32,
+                    );
                     // Clear title overlay so it starts invisible for animated titles
                     self.state.clear_title_overlay = true;
                 }
@@ -12879,7 +12886,14 @@ impl KlippApp {
         // Apply the asset's baked-in animation keyframes the same
         // way `CreateTitleClip` does.
         if let Some(ref anim_str) = asset.animation {
-            apply_title_animation(&mut clip, anim_str, 5.0);
+            let res = self.state.sequences[seq_idx].resolution;
+            apply_title_animation(
+                &mut clip,
+                anim_str,
+                5.0,
+                res.width as f32,
+                res.height as f32,
+            );
         }
 
         self.state.sequences[seq_idx].tracks[track_idx]
@@ -13459,7 +13473,6 @@ impl KlippApp {
             AppCommand::SetTitleAnimation { clip_id, animation_kind, speed } => {
                 let animation = decode_title_animation(*animation_kind, *speed);
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                let fps = seq.fps;
                 let frame_w = seq.resolution.width as f32;
                 let frame_h = seq.resolution.height as f32;
                 for track in &mut seq.tracks {
@@ -13467,7 +13480,7 @@ impl KlippApp {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             td.animation_type = animation.clone();
                         }
-                        apply_title_animation_keyframes(clip, &animation, fps, frame_h, frame_w);
+                        apply_title_animation_keyframes(clip, &animation, frame_h, frame_w);
                     }
                 }
                 self.render_title_to_viewer(*clip_id);
@@ -15371,6 +15384,20 @@ impl KlippApp {
                     self.state.export_offline_warning = Some((offline_clips, Box::new(settings.clone())));
                     return true;
                 }
+
+                // Pre-export check: would the export target overwrite
+                // a file currently used as source media? Mid-render
+                // overwrite of a still-decoding source corrupts both
+                // the source and the export, and after the fact
+                // invalidates the project's filmstrip cache so every
+                // subsequent project load regenerates filmstrips for
+                // every affected clip. Catch it here, before the
+                // encoder opens, and let the user pick a safe path.
+                if let Some(matched_filename) = self.find_export_overwrite_conflict(&settings.output_path) {
+                    self.state.export_source_overwrite_warning =
+                        Some((matched_filename, Box::new(settings.clone())));
+                    return true;
+                }
                 // Marker multi-export: enqueue one job per segment between markers.
                 if self.export_dialog.range_mode == 3 {
                     self.enqueue_marker_segments(settings);
@@ -15417,6 +15444,18 @@ impl KlippApp {
             AppCommand::ForceExportSequence { settings } => {
                 // Same as ExportSequence but skips offline check (user confirmed)
                 self.state.export_offline_warning = None;
+                // Source-overwrite guard still runs — bypassing the
+                // offline check doesn't bypass the data-corruption
+                // check. If it triggers, the user gets the second
+                // dialog and has to confirm via
+                // ForceExportSequenceOverwrite.
+                if let Some(matched_filename) =
+                    self.find_export_overwrite_conflict(&settings.output_path)
+                {
+                    self.state.export_source_overwrite_warning =
+                        Some((matched_filename, Box::new(settings.as_ref().clone())));
+                    return true;
+                }
                 if self.export_dialog.range_mode == 3 {
                     self.enqueue_marker_segments(settings);
                     self.state.show_render_queue = true;
@@ -15446,6 +15485,56 @@ impl KlippApp {
                 match snapshot {
                     Ok(snap) => {
                         self.state.render_queue.add_job(settings.output_path.clone(), settings.as_ref().clone(), label, snap);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create render snapshot: {e}");
+                    }
+                }
+                self.state.show_render_queue = true;
+                true
+            }
+            AppCommand::ForceExportSequenceOverwrite { settings } => {
+                // User explicitly accepted the source-overwrite
+                // warning. Same body as ForceExportSequence but
+                // skips both the offline check (user already passed
+                // it if it fired) and the source-overwrite check.
+                self.state.export_offline_warning = None;
+                self.state.export_source_overwrite_warning = None;
+                if self.export_dialog.range_mode == 3 {
+                    self.enqueue_marker_segments(settings);
+                    self.state.show_render_queue = true;
+                    return true;
+                }
+                let use_marked = self.export_dialog.range_mode == 1;
+                let mut snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
+                    &self.state.sequences[self.state.active_sequence_idx],
+                    &self.state.sequences,
+                    &self.state.media_pool,
+                    settings,
+                    None,
+                    use_marked,
+                );
+                if self.export_dialog.range_mode == 2 {
+                    if let Ok(ref mut snap) = snapshot {
+                        let seq = &self.state.sequences[self.state.active_sequence_idx];
+                        snap.sequence_snapshot.export_range = selected_clips_frame_range(
+                            &self.state.selected_clips, seq, snap.sequence_snapshot.fps);
+                    }
+                }
+                if let Ok(ref mut snap) = snapshot {
+                    snap.sequence_snapshot.working_colorspace = self.state.project_working_colorspace;
+                }
+                let label = settings.output_path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "Render".into());
+                match snapshot {
+                    Ok(snap) => {
+                        self.state.render_queue.add_job(
+                            settings.output_path.clone(),
+                            settings.as_ref().clone(),
+                            label,
+                            snap,
+                        );
                     }
                     Err(e) => {
                         tracing::error!("Failed to create render snapshot: {e}");
@@ -16142,6 +16231,76 @@ impl KlippApp {
             }
             _ => false,
         }
+    }
+
+    /// If `output_path` resolves to the same file as any media-pool item,
+    /// returns the matching item's filename. Used to warn the user before
+    /// they overwrite a source file mid-edit (the encoder rewrites the
+    /// file under the live decoder, invalidates filmstrip cache, and on
+    /// reload the timeline references the rendered output rather than the
+    /// camera-original).
+    ///
+    /// Path comparison: try canonicalisation (resolves `..`, symlinks,
+    /// case-insensitive matches on relevant FSes); fall back to lexical
+    /// equality if canonicalisation fails (e.g. the export path is in a
+    /// directory that doesn't exist yet — won't conflict, so the
+    /// fall-back trivially returns None for it). Both paths must
+    /// canonicalise for a match — if only one resolves we treat it as
+    /// "no conflict" rather than risk a false positive.
+    fn find_export_overwrite_conflict(
+        &self,
+        output_path: &std::path::Path,
+    ) -> Option<String> {
+        let canon_out = output_path.canonicalize().ok()?;
+        for item in self.state.media_pool.all() {
+            if item.is_synthetic() {
+                continue;
+            }
+            if let Ok(canon_item) = item.path.canonicalize() {
+                if canon_item == canon_out {
+                    return Some(
+                        item.path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| item.path.display().to_string()),
+                    );
+                }
+            }
+        }
+        None
+    }
+
+    /// Find next available numeric-suffixed filename (`output_1.mp4`,
+    /// `output_2.mp4` …) when the user picks "Auto-Rename" on the
+    /// source-overwrite warning. Walks suffix integers up to 9999 then
+    /// gives up — far beyond any plausible real-world clash.
+    fn auto_rename_export_path(
+        original: &std::path::Path,
+    ) -> std::path::PathBuf {
+        let parent = original.parent().unwrap_or(std::path::Path::new("."));
+        let stem = original
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "output".into());
+        let ext = original
+            .extension()
+            .map(|e| e.to_string_lossy().to_string())
+            .unwrap_or_default();
+        for n in 1..10000u32 {
+            let name = if ext.is_empty() {
+                format!("{stem}_{n}")
+            } else {
+                format!("{stem}_{n}.{ext}")
+            };
+            let candidate = parent.join(&name);
+            if !candidate.exists() {
+                return candidate;
+            }
+        }
+        // Ridiculously unlikely. Fall back to original — caller will
+        // get the warning again on the next export, which is the
+        // safest failure mode.
+        original.to_path_buf()
     }
 
     /// Marker multi-export: enqueue one render job per segment between
@@ -25068,6 +25227,80 @@ impl KlippApp {
             }
         }
 
+        // Export would overwrite a source media file — warn the user.
+        // Three escape hatches: pick a different file (re-opens the
+        // export dialog with the conflicting filename pre-filled),
+        // auto-rename to the next free numeric suffix, or overwrite
+        // anyway (the user knows what they're doing — e.g. they're
+        // genuinely re-encoding in place).
+        if self.state.export_source_overwrite_warning.is_some() {
+            let mut auto_rename = false;
+            let mut overwrite_anyway = false;
+            let mut pick_different = false;
+            let mut rename_target = std::path::PathBuf::new();
+            if let Some((ref filename, ref settings)) =
+                self.state.export_source_overwrite_warning
+            {
+                rename_target = Self::auto_rename_export_path(&settings.output_path);
+                let rename_label = rename_target
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "renamed copy".into());
+                egui::Window::new("Export Would Overwrite Source Media")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                    .show(ctx, |ui| {
+                        ui.label(format!(
+                            "The export target is the same file as a clip in this project:"
+                        ));
+                        ui.add_space(2.0);
+                        ui.label(format!("  \u{2022} {}", filename));
+                        ui.add_space(6.0);
+                        ui.label(
+                            "Writing to it will replace the source on disk, \
+                             invalidate the filmstrip cache, and on next reload \
+                             the timeline will reference the rendered output \
+                             instead of the camera-original.",
+                        );
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Pick Different File").clicked() {
+                                pick_different = true;
+                            }
+                            if ui.button(format!("Auto-Rename to {}", rename_label)).clicked() {
+                                auto_rename = true;
+                            }
+                            if ui.button("Overwrite Anyway").clicked() {
+                                overwrite_anyway = true;
+                            }
+                        });
+                    });
+            }
+            if pick_different {
+                self.state.export_source_overwrite_warning = None;
+                self.state.show_export_dialog = true;
+            }
+            if auto_rename {
+                if let Some((_, settings)) =
+                    self.state.export_source_overwrite_warning.take()
+                {
+                    let mut new_settings = settings.as_ref().clone();
+                    new_settings.output_path = rename_target;
+                    cmds.push(AppCommand::ForceExportSequenceOverwrite {
+                        settings: Box::new(new_settings),
+                    });
+                }
+            }
+            if overwrite_anyway {
+                if let Some((_, settings)) =
+                    self.state.export_source_overwrite_warning.take()
+                {
+                    cmds.push(AppCommand::ForceExportSequenceOverwrite { settings });
+                }
+            }
+        }
+
         // 4a2. Confirm remove track dialog
         if let Some(track_id) = self.state.confirm_remove_track {
             let mut open = true;
@@ -27642,7 +27875,13 @@ fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId> {
 
 /// Animation format: `"type_duration"` or `"type1+type2_duration"` where duration is in seconds.
 /// Examples: `"fade_in_0.5"`, `"slide_left_1.0"`, `"fade_in+slide_left_0.8"`, `"fade_in_out_0.5"`
-fn apply_title_animation(clip: &mut klipp_timeline::Clip, anim_str: &str, clip_dur: f64) {
+fn apply_title_animation(
+    clip: &mut klipp_timeline::Clip,
+    anim_str: &str,
+    clip_dur: f64,
+    frame_w: f32,
+    frame_h: f32,
+) {
     use klipp_core::{Interpolation, Keyframe};
 
     // Helper to create a bezier keyframe with ease tangents
@@ -27866,47 +28105,25 @@ fn apply_title_animation(clip: &mut klipp_timeline::Clip, anim_str: &str, clip_d
                 clip.transform_pos_y_keyframes.push(bezier_kf(0.0, 50.0, (0.0, 0.0), (0.33 * clip_dur, 0.0)));
                 clip.transform_pos_y_keyframes.push(bezier_kf(clip_dur, -50.0, (-0.33 * clip_dur, 0.0), (0.0, 0.0)));
             }
-            // ── Continuous motion via keyframes (speed = distance / clip_duration) ──
-            "scroll_up" => {
-                // Text scrolls from below frame to above frame over clip duration
-                clip.transform_pos_y_keyframes.push(Keyframe {
-                    time_secs: 0.0, value: 600.0, interpolation: Interpolation::Linear,
-                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
-                });
-                clip.transform_pos_y_keyframes.push(Keyframe {
-                    time_secs: clip_dur, value: -600.0, interpolation: Interpolation::Linear,
-                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
-                });
-            }
-            "scroll_down" => {
-                clip.transform_pos_y_keyframes.push(Keyframe {
-                    time_secs: 0.0, value: -600.0, interpolation: Interpolation::Linear,
-                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
-                });
-                clip.transform_pos_y_keyframes.push(Keyframe {
-                    time_secs: clip_dur, value: 600.0, interpolation: Interpolation::Linear,
-                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
-                });
-            }
-            "ticker_left" => {
-                clip.transform_pos_x_keyframes.push(Keyframe {
-                    time_secs: 0.0, value: 1000.0, interpolation: Interpolation::Linear,
-                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
-                });
-                clip.transform_pos_x_keyframes.push(Keyframe {
-                    time_secs: clip_dur, value: -1000.0, interpolation: Interpolation::Linear,
-                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
-                });
-            }
-            "ticker_right" => {
-                clip.transform_pos_x_keyframes.push(Keyframe {
-                    time_secs: 0.0, value: -1000.0, interpolation: Interpolation::Linear,
-                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
-                });
-                clip.transform_pos_x_keyframes.push(Keyframe {
-                    time_secs: clip_dur, value: 1000.0, interpolation: Interpolation::Linear,
-                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
-                });
+            // ── Continuous motion via keyframes ──
+            // Scroll/ticker dispatch through the enum-typed path so
+            // `td.animation_type` is populated and the Inspector's speed
+            // slider becomes effective. Default speed = 0.0 = "Auto"
+            // (clip-bounded), matching the original baked-in behaviour
+            // until the user drags the slider.
+            "scroll_up" | "scroll_down" | "ticker_left" | "ticker_right" => {
+                use klipp_timeline::TitleAnimationType as T;
+                let animation = match anim_type {
+                    "scroll_up" => T::ScrollUp { speed_px_per_sec: 0.0 },
+                    "scroll_down" => T::ScrollDown { speed_px_per_sec: 0.0 },
+                    "ticker_left" => T::CrawlLeft { speed_px_per_sec: 0.0 },
+                    "ticker_right" => T::CrawlRight { speed_px_per_sec: 0.0 },
+                    _ => unreachable!(),
+                };
+                if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                    td.animation_type = animation.clone();
+                }
+                apply_title_animation_keyframes(clip, &animation, frame_h, frame_w);
             }
             "spinning" => {
                 use klipp_core::modifier::*;
@@ -28664,19 +28881,16 @@ fn decode_title_animation(kind: u8, speed: f32) -> klipp_timeline::TitleAnimatio
 /// them for Static/Typewriter. Position offsets use the same pixel-offset
 /// convention as the rest of the codebase (0 = centred).
 ///
-/// F-173: `speed_px_per_sec` now drives the keyframe span. Travel is always
-/// edge-to-edge (`2 * frame_height` for vertical scroll, `2 * frame_width`
-/// for horizontal crawl); `span = travel / speed` sets the keyframe
-/// duration. If the computed span exceeds the clip duration, we fall back
-/// to the clip-bounded behaviour (text off-screen before the clip ends is
-/// confusing; pro NLEs cap here too). Speed ≤ 0 also falls back. The
-/// previous behaviour always used the full clip duration regardless of
-/// the user-set speed, so the slider in the inspector changed the stored
-/// value but not the rendered motion.
+/// `speed_px_per_sec` drives the keyframe span. Travel is text-dim-aware:
+/// `((frame + text) * 0.5 * 1.1).max(frame)` per side, so multi-line credits
+/// fully clear the viewport at both ends regardless of resolution. When
+/// `speed_px_per_sec > 0` the scroll completes in `(2 * offset) / speed`
+/// seconds (clamped to clip duration so text never gets cut off mid-scroll).
+/// When `speed ≤ 0`, span = clip duration — the "Auto / clip-bounded"
+/// default that fills the entire clip with motion regardless of length.
 fn apply_title_animation_keyframes(
     clip: &mut klipp_timeline::Clip,
     animation: &klipp_timeline::TitleAnimationType,
-    _seq_fps: klipp_core::Fps,
     frame_height: f32,
     frame_width: f32,
 ) {
@@ -28684,6 +28898,32 @@ fn apply_title_animation_keyframes(
     use klipp_timeline::TitleAnimationType as T;
 
     let clip_dur_secs = clip.duration().to_secs_f64().max(0.001);
+
+    // Estimate the rendered title's pixel block dims so scroll/crawl
+    // travel far enough to fully clear the frame at both ends. Mirror
+    // the calculation `apply_title_animation` performs at clip-creation
+    // time (the renderer scales font_size by frame_h/1080 before glyph
+    // layout, so we mirror that scale here).
+    let render_scale = frame_height / 1080.0;
+    let (text_h, text_w) = match &clip.kind {
+        klipp_timeline::ClipKind::Title(td) => {
+            let line_count = td.text.lines().count().max(1) as f32;
+            let max_chars = td
+                .text
+                .lines()
+                .map(|l| l.chars().count())
+                .max()
+                .unwrap_or(0)
+                .max(1) as f32;
+            let scaled_font = td.font_size * render_scale;
+            let h = line_count * scaled_font * 1.4;
+            let w = max_chars * scaled_font * 0.55;
+            (h, w)
+        }
+        _ => (0.0, 0.0),
+    };
+    let scroll_offset = ((frame_height + text_h) * 0.5 * 1.1).max(frame_height);
+    let crawl_offset = ((frame_width + text_w) * 0.5 * 1.1).max(frame_width);
 
     let mk_linear_kf = |time_secs: f64, value: f32| Keyframe {
         time_secs,
@@ -28693,9 +28933,8 @@ fn apply_title_animation_keyframes(
         tangent_in: (0.0, 0.0),
     };
 
-    // Compute the keyframe span: how long the scroll motion takes.
-    // Returns min(clip_dur, travel/speed); fallback to clip_dur if
-    // speed invalid.
+    // Span = min(travel/speed, clip_dur); fallback to clip_dur when speed
+    // ≤ 0 (the "Auto" default — animation fills the entire clip).
     let span_for = |speed_px_per_sec: f32, travel_px: f32| -> f64 {
         if speed_px_per_sec > 0.0 && travel_px > 0.0 {
             let by_speed = travel_px as f64 / speed_px_per_sec as f64;
@@ -28707,35 +28946,35 @@ fn apply_title_animation_keyframes(
 
     match animation {
         T::ScrollUp { speed_px_per_sec } => {
-            let span = span_for(*speed_px_per_sec, 2.0 * frame_height);
+            let span = span_for(*speed_px_per_sec, 2.0 * scroll_offset);
             clip.transform_pos_x_keyframes.clear();
             clip.transform_pos_y_keyframes = vec![
-                mk_linear_kf(0.0, frame_height),
-                mk_linear_kf(span, -frame_height),
+                mk_linear_kf(0.0, scroll_offset),
+                mk_linear_kf(span, -scroll_offset),
             ];
         }
         T::ScrollDown { speed_px_per_sec } => {
-            let span = span_for(*speed_px_per_sec, 2.0 * frame_height);
+            let span = span_for(*speed_px_per_sec, 2.0 * scroll_offset);
             clip.transform_pos_x_keyframes.clear();
             clip.transform_pos_y_keyframes = vec![
-                mk_linear_kf(0.0, -frame_height),
-                mk_linear_kf(span, frame_height),
+                mk_linear_kf(0.0, -scroll_offset),
+                mk_linear_kf(span, scroll_offset),
             ];
         }
         T::CrawlLeft { speed_px_per_sec } => {
-            let span = span_for(*speed_px_per_sec, 2.0 * frame_width);
+            let span = span_for(*speed_px_per_sec, 2.0 * crawl_offset);
             clip.transform_pos_y_keyframes.clear();
             clip.transform_pos_x_keyframes = vec![
-                mk_linear_kf(0.0, frame_width),
-                mk_linear_kf(span, -frame_width),
+                mk_linear_kf(0.0, crawl_offset),
+                mk_linear_kf(span, -crawl_offset),
             ];
         }
         T::CrawlRight { speed_px_per_sec } => {
-            let span = span_for(*speed_px_per_sec, 2.0 * frame_width);
+            let span = span_for(*speed_px_per_sec, 2.0 * crawl_offset);
             clip.transform_pos_y_keyframes.clear();
             clip.transform_pos_x_keyframes = vec![
-                mk_linear_kf(0.0, -frame_width),
-                mk_linear_kf(span, frame_width),
+                mk_linear_kf(0.0, -crawl_offset),
+                mk_linear_kf(span, crawl_offset),
             ];
         }
         T::Typewriter { .. } | T::Static => {
@@ -29145,16 +29384,12 @@ Dialogue: 0,0:00:09.00,0:00:11.00,Default,,0,0,0,,Text, with commas, inside
         clip.timeline_in = ti;
         clip.timeline_out = to;
         let anim = TitleAnimationType::ScrollUp { speed_px_per_sec: 100.0 };
-        apply_title_animation_keyframes(
-            &mut clip,
-            &anim,
-            klipp_core::Fps::new(24, 1),
-            1080.0,
-            1920.0,
-        );
+        apply_title_animation_keyframes(&mut clip, &anim, 1080.0, 1920.0);
         assert!(clip.transform_pos_x_keyframes.is_empty());
         assert_eq!(clip.transform_pos_y_keyframes.len(), 2);
-        // First kf: bottom (+H), last kf: top (-H)
+        // Gap clip → no Title content → text dims = 0 → scroll_offset
+        // collapses to frame_height. First kf: bottom (+H), last kf:
+        // top (-H).
         assert!((clip.transform_pos_y_keyframes[0].value - 1080.0).abs() < 0.001);
         assert!((clip.transform_pos_y_keyframes[1].value + 1080.0).abs() < 0.001);
     }
@@ -29177,13 +29412,7 @@ Dialogue: 0,0:00:09.00,0:00:11.00,Default,,0,0,0,,Text, with commas, inside
             time_secs: 0.0, value: 100.0, interpolation: Interpolation::Linear,
             tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0),
         });
-        apply_title_animation_keyframes(
-            &mut clip,
-            &TitleAnimationType::Static,
-            klipp_core::Fps::new(24, 1),
-            1080.0,
-            1920.0,
-        );
+        apply_title_animation_keyframes(&mut clip, &TitleAnimationType::Static, 1080.0, 1920.0);
         assert!(clip.transform_pos_x_keyframes.is_empty());
         assert!(clip.transform_pos_y_keyframes.is_empty());
     }

@@ -1403,10 +1403,15 @@ fn show_title_editor(
                 ui.selectable_value(&mut selected, 5, "Typewriter");
             });
         if selected != current_kind {
-            // Use sensible defaults when switching variants
+            // Switching kind defaults to speed = 0 ("Auto" / clip-bounded)
+            // for scroll/crawl — the motion fills the entire clip
+            // duration regardless of length, matching the original
+            // baked-in template behaviour. Typewriter still gets a
+            // sensible chars/sec default since "0 chars/sec" isn't
+            // meaningful.
             let speed = match selected {
-                1 | 2 | 3 | 4 => 120.0,   // px/sec
-                5 => 15.0,                 // chars/sec
+                1 | 2 | 3 | 4 => 0.0,
+                5 => 15.0,
                 _ => 0.0,
             };
             cmds.push(AppCommand::SetTitleAnimation {
@@ -1425,16 +1430,34 @@ fn show_title_editor(
                 let mut v = *speed_px_per_sec;
                 ui.horizontal(|ui| {
                     ui.label("Speed:");
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut v)
-                                .range(10.0..=2000.0)
-                                .speed(1.0)
-                                .suffix(" px/s")
-                                .fixed_decimals(0),
-                        )
-                        .changed()
-                    {
+                    // 0 = Auto (clip-bounded — animation fills clip duration).
+                    // Custom formatter shows "Auto" instead of "0 px/s" at the
+                    // bottom of the range so the semantics are obvious.
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut v)
+                            .range(0.0..=2000.0)
+                            .speed(1.0)
+                            .fixed_decimals(0)
+                            .custom_formatter(|n, _| {
+                                if n <= 0.5 {
+                                    "Auto".to_string()
+                                } else {
+                                    format!("{n:.0} px/s")
+                                }
+                            })
+                            .custom_parser(|s| {
+                                let t = s.trim().to_lowercase();
+                                if t == "auto" || t.is_empty() {
+                                    Some(0.0)
+                                } else {
+                                    t.trim_end_matches("px/s")
+                                        .trim()
+                                        .parse::<f64>()
+                                        .ok()
+                                }
+                            }),
+                    );
+                    if resp.changed() {
                         cmds.push(AppCommand::SetTitleAnimation {
                             clip_id,
                             animation_kind: current_kind,

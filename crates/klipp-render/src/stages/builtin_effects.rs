@@ -232,7 +232,24 @@ impl ProcessingStage for BuiltinEffectsStage {
             None => return frame,
         };
 
-        if clip.builtin_effects.is_empty() {
+        // Skip the stage entirely only when there's nothing to do —
+        // no static effects AND no animation keyframes. The earlier
+        // bare `clip.builtin_effects.is_empty()` check skipped the
+        // keyframe-evaluation block below for any clip with no
+        // static effects queued, which broke transform animation
+        // (credits scroll, slide, push, crawl) on title and
+        // generator clips that don't carry standalone effects but
+        // DO carry `transform_pos_*_keyframes` / `opacity_keyframes`.
+        // Symptom: exported clip showed static text instead of the
+        // scrolling animation; playback showed the same thing
+        // (visible for any title where only the keyframe path
+        // produces motion).
+        let has_animation_kfs = !clip.transform_pos_x_keyframes.is_empty()
+            || !clip.transform_pos_y_keyframes.is_empty()
+            || !clip.transform_scale_keyframes.is_empty()
+            || !clip.transform_rotation_keyframes.is_empty()
+            || !clip.opacity_keyframes.is_empty();
+        if clip.builtin_effects.is_empty() && !has_animation_kfs {
             return frame;
         }
 
