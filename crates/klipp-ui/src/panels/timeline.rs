@@ -195,13 +195,39 @@ pub(crate) const TEXT_TRACK_HEIGHT: f32 = 32.0;
 const MIN_TRACK_HEIGHT: f32 = 32.0;
 const MAX_TRACK_HEIGHT: f32 = 300.0;
 
-/// Get effective track height, respecting custom_height override and prefs.
+/// Height of the per-track expandable automation lane when visible.
+/// Matches DaVinci Fairlight's lane proportion — tall enough that drag
+/// handles aren't fiddly, short enough that several tracks still fit.
+pub(crate) const AUTOMATION_LANE_HEIGHT: f32 = 120.0;
+
+/// Returns the height of the lane below the clip area, or 0 if the lane
+/// is collapsed. Used by Y-stacking and the lane painter.
+pub(crate) fn automation_lane_height(track: &klipp_timeline::Track) -> f32 {
+    if track.automation_lane_visible.is_some() {
+        AUTOMATION_LANE_HEIGHT
+    } else {
+        0.0
+    }
+}
+
+/// Get effective track height (clip-area only — the part `clip_screen_rect`
+/// sizes against). Respects `custom_height` override and prefs, but does
+/// NOT include the expandable automation lane — the lane stacks below
+/// this. Use [`track_row_height`] when you need the full row footprint
+/// for Y-position accumulation.
 pub(crate) fn effective_track_height(track: &klipp_timeline::Track) -> f32 {
     track.custom_height.unwrap_or(match track.kind {
         TrackKind::Audio => AUDIO_TRACK_HEIGHT,
         TrackKind::Text | TrackKind::Subtitle => TEXT_TRACK_HEIGHT,
         _ => VIDEO_TRACK_HEIGHT,
     })
+}
+
+/// Total Y footprint of a track row: clip area plus the automation lane
+/// when visible. Use this in the timeline's track-stacking pass; clip
+/// rectangle sizing still uses [`effective_track_height`].
+pub(crate) fn track_row_height(track: &klipp_timeline::Track) -> f32 {
+    effective_track_height(track) + automation_lane_height(track)
 }
 
 /// Get effective track height using preferences for defaults.
@@ -295,6 +321,316 @@ fn sync_editing_prefs_to_timeline(snap_px: f32) {
 }
 
 fn snap_threshold_px() -> f32 { TL_SNAP_THRESHOLD_PX.get() }
+
+// ─── Audio rubber-band paint helpers ─────────────────────────────────────
+// Pure paint primitives shared between the inline overlay
+// (`draw_audio_rubber_band`, painted on top of every audio clip) and the
+// expandable per-track automation lane. Both surfaces show the
+// same data — `Clip.{volume,pan,gain}_keyframes` — using the same fixed
+// Y range, color palette, fill-below-curve, and diamond-marker style.
+//
+// Hit-testing, drag dispatch, the param-pill overlay, and tooltip rendering
+// stay in the caller — only the curve paint lives here.
+
+/// Fixed (min, range, unity) per audio param. Matches the values used by
+/// the rubber-band drag handlers in `handle_audio_keyframe_drag` etc.;
+/// any change here MUST be mirrored in those handlers or drags desync.
+fn audio_param_range(param: klipp_core::AudioParam) -> (f32, f32, f32) {
+    match param {
+        klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32, 1.0_f32),
+        klipp_core::AudioParam::Pan    => (-1.0_f32, 2.0_f32, 0.0_f32),
+        klipp_core::AudioParam::Gain   => (0.0_f32, 2.0_f32, 1.0_f32),
+    }
+}
+
+/// Map a param value to a Y position within `rect`. min = bottom, max = top.
+fn audio_param_value_to_y(rect: egui::Rect, param: klipp_core::AudioParam, value: f32) -> f32 {
+    let (p_min, p_range, _) = audio_param_range(param);
+    let normalized = ((value - p_min) / p_range).clamp(0.0, 1.0);
+    rect.bottom() - normalized * rect.height()
+}
+
+/// Inverse of [`audio_param_value_to_y`]. Used by alt-click-to-add and
+/// the flat-line drag handler to project a pointer Y back onto a value.
+#[allow(dead_code)]
+fn audio_param_y_to_value(rect: egui::Rect, param: klipp_core::AudioParam, y: f32) -> f32 {
+    let (p_min, p_range, _) = audio_param_range(param);
+    let normalized = ((rect.bottom() - y) / rect.height()).clamp(0.0, 1.0);
+    p_min + normalized * p_range
+}
+
+/// Map a time value (in source seconds, 0..time_range_secs) to an X
+/// position within `rect`. Caller passes whatever range the keyframes
+/// were authored against (typically `clip.source_out - clip.source_in`).
+fn audio_param_time_to_x(rect: egui::Rect, time_range_secs: f64, t: f64) -> f32 {
+    let frac = if time_range_secs > 0.0 { (t / time_range_secs).clamp(0.0, 1.0) } else { 0.0 };
+    rect.left() + frac as f32 * rect.width()
+}
+
+/// Per-param colour bundle. Hand-picked alphas tuned for readability over
+/// the audio waveform — selected/unselected line at 250/220, fill at 38,
+/// reference line at 70.
+struct AudioCurvePalette {
+    line_color: egui::Color32,        // selected stroke
+    line_color_dim: egui::Color32,    // unselected stroke
+    diamond_fill_sel: egui::Color32,  // selected-clip diamond fill
+    diamond_fill_norm: egui::Color32, // unselected-clip diamond fill
+    fill_color: egui::Color32,        // translucent below-curve wash
+    ref_color: egui::Color32,         // unity / centre reference line
+    shadow_color: egui::Color32,      // dark contrast pass behind the stroke
+}
+
+fn audio_curve_palette(param: klipp_core::AudioParam) -> AudioCurvePalette {
+    let (line_color, line_color_dim, diamond_fill_sel, diamond_fill_norm, fill_color, ref_color) = match param {
+        klipp_core::AudioParam::Volume => (
+            egui::Color32::from_rgba_unmultiplied(255, 195, 50, 250),
+            egui::Color32::from_rgba_unmultiplied(255, 195, 50, 220),
+            egui::Color32::from_rgba_unmultiplied(255, 210, 60, 250),
+            egui::Color32::from_rgba_unmultiplied(255, 195, 50, 200),
+            egui::Color32::from_rgba_unmultiplied(255, 195, 50, 38),
+            egui::Color32::from_rgba_unmultiplied(255, 220, 130, 70),
+        ),
+        klipp_core::AudioParam::Pan => (
+            egui::Color32::from_rgba_unmultiplied(50, 195, 255, 250),
+            egui::Color32::from_rgba_unmultiplied(50, 195, 255, 220),
+            egui::Color32::from_rgba_unmultiplied(60, 210, 255, 250),
+            egui::Color32::from_rgba_unmultiplied(50, 195, 255, 200),
+            egui::Color32::from_rgba_unmultiplied(50, 195, 255, 38),
+            egui::Color32::from_rgba_unmultiplied(140, 220, 255, 70),
+        ),
+        klipp_core::AudioParam::Gain => (
+            egui::Color32::from_rgba_unmultiplied(50, 220, 100, 250),
+            egui::Color32::from_rgba_unmultiplied(50, 220, 100, 220),
+            egui::Color32::from_rgba_unmultiplied(60, 240, 110, 250),
+            egui::Color32::from_rgba_unmultiplied(50, 220, 100, 200),
+            egui::Color32::from_rgba_unmultiplied(50, 220, 100, 38),
+            egui::Color32::from_rgba_unmultiplied(140, 240, 170, 70),
+        ),
+    };
+    AudioCurvePalette {
+        line_color, line_color_dim, diamond_fill_sel, diamond_fill_norm,
+        fill_color, ref_color,
+        shadow_color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150),
+    }
+}
+
+/// Pure paint of an audio rubber-band curve into `rect`. Renders, in order:
+///   1. faint reference line at the param's neutral value (unity / centre)
+///   2. translucent fill from the curve down to `rect.bottom()`
+///   3. shadow stroke pass behind the curve for contrast
+///   4. coloured stroke pass on top
+///   5. diamond markers at every keyframe (with hover + selected-kf affordances)
+///   6. Bezier tangent handles when the host clip is selected
+///
+/// Caller owns: hit-testing (`hovered_kf_idx` / `selected_kf_idx`), drag
+/// dispatch, the per-clip param pill, value tooltips. The helper applies
+/// no clipping — wrap with `painter.with_clip_rect(rect)` if the lane / clip
+/// painter doesn't already clip for you.
+#[allow(clippy::too_many_arguments)]
+fn paint_audio_curve_band(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    param: klipp_core::AudioParam,
+    keyframes: &[klipp_core::Keyframe],
+    static_value: f32,
+    time_range_secs: f64,
+    is_selected: bool,
+    is_multi_selected: bool,
+    hovered_kf_idx: Option<usize>,
+    selected_kf_idx: Option<usize>,
+) {
+    let (param_min, param_range, unity_value) = audio_param_range(param);
+    let palette = audio_curve_palette(param);
+
+    let active_line_color = if is_selected || is_multi_selected {
+        palette.line_color
+    } else {
+        palette.line_color_dim
+    };
+    let diamond_fill = if is_selected || is_multi_selected {
+        palette.diamond_fill_sel
+    } else {
+        palette.diamond_fill_norm
+    };
+    let line_width = if is_selected || is_multi_selected { 3.0_f32 } else { 2.0_f32 };
+    let shadow_width = line_width + 1.0_f32;
+
+    let value_to_y = |v: f32| audio_param_value_to_y(rect, param, v);
+    let time_to_x = |t: f64| audio_param_time_to_x(rect, time_range_secs, t);
+
+    // 1) Reference line at unity / centre.
+    let unity_y = rect.bottom()
+        - ((unity_value - param_min) / param_range).clamp(0.0, 1.0) * rect.height();
+    painter.line_segment(
+        [egui::pos2(rect.left(), unity_y), egui::pos2(rect.right(), unity_y)],
+        egui::Stroke::new(1.0, palette.ref_color),
+    );
+
+    if keyframes.is_empty() {
+        // No keyframes: single horizontal line at the static value plus
+        // a translucent fill from the line down to the rect bottom so
+        // the curve reads as a band.
+        let y = value_to_y(static_value);
+        let band_bottom = rect.bottom();
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(rect.left(), y),
+                egui::pos2(rect.right(), y),
+                egui::pos2(rect.right(), band_bottom),
+                egui::pos2(rect.left(), band_bottom),
+            ],
+            palette.fill_color,
+            egui::Stroke::NONE,
+        ));
+        painter.line_segment(
+            [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+            egui::Stroke::new(shadow_width, palette.shadow_color),
+        );
+        painter.line_segment(
+            [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+            egui::Stroke::new(line_width, active_line_color),
+        );
+        return;
+    }
+
+    // 2-4) Curve. Dense linear sampling of `evaluate()` so all
+    // interpolation modes (Linear / Bezier / Step) render correctly.
+    let num_samples = (rect.width() as usize / 2).clamp(20, 400);
+    let mut curve_pts: Vec<egui::Pos2> = Vec::with_capacity(num_samples + 1);
+    for si in 0..=num_samples {
+        let t_frac = si as f64 / num_samples as f64;
+        let t_secs = t_frac * time_range_secs;
+        let val = klipp_core::keyframe::evaluate(keyframes, t_secs, static_value);
+        let x = rect.left() + t_frac as f32 * rect.width();
+        curve_pts.push(egui::pos2(x, value_to_y(val)));
+    }
+
+    // Translucent fill below the curve. Tessellated as a triangle strip
+    // because zig-zag keyframe shapes aren't convex (single-polygon
+    // would render incorrectly).
+    if curve_pts.len() >= 2 {
+        let band_bottom = rect.bottom();
+        let mut mesh = egui::epaint::Mesh::default();
+        for p in &curve_pts {
+            mesh.colored_vertex(*p, palette.fill_color);
+            mesh.colored_vertex(egui::pos2(p.x, band_bottom), palette.fill_color);
+        }
+        for i in 0..(curve_pts.len() - 1) {
+            let base = (i * 2) as u32;
+            mesh.add_triangle(base, base + 1, base + 2);
+            mesh.add_triangle(base + 1, base + 3, base + 2);
+        }
+        painter.add(egui::Shape::mesh(mesh));
+    }
+
+    for i in 0..curve_pts.len().saturating_sub(1) {
+        painter.line_segment(
+            [curve_pts[i], curve_pts[i + 1]],
+            egui::Stroke::new(shadow_width, palette.shadow_color),
+        );
+    }
+    for i in 0..curve_pts.len().saturating_sub(1) {
+        painter.line_segment(
+            [curve_pts[i], curve_pts[i + 1]],
+            egui::Stroke::new(line_width, active_line_color),
+        );
+    }
+
+    // 5) Diamonds.
+    for (ki, kf) in keyframes.iter().enumerate() {
+        if kf.time_secs < 0.0 || kf.time_secs > time_range_secs {
+            continue;
+        }
+        let cx = time_to_x(kf.time_secs);
+        let cy = value_to_y(kf.value);
+        let is_hovered = hovered_kf_idx == Some(ki);
+        let is_kf_selected = selected_kf_idx == Some(ki);
+        let d = if is_hovered || is_kf_selected { 9.0_f32 } else { 8.0_f32 };
+
+        // Dark outline diamond behind for contrast.
+        let outline_d = d + 1.5;
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(cx, cy - outline_d),
+                egui::pos2(cx + outline_d, cy),
+                egui::pos2(cx, cy + outline_d),
+                egui::pos2(cx - outline_d, cy),
+            ],
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
+            egui::Stroke::NONE,
+        ));
+
+        // Brighten fill on hover.
+        let fill = if is_hovered {
+            egui::Color32::from_rgba_unmultiplied(
+                diamond_fill.r().saturating_add(30),
+                diamond_fill.g().saturating_add(30),
+                diamond_fill.b().saturating_add(30),
+                255,
+            )
+        } else {
+            diamond_fill
+        };
+        let stroke = if is_kf_selected {
+            egui::Stroke::new(2.0_f32, egui::Color32::WHITE)
+        } else {
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220))
+        };
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(cx, cy - d),
+                egui::pos2(cx + d, cy),
+                egui::pos2(cx, cy + d),
+                egui::pos2(cx - d, cy),
+            ],
+            fill,
+            stroke,
+        ));
+
+        // 6) Bezier tangent handles. Only paint them when the host clip is
+        // selected — they would otherwise crowd the inline overlay.
+        if kf.interpolation == klipp_core::Interpolation::Bezier && (is_selected || is_multi_selected) {
+            let pixels_per_sec = if time_range_secs > 0.0 {
+                rect.width() / time_range_secs as f32
+            } else {
+                1.0
+            };
+            let value_scale = rect.height() / param_range;
+            let tangent_line_color = egui::Color32::from_rgba_unmultiplied(
+                active_line_color.r(), active_line_color.g(), active_line_color.b(), 120,
+            );
+            let handle_radius = 4.0_f32;
+
+            // Out (right).
+            let tout_x = cx + kf.tangent_out.0 as f32 * pixels_per_sec;
+            let tout_y = cy - kf.tangent_out.1 * value_scale;
+            painter.line_segment(
+                [egui::pos2(cx, cy), egui::pos2(tout_x, tout_y)],
+                egui::Stroke::new(1.0_f32, tangent_line_color),
+            );
+            painter.circle(
+                egui::pos2(tout_x, tout_y),
+                handle_radius,
+                active_line_color,
+                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+            );
+
+            // In (left).
+            let tin_x = cx + kf.tangent_in.0 as f32 * pixels_per_sec;
+            let tin_y = cy - kf.tangent_in.1 * value_scale;
+            painter.line_segment(
+                [egui::pos2(cx, cy), egui::pos2(tin_x, tin_y)],
+                egui::Stroke::new(1.0_f32, tangent_line_color),
+            );
+            painter.circle(
+                egui::pos2(tin_x, tin_y),
+                handle_radius,
+                active_line_color,
+                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
+            );
+        }
+    }
+}
 
 // Accessor functions replacing the old consts
 fn clip_gap() -> f32 { TL_CLIP_GAP.get() }
@@ -756,8 +1092,10 @@ impl TimelinePanel {
         let pool_h = if self.embedded { 0.0 } else { MEDIA_POOL_HEIGHT };
         let tracks_start_y = content_rect.top() + overview_height + ruler_height_used + pool_h;
         let track_count = state.sequence().tracks.len();
+        // Total Y footprint must include the per-track automation lane
+        // when visible. `track_row_height` folds it in.
         let total_tracks_h: f32 = (0..track_count)
-            .map(|ti| effective_track_height(&state.sequence().tracks[ti]))
+            .map(|ti| track_row_height(&state.sequence().tracks[ti]))
             .sum();
         let available_h = content_rect.bottom() - tracks_start_y;
         let max_scroll_y = (total_tracks_h - available_h).max(0.0);
@@ -817,18 +1155,23 @@ impl TimelinePanel {
         // and buttons from bleeding into the ruler above or status bar below.
         let header_painter = bg_painter.with_clip_rect(tracks_clip.intersect(effective_clip));
 
-        // Pre-compute all track rects so cross-track drag can find any track
+        // Pre-compute all track rects so cross-track drag can find any
+        // track. The cached rect covers the clip area only (where clips
+        // are placed and hit-tested); the automation lane sits below
+        // it. `pre_y` advances by `track_row_height` so the next track
+        // stacks below the lane when visible.
         {
             let mut pre_y = tracks_start_y - scroll_y;
             for ti in 0..track_count {
                 let tk = state.sequence().tracks[ti].kind;
                 let th = effective_track_height(&state.sequence().tracks[ti]);
+                let row_h = track_row_height(&state.sequence().tracks[ti]);
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(content_rect.left(), pre_y),
                     egui::vec2(content_rect.width(), th),
                 );
                 self.frame_cache.track_rects.push((ti, tk, rect));
-                pre_y += th;
+                pre_y += row_h;
             }
         }
         self.frame_cache.tracks_start_y = tracks_start_y;
@@ -932,7 +1275,22 @@ impl TimelinePanel {
                 );
             }
 
-            track_y += track_height;
+            // Per-track expandable automation lane. Sits in
+            // the row's bottom slice, sized by `automation_lane_height`.
+            // Skipped when the track has it collapsed (height = 0).
+            let lane_h = automation_lane_height(&state.sequence().tracks[track_idx]);
+            if lane_h > 0.0 && track_visible {
+                let lane_rect = egui::Rect::from_min_size(
+                    egui::pos2(content_rect.left(), track_y + track_height),
+                    egui::vec2(content_rect.width(), lane_h),
+                );
+                self.draw_automation_lane(
+                    ui, &painter, lane_rect, &content_rect, track_idx,
+                    state, &mut cmds,
+                );
+            }
+
+            track_y += track_height + lane_h;
         }
 
         // Restore clip rect for marquee selection and other post-track rendering
@@ -959,12 +1317,15 @@ impl TimelinePanel {
         self.draw_playhead(ui, state, &painter, content_rect, ruler_rect, &mut cmds);
         self.draw_snap_line(state, &painter, content_rect, tracks_start_y);
 
-        // --- Status bar --- (skip when embedded)
-        if self.embedded { return cmds; }
-        self.draw_status_bar(ui, state, &layout);
-
         // ── Audio keyframe rubber band drag update ─────────────────────
         // Process dragging_audio_keyframe: update position on drag, clear on release.
+        // MUST run in both standalone and embedded mode — drag init lives
+        // inside `draw_audio_rubber_band` / `draw_automation_lane` (which
+        // both run regardless of `self.embedded`), so a drag started from
+        // the inline overlay or the per-track lane needs its handler to
+        // run too. The status-bar early-return below previously skipped
+        // these handlers in embedded mode, leaving `state.dragging_audio_keyframe`
+        // permanently set after the first drag.
         let pointer_released = ui.input(|i| i.pointer.primary_released());
         let pointer_down = ui.input(|i| i.pointer.primary_down());
         self.handle_audio_keyframe_drag(ui, state, &mut cmds, pointer_released, pointer_down);
@@ -989,6 +1350,10 @@ impl TimelinePanel {
 
         // ── Keyframe interpolation context menu popup ───────────────────────
         self.show_keyframe_context_menu(ui, state, &mut cmds);
+
+        // --- Status bar --- (skip when embedded)
+        if self.embedded { return cmds; }
+        self.draw_status_bar(ui, state, &layout);
 
         cmds
     }
@@ -1590,20 +1955,25 @@ impl TimelinePanel {
                         });
                 });
 
-            // Close menu on click outside or after selection
+            // Close menu on click outside or after selection.
+            // Only on PRIMARY clicks — using `any_click()` here closed the
+            // menu on the same right-click that just opened it. On the
+            // first frame egui hasn't yet laid out the menu Area so its
+            // rect is empty; `menu_rect.contains(click_pos)` returns
+            // false, the right-click counts as "outside", and the menu
+            // disappears in a single frame. Right-click is reserved for
+            // opening; left-click outside (or Escape) closes.
             if close_menu {
                 state.keyframe_context_menu = None;
             } else {
-                // Close if clicked anywhere outside the menu area
                 let menu_rect = menu_resp.response.rect;
-                if ui.input(|i| i.pointer.any_click()) {
+                if ui.input(|i| i.pointer.primary_clicked()) {
                     if let Some(click_pos) = ui.input(|i| i.pointer.interact_pos()) {
                         if !menu_rect.contains(click_pos) {
                             state.keyframe_context_menu = None;
                         }
                     }
                 }
-                // Also close on Escape
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     state.keyframe_context_menu = None;
                 }
@@ -10098,6 +10468,635 @@ impl TimelinePanel {
             }
     }
 
+    /// Draw the per-track expandable automation lane. The lane sits
+    /// directly below the clip area and spans the timeline's full width.
+    /// Each clip on the track contributes a sub-rect inside the lane at
+    /// the clip's X range; the inline rubber band's `paint_audio_curve_band`
+    /// helper renders the curve into that sub-rect, so the lane and inline
+    /// surfaces stay visually identical down to the diamond style — the
+    /// lane is just the same data drawn at a bigger Y resolution.
+    ///
+    /// Background, grid lines (at 25%/50%/75%/unity), and a small value-
+    /// scale on the left edge give the lane a "I'm a dedicated editing
+    /// surface" frame, distinct from the clip-area waveform rendering.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_automation_lane(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        lane_rect: egui::Rect,
+        content_rect: &egui::Rect,
+        track_idx: usize,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let track = &state.sequence().tracks[track_idx];
+        let Some(param) = track.automation_lane_visible else {
+            return;
+        };
+        if track.kind != TrackKind::Audio {
+            return;
+        }
+
+        let tt = theme();
+        let lane_painter = painter.with_clip_rect(lane_rect.intersect(*content_rect));
+
+        // 1) Background — subtle alt-fill so the lane reads as its own
+        // editing region, distinct from the clip area above.
+        lane_painter.rect_filled(lane_rect, 0.0, tt.bg_deep);
+
+        // 2) Top + bottom dividers so the lane has a clear frame.
+        let divider_color = tt.border;
+        lane_painter.line_segment(
+            [egui::pos2(lane_rect.left(), lane_rect.top()),
+             egui::pos2(lane_rect.right(), lane_rect.top())],
+            egui::Stroke::new(1.0, divider_color),
+        );
+        lane_painter.line_segment(
+            [egui::pos2(lane_rect.left(), lane_rect.bottom() - 0.5),
+             egui::pos2(lane_rect.right(), lane_rect.bottom() - 0.5)],
+            egui::Stroke::new(1.0, divider_color),
+        );
+
+        // 3) Horizontal grid lines + value-scale labels on the left edge.
+        // Tick spacing depends on the param's range: Volume / Gain go
+        // 0..2 with ticks at 0, 0.5, 1.0 (unity), 1.5, 2.0 — labelled
+        // 0%, 50%, 100%, 150%, 200%. Pan goes -1..1 with ticks at
+        // -1.0 (L), -0.5, 0 (C), 0.5, 1.0 (R).
+        let (param_min, param_range, _) = audio_param_range(param);
+        let palette = audio_curve_palette(param);
+        let grid_color = egui::Color32::from_rgba_unmultiplied(
+            tt.text_dim.r(), tt.text_dim.g(), tt.text_dim.b(), 28,
+        );
+        let unity_grid_color = egui::Color32::from_rgba_unmultiplied(
+            palette.ref_color.r(), palette.ref_color.g(), palette.ref_color.b(), 110,
+        );
+        let label_color = tt.text_dim;
+        let label_font = egui::FontId::proportional(9.0);
+
+        let scale_label_x = lane_rect.left() + 4.0;
+        let scale_inset_left = lane_rect.left() + 28.0; // grid starts after the value column
+        let ticks: &[(f32, &str, bool)] = match param {
+            klipp_core::AudioParam::Volume => &[
+                (0.0, "0%", false),
+                (0.5, "50%", false),
+                (1.0, "100%", true),
+                (1.5, "150%", false),
+                (2.0, "200%", false),
+            ],
+            klipp_core::AudioParam::Gain => &[
+                (0.0, "0", false),
+                (0.5, "0.5", false),
+                (1.0, "1.0", true),
+                (1.5, "1.5", false),
+                (2.0, "2.0", false),
+            ],
+            klipp_core::AudioParam::Pan => &[
+                (-1.0, "L", false),
+                (-0.5, "L50", false),
+                (0.0, "C", true),
+                (0.5, "R50", false),
+                (1.0, "R", false),
+            ],
+        };
+        for &(value, label, is_unity) in ticks {
+            let normalized = ((value - param_min) / param_range).clamp(0.0, 1.0);
+            let y = lane_rect.bottom() - normalized * lane_rect.height();
+            let stroke = if is_unity {
+                egui::Stroke::new(1.0, unity_grid_color)
+            } else {
+                egui::Stroke::new(1.0, grid_color)
+            };
+            lane_painter.line_segment(
+                [egui::pos2(scale_inset_left, y), egui::pos2(lane_rect.right(), y)],
+                stroke,
+            );
+            lane_painter.text(
+                egui::pos2(scale_label_x, y),
+                egui::Align2::LEFT_CENTER,
+                label,
+                label_font.clone(),
+                label_color,
+            );
+        }
+
+        // 4) For each clip on the track, paint its curve into a sub-rect
+        // within the lane that matches the clip's X range. Reuses
+        // `paint_audio_curve_band` so the look matches the inline overlay
+        // exactly — same fixed Y range, same fill, same diamonds.
+        let zoom = state.timeline_zoom;
+        let scroll = state.timeline_scroll_x;
+        let selected_clip_id = state.selected_clip;
+        let multi_selected = state.selected_clips.clone();
+
+        // Snapshot the data we need so we can release the immutable
+        // borrow into `state.sequence()` before we paint (no &mut state
+        // is reached, but the snapshot keeps the inner loop cheap and
+        // makes the function easier to reason about).
+        struct ClipPaintData {
+            clip_id: klipp_core::ClipId,
+            clip_x: f32,
+            clip_w: f32,
+            time_range_secs: f64,
+            static_val: f32,
+            kfs: Vec<klipp_core::Keyframe>,
+            is_selected: bool,
+            is_multi_selected: bool,
+            // Carried for the flat-line drag's BeginAudioDrag / UpdateClipAudio
+            // dispatch — the lane mirrors the inline behaviour for clips with
+            // no keyframes (drag the line to set the static value).
+            gain: f32,
+            volume: f32,
+            pan: f32,
+            fade_in_secs: f32,
+            fade_out_secs: f32,
+            fade_in_curve: klipp_core::FadeCurve,
+            fade_out_curve: klipp_core::FadeCurve,
+            channel_config: klipp_timeline::ChannelConfig,
+        }
+        let clips: Vec<ClipPaintData> = state
+            .sequence()
+            .tracks[track_idx]
+            .clips
+            .iter()
+            .filter_map(|clip| {
+                if clip.kind.is_gap() {
+                    return None;
+                }
+                let clip_x = content_rect.left()
+                    + clip.timeline_in.to_secs_f64() as f32 * zoom
+                    - scroll;
+                let clip_w = clip.duration().to_secs_f64() as f32 * zoom;
+                if clip_w < 4.0 {
+                    return None;
+                }
+                let (static_val, kfs) = match param {
+                    klipp_core::AudioParam::Volume => (clip.volume, clip.volume_keyframes.clone()),
+                    klipp_core::AudioParam::Pan => (clip.pan, clip.pan_keyframes.clone()),
+                    klipp_core::AudioParam::Gain => (clip.gain, clip.gain_keyframes.clone()),
+                };
+                let time_range_secs = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
+                let is_sel = selected_clip_id == Some(clip.id);
+                let is_msel = multi_selected.contains(&clip.id);
+                Some(ClipPaintData {
+                    clip_id: clip.id,
+                    clip_x,
+                    clip_w,
+                    time_range_secs,
+                    static_val,
+                    kfs,
+                    is_selected: is_sel,
+                    is_multi_selected: is_msel,
+                    gain: clip.gain,
+                    volume: clip.volume,
+                    pan: clip.pan,
+                    fade_in_secs: clip.fade_in_secs,
+                    fade_out_secs: clip.fade_out_secs,
+                    fade_in_curve: clip.fade_in_curve,
+                    fade_out_curve: clip.fade_out_curve,
+                    channel_config: clip.channel_config,
+                })
+            })
+            .collect();
+
+        // Pointer + modifier state for the per-clip interaction block.
+        // Computed once for the whole lane; each clip's interaction
+        // dispatch reuses these.
+        let pointer_pos = ui.input(|i| i.pointer.interact_pos());
+        let pointer_down = ui.input(|i| i.pointer.primary_down());
+        let primary_clicked = ui.input(|i| i.pointer.primary_clicked());
+        let secondary_released = ui.input(|i| i.pointer.secondary_released());
+        let primary_double_clicked = ui.input(|i|
+            i.pointer.button_double_clicked(egui::PointerButton::Primary)
+        );
+        let alt_held = ui.input(|i| i.modifiers.alt);
+
+        // Playhead indicator inside the lane — the global playhead line at
+        // `draw_playhead` is 1 px and gets visually buried under the lane's
+        // grid lines + curve. Repaint a brighter, dashed-style accent
+        // inside the lane so the user has a clear "you are here" anchor.
+        // Without this it's easy to drop a keyframe nowhere near the
+        // playhead and not realise why nothing changes during playback.
+        {
+            let playhead_x = content_rect.left()
+                + state.playhead_smooth_secs as f32 * state.timeline_zoom
+                - state.timeline_scroll_x;
+            if playhead_x >= lane_rect.left() && playhead_x <= lane_rect.right() {
+                let ph_color = egui::Color32::from_rgba_unmultiplied(
+                    tt.accent.r(), tt.accent.g(), tt.accent.b(), 200,
+                );
+                lane_painter.line_segment(
+                    [
+                        egui::pos2(playhead_x, lane_rect.top() + 1.0),
+                        egui::pos2(playhead_x, lane_rect.bottom() - 1.0),
+                    ],
+                    egui::Stroke::new(1.5, ph_color),
+                );
+                // Small downward-pointing wedge at the lane's top edge so
+                // the "you are here" marker reads at a glance.
+                lane_painter.add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(playhead_x - 4.0, lane_rect.top() + 1.0),
+                        egui::pos2(playhead_x + 4.0, lane_rect.top() + 1.0),
+                        egui::pos2(playhead_x, lane_rect.top() + 6.0),
+                    ],
+                    tt.accent,
+                    egui::Stroke::NONE,
+                ));
+            }
+        }
+
+        for c in &clips {
+            // Clip the lane sub-rect to the lane's drawable region (post
+            // the value-scale column).
+            let sub_left = c.clip_x.max(scale_inset_left);
+            let sub_right = (c.clip_x + c.clip_w).min(lane_rect.right());
+            if sub_right - sub_left < 4.0 {
+                continue;
+            }
+            let sub_rect = egui::Rect::from_min_max(
+                egui::pos2(sub_left, lane_rect.top() + 1.0),
+                egui::pos2(sub_right, lane_rect.bottom() - 1.0),
+            );
+
+            // Time mapping uses the FULL clip's screen rect (`c.clip_x`/
+            // `c.clip_w`), NOT the lane sub_rect. sub_rect is the
+            // visible portion of the clip after clipping to the lane —
+            // when the clip extends offscreen (long clip + zoom or
+            // scroll), sub_rect.width() is much smaller than the clip's
+            // screen width. Mapping the sub_rect's screen pixels onto
+            // the full clip duration would land kfs at completely wrong
+            // clip-times (a click at the visible left of an 88-second
+            // clip would still report `t = 0`, but a click at the
+            // visible right would jump to `t = 88s` even if only 15s
+            // of the clip are visible). Y mapping correctly uses
+            // sub_rect — the value axis is local to the lane region.
+            //
+            // Inset the X axis by `CLIP_GAP` on each side so the lane's
+            // time origin and end exactly match the inline rubber band's
+            // (which uses clip_rect = clip_x + GAP .. clip_x + w - GAP).
+            // Without this inset the two surfaces drift by ~3 px at the
+            // clip edges and a kf set on one looks misaligned on the
+            // other.
+            let clip_gap = clip_gap();
+            let full_clip_rect = egui::Rect::from_min_max(
+                egui::pos2(c.clip_x + clip_gap, sub_rect.top()),
+                egui::pos2(c.clip_x + c.clip_w - clip_gap, sub_rect.bottom()),
+            );
+            let inset_clip_w = (c.clip_w - clip_gap * 2.0).max(1.0);
+            let inset_clip_left = c.clip_x + clip_gap;
+            let value_to_y = |v: f32| audio_param_value_to_y(sub_rect, param, v);
+            let time_to_x = |t: f64| audio_param_time_to_x(full_clip_rect, c.time_range_secs, t);
+            let y_to_value = |y: f32| audio_param_y_to_value(sub_rect, param, y);
+            let x_to_time = |x: f32| -> f64 {
+                let frac = ((x - inset_clip_left) / inset_clip_w).clamp(0.0, 1.0) as f64;
+                frac * c.time_range_secs
+            };
+
+            // ── Hit-test inside this clip's lane sub-rect ──
+            let pointer_in_sub = pointer_pos
+                .map(|p| sub_rect.expand(2.0).contains(p))
+                .unwrap_or(false);
+
+            let hovered_kf_idx: Option<usize> = if pointer_in_sub {
+                pointer_pos.and_then(|p| {
+                    let mut best: Option<(usize, f32)> = None;
+                    for (ki, kf) in c.kfs.iter().enumerate() {
+                        if kf.time_secs >= 0.0 && kf.time_secs <= c.time_range_secs {
+                            let kx = time_to_x(kf.time_secs);
+                            let ky = value_to_y(kf.value);
+                            let dist = ((p.x - kx).powi(2) + (p.y - ky).powi(2)).sqrt();
+                            if dist < 10.0 && best.is_none_or(|(_, bd)| dist < bd) {
+                                best = Some((ki, dist));
+                            }
+                        }
+                    }
+                    best.map(|(i, _)| i)
+                })
+            } else {
+                None
+            };
+
+            let selected_kf_idx = state.selected_keyframe.as_ref().and_then(|sk| {
+                if sk.clip_id == c.clip_id
+                    && sk.param_kind == crate::state::KeyframeParamKind::Audio(param)
+                {
+                    Some(sk.keyframe_index)
+                } else {
+                    None
+                }
+            });
+
+            // ── Paint the curve into the full clip's screen rect ──
+            // Pass `full_clip_rect` (extends beyond the visible lane
+            // when the clip is longer than the viewport) so kf X
+            // positions match the timeline's zoom and scroll. The
+            // `lane_painter` is already clipped to the lane area, so
+            // pixels outside the lane simply don't render.
+            paint_audio_curve_band(
+                &lane_painter,
+                full_clip_rect,
+                param,
+                &c.kfs,
+                c.static_val,
+                c.time_range_secs,
+                c.is_selected,
+                c.is_multi_selected,
+                hovered_kf_idx,
+                selected_kf_idx,
+            );
+
+            // ── Cursor + interactions (only for the clip the pointer is on) ──
+            if pointer_in_sub {
+                let near_curve = pointer_pos
+                    .map(|p| {
+                        let t = x_to_time(p.x);
+                        let curve_y = if c.kfs.is_empty() {
+                            value_to_y(c.static_val)
+                        } else {
+                            value_to_y(klipp_core::keyframe::evaluate(&c.kfs, t, c.static_val))
+                        };
+                        (p.y - curve_y).abs() < 6.0
+                    })
+                    .unwrap_or(false);
+
+                let is_dragging_this_kf = state
+                    .dragging_audio_keyframe
+                    .as_ref()
+                    .is_some_and(|d| d.clip_id == c.clip_id && d.in_automation_lane);
+                let is_dragging_this_bezier = state
+                    .dragging_bezier_handle
+                    .as_ref()
+                    .is_some_and(|d| d.clip_id == c.clip_id && d.in_automation_lane);
+
+                if is_dragging_this_kf || is_dragging_this_bezier {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                } else if hovered_kf_idx.is_some() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                } else if near_curve {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                }
+
+                // Double-click diamond → delete keyframe.
+                if primary_double_clicked {
+                    if let Some(ki) = hovered_kf_idx {
+                        if let Some(kf) = c.kfs.get(ki) {
+                            cmds.push(AppCommand::RemoveAudioKeyframe {
+                                clip_id: c.clip_id,
+                                param,
+                                time_secs: kf.time_secs,
+                            });
+                        }
+                    }
+                }
+
+                // Click diamond → select it (drag dispatch happens
+                // separately below once the pointer crosses egui's
+                // decided-drag threshold).
+                if primary_clicked && state.dragging_audio_keyframe.is_none() {
+                    if let Some(ki) = hovered_kf_idx {
+                        state.selected_keyframe = Some(crate::state::SelectedKeyframe {
+                            clip_id: c.clip_id,
+                            param_kind: crate::state::KeyframeParamKind::Audio(param),
+                            keyframe_index: ki,
+                        });
+                    } else if state
+                        .selected_keyframe
+                        .as_ref()
+                        .is_some_and(|sk| sk.clip_id == c.clip_id)
+                    {
+                        // Click on empty lane area deselects the kf on
+                        // this clip — matches the inline behaviour.
+                        state.selected_keyframe = None;
+                    }
+                }
+
+                // Right-click → keyframe context menu (or selected-kf
+                // fallback if no diamond is hovered).
+                if secondary_released {
+                    let target = hovered_kf_idx.or_else(|| {
+                        state
+                            .selected_keyframe
+                            .as_ref()
+                            .filter(|sk| {
+                                sk.clip_id == c.clip_id
+                                    && sk.param_kind
+                                        == crate::state::KeyframeParamKind::Audio(param)
+                            })
+                            .map(|sk| sk.keyframe_index)
+                    });
+                    if let (Some(ki), Some(p)) = (target, pointer_pos) {
+                        if ki < c.kfs.len() {
+                            state.keyframe_context_menu = Some(crate::state::KeyframeContextMenu {
+                                clip_id: c.clip_id,
+                                param_kind: crate::state::KeyframeParamKind::Audio(param),
+                                keyframe_index: ki,
+                                screen_pos: p,
+                            });
+                            self.suppress_clip_context_menu = true;
+                        }
+                    }
+                }
+
+                // Alt-click anywhere in the lane sub-rect → add a new
+                // keyframe at the pointer's (time, value). The lane is
+                // a dedicated automation editing surface so the inline
+                // overlay's "must click near the line" gate would only
+                // get in the way — pro DAWs (Fairlight, Premiere)
+                // create a keyframe wherever the alt-click lands.
+                if alt_held && primary_clicked && hovered_kf_idx.is_none() {
+                    if let Some(p) = pointer_pos {
+                        let t = x_to_time(p.x);
+                        let v = y_to_value(p.y);
+                        cmds.push(AppCommand::AddAudioKeyframe {
+                            clip_id: c.clip_id,
+                            param,
+                            time_secs: t,
+                            value: v,
+                        });
+                    }
+                }
+
+                // Flat-line drag — when the clip has zero keyframes, dragging
+                // the bare line in the lane updates the clip's static value
+                // (volume / pan / gain depending on which param the lane
+                // is showing). Mirrors the inline rubber band's behaviour
+                // and rides the same Begin/End coalesce envelope.
+                if c.kfs.is_empty()
+                    && near_curve
+                    && pointer_down
+                    && state.dragging_audio_keyframe.is_none()
+                    && state.dragging_rubber_band.is_none()
+                    && state.dragging_fade_handle.is_none()
+                    && !state.drag_drop.is_active()
+                    && !alt_held
+                {
+                    cmds.push(AppCommand::BeginAudioDrag {
+                        key: format!("{:?}:audio", c.clip_id),
+                        clip_id: c.clip_id,
+                        old_gain: c.gain,
+                        old_volume: c.volume,
+                        old_pan: c.pan,
+                        old_fade_in: c.fade_in_secs,
+                        old_fade_out: c.fade_out_secs,
+                    });
+                    state.dragging_rubber_band = Some(c.clip_id);
+                    state.dragging_rubber_band_in_lane = true;
+                }
+
+                // Diamond drag init — first priority. Hit-tested against
+                // `press_origin` (where the user pressed the mouse), not
+                // the current pointer pos, so a fast drag that moves
+                // beyond the diamond before egui's decided-drag threshold
+                // fires still latches onto the originally-clicked
+                // diamond. Without this the drag init silently fails for
+                // any user dragging faster than ~6 px before egui's
+                // is_decidedly_dragging trips.
+                let press_origin_kf_idx: Option<usize> =
+                    ui.input(|i| i.pointer.press_origin()).and_then(|press| {
+                        if !sub_rect.expand(8.0).contains(press) {
+                            return None;
+                        }
+                        let mut best: Option<(usize, f32)> = None;
+                        for (ki, kf) in c.kfs.iter().enumerate() {
+                            if kf.time_secs >= 0.0 && kf.time_secs <= c.time_range_secs {
+                                let kx = time_to_x(kf.time_secs);
+                                let ky = value_to_y(kf.value);
+                                let dist = ((press.x - kx).powi(2) + (press.y - ky).powi(2)).sqrt();
+                                if dist < 12.0 && best.is_none_or(|(_, bd)| dist < bd) {
+                                    best = Some((ki, dist));
+                                }
+                            }
+                        }
+                        best.map(|(i, _)| i)
+                    });
+
+                if let Some(ki) = press_origin_kf_idx {
+                    let other_drags = state.dragging_audio_keyframe.is_some()
+                        || state.dragging_bezier_handle.is_some()
+                        || state.dragging_fade_handle.is_some();
+                    let decided = ui.input(|i| i.pointer.is_decidedly_dragging());
+                    if pointer_down && !other_drags && !alt_held && decided {
+                        let drag_key = format!(
+                            "kf:audio:{}:{:?}:{}",
+                            c.clip_id.0, param, ki
+                        );
+                        cmds.push(AppCommand::BeginKeyframeDrag {
+                            key: drag_key,
+                            clip_id: c.clip_id,
+                        });
+                        state.dragging_audio_keyframe =
+                            Some(crate::state::DraggingKeyframe {
+                                clip_id: c.clip_id,
+                                param,
+                                keyframe_index: ki,
+                                in_automation_lane: true,
+                            });
+                    }
+                }
+
+                // Drag-on-curve (with keyframes) → create a new keyframe at
+                // the press position and immediately start dragging it.
+                // DAW-style "grab the line anywhere" behaviour: the user
+                // feels like the curve is fully editable, not just the
+                // diamonds. Wider 16-px guard around existing diamonds so
+                // a slightly-off click on a diamond still grabs the
+                // diamond instead of spawning a new kf next to it. The
+                // new kf's index is predicted by counting existing kfs
+                // with `time_secs < t` — sequence.append / insert
+                // handlers sort by time.
+                let near_any_diamond = pointer_pos
+                    .map(|p| {
+                        c.kfs.iter().any(|kf| {
+                            if kf.time_secs < 0.0 || kf.time_secs > c.time_range_secs {
+                                return false;
+                            }
+                            let kx = time_to_x(kf.time_secs);
+                            let ky = value_to_y(kf.value);
+                            ((p.x - kx).powi(2) + (p.y - ky).powi(2)).sqrt() < 16.0
+                        })
+                    })
+                    .unwrap_or(false);
+                if !c.kfs.is_empty()
+                    && near_curve
+                    && !near_any_diamond
+                    && pointer_down
+                    && hovered_kf_idx.is_none()
+                    && state.dragging_audio_keyframe.is_none()
+                    && state.dragging_bezier_handle.is_none()
+                    && state.dragging_rubber_band.is_none()
+                    && state.dragging_fade_handle.is_none()
+                    && !state.drag_drop.is_active()
+                    && !alt_held
+                {
+                    let dragged_far_enough = ui.input(|i| i.pointer.is_decidedly_dragging());
+                    if dragged_far_enough {
+                        if let Some(press_pos) =
+                            ui.input(|i| i.pointer.press_origin()).or(pointer_pos)
+                        {
+                            let t = x_to_time(press_pos.x);
+                            let v = y_to_value(press_pos.y);
+                            let new_idx = c.kfs.iter().take_while(|kf| kf.time_secs < t).count();
+                            cmds.push(AppCommand::AddAudioKeyframe {
+                                clip_id: c.clip_id,
+                                param,
+                                time_secs: t,
+                                value: v,
+                            });
+                            let drag_key = format!(
+                                "kf:audio:{}:{:?}:{}",
+                                c.clip_id.0, param, new_idx
+                            );
+                            cmds.push(AppCommand::BeginKeyframeDrag {
+                                key: drag_key,
+                                clip_id: c.clip_id,
+                            });
+                            state.dragging_audio_keyframe =
+                                Some(crate::state::DraggingKeyframe {
+                                    clip_id: c.clip_id,
+                                    param,
+                                    keyframe_index: new_idx,
+                                    in_automation_lane: true,
+                                });
+                        }
+                    }
+                }
+
+                // Active flat-line drag dispatch — runs every frame the
+                // pointer stays held. The renderer above already painted
+                // the curve at the static value; this writes the new
+                // value back so the next frame paints the updated line.
+                if state.dragging_rubber_band == Some(c.clip_id)
+                    && state.dragging_rubber_band_in_lane
+                    && state.dragging_fade_handle.is_none()
+                    && !state.drag_drop.is_active()
+                    && pointer_down
+                {
+                    if let Some(p) = pointer_pos {
+                        let new_val = y_to_value(p.y);
+                        let (drag_gain, drag_volume, drag_pan) = match param {
+                            klipp_core::AudioParam::Volume => (c.gain, new_val, c.pan),
+                            klipp_core::AudioParam::Pan => (c.gain, c.volume, new_val),
+                            klipp_core::AudioParam::Gain => (new_val, c.volume, c.pan),
+                        };
+                        cmds.push(AppCommand::UpdateClipAudio {
+                            clip_id: c.clip_id,
+                            gain: drag_gain,
+                            volume: drag_volume,
+                            pan: drag_pan,
+                            fade_in_secs: c.fade_in_secs,
+                            fade_out_secs: c.fade_out_secs,
+                            fade_in_curve: c.fade_in_curve,
+                            fade_out_curve: c.fade_out_curve,
+                            channel_config: c.channel_config,
+                        });
+                    }
+                }
+
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn draw_audio_rubber_band(
         &mut self,
@@ -10205,14 +11204,14 @@ impl TimelinePanel {
         let kf_keyframes = &kf_keyframes_vec[..];
 
 
-            // Phase A: fixed Y range per param so the unity / centre line
-            // lands at the same vertical position on every clip,
-            // regardless of keyframe content. The previous auto-scale
-            // behaviour collapsed the curve to a 14%-from-bottom band on
-            // the (very common) no-keyframes case, blending into the
-            // waveform peaks. Fixed ranges match how DaVinci/Premiere
-            // present the inline rubber band; the dedicated automation
-            // lane (Phase B) is where zoom-to-fit auto-scaling will live.
+            // Fixed Y range per param so the unity / centre line lands
+            // at the same vertical position on every clip, regardless
+            // of keyframe content. The earlier auto-scale collapsed the
+            // curve to a 14%-from-bottom band on the (very common)
+            // no-keyframes case, blending into the waveform peaks.
+            // Fixed ranges match how DaVinci/Premiere present the inline
+            // rubber band; the dedicated automation lane is where
+            // zoom-to-fit auto-scaling can live as a follow-up.
             let (param_min, param_range, unity_value) = match rb_param {
                 klipp_core::AudioParam::Volume => (0.0_f32, 2.0_f32, 1.0_f32),
                 klipp_core::AudioParam::Pan    => (-1.0_f32, 2.0_f32, 0.0_f32),
@@ -10234,57 +11233,20 @@ impl TimelinePanel {
                 clip_rect.left() + frac as f32 * clip_rect.width()
             };
 
-            // Color per param: amber=Volume, cyan=Pan, green=Gain.
-            // Phase A bumped unselected alpha 140 → 220 so the curve
-            // actually reads against the waveform; selected stays at
-            // 250+ to keep the "this clip is active" signal strong.
-            let (line_color, line_color_dim, diamond_fill_sel, diamond_fill_norm, fill_color, ref_color, _diamond_stroke_color) = match rb_param {
-                klipp_core::AudioParam::Volume => (
-                    egui::Color32::from_rgba_unmultiplied(255, 195, 50, 250),
-                    egui::Color32::from_rgba_unmultiplied(255, 195, 50, 220),
-                    egui::Color32::from_rgba_unmultiplied(255, 210, 60, 250),
-                    egui::Color32::from_rgba_unmultiplied(255, 195, 50, 200),
-                    egui::Color32::from_rgba_unmultiplied(255, 195, 50, 38),
-                    egui::Color32::from_rgba_unmultiplied(255, 220, 130, 70),
-                    egui::Color32::from_rgba_unmultiplied(200, 150, 30, 240),
-                ),
-                klipp_core::AudioParam::Pan => (
-                    egui::Color32::from_rgba_unmultiplied(50, 195, 255, 250),
-                    egui::Color32::from_rgba_unmultiplied(50, 195, 255, 220),
-                    egui::Color32::from_rgba_unmultiplied(60, 210, 255, 250),
-                    egui::Color32::from_rgba_unmultiplied(50, 195, 255, 200),
-                    egui::Color32::from_rgba_unmultiplied(50, 195, 255, 38),
-                    egui::Color32::from_rgba_unmultiplied(140, 220, 255, 70),
-                    egui::Color32::from_rgba_unmultiplied(30, 150, 200, 240),
-                ),
-                klipp_core::AudioParam::Gain => (
-                    egui::Color32::from_rgba_unmultiplied(50, 220, 100, 250),
-                    egui::Color32::from_rgba_unmultiplied(50, 220, 100, 220),
-                    egui::Color32::from_rgba_unmultiplied(60, 240, 110, 250),
-                    egui::Color32::from_rgba_unmultiplied(50, 220, 100, 200),
-                    egui::Color32::from_rgba_unmultiplied(50, 220, 100, 38),
-                    egui::Color32::from_rgba_unmultiplied(140, 240, 170, 70),
-                    egui::Color32::from_rgba_unmultiplied(30, 170, 60, 240),
-                ),
+            // Palette + active stroke colour are pulled from the shared
+            // `audio_curve_palette` so the inline overlay and the
+            // future automation lane stay visually identical without
+            // copying constants. The helper does the actual reference-
+            // line / fill / stroke / diamond / Bezier-tangent painting
+            // — see `paint_audio_curve_band` in the module-level
+            // helpers near the top of this file.
+            let palette = audio_curve_palette(rb_param);
+            let active_line_color = if is_selected || is_multi_selected {
+                palette.line_color
+            } else {
+                palette.line_color_dim
             };
-            let shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150);
-            let diamond_fill = if is_selected || is_multi_selected { diamond_fill_sel } else { diamond_fill_norm };
-            let _diamond_shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160);
-            let active_line_color = if is_selected || is_multi_selected { line_color } else { line_color_dim };
-            let rb_line_width = if is_selected || is_multi_selected { 3.0_f32 } else { 2.0_f32 };
-            let rb_shadow_width = rb_line_width + 1.0_f32;
-
-            // Reference line (unity for Volume/Gain, centre for Pan).
-            // A faint horizontal at the param's neutral value gives the
-            // user a spatial anchor — without it the curve looks
-            // arbitrary against an empty clip background. Drawn before
-            // the fill + stroke so it sits behind both.
-            let unity_y = clip_rect.bottom()
-                - ((unity_value - param_min) / param_range).clamp(0.0, 1.0) * clip_rect.height();
-            clip_painter.line_segment(
-                [egui::pos2(clip_rect.left(), unity_y), egui::pos2(clip_rect.right(), unity_y)],
-                egui::Stroke::new(1.0, ref_color),
-            );
+            let _ = unity_value; // helper handles the reference line internally
 
             // Draw param pill badge at top-left of clip (below clip name area)
             let param_label = match rb_param {
@@ -10326,190 +11288,58 @@ impl TimelinePanel {
                 }
             }
 
-            if kf_keyframes.is_empty() {
-                // No keyframes: draw a single horizontal line at the
-                // static value, plus a translucent fill from the line
-                // down to the clip bottom so the curve reads as a
-                // band rather than a stroke. Phase A polish.
-                let y = value_to_y(kf_static_val);
-                let band_bottom = clip_rect.bottom();
-                clip_painter.add(egui::Shape::convex_polygon(
-                    vec![
-                        egui::pos2(clip_rect.left(), y),
-                        egui::pos2(clip_rect.right(), y),
-                        egui::pos2(clip_rect.right(), band_bottom),
-                        egui::pos2(clip_rect.left(), band_bottom),
-                    ],
-                    fill_color,
-                    egui::Stroke::NONE,
-                ));
-                // Shadow line behind for contrast.
-                clip_painter.line_segment(
-                    [egui::pos2(clip_rect.left(), y), egui::pos2(clip_rect.right(), y)],
-                    egui::Stroke::new(rb_shadow_width, shadow_color),
-                );
-                clip_painter.line_segment(
-                    [egui::pos2(clip_rect.left(), y), egui::pos2(clip_rect.right(), y)],
-                    egui::Stroke::new(rb_line_width, active_line_color),
-                );
-            } else {
-                // Draw curve by densely sampling evaluate() — correctly renders
-                // all interpolation types (Linear, Bezier, Step) regardless of keyframe count.
-                let clip_time_range = src_out_secs - src_in_secs;
-
-                // Dense sampling: evaluate the keyframe curve at many points across the clip
-                let num_samples = (clip_rect.width() as usize / 2).clamp(20, 400);
-                let mut curve_pts: Vec<egui::Pos2> = Vec::with_capacity(num_samples + 1);
-                for si in 0..=num_samples {
-                    let t_frac = si as f64 / num_samples as f64;
-                    let t_secs = t_frac * clip_time_range;
-                    let val = klipp_core::keyframe::evaluate(kf_keyframes, t_secs, kf_static_val);
-                    let x = clip_rect.left() + t_frac as f32 * clip_rect.width();
-                    let y = value_to_y(val);
-                    curve_pts.push(egui::pos2(x, y));
+            // Compute paint-only "hovered keyframe" — same hit-test the
+            // helper would do, but we inline it here so we can pass the
+            // resolved index in (and reuse the local `value_to_y` /
+            // `time_to_x` closures that would otherwise be redundant
+            // with the helper's). The interaction code further down has
+            // its own `nearest_kf_idx` for drag dispatch — the two
+            // exist because the paint-only check gates on
+            // `clip_rect.contains(pos)` while the drag check doesn't.
+            let kf_paint_time_range = src_out_secs - src_in_secs;
+            let hovered_kf_idx_paint: Option<usize> = pointer_pos.and_then(|pos| {
+                if !clip_rect.contains(pos) {
+                    return None;
                 }
-
-                // Translucent fill from the curve down to the clip
-                // bottom — reads as a "band" instead of a naked stroke.
-                // Tessellate as a triangle strip via egui's mesh rather
-                // than convex_polygon because the curve isn't convex
-                // (zig-zag keyframe shapes would render incorrectly as
-                // a single polygon).
-                if curve_pts.len() >= 2 {
-                    let band_bottom = clip_rect.bottom();
-                    let mut mesh = egui::epaint::Mesh::default();
-                    for p in &curve_pts {
-                        mesh.colored_vertex(*p, fill_color);
-                        mesh.colored_vertex(egui::pos2(p.x, band_bottom), fill_color);
-                    }
-                    for i in 0..(curve_pts.len() - 1) {
-                        let base = (i * 2) as u32;
-                        // Two triangles per quad.
-                        mesh.add_triangle(base, base + 1, base + 2);
-                        mesh.add_triangle(base + 1, base + 3, base + 2);
-                    }
-                    clip_painter.add(egui::Shape::mesh(mesh));
-                }
-
-                // Draw shadow pass then color pass.
-                for i in 0..curve_pts.len().saturating_sub(1) {
-                    clip_painter.line_segment(
-                        [curve_pts[i], curve_pts[i + 1]],
-                        egui::Stroke::new(rb_shadow_width, shadow_color),
-                    );
-                }
-                for i in 0..curve_pts.len().saturating_sub(1) {
-                    clip_painter.line_segment(
-                        [curve_pts[i], curve_pts[i + 1]],
-                        egui::Stroke::new(rb_line_width, active_line_color),
-                    );
-                }
-
-                // Draw diamond markers at each keyframe
-                // Check if pointer is near any keyframe for hover effect
-                let hovered_kf_idx: Option<usize> = pointer_pos.and_then(|pos| {
-                    if !clip_rect.contains(pos) { return None; }
-                    let mut best: Option<(usize, f32)> = None;
-                    for (ki, kf) in kf_keyframes.iter().enumerate() {
-                        if kf.time_secs >= 0.0 && kf.time_secs <= clip_time_range {
-                            let kx = time_to_x(kf.time_secs);
-                            let ky = value_to_y(kf.value);
-                            let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
-                            if dist < 10.0
-                                && best.is_none_or(|(_, bd)| dist < bd) {
-                                    best = Some((ki, dist));
-                                }
+                let mut best: Option<(usize, f32)> = None;
+                for (ki, kf) in kf_keyframes.iter().enumerate() {
+                    if kf.time_secs >= 0.0 && kf.time_secs <= kf_paint_time_range {
+                        let kx = time_to_x(kf.time_secs);
+                        let ky = value_to_y(kf.value);
+                        let dist = ((pos.x - kx).powi(2) + (pos.y - ky).powi(2)).sqrt();
+                        if dist < 10.0 && best.is_none_or(|(_, bd)| dist < bd) {
+                            best = Some((ki, dist));
                         }
                     }
-                    best.map(|(i, _)| i)
+                }
+                best.map(|(i, _)| i)
+            });
+            let selected_kf_idx_paint: Option<usize> =
+                state.selected_keyframe.as_ref().and_then(|sk| {
+                    if sk.clip_id == kf_clip_id
+                        && sk.param_kind == crate::state::KeyframeParamKind::Audio(rb_param)
+                    {
+                        Some(sk.keyframe_index)
+                    } else {
+                        None
+                    }
                 });
 
-                for (ki, kf) in kf_keyframes.iter().enumerate() {
-                    if kf.time_secs >= 0.0 && kf.time_secs <= clip_time_range {
-                        let cx = time_to_x(kf.time_secs);
-                        let cy = value_to_y(kf.value);
-                        let is_hovered = hovered_kf_idx == Some(ki);
-                        let is_kf_selected = state.selected_keyframe.as_ref().is_some_and(|sk| {
-                            sk.clip_id == kf_clip_id && sk.param_kind == crate::state::KeyframeParamKind::Audio(rb_param) && sk.keyframe_index == ki
-                        });
-                        let d = if is_hovered || is_kf_selected { 9.0_f32 } else { 8.0_f32 };
-                        // Dark outline diamond behind for contrast
-                        let outline_d = d + 1.5;
-                        let outline_diamond = vec![
-                            egui::pos2(cx, cy - outline_d),
-                            egui::pos2(cx + outline_d, cy),
-                            egui::pos2(cx, cy + outline_d),
-                            egui::pos2(cx - outline_d, cy),
-                        ];
-                        clip_painter.add(egui::Shape::convex_polygon(
-                            outline_diamond,
-                            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
-                            egui::Stroke::NONE,
-                        ));
-                        // Brighten fill on hover
-                        let fill = if is_hovered {
-                            egui::Color32::from_rgba_unmultiplied(
-                                diamond_fill.r().saturating_add(30),
-                                diamond_fill.g().saturating_add(30),
-                                diamond_fill.b().saturating_add(30),
-                                255,
-                            )
-                        } else {
-                            diamond_fill
-                        };
-                        let diamond = vec![
-                            egui::pos2(cx, cy - d),
-                            egui::pos2(cx + d, cy),
-                            egui::pos2(cx, cy + d),
-                            egui::pos2(cx - d, cy),
-                        ];
-                        let stroke = if is_kf_selected {
-                            egui::Stroke::new(2.0_f32, egui::Color32::WHITE)
-                        } else {
-                            egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220))
-                        };
-                        clip_painter.add(egui::Shape::convex_polygon(diamond, fill, stroke));
-
-                        // ── Bezier tangent handles (only when clip is selected) ──
-                        if kf.interpolation == klipp_core::Interpolation::Bezier && (is_selected || is_multi_selected) {
-                            let pixels_per_sec = if clip_dur_secs > 0.0 { clip_rect.width() / clip_dur_secs as f32 } else { 1.0 };
-                            let value_scale = clip_rect.height() / param_range;
-                            let tangent_line_color = egui::Color32::from_rgba_unmultiplied(
-                                active_line_color.r(), active_line_color.g(), active_line_color.b(), 120,
-                            );
-                            let handle_radius = 4.0_f32;
-
-                            // Tangent out handle (right)
-                            let tout_x = cx + kf.tangent_out.0 as f32 * pixels_per_sec;
-                            let tout_y = cy - kf.tangent_out.1 * value_scale;
-                            clip_painter.line_segment(
-                                [egui::pos2(cx, cy), egui::pos2(tout_x, tout_y)],
-                                egui::Stroke::new(1.0_f32, tangent_line_color),
-                            );
-                            clip_painter.circle(
-                                egui::pos2(tout_x, tout_y),
-                                handle_radius,
-                                active_line_color,
-                                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
-                            );
-
-                            // Tangent in handle (left)
-                            let tin_x = cx + kf.tangent_in.0 as f32 * pixels_per_sec;
-                            let tin_y = cy - kf.tangent_in.1 * value_scale;
-                            clip_painter.line_segment(
-                                [egui::pos2(cx, cy), egui::pos2(tin_x, tin_y)],
-                                egui::Stroke::new(1.0_f32, tangent_line_color),
-                            );
-                            clip_painter.circle(
-                                egui::pos2(tin_x, tin_y),
-                                handle_radius,
-                                active_line_color,
-                                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200)),
-                            );
-                        }
-                    }
-                }
-            }
+            // Hand off to the shared paint helper. This is the same
+            // entry point the per-track automation lane calls
+            // — same data, same look, just a different `rect`.
+            paint_audio_curve_band(
+                &clip_painter,
+                clip_rect,
+                rb_param,
+                kf_keyframes,
+                kf_static_val,
+                kf_paint_time_range,
+                is_selected,
+                is_multi_selected,
+                hovered_kf_idx_paint,
+                selected_kf_idx_paint,
+            );
 
             // ── Rubber band interaction ──────────────────────────────────
             if interactive {
@@ -10666,6 +11496,7 @@ impl TimelinePanel {
                                     param: rb_param,
                                     keyframe_index: bh_ki,
                                     is_out: bh_is_out,
+                                    in_automation_lane: false,
                                 });
                             }
                         }
@@ -10688,6 +11519,7 @@ impl TimelinePanel {
                                         clip_id: kf_clip_id,
                                         param: rb_param,
                                         keyframe_index: ki,
+                                        in_automation_lane: false,
                                     });
                                 }
                             }
@@ -10720,10 +11552,22 @@ impl TimelinePanel {
                                 old_fade_out: kf_fade_out,
                             });
                             state.dragging_rubber_band = Some(kf_clip_id);
+                            // Defensive: clear any stale lane-mode flag from
+                            // a prior gesture. The release handler clears
+                            // both fields, but if the previous frame's
+                            // release was somehow missed, the inline drag
+                            // update would otherwise be gated out by the
+                            // `!in_lane` check.
+                            state.dragging_rubber_band_in_lane = false;
                         }
 
                         // Process active flat-line rubber band drag (blocked during fade handle drag and drag-and-drop)
-                        if state.dragging_rubber_band == Some(kf_clip_id) && state.dragging_fade_handle.is_none() && !state.drag_drop.is_active()
+                        // Gate on `!in_lane` so a drag that started in the
+                        // automation lane is processed by the lane's own
+                        // dispatch (with lane-rect Y mapping), not here.
+                        if state.dragging_rubber_band == Some(kf_clip_id)
+                            && !state.dragging_rubber_band_in_lane
+                            && state.dragging_fade_handle.is_none() && !state.drag_drop.is_active()
                             && pointer_down {
                                 let new_val = y_to_value(pos.y);
                                 let (drag_gain, drag_volume, drag_pan) = match rb_param {
@@ -12469,9 +13313,16 @@ impl TimelinePanel {
                         let track_height = effective_track_height(track);
                         if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
                             let content_left = track_rect.left();
-                            let clip_rect_approx = {
-                                let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
-                                let cw = clip.duration().to_secs_f64() as f32 * zoom;
+                            let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                            let cw = clip.duration().to_secs_f64() as f32 * zoom;
+                            let clip_rect_approx = if drag_bh.in_automation_lane {
+                                let lane_left = (cx).max(track_rect.left() + 28.0);
+                                let lane_right = (cx + cw).min(track_rect.right());
+                                egui::Rect::from_min_max(
+                                    egui::pos2(lane_left, track_rect.bottom() + 1.0),
+                                    egui::pos2(lane_right.max(lane_left + 2.0), track_rect.bottom() + AUTOMATION_LANE_HEIGHT - 1.0),
+                                )
+                            } else {
                                 egui::Rect::from_min_size(
                                     egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
                                     egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
@@ -12712,9 +13563,20 @@ impl TimelinePanel {
                         // Find track_rect from track_rects cache
                         if let Some((_, _, track_rect)) = self.frame_cache.track_rects.iter().find(|(idx, _, _)| *idx == ti) {
                             let content_left = track_rect.left(); // approximation — content_rect not available here
-                            let clip_rect_approx = {
-                                let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
-                                let cw = clip.duration().to_secs_f64() as f32 * zoom;
+                            let cx = content_left + clip.timeline_in.to_secs_f64() as f32 * zoom - scroll;
+                            let cw = clip.duration().to_secs_f64() as f32 * zoom;
+                            // Map drag against the surface the gesture
+                            // started on. Lane sub-rect for lane drags
+                            // when started in the lane, clip rect when
+                            // started inline.
+                            let clip_rect_approx = if drag_kf.in_automation_lane {
+                                let lane_left = (cx).max(track_rect.left() + 28.0);
+                                let lane_right = (cx + cw).min(track_rect.right());
+                                egui::Rect::from_min_max(
+                                    egui::pos2(lane_left, track_rect.bottom() + 1.0),
+                                    egui::pos2(lane_right.max(lane_left + 2.0), track_rect.bottom() + AUTOMATION_LANE_HEIGHT - 1.0),
+                                )
+                            } else {
                                 egui::Rect::from_min_size(
                                     egui::pos2(cx + CLIP_GAP, track_rect.top() + 2.0),
                                     egui::vec2((cw - CLIP_GAP * 2.0).max(2.0), track_height - 4.0),
@@ -12786,23 +13648,46 @@ impl TimelinePanel {
                                     new_value,
                                 });
 
-                                // Live value readout tooltip
+                                // Live value readout tooltip — same labelling
+                                // language as the lane's value-scale axis so
+                                // the user can correlate "the diamond is at
+                                // X%" with the labels they see drawn.
                                 let value_text = match drag_kf.param {
-                                    klipp_core::AudioParam::Volume => format!("{:.2}", new_value),
-                                    klipp_core::AudioParam::Pan => format!("{:.2}", new_value),
-                                    klipp_core::AudioParam::Gain => format!("{:.2}", new_value),
+                                    klipp_core::AudioParam::Volume => format!("{:.0}%", new_value * 100.0),
+                                    klipp_core::AudioParam::Pan => {
+                                        if new_value.abs() < 0.01 { "C".to_string() }
+                                        else if new_value < 0.0 { format!("L{:.0}", -new_value * 100.0) }
+                                        else { format!("R{:.0}", new_value * 100.0) }
+                                    }
+                                    klipp_core::AudioParam::Gain => format!("{:.2}x", new_value),
                                 };
                                 let time_text = format!("{:.2}s", new_time);
-                                let tooltip = format!("{} | {}", time_text, value_text);
+                                let tooltip = format!("{}  {}", time_text, value_text);
                                 let painter = ui.painter().with_clip_rect(
                                     ui.clip_rect().intersect(ui.max_rect()),
                                 );
+                                let tooltip_pos = egui::pos2(pos.x + 12.0, pos.y - 18.0);
+                                let font = egui::FontId::proportional(10.0);
+                                let galley = painter.layout_no_wrap(
+                                    tooltip.clone(),
+                                    font.clone(),
+                                    egui::Color32::WHITE,
+                                );
+                                let bg_rect = egui::Rect::from_min_size(
+                                    tooltip_pos - egui::vec2(4.0, galley.size().y + 2.0),
+                                    galley.size() + egui::vec2(8.0, 4.0),
+                                );
+                                painter.rect_filled(
+                                    bg_rect,
+                                    3.0,
+                                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 210),
+                                );
                                 painter.text(
-                                    egui::pos2(pos.x + 12.0, pos.y - 16.0),
+                                    tooltip_pos,
                                     egui::Align2::LEFT_BOTTOM,
                                     &tooltip,
-                                    egui::FontId::proportional(10.0),
-                                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220),
+                                    font,
+                                    egui::Color32::WHITE,
                                 );
                             }
                         }
@@ -13111,6 +13996,7 @@ impl TimelinePanel {
                     });
                 }
                 state.dragging_rubber_band = None;
+                state.dragging_rubber_band_in_lane = false;
             }
         }
     }

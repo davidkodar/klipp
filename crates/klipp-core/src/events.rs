@@ -1358,6 +1358,12 @@ pub enum AppCommand {
     /// Arm / un-arm a track for recording. Only one track is armed at a time
     /// for the MVP — arming track X un-arms all others.
     ArmTrack { track_id: TrackId, armed: bool },
+    /// Toggle the per-track expandable automation lane on the audio track at
+    /// `track_idx`. The lane shows the active rubber-band param's curve at
+    /// full lane height — DaVinci Fairlight / Premiere "Show Track Keyframes"
+    /// style. Currently-collapsed → opens with the global rubber-band param;
+    /// already-open → collapses. State persists with the project file.
+    ToggleAudioAutomationLane { track_idx: usize },
     /// Begin capturing audio from the configured input device into a WAV file
     /// in the proxy cache. Does nothing if no track is armed.
     StartRecording,

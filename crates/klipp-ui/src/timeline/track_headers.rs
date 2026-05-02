@@ -263,9 +263,48 @@ pub fn show(
             }
         }
 
+        // Automation-lane expand/collapse button (audio tracks only).
+        // Sits left of the record-arm. ▸ collapsed → ▾ expanded; click
+        // dispatches `ToggleAudioAutomationLane`. Same data the inline
+        // rubber band uses, just rendered at full lane height when open.
+        let btn_size = 16.0;
+        if track.kind == TrackKind::Audio {
+            let lane_rect_btn = egui::Rect::from_min_size(
+                egui::pos2(
+                    track_rect.max.x - btn_size * 5.0 - 20.0,
+                    track_rect.center().y - btn_size / 2.0,
+                ),
+                egui::vec2(btn_size, btn_size),
+            );
+            let lane_resp = ui.allocate_rect(lane_rect_btn, egui::Sense::click());
+            let lane_open = track.automation_lane_visible.is_some();
+            let lane_color = if lane_open { theme.accent } else { theme.text_dim };
+            ui.painter().rect_filled(
+                lane_rect_btn,
+                3.0,
+                if lane_resp.hovered() { theme.bg_raised } else { egui::Color32::TRANSPARENT },
+            );
+            let lane_glyph = if lane_open { "\u{25BE}" } else { "\u{25B8}" }; // ▾ vs ▸
+            ui.painter().text(
+                lane_rect_btn.center(),
+                egui::Align2::CENTER_CENTER,
+                lane_glyph,
+                egui::FontId::proportional(12.0),
+                lane_color,
+            );
+            let lane_tip = if lane_open {
+                "Hide automation lane"
+            } else {
+                "Show automation lane"
+            };
+            styled_tooltip(&lane_resp, theme, lane_tip, None);
+            if lane_resp.clicked() {
+                cmds.push(AppCommand::ToggleAudioAutomationLane { track_idx });
+            }
+        }
+
         // Record-arm button (audio tracks only) — dim red when un-armed,
         // bright red when armed. Appears to the left of the mute button.
-        let btn_size = 16.0;
         if track.kind == TrackKind::Audio {
             let arm_rect = egui::Rect::from_min_size(
                 egui::pos2(

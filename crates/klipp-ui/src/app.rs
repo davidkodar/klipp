@@ -15861,6 +15861,27 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::ToggleAudioAutomationLane { track_idx } => {
+                let active_param = match self.state.rubber_band_param {
+                    crate::state::RubberBandParam::ClipParam(p) => p,
+                    crate::state::RubberBandParam::EffectParam { .. } => {
+                        // FX-param rubber band on the pill picker doesn't
+                        // map onto a clip-level lane. Fall back to Volume so
+                        // the toggle still does something useful.
+                        klipp_core::AudioParam::Volume
+                    }
+                };
+                if let Some(seq) = self.state.sequences.get_mut(self.state.active_sequence_idx) {
+                    if let Some(t) = seq.tracks.get_mut(*track_idx) {
+                        t.automation_lane_visible = match t.automation_lane_visible {
+                            None => Some(active_param),
+                            Some(_) => None,
+                        };
+                        self.state.dirty = true;
+                    }
+                }
+                true
+            }
             AppCommand::StartRecording => {
                 self.start_recording();
                 true

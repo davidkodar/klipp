@@ -113,6 +113,12 @@ pub struct DraggingKeyframe {
     pub clip_id: ClipId,
     pub param: AudioParam,
     pub keyframe_index: usize,
+    /// True when the drag was initiated inside the per-track expandable
+    /// automation lane. Drag handlers use this to map pointer
+    /// Y against the lane sub-rect rather than the clip rect, so the
+    /// diamond stays under the cursor regardless of which surface
+    /// started the gesture.
+    pub in_automation_lane: bool,
 }
 
 /// State during an active audio EFFECT keyframe drag on the timeline
@@ -136,6 +142,8 @@ pub struct BezierHandleDrag {
     pub keyframe_index: usize,
     /// true = tangent_out (right handle), false = tangent_in (left handle)
     pub is_out: bool,
+    /// See [`DraggingKeyframe::in_automation_lane`].
+    pub in_automation_lane: bool,
 }
 
 /// State during an active Bezier tangent handle drag on an audio EFFECT
@@ -1636,6 +1644,13 @@ pub struct AppState {
     pub dragging_video_keyframe: Option<DraggingVideoKeyframe>,
     /// Clip whose flat rubber band line is being dragged (no-keyframes volume adjust)
     pub dragging_rubber_band: Option<ClipId>,
+    /// True when the active flat-line rubber band drag (`dragging_rubber_band`)
+    /// was initiated inside the per-track expandable automation lane.
+    /// The drag-update logic checks this to decide whether to compute the new
+    /// value against the inline clip rect or the lane sub-rect. Cleared
+    /// alongside `dragging_rubber_band` on release. Only meaningful when
+    /// `dragging_rubber_band.is_some()`.
+    pub dragging_rubber_band_in_lane: bool,
     /// Bezier tangent handle drag state (audio)
     pub dragging_bezier_handle: Option<BezierHandleDrag>,
     /// Bezier tangent handle drag state (video)
@@ -2874,6 +2889,7 @@ impl Default for AppState {
             dragging_audio_keyframe: None,
             dragging_video_keyframe: None,
             dragging_rubber_band: None,
+            dragging_rubber_band_in_lane: false,
             dragging_bezier_handle: None,
             dragging_video_bezier_handle: None,
             dragging_audio_effect_keyframe: None,

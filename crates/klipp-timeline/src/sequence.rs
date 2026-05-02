@@ -374,6 +374,13 @@ pub struct Track {
     /// Only one track is armed at a time in the MVP (see #60 tier 2b).
     #[serde(default)]
     pub record_armed: bool,
+    /// Per-track expandable automation lane state. `None` = collapsed (the
+    /// inline rubber band on each clip is the only surface). `Some(param)`
+    /// = the lane is visible below the clip area, showing the named
+    /// param's curve at full lane height. Survives project reload via
+    /// serde; defaults to `None` for back-compat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automation_lane_visible: Option<klipp_core::AudioParam>,
 }
 
 fn default_opacity() -> f32 { 1.0 }
@@ -404,6 +411,7 @@ impl Track {
             pre_collapse_height: None,
             source_file: None,
             record_armed: false,
+            automation_lane_visible: None,
         }
     }
 
