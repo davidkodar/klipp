@@ -520,6 +520,7 @@ fn register_media(
     let item = klipp_media::MediaItem {
         id: klipp_core::MediaId::new(),
         path: path.to_path_buf(),
+        kind: klipp_media::MediaItemKind::File,
         filename,
         duration,
         fps: *fps,

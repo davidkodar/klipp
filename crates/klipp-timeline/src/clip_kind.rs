@@ -125,6 +125,38 @@ impl Default for ClipKind {
     }
 }
 
+/// A title saved as a reusable project asset. Lives in the project's
+/// `title_assets: HashMap<MediaId, TitleAsset>` store, keyed by the
+/// `MediaId` of its synthetic `MediaItem`. Editing an asset
+/// propagates to every linked clip on every sequence at render time.
+///
+/// `display_name` is the user-facing label shown in the Media tab and
+/// in the Inspector's "Linked to" banner — initially derived from the
+/// title's text content but renameable so users can group brand
+/// assets ("Brand Lower Third (Red)" vs the title's actual visible
+/// "Jane Doe — CEO" text).
+///
+/// `data` is the canonical `TitleData` source-of-truth; linked clips
+/// fall back to their inline `ClipKind::Title(TitleData)` only when
+/// the asset can't be resolved (loading a project where the asset
+/// was deleted out from under live instances — the inline copy is
+/// the safety net).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TitleAsset {
+    /// User-editable name. Renaming doesn't break links — the
+    /// `MediaId` is the stable identifier.
+    pub display_name: String,
+    /// Canonical title content, styling, and animation parameters.
+    pub data: TitleData,
+    /// Animation token string from the original Library template
+    /// (e.g. `"fade_in_0.5+slide_up_0.3"`). Stored on the asset so
+    /// every linked instance gets the same intro animation; clips
+    /// can override per-instance via Inspector if Detach hasn't been
+    /// triggered.
+    #[serde(default)]
+    pub animation: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TitleData {
     pub text: String,

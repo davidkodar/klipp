@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use klipp_core::{Fps, MarkerColor, MarkerId, MediaId, RationalTime, Resolution, SequenceId};
-use klipp_media::{MediaItem, MediaPool};
+use klipp_media::{MediaItem, MediaItemKind, MediaPool};
 use klipp_timeline::{Clip, ClipKind, ClipMarker, Marker, Sequence, Track, TrackKind};
 
 pub use crate::mlt_import::ImportResult;
@@ -334,6 +334,7 @@ fn register_asset_media(
     let item = MediaItem {
         id: MediaId::new(),
         path: asset.path.clone(),
+        kind: MediaItemKind::File,
         filename: asset.name.clone(),
         duration,
         fps: seq_fps,

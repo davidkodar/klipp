@@ -314,7 +314,7 @@ fn escape_xml(s: &str) -> String {
 mod tests {
     use super::*;
     use klipp_core::{ClipId, Fps, MediaId, RationalTime, Resolution, SequenceId};
-    use klipp_media::{MediaItem, MediaPool};
+    use klipp_media::{MediaItem, MediaItemKind, MediaPool};
     use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
     use std::path::PathBuf;
 
@@ -338,6 +338,7 @@ mod tests {
         MediaItem {
             id,
             path: PathBuf::from(format!("/media/{filename}")),
+            kind: MediaItemKind::File,
             filename: filename.into(),
             duration: RationalTime { value: frames, rate },
             fps: Fps { num: rate, den: 1 },
@@ -404,6 +405,7 @@ mod tests {
             builtin_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
             linked_clip_id: None,
+            linked_title_asset_id: None,
             group_id: None,
             magnetic_anchor: None,
             gain: 1.0,

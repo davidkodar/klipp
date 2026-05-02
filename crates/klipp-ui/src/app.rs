@@ -957,6 +957,7 @@ impl KlippApp {
                     let mut media_item = MediaItem {
                         id: media_id,
                         path: path.clone(),
+                        kind: klipp_media::MediaItemKind::File,
                         filename,
                         duration,
                         fps,
@@ -6010,6 +6011,7 @@ impl KlippApp {
                                     builtin_effects: clip.builtin_effects.clone(),
                                     builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
                                     linked_clip_id: None,
+                                    linked_title_asset_id: None,
                                     group_id: None,
                                     magnetic_anchor: None,
                                     gain: clip.gain,
@@ -6175,6 +6177,7 @@ impl KlippApp {
                             builtin_effects: clip.builtin_effects.clone(),
                             builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
                             linked_clip_id: None,
+                            linked_title_asset_id: None,
                             group_id: None,
                             magnetic_anchor: None,
                             gain: clip.gain,
@@ -9543,6 +9546,16 @@ impl KlippApp {
                     true
                 }
                 AppCommand::AppendClipToTrack { media_id, track_index } => {
+                    // Synthetic title asset path — read-only fork
+                    // before any framerate-prompt logic. Creates a
+                    // title clip linked to the asset rather than a
+                    // media clip; the MediaItem is just a discoverable
+                    // entry in the pool.
+                    let item_kind = self.state.media_pool.get(media_id).map(|i| i.kind.clone());
+                    if matches!(item_kind, Some(klipp_media::MediaItemKind::SyntheticTitle)) {
+                        self.append_title_asset_to_timeline(*media_id, *track_index);
+                        return true;
+                    }
                     if self.maybe_prompt_framerate_mismatch(media_id, cmd.clone()) {
                         return true;
                     }
@@ -10128,6 +10141,7 @@ impl KlippApp {
                     let media_item = klipp_media::MediaItem {
                         id: klipp_core::MediaId::new(),
                         path,
+                        kind: klipp_media::MediaItemKind::File,
                         filename: display_name,
                         duration,
                         fps: fps_val,
@@ -10262,6 +10276,13 @@ impl KlippApp {
                         let old = item.filename.clone();
                         if old != *new_filename {
                             item.filename = new_filename.clone();
+                            // Synthetic title assets keep their
+                            // display_name in sync with the pool's
+                            // filename so the Inspector banner and
+                            // Media-tab card label always agree.
+                            if let Some(asset) = self.state.title_assets.get_mut(media_id) {
+                                asset.display_name = new_filename.clone();
+                            }
                             self.state.history.push(HistoryEntry {
                                 sequence_idx: self.state.active_sequence_idx,
                                 command: crate::history::EditCommand::BatchRenameMediaItems {
@@ -12419,13 +12440,26 @@ impl KlippApp {
     }
 
     fn handle_title_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
-        if self.handle_title_lifecycle(cmd, needs_refresh) { return true; }
-        if self.handle_title_content(cmd, needs_refresh) { return true; }
-        if self.handle_title_layout(cmd, needs_refresh) { return true; }
-        if self.handle_title_styling(cmd, needs_refresh) { return true; }
-        if self.handle_title_effects(cmd, needs_refresh) { return true; }
-        if self.handle_title_animation(cmd, needs_refresh) { return true; }
-        false
+        let handled = if self.handle_title_lifecycle(cmd, needs_refresh) { true }
+            else if self.handle_title_content(cmd, needs_refresh) { true }
+            else if self.handle_title_layout(cmd, needs_refresh) { true }
+            else if self.handle_title_styling(cmd, needs_refresh) { true }
+            else if self.handle_title_effects(cmd, needs_refresh) { true }
+            else if self.handle_title_animation(cmd, needs_refresh) { false }
+            else { false };
+        // Edit propagation: any title edit on a clip linked to a
+        // Project Asset is the source-of-truth update for that
+        // asset. Snapshot the edited clip's `TitleData` into the
+        // asset, then push the asset's data back out to every
+        // other linked instance in one tick. Safe to run every
+        // frame even on no-op commands — the helper bails when
+        // there's nothing to do.
+        if handled {
+            if let Some(clip_id) = title_edit_clip_id(cmd) {
+                self.propagate_title_edit_to_asset(clip_id);
+            }
+        }
+        handled
     }
 
     fn handle_title_lifecycle(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
@@ -12464,6 +12498,7 @@ impl KlippApp {
                     builtin_effects_enabled: Vec::new(),
                     effects: Vec::new(),
                     linked_clip_id: None,
+                    linked_title_asset_id: None,
                     group_id: None,
                     magnetic_anchor: None,
                     gain: 1.0,
@@ -12531,7 +12566,370 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::CreateTitleAsset { source_clip_id } => {
+                self.handle_create_title_asset(*source_clip_id);
+                true
+            }
+            AppCommand::DetachTitleAsset { clip_id } => {
+                self.handle_detach_title_asset(*clip_id);
+                true
+            }
+            AppCommand::RenameTitleAsset { asset_id, new_name } => {
+                if let Some(asset) = self.state.title_assets.get_mut(asset_id) {
+                    asset.display_name = new_name.clone();
+                }
+                if let Some(item) = self.state.media_pool.get_mut(asset_id) {
+                    item.filename = new_name.clone();
+                }
+                self.state.dirty = true;
+                true
+            }
             _ => false,
+        }
+    }
+
+    /// Promote a title clip on the timeline into a reusable Project
+    /// Asset. Mints a fresh `MediaId`, builds a `TitleAsset` from a
+    /// snapshot of the clip's `TitleData`, registers a synthetic
+    /// `MediaItem` in the pool so the asset shows up in the Media
+    /// tab, and links the source clip via `linked_title_asset_id`.
+    /// No-ops if the clip can't be located, isn't a title clip, or
+    /// is already linked to an asset (re-promotion is meaningless —
+    /// the user can rename instead).
+    /// Walk every linked-instance of a Project Asset and ensure they
+    /// all carry the same `TitleData`. Called after a title-edit
+    /// command lands on any single clip — if that clip is linked,
+    /// its post-edit data becomes the asset's new canonical state
+    /// and the rest of the instances pick it up on this same tick.
+    fn propagate_title_edit_to_asset(&mut self, edited_clip_id: klipp_core::ClipId) {
+        let seq_idx = self.state.active_sequence_idx;
+        // Find the edited clip and its asset id + post-edit data.
+        let mut asset_id: Option<klipp_core::MediaId> = None;
+        let mut new_data: Option<klipp_timeline::TitleData> = None;
+        for track in &self.state.sequences[seq_idx].tracks {
+            if let Some(clip) = track.clips.iter().find(|c| c.id == edited_clip_id) {
+                asset_id = clip.linked_title_asset_id;
+                if let klipp_timeline::ClipKind::Title(ref td) = clip.kind {
+                    new_data = Some(td.clone());
+                }
+                break;
+            }
+        }
+        let (Some(asset_id), Some(new_data)) = (asset_id, new_data) else {
+            return; // Either not linked or not a title clip — nothing to propagate.
+        };
+        // Update the asset (single source of truth).
+        if let Some(asset) = self.state.title_assets.get_mut(&asset_id) {
+            asset.data = new_data.clone();
+        } else {
+            // Asset went missing while linked — defensive: clear the
+            // dangling link so the user isn't surprised by a no-op
+            // edit. Inline data already has the user's change.
+            for track in &mut self.state.sequences[seq_idx].tracks {
+                if let Some(clip) = track.clips.iter_mut().find(|c| c.id == edited_clip_id) {
+                    clip.linked_title_asset_id = None;
+                    break;
+                }
+            }
+            return;
+        }
+        // Fan out to every other linked instance across all
+        // sequences (a single asset can be referenced from any
+        // number of sequences in the project).
+        for seq in &mut self.state.sequences {
+            for track in &mut seq.tracks {
+                for clip in &mut track.clips {
+                    if clip.id == edited_clip_id {
+                        continue;
+                    }
+                    if clip.linked_title_asset_id == Some(asset_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            *td = new_data.clone();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_create_title_asset(&mut self, source_clip_id: klipp_core::ClipId) {
+        // First pass: find the source clip and snapshot its
+        // `TitleData`. We need a separate borrow scope so the
+        // subsequent mutation on `state.title_assets` and
+        // `state.media_pool` can take their own borrows without
+        // tripping the borrow checker.
+        let mut snapshot: Option<(klipp_timeline::TitleData, klipp_core::Timecode, klipp_core::Fps)> = None;
+        let mut already_linked = false;
+        let seq_idx = self.state.active_sequence_idx;
+        for track in &self.state.sequences[seq_idx].tracks {
+            if let Some(clip) = track.clips.iter().find(|c| c.id == source_clip_id) {
+                if clip.linked_title_asset_id.is_some() {
+                    already_linked = true;
+                    break;
+                }
+                if let klipp_timeline::ClipKind::Title(ref td) = clip.kind {
+                    let dur = clip.timeline_out - clip.timeline_in;
+                    let fps = self.state.sequences[seq_idx].fps;
+                    snapshot = Some((td.clone(), dur, fps));
+                }
+                break;
+            }
+        }
+        if already_linked {
+            self.state
+                .toast
+                .show("Title is already a Project Asset — rename or detach first");
+            return;
+        }
+        let Some((title_data, duration, fps)) = snapshot else {
+            self.state.toast.show("Select a title clip first");
+            return;
+        };
+
+        // Generate a name from the first ~32 chars of the title text,
+        // stripping placeholders like "[Your Title]" so the user gets
+        // something they can recognise in the Media tab. Falls back
+        // to "Title Asset" when the text is empty/placeholder-only.
+        let raw_name = title_data
+            .text
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim_matches(|c: char| c == '[' || c == ']' || c.is_whitespace())
+            .to_string();
+        let display_name = if raw_name.is_empty() {
+            "Title Asset".to_string()
+        } else if raw_name.chars().count() > 32 {
+            let truncated: String = raw_name.chars().take(32).collect();
+            format!("{truncated}\u{2026}")
+        } else {
+            raw_name
+        };
+
+        // Mint the asset.
+        let asset_id = klipp_core::MediaId::new();
+        let asset = klipp_timeline::TitleAsset {
+            display_name: display_name.clone(),
+            data: title_data.clone(),
+            animation: None, // Animation tokens land via Inspector edits later.
+        };
+        self.state.title_assets.insert(asset_id, asset);
+
+        // Register the synthetic MediaItem so the Media tab can
+        // render it and drag-drop can resolve by MediaId.
+        let media_item = klipp_media::MediaItem::new_synthetic_title(
+            asset_id,
+            display_name.clone(),
+            duration,
+            fps,
+        );
+        self.state.media_pool.add(media_item);
+
+        // Link the source clip back to the asset.
+        for track in &mut self.state.sequences[seq_idx].tracks {
+            if let Some(clip) = track.clips.iter_mut().find(|c| c.id == source_clip_id) {
+                clip.linked_title_asset_id = Some(asset_id);
+                break;
+            }
+        }
+
+        self.state.toast.show(format!(
+            "Saved \"{display_name}\" to Project Assets — drag from Media tab to reuse"
+        ));
+        self.state.dirty = true;
+        tracing::info!(
+            "CreateTitleAsset: clip {:?} -> asset {:?} (\"{}\")",
+            source_clip_id, asset_id, display_name,
+        );
+    }
+
+    /// Drop a synthetic title asset onto the timeline. Routes the
+    /// drop to a Text track (creating one if `track_index` doesn't
+    /// point at a Text/Subtitle track), creates a new title clip with
+    /// `linked_title_asset_id = Some(asset_id)`, and seeds the
+    /// inline `TitleData` from the asset so the clip renders
+    /// correctly even before the asset-canonical lookup wires up.
+    fn append_title_asset_to_timeline(
+        &mut self,
+        asset_media_id: klipp_core::MediaId,
+        target_track_idx: usize,
+    ) {
+        // Resolve asset data + display name. Bail with a clear
+        // message if the synthetic MediaItem is in the pool but the
+        // backing asset is missing (corrupted load, manual edit).
+        let Some(asset) = self.state.title_assets.get(&asset_media_id).cloned() else {
+            self.state.toast.show(
+                "Project Asset is missing — was it deleted from the project?",
+            );
+            return;
+        };
+
+        // Decide which track receives the clip. If the user dropped
+        // on a Text/Subtitle track, use it directly. Otherwise (drop
+        // on Video / unknown), find or create a Text track at the
+        // top of the stack — same convention as the Library "Apply
+        // title" flow.
+        let seq_idx = self.state.active_sequence_idx;
+        let target_kind = self.state.sequences[seq_idx]
+            .tracks
+            .get(target_track_idx)
+            .map(|t| t.kind);
+        let track_idx = if matches!(
+            target_kind,
+            Some(klipp_timeline::TrackKind::Text)
+                | Some(klipp_timeline::TrackKind::Subtitle)
+        ) {
+            target_track_idx
+        } else {
+            // Find first Text track or create one.
+            let existing = self.state.sequences[seq_idx]
+                .tracks
+                .iter()
+                .position(|t| t.kind == klipp_timeline::TrackKind::Text);
+            match existing {
+                Some(idx) => idx,
+                None => {
+                    let track_num = self.state.sequences[seq_idx]
+                        .tracks
+                        .iter()
+                        .filter(|t| t.kind == klipp_timeline::TrackKind::Text)
+                        .count()
+                        + 1;
+                    let new_track = klipp_timeline::Track::new(
+                        &format!("Text {track_num}"),
+                        klipp_timeline::TrackKind::Text,
+                    );
+                    self.state.sequences[seq_idx]
+                        .tracks
+                        .insert(0, new_track);
+                    0
+                }
+            }
+        };
+
+        // Pick a default 5-second duration anchored at the playhead,
+        // matching `CreateTitleClip`'s default.
+        let fps = self.state.sequences[seq_idx].fps;
+        let fps_rate = fps.rate();
+        let duration_frames = (fps_rate * 5).max(1);
+        let timeline_in = self.state.playhead;
+        let timeline_out = klipp_core::RationalTime::from_frames(
+            timeline_in.value + duration_frames as i64,
+            timeline_in.rate,
+        );
+
+        // Build the title clip. Mirrors `CreateTitleClip`'s field-
+        // by-field constructor — kept in lockstep with that handler
+        // so adding new `Clip` fields shows up here at compile time.
+        let new_clip_id = klipp_core::ClipId::new();
+        let mut clip = klipp_timeline::Clip {
+            id: new_clip_id,
+            kind: klipp_timeline::ClipKind::Title(asset.data.clone()),
+            timeline_in,
+            timeline_out,
+            source_in: klipp_core::RationalTime::from_frames(0, fps_rate),
+            source_out: klipp_core::RationalTime::from_frames(
+                duration_frames as i64,
+                fps_rate,
+            ),
+            node_graph: klipp_nodes::NodeGraph::default(),
+            builtin_effects: Vec::new(),
+            builtin_effects_enabled: Vec::new(),
+            effects: Vec::new(),
+            linked_clip_id: None,
+            linked_title_asset_id: Some(asset_media_id),
+            group_id: None,
+            magnetic_anchor: None,
+            gain: 1.0,
+            volume: 1.0,
+            pan: 0.0,
+            fade_in_secs: 0.0,
+            fade_out_secs: 0.0,
+            fade_in_curve: klipp_timeline::FadeCurve::default(),
+            fade_out_curve: klipp_timeline::FadeCurve::default(),
+            channel_config: klipp_timeline::ChannelConfig::default(),
+            volume_keyframes: Vec::new(),
+            pan_keyframes: Vec::new(),
+            gain_keyframes: Vec::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
+            clip_markers: Vec::new(),
+            effect_keyframes: std::collections::HashMap::new(),
+            role: klipp_core::ClipRole::default(),
+            param_modifiers: std::collections::HashMap::new(),
+            speed: 1.0,
+            speed_keyframes: Vec::new(),
+            source_rotation: 0,
+            enabled: true,
+            solo: false,
+            grade_versions: Vec::new(),
+            active_grade_version: None,
+            multicam_group: None,
+            multicam_angle: 0,
+            multicam_cuts: Vec::new(),
+            audio_effects: Vec::new(),
+            audio_effect_keyframes: std::collections::HashMap::new(),
+            stabilization_data: None,
+            smoothed_trajectory: None,
+            track_points: Vec::new(),
+        };
+        // Apply the asset's baked-in animation keyframes the same
+        // way `CreateTitleClip` does.
+        if let Some(ref anim_str) = asset.animation {
+            apply_title_animation(&mut clip, anim_str, 5.0);
+        }
+
+        self.state.sequences[seq_idx].tracks[track_idx]
+            .clips
+            .push(clip);
+        self.state.sequences[seq_idx].tracks[track_idx]
+            .clips
+            .sort_by_key(|c| c.timeline_in.value);
+        self.state.selected_clip = Some(new_clip_id);
+        self.state.toast.show(format!(
+            "\"{}\" added to timeline",
+            asset.display_name
+        ));
+        self.sync_sequence_to_engine();
+        self.state.dirty = true;
+        tracing::info!(
+            "AppendTitleAsset: asset {:?} -> clip {:?} on track {}",
+            asset_media_id, new_clip_id, track_idx,
+        );
+    }
+
+    /// Detach a clip from its linked title asset. Inline `TitleData`
+    /// stays as-is (already in sync from the last propagation), the
+    /// `linked_title_asset_id` is cleared, and future edits diverge.
+    fn handle_detach_title_asset(&mut self, clip_id: klipp_core::ClipId) {
+        let seq_idx = self.state.active_sequence_idx;
+        let mut detached_from: Option<klipp_core::MediaId> = None;
+        for track in &mut self.state.sequences[seq_idx].tracks {
+            if let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) {
+                if let Some(asset_id) = clip.linked_title_asset_id.take() {
+                    detached_from = Some(asset_id);
+                }
+                break;
+            }
+        }
+        if let Some(asset_id) = detached_from {
+            let name = self
+                .state
+                .title_assets
+                .get(&asset_id)
+                .map(|a| a.display_name.clone())
+                .unwrap_or_else(|| "Title Asset".to_string());
+            self.state
+                .toast
+                .show(format!("Detached from \"{name}\" — edits no longer sync"));
+            self.state.dirty = true;
+            tracing::info!(
+                "DetachTitleAsset: clip {:?} detached from asset {:?}",
+                clip_id, asset_id,
+            );
         }
     }
 
@@ -14673,6 +15071,12 @@ impl KlippApp {
                 true
             }
             AppCommand::BrowserSkimAudioStart { media_id, source_path, time_secs } => {
+                // Audition has exclusive access — file/media browser
+                // skim is suppressed while it's playing so the cursor
+                // doesn't kick the audition off the cpal slot.
+                if self.state.audition_active {
+                    return true;
+                }
                 // Stop any existing session
                 if let Some(ref session) = self.state.skim_audio_session {
                     session.stop();
@@ -14692,19 +15096,45 @@ impl KlippApp {
                         cache_dir.join(format!("{}.pcm", media_id))
                     });
 
+                tracing::info!(
+                    "BrowserSkimAudioStart: media={:?} pcm={:?} pcm_exists={} muted={} vol={} cpal_rate={}",
+                    media_id,
+                    pcm_path,
+                    pcm_path.exists(),
+                    self.state.master_muted,
+                    self.state.master_volume,
+                    self.cpal_sample_rate,
+                );
+
+                let initial_volume = if self.state.master_muted {
+                    0.0
+                } else {
+                    self.state.master_volume
+                };
                 if let Some(session) = klipp_engine::skim_audio::SkimAudioSession::new(
                     &pcm_path,
                     source_path.clone(),
                     self.cpal_sample_rate,
                     self.skim_consumer.clone(),
-                    self.state.master_volume,
+                    initial_volume,
                 ) {
                     session.seek_and_play(*time_secs);
                     self.state.skim_audio_session = Some(session);
+                    tracing::info!(
+                        "BrowserSkimAudioStart: session created and playing from {:.2}s",
+                        time_secs
+                    );
+                } else {
+                    tracing::warn!(
+                        "BrowserSkimAudioStart: session creation FAILED (PCM cache missing or load error)"
+                    );
                 }
                 true
             }
             AppCommand::BrowserSkimAudioStartFromPath { source_path, time_secs } => {
+                if self.state.audition_active {
+                    return true;
+                }
                 // Stop any existing session first.
                 if let Some(ref session) = self.state.skim_audio_session {
                     session.stop();
@@ -14726,6 +15156,15 @@ impl KlippApp {
                 true
             }
             AppCommand::BrowserSkimAudioUpdate { time_secs, .. } => {
+                // Critical: this is the path that was killing the
+                // audition. When the cursor stops moving (speed = 0),
+                // `determine_skim_mode` returns Silent and we'd call
+                // `session.silence()` on whatever session is in the
+                // slot — including the audition's. Bail out when
+                // audition owns the session.
+                if self.state.audition_active {
+                    return true;
+                }
                 if let Some(ref session) = self.state.skim_audio_session {
                     // Update volume dynamically
                     let vol = if self.state.master_muted { 0.0 } else { self.state.master_volume };
@@ -14741,6 +15180,14 @@ impl KlippApp {
                 true
             }
             AppCommand::BrowserSkimAudioEnd => {
+                // Cursor-skim End is suppressed while audition owns
+                // the session. The cursor handlers fire End when the
+                // mouse leaves a clip; without this guard, mousing
+                // away from a timeline/file row would tear down the
+                // audition's playback.
+                if self.state.audition_active {
+                    return true;
+                }
                 if let Some(ref session) = self.state.skim_audio_session {
                     session.stop();
                 }
@@ -14749,6 +15196,85 @@ impl KlippApp {
                 klipp_engine::audio_output::set_skim_consumer(&self.skim_consumer, None);
                 self.state.skim_audio_session = None;
                 self.state.skim_speed_px_per_sec = 0.0;
+                true
+            }
+            AppCommand::AuditionSeek { time_secs } => {
+                if let Some(ref session) = self.state.skim_audio_session {
+                    session.seek_and_play(*time_secs);
+                }
+                true
+            }
+            AppCommand::AuditionStart { media_id, source_path, time_secs } => {
+                // Stop any cursor-skim session first.
+                if let Some(ref session) = self.state.skim_audio_session {
+                    session.stop();
+                }
+                self.state.skim_audio_session = None;
+
+                // Look up the conformed-PCM path the same way
+                // BrowserSkimAudioStart does — by media_id with the
+                // legacy fallback location.
+                let pcm_path = self
+                    .state
+                    .media_pool
+                    .get(media_id)
+                    .and_then(|item| item.audio_cache.as_ref())
+                    .map(|cache| cache.pcm_path.clone())
+                    .unwrap_or_else(|| {
+                        let cache_dir = dirs::cache_dir()
+                            .unwrap_or_else(|| PathBuf::from("/tmp"))
+                            .join("klipp")
+                            .join("audio-cache");
+                        cache_dir.join(format!("{}.pcm", media_id))
+                    });
+                tracing::info!(
+                    "AuditionStart: media={:?} pcm_exists={} muted={} vol={}",
+                    media_id,
+                    pcm_path.exists(),
+                    self.state.master_muted,
+                    self.state.master_volume,
+                );
+                let initial_volume = if self.state.master_muted {
+                    0.0
+                } else {
+                    self.state.master_volume
+                };
+                if let Some(session) = klipp_engine::skim_audio::SkimAudioSession::new(
+                    &pcm_path,
+                    source_path.clone(),
+                    self.cpal_sample_rate,
+                    self.skim_consumer.clone(),
+                    initial_volume,
+                ) {
+                    session.seek_and_play(*time_secs);
+                    self.state.skim_audio_session = Some(session);
+                    self.state.audition_active = true;
+                    tracing::info!(
+                        "AuditionStart: session created and playing from {:.2}s (audition lock acquired)",
+                        time_secs
+                    );
+                } else {
+                    tracing::warn!(
+                        "AuditionStart: session creation FAILED (PCM cache missing)"
+                    );
+                }
+                true
+            }
+            AppCommand::AuditionSetVolume(vol) => {
+                if let Some(ref session) = self.state.skim_audio_session {
+                    session.set_volume((*vol).clamp(0.0, 1.5));
+                }
+                true
+            }
+            AppCommand::AuditionEnd => {
+                if let Some(ref session) = self.state.skim_audio_session {
+                    session.stop();
+                }
+                klipp_engine::audio_output::flush_skim_consumer(&self.skim_consumer);
+                klipp_engine::audio_output::set_skim_consumer(&self.skim_consumer, None);
+                self.state.skim_audio_session = None;
+                self.state.audition_active = false;
+                tracing::info!("AuditionEnd: audition lock released");
                 true
             }
             AppCommand::RefineFilmstrip { media_id, start_secs, end_secs, interval_secs } => {
@@ -18051,6 +18577,7 @@ impl KlippApp {
                 builtin_effects: clip.builtin_effects.clone(),
                 builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
                 linked_clip_id: clip.linked_clip_id,
+                linked_title_asset_id: clip.linked_title_asset_id,
                 group_id: clip.group_id,
                 magnetic_anchor: None,
                 gain: clip.gain,
@@ -18170,6 +18697,7 @@ impl KlippApp {
                 builtin_effects: clip.builtin_effects.clone(),
                 builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
                 linked_clip_id: clip.linked_clip_id,
+                linked_title_asset_id: clip.linked_title_asset_id,
                 group_id: clip.group_id,
                 magnetic_anchor: None,
                 gain: clip.gain,
@@ -18368,7 +18896,7 @@ impl KlippApp {
             working_colorspace: self.state.project_working_colorspace,
         };
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
-        match klipp_project::save_project_with_color_and_backups(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x)) {
+        match klipp_project::save_project_full(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x), &self.state.title_assets) {
             Ok(()) => {
                 if let Err(e) = klipp_project::save_looks(path, &self.state.looks) {
                     tracing::warn!("Failed to persist Looks library: {e}");
@@ -18438,7 +18966,7 @@ impl KlippApp {
     fn do_open_project_inner(&mut self, path: &std::path::Path) {
         match klipp_project::load_project(path) {
             Ok((sequences, media_pool, color_settings, active_id, created_at, notes,
-                timeline_zoom, timeline_scroll_x)) => {
+                timeline_zoom, timeline_scroll_x, title_assets)) => {
                 self.state.fps = sequences.first().map(|s| s.fps).unwrap_or(klipp_core::Fps { num: 24, den: 1 });
                 let active_idx = active_id.as_deref()
                     .and_then(|id| sequences.iter().position(|s| s.id.to_string() == id))
@@ -18448,6 +18976,7 @@ impl KlippApp {
                 self.state.created_at = created_at;
                 self.state.project_notes = notes;
                 self.state.media_pool = media_pool;
+                self.state.title_assets = title_assets;
                 self.state.looks = klipp_project::load_looks(path);
                 // Restore saved timeline view-state (zoom + scroll). Legacy
                 // project files don't carry these — leave the in-memory
@@ -21312,7 +21841,7 @@ impl eframe::App for KlippApp {
                     working_colorspace: self.state.project_working_colorspace,
                 };
                 let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
-                match klipp_project::save_project_with_color_and_backups(&autosave_path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x)) {
+                match klipp_project::save_project_full(&autosave_path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x), &self.state.title_assets) {
                     Ok(()) => {
                         if let Err(e) = klipp_project::save_looks(&autosave_path, &self.state.looks) {
                             tracing::warn!("Auto-save: failed to persist Looks: {e}");
@@ -27092,6 +27621,25 @@ fn ensure_klipp_extension(mut path: PathBuf) -> PathBuf {
 
 /// Apply baked-in animation keyframes to a title clip based on an animation identifier string.
 ///
+/// Extract the target `ClipId` from any title-edit `AppCommand`.
+/// Returns `None` when the command isn't a title edit (lifecycle /
+/// asset commands carry their own clip-id semantics handled
+/// elsewhere). Used by the title-command dispatcher to know which
+/// clip to propagate from after a successful edit.
+fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId> {
+    use AppCommand as C;
+    match cmd {
+        C::UpdateTitleData { clip_id, .. }
+        | C::ApplyTitleStyle { clip_id, .. }
+        | C::SetTitleAlignment { clip_id, .. }
+        | C::SetTitlePosition { clip_id, .. }
+        | C::SetTitleBackground { clip_id, .. }
+        | C::SetTitleShadow { clip_id, .. }
+        | C::SetTitleGradient { clip_id, .. } => Some(*clip_id),
+        _ => None,
+    }
+}
+
 /// Animation format: `"type_duration"` or `"type1+type2_duration"` where duration is in seconds.
 /// Examples: `"fade_in_0.5"`, `"slide_left_1.0"`, `"fade_in+slide_left_0.8"`, `"fade_in_out_0.5"`
 fn apply_title_animation(clip: &mut klipp_timeline::Clip, anim_str: &str, clip_dur: f64) {

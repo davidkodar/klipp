@@ -1998,12 +1998,25 @@ impl TimelinePanel {
             let any_down = ui.input(|i| i.pointer.any_down());
             if let Some(pos) = hover_pos {
                 if track_rect.contains(pos) {
+                    let media_item_kind = state.media_pool.get(&drag_media_id).map(|i| i.kind.clone());
+                    let is_synth_title = matches!(
+                        media_item_kind,
+                        Some(klipp_media::MediaItemKind::SyntheticTitle)
+                    );
                     let is_audio_only = state.media_pool.get(&drag_media_id)
-                        .map(|item| item.video_codec.is_empty())
+                        .map(|item| item.video_codec.is_empty() && !is_synth_title)
                         .unwrap_or(false);
-                    let compatible = match track_kind {
-                        TrackKind::Audio => is_audio_only,
-                        _ => !is_audio_only,
+                    // Synthetic titles only compatible with Text /
+                    // Subtitle tracks. File-backed media keeps its
+                    // existing video-vs-audio split.
+                    let compatible = if is_synth_title {
+                        matches!(track_kind, TrackKind::Text | TrackKind::Subtitle)
+                    } else {
+                        match track_kind {
+                            TrackKind::Audio => is_audio_only,
+                            TrackKind::Text | TrackKind::Subtitle => false,
+                            _ => !is_audio_only,
+                        }
                     };
                     if compatible {
                         painter.rect_stroke(
@@ -6679,6 +6692,39 @@ impl TimelinePanel {
                         cmds.push(AppCommand::SelectClip(Some(clip_id)));
                         ui.close_menu();
                     }
+
+                    // Project Asset promote/detach. The two are
+                    // mutually exclusive — if the clip is already
+                    // linked we only show "Detach", otherwise "Save
+                    // as Project Asset". Keeping the same menu spot
+                    // means the asset workflow is right next to the
+                    // primary "Edit Text" affordance, which is the
+                    // mockup's intent.
+                    let linked_asset_id = state.sequence().tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == clip_id)
+                        .and_then(|c| c.linked_title_asset_id);
+                    if let Some(asset_id) = linked_asset_id {
+                        let asset_name = state.title_assets
+                            .get(&asset_id)
+                            .map(|a| a.display_name.clone())
+                            .unwrap_or_else(|| "Project Asset".to_string());
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "\u{1F517} Linked to \u{201C}{asset_name}\u{201D}"
+                            ))
+                            .small()
+                            .color(egui::Color32::from_gray(170)),
+                        );
+                        if ui.button("\u{2702} Detach from Project Asset").clicked() {
+                            cmds.push(AppCommand::DetachTitleAsset { clip_id });
+                            ui.close_menu();
+                        }
+                    } else if ui.button("\u{2B50} Save as Project Asset").clicked() {
+                        cmds.push(AppCommand::CreateTitleAsset { source_clip_id: clip_id });
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     {
                         // Alignment submenu
                         let current_align = &td.alignment;

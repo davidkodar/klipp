@@ -441,6 +441,7 @@ impl Track {
             builtin_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
             linked_clip_id: None,
+            linked_title_asset_id: None,
             group_id: None,
             magnetic_anchor: None,
             gain: 1.0,
@@ -672,6 +673,7 @@ impl Track {
             builtin_effects: clip.builtin_effects.clone(),
             builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
             linked_clip_id: clip.linked_clip_id,
+            linked_title_asset_id: clip.linked_title_asset_id,
             group_id: clip.group_id,
             magnetic_anchor: clip.magnetic_anchor.clone(),
             gain: clip.gain,
@@ -722,6 +724,7 @@ impl Track {
             builtin_effects: clip.builtin_effects.clone(),
             builtin_effects_enabled: clip.builtin_effects_enabled.clone(),
             linked_clip_id: clip.linked_clip_id,
+            linked_title_asset_id: clip.linked_title_asset_id,
             group_id: clip.group_id,
             magnetic_anchor: None, // right half gets no anchor
             gain: clip.gain,
@@ -845,6 +848,17 @@ pub struct Clip {
     pub builtin_effects_enabled: Vec<bool>,
     #[serde(default)]
     pub linked_clip_id: Option<ClipId>,
+    /// If `Some`, this clip is a *linked instance* of a project-scoped
+    /// title asset (a `MediaItem` with `MediaItemKind::SyntheticTitle`).
+    /// The renderer reads the canonical `TitleData` from the asset
+    /// store keyed by this `MediaId`, so editing the asset updates
+    /// every linked instance on the timeline at once. The clip's
+    /// inline `ClipKind::Title(TitleData)` is kept in sync as a
+    /// fallback for paths that don't have asset-store access (export,
+    /// snapshot tools), but the asset is the source of truth while
+    /// linked. `None` = independent / unlinked title clip.
+    #[serde(default)]
+    pub linked_title_asset_id: Option<klipp_core::MediaId>,
     #[serde(default)]
     pub group_id: Option<GroupId>,
     /// If Some, this clip is connected to an anchor on the primary storyline.
@@ -1145,6 +1159,7 @@ impl Clip {
             builtin_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
             linked_clip_id: None,
+            linked_title_asset_id: None,
             group_id: None,
             magnetic_anchor: None,
             gain: 1.0,
@@ -1205,6 +1220,7 @@ impl Clip {
             builtin_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
             linked_clip_id: None,
+            linked_title_asset_id: None,
             group_id: None,
             magnetic_anchor: None,
             gain: 1.0,
@@ -1264,6 +1280,7 @@ impl Clip {
             builtin_effects: Vec::new(),
             builtin_effects_enabled: Vec::new(),
             linked_clip_id: None,
+            linked_title_asset_id: None,
             group_id: None,
             magnetic_anchor: None,
             gain: 1.0,

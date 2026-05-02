@@ -747,6 +747,13 @@ pub struct AppState {
     /// (parent_sequence_idx, parent_playhead) so we can navigate back.
     pub compound_clip_stack: Vec<(usize, klipp_core::Timecode)>,
     pub media_pool: MediaPool,
+    /// Project-scoped synthetic title assets, keyed by the
+    /// `MediaId` of the matching synthetic `MediaItem` in the pool.
+    /// The map is the canonical source of truth for `TitleData`
+    /// edits — title clips with `linked_title_asset_id = Some(id)`
+    /// read from here at render time, and Inspector edits write
+    /// back to here.
+    pub title_assets: std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset>,
     pub project_path: Option<PathBuf>,
     pub created_at: Option<String>,
     /// Free-form project notes — shot list, delivery specs, anything
@@ -1066,6 +1073,12 @@ pub struct AppState {
     pub skim_last_x: f32,
     /// The active skim audio session. Some() while hovering a skimmable clip.
     pub skim_audio_session: Option<klipp_engine::skim_audio::SkimAudioSession>,
+    /// True while the FX-audition transport owns the skim session.
+    /// All cursor-skim handlers (file browser hover, media tab hover,
+    /// timeline scrub) bail out early when this is set so they can't
+    /// silence the audition by re-running `determine_skim_mode` on a
+    /// stationary cursor.
+    pub audition_active: bool,
     /// System audio mute detection (Linux/PipeWire only). Polled via
     /// `wpctl get-volume @DEFAULT_AUDIO_SINK@` every ~2 seconds. When
     /// the system sink is muted, this is `true` and the transport bar
@@ -2546,6 +2559,7 @@ impl Default for AppState {
             active_sequence_idx: 0,
             compound_clip_stack: Vec::new(),
             media_pool: MediaPool::new(),
+            title_assets: std::collections::HashMap::new(),
             project_path: None,
             created_at: None,
             dirty: false,
@@ -2660,6 +2674,7 @@ impl Default for AppState {
             skim_last_update: std::time::Instant::now(),
             skim_last_x: 0.0,
             skim_audio_session: None,
+            audition_active: false,
             system_audio_muted: false,
             system_audio_last_check: std::time::Instant::now(),
             system_audio_last_reminder: std::time::Instant::now(),

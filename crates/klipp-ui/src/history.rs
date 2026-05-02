@@ -697,13 +697,14 @@ fn combine_old_new(old_entry: HistoryEntry, new_entry: HistoryEntry) -> HistoryE
 mod bin_undo_tests {
     use super::*;
     use klipp_core::{BinId, MediaId, RationalTime};
-    use klipp_media::{MediaItem, MediaPool};
+    use klipp_media::{MediaItem, MediaItemKind, MediaPool};
 
     /// Helper: create a minimal MediaItem for testing bin operations.
     fn test_media_item(id: MediaId) -> MediaItem {
         MediaItem {
             id,
             path: std::path::PathBuf::from("/test/video.mp4"),
+            kind: MediaItemKind::File,
             filename: "video.mp4".to_string(),
             duration: RationalTime::from_frames(240, 24),
             fps: klipp_core::Fps::new(24, 1),

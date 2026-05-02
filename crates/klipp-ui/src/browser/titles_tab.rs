@@ -1,11 +1,48 @@
+use crate::browser::effects_tab::{EffectSort, EffectViewMode};
 use crate::drag_drop::DragPayload;
+use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 use klipp_timeline::{
     CharAnimation, CharEntrance, FontStyle, StyleRun, TextAlignment, TextExtrusion, TextGlow,
-    TextGradient, TextOutline, TextPath, TitleBackground, TitleData, TitlePosition, TitleShadow,
+    TextGradient, TextOutline, TextPath, TitleAnimationType, TitleBackground, TitleData,
+    TitlePosition, TitleShadow,
 };
+
+/// Preview canvas background used behind every title card. The user
+/// picks one from the swatch row above the search bar so they can
+/// see how a template would read against different real-world
+/// surfaces (black footage, white footage, gradient sky, warm wood,
+/// green chroma).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitlesPreviewBg {
+    Black,
+    White,
+    BlueGradient,
+    OrangeWood,
+    GreenPattern,
+}
+
+impl Default for TitlesPreviewBg {
+    fn default() -> Self {
+        TitlesPreviewBg::BlueGradient
+    }
+}
+
+/// Built-in vs user-imported source filter for the Titles tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitlesSourceFilter {
+    All,
+    Builtin,
+    User,
+}
+
+impl Default for TitlesSourceFilter {
+    fn default() -> Self {
+        TitlesSourceFilter::All
+    }
+}
 
 struct TitleTemplate {
     name: &'static str,
@@ -984,379 +1021,2269 @@ const CATEGORIES: &[&str] = &[
     "Wedding / Event",
 ];
 
+const TITLES_SIDEBAR_W: f32 = 180.0;
+
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut AppState,
     theme: &KlippTheme,
-    search_query: &str,
+    search_query: &mut String,
+    active_category: &mut Option<&'static str>,
+    preview_bg: &mut TitlesPreviewBg,
+    preview_text: &mut String,
+    source_filter: &mut TitlesSourceFilter,
+    animated_only: &mut bool,
+    view_mode: &mut EffectViewMode,
+    sort_mode: &mut EffectSort,
+    selected: &mut Option<String>,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
-    let search_lower = search_query.to_lowercase();
+    let avail = ui.available_rect_before_wrap();
 
-    let filtered: Vec<_> = TITLES
-        .iter()
-        .filter(|t| search_lower.is_empty() || t.name.to_lowercase().contains(&search_lower) || t.category.to_lowercase().contains(&search_lower))
-        .collect();
+    // ── Split: sidebar (left) | content (right) ──
+    let sidebar_w = TITLES_SIDEBAR_W.min(avail.width() * 0.40);
+    let sidebar_rect = egui::Rect::from_min_size(
+        avail.min,
+        egui::vec2(sidebar_w, avail.height()),
+    );
+    let content_rect = egui::Rect::from_min_max(
+        egui::pos2(avail.min.x + sidebar_w, avail.min.y),
+        avail.max,
+    );
 
-    egui::ScrollArea::vertical().id_salt("browser_titles_scroll").show(ui, |ui| {
-        let avail_w = ui.available_width() - 16.0;
-        let card_w = (avail_w - 6.0) / 2.0;
+    // ── Sidebar ─────────────────────────────────────────────────────
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+        ui.set_min_size(sidebar_rect.size());
+        ui.painter().rect_filled(sidebar_rect, 0.0, theme.bg_panel);
+        ui.painter().vline(
+            sidebar_rect.max.x,
+            sidebar_rect.y_range(),
+            egui::Stroke::new(1.0_f32, theme.border),
+        );
 
-        for category in CATEGORIES {
-            let cat_titles: Vec<_> = filtered.iter().filter(|t| t.category == *category).collect();
-            if cat_titles.is_empty() {
-                continue;
-            }
+        egui::ScrollArea::vertical()
+            .id_salt("titles_sidebar_scroll")
+            .show(ui, |ui| {
+                ui.add_space(6.0);
 
-            // Collapsible category (collapsed by default, auto-expand when searching)
-            ui.add_space(4.0);
-            let cat_id = ui.make_persistent_id(format!("title_cat_{category}"));
-            let default_open = *category == "Basic"; // Only Basic open by default
-            let mut col_state = egui::collapsing_header::CollapsingState::load_with_default_open(
-                ui.ctx(), cat_id, default_open,
-            );
-            if !search_lower.is_empty() {
-                col_state.set_open(true);
-            }
-            col_state.show_header(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(format!("{}  ({})", category, cat_titles.len()))
-                        .strong().size(11.0).color(theme.text_accent)
+                // Counts (registry-wide, ignore the active filter so
+                // sidebar numbers don't dance as the user types).
+                let installed_total = TITLES.len();
+                // No favorites/recent persistence yet — show 0/0 stubs
+                // matching the audio FX sidebar shape.
+                titles_general_row(
+                    ui,
+                    theme,
+                    Icon::Star,
+                    "Favorites",
+                    0,
+                    false,
+                    "titles_general_favourites",
+                    &mut |_| {},
                 );
-            })
-            .body(|ui| {
-                ui.add_space(4.0);
-                egui::Grid::new(format!("titles_grid_{category}"))
-                    .num_columns(2)
-                    .spacing([6.0, 6.0])
-                    .min_col_width(card_w)
-                    .show(ui, |ui| {
-                        for (i, title) in cat_titles.iter().enumerate() {
-                            let resp = title_card(ui, theme, title, card_w);
+                titles_general_row(
+                    ui,
+                    theme,
+                    Icon::ArrowCounterClockwise,
+                    "Recent",
+                    0,
+                    false,
+                    "titles_general_recent",
+                    &mut |_| {},
+                );
+                titles_general_row(
+                    ui,
+                    theme,
+                    Icon::UploadSimple,
+                    "Installed",
+                    installed_total,
+                    false,
+                    "titles_general_installed",
+                    &mut |_| {},
+                );
 
-                            // Double-click: create title clip at playhead
-                            if resp.double_clicked() {
-                                let title_data = (title.create_data)();
-                                state.pending_title_data = Some(title_data);
-                                state.pending_title_animation = title.animation.map(|s| s.to_string());
-                                let ph = state.playhead;
-                                let track_index = state.sequences[state.active_sequence_idx].tracks.iter()
-                                    .enumerate()
-                                    .find(|(_, t)| {
-                                        t.kind == klipp_timeline::TrackKind::Text
-                                            && t.clip_at_timecode(ph).is_none()
-                                    })
-                                    .map(|(idx, _)| idx);
-                                let track_index = match track_index {
-                                    Some(idx) => idx,
-                                    None => {
-                                        let track_num = state.sequences[state.active_sequence_idx].tracks.iter()
-                                            .filter(|t| t.kind == klipp_timeline::TrackKind::Text)
-                                            .count() + 1;
-                                        let track = klipp_timeline::Track::new(
-                                            &format!("Text {track_num}"),
-                                            klipp_timeline::TrackKind::Text,
-                                        );
-                                        state.sequences[state.active_sequence_idx].tracks.insert(0, track);
-                                        0
-                                    }
-                                };
-                                let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
-                                let duration_frames = fps_rate * 5;
-                                cmds.push(AppCommand::CreateTitleClip {
-                                    track_index,
-                                    timeline_in: ph,
-                                    duration_frames,
-                                });
-                                state.toast.show(format!(
-                                    "\"{}\" title added to timeline",
-                                    title.name
-                                ));
-                            }
+                ui.add_space(8.0);
+                titles_section_separator(ui, theme);
+                titles_section_header(ui, theme, Some(Icon::FilmSlate), "Titles");
 
-                            // Drag: begin title drag
-                            if resp.drag_started() {
-                                let data = (title.create_data)();
-                                state.drag_drop.begin(DragPayload::Title {
-                                    template_name: title.name.to_string(),
-                                    title_data: data,
-                                    animation: title.animation.map(|s| s.to_string()),
-                                });
-                            }
-
-                            if i % 2 == 1 {
-                                ui.end_row();
-                            }
-                        }
-                        if cat_titles.len() % 2 == 1 {
-                            ui.end_row();
-                        }
-                    });
+                // "All" pseudo-category at the top of the Titles
+                // section, then each category with its registry count.
+                titles_sidebar_row(
+                    ui,
+                    theme,
+                    Some(Icon::List),
+                    "All",
+                    installed_total,
+                    active_category.is_none(),
+                    "titles_cat_all",
+                    &mut |opt| *active_category = opt,
+                    None,
+                );
+                for cat in CATEGORIES {
+                    let count = TITLES.iter().filter(|t| t.category == *cat).count();
+                    let is_active = *active_category == Some(*cat);
+                    titles_sidebar_row(
+                        ui,
+                        theme,
+                        Some(category_icon(cat)),
+                        cat,
+                        count,
+                        is_active,
+                        &format!("titles_cat_{cat}"),
+                        &mut |opt| *active_category = opt,
+                        Some(*cat),
+                    );
+                }
+                ui.add_space(8.0);
             });
+    });
+
+    // ── Right pane ──────────────────────────────────────────────────
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+        ui.set_min_size(content_rect.size());
+
+        ui.add_space(8.0);
+
+        // ── Preview header: PREVIEW ON [swatches] [text input] ──
+        egui::Frame::none()
+            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("\u{1F5BC} PREVIEW ON")
+                            .size(10.0)
+                            .strong()
+                            .color(theme.text_dim),
+                    );
+                    ui.add_space(8.0);
+                    preview_swatch(ui, theme, TitlesPreviewBg::Black, preview_bg);
+                    preview_swatch(ui, theme, TitlesPreviewBg::White, preview_bg);
+                    preview_swatch(ui, theme, TitlesPreviewBg::BlueGradient, preview_bg);
+                    preview_swatch(ui, theme, TitlesPreviewBg::OrangeWood, preview_bg);
+                    preview_swatch(ui, theme, TitlesPreviewBg::GreenPattern, preview_bg);
+                    ui.add_space(8.0);
+                    // Live preview text input — empty falls back to
+                    // each template's own preview_text.
+                    let edit = egui::TextEdit::singleline(preview_text)
+                        .hint_text(
+                            egui::RichText::new("Klipp the new Linux NLE!")
+                                .color(theme.text_dim),
+                        )
+                        .desired_width(ui.available_width().max(120.0))
+                        .font(egui::FontId::proportional(11.0))
+                        .text_color(theme.text_primary);
+                    ui.add(edit);
+                });
+            });
+
+        ui.add_space(8.0);
+
+        // ── Search bar ──
+        egui::Frame::none()
+            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+            .show(ui, |ui| {
+                titles_search_field(ui, theme, search_query);
+            });
+        ui.add_space(6.0);
+
+        // ── Filter row: All / Built-in / User + Animated only + view toggle ──
+        let scoped_total = TITLES
+            .iter()
+            .filter(|t| match active_category {
+                Some(cat) => t.category == *cat,
+                None => true,
+            })
+            .count();
+        // Built-in vs User: every entry is "Built-in" today (no user-
+        // importable templates yet); User stays at zero so the filter
+        // chip honestly reports.
+        let builtin_count = scoped_total;
+        let user_count: usize = 0;
+
+        egui::Frame::none()
+            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    titles_segmented_filter(
+                        ui,
+                        theme,
+                        source_filter,
+                        scoped_total,
+                        builtin_count,
+                        user_count,
+                    );
+                    ui.add_space(6.0);
+                    animated_only_pill(ui, theme, animated_only);
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            view_mode_button(
+                                ui,
+                                theme,
+                                view_mode,
+                                EffectViewMode::List,
+                                Icon::List,
+                                "List view",
+                            );
+                            view_mode_button(
+                                ui,
+                                theme,
+                                view_mode,
+                                EffectViewMode::Grid,
+                                Icon::GridFour,
+                                "Grid view",
+                            );
+                        },
+                    );
+                });
+            });
+
+        ui.add_space(8.0);
+
+        // ── Filter the registry ──
+        let search_lower = search_query.to_lowercase();
+        let mut filtered: Vec<&TitleTemplate> = TITLES
+            .iter()
+            .filter(|t| match active_category {
+                Some(cat) => t.category == *cat,
+                None => true,
+            })
+            .filter(|_| match *source_filter {
+                TitlesSourceFilter::All | TitlesSourceFilter::Builtin => true,
+                TitlesSourceFilter::User => false, // no user templates yet
+            })
+            .filter(|t| !*animated_only || t.animation.is_some())
+            .filter(|t| {
+                if search_lower.is_empty() {
+                    return true;
+                }
+                t.name.to_lowercase().contains(&search_lower)
+                    || t.category.to_lowercase().contains(&search_lower)
+            })
+            .collect();
+        match *sort_mode {
+            EffectSort::NameAsc => {
+                filtered.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            }
+            EffectSort::NameDesc => {
+                filtered.sort_by(|a, b| b.name.to_lowercase().cmp(&a.name.to_lowercase()));
+            }
+            EffectSort::Category => {
+                filtered.sort_by(|a, b| {
+                    a.category
+                        .to_lowercase()
+                        .cmp(&b.category.to_lowercase())
+                        .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                });
+            }
+            EffectSort::Source => {
+                filtered.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            }
         }
+
+        // ── Result strip: count + sort dropdown ──
+        titles_result_strip(ui, theme, filtered.len(), sort_mode);
+        ui.add_space(4.0);
+
+        // ── Card grid ──
+        egui::ScrollArea::vertical()
+            .id_salt("titles_grid_scroll")
+            .show(ui, |ui| {
+                if filtered.is_empty() {
+                    ui.add_space(20.0);
+                    ui.vertical_centered(|ui| {
+                        let msg = if !search_query.is_empty() {
+                            format!("No titles match \"{}\"", search_query)
+                        } else {
+                            "No titles in this category".to_string()
+                        };
+                        ui.label(
+                            egui::RichText::new(msg)
+                                .size(11.0)
+                                .color(theme.text_dim),
+                        );
+                    });
+                    return;
+                }
+
+                let avail_w = ui.available_width() - 8.0;
+                let spacing = 6.0;
+                let render_grid = *view_mode == EffectViewMode::Grid;
+
+                if render_grid {
+                    let card_w = ((avail_w - spacing) / 2.0).floor();
+                    let card_h = (card_w * 9.0 / 16.0).round().max(96.0);
+                    egui::Grid::new("titles_grid")
+                        .num_columns(2)
+                        .spacing([spacing, spacing])
+                        .min_col_width(card_w)
+                        .show(ui, |ui| {
+                            for (i, title) in filtered.iter().enumerate() {
+                                let is_selected =
+                                    selected.as_deref() == Some(title.name);
+                                let display_text = effective_preview_text(
+                                    preview_text,
+                                    title,
+                                );
+                                // Read elapsed time from the previous
+                                // frame's hover state — egui Response
+                                // isn't available until after paint, so
+                                // we lag by one frame (imperceptible).
+                                let elapsed = read_anim_elapsed(ui, title.name);
+                                let resp = title_card(
+                                    ui,
+                                    theme,
+                                    title,
+                                    card_w,
+                                    card_h,
+                                    *preview_bg,
+                                    &display_text,
+                                    is_selected,
+                                    elapsed,
+                                );
+                                let active =
+                                    resp.hovered() || is_selected;
+                                update_anim_state(ui, title.name, active);
+                                if active && title.animation.is_some() {
+                                    ui.ctx().request_repaint();
+                                }
+                                handle_title_interaction(
+                                    state, &mut cmds, title, &resp, selected,
+                                );
+                                if i % 2 == 1 {
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                } else {
+                    for title in &filtered {
+                        let is_selected =
+                            selected.as_deref() == Some(title.name);
+                        let display_text =
+                            effective_preview_text(preview_text, title);
+                        let elapsed = read_anim_elapsed(ui, title.name);
+                        let resp = title_list_row(
+                            ui,
+                            theme,
+                            title,
+                            *preview_bg,
+                            &display_text,
+                            is_selected,
+                            elapsed,
+                        );
+                        let active = resp.hovered() || is_selected;
+                        update_anim_state(ui, title.name, active);
+                        if active && title.animation.is_some() {
+                            ui.ctx().request_repaint();
+                        }
+                        handle_title_interaction(
+                            state, &mut cmds, title, &resp, selected,
+                        );
+                    }
+                }
+            });
     });
 
     cmds
 }
 
-fn title_card(ui: &mut egui::Ui, theme: &KlippTheme, title: &TitleTemplate, width: f32) -> egui::Response {
+/// Pick the text to render inside a card — user override beats the
+/// template's hand-picked preview_text.
+fn effective_preview_text<'a>(
+    user_text: &'a str,
+    title: &'a TitleTemplate,
+) -> std::borrow::Cow<'a, str> {
+    if user_text.trim().is_empty() {
+        std::borrow::Cow::Borrowed(title.preview_text)
+    } else {
+        std::borrow::Cow::Borrowed(user_text)
+    }
+}
+
+/// Shared interaction handler for both grid + list rendering — keeps
+/// double-click-to-add and drag-to-timeline logic in one place.
+fn handle_title_interaction(
+    state: &mut AppState,
+    cmds: &mut Vec<AppCommand>,
+    title: &TitleTemplate,
+    resp: &egui::Response,
+    selected: &mut Option<String>,
+) {
+    if resp.clicked() {
+        *selected = Some(title.name.to_string());
+    }
+    if resp.double_clicked() {
+        let title_data = (title.create_data)();
+        state.pending_title_data = Some(title_data);
+        state.pending_title_animation = title.animation.map(|s| s.to_string());
+        let ph = state.playhead;
+        let track_index = state.sequences[state.active_sequence_idx]
+            .tracks
+            .iter()
+            .enumerate()
+            .find(|(_, t)| {
+                t.kind == klipp_timeline::TrackKind::Text
+                    && t.clip_at_timecode(ph).is_none()
+            })
+            .map(|(idx, _)| idx);
+        let track_index = match track_index {
+            Some(idx) => idx,
+            None => {
+                let track_num = state.sequences[state.active_sequence_idx]
+                    .tracks
+                    .iter()
+                    .filter(|t| t.kind == klipp_timeline::TrackKind::Text)
+                    .count()
+                    + 1;
+                let track = klipp_timeline::Track::new(
+                    &format!("Text {track_num}"),
+                    klipp_timeline::TrackKind::Text,
+                );
+                state.sequences[state.active_sequence_idx]
+                    .tracks
+                    .insert(0, track);
+                0
+            }
+        };
+        let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
+        let duration_frames = fps_rate * 5;
+        cmds.push(AppCommand::CreateTitleClip {
+            track_index,
+            timeline_in: ph,
+            duration_frames,
+        });
+        state
+            .toast
+            .show(format!("\"{}\" title added to timeline", title.name));
+    }
+    if resp.drag_started() {
+        let data = (title.create_data)();
+        state.drag_drop.begin(DragPayload::Title {
+            template_name: title.name.to_string(),
+            title_data: data,
+            animation: title.animation.map(|s| s.to_string()),
+        });
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn title_card(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    title: &TitleTemplate,
+    width: f32,
+    height: f32,
+    preview_bg: TitlesPreviewBg,
+    preview_text_override: &str,
+    is_selected: bool,
+    elapsed_secs: f32,
+) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(width, 76.0),
+        egui::vec2(width, height),
         egui::Sense::click_and_drag(),
     );
-
     let hovered = resp.hovered();
-    let border_color = if hovered { theme.accent_dim } else { theme.border };
-
-    // Card background
-    ui.painter().rect_filled(rect, 6.0, theme.bg_raised);
+    let border_color = if is_selected {
+        theme.accent
+    } else if hovered {
+        theme.accent_dim
+    } else {
+        theme.border
+    };
+    let stroke_w: f32 = if is_selected { 2.0 } else { 1.0 };
+    let rounding = egui::Rounding::same(8.0);
+    paint_preview_canvas(ui.painter(), rect, rounding, preview_bg);
     ui.painter()
-        .rect_stroke(rect, 6.0, egui::Stroke::new(1.0_f32, border_color));
+        .rect_stroke(rect, rounding, egui::Stroke::new(stroke_w, border_color));
 
-    // Preview area (top 56px, black background)
-    let preview_rect = egui::Rect::from_min_size(rect.min, egui::vec2(width, 56.0));
-    ui.painter().rect_filled(
-        preview_rect,
-        egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 },
-        egui::Color32::BLACK,
+    // Inset so the rendered text doesn't sit flush against the badge
+    // area at the top. The inner rect is the "frame" we treat as the
+    // 0–1 normalized coordinate space for `TitleData::position`.
+    let inner = rect.shrink2(egui::vec2(8.0, 16.0));
+    paint_card_text(
+        ui.painter(),
+        inner,
+        title,
+        preview_text_override,
+        elapsed_secs,
     );
 
-    // Render title preview
-    paint_title_preview(ui.painter(), preview_rect, title, theme);
-
-    // Animation badge (small indicator for animated templates)
+    // Top-right BUILT-IN / USER badge (USER stub for now since the
+    // registry has no user-imported templates).
+    paint_corner_badge(ui, theme, rect, "BUILT-IN", BadgeKind::Builtin, true);
+    // Top-left "+ ANIMATED" badge.
     if title.animation.is_some() {
-        let badge_rect = egui::Rect::from_min_size(
-            egui::pos2(preview_rect.max.x - 18.0, preview_rect.min.y + 2.0),
-            egui::vec2(16.0, 12.0),
-        );
-        ui.painter().rect_filled(badge_rect, 3.0, egui::Color32::from_rgba_premultiplied(theme.role_graphics.r(), theme.role_graphics.g(), theme.role_graphics.b(), 180));
-        ui.painter().text(
-            badge_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "\u{25b6}",
-            egui::FontId::proportional(7.0),
-            egui::Color32::WHITE,
-        );
+        paint_corner_badge(ui, theme, rect, "+ ANIMATED", BadgeKind::Animated, false);
     }
-
-    // Title name
-    let name_rect = egui::Rect::from_min_size(
-        egui::pos2(rect.min.x, rect.min.y + 56.0),
-        egui::vec2(width, 20.0),
-    );
-    ui.painter().text(
-        name_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        title.name,
-        egui::FontId::proportional(10.0),
-        theme.text_dim,
-    );
-
     resp
 }
 
-fn paint_title_preview(
+// ──────────────────────────── Animation tracking ────────────────────────────
+
+/// Read the elapsed-time-since-hover-began for `title_name`. Returns
+/// 0.0 when the card is not currently hovered/selected (which kicks
+/// the renderer into static-pose mode).
+fn read_anim_elapsed(ui: &egui::Ui, title_name: &str) -> f32 {
+    let active_id = ui.id().with(("titles_anim_active", title_name));
+    let start_id = ui.id().with(("titles_anim_start", title_name));
+    let now = ui.ctx().input(|i| i.time);
+    let active: bool = ui
+        .memory(|m| m.data.get_temp(active_id))
+        .unwrap_or(false);
+    if !active {
+        return 0.0;
+    }
+    let start: f64 = ui.memory(|m| m.data.get_temp(start_id)).unwrap_or(now);
+    (now - start).max(0.0) as f32
+}
+
+/// Persist the current-frame hover-or-selected state. On a rising
+/// edge (false → true), records the start instant so the next frame's
+/// `read_anim_elapsed` returns 0 and counts up from there.
+fn update_anim_state(ui: &egui::Ui, title_name: &str, active: bool) {
+    let active_id = ui.id().with(("titles_anim_active", title_name));
+    let start_id = ui.id().with(("titles_anim_start", title_name));
+    let now = ui.ctx().input(|i| i.time);
+    let prev_active: bool = ui
+        .memory(|m| m.data.get_temp(active_id))
+        .unwrap_or(false);
+    ui.memory_mut(|m| {
+        m.data.insert_temp(active_id, active);
+        if active && !prev_active {
+            m.data.insert_temp(start_id, now);
+        }
+        if !active {
+            m.data.remove::<f64>(start_id);
+        }
+    });
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BadgeKind {
+    Builtin,
+    Animated,
+}
+
+/// Place a small pill-shaped badge in either the top-left or top-right
+/// corner of `rect`. Both badges share the dark high-contrast style so
+/// they read against any preview background.
+fn paint_corner_badge(
+    ui: &egui::Ui,
+    theme: &KlippTheme,
+    rect: egui::Rect,
+    label: &str,
+    kind: BadgeKind,
+    right_aligned: bool,
+) {
+    let (fg, bg) = match kind {
+        BadgeKind::Builtin => (
+            theme.text_secondary,
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
+        ),
+        BadgeKind::Animated => (
+            theme.text_primary,
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
+        ),
+    };
+    let painter = ui.painter();
+    let font = egui::FontId::proportional(9.0);
+    let galley = painter.layout_no_wrap(label.to_string(), font, fg);
+    let pad_x = 7.0;
+    let h = 17.0;
+    let w = galley.size().x + pad_x * 2.0;
+    let pos = if right_aligned {
+        egui::pos2(rect.max.x - w - 8.0, rect.min.y + 8.0)
+    } else {
+        egui::pos2(rect.min.x + 8.0, rect.min.y + 8.0)
+    };
+    let badge_rect = egui::Rect::from_min_size(pos, egui::vec2(w, h));
+    painter.rect_filled(badge_rect, egui::Rounding::same(3.0), bg);
+    painter.galley(
+        egui::pos2(
+            badge_rect.min.x + pad_x,
+            badge_rect.center().y - galley.size().y * 0.5,
+        ),
+        galley,
+        fg,
+    );
+}
+
+/// Compact list-mode row used when the user toggles to list view.
+fn title_list_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    title: &TitleTemplate,
+    preview_bg: TitlesPreviewBg,
+    preview_text_override: &str,
+    is_selected: bool,
+    elapsed_secs: f32,
+) -> egui::Response {
+    let avail_w = ui.available_width();
+    let row_h = 56.0;
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(avail_w, row_h),
+        egui::Sense::click_and_drag(),
+    );
+    let hovered = resp.hovered();
+
+    if is_selected {
+        let bg = egui::Color32::from_rgba_unmultiplied(
+            theme.accent.r(),
+            theme.accent.g(),
+            theme.accent.b(),
+            28,
+        );
+        ui.painter()
+            .rect_filled(rect, egui::Rounding::same(6.0), bg);
+    } else if hovered {
+        ui.painter().rect_filled(rect, egui::Rounding::same(6.0), theme.bg_raised);
+    }
+
+    // Mini preview on the left, text block on the right.
+    let mini_w = 96.0;
+    let mini_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x + 8.0, rect.min.y + 6.0),
+        egui::vec2(mini_w, row_h - 12.0),
+    );
+    paint_preview_canvas(ui.painter(), mini_rect, egui::Rounding::same(4.0), preview_bg);
+    let inner = mini_rect.shrink(4.0);
+    paint_card_text(ui.painter(), inner, title, preview_text_override, elapsed_secs);
+
+    let text_x = mini_rect.max.x + 12.0;
+    let text_y = rect.center().y;
+    ui.painter().text(
+        egui::pos2(text_x, text_y - 7.0),
+        egui::Align2::LEFT_CENTER,
+        title.name,
+        egui::FontId::proportional(12.0),
+        theme.text_primary,
+    );
+    let mut meta = title.category.to_string();
+    if title.animation.is_some() {
+        meta.push_str("  \u{00B7} Animated");
+    }
+    ui.painter().text(
+        egui::pos2(text_x, text_y + 8.0),
+        egui::Align2::LEFT_CENTER,
+        meta,
+        egui::FontId::proportional(10.0),
+        theme.text_dim,
+    );
+    resp
+}
+
+/// Paint the chosen preview-canvas background fill. Each variant is
+/// a single-pass rect/gradient/pattern — no expensive image loads,
+/// since these run inside every card on every frame.
+fn paint_preview_canvas(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    rounding: egui::Rounding,
+    bg: TitlesPreviewBg,
+) {
+    match bg {
+        TitlesPreviewBg::Black => {
+            painter.rect_filled(rect, rounding, egui::Color32::BLACK);
+        }
+        TitlesPreviewBg::White => {
+            painter.rect_filled(rect, rounding, egui::Color32::from_rgb(0xe6, 0xe6, 0xe6));
+        }
+        TitlesPreviewBg::BlueGradient => {
+            // Simple two-tone "sky" — paint base then a top-half
+            // lighter strip to fake a gradient cheaply.
+            painter.rect_filled(rect, rounding, egui::Color32::from_rgb(0x4d, 0x77, 0xab));
+            let upper = egui::Rect::from_min_max(
+                rect.min,
+                egui::pos2(rect.max.x, rect.min.y + rect.height() * 0.5),
+            );
+            painter.rect_filled(upper, rounding, egui::Color32::from_rgb(0x6b, 0x8d, 0xb5));
+        }
+        TitlesPreviewBg::OrangeWood => {
+            painter.rect_filled(rect, rounding, egui::Color32::from_rgb(0x8a, 0x4c, 0x2f));
+            // Vertical "grain" stripes — quick visual hint.
+            let stripe_w = 6.0;
+            let mut x = rect.min.x;
+            let mut alt = false;
+            while x < rect.max.x {
+                let s = egui::Rect::from_min_size(
+                    egui::pos2(x, rect.min.y),
+                    egui::vec2(stripe_w * 0.5, rect.height()),
+                );
+                let s = s.intersect(rect);
+                if alt {
+                    painter.rect_filled(
+                        s,
+                        egui::Rounding::ZERO,
+                        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 30),
+                    );
+                }
+                x += stripe_w;
+                alt = !alt;
+            }
+        }
+        TitlesPreviewBg::GreenPattern => {
+            painter.rect_filled(rect, rounding, egui::Color32::from_rgb(0x2c, 0x5e, 0x3a));
+            // Dotted grid — chroma-screen reference.
+            let step = 8.0;
+            let dot = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 24);
+            let mut y = rect.min.y + step * 0.5;
+            while y < rect.max.y {
+                let mut x = rect.min.x + step * 0.5;
+                while x < rect.max.x {
+                    painter.circle_filled(egui::pos2(x, y), 1.0, dot);
+                    x += step;
+                }
+                y += step;
+            }
+        }
+    }
+}
+
+/// Paint the title's preview inside the card. Honors the template's
+/// position, background, alignment, color, shadow, and (for Rich Text
+/// templates) per-character style runs. Applies a small subset of
+/// animation transforms when `elapsed_secs > 0` so hovered/selected
+/// cards show the actual movement of an animated template.
+///
+/// Note: we don't re-run the full klipp-title renderer for every card
+/// every frame — that would be expensive. We approximate the look so
+/// the user can scan the library and recognise styles at a glance.
+fn paint_card_text(
     painter: &egui::Painter,
     rect: egui::Rect,
     title: &TitleTemplate,
-    _theme: &KlippTheme,
+    preview_text_override: &str,
+    elapsed_secs: f32,
 ) {
-    // Determine preview style from category + template properties
-    let category = title.category;
     let data = (title.create_data)();
 
-    match category {
-        "Lower Thirds" | "Broadcast" => {
-            // Show a bar at the bottom with text
-            let bg_color = match &data.background {
-                TitleBackground::Color { color, .. } => egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]),
-                _ => egui::Color32::from_rgba_premultiplied(0, 0, 0, 180),
-            };
-            let bar_rect = egui::Rect::from_min_max(
-                egui::pos2(rect.min.x, rect.max.y - 20.0),
-                rect.max,
-            );
-            painter.rect_filled(bar_rect, 0.0, bg_color);
-            let text_color = egui::Color32::from_rgba_premultiplied(data.color[0], data.color[1], data.color[2], data.color[3]);
-            let text_pos = if data.alignment == TextAlignment::Left {
-                egui::pos2(rect.min.x + 8.0, rect.max.y - 10.0)
-            } else {
-                egui::pos2(rect.center().x, rect.max.y - 10.0)
-            };
-            let align = if data.alignment == TextAlignment::Left { egui::Align2::LEFT_CENTER } else { egui::Align2::CENTER_CENTER };
+    // Decide whether to render the user-supplied preview text or the
+    // template's hand-crafted preview_text. For Rich-Text templates
+    // with style runs, we always use the original text since the runs
+    // are pinned to character indices in that string.
+    let use_template_text = !data.style_runs.is_empty();
+    let display_text_raw: String = if use_template_text {
+        data.text.clone()
+    } else if !preview_text_override.trim().is_empty() {
+        preview_text_override.to_string()
+    } else {
+        title.preview_text.to_string()
+    };
+
+    // Translate the title's normalized 0–1 position into card pixels.
+    let pos_unanimated = egui::pos2(
+        rect.min.x + data.position.x * rect.width(),
+        rect.min.y + data.position.y * rect.height(),
+    );
+    let align = match data.alignment {
+        TextAlignment::Left => egui::Align2::LEFT_CENTER,
+        TextAlignment::Right => egui::Align2::RIGHT_CENTER,
+        TextAlignment::Center => egui::Align2::CENTER_CENTER,
+    };
+
+    // Compute animation transform from the elapsed time.
+    let xform = if let Some(anim) = title.animation {
+        animation_transform(anim, elapsed_secs, rect.width(), rect.height())
+    } else {
+        TextTransform::identity()
+    };
+
+    let pos = pos_unanimated + xform.offset;
+    let font_size = ((data.font_size / 5.0) * xform.scale).clamp(8.0, 28.0);
+
+    // Apply animation_type (Typewriter / Scroll / Crawl) on hover. On
+    // a static card we render the full text in its anchor pose; while
+    // hovered, these modify either the visible character count or the
+    // anchor position.
+    let (display_text, type_pos) = apply_animation_type(
+        &data,
+        &display_text_raw,
+        rect,
+        pos,
+        font_size,
+        elapsed_secs,
+    );
+    let pos = type_pos;
+
+    // ── 1. Background ──
+    paint_title_background(
+        painter,
+        rect,
+        &data,
+        align,
+        pos,
+        font_size,
+        &display_text,
+        xform.alpha,
+    );
+
+    // ── 2. Glow (soft outer halo, multi-pass) ──
+    if let Some(ref glow) = data.glow {
+        paint_glow(painter, pos, align, font_size, &display_text, glow, xform.alpha);
+    }
+
+    // ── 3. Extrusion (3D depth — repeated offset draws) ──
+    if let Some(ref ext) = data.extrusion {
+        paint_extrusion(
+            painter,
+            pos,
+            align,
+            font_size,
+            &display_text,
+            ext,
+            data.color,
+            xform.alpha,
+        );
+    }
+
+    // ── 4. Outline(s) — multi-layer stroke behind main fill ──
+    let outlines: Vec<&TextOutline> = data
+        .outlines
+        .iter()
+        .chain(data.outline.iter())
+        .collect();
+    for outline in &outlines {
+        paint_outline(painter, pos, align, font_size, &display_text, outline, xform.alpha);
+    }
+
+    // ── 5. Shadow ──
+    if let Some(ref shadow) = data.shadow {
+        let shadow_color = scaled_color(shadow.color, xform.alpha);
+        // For Bold weight we paint shadow twice (slightly thicker).
+        let bold = matches!(data.font_style, FontStyle::Bold | FontStyle::BoldItalic);
+        let offsets: &[(f32, f32)] = if bold {
+            &[(0.0, 0.0), (0.5, 0.0)]
+        } else {
+            &[(0.0, 0.0)]
+        };
+        for (dx, dy) in offsets {
             painter.text(
-                text_pos,
+                egui::pos2(
+                    pos.x + shadow.offset_x * 0.4 + dx,
+                    pos.y + shadow.offset_y * 0.4 + dy,
+                ),
                 align,
-                title.preview_text,
-                egui::FontId::proportional(11.0),
-                text_color,
-            );
-        }
-        "Cinematic" => {
-            // Dark background with colored text
-            let bg = match &data.background {
-                TitleBackground::FullFrame { color } => egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]),
-                _ => egui::Color32::from_rgb(0x0a, 0x0a, 0x0c),
-            };
-            painter.rect_filled(rect, 0.0, bg);
-            let text_color = egui::Color32::from_rgba_premultiplied(data.color[0], data.color[1], data.color[2], data.color[3]);
-            let font_size = (data.font_size / 6.0).clamp(9.0, 16.0);
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                title.preview_text,
+                &display_text,
                 egui::FontId::proportional(font_size),
-                text_color,
+                shadow_color,
             );
         }
-        "Stylized" => {
-            painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(0x11, 0x11, 0x11));
-            let text_color = egui::Color32::from_rgba_premultiplied(data.color[0], data.color[1], data.color[2], data.color[3]);
-            // Add glow effect for neon/gradient styles
-            if let Some(ref shadow) = data.shadow {
-                if shadow.offset_x == 0.0 && shadow.offset_y == 0.0 && shadow.blur > 6.0 {
-                    let glow = egui::Color32::from_rgba_premultiplied(shadow.color[0], shadow.color[1], shadow.color[2], shadow.color[3] / 2);
-                    for dx in [-1.0f32, 0.0, 1.0] {
-                        for dy in [-1.0f32, 0.0, 1.0] {
-                            painter.text(
-                                egui::pos2(rect.center().x + dx, rect.center().y + dy),
-                                egui::Align2::CENTER_CENTER,
-                                title.preview_text,
-                                egui::FontId::proportional(12.0),
-                                glow,
-                            );
-                        }
-                    }
-                }
+    }
+
+    // ── 6. Main fill (gradient / pattern / style runs / per-char anim / text path) ──
+    if let Some(ref path) = data.text_path {
+        paint_text_along_path(
+            painter,
+            rect,
+            &display_text,
+            font_size,
+            data.color,
+            path,
+            xform.alpha,
+            &data.font_style,
+        );
+    } else if let Some(ref ca) = data.char_animation {
+        paint_char_animated(
+            painter,
+            pos,
+            align,
+            font_size,
+            &display_text,
+            data.color,
+            ca,
+            elapsed_secs,
+            xform.alpha,
+            &data.font_style,
+        );
+    } else if !data.style_runs.is_empty() {
+        paint_styled_runs(painter, pos, align, font_size, &data, xform.alpha);
+    } else if let Some(ref grad) = data.gradient {
+        paint_gradient_text(
+            painter, pos, align, font_size, &display_text, grad, xform.alpha,
+            &data.font_style,
+        );
+    } else {
+        paint_styled_text(
+            painter,
+            pos,
+            align,
+            font_size,
+            &display_text,
+            scaled_color(data.color, xform.alpha),
+            &data.font_style,
+        );
+    }
+}
+
+/// Bold weight is approximated by painting the text twice with a 1-px
+/// horizontal offset (egui's painter.text doesn't support font weights
+/// without a separate font face). Italic isn't faked — it'd require a
+/// shear that the painter API can't apply cheaply. The card readout is
+/// "this template uses bold" rather than a pixel-perfect match.
+fn paint_styled_text(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    align: egui::Align2,
+    font_size: f32,
+    text: &str,
+    color: egui::Color32,
+    style: &FontStyle,
+) {
+    let bold = matches!(style, FontStyle::Bold | FontStyle::BoldItalic);
+    if bold {
+        painter.text(
+            egui::pos2(pos.x - 0.5, pos.y),
+            align,
+            text,
+            egui::FontId::proportional(font_size),
+            color,
+        );
+        painter.text(
+            egui::pos2(pos.x + 0.5, pos.y),
+            align,
+            text,
+            egui::FontId::proportional(font_size),
+            color,
+        );
+    } else {
+        painter.text(pos, align, text, egui::FontId::proportional(font_size), color);
+    }
+}
+
+/// Outline pass — draws the text 8 times around the centre with the
+/// outline colour. Width clamps at 3 px so the text doesn't blob out
+/// at small card font sizes.
+fn paint_outline(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    align: egui::Align2,
+    font_size: f32,
+    text: &str,
+    outline: &TextOutline,
+    alpha_mul: f32,
+) {
+    let color = scaled_color(outline.color, alpha_mul);
+    let w = (outline.width * 0.4).clamp(0.5, 3.0);
+    for (dx, dy) in [
+        (-w, -w), (0.0, -w), (w, -w),
+        (-w, 0.0),            (w, 0.0),
+        (-w, w),  (0.0, w),  (w, w),
+    ] {
+        painter.text(
+            egui::pos2(pos.x + dx, pos.y + dy),
+            align,
+            text,
+            egui::FontId::proportional(font_size),
+            color,
+        );
+    }
+}
+
+/// Soft glow — multiple passes at a slightly larger size with low
+/// alpha. Cheaper than a real Gaussian blur but reads as "glowing"
+/// at thumbnail scale.
+fn paint_glow(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    align: egui::Align2,
+    font_size: f32,
+    text: &str,
+    glow: &TextGlow,
+    alpha_mul: f32,
+) {
+    let base_a = (glow.color[3] as f32 * glow.intensity * alpha_mul).clamp(0.0, 255.0);
+    let layers = 4;
+    for i in 1..=layers {
+        let scale = 1.0 + (i as f32 / layers as f32) * (glow.radius * 0.04).clamp(0.05, 0.5);
+        let alpha = (base_a * (1.0 - i as f32 / layers as f32) * 0.5) as u8;
+        let halo_color = egui::Color32::from_rgba_unmultiplied(
+            glow.color[0], glow.color[1], glow.color[2], alpha,
+        );
+        painter.text(
+            pos,
+            align,
+            text,
+            egui::FontId::proportional(font_size * scale),
+            halo_color,
+        );
+    }
+}
+
+/// Pseudo-3D extrusion — paint the text repeatedly along the
+/// extrusion angle with the side colour, then the front face on top.
+/// Lightness tapers along the depth so the back layers fade.
+fn paint_extrusion(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    align: egui::Align2,
+    font_size: f32,
+    text: &str,
+    ext: &TextExtrusion,
+    base_color: [u8; 4],
+    alpha_mul: f32,
+) {
+    let depth = (ext.depth * 0.4).clamp(1.0, 8.0);
+    let angle_rad = ext.angle.to_radians();
+    let dx = angle_rad.cos();
+    let dy = angle_rad.sin();
+    let layers = depth as usize;
+    let side_color = if ext.side_color[3] == 0 { base_color } else { ext.side_color };
+    for i in (1..=layers).rev() {
+        // Lighter at the back, darker toward the front.
+        let fade = 1.0 - (i as f32 / layers as f32) * 0.5;
+        let layer_color = egui::Color32::from_rgba_unmultiplied(
+            (side_color[0] as f32 * fade) as u8,
+            (side_color[1] as f32 * fade) as u8,
+            (side_color[2] as f32 * fade) as u8,
+            (side_color[3] as f32 * alpha_mul) as u8,
+        );
+        painter.text(
+            egui::pos2(pos.x + dx * i as f32, pos.y + dy * i as f32),
+            align,
+            text,
+            egui::FontId::proportional(font_size),
+            layer_color,
+        );
+    }
+}
+
+/// Lay out a string of characters along a circular arc. Used by
+/// both `TextPath::Arc` and `TextPath::Circle` (the latter passes a
+/// 360° sweep). Each char paints individually with axis-aligned
+/// rotation — egui's painter can't rotate raster glyphs without
+/// going through a tessellator pass, so the readable approximation
+/// is "characters arranged on a curve" rather than "characters
+/// rotated to follow the curve."
+#[allow(clippy::too_many_arguments)]
+fn paint_text_along_arc(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    chars: &[char],
+    font_size: f32,
+    color: egui::Color32,
+    style: &FontStyle,
+    radius: f32,
+    start_angle: f32,
+    sweep: f32,
+) {
+    let r = (radius * 0.06).clamp(20.0, rect.width().min(rect.height()) * 0.35);
+    let centre = rect.center();
+    let step = sweep / chars.len().max(1) as f32;
+    for (i, ch) in chars.iter().enumerate() {
+        let angle = (start_angle + step * i as f32).to_radians();
+        let pos = egui::pos2(
+            centre.x + angle.cos() * r,
+            centre.y + angle.sin() * r,
+        );
+        paint_styled_text(
+            painter,
+            pos,
+            egui::Align2::CENTER_CENTER,
+            font_size,
+            &ch.to_string(),
+            color,
+            style,
+        );
+    }
+}
+
+/// Lay out characters along an Arc / Circle / Wave path. Each char is
+/// painted individually with the per-position rotation approximated
+/// (egui can't rotate raster text, so the chars stay axis-aligned).
+fn paint_text_along_path(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    text: &str,
+    font_size: f32,
+    base_color: [u8; 4],
+    path: &TextPath,
+    alpha_mul: f32,
+    style: &FontStyle,
+) {
+    let color = scaled_color(base_color, alpha_mul);
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return;
+    }
+    match *path {
+        TextPath::Arc { radius, start_angle, sweep } => {
+            paint_text_along_arc(
+                painter, rect, &chars, font_size, color, style,
+                radius, start_angle, sweep,
+            );
+        }
+        TextPath::Circle { radius } => {
+            paint_text_along_arc(
+                painter, rect, &chars, font_size, color, style,
+                radius, -90.0, 360.0,
+            );
+        }
+        TextPath::Wave { amplitude, frequency, phase } => {
+            let amp = (amplitude * 0.3).clamp(2.0, rect.height() * 0.25);
+            let centre_y = rect.center().y;
+            // Estimate line width by char count.
+            let total_chars = chars.len() as f32;
+            let approx_total_w = total_chars * font_size * 0.55;
+            let start_x = rect.center().x - approx_total_w * 0.5;
+            for (i, ch) in chars.iter().enumerate() {
+                let frac = i as f32 / total_chars.max(1.0);
+                let x = start_x + i as f32 * font_size * 0.55;
+                let theta = (phase + frac * frequency * 360.0).to_radians();
+                let y = centre_y + theta.sin() * amp;
+                paint_styled_text(
+                    painter,
+                    egui::pos2(x, y),
+                    egui::Align2::CENTER_CENTER,
+                    font_size,
+                    &ch.to_string(),
+                    color,
+                    style,
+                );
             }
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                title.preview_text,
-                egui::FontId::proportional(12.0),
-                text_color,
-            );
         }
-        "Educational" => {
-            let bg = match &data.background {
-                TitleBackground::FullFrame { color } => egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]),
-                TitleBackground::Color { color, .. } => egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]),
-                _ => egui::Color32::from_rgb(0x18, 0x18, 0x22),
+    }
+}
+
+/// Per-character animation — applies CharEntrance + wave to each
+/// character based on `elapsed`. Always paints the full string at
+/// once when the card is static (`elapsed = 0`); on hover, characters
+/// stagger in, fade in, slide in, scale in, or oscillate.
+#[allow(clippy::too_many_arguments)]
+fn paint_char_animated(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    align: egui::Align2,
+    font_size: f32,
+    text: &str,
+    base_color: [u8; 4],
+    ca: &CharAnimation,
+    elapsed: f32,
+    alpha_mul: f32,
+    style: &FontStyle,
+) {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return;
+    }
+    // Approximate per-char width.
+    let char_w = font_size * 0.55;
+    let total_w = chars.len() as f32 * char_w;
+    let start_x = match align {
+        egui::Align2::LEFT_CENTER => pos.x,
+        egui::Align2::RIGHT_CENTER => pos.x - total_w,
+        _ => pos.x - total_w * 0.5,
+    };
+    let stagger = ca.stagger.max(0.01);
+    for (i, ch) in chars.iter().enumerate() {
+        let local_t = if elapsed > 0.0 {
+            ((elapsed - i as f32 * stagger) / stagger.max(0.05)).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        // Wave oscillation (always applied if amplitude > 0).
+        let wave_y = if ca.wave_amplitude > 0.0 {
+            let phase = elapsed * ca.wave_speed * std::f32::consts::TAU
+                + i as f32 * 0.5;
+            phase.sin() * ca.wave_amplitude * 0.3
+        } else {
+            0.0
+        };
+        // Entrance pose offset.
+        let (mut entrance_alpha, mut entrance_dy, mut entrance_scale) =
+            (1.0, 0.0, 1.0);
+        match ca.entrance {
+            CharEntrance::None => {}
+            CharEntrance::FadeIn => {
+                entrance_alpha = local_t;
+            }
+            CharEntrance::SlideUp => {
+                entrance_alpha = local_t;
+                entrance_dy = (1.0 - local_t) * font_size;
+            }
+            CharEntrance::SlideDown => {
+                entrance_alpha = local_t;
+                entrance_dy = -(1.0 - local_t) * font_size;
+            }
+            CharEntrance::ScaleUp => {
+                entrance_alpha = local_t;
+                entrance_scale = local_t.max(0.05);
+            }
+        }
+        let cx = start_x + i as f32 * char_w + char_w * 0.5;
+        let cy = pos.y + wave_y + entrance_dy;
+        let color = scaled_color(base_color, alpha_mul * entrance_alpha);
+        paint_styled_text(
+            painter,
+            egui::pos2(cx, cy),
+            egui::Align2::CENTER_CENTER,
+            font_size * entrance_scale,
+            &ch.to_string(),
+            color,
+            style,
+        );
+    }
+}
+
+/// Approximate a vertical gradient fill by drawing the text twice in
+/// the top and bottom halves with the gradient endpoints, plus a
+/// blended middle stripe. Real gradient text would need a glyph-mask
+/// pass; this is "close enough at thumbnail scale".
+fn paint_gradient_text(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    align: egui::Align2,
+    font_size: f32,
+    text: &str,
+    grad: &TextGradient,
+    alpha_mul: f32,
+    style: &FontStyle,
+) {
+    // Paint bottom colour as the base, then a top-half overlay with
+    // the top colour. Crude but readable.
+    let bot = scaled_color(grad.bottom_color, alpha_mul);
+    paint_styled_text(painter, pos, align, font_size, text, bot, style);
+    // Top half painted slightly higher with reduced alpha so the seam
+    // softens — closer to a real gradient appearance.
+    let top = egui::Color32::from_rgba_unmultiplied(
+        grad.top_color[0],
+        grad.top_color[1],
+        grad.top_color[2],
+        ((grad.top_color[3] as f32) * 0.85 * alpha_mul) as u8,
+    );
+    paint_styled_text(
+        painter,
+        egui::pos2(pos.x, pos.y - font_size * 0.18),
+        align,
+        font_size,
+        text,
+        top,
+        style,
+    );
+}
+
+/// Apply the template's animation_type to the card-preview pose. On
+/// a static card we keep the full text at its anchor position; while
+/// hovered, scroll/crawl/typewriter advance through a 3-second loop.
+fn apply_animation_type(
+    data: &TitleData,
+    text: &str,
+    rect: egui::Rect,
+    base_pos: egui::Pos2,
+    _font_size: f32,
+    elapsed: f32,
+) -> (String, egui::Pos2) {
+    if elapsed <= 0.0 {
+        return (text.to_string(), base_pos);
+    }
+    const LOOP_SECS: f32 = 3.0;
+    let t = elapsed.rem_euclid(LOOP_SECS) / LOOP_SECS;
+    match &data.animation_type {
+        TitleAnimationType::Static => (text.to_string(), base_pos),
+        TitleAnimationType::ScrollUp { .. } => {
+            let dy = rect.height() * 0.5 - rect.height() * t;
+            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy))
+        }
+        TitleAnimationType::ScrollDown { .. } => {
+            let dy = -rect.height() * 0.5 + rect.height() * t;
+            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy))
+        }
+        TitleAnimationType::CrawlLeft { .. } => {
+            let dx = rect.width() * 0.5 - rect.width() * t;
+            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y))
+        }
+        TitleAnimationType::CrawlRight { .. } => {
+            let dx = -rect.width() * 0.5 + rect.width() * t;
+            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y))
+        }
+        TitleAnimationType::Typewriter { .. } => {
+            let chars: Vec<char> = text.chars().collect();
+            let visible = ((t * (chars.len() as f32 + 6.0)) as usize)
+                .min(chars.len());
+            let revealed: String = chars.iter().take(visible).collect();
+            (revealed, base_pos)
+        }
+    }
+}
+
+/// Build a `Color32` from a u8 RGBA tuple with `alpha_mul` (0–1)
+/// applied to the alpha channel.
+fn scaled_color(rgba: [u8; 4], alpha_mul: f32) -> egui::Color32 {
+    let a = (rgba[3] as f32 * alpha_mul.clamp(0.0, 1.0)) as u8;
+    egui::Color32::from_rgba_unmultiplied(rgba[0], rgba[1], rgba[2], a)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TextTransform {
+    alpha: f32,
+    offset: egui::Vec2,
+    scale: f32,
+}
+
+impl TextTransform {
+    fn identity() -> Self {
+        Self {
+            alpha: 1.0,
+            offset: egui::Vec2::ZERO,
+            scale: 1.0,
+        }
+    }
+}
+
+/// Cheap easing — smoothstep-ish ease-out so the in-animations don't
+/// look mechanical.
+fn ease_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// Parse the animation token string and return the visual transform
+/// to apply at this `elapsed`. Composite tokens (`a+b`) play
+/// sequentially; the first token covers `0..d_a`, the second covers
+/// `d_a..d_a+d_b`, and so on.
+///
+/// For an MVP we match a handful of common token prefixes and ignore
+/// the rest (returning identity). The card still shows the static
+/// styled pose, so unknown animations gracefully degrade.
+fn animation_transform(
+    anim: &str,
+    elapsed: f32,
+    card_w: f32,
+    card_h: f32,
+) -> TextTransform {
+    // Loop the animation every ~3 seconds so the card keeps
+    // demonstrating the effect while the user keeps the cursor on it.
+    const LOOP_SECS: f32 = 3.0;
+    let t_loop = elapsed.rem_euclid(LOOP_SECS);
+
+    // Walk composite chain — segments separated by `+`. Each segment
+    // is `name_durationSecs`. We interpret the FIRST matching segment
+    // for the current time slice; if elapsed lands past all in-
+    // animations, we hold at "fully arrived" pose.
+    let segments: Vec<(&str, f32)> = anim
+        .split('+')
+        .map(|seg| parse_segment(seg))
+        .collect();
+    let mut t = t_loop;
+    for (name, dur) in &segments {
+        let dur = (*dur).max(0.05);
+        if t < dur {
+            return apply_segment(name, t / dur, card_w, card_h, dur, t);
+        }
+        t -= dur;
+    }
+    // Beyond the chain — hold in arrived state for the rest of the
+    // loop; for continuous effects (ticker/scroll/spinning/floating
+    // /breathing/pulsing) the segment itself handles the steady
+    // motion via t/dur saturating, so this branch only matters for
+    // one-shot in-animations.
+    let last = segments.last().copied().unwrap_or(("", 0.0));
+    apply_segment(last.0, 1.0, card_w, card_h, last.1.max(0.05), t_loop)
+}
+
+/// Split a segment like "fade_in_0.8" into ("fade_in", 0.8).
+fn parse_segment(seg: &str) -> (&str, f32) {
+    if let Some((name, num)) = seg.rsplit_once('_') {
+        if let Ok(d) = num.parse::<f32>() {
+            return (name, d);
+        }
+    }
+    (seg, 1.0)
+}
+
+#[allow(clippy::manual_range_contains)]
+fn apply_segment(
+    name: &str,
+    progress: f32,
+    card_w: f32,
+    card_h: f32,
+    seg_dur: f32,
+    elapsed_in_loop: f32,
+) -> TextTransform {
+    let p = progress.clamp(0.0, 1.0);
+    let eased = ease_out(p);
+    match name {
+        "fade_in" => TextTransform {
+            alpha: p,
+            offset: egui::Vec2::ZERO,
+            scale: 1.0,
+        },
+        "fade_out" => TextTransform {
+            alpha: 1.0 - p,
+            offset: egui::Vec2::ZERO,
+            scale: 1.0,
+        },
+        "fade_in_out" => {
+            // Symmetric fade across the whole loop window.
+            let bell = (p * std::f32::consts::PI).sin();
+            TextTransform {
+                alpha: bell,
+                offset: egui::Vec2::ZERO,
+                scale: 1.0,
+            }
+        }
+        "slide_left" => TextTransform {
+            alpha: 1.0,
+            offset: egui::vec2((1.0 - eased) * card_w * 0.6, 0.0),
+            scale: 1.0,
+        },
+        "slide_right" => TextTransform {
+            alpha: 1.0,
+            offset: egui::vec2(-(1.0 - eased) * card_w * 0.6, 0.0),
+            scale: 1.0,
+        },
+        "slide_up" | "float_up" => TextTransform {
+            alpha: 1.0,
+            offset: egui::vec2(0.0, (1.0 - eased) * card_h * 0.4),
+            scale: 1.0,
+        },
+        "slide_down" => TextTransform {
+            alpha: 1.0,
+            offset: egui::vec2(0.0, -(1.0 - eased) * card_h * 0.4),
+            scale: 1.0,
+        },
+        "zoom_in" => TextTransform {
+            alpha: p,
+            offset: egui::Vec2::ZERO,
+            scale: eased,
+        },
+        "zoom_out" => TextTransform {
+            alpha: 1.0 - p,
+            offset: egui::Vec2::ZERO,
+            scale: 1.0 + p * 0.5,
+        },
+        "bounce_in" => {
+            // Slightly overshoot then settle.
+            let s = if p < 0.7 {
+                eased * 1.15
+            } else {
+                1.15 - (p - 0.7) / 0.3 * 0.15
             };
-            painter.rect_filled(rect, 0.0, bg);
-            let text_color = egui::Color32::from_rgba_premultiplied(data.color[0], data.color[1], data.color[2], data.color[3]);
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                title.preview_text,
-                egui::FontId::proportional(10.0),
-                text_color,
+            TextTransform {
+                alpha: p.min(1.0),
+                offset: egui::Vec2::ZERO,
+                scale: s,
+            }
+        }
+        "spin_in" | "rotate_in" | "rotate_out" => {
+            // egui's painter.text doesn't rotate; fake it with a
+            // scale jitter so the user sees motion.
+            TextTransform {
+                alpha: p,
+                offset: egui::Vec2::ZERO,
+                scale: 0.5 + 0.5 * eased,
+            }
+        }
+        "shake" => {
+            let phase = elapsed_in_loop * 30.0;
+            TextTransform {
+                alpha: 1.0,
+                offset: egui::vec2(phase.sin() * 4.0, (phase * 1.3).cos() * 3.0),
+                scale: 1.0,
+            }
+        }
+        "glitch" => {
+            let phase = elapsed_in_loop * 14.0;
+            let dx = phase.sin().signum() * 3.0;
+            TextTransform {
+                alpha: 1.0,
+                offset: egui::vec2(dx, 0.0),
+                scale: 1.0,
+            }
+        }
+        "pulsing" | "pulse" => {
+            let osc = (elapsed_in_loop * 4.0).sin() * 0.5 + 0.5;
+            TextTransform {
+                alpha: 0.5 + 0.5 * osc,
+                offset: egui::Vec2::ZERO,
+                scale: 1.0 + 0.05 * osc,
+            }
+        }
+        "breathing" => {
+            let osc = (elapsed_in_loop * 1.6).sin() * 0.5 + 0.5;
+            TextTransform {
+                alpha: 1.0,
+                offset: egui::Vec2::ZERO,
+                scale: 0.95 + 0.1 * osc,
+            }
+        }
+        "floating" => {
+            let osc = (elapsed_in_loop * 1.4).sin();
+            TextTransform {
+                alpha: 1.0,
+                offset: egui::vec2(0.0, osc * 4.0),
+                scale: 1.0,
+            }
+        }
+        "spinning" => {
+            // No real rotation; just oscillate scale to suggest motion.
+            let osc = (elapsed_in_loop * 2.0).sin();
+            TextTransform {
+                alpha: 1.0,
+                offset: egui::Vec2::ZERO,
+                scale: 1.0 + 0.06 * osc,
+            }
+        }
+        "ticker_left" => {
+            // Continuous left scroll across the seg duration.
+            let cycle = elapsed_in_loop / seg_dur.max(0.05);
+            TextTransform {
+                alpha: 1.0,
+                offset: egui::vec2(card_w - card_w * cycle, 0.0),
+                scale: 1.0,
+            }
+        }
+        "ticker_right" => {
+            let cycle = elapsed_in_loop / seg_dur.max(0.05);
+            TextTransform {
+                alpha: 1.0,
+                offset: egui::vec2(-card_w + card_w * cycle, 0.0),
+                scale: 1.0,
+            }
+        }
+        "scroll_up" => {
+            let cycle = elapsed_in_loop / seg_dur.max(0.05);
+            TextTransform {
+                alpha: 1.0,
+                offset: egui::vec2(0.0, card_h - card_h * cycle),
+                scale: 1.0,
+            }
+        }
+        "scroll_down" => {
+            let cycle = elapsed_in_loop / seg_dur.max(0.05);
+            TextTransform {
+                alpha: 1.0,
+                offset: egui::vec2(0.0, -card_h + card_h * cycle),
+                scale: 1.0,
+            }
+        }
+        "elastic" => {
+            // Damped oscillation around 1.0
+            let osc = ((p * 6.0).cos() * (1.0 - p)).abs();
+            TextTransform {
+                alpha: 1.0,
+                offset: egui::Vec2::ZERO,
+                scale: 1.0 + 0.15 * osc,
+            }
+        }
+        "implode_in" => TextTransform {
+            alpha: p,
+            offset: egui::Vec2::ZERO,
+            scale: (1.0 - p) * 2.0 + p,
+        },
+        "explode_out" => TextTransform {
+            alpha: (1.0 - p).max(0.0),
+            offset: egui::Vec2::ZERO,
+            scale: 1.0 + p * 1.5,
+        },
+        _ => TextTransform::identity(),
+    }
+}
+
+/// Paint the title-data background behind the text. Implementations:
+///   - `None`            → no-op (canvas shows through)
+///   - `FullFrame`       → covers the card with the chosen colour
+///   - `Color`           → tight box behind the text with padding
+///   - `Gradient`        → two-tone vertical gradient
+fn paint_title_background(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    data: &TitleData,
+    align: egui::Align2,
+    text_pos: egui::Pos2,
+    font_size: f32,
+    text: &str,
+    alpha_mul: f32,
+) {
+    match &data.background {
+        TitleBackground::None => {}
+        TitleBackground::FullFrame { color } => {
+            painter.rect_filled(
+                rect,
+                egui::Rounding::ZERO,
+                scaled_color(*color, alpha_mul),
             );
         }
-        "Wedding / Event" => {
-            let bg = match &data.background {
-                TitleBackground::FullFrame { color } => egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]),
-                _ => egui::Color32::from_rgb(0x1a, 0x14, 0x22),
-            };
-            painter.rect_filled(rect, 0.0, bg);
-            let text_color = egui::Color32::from_rgba_premultiplied(data.color[0], data.color[1], data.color[2], data.color[3]);
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                title.preview_text,
-                egui::FontId::proportional(11.0),
-                text_color,
-            );
-        }
-        "Animated Intros" | "Animated Outros" | "Full Animations" => {
-            // Subtle gradient background for animated templates
-            painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(0x0c, 0x0c, 0x18));
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                title.preview_text,
-                egui::FontId::proportional(12.0),
+        TitleBackground::Color { color, padding } => {
+            // Measure the foreground text so we can size the
+            // surrounding box. `layout_no_wrap` is cheap.
+            let galley = painter.layout_no_wrap(
+                text.to_string(),
+                egui::FontId::proportional(font_size),
                 egui::Color32::WHITE,
             );
-            // Subtle motion indicator lines
-            let mid_y = rect.center().y;
-            let alpha = 40u8;
-            painter.line_segment(
-                [egui::pos2(rect.min.x + 4.0, mid_y - 12.0), egui::pos2(rect.min.x + 16.0, mid_y - 12.0)],
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(100, 60, 200, alpha)),
-            );
-            painter.line_segment(
-                [egui::pos2(rect.min.x + 4.0, mid_y + 12.0), egui::pos2(rect.min.x + 12.0, mid_y + 12.0)],
-                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(100, 60, 200, alpha)),
-            );
-        }
-        "Social Media" => {
-            painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(0x0e, 0x0e, 0x14));
-            let text_color = egui::Color32::from_rgba_premultiplied(data.color[0], data.color[1], data.color[2], data.color[3]);
-            let font_size = (data.font_size / 6.0).clamp(9.0, 14.0);
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                title.preview_text,
-                egui::FontId::proportional(font_size),
-                text_color,
-            );
-        }
-        "Texture Fill" => {
-            // Hatched/patterned preview to suggest "image goes here"
-            painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(0x18, 0x18, 0x18));
-            // Draw diagonal hatch lines to suggest texture
-            let step = 8.0;
-            let mut x = rect.min.x;
-            while x < rect.max.x + rect.height() {
-                let p0 = egui::pos2((x).max(rect.min.x), rect.min.y);
-                let p1 = egui::pos2((x - rect.height()).max(rect.min.x), rect.max.y);
-                painter.line_segment([p0, p1], egui::Stroke::new(0.5_f32, egui::Color32::from_rgb(60, 60, 80)));
-                x += step;
-            }
-            let text_color = egui::Color32::from_rgba_premultiplied(200, 200, 220, 255);
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                title.preview_text,
-                egui::FontId::proportional(12.0),
-                text_color,
-            );
-            // Small hint at bottom
-            painter.text(
-                egui::pos2(rect.center().x, rect.max.y - 6.0),
-                egui::Align2::CENTER_BOTTOM,
-                "select image",
-                egui::FontId::proportional(7.0),
-                egui::Color32::from_rgb(120, 120, 140),
-            );
-        }
-        _ => {
-            // Basic and fallback
-            let bg = match &data.background {
-                TitleBackground::FullFrame { color } => egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]),
-                TitleBackground::Color { color, .. } => {
-                    painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(0, 0, 0, 200));
-                    egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3])
+            let pad = (*padding * 0.4).clamp(2.0, 12.0);
+            let size = galley.size() + egui::vec2(pad * 2.0, pad * 2.0);
+            let origin = match align {
+                egui::Align2::LEFT_CENTER => {
+                    egui::pos2(text_pos.x - pad, text_pos.y - size.y * 0.5)
                 }
-                TitleBackground::None => {
-                    painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_premultiplied(0, 0, 0, 200));
-                    egui::Color32::TRANSPARENT
-                }
+                egui::Align2::RIGHT_CENTER => egui::pos2(
+                    text_pos.x - galley.size().x - pad,
+                    text_pos.y - size.y * 0.5,
+                ),
+                _ => egui::pos2(
+                    text_pos.x - size.x * 0.5,
+                    text_pos.y - size.y * 0.5,
+                ),
             };
-            if bg != egui::Color32::TRANSPARENT && !matches!(&data.background, TitleBackground::Color { .. } | TitleBackground::None) {
-                painter.rect_filled(rect, 0.0, bg);
-            }
-            let text_color = egui::Color32::from_rgba_premultiplied(data.color[0], data.color[1], data.color[2], data.color[3]);
-            let font_size = (data.font_size / 6.0).clamp(9.0, 14.0);
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                title.preview_text,
-                egui::FontId::proportional(font_size),
-                text_color,
+            let bg_rect = egui::Rect::from_min_size(origin, size);
+            painter.rect_filled(
+                bg_rect,
+                egui::Rounding::same(2.0),
+                scaled_color(*color, alpha_mul),
             );
         }
     }
 }
+
+/// Render Rich-Text templates that use per-character `StyleRun`s —
+/// each run gets its own colour and (optional) size override. The
+/// runs paint left-to-right starting at the alignment-anchored x.
+fn paint_styled_runs(
+    painter: &egui::Painter,
+    text_pos: egui::Pos2,
+    align: egui::Align2,
+    base_font_size: f32,
+    data: &TitleData,
+    alpha_mul: f32,
+) {
+    let chars: Vec<char> = data.text.chars().collect();
+    // Default colour for any character not covered by a run.
+    let default_color = scaled_color(data.color, alpha_mul);
+    // Helper: resolve (color, size) at a character index, falling back
+    // to the template's defaults when the run leaves a field None.
+    let style_at = |idx: usize| -> (egui::Color32, f32) {
+        let run = data
+            .style_runs
+            .iter()
+            .find(|r| r.start <= idx && idx < r.end);
+        match run {
+            Some(r) => {
+                let color = match r.color {
+                    Some(c) => scaled_color(c, alpha_mul),
+                    None => default_color,
+                };
+                // r.font_size is absolute (pixels) — convert to the
+                // card-relative scale we're already using by ratio
+                // against the template's base font_size.
+                let size_ratio = match r.font_size {
+                    Some(sz) => sz / data.font_size.max(1.0),
+                    None => 1.0,
+                };
+                (color, size_ratio)
+            }
+            None => (default_color, 1.0),
+        }
+    };
+
+    let mut segments: Vec<(String, f32, egui::Color32)> = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < chars.len() {
+        let (color, size_ratio) = style_at(cursor);
+        // Coalesce neighbouring chars with the same style.
+        let mut end = cursor + 1;
+        while end < chars.len() {
+            let (next_color, next_size) = style_at(end);
+            if next_color != color || (next_size - size_ratio).abs() > 0.001 {
+                break;
+            }
+            end += 1;
+        }
+        let seg_text: String = chars[cursor..end].iter().collect();
+        segments.push((seg_text, base_font_size * size_ratio, color));
+        cursor = end;
+    }
+    // Total width for alignment.
+    let total_w: f32 = segments
+        .iter()
+        .map(|(s, sz, _)| {
+            painter
+                .layout_no_wrap(
+                    s.clone(),
+                    egui::FontId::proportional(*sz),
+                    egui::Color32::WHITE,
+                )
+                .size()
+                .x
+        })
+        .sum();
+    let mut x = match align {
+        egui::Align2::LEFT_CENTER => text_pos.x,
+        egui::Align2::RIGHT_CENTER => text_pos.x - total_w,
+        _ => text_pos.x - total_w * 0.5,
+    };
+    let y = text_pos.y;
+    for (seg, sz, color) in segments {
+        let galley = painter.layout_no_wrap(
+            seg,
+            egui::FontId::proportional(sz),
+            color,
+        );
+        painter.galley(
+            egui::pos2(x, y - galley.size().y * 0.5),
+            galley.clone(),
+            color,
+        );
+        x += galley.size().x;
+    }
+}
+
+/// Single swatch in the preview-canvas selector strip. Same visual
+/// language as the main `paint_preview_canvas` so the swatch
+/// previews exactly what the cards will show.
+fn preview_swatch(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    bg: TitlesPreviewBg,
+    selected: &mut TitlesPreviewBg,
+) {
+    let size = 24.0;
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(size, size),
+        egui::Sense::click(),
+    );
+    paint_preview_canvas(ui.painter(), rect, egui::Rounding::same(4.0), bg);
+    let is_active = *selected == bg;
+    let stroke = if is_active {
+        egui::Stroke::new(2.0_f32, theme.accent)
+    } else if resp.hovered() {
+        egui::Stroke::new(1.0_f32, theme.text_primary)
+    } else {
+        egui::Stroke::new(1.0_f32, theme.border)
+    };
+    ui.painter().rect_stroke(rect, egui::Rounding::same(4.0), stroke);
+    if resp.clicked() {
+        *selected = bg;
+    }
+}
+
+// ──────────────────────────── Sidebar widgets ────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+fn titles_sidebar_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    icon: Option<Icon>,
+    label: &str,
+    count: usize,
+    is_active: bool,
+    id_salt: &str,
+    on_click: &mut dyn FnMut(Option<&'static str>),
+    target_cat: Option<&'static str>,
+) {
+    let row_h = 26.0;
+    let avail_w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(avail_w, row_h),
+        egui::Sense::click(),
+    );
+    let click_resp = ui.interact(rect, ui.id().with(id_salt), egui::Sense::click());
+    let hovered = resp.hovered() || click_resp.hovered();
+
+    if is_active {
+        ui.painter().rect_filled(rect, 0.0, theme.accent_subtle);
+        let stripe = egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height()));
+        ui.painter().rect_filled(stripe, 0.0, theme.accent);
+    } else if hovered {
+        ui.painter().rect_filled(rect, 0.0, theme.bg_raised);
+    }
+
+    let indent = 14.0;
+    let icon_size = 13.0;
+    let icon_gap = 8.0;
+    let label_x = rect.min.x + indent + icon_size + icon_gap;
+    let label_color = if is_active || hovered {
+        theme.text_primary
+    } else {
+        theme.text_secondary
+    };
+    let icon_tint = if is_active { theme.accent } else { theme.text_dim };
+
+    if let Some(icon) = icon {
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.min.x + indent, rect.center().y - icon_size * 0.5),
+            egui::vec2(icon_size, icon_size),
+        );
+        let img = icon.image(icon_size).tint(icon_tint);
+        ui.allocate_new_ui(
+            egui::UiBuilder::new().max_rect(icon_rect),
+            |ui| {
+                ui.add(img);
+            },
+        );
+    }
+
+    let label_galley = ui.painter().layout_no_wrap(
+        label.to_string(),
+        egui::FontId::proportional(11.5),
+        label_color,
+    );
+    ui.painter().galley(
+        egui::pos2(label_x, rect.center().y - label_galley.size().y * 0.5),
+        label_galley,
+        label_color,
+    );
+
+    let count_color = if is_active { theme.accent } else { theme.text_dim };
+    let count_galley = ui.painter().layout_no_wrap(
+        format!("{}", count),
+        egui::FontId::monospace(10.0),
+        count_color,
+    );
+    ui.painter().galley(
+        egui::pos2(
+            rect.max.x - 14.0 - count_galley.size().x,
+            rect.center().y - count_galley.size().y * 0.5,
+        ),
+        count_galley,
+        count_color,
+    );
+
+    if click_resp.clicked() || resp.clicked() {
+        on_click(target_cat);
+    }
+}
+
+/// Stub-only general-section row (Favorites / Recent / Installed).
+/// Same visual language as `titles_sidebar_row` but without the
+/// category routing — there's no persistence layer for these yet.
+fn titles_general_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    icon: Icon,
+    label: &str,
+    count: usize,
+    is_active: bool,
+    id_salt: &str,
+    _on_click: &mut dyn FnMut(()),
+) {
+    let row_h = 26.0;
+    let avail_w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(avail_w, row_h),
+        egui::Sense::click(),
+    );
+    let click_resp = ui.interact(rect, ui.id().with(id_salt), egui::Sense::click());
+    let hovered = resp.hovered() || click_resp.hovered();
+    if is_active {
+        ui.painter().rect_filled(rect, 0.0, theme.accent_subtle);
+    } else if hovered {
+        ui.painter().rect_filled(rect, 0.0, theme.bg_raised);
+    }
+    let indent = 14.0;
+    let icon_size = 13.0;
+    let icon_gap = 8.0;
+    let label_x = rect.min.x + indent + icon_size + icon_gap;
+    let icon_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x + indent, rect.center().y - icon_size * 0.5),
+        egui::vec2(icon_size, icon_size),
+    );
+    let img = icon.image(icon_size).tint(theme.text_dim);
+    ui.allocate_new_ui(
+        egui::UiBuilder::new().max_rect(icon_rect),
+        |ui| {
+            ui.add(img);
+        },
+    );
+    let label_galley = ui.painter().layout_no_wrap(
+        label.to_string(),
+        egui::FontId::proportional(11.5),
+        theme.text_secondary,
+    );
+    ui.painter().galley(
+        egui::pos2(label_x, rect.center().y - label_galley.size().y * 0.5),
+        label_galley,
+        theme.text_secondary,
+    );
+    let count_galley = ui.painter().layout_no_wrap(
+        format!("{}", count),
+        egui::FontId::monospace(10.0),
+        theme.text_dim,
+    );
+    ui.painter().galley(
+        egui::pos2(
+            rect.max.x - 14.0 - count_galley.size().x,
+            rect.center().y - count_galley.size().y * 0.5,
+        ),
+        count_galley,
+        theme.text_dim,
+    );
+}
+
+fn titles_section_separator(ui: &mut egui::Ui, theme: &KlippTheme) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 1.0),
+        egui::Sense::hover(),
+    );
+    ui.painter().hline(
+        (rect.min.x + 8.0)..=(rect.max.x - 8.0),
+        rect.center().y,
+        egui::Stroke::new(1.0_f32, theme.border),
+    );
+    ui.add_space(4.0);
+}
+
+fn titles_section_header(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    icon: Option<Icon>,
+    label: &str,
+) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 20.0),
+        egui::Sense::hover(),
+    );
+    let indent = 14.0;
+    let icon_size = 11.0;
+    let icon_gap = 6.0;
+    let label_x = if icon.is_some() {
+        rect.min.x + indent + icon_size + icon_gap
+    } else {
+        rect.min.x + indent
+    };
+    if let Some(icon) = icon {
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.min.x + indent, rect.center().y - icon_size * 0.5),
+            egui::vec2(icon_size, icon_size),
+        );
+        let img = icon.image(icon_size).tint(theme.text_dim);
+        ui.allocate_new_ui(
+            egui::UiBuilder::new().max_rect(icon_rect),
+            |ui| {
+                ui.add(img);
+            },
+        );
+    }
+    ui.painter().text(
+        egui::pos2(label_x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label.to_uppercase(),
+        egui::FontId::proportional(9.5),
+        theme.text_dim,
+    );
+}
+
+/// Reasonable icon hint for each title sub-category. Picks from the
+/// already-bundled Phosphor set; categories without an exact match
+/// fall back to a generic glyph.
+fn category_icon(cat: &str) -> Icon {
+    match cat {
+        "Basic" => Icon::FilmSlate,
+        "Lower Thirds" => Icon::FrameCorners,
+        "Cinematic" => Icon::FilmStrip,
+        "Social Media" => Icon::Star,
+        "Animated Intros" => Icon::CaretRight,
+        "Animated Outros" => Icon::CaretLeft,
+        "Full Animations" => Icon::Lightning,
+        "Motion" => Icon::ArrowsOut,
+        "Scrolling" => Icon::SortAscending,
+        "Broadcast" => Icon::SpeakerHigh,
+        "Educational" => Icon::Sliders,
+        "Stylized" => Icon::Eyedropper,
+        "Texture Fill" => Icon::GridFour,
+        "3D Text" => Icon::Diamond,
+        "Text on Path" => Icon::ArrowsOut,
+        "Per-Character" => Icon::List,
+        "Rich Text" => Icon::Sliders,
+        "Wedding / Event" => Icon::Star,
+        _ => Icon::FilmSlate,
+    }
+}
+
+// ──────────────────────────── Search field ────────────────────────────
+
+fn titles_search_field(ui: &mut egui::Ui, theme: &KlippTheme, query: &mut String) {
+    let h = 32.0;
+    let avail_w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(avail_w, h),
+        egui::Sense::hover(),
+    );
+    let rounding = egui::Rounding::same(6.0);
+    ui.painter().rect_filled(rect, rounding, theme.bg_panel);
+    ui.painter().rect_stroke(
+        rect,
+        rounding,
+        egui::Stroke::new(1.0_f32, theme.border),
+    );
+
+    let icon_size = 13.0;
+    let icon_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x + 10.0, rect.center().y - icon_size * 0.5),
+        egui::vec2(icon_size, icon_size),
+    );
+    let img = Icon::MagnifyingGlass.image(icon_size).tint(theme.text_dim);
+    ui.allocate_new_ui(
+        egui::UiBuilder::new().max_rect(icon_rect),
+        |ui| {
+            ui.add(img);
+        },
+    );
+
+    let edit_left = rect.min.x + 10.0 + icon_size + 8.0;
+    let edit_right = rect.max.x - 8.0;
+    let edit_rect = egui::Rect::from_min_max(
+        egui::pos2(edit_left, rect.min.y),
+        egui::pos2(edit_right, rect.max.y),
+    );
+    ui.allocate_new_ui(
+        egui::UiBuilder::new().max_rect(edit_rect),
+        |ui| {
+            ui.set_clip_rect(edit_rect);
+            let edit = egui::TextEdit::singleline(query)
+                .hint_text(
+                    egui::RichText::new("Search titles\u{2026}").color(theme.text_dim),
+                )
+                .desired_width(edit_rect.width())
+                .font(egui::FontId::proportional(11.5))
+                .text_color(theme.text_primary)
+                .frame(false);
+            ui.add_sized(edit_rect.size(), edit);
+        },
+    );
+}
+
+// ──────────────────────────── Filter row widgets ────────────────────────────
+
+fn titles_segmented_filter(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    filter: &mut TitlesSourceFilter,
+    all_count: usize,
+    builtin_count: usize,
+    user_count: usize,
+) {
+    let outer_h = 26.0;
+    let pad = 2.0;
+    let segments = [
+        (TitlesSourceFilter::All, "All", all_count),
+        (TitlesSourceFilter::Builtin, "Built-in", builtin_count),
+        (TitlesSourceFilter::User, "User", user_count),
+    ];
+    let mut seg_widths = [0.0f32; 3];
+    let mut total_w = pad * 2.0;
+    for (i, (_, label, count)) in segments.iter().enumerate() {
+        let label_galley = ui.painter().layout_no_wrap(
+            (*label).to_string(),
+            egui::FontId::proportional(11.0),
+            theme.text_secondary,
+        );
+        let count_galley = ui.painter().layout_no_wrap(
+            format!("{}", count),
+            egui::FontId::monospace(10.0),
+            theme.text_dim,
+        );
+        let w = label_galley.size().x + 6.0 + count_galley.size().x + 22.0;
+        seg_widths[i] = w;
+        total_w += w + 1.0;
+    }
+    total_w -= 1.0;
+    let (outer_rect, _) = ui.allocate_exact_size(
+        egui::vec2(total_w, outer_h),
+        egui::Sense::hover(),
+    );
+    ui.painter().rect_filled(outer_rect, 5.0, theme.bg_panel);
+    ui.painter().rect_stroke(
+        outer_rect,
+        5.0,
+        egui::Stroke::new(1.0_f32, theme.border),
+    );
+    let mut x = outer_rect.min.x + pad;
+    for (i, (variant, label, count)) in segments.iter().enumerate() {
+        let seg_rect = egui::Rect::from_min_size(
+            egui::pos2(x, outer_rect.min.y + pad),
+            egui::vec2(seg_widths[i], outer_h - pad * 2.0),
+        );
+        let resp = ui.interact(
+            seg_rect,
+            ui.id().with(("titles_source_seg", i)),
+            egui::Sense::click(),
+        );
+        let is_active = *filter == *variant;
+        let hovered = resp.hovered();
+        if is_active {
+            ui.painter().rect_filled(seg_rect, 3.0, theme.bg_raised);
+        } else if hovered {
+            ui.painter().rect_filled(seg_rect, 3.0, theme.accent_subtle);
+        }
+        let label_color = if is_active || hovered {
+            theme.text_primary
+        } else {
+            theme.text_secondary
+        };
+        let count_color = if is_active { theme.accent } else { theme.text_dim };
+        let label_galley = ui.painter().layout_no_wrap(
+            (*label).to_string(),
+            egui::FontId::proportional(11.0),
+            label_color,
+        );
+        let count_galley = ui.painter().layout_no_wrap(
+            format!("{}", count),
+            egui::FontId::monospace(10.0),
+            count_color,
+        );
+        let inner_w = label_galley.size().x + 6.0 + count_galley.size().x;
+        let lx = seg_rect.center().x - inner_w * 0.5;
+        ui.painter().galley(
+            egui::pos2(lx, seg_rect.center().y - label_galley.size().y * 0.5),
+            label_galley.clone(),
+            label_color,
+        );
+        ui.painter().galley(
+            egui::pos2(
+                lx + label_galley.size().x + 6.0,
+                seg_rect.center().y - count_galley.size().y * 0.5,
+            ),
+            count_galley,
+            count_color,
+        );
+        if resp.clicked() {
+            *filter = *variant;
+        }
+        x += seg_widths[i] + 1.0;
+    }
+}
+
+fn animated_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) {
+    let label_galley = ui.painter().layout_no_wrap(
+        "Animated only".to_string(),
+        egui::FontId::proportional(11.0),
+        theme.text_secondary,
+    );
+    let icon_size = 11.0;
+    let pad_x = 10.0;
+    let gap = 5.0;
+    let w = pad_x * 2.0 + icon_size + gap + label_galley.size().x;
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(w, 26.0),
+        egui::Sense::click(),
+    );
+    let hovered = resp.hovered();
+    let (bg, border, fg) = if *active {
+        (theme.accent_subtle, theme.accent, theme.accent)
+    } else if hovered {
+        (theme.bg_raised, theme.border, theme.text_primary)
+    } else {
+        (theme.bg_panel, theme.border, theme.text_secondary)
+    };
+    ui.painter().rect_filled(rect, 12.0, bg);
+    ui.painter().rect_stroke(rect, 12.0, egui::Stroke::new(1.0_f32, border));
+    let icon_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x + pad_x, rect.center().y - icon_size * 0.5),
+        egui::vec2(icon_size, icon_size),
+    );
+    let img = Icon::Lightning.image(icon_size).tint(fg);
+    ui.allocate_new_ui(
+        egui::UiBuilder::new().max_rect(icon_rect),
+        |ui| {
+            ui.add(img);
+        },
+    );
+    ui.painter().text(
+        egui::pos2(rect.min.x + pad_x + icon_size + gap, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        "Animated only",
+        egui::FontId::proportional(11.0),
+        fg,
+    );
+    if resp.clicked() {
+        *active = !*active;
+    }
+}
+
+fn view_mode_button(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    current: &mut EffectViewMode,
+    target: EffectViewMode,
+    icon: Icon,
+    tooltip: &str,
+) {
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(26.0, 26.0),
+        egui::Sense::click(),
+    );
+    let is_active = *current == target;
+    let hovered = resp.hovered();
+    let (bg, border, fg) = if is_active {
+        (theme.accent_subtle, theme.accent, theme.accent)
+    } else if hovered {
+        (theme.bg_raised, theme.border, theme.text_primary)
+    } else {
+        (theme.bg_panel, theme.border, theme.text_secondary)
+    };
+    ui.painter().rect_filled(rect, 4.0, bg);
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
+    let size = 13.0;
+    let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(size, size));
+    let img = icon.image(size).tint(fg);
+    ui.allocate_new_ui(
+        egui::UiBuilder::new().max_rect(icon_rect),
+        |ui| {
+            ui.add(img);
+        },
+    );
+    let _ = resp.clone().on_hover_text(tooltip);
+    if resp.clicked() {
+        *current = target;
+    }
+}
+
+// ──────────────────────────── Result strip ────────────────────────────
+
+fn titles_result_strip(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    count: usize,
+    sort_mode: &mut EffectSort,
+) {
+    let avail_w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(avail_w, 24.0),
+        egui::Sense::hover(),
+    );
+    ui.painter().rect_filled(rect, 0.0, theme.bg_panel);
+    ui.painter().hline(
+        rect.x_range(),
+        rect.max.y,
+        egui::Stroke::new(1.0_f32, theme.border),
+    );
+    ui.painter().text(
+        egui::pos2(rect.min.x + 12.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        format!("{} Titles", count),
+        egui::FontId::proportional(10.5),
+        theme.text_secondary,
+    );
+
+    let dropdown_w = 116.0;
+    let dropdown_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.max.x - dropdown_w - 8.0, rect.min.y + 1.0),
+        egui::pos2(rect.max.x - 8.0, rect.max.y - 1.0),
+    );
+    ui.allocate_new_ui(
+        egui::UiBuilder::new().max_rect(dropdown_rect),
+        |ui| {
+            ui.style_mut().visuals.widgets.inactive.weak_bg_fill =
+                egui::Color32::TRANSPARENT;
+            ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+            let label = format!("Sort: {}", sort_mode.label());
+            egui::ComboBox::from_id_salt("titles_sort_dd")
+                .selected_text(
+                    egui::RichText::new(label).size(10.5).color(theme.text_dim),
+                )
+                .width(dropdown_w - 4.0)
+                .show_ui(ui, |ui| {
+                    for variant in [
+                        EffectSort::NameAsc,
+                        EffectSort::NameDesc,
+                        EffectSort::Category,
+                    ] {
+                        ui.selectable_value(sort_mode, variant, variant.label());
+                    }
+                });
+        },
+    );
+}
+

@@ -73,12 +73,49 @@ pub fn save_project_with_color_and_backups(
     timeline_zoom: Option<f32>,
     timeline_scroll_x: Option<f32>,
 ) -> Result<(), String> {
+    save_project_full(
+        dir, sequences, media_pool, color,
+        active_sequence_id, created_at, notes, backup_count,
+        timeline_zoom, timeline_scroll_x,
+        &std::collections::HashMap::new(),
+    )
+}
+
+/// Full save — includes synthetic title assets. Existing wrappers
+/// (`save_project`, `save_project_with_color`,
+/// `save_project_with_color_and_backups`) call this with an empty
+/// asset map so callers that don't yet know about assets keep
+/// working unchanged.
+#[allow(clippy::too_many_arguments)]
+pub fn save_project_full(
+    dir: &Path,
+    sequences: &[Sequence],
+    media_pool: &MediaPool,
+    color: &ColorSettings,
+    active_sequence_id: Option<&str>,
+    created_at: Option<&str>,
+    notes: &str,
+    backup_count: u32,
+    timeline_zoom: Option<f32>,
+    timeline_scroll_x: Option<f32>,
+    title_assets: &std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset>,
+) -> Result<(), String> {
     // Create directory structure
     std::fs::create_dir_all(dir.join("media"))
         .map_err(|e| format!("Failed to create project directory: {e}"))?;
 
     // Build project.json
     let now = iso8601_now();
+
+    let title_assets_json: Vec<crate::format::TitleAssetJson> = title_assets
+        .iter()
+        .map(|(id, asset)| crate::format::TitleAssetJson {
+            id: id.0.to_string(),
+            display_name: asset.display_name.clone(),
+            data: serde_json::to_value(&asset.data).unwrap_or(serde_json::Value::Null),
+            animation: asset.animation.clone(),
+        })
+        .collect();
 
     let project = ProjectJson {
         version: "1.0.0".to_string(),
@@ -93,6 +130,7 @@ pub fn save_project_with_color_and_backups(
         timeline_zoom,
         timeline_scroll_x,
         working_colorspace: color.working_colorspace,
+        title_assets: title_assets_json,
     };
 
     let project_json = serde_json::to_string_pretty(&project)
@@ -205,6 +243,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                             serde_json::to_value(&c.builtin_effects).ok()
                         },
                         linked_clip_id: c.linked_clip_id.map(|id| id.to_string()),
+                        linked_title_asset_id: c.linked_title_asset_id.map(|id| id.to_string()),
                         group_id: c.group_id.map(|id| id.to_string()),
                         gain: if (c.gain - 1.0).abs() > f32::EPSILON { Some(c.gain) } else { None },
                         volume: if (c.volume - 1.0).abs() > f32::EPSILON { Some(c.volume) } else { None },

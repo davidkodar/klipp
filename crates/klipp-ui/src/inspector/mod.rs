@@ -318,6 +318,7 @@ impl NewInspectorPanel {
                             builtin_effects: Vec::new(),
                             builtin_effects_enabled: Vec::new(),
                             linked_clip_id: None,
+                            linked_title_asset_id: None,
                             group_id: None,
                             magnetic_anchor: None,
                             gain: 1.0, volume: 1.0, pan: 0.0,
@@ -424,6 +425,80 @@ fn show_title_editor(
         klipp_timeline::ClipKind::Title(td) => td,
         _ => return,
     };
+
+    // ── Project Asset banner ──
+    // Only when the clip is linked. Shows the asset name + how
+    // many other instances share it + a one-click Detach. The
+    // banner uses the accent_subtle / accent border treatment so
+    // it reads as "informational, not actionable" — the actual
+    // detach action is on the explicit button.
+    if let Some(asset_id) = clip.linked_title_asset_id {
+        if let Some(asset) = state.title_assets.get(&asset_id) {
+            // Count linked instances across all sequences.
+            let mut instance_count = 0usize;
+            for seq in &state.sequences {
+                for track in &seq.tracks {
+                    for c in &track.clips {
+                        if c.linked_title_asset_id == Some(asset_id) {
+                            instance_count += 1;
+                        }
+                    }
+                }
+            }
+            egui::Frame::none()
+                .fill(theme.accent_subtle)
+                .stroke(egui::Stroke::new(1.0_f32, theme.accent))
+                .rounding(4.0)
+                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                .outer_margin(egui::Margin::symmetric(0.0, 4.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let icon_size = 12.0;
+                        let img = crate::icons::Icon::Star.image(icon_size).tint(theme.accent);
+                        ui.add(img);
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Linked to \u{201C}{}\u{201D}",
+                                    asset.display_name
+                                ))
+                                .size(11.0)
+                                .strong()
+                                .color(theme.text_primary),
+                            );
+                            let footer = if instance_count > 1 {
+                                format!(
+                                    "Edits sync across {instance_count} instances"
+                                )
+                            } else {
+                                "Edits will sync to all linked instances".to_string()
+                            };
+                            ui.label(
+                                egui::RichText::new(footer)
+                                    .size(9.5)
+                                    .color(theme.text_secondary),
+                            );
+                        });
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui
+                                    .small_button("Detach")
+                                    .on_hover_text(
+                                        "Stop syncing this clip with the asset",
+                                    )
+                                    .clicked()
+                                {
+                                    cmds.push(AppCommand::DetachTitleAsset { clip_id });
+                                }
+                            },
+                        );
+                    });
+                });
+            ui.add_space(4.0);
+        }
+    }
+
     // Text preview (read-only) — editing happens in the viewer (double-click)
     ui.label(egui::RichText::new("Text").strong().size(11.0));
     let preview = if td.text.len() > 80 {

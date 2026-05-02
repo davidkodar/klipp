@@ -32,7 +32,7 @@ fn acescg_setting_round_trips_through_save_load() {
 
     save_project_with_color(&dir, &[seq], &pool, &color, None, None, "").unwrap();
 
-    let (_seqs, _pool, loaded_color, _active, _created, _notes, _zoom, _scroll) =
+    let (_seqs, _pool, loaded_color, _active, _created, _notes, _zoom, _scroll, _assets) =
         load_project(&dir).unwrap();
     assert_eq!(
         loaded_color.working_colorspace,
@@ -55,7 +55,7 @@ fn default_setting_round_trips_as_rec709_linear() {
     let color = ColorSettings::default();
     save_project_with_color(&dir, &[seq], &pool, &color, None, None, "").unwrap();
 
-    let (_seqs, _pool, loaded_color, _active, _created, _notes, _zoom, _scroll) =
+    let (_seqs, _pool, loaded_color, _active, _created, _notes, _zoom, _scroll, _assets) =
         load_project(&dir).unwrap();
     assert_eq!(
         loaded_color.working_colorspace,
@@ -89,7 +89,7 @@ fn legacy_project_without_working_colorspace_field_loads_as_rec709_linear() {
     }
     std::fs::write(&project_json_path, serde_json::to_string_pretty(&json).unwrap()).unwrap();
 
-    let (_seqs, _pool, loaded_color, _active, _created, _notes, _zoom, _scroll) =
+    let (_seqs, _pool, loaded_color, _active, _created, _notes, _zoom, _scroll, _assets) =
         load_project(&dir).unwrap();
     assert_eq!(
         loaded_color.working_colorspace,

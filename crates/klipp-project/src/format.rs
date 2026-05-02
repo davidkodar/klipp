@@ -39,6 +39,33 @@ pub struct ProjectJson {
     /// before the upgrade so existing projects open unchanged.
     #[serde(default)]
     pub working_colorspace: klipp_core::WorkingColorspace,
+    /// Project-scoped synthetic title assets. Each entry is keyed by
+    /// the `MediaId` of its synthetic `MediaItem` (the entry that
+    /// shows up in the Media tab) and carries the canonical
+    /// `TitleData` + display name + animation token. Empty for
+    /// projects saved before the synthetic-asset feature shipped —
+    /// `#[serde(default)]` keeps backward compat.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub title_assets: Vec<TitleAssetJson>,
+}
+
+/// JSON projection of a `klipp_timeline::TitleAsset`. Stored
+/// alongside the rest of the project (one centralized list rather
+/// than per-sequence) so the same asset is reusable across every
+/// sequence in the project.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TitleAssetJson {
+    /// Stable UUID — must match the `MediaItem.id` of the synthetic
+    /// pool entry that represents this asset.
+    pub id: String,
+    pub display_name: String,
+    /// `TitleData` is JSON-serializable directly (see `TitleData`'s
+    /// `Serialize` derive). We store it as a nested object rather
+    /// than a string so future field additions inherit serde's own
+    /// backward-compat handling.
+    pub data: serde_json::Value,
+    #[serde(default)]
+    pub animation: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -163,6 +190,11 @@ pub struct ClipJson {
     pub builtin_effects: Option<serde_json::Value>,
     #[serde(default)]
     pub linked_clip_id: Option<String>,
+    /// Project-asset MediaId this clip is a linked instance of.
+    /// Serialized as a UUID string (matches the rest of the project
+    /// format's ID encoding).
+    #[serde(default)]
+    pub linked_title_asset_id: Option<String>,
     #[serde(default)]
     pub group_id: Option<String>,
     #[serde(default)]
@@ -574,6 +606,7 @@ mod tests {
             timeline_zoom: None,
             timeline_scroll_x: None,
             working_colorspace: klipp_core::WorkingColorspace::AcesCG,
+            title_assets: Vec::new(),
         };
         let serialised = serde_json::to_string(&project).expect("serialise");
         let back: ProjectJson = serde_json::from_str(&serialised).expect("deserialise");
@@ -662,6 +695,7 @@ mod tests {
             effects: vec![],
             builtin_effects: None,
             linked_clip_id: None,
+            linked_title_asset_id: None,
             group_id: None,
             gain: None, volume: None, pan: None,
             fade_in_secs: None, fade_out_secs: None,
@@ -724,7 +758,7 @@ mod tests {
             source_in: 0, source_out: 24, rate: 24,
             node_graph: None, color_grade: None,
             effects: vec![], builtin_effects: None,
-            linked_clip_id: None, group_id: None,
+            linked_clip_id: None, linked_title_asset_id: None, group_id: None,
             gain: None, volume: None, pan: None,
             fade_in_secs: None, fade_out_secs: None,
             fade_in_curve: None, fade_out_curve: None,

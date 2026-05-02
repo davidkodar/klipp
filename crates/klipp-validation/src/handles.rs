@@ -169,6 +169,7 @@ mod tests {
         klipp_media::MediaItem {
             id: MediaId::new(),
             path: std::path::PathBuf::from("/test/media.mp4"),
+            kind: klipp_media::MediaItemKind::File,
             filename: "media.mp4".into(),
             duration: tc(duration_frames, rate),
             fps: klipp_core::Fps::new(rate, 1),

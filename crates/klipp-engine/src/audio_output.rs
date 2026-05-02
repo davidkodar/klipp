@@ -471,8 +471,22 @@ impl AudioOutput {
 
                             // Mix in skim audio (independent of playback state).
                             // Uses thread-local buffer to avoid heap allocation in real-time callback.
+                            //
+                            // Diagnostic counters track whether the skim consumer
+                            // is connected and how many samples per call get
+                            // mixed in. Printed once per second from a separate
+                            // path. Use SKIM_DIAG_LAST to throttle.
+                            thread_local! {
+                                static SKIM_DIAG_FRAMES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+                                static SKIM_DIAG_NONZERO: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+                                static SKIM_DIAG_DISCONNECTED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+                                static SKIM_DIAG_LAST: std::cell::Cell<std::time::Instant> = std::cell::Cell::new(std::time::Instant::now());
+                            }
+                            let mut skim_read_this_call: usize = 0;
+                            let mut skim_connected = false;
                             if let Ok(mut skim_guard) = skim_consumer_flag.try_lock() {
                                 if let Some(ref mut skim_cons) = *skim_guard {
+                                    skim_connected = true;
                                     thread_local! {
                                         static SKIM_BUF: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) };
                                     }
@@ -480,12 +494,35 @@ impl AudioOutput {
                                         let mut buf = buf.borrow_mut();
                                         buf.resize(data.len(), 0.0);
                                         let read = skim_cons.pop_slice(&mut buf[..data.len()]);
+                                        skim_read_this_call = read;
                                         for i in 0..read {
                                             data[i] = (data[i] + buf[i]).clamp(-1.0, 1.0);
                                         }
                                     });
                                 }
                             }
+                            SKIM_DIAG_FRAMES.with(|c| c.set(c.get() + 1));
+                            if skim_read_this_call > 0 {
+                                SKIM_DIAG_NONZERO.with(|c| c.set(c.get() + 1));
+                            }
+                            if !skim_connected {
+                                SKIM_DIAG_DISCONNECTED.with(|c| c.set(c.get() + 1));
+                            }
+                            SKIM_DIAG_LAST.with(|last| {
+                                let now = std::time::Instant::now();
+                                if now.duration_since(last.get()) >= std::time::Duration::from_secs(1) {
+                                    let frames = SKIM_DIAG_FRAMES.with(|c| c.replace(0));
+                                    let nonzero = SKIM_DIAG_NONZERO.with(|c| c.replace(0));
+                                    let disc = SKIM_DIAG_DISCONNECTED.with(|c| c.replace(0));
+                                    if frames > 0 {
+                                        tracing::info!(
+                                            "cpal_skim_diag: frames={} nonzero={} disconnected={} last_read={}",
+                                            frames, nonzero, disc, skim_read_this_call,
+                                        );
+                                    }
+                                    last.set(now);
+                                }
+                            });
                         },
                     );
                 },

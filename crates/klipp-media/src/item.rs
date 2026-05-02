@@ -103,6 +103,33 @@ impl ColourSpace {
     }
 }
 
+/// Discriminates "real" file-backed media from synthetic project
+/// assets. Synthetic items reuse the entire `MediaItem` plumbing
+/// (drag-and-drop, bins, ratings, sort, search) but their underlying
+/// data lives in project-scoped stores keyed by the same `MediaId`.
+/// Adding a new variant means adding a matching project-side store
+/// (e.g. `title_assets: HashMap<MediaId, TitleAsset>` on AppState
+/// for `SyntheticTitle`).
+///
+/// `#[serde(default)]` on the enclosing field means existing `.klipp`
+/// projects without this field load as `File`, preserving every
+/// pre-existing media item.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum MediaItemKind {
+    /// Standard file-backed item — `path` points to an actual file
+    /// on disk. This is what every MediaItem was before synthetic
+    /// assets shipped.
+    #[default]
+    File,
+    /// Title clip saved as a reusable project asset. The
+    /// `TitleData` lives in the project's `title_assets` store
+    /// keyed by `MediaItem.id`. `path` stays as a synthetic stub
+    /// (e.g. an empty `PathBuf` or a sentinel "<title-asset:UUID>")
+    /// so file-only code paths can't accidentally treat it as a
+    /// real file.
+    SyntheticTitle,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaItem {
     pub id: MediaId,
@@ -115,6 +142,10 @@ pub struct MediaItem {
     pub audio_codec: String,
     pub has_audio: bool,
     pub file_size_bytes: u64,
+    /// File-backed vs synthetic-asset discriminator. Default is
+    /// `File` for serde backward-compat with existing projects.
+    #[serde(default)]
+    pub kind: MediaItemKind,
     /// Audio sample rate in Hz (e.g. 48000, 44100, 96000). None if no audio stream.
     #[serde(default)]
     pub sample_rate: Option<u32>,
@@ -235,6 +266,80 @@ impl MediaItem {
         self.parent_media_id.is_some()
     }
 
+    /// True when this item is a synthetic project asset (title /
+    /// generator etc.) — its underlying data lives in a project-
+    /// scoped store (e.g. `AppState::title_assets`) rather than on
+    /// disk. Callers that walk the media pool to do file-only work
+    /// (probing codecs, reading frames, generating thumbnails from
+    /// disk) should skip these.
+    pub fn is_synthetic(&self) -> bool {
+        !matches!(self.kind, MediaItemKind::File)
+    }
+
+    /// Build a `MediaItem` representing a synthetic title asset.
+    /// Duration and FPS come from the host sequence so a dropped
+    /// instance lands at a sensible default length on the timeline.
+    /// `path` is stored as a sentinel ("`<title-asset:UUID>`") so any
+    /// path-comparison or `path.exists()` check fails closed instead
+    /// of accidentally pointing at an unrelated file.
+    pub fn new_synthetic_title(
+        id: MediaId,
+        display_name: String,
+        duration: Timecode,
+        fps: Fps,
+    ) -> Self {
+        let sentinel = PathBuf::from(format!("<title-asset:{}>", id.0));
+        Self {
+            id,
+            path: sentinel,
+            kind: MediaItemKind::SyntheticTitle,
+            filename: display_name,
+            duration,
+            fps,
+            resolution: Resolution { width: 1920, height: 1080 },
+            video_codec: String::new(),
+            audio_codec: String::new(),
+            has_audio: false,
+            file_size_bytes: 0,
+            sample_rate: None,
+            audio_channels: None,
+            offline: false,
+            is_still: false,
+            proxy_path: None,
+            proxy_ready: false,
+            default_source_in: None,
+            default_source_out: None,
+            rating: 0,
+            tags: Vec::new(),
+            user_notes: String::new(),
+            bin: None,
+            bin_id: None,
+            parent_media_id: None,
+            added_at: 0,
+            fingerprint: None,
+            file_modified_at: None,
+            media_created_at: None,
+            color_label: ColorLabel::default(),
+            colour_space: ColourSpace::default(),
+            log_format: klipp_core::LogFormat::default(),
+            source_rotation: 0,
+            camera_make: None,
+            camera_model: None,
+            encoder: None,
+            bit_depth: None,
+            video_bitrate_kbps: None,
+            audio_bitrate_kbps: None,
+            color_primaries: None,
+            color_transfer: None,
+            pixel_format: None,
+            detected_log_format: klipp_core::LogFormat::default(),
+            skim_file: None,
+            needs_reprobe: false,
+            waveform_data: None,
+            audio_cache: None,
+        }
+    }
+
     /// Detect the likely log format from metadata (color_transfer, camera, bit depth, pixel format).
     pub fn detect_log_format(&self) -> klipp_core::LogFormat {
         use klipp_core::LogFormat;
@@ -346,6 +451,7 @@ mod subclip_tests {
         MediaItem {
             id: MediaId::new(),
             path: PathBuf::from("/tmp/parent.mp4"),
+            kind: MediaItemKind::File,
             filename: "parent.mp4".into(),
             duration: RationalTime { value: 240, rate: 24 }, // 10 seconds at 24fps
             fps: Fps::film_24(),

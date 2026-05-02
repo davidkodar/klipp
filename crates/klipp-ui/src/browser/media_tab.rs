@@ -149,6 +149,7 @@ pub fn show(
             offline: m.offline,
             parent_media_id: m.parent_media_id,
             has_zone: m.default_source_in.is_some() && m.default_source_out.is_some(),
+            kind: m.kind.clone(),
         })
         .collect();
 
@@ -578,6 +579,184 @@ fn paint_offline_badge(painter: &egui::Painter, thumb_rect: egui::Rect, theme: &
         label,
         font,
         egui::Color32::WHITE,
+    );
+}
+
+/// Paint a synthetic title asset's mini-thumbnail. Renders a soft
+/// blue gradient canvas (matches the Library/Titles tab's default
+/// preview background so users can connect "this came from Titles")
+/// and draws the asset's title text centred on top with the
+/// `TitleData`'s color, font weight, alignment, and shadow.
+///
+/// Falls back to a "MISSING ASSET" pose if the asset got deleted
+/// from the project store while the synthetic `MediaItem` still
+/// lingers in the pool — defensive against partial corruption.
+fn paint_synthetic_title_thumb(
+    ui: &egui::Ui,
+    theme: &KlippTheme,
+    rect: egui::Rect,
+    asset_id: MediaId,
+    title_assets: &std::collections::HashMap<MediaId, klipp_timeline::TitleAsset>,
+) {
+    let painter = ui.painter();
+    // Two-tone blue gradient — same colours as the Library Titles tab
+    // BlueGradient swatch so the asset reads as "made from a title".
+    painter.rect_filled(
+        rect,
+        egui::Rounding::same(2.0),
+        egui::Color32::from_rgb(0x4d, 0x77, 0xab),
+    );
+    let upper = egui::Rect::from_min_max(
+        rect.min,
+        egui::pos2(rect.max.x, rect.min.y + rect.height() * 0.5),
+    );
+    painter.rect_filled(
+        upper,
+        egui::Rounding { nw: 2.0, ne: 2.0, sw: 0.0, se: 0.0 },
+        egui::Color32::from_rgb(0x6b, 0x8d, 0xb5),
+    );
+
+    let Some(asset) = title_assets.get(&asset_id) else {
+        // Asset went missing — draw a placeholder instead of leaving
+        // a blank gradient (which would look like a normal item with
+        // no thumbnail and confuse the user).
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "MISSING ASSET",
+            egui::FontId::proportional((rect.height() * 0.16).clamp(8.0, 14.0)),
+            theme.marker_error,
+        );
+        return;
+    };
+
+    let data = &asset.data;
+    // Use the title's own preview text (or the visible text if
+    // there's content). Bias to the asset's own data field — this
+    // is a Project Asset, the user named it, the displayed text
+    // should match the asset.
+    let display_text = if data.text.trim().is_empty() {
+        "Title".to_string()
+    } else {
+        // Single-line preview — multi-line titles get squashed at
+        // thumbnail size anyway. Strip past the first newline.
+        data.text.lines().next().unwrap_or("").to_string()
+    };
+
+    let inner = rect.shrink2(egui::vec2(rect.width() * 0.06, rect.height() * 0.10));
+    let pos = egui::pos2(
+        inner.min.x + data.position.x * inner.width(),
+        inner.min.y + data.position.y * inner.height(),
+    );
+    let align = match data.alignment {
+        klipp_timeline::TextAlignment::Left => egui::Align2::LEFT_CENTER,
+        klipp_timeline::TextAlignment::Right => egui::Align2::RIGHT_CENTER,
+        klipp_timeline::TextAlignment::Center => egui::Align2::CENTER_CENTER,
+    };
+    // Scale the title's font_size into a card-friendly range. The
+    // template stores e.g. 72 px which would dwarf the thumbnail; we
+    // map it down by a fixed factor and clamp the result.
+    let font_size = (data.font_size / 7.0).clamp(8.0, 18.0);
+    let color = egui::Color32::from_rgba_unmultiplied(
+        data.color[0], data.color[1], data.color[2], data.color[3],
+    );
+    if let Some(ref shadow) = data.shadow {
+        let sc = egui::Color32::from_rgba_unmultiplied(
+            shadow.color[0], shadow.color[1], shadow.color[2], shadow.color[3],
+        );
+        painter.text(
+            egui::pos2(pos.x + shadow.offset_x * 0.3, pos.y + shadow.offset_y * 0.3),
+            align,
+            &display_text,
+            egui::FontId::proportional(font_size),
+            sc,
+        );
+    }
+    painter.text(
+        pos,
+        align,
+        display_text,
+        egui::FontId::proportional(font_size),
+        color,
+    );
+}
+
+/// Count how many timeline clips across all sequences are linked
+/// to a given title asset id. Used both for the Media-tab "N×"
+/// badge and the delete-confirm prompt.
+pub(crate) fn count_linked_instances(state: &AppState, asset_id: MediaId) -> usize {
+    let mut n = 0;
+    for seq in &state.sequences {
+        for track in &seq.tracks {
+            for clip in &track.clips {
+                if clip.linked_title_asset_id == Some(asset_id) {
+                    n += 1;
+                }
+            }
+        }
+    }
+    n
+}
+
+/// "Nx" pill anchored to the bottom-right of the thumbnail, paired
+/// visually with the TITLE badge in the top-right. Same dark-bg
+/// readability treatment so it works against any preview canvas.
+fn paint_asset_instance_count(
+    painter: &egui::Painter,
+    thumb_rect: egui::Rect,
+    theme: &KlippTheme,
+    count: usize,
+) {
+    let label = format!("{}\u{00D7}", count);
+    let font = egui::FontId::proportional(9.0);
+    let galley = painter.layout_no_wrap(label.clone(), font.clone(), theme.text_primary);
+    let pad_x = 6.0;
+    let pad_y = 2.0;
+    let pill_size = egui::vec2(
+        galley.size().x + pad_x * 2.0,
+        galley.size().y + pad_y * 2.0,
+    );
+    let pill_pos = egui::pos2(
+        thumb_rect.max.x - pill_size.x - 4.0,
+        thumb_rect.max.y - pill_size.y - 4.0,
+    );
+    let pill_rect = egui::Rect::from_min_size(pill_pos, pill_size);
+    painter.rect_filled(
+        pill_rect,
+        2.0,
+        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 200),
+    );
+    painter.text(
+        pill_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        &label,
+        font,
+        theme.text_primary,
+    );
+}
+
+/// TITLE pill in the top-right of the thumbnail. Accent-coloured
+/// with strong contrast white-on-amber text so it reads against any
+/// thumbnail background.
+fn paint_title_asset_badge(painter: &egui::Painter, thumb_rect: egui::Rect, theme: &KlippTheme) {
+    let label = "TITLE";
+    let font = egui::FontId::proportional(9.0);
+    let galley = painter.layout_no_wrap(label.into(), font.clone(), theme.text_on_accent);
+    let pad_x = 6.0;
+    let pad_y = 2.0;
+    let pill_size = egui::vec2(galley.size().x + pad_x * 2.0, galley.size().y + pad_y * 2.0);
+    let pill_pos = egui::pos2(
+        thumb_rect.max.x - pill_size.x - 4.0,
+        thumb_rect.min.y + 4.0,
+    );
+    let pill_rect = egui::Rect::from_min_size(pill_pos, pill_size);
+    painter.rect_filled(pill_rect, 2.0, theme.accent);
+    painter.text(
+        pill_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        font,
+        theme.text_on_accent,
     );
 }
 
@@ -1072,8 +1251,21 @@ fn render_grid_view(
             // ── Thumbnail area (top portion, 16:9) ──
             let thumb_rect = egui::Rect::from_min_size(card_pos, egui::vec2(card_w, thumb_h));
 
-            // Render poster thumbnail — fill the 16:9 area completely (cover mode)
-            if let Some(tex) = state.thumbnail_textures.get(&item.id) {
+            // Synthetic project asset (title etc.) — render a styled
+            // mini-preview of the title content instead of going down
+            // the file-thumbnail path. Uses the same paint primitives
+            // as the Library/Titles tab cards so the asset reads
+            // exactly like its source template.
+            let is_synth = matches!(item.kind, klipp_media::MediaItemKind::SyntheticTitle);
+            if is_synth {
+                paint_synthetic_title_thumb(
+                    ui,
+                    theme,
+                    thumb_rect,
+                    item.id,
+                    &state.title_assets,
+                );
+            } else if let Some(tex) = state.thumbnail_textures.get(&item.id) {
                 let tex_size = tex.size_vec2();
                 if tex_size.x > 0.0 && tex_size.y > 0.0 {
                     // Use UV cropping to cover the thumb_rect while preserving aspect ratio
@@ -1130,6 +1322,21 @@ fn render_grid_view(
             // Offline badge: dim the thumbnail and overlay an OFFLINE pill.
             if item.offline {
                 paint_offline_badge(ui.painter(), thumb_rect, theme);
+            }
+
+            // TITLE badge + instance count for synthetic project
+            // assets. The count tells users "this asset is in use" /
+            // "still safe to delete" at a glance — Premiere's
+            // Master Clips do this with a usage column; we put it
+            // right on the card.
+            if is_synth {
+                paint_title_asset_badge(ui.painter(), thumb_rect, theme);
+                let instance_count = count_linked_instances(state, item.id);
+                if instance_count > 0 {
+                    paint_asset_instance_count(
+                        ui.painter(), thumb_rect, theme, instance_count,
+                    );
+                }
             }
 
             // Usage indicators: source-loaded border + on-timeline red bar.
@@ -1584,6 +1791,11 @@ struct MediaRow {
     /// Cached `has_zone` flag — true when `default_source_in/out` are both
     /// set, for the right-click "Create Subclip from Zone" gate.
     has_zone: bool,
+    /// File-backed vs synthetic project asset (title etc). Drives
+    /// the special card/row rendering path so synthetic items show
+    /// a custom thumbnail + TITLE badge instead of trying to read
+    /// from disk.
+    kind: klipp_media::MediaItemKind,
 }
 
 fn show_context_menu(

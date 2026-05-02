@@ -1240,6 +1240,22 @@ pub enum AppCommand {
 
     // Title clips
     CreateTitleClip { track_index: usize, timeline_in: Timecode, duration_frames: u32 },
+    /// Promote an existing title clip to a reusable Project Asset.
+    /// Reads the clip's `TitleData`, builds a `TitleAsset` keyed by a
+    /// fresh `MediaId`, inserts a synthetic `MediaItem` into the pool
+    /// (so it shows up in the Media tab), stores the asset in the
+    /// project's `title_assets` map, and links the source clip to it.
+    /// All future edits to any linked clip propagate via the asset.
+    CreateTitleAsset { source_clip_id: ClipId },
+    /// Detach a clip from its linked Project Asset. The clip's inline
+    /// `TitleData` is kept (already in sync), `linked_title_asset_id`
+    /// is cleared, and edits to this clip stop affecting the asset
+    /// (and vice versa).
+    DetachTitleAsset { clip_id: ClipId },
+    /// Rename a Project Asset (the user-facing label in the Media tab
+    /// and the Inspector banner). The `MediaId` stays stable so all
+    /// linked instances remain linked.
+    RenameTitleAsset { asset_id: MediaId, new_name: String },
     UpdateTitleData { clip_id: ClipId, text: String, font_size: f32, font_name: String, font_style: u8, color: [u8; 4] },
     SetTitleAlignment { clip_id: ClipId, alignment: u8 },  // 0=Left, 1=Center, 2=Right
     SetTitlePosition { clip_id: ClipId, x: f32, y: f32 },
@@ -1451,6 +1467,32 @@ pub enum AppCommand {
     },
     /// End the audio skim session (mouse leaves clip or skimming disabled).
     BrowserSkimAudioEnd,
+    /// Seek the active skim/audition session to an absolute position
+    /// in seconds and keep playing. Distinct from
+    /// `BrowserSkimAudioUpdate` because that one runs the cursor-speed
+    /// heuristic (no movement → silence), which is wrong for the FX
+    /// audition scrubber where the user clicks once and expects
+    /// playback to continue from the new position.
+    AuditionSeek {
+        time_secs: f64,
+    },
+    /// Start the FX audition: same machinery as `BrowserSkimAudioStart`
+    /// (cached PCM via media_id), but takes exclusive ownership of the
+    /// skim session so the cursor-skim paths (file/media browser
+    /// hover, timeline scrubbing) can't clobber it with `silence()`
+    /// calls when the cursor stops moving.
+    AuditionStart {
+        media_id: MediaId,
+        source_path: PathBuf,
+        time_secs: f64,
+    },
+    /// End the FX audition. Releases the audition lock and stops the
+    /// session, mirroring `BrowserSkimAudioEnd`.
+    AuditionEnd,
+    /// Update the audition session's playback volume. Range 0.0–1.5
+    /// in practice (1.0 = unity). The skim feeder picks this up on
+    /// the next chunk; no-op if no audition session is active.
+    AuditionSetVolume(f32),
 
     // UI
     SetViewerMode(ViewerMode),

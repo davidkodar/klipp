@@ -461,11 +461,11 @@ impl EffectRegistry {
             },
             EffectEntry {
                 name: "Pitch Shift".into(),
-                category: EffectCategory::AudioEQ,
+                category: EffectCategory::AudioPitch,
                 source: EffectSource::Audio("pitch_shift".into()),
                 source_label: "Built-in",
                 description: String::new(),
-                grouping: "EQ".into(),
+                grouping: "Pitch".into(),
             },
             EffectEntry {
                 name: "Compressor".into(),
@@ -493,19 +493,19 @@ impl EffectRegistry {
             },
             EffectEntry {
                 name: "De-Esser".into(),
-                category: EffectCategory::AudioDynamics,
+                category: EffectCategory::AudioRestoration,
                 source: EffectSource::Audio("deesser".into()),
                 source_label: "Built-in",
                 description: String::new(),
-                grouping: "Dynamics".into(),
+                grouping: "Restoration".into(),
             },
             EffectEntry {
                 name: "Normalize".into(),
-                category: EffectCategory::AudioDynamics,
+                category: EffectCategory::AudioUtility,
                 source: EffectSource::Audio("normalize".into()),
                 source_label: "Built-in",
                 description: String::new(),
-                grouping: "Dynamics".into(),
+                grouping: "Utility".into(),
             },
             EffectEntry {
                 // CODE_AUDIT C-3: this effect is a multi-band gate, not
@@ -522,11 +522,11 @@ impl EffectRegistry {
             },
             EffectEntry {
                 name: "De-click".into(),
-                category: EffectCategory::AudioDynamics,
+                category: EffectCategory::AudioRestoration,
                 source: EffectSource::Audio("declick".into()),
                 source_label: "Built-in",
                 description: String::new(),
-                grouping: "Dynamics".into(),
+                grouping: "Restoration".into(),
             },
             EffectEntry {
                 name: "Reverb".into(),
@@ -538,19 +538,19 @@ impl EffectRegistry {
             },
             EffectEntry {
                 name: "Delay".into(),
-                category: EffectCategory::AudioReverb,
+                category: EffectCategory::AudioDelay,
                 source: EffectSource::Audio("delay".into()),
                 source_label: "Built-in",
                 description: String::new(),
-                grouping: "Reverb".into(),
+                grouping: "Delay".into(),
             },
             EffectEntry {
                 name: "Chorus".into(),
-                category: EffectCategory::AudioReverb,
+                category: EffectCategory::AudioModulation,
                 source: EffectSource::Audio("chorus".into()),
                 source_label: "Built-in",
                 description: String::new(),
-                grouping: "Reverb".into(),
+                grouping: "Modulation".into(),
             },
         ];
 
@@ -680,6 +680,11 @@ impl EffectRegistry {
                     EffectCategory::AudioEQ
                         | EffectCategory::AudioDynamics
                         | EffectCategory::AudioReverb
+                        | EffectCategory::AudioDelay
+                        | EffectCategory::AudioModulation
+                        | EffectCategory::AudioPitch
+                        | EffectCategory::AudioRestoration
+                        | EffectCategory::AudioUtility
                 ) || matches!(e.source, EffectSource::Ladspa(_));
                 let cat_match = match category {
                     // Favourites: show every effect the user has starred,
@@ -787,7 +792,41 @@ fn category_from_grouping(grouping: &str) -> EffectCategory {
 fn ladspa_category_from_name(name: &str, label: &str) -> EffectCategory {
     let s = format!("{} {}", name.to_lowercase(), label.to_lowercase());
 
-    // Reverb / spatial — very distinctive substrings, checked first.
+    // Restoration — denoise / declick / dehum / repair (checked early
+    // since "noise" can otherwise match overly broad rules). Match
+    // both hyphenated ("de-click") and concatenated ("declick") forms
+    // since plugin authors are inconsistent.
+    if s.contains("denois")
+        || s.contains("noise reduc")
+        || s.contains("noise_reduc")
+        || s.contains("declick")
+        || s.contains("de-click")
+        || s.contains("decrackle")
+        || s.contains("de-crackle")
+        || s.contains("dehum")
+        || s.contains("de-hum")
+        || s.contains("dehiss")
+        || s.contains("de-hiss")
+        || s.contains("hum remov")
+        || s.contains("hiss")
+        || s.contains("repair")
+    {
+        return EffectCategory::AudioRestoration;
+    }
+
+    // Pitch — pitch shift, harmoniser, autotune, tuning utilities.
+    if s.contains("pitch")
+        || s.contains("autotune")
+        || s.contains("auto-tune")
+        || s.contains("harmoni")
+        || s.contains("octaver")
+        || s.contains("transpose")
+    {
+        return EffectCategory::AudioPitch;
+    }
+
+    // Reverb / spatial — very distinctive substrings, checked first
+    // among spatial/temporal categories.
     if s.contains("reverb")
         || s.contains("hall")
         || s.contains("plate")
@@ -795,21 +834,33 @@ fn ladspa_category_from_name(name: &str, label: &str) -> EffectCategory {
         || s.contains("freeverb")
         || s.contains("gverb")
         || s.contains("plateverb")
+        || s.contains("spring")
     {
         return EffectCategory::AudioReverb;
     }
 
-    // Delay / echo — sit under Reverb in the audio category sidebar
-    // (the sub-tab is "Reverb" but covers reverb+delay collectively).
+    // Modulation — chorus / flanger / phaser / tremolo / vibrato.
+    // Checked before Delay so "chorus" doesn't slip into the comb/echo
+    // bucket.
+    if s.contains("chorus")
+        || s.contains("flanger")
+        || s.contains("phaser")
+        || s.contains("tremolo")
+        || s.contains("vibrato")
+        || s.contains("modulator")
+        || s.contains("ring mod")
+        || s.contains("ring_mod")
+    {
+        return EffectCategory::AudioModulation;
+    }
+
+    // Delay / echo / comb.
     if s.contains("delay")
         || s.contains("echo")
         || s.contains("tap_")
-        || s.contains("flanger") // delay-based modulation
-        || s.contains("chorus") // delay-based modulation
-        || s.contains("phaser") // sometimes delay-based
         || s.contains("comb")
     {
-        return EffectCategory::AudioReverb;
+        return EffectCategory::AudioDelay;
     }
 
     // Dynamics — compressor/limiter/gate/expander/maximiser families.
@@ -827,6 +878,23 @@ fn ladspa_category_from_name(name: &str, label: &str) -> EffectCategory {
         || s.contains("leveller")
     {
         return EffectCategory::AudioDynamics;
+    }
+
+    // Utility — gain, channel, stereo, mid/side, mono, normalise.
+    if s.contains("gain")
+        || s.contains("amplif")
+        || s.contains("normali")
+        || s.contains("channel")
+        || s.contains("stereo")
+        || s.contains("mono")
+        || s.contains("mid_side")
+        || s.contains("midside")
+        || s.contains("ms_decoder")
+        || s.contains("balance")
+        || s.contains("invert")
+        || s.contains("dc_remov")
+    {
+        return EffectCategory::AudioUtility;
     }
 
     // EQ / filter family — equalisers, filters, shelves, parametric/graphic.
@@ -853,11 +921,12 @@ fn ladspa_category_from_name(name: &str, label: &str) -> EffectCategory {
         return EffectCategory::AudioEQ;
     }
 
-    // Default: route unmatched plugins to AudioEQ. They still appear in
-    // AudioAll; the only consequence is which sub-tab in the category
-    // sidebar surfaces them. AudioEQ is the most forgiving default
-    // because users browsing for a generic effect tend to start there.
-    EffectCategory::AudioEQ
+    // Default: route unmatched plugins to AudioUtility. They still
+    // appear in AudioAll; the only consequence is which sub-tab in the
+    // category sidebar surfaces them. Utility is a more honest "misc"
+    // bucket than EQ for plugins that don't match any of the rules
+    // above.
+    EffectCategory::AudioUtility
 }
 
 #[cfg(test)]
@@ -995,22 +1064,85 @@ mod tests {
     }
 
     #[test]
-    fn ladspa_category_routes_delays_and_modulation_to_reverb_bucket() {
-        // Delay + delay-based modulation effects sit under the Reverb sub-tab
-        // because that's where Klipp's category sidebar groups time-domain FX.
+    fn ladspa_category_routes_delays() {
+        // Delay / echo / comb effects route to AudioDelay so they get
+        // their own sidebar bucket, separate from Reverb and Modulation.
         for name in [
             "Stereo Delay",
             "Tape Echo",
             "Tap Delay",
-            "Calf Flanger",
-            "Calf Chorus",
-            "Phaser",
             "Comb Filter Delay",
         ] {
             assert_eq!(
                 ladspa_category_from_name(name, ""),
-                EffectCategory::AudioReverb,
-                "expected {name:?} to be AudioReverb",
+                EffectCategory::AudioDelay,
+                "expected {name:?} to be AudioDelay",
+            );
+        }
+    }
+
+    #[test]
+    fn ladspa_category_routes_modulation() {
+        // Chorus / flanger / phaser / tremolo / vibrato → Modulation.
+        for name in [
+            "Calf Flanger",
+            "Calf Chorus",
+            "Phaser",
+            "Tremolo",
+            "Vibrato",
+            "Ring Mod",
+        ] {
+            assert_eq!(
+                ladspa_category_from_name(name, ""),
+                EffectCategory::AudioModulation,
+                "expected {name:?} to be AudioModulation",
+            );
+        }
+    }
+
+    #[test]
+    fn ladspa_category_routes_pitch() {
+        for name in ["Pitch Shifter", "Auto-Tune", "Harmonizer", "Octaver"] {
+            assert_eq!(
+                ladspa_category_from_name(name, ""),
+                EffectCategory::AudioPitch,
+                "expected {name:?} to be AudioPitch",
+            );
+        }
+    }
+
+    #[test]
+    fn ladspa_category_routes_restoration() {
+        for name in [
+            "Denoiser",
+            "Noise Reduction",
+            "De-click",
+            "De-crackle",
+            "De-hum",
+            "De-hiss",
+        ] {
+            assert_eq!(
+                ladspa_category_from_name(name, ""),
+                EffectCategory::AudioRestoration,
+                "expected {name:?} to be AudioRestoration",
+            );
+        }
+    }
+
+    #[test]
+    fn ladspa_category_routes_utility() {
+        for name in [
+            "Gain",
+            "Amplifier",
+            "Stereo Balance",
+            "Mid/Side Decoder",
+            "DC Removal",
+            "Mono Mixer",
+        ] {
+            assert_eq!(
+                ladspa_category_from_name(name, ""),
+                EffectCategory::AudioUtility,
+                "expected {name:?} to be AudioUtility",
             );
         }
     }
@@ -1067,13 +1199,14 @@ mod tests {
 
     #[test]
     fn ladspa_category_falls_back_for_unknown_names() {
-        // No matching substring → AudioEQ default. AudioAll always shows
-        // these too; the default just controls which sub-tab surfaces them.
+        // No matching substring → AudioUtility default ("misc" bucket).
+        // AudioAll always shows these too; the default just controls
+        // which sub-tab surfaces them.
         for name in ["Mystery Plugin", "Foo Bar", "Saturator", "Bitcrusher"] {
             assert_eq!(
                 ladspa_category_from_name(name, ""),
-                EffectCategory::AudioEQ,
-                "expected {name:?} to fall back to AudioEQ",
+                EffectCategory::AudioUtility,
+                "expected {name:?} to fall back to AudioUtility",
             );
         }
     }

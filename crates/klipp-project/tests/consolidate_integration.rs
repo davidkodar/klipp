@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use klipp_core::{Fps, MediaId, RationalTime};
-use klipp_media::{MediaItem, MediaPool};
+use klipp_media::{MediaItem, MediaItemKind, MediaPool};
 use klipp_project::{
     consolidate::{
         consolidate_project, ConsolidateError, ConsolidateOptions, ConsolidateResult,
@@ -38,6 +38,7 @@ fn make_media_item(path: PathBuf) -> MediaItem {
     MediaItem {
         id: MediaId::new(),
         path,
+        kind: MediaItemKind::File,
         filename,
         duration: RationalTime::from_frames(120, 24),
         fps: Fps::new(24, 1),
@@ -146,7 +147,7 @@ fn consolidate_round_trip() {
     assert!(dest.join("media/clip_b.mp4").exists());
 
     // Consolidated project is loadable and its media items all resolve.
-    let (_seqs, loaded_pool, _color, _active, _created, _notes, _zoom, _scroll) = load_project(&dest).unwrap();
+    let (_seqs, loaded_pool, _color, _active, _created, _notes, _zoom, _scroll, _assets) = load_project(&dest).unwrap();
     for item in loaded_pool.all() {
         assert!(item.path.exists(), "media {:?} should exist", item.path);
         assert!(!item.offline);

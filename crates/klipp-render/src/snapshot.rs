@@ -800,7 +800,7 @@ fn time_to_frame(rt: &RationalTime, fps: f64) -> u64 {
 mod tests {
     use super::*;
     use klipp_core::{ClipId, ExportAudioCodec, ExportFormat, ExportVideoCodec, Fps, MediaId, Resolution, EncoderPreset};
-    use klipp_media::{MediaItem, MediaPool};
+    use klipp_media::{MediaItem, MediaItemKind, MediaPool};
     use klipp_nodes::NodeGraph;
     use klipp_timeline::{Clip, ClipKind, Sequence};
 
@@ -820,6 +820,7 @@ mod tests {
         MediaItem {
             id,
             path: PathBuf::from(path),
+            kind: MediaItemKind::File,
             filename: path.into(),
             duration: make_rational(240, 24), // 10 seconds
             fps: make_fps24(),

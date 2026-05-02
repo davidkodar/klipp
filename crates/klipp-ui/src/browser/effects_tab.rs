@@ -28,6 +28,11 @@ pub enum EffectCategory {
     AudioEQ,
     AudioDynamics,
     AudioReverb,
+    AudioDelay,
+    AudioModulation,
+    AudioPitch,
+    AudioRestoration,
+    AudioUtility,
 }
 
 /// Mutually-exclusive source filter. Replaces the previous three
@@ -1003,9 +1008,14 @@ fn category_color(cat: EffectCategory, theme: &KlippTheme) -> egui::Color32 {
         EffectCategory::Distort => egui::Color32::from_rgb(0xe8, 0x50, 0x20),
         EffectCategory::Light => egui::Color32::from_rgb(0xf0, 0xd0, 0x60),
         EffectCategory::AudioAll => egui::Color32::from_rgb(0x60, 0xc0, 0x80),
-        EffectCategory::AudioEQ => egui::Color32::from_rgb(0x50, 0xb0, 0x70),
-        EffectCategory::AudioDynamics => egui::Color32::from_rgb(0x40, 0xa0, 0x90),
-        EffectCategory::AudioReverb => egui::Color32::from_rgb(0x60, 0x90, 0xb0),
+        EffectCategory::AudioEQ => egui::Color32::from_rgb(0x2d, 0x6f, 0xa8),
+        EffectCategory::AudioDynamics => egui::Color32::from_rgb(0x3a, 0x8c, 0x6e),
+        EffectCategory::AudioReverb => egui::Color32::from_rgb(0x4a, 0x6e, 0xa8),
+        EffectCategory::AudioDelay => egui::Color32::from_rgb(0x6a, 0x80, 0xc0),
+        EffectCategory::AudioModulation => egui::Color32::from_rgb(0x9a, 0x6e, 0xc8),
+        EffectCategory::AudioPitch => egui::Color32::from_rgb(0xc0, 0x5e, 0x9e),
+        EffectCategory::AudioRestoration => egui::Color32::from_rgb(0xa9, 0xa3, 0x4e),
+        EffectCategory::AudioUtility => egui::Color32::from_rgb(0x70, 0x80, 0x88),
     }
 }
 
@@ -1435,7 +1445,12 @@ fn result_strip(
         EffectCategory::AudioAll
         | EffectCategory::AudioEQ
         | EffectCategory::AudioDynamics
-        | EffectCategory::AudioReverb => "Audio FX",
+        | EffectCategory::AudioReverb
+        | EffectCategory::AudioDelay
+        | EffectCategory::AudioModulation
+        | EffectCategory::AudioPitch
+        | EffectCategory::AudioRestoration
+        | EffectCategory::AudioUtility => "Audio FX",
         _ => "Video FX",
     };
     let mut left = format!("{} {}", count, scope);
@@ -1591,6 +1606,11 @@ pub fn display_category_for(fx: &crate::browser::effect_registry::EffectEntry) -
         EffectCategory::AudioEQ => "EQ",
         EffectCategory::AudioDynamics => "Dynamics",
         EffectCategory::AudioReverb => "Reverb",
+        EffectCategory::AudioDelay => "Delay",
+        EffectCategory::AudioModulation => "Modulation",
+        EffectCategory::AudioPitch => "Pitch",
+        EffectCategory::AudioRestoration => "Restoration",
+        EffectCategory::AudioUtility => "Utility",
         _ => "Effect",
     }
     .to_string()

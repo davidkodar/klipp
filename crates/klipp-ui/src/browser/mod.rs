@@ -582,6 +582,73 @@ pub struct BrowserPanel {
     pub creating_bin: Option<String>,             // new bin name being typed
     // Effects tab state
     pub effects_category: effects_tab::EffectCategory,
+    // Audio FX tab state — kept distinct from effects_category so the
+    // user's video category stays intact when they toggle to Audio FX
+    // and back.
+    pub audio_fx_category: effects_tab::EffectCategory,
+    pub audio_fx_source_filter: audio_fx_tab::AudioSourceFilter,
+    pub audio_fx_sort: effects_tab::EffectSort,
+    /// Visual play/pause state for the Audition transport at the top of
+    /// the Audio FX tab. Wiring to the audio engine lands later — this
+    /// just toggles the icon for now.
+    pub audio_fx_audition_playing: bool,
+    /// User-picked audition source clip from the timeline. When `None`
+    /// the audition transport falls back to the most recent timeline
+    /// selection (which also feeds into the source dropdown). Persisted
+    /// only as long as the clip exists; cleared automatically by the
+    /// renderer when the clip is gone.
+    pub audio_fx_audition_source: Option<klipp_core::ClipId>,
+    /// Audition transport volume (0.0–1.5, 1.0 = unity). Surfaced as
+    /// the slider in the audition header; pushed to the active
+    /// `SkimAudioSession` via `AppCommand::AuditionSetVolume` when the
+    /// user drags it.
+    pub audio_fx_audition_volume: f32,
+    /// Audition playhead position in seconds at the last anchor point
+    /// (play start or seek). Live position = `anchor + (now - anchor_at)`
+    /// while playing.
+    pub audio_fx_audition_anchor_secs: f64,
+    /// Wall-clock instant at which the audition position anchor was
+    /// last set. `None` when paused so the displayed position freezes.
+    pub audio_fx_audition_anchor_at: Option<std::time::Instant>,
+    /// Name of the currently-selected effect (highlight only). Set
+    /// when the user clicks the row body; does not start playback.
+    pub audio_fx_selected: Option<String>,
+    /// Name of the effect currently being auditioned (= the play
+    /// button on that row is filled, with a stop glyph). Set only by
+    /// clicking a row's play button — separate from selection so the
+    /// user can pick a row to inspect without starting audio.
+    /// Visual-only for now; audition routing lands later.
+    pub audio_fx_auditioning: Option<String>,
+    /// Mirror of the eye-toggle on the filter row. Hides plugins flagged
+    /// as not yet wired up. No effect today; lays the groundwork for the
+    /// missing-binding sweep.
+    pub audio_fx_hide_unsupported: bool,
+    // ── Titles tab state ──
+    /// Selected sub-category in the Titles sidebar. `None` = All.
+    pub titles_category: Option<&'static str>,
+    /// Preview background swatch shown behind every title card.
+    pub titles_preview_bg: titles_tab::TitlesPreviewBg,
+    /// Live preview text — typed into the small input next to the
+    /// preview swatches. Empty falls back to each template's hand-
+    /// crafted preview_text.
+    pub titles_preview_text: String,
+    /// Built-in vs user templates filter.
+    pub titles_source_filter: titles_tab::TitlesSourceFilter,
+    /// Animated-only filter chip.
+    pub titles_animated_only: bool,
+    /// Grid (default) vs list view.
+    pub titles_view_mode: effects_tab::EffectViewMode,
+    /// Sort key for the title cards.
+    pub titles_sort: effects_tab::EffectSort,
+    /// Selected card name — drives the accent border highlight.
+    pub titles_selected: Option<String>,
+    // ── Transitions tab state ──
+    pub transitions_category: Option<transitions_tab::TransitionsCategory>,
+    pub transitions_source_filter: transitions_tab::TransitionsSourceFilter,
+    pub transitions_gpu_only: bool,
+    pub transitions_view_mode: effects_tab::EffectViewMode,
+    pub transitions_sort: effects_tab::EffectSort,
+    pub transitions_selected: Option<String>,
     // Library tab category
     pub library_category: LibraryCategory,
     // Scroll-to request from RevealMediaInBrowser
@@ -774,6 +841,31 @@ impl Default for BrowserPanel {
             renaming_bin: None,
             creating_bin: None,
             effects_category: effects_tab::EffectCategory::All,
+            audio_fx_category: effects_tab::EffectCategory::AudioAll,
+            audio_fx_source_filter: audio_fx_tab::AudioSourceFilter::All,
+            audio_fx_sort: effects_tab::EffectSort::NameAsc,
+            titles_category: None,
+            titles_preview_bg: titles_tab::TitlesPreviewBg::default(),
+            titles_preview_text: String::new(),
+            titles_source_filter: titles_tab::TitlesSourceFilter::All,
+            titles_animated_only: false,
+            titles_view_mode: effects_tab::EffectViewMode::Grid,
+            titles_sort: effects_tab::EffectSort::NameAsc,
+            titles_selected: None,
+            transitions_category: None,
+            transitions_source_filter: transitions_tab::TransitionsSourceFilter::All,
+            transitions_gpu_only: false,
+            transitions_view_mode: effects_tab::EffectViewMode::Grid,
+            transitions_sort: effects_tab::EffectSort::NameAsc,
+            transitions_selected: None,
+            audio_fx_audition_playing: false,
+            audio_fx_audition_source: None,
+            audio_fx_audition_volume: 1.0,
+            audio_fx_audition_anchor_secs: 0.0,
+            audio_fx_audition_anchor_at: None,
+            audio_fx_selected: None,
+            audio_fx_auditioning: None,
+            audio_fx_hide_unsupported: false,
             library_category: LibraryCategory::default(),
             scroll_to_media_id: None,
             files_current_path: dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
@@ -1198,7 +1290,13 @@ impl BrowserPanel {
             // `files_search_query`, every other tab uses `search_query`.
             // This keeps effects queries from leaking into the Files
             // filter in split view.
-            if !show_split {
+            //
+            // Library tab owns its own search bar (rendered inside each
+            // category sub-tab) so the panel-top placement collapses to
+            // nothing — otherwise the Audio FX tab shows two competing
+            // search inputs.
+            let library_owns_search = *active_tab == BrowserTab::Library;
+            if !show_split && !library_owns_search {
                 egui::Frame::none()
                     .fill(theme.bg_raised)
                     .stroke(egui::Stroke::new(1.0_f32, theme.border))
@@ -1302,8 +1400,12 @@ impl BrowserPanel {
                 // the search to the content it filters, rather than
                 // spanning both panes at the top of the browser where
                 // users mistake it for a global search.
+                //
+                // Library skips this — its sub-tabs render their own
+                // search bar so we don't stack two of them.
+                let library_owns_search = *active_tab == BrowserTab::Library;
                 ui.add_space(2.0);
-                egui::Frame::none()
+                if !library_owns_search { egui::Frame::none()
                     .fill(theme.bg_raised)
                     .stroke(egui::Stroke::new(1.0_f32, theme.border))
                     .rounding(5.0)
@@ -1335,6 +1437,7 @@ impl BrowserPanel {
                             );
                         }
                     });
+                }
                 ui.add_space(4.0);
 
                 match active_tab {
@@ -4146,40 +4249,50 @@ impl BrowserPanel {
         state: &mut AppState,
         theme: &KlippTheme,
     ) -> Vec<AppCommand> {
-        // ── Category pill bar ──
+        // ── Category tab-bar ──
+        // Outlined-rectangle tabs styled per the mockup. Tabs are
+        // label-only by default so all five fit in the typical
+        // dock-width panel; the optional decorative icon only appears
+        // when the panel is wide enough to host both without clipping
+        // (the docked panel sits around 380–520 px in practice; the
+        // mockup was drawn at ~870 px).
+        ui.add_space(4.0);
+        let categories: [(LibraryCategory, &str, Icon); 5] = [
+            (LibraryCategory::VideoFx, "Video FX", Icon::FilmStrip),
+            (LibraryCategory::AudioFx, "Audio FX", Icon::SpeakerHigh),
+            (LibraryCategory::Titles, "Titles", Icon::FilmSlate),
+            (LibraryCategory::Transitions, "Transitions", Icon::ArrowsOut),
+            (LibraryCategory::Generators, "Generators", Icon::Star),
+        ];
+        let avail_w = ui.available_width();
+        // Estimate label-only width: 5 tabs * (label + 2*pad) + 4
+        // gaps + leading. If even that doesn't fit we still render
+        // compact (clipping a tab is the lesser evil — the full-icon
+        // mode would be worse).
+        let icon_mode_threshold: f32 = 760.0; // generous: needs real screen estate
+        let show_icons = avail_w >= icon_mode_threshold;
+        let compact = !show_icons;
         ui.horizontal(|ui| {
-            ui.add_space(8.0);
-            let categories = [
-                (LibraryCategory::VideoFx, "Video FX"),
-                (LibraryCategory::AudioFx, "Audio FX"),
-                (LibraryCategory::Titles, "Titles"),
-                (LibraryCategory::Transitions, "Transitions"),
-                (LibraryCategory::Generators, "Generators"),
-            ];
-            for (cat, label) in &categories {
+            ui.add_space(6.0);
+            ui.spacing_mut().item_spacing.x = if compact { 4.0 } else { 6.0 };
+            for (cat, label, icon) in &categories {
                 let is_active = self.library_category == *cat;
-                let bg = if is_active { theme.accent_dim } else { theme.bg_raised };
-                let text_color = if is_active { theme.text_accent } else { theme.text_secondary };
-
-                let resp = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new(*label).size(10.0).color(text_color),
-                    )
-                    .fill(bg)
-                    .rounding(12.0)
-                    .min_size(egui::vec2(0.0, 22.0))
-                    .stroke(if is_active {
-                        egui::Stroke::new(1.0_f32, theme.accent)
-                    } else {
-                        egui::Stroke::new(1.0_f32, theme.border)
-                    }),
-                );
-                if resp.clicked() {
+                if library_category_tab(ui, theme, *icon, label, is_active, compact) {
                     self.library_category = *cat;
                 }
             }
         });
         ui.add_space(4.0);
+        // Hairline divider under the tab-bar (separates the tab strip
+        // from the per-tab content body).
+        let avail = ui.available_rect_before_wrap();
+        let div_y = avail.min.y;
+        ui.painter().hline(
+            avail.x_range(),
+            div_y,
+            egui::Stroke::new(1.0_f32, theme.border),
+        );
+        ui.add_space(2.0);
 
         // ── Category content ──
         match self.library_category {
@@ -4197,19 +4310,279 @@ impl BrowserPanel {
                 )
             }
             LibraryCategory::AudioFx => {
-                audio_fx_tab::show(ui, state, theme, &self.search_query)
+                // Build the audition-source options from the current
+                // timeline selection. Multi-select reflects each clip
+                // individually so the dropdown can offer one entry per
+                // clip; the "active" entry is whichever the user picked
+                // (or the last clip selected when no explicit pick).
+                // Single-click sets only `selected_clip`; shift/ctrl
+                // multi-click populates `selected_clips`. Build a
+                // deduped union so the dropdown sees both — without
+                // this the pill said "No clip selected" even when one
+                // clip was clearly highlighted on the timeline.
+                let mut source_clip_ids: Vec<klipp_core::ClipId> = Vec::new();
+                if let Some(primary) = state.selected_clip {
+                    source_clip_ids.push(primary);
+                }
+                for cid in &state.selected_clips {
+                    if !source_clip_ids.contains(cid) {
+                        source_clip_ids.push(*cid);
+                    }
+                }
+                let source_options: Vec<audio_fx_tab::AuditionSourceOption> = source_clip_ids
+                    .iter()
+                    .filter_map(|cid| {
+                        // Resolve clip → media filename via the active
+                        // sequence + media pool. Clips without a media
+                        // backing (e.g. generators, when those land)
+                        // are skipped — the dropdown is for audio-bearing
+                        // clips only.
+                        let seq = state.sequence();
+                        for track in &seq.tracks {
+                            if let Some(clip) = track.find_clip(*cid) {
+                                if let Some(mid) = clip.media_id() {
+                                    if let Some(item) = state.media_pool.get(&mid) {
+                                        return Some(audio_fx_tab::AuditionSourceOption {
+                                            clip_id: *cid,
+                                            media_id: mid,
+                                            label: item.filename.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+                // If the previously-picked source is no longer in the
+                // current selection, reset it so the UI falls back to
+                // the default (last-selected) entry.
+                if let Some(picked) = self.audio_fx_audition_source {
+                    if !source_options.iter().any(|o| o.clip_id == picked) {
+                        self.audio_fx_audition_source = None;
+                    }
+                }
+
+                // Resolve the active source's media path so we can
+                // (a) render real waveform peaks and (b) hand off to
+                // the skim-audio player when the user hits play. Picks
+                // the explicitly-chosen clip when set, otherwise the
+                // first selected clip.
+                let active_clip_id: Option<klipp_core::ClipId> = self
+                    .audio_fx_audition_source
+                    .or_else(|| source_options.first().map(|o| o.clip_id));
+                // Resolve everything we need from the media pool in one
+                // pass: path (for skim playback), duration (for the
+                // M:SS total), and the conformed waveform peaks. The
+                // peaks are already cached on `MediaItem.waveform_data`
+                // — populated by the `conform_audio` worker when the
+                // clip is imported, and re-used by the timeline strip
+                // — so we can read them directly instead of going
+                // through `BrowserPanel::file_audio_peaks` (which has
+                // its own worker pool and was getting starved on this
+                // path, leaving the audition stuck on "Loading…").
+                struct Resolved {
+                    path: std::path::PathBuf,
+                    duration_secs: f64,
+                    has_audio: bool,
+                    peaks: Option<Vec<(f32, f32)>>,
+                }
+                let resolved: Option<Resolved> = active_clip_id.and_then(|cid| {
+                    let seq = state.sequence();
+                    for track in &seq.tracks {
+                        if let Some(clip) = track.find_clip(cid) {
+                            if let Some(mid) = clip.media_id() {
+                                if let Some(item) = state.media_pool.get(&mid) {
+                                    return Some(Resolved {
+                                        path: item.path.clone(),
+                                        duration_secs: item.duration.to_secs_f64(),
+                                        has_audio: item.has_audio,
+                                        peaks: item.waveform_data.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    None
+                });
+                let active_path: Option<std::path::PathBuf> =
+                    resolved.as_ref().map(|r| r.path.clone());
+                let active_media_id: Option<klipp_core::MediaId> =
+                    resolved.as_ref().and_then(|_| {
+                        active_clip_id.and_then(|cid| {
+                            let seq = state.sequence();
+                            for track in &seq.tracks {
+                                if let Some(clip) = track.find_clip(cid) {
+                                    if let Some(mid) = clip.media_id() {
+                                        return Some(mid);
+                                    }
+                                }
+                            }
+                            None
+                        })
+                    });
+                let active_duration_secs: Option<f64> =
+                    resolved.as_ref().map(|r| r.duration_secs);
+                // The clip's media_pool peaks are owned by us for the
+                // lifetime of this borrow — clone into a stack-local
+                // so we can pass a slice without holding a media_pool
+                // borrow across the audio_fx_tab call.
+                let local_peaks: Option<Vec<(f32, f32)>> =
+                    resolved.as_ref().and_then(|r| r.peaks.clone());
+                let audition_peaks: Option<&[(f32, f32)]> =
+                    local_peaks.as_deref();
+                // "Failed" = clip resolved + media item exists + we
+                // know it has no audio stream. The conform worker
+                // marks this on the MediaItem at import time. If the
+                // clip simply hasn't conformed yet we stay in the
+                // Loading state and the spinner keeps polling.
+                let audition_failed = resolved
+                    .as_ref()
+                    .map(|r| !r.has_audio)
+                    .unwrap_or(false);
+
+                audio_fx_tab::show(
+                    ui,
+                    state,
+                    theme,
+                    &mut self.search_query,
+                    &mut self.audio_fx_category,
+                    &mut self.audio_fx_source_filter,
+                    &mut self.audio_fx_sort,
+                    &mut self.audio_fx_audition_playing,
+                    &mut self.audio_fx_audition_source,
+                    &source_options,
+                    active_path.as_deref(),
+                    active_media_id,
+                    audition_peaks,
+                    audition_failed,
+                    active_duration_secs,
+                    &mut self.audio_fx_audition_volume,
+                    &mut self.audio_fx_audition_anchor_secs,
+                    &mut self.audio_fx_audition_anchor_at,
+                    &mut self.audio_fx_selected,
+                    &mut self.audio_fx_auditioning,
+                    &mut self.audio_fx_hide_unsupported,
+                    &mut self.favorite_effects,
+                    &mut self.recent_effects,
+                )
             }
             LibraryCategory::Titles => {
-                titles_tab::show(ui, state, theme, &self.search_query)
+                titles_tab::show(
+                    ui,
+                    state,
+                    theme,
+                    &mut self.search_query,
+                    &mut self.titles_category,
+                    &mut self.titles_preview_bg,
+                    &mut self.titles_preview_text,
+                    &mut self.titles_source_filter,
+                    &mut self.titles_animated_only,
+                    &mut self.titles_view_mode,
+                    &mut self.titles_sort,
+                    &mut self.titles_selected,
+                )
             }
             LibraryCategory::Transitions => {
-                transitions_tab::show(ui, state, theme, &self.search_query)
+                transitions_tab::show(
+                    ui,
+                    state,
+                    theme,
+                    &mut self.search_query,
+                    &mut self.transitions_category,
+                    &mut self.transitions_source_filter,
+                    &mut self.transitions_gpu_only,
+                    &mut self.transitions_view_mode,
+                    &mut self.transitions_sort,
+                    &mut self.transitions_selected,
+                )
             }
             LibraryCategory::Generators => {
                 generators_tab::show(ui, state, theme, &self.search_query)
             }
         }
     }
+}
+
+/// Single tab button for the Library category strip. Outlined rectangle
+/// with leading icon + label; active tab gets an accent border, an
+/// accent-tinted fill, and accent text/icon. Returns `true` on click so
+/// the caller can flip its state in one line.
+///
+/// `compact` drops the icon and trims paddings so all five tabs fit in
+/// narrow library panels (the mockup was drawn at ~870px; a real
+/// dock can sit at 380px). Caller decides which mode to use based on
+/// the available width — the icons are decorative anyway.
+fn library_category_tab(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    icon: Icon,
+    label: &str,
+    is_active: bool,
+    compact: bool,
+) -> bool {
+    let font_size = if compact { 10.5 } else { 11.0 };
+    let label_galley = ui.painter().layout_no_wrap(
+        label.to_string(),
+        egui::FontId::proportional(font_size),
+        theme.text_secondary,
+    );
+    let show_icon = !compact;
+    let icon_size = 12.0;
+    let pad_x = if compact { 8.0 } else { 10.0 };
+    let gap = 5.0;
+    let height = if compact { 24.0 } else { 28.0 };
+    let icon_block = if show_icon { icon_size + gap } else { 0.0 };
+    let width = pad_x * 2.0 + icon_block + label_galley.size().x;
+
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(width, height),
+        egui::Sense::click(),
+    );
+    let hovered = resp.hovered();
+
+    let (bg, border, fg) = if is_active {
+        (theme.accent_subtle, theme.accent, theme.accent)
+    } else if hovered {
+        (theme.bg_raised, theme.border, theme.text_primary)
+    } else {
+        (theme.bg_panel, theme.border, theme.text_secondary)
+    };
+
+    let rounding = egui::Rounding::same(5.0);
+    ui.painter().rect_filled(rect, rounding, bg);
+    ui.painter().rect_stroke(
+        rect,
+        rounding,
+        egui::Stroke::new(if is_active { 1.5 } else { 1.0 }, border),
+    );
+
+    let label_x = if show_icon {
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.min.x + pad_x, rect.center().y - icon_size * 0.5),
+            egui::vec2(icon_size, icon_size),
+        );
+        let img = icon.image(icon_size).tint(fg);
+        ui.allocate_new_ui(
+            egui::UiBuilder::new().max_rect(icon_rect),
+            |ui| {
+                ui.add(img);
+            },
+        );
+        rect.min.x + pad_x + icon_size + gap
+    } else {
+        rect.min.x + pad_x
+    };
+
+    ui.painter().text(
+        egui::pos2(label_x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(font_size),
+        fg,
+    );
+
+    resp.clicked()
 }
 
 // Computed once at startup from the canonical klipp_core constants. The old

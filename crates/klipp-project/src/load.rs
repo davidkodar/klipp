@@ -4,7 +4,7 @@ use crate::path_util::{
     MAX_INPUT_FILE_BYTES,
 };
 use klipp_core::*;
-use klipp_media::{MediaItem, MediaPool};
+use klipp_media::{MediaItem, MediaItemKind, MediaPool};
 use klipp_timeline::{
     Clip, ClipKind, FontStyle, Look, Sequence, TextAlignment, TitleBackground, TitleData,
     TitlePosition, TitleShadow, Track, TrackKind,
@@ -82,6 +82,12 @@ fn migrate_graph(graph: &mut NodeGraph) {
 /// timeline zoom (px-per-second) and optional timeline scroll position.
 /// The two view-state fields round-trip through `project.json` so e.g.
 /// "Fit Timeline to Window" persists across sessions.
+/// Project-scoped synthetic title assets, keyed by their
+/// `MediaItem.id`. Empty `HashMap` for projects that pre-date the
+/// synthetic-asset feature. The 9th tuple element of `LoadResult`.
+pub type LoadedTitleAssets =
+    std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset>;
+
 pub type LoadResult = (
     Vec<Sequence>,
     MediaPool,
@@ -91,6 +97,7 @@ pub type LoadResult = (
     String,
     Option<f32>,
     Option<f32>,
+    LoadedTitleAssets,
 );
 
 pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
@@ -133,6 +140,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
         let mut media_item = MediaItem {
             id: MediaId(parse_uuid(&item_json.id)?),
             path,
+            kind: MediaItemKind::File,
             filename: item_json.filename.clone(),
             duration: RationalTime { value: item_json.duration_frames, rate: item_json.duration_rate },
             fps: sanitize_fps(item_json.fps.num, item_json.fps.den),
@@ -258,7 +266,49 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
         working_colorspace: project.working_colorspace,
     };
 
-    info!("Project loaded from {:?} ({} sequence(s))", dir, sequences.len());
+    // Decode the synthetic title-asset list into a MediaId-keyed
+    // map. Projects saved before the asset feature shipped have an
+    // empty (or absent — defaulted) list, which becomes an empty
+    // map. Bad UUIDs / malformed `data` blobs are skipped with a
+    // warning so a partly-corrupted assets section doesn't refuse
+    // the whole project.
+    let mut title_assets: std::collections::HashMap<klipp_core::MediaId, klipp_timeline::TitleAsset> =
+        std::collections::HashMap::new();
+    for entry in &project.title_assets {
+        let id = match parse_uuid(&entry.id) {
+            Ok(u) => klipp_core::MediaId(u),
+            Err(e) => {
+                tracing::warn!("title_asset: skipping entry with bad id {:?}: {}", entry.id, e);
+                continue;
+            }
+        };
+        let data: klipp_timeline::TitleData =
+            match serde_json::from_value(entry.data.clone()) {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::warn!(
+                        "title_asset {:?}: skipping (bad data field): {}",
+                        entry.id, e
+                    );
+                    continue;
+                }
+            };
+        title_assets.insert(
+            id,
+            klipp_timeline::TitleAsset {
+                display_name: entry.display_name.clone(),
+                data,
+                animation: entry.animation.clone(),
+            },
+        );
+    }
+
+    info!(
+        "Project loaded from {:?} ({} sequence(s), {} title asset(s))",
+        dir,
+        sequences.len(),
+        title_assets.len(),
+    );
     Ok((
         sequences,
         media_pool,
@@ -268,6 +318,7 @@ pub fn load_project(dir: &Path) -> Result<LoadResult, String> {
         project.notes,
         project.timeline_zoom,
         project.timeline_scroll_x,
+        title_assets,
     ))
 }
 
@@ -356,6 +407,9 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     }).collect(),
                     linked_clip_id: c.linked_clip_id.as_ref().and_then(|s| {
                         parse_uuid(s).ok().map(ClipId)
+                    }),
+                    linked_title_asset_id: c.linked_title_asset_id.as_ref().and_then(|s| {
+                        parse_uuid(s).ok().map(klipp_core::MediaId)
                     }),
                     group_id: c.group_id.as_ref().and_then(|s| {
                         parse_uuid(s).ok().map(GroupId)

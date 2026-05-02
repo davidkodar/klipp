@@ -157,6 +157,7 @@ fn show_bin_media_video(
         builtin_effects: Vec::new(),
         builtin_effects_enabled: Vec::new(),
         linked_clip_id: None,
+        linked_title_asset_id: None,
         group_id: None,
         magnetic_anchor: None,
         gain: 1.0,
