@@ -28933,49 +28933,69 @@ fn apply_title_animation_keyframes(
         tangent_in: (0.0, 0.0),
     };
 
-    // Span = min(travel/speed, clip_dur); fallback to clip_dur when speed
-    // ≤ 0 (the "Auto" default — animation fills the entire clip).
-    let span_for = |speed_px_per_sec: f32, travel_px: f32| -> f64 {
-        if speed_px_per_sec > 0.0 && travel_px > 0.0 {
-            let by_speed = travel_px as f64 / speed_px_per_sec as f64;
-            by_speed.min(clip_dur_secs).max(0.001)
+    // Build a (start_y, start_t, end_y, end_t) tuple per axis. Two
+    // regimes:
+    //
+    // - speed = 0 (Auto): full ±offset traverse over the entire clip.
+    //   Text scrolls from off-screen-bottom to off-screen-top in
+    //   exactly clip_dur — the original baked-in credits-roll feel.
+    //
+    // - speed > 0 fast enough to fully traverse `2 × offset` within
+    //   the clip: anchor at ±offset (off-screen) and centre the
+    //   scrolling phase around the clip midpoint. Before/after the
+    //   keyframes the engine holds at the start/end values, so the
+    //   user sees text wait off-screen, scroll across at their chosen
+    //   speed, then hold off-screen — the standard "fast credits"
+    //   pattern.
+    //
+    // - speed > 0 too slow to fully traverse: the keyframe values
+    //   shrink to `±(speed × clip_dur)/2` so motion is centred on
+    //   y = 0 at clip-midpoint. This is the key fix — earlier slow
+    //   speeds anchored at ±offset, leaving text frozen off-screen
+    //   for the entire clip because (speed × clip_dur) wasn't enough
+    //   distance to enter the visible area. With this scheme, slow
+    //   speeds always show visible motion (text passing through
+    //   centre at the chosen rate). "Painfully slow" → text barely
+    //   moves either side of centre, but always visible.
+    let plan = |offset: f32, speed_px_per_sec: f32| -> (f32, f64, f32, f64) {
+        if speed_px_per_sec <= 0.0 {
+            return (offset, 0.0, -offset, clip_dur_secs);
+        }
+        let speed_f64 = speed_px_per_sec as f64;
+        let half_travel_at_speed = (speed_f64 * clip_dur_secs * 0.5) as f32;
+        if half_travel_at_speed >= offset {
+            let span = ((2.0 * offset as f64) / speed_f64).max(0.001);
+            let pad = ((clip_dur_secs - span) * 0.5).max(0.0);
+            (offset, pad, -offset, pad + span)
         } else {
-            clip_dur_secs
+            (half_travel_at_speed, 0.0, -half_travel_at_speed, clip_dur_secs)
         }
     };
 
     match animation {
         T::ScrollUp { speed_px_per_sec } => {
-            let span = span_for(*speed_px_per_sec, 2.0 * scroll_offset);
+            let (sy, st, ey, et) = plan(scroll_offset, *speed_px_per_sec);
             clip.transform_pos_x_keyframes.clear();
-            clip.transform_pos_y_keyframes = vec![
-                mk_linear_kf(0.0, scroll_offset),
-                mk_linear_kf(span, -scroll_offset),
-            ];
+            clip.transform_pos_y_keyframes =
+                vec![mk_linear_kf(st, sy), mk_linear_kf(et, ey)];
         }
         T::ScrollDown { speed_px_per_sec } => {
-            let span = span_for(*speed_px_per_sec, 2.0 * scroll_offset);
+            let (sy, st, ey, et) = plan(scroll_offset, *speed_px_per_sec);
             clip.transform_pos_x_keyframes.clear();
-            clip.transform_pos_y_keyframes = vec![
-                mk_linear_kf(0.0, -scroll_offset),
-                mk_linear_kf(span, scroll_offset),
-            ];
+            clip.transform_pos_y_keyframes =
+                vec![mk_linear_kf(st, -sy), mk_linear_kf(et, -ey)];
         }
         T::CrawlLeft { speed_px_per_sec } => {
-            let span = span_for(*speed_px_per_sec, 2.0 * crawl_offset);
+            let (sx, st, ex, et) = plan(crawl_offset, *speed_px_per_sec);
             clip.transform_pos_y_keyframes.clear();
-            clip.transform_pos_x_keyframes = vec![
-                mk_linear_kf(0.0, crawl_offset),
-                mk_linear_kf(span, -crawl_offset),
-            ];
+            clip.transform_pos_x_keyframes =
+                vec![mk_linear_kf(st, sx), mk_linear_kf(et, ex)];
         }
         T::CrawlRight { speed_px_per_sec } => {
-            let span = span_for(*speed_px_per_sec, 2.0 * crawl_offset);
+            let (sx, st, ex, et) = plan(crawl_offset, *speed_px_per_sec);
             clip.transform_pos_y_keyframes.clear();
-            clip.transform_pos_x_keyframes = vec![
-                mk_linear_kf(0.0, -crawl_offset),
-                mk_linear_kf(span, crawl_offset),
-            ];
+            clip.transform_pos_x_keyframes =
+                vec![mk_linear_kf(st, -sx), mk_linear_kf(et, -ex)];
         }
         T::Typewriter { .. } | T::Static => {
             clip.transform_pos_x_keyframes.clear();
@@ -29374,10 +29394,34 @@ Dialogue: 0,0:00:09.00,0:00:11.00,Default,,0,0,0,,Text, with commas, inside
     }
 
     #[test]
-    fn apply_title_animation_keyframes_scroll_up_generates_two_kfs() {
+    fn apply_title_animation_keyframes_scroll_up_auto_traverses_full_offset() {
         use klipp_core::RationalTime;
         use klipp_timeline::TitleAnimationType;
-        // Build a 4-second clip at 24fps
+        // 4s gap clip at 24fps. Gap → no Title content → text dims = 0
+        // → scroll_offset collapses to frame_height (1080).
+        let ti = RationalTime::from_secs_f64(0.0, 24);
+        let to = RationalTime::from_secs_f64(4.0, 24);
+        let mut clip = klipp_timeline::Clip::gap(ti, to);
+        clip.timeline_in = ti;
+        clip.timeline_out = to;
+        // speed = 0 → "Auto" — full ±offset traverse over the clip.
+        let anim = TitleAnimationType::ScrollUp { speed_px_per_sec: 0.0 };
+        apply_title_animation_keyframes(&mut clip, &anim, 1080.0, 1920.0);
+        assert!(clip.transform_pos_x_keyframes.is_empty());
+        assert_eq!(clip.transform_pos_y_keyframes.len(), 2);
+        assert!((clip.transform_pos_y_keyframes[0].value - 1080.0).abs() < 0.001);
+        assert!((clip.transform_pos_y_keyframes[1].value + 1080.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn apply_title_animation_keyframes_scroll_up_slow_speed_centres_motion() {
+        use klipp_core::RationalTime;
+        use klipp_timeline::TitleAnimationType;
+        // 4s gap clip; offset = 1080. speed × clip_dur / 2 = 200,
+        // which is < 1080 → slow regime. Keyframes should sit at
+        // ±200 over the full clip duration so motion passes through
+        // y = 0 at midpoint, always visible (instead of frozen
+        // off-screen at ±1080).
         let ti = RationalTime::from_secs_f64(0.0, 24);
         let to = RationalTime::from_secs_f64(4.0, 24);
         let mut clip = klipp_timeline::Clip::gap(ti, to);
@@ -29385,13 +29429,33 @@ Dialogue: 0,0:00:09.00,0:00:11.00,Default,,0,0,0,,Text, with commas, inside
         clip.timeline_out = to;
         let anim = TitleAnimationType::ScrollUp { speed_px_per_sec: 100.0 };
         apply_title_animation_keyframes(&mut clip, &anim, 1080.0, 1920.0);
-        assert!(clip.transform_pos_x_keyframes.is_empty());
         assert_eq!(clip.transform_pos_y_keyframes.len(), 2);
-        // Gap clip → no Title content → text dims = 0 → scroll_offset
-        // collapses to frame_height. First kf: bottom (+H), last kf:
-        // top (-H).
+        assert!((clip.transform_pos_y_keyframes[0].value - 200.0).abs() < 0.001);
+        assert!((clip.transform_pos_y_keyframes[1].value + 200.0).abs() < 0.001);
+        assert!((clip.transform_pos_y_keyframes[0].time_secs - 0.0).abs() < 0.001);
+        assert!((clip.transform_pos_y_keyframes[1].time_secs - 4.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn apply_title_animation_keyframes_scroll_up_fast_speed_centres_phase() {
+        use klipp_core::RationalTime;
+        use klipp_timeline::TitleAnimationType;
+        // 4s gap clip; offset = 1080. At speed = 1080 px/s, full
+        // 2160px traverse takes 2s. Keyframes anchor at ±1080 with
+        // 1s of pad on each side so the scroll phase is centred on
+        // the clip's midpoint.
+        let ti = RationalTime::from_secs_f64(0.0, 24);
+        let to = RationalTime::from_secs_f64(4.0, 24);
+        let mut clip = klipp_timeline::Clip::gap(ti, to);
+        clip.timeline_in = ti;
+        clip.timeline_out = to;
+        let anim = TitleAnimationType::ScrollUp { speed_px_per_sec: 1080.0 };
+        apply_title_animation_keyframes(&mut clip, &anim, 1080.0, 1920.0);
+        assert_eq!(clip.transform_pos_y_keyframes.len(), 2);
         assert!((clip.transform_pos_y_keyframes[0].value - 1080.0).abs() < 0.001);
         assert!((clip.transform_pos_y_keyframes[1].value + 1080.0).abs() < 0.001);
+        assert!((clip.transform_pos_y_keyframes[0].time_secs - 1.0).abs() < 0.001);
+        assert!((clip.transform_pos_y_keyframes[1].time_secs - 3.0).abs() < 0.001);
     }
 
     #[test]

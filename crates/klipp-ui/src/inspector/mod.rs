@@ -1436,13 +1436,30 @@ fn show_title_editor(
                     let resp = ui.add(
                         egui::DragValue::new(&mut v)
                             .range(0.0..=2000.0)
+                            // 1 px/s per drag-pixel keeps the useful
+                            // range (10–500 px/s for visible slow
+                            // scroll, 500+ for fast) reachable in a
+                            // few centimetres of mouse travel. Sub-1
+                            // px/s torture-mode is still available
+                            // by typing the value (custom_parser
+                            // accepts decimals) — but those rates
+                            // produce single-pixel motion over tens
+                            // of seconds, so they're niche enough to
+                            // hide behind keyboard entry rather than
+                            // make the slider drag through them.
                             .speed(1.0)
-                            .fixed_decimals(0)
+                            .min_decimals(0)
+                            .max_decimals(2)
                             .custom_formatter(|n, _| {
-                                if n <= 0.5 {
+                                // Treat near-zero as the explicit
+                                // Auto (clip-bounded) sentinel —
+                                // anything ≥ 0.005 is a real speed.
+                                if n < 0.005 {
                                     "Auto".to_string()
-                                } else {
+                                } else if (n - n.round()).abs() < 1e-3 {
                                     format!("{n:.0} px/s")
+                                } else {
+                                    format!("{n:.2} px/s")
                                 }
                             })
                             .custom_parser(|s| {
