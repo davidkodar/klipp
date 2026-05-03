@@ -13343,6 +13343,36 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleObjectText { clip_id, object_id, text } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut o.content {
+                                    let old_len = tb.text.len();
+                                    tb.text = text.clone();
+                                    if tb.text.len() != old_len {
+                                        klipp_timeline::adjust_style_runs_for_text_change(
+                                            &mut tb.style_runs,
+                                            tb.text.len(),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old {
+                    self.push_title_undo(*clip_id, "Edit Title Text", old);
+                }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetTitleObjectTransformAndFont {
                 clip_id, object_id,
                 center_x, center_y, size_x, size_y,

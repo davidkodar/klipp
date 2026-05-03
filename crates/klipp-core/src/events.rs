@@ -1300,6 +1300,13 @@ pub enum AppCommand {
     /// the list are left at the end in their existing relative order
     /// (defensive against partial-update races).
     ReorderTitleObjects { clip_id: ClipId, new_order: Vec<u32> },
+    /// Inline text edit: replace the text of a specific TextBox
+    /// object (identified by id) with a new value. Used by the
+    /// in-bbox text editor; doesn't touch font / size / colour /
+    /// style — those flow through the existing `UpdateTitleData`
+    /// or per-property commands so they stay separable from the
+    /// keystroke-by-keystroke text mutation.
+    SetTitleObjectText { clip_id: ClipId, object_id: u32, text: String },
     /// Same as SetTitleObjectTransform but also updates the primary
     /// TextBox's font_size — used by the corner-handle drag where
     /// the pro-NLE convention is "scale the font, not just the box".

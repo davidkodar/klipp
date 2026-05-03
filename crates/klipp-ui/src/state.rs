@@ -1837,6 +1837,11 @@ pub struct AppState {
     // Viewer text edit mode (double-click title in viewer)
     /// When true, the viewer shows an editable text overlay for a title clip.
     pub viewer_text_edit: bool,
+    /// When inline-edit is active on a specific Title-object (the
+    /// preferred path), tracks which object inside the clip is
+    /// being edited. `None` while the clip-wide editor is active
+    /// (legacy double-click anywhere on the viewer flow).
+    pub viewer_text_edit_object: Option<klipp_timeline::TitleObjectId>,
     /// The text being edited (clone of TitleData.text, synced on every change).
     pub viewer_text_edit_buffer: String,
     /// Clip being text-edited.
@@ -3035,6 +3040,7 @@ impl Default for AppState {
             multicam_active_angle: 0,
             pending_title_animation: None,
             viewer_text_edit: false,
+            viewer_text_edit_object: None,
             viewer_text_edit_buffer: String::new(),
             viewer_text_edit_clip: None,
             viewer_text_edit_request_focus: false,
