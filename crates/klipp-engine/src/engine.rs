@@ -42,11 +42,13 @@ fn typewriter_override(
     clip_elapsed_secs: f64,
 ) -> Option<klipp_timeline::TitleData> {
     if let klipp_timeline::TitleAnimationType::Typewriter { chars_per_sec } = td.animation_type {
-        let chars = td.text.chars().count().max(1);
+        let chars = td.text().chars().count().max(1);
         let write_on = ((clip_elapsed_secs * chars_per_sec as f64) / chars as f64)
             .clamp(0.0, 1.0) as f32;
         let mut out = td.clone();
-        out.write_on = write_on;
+        if let Some(tb) = out.primary_text_mut() {
+            tb.write_on = write_on;
+        }
         Some(out)
     } else {
         None
@@ -4621,7 +4623,7 @@ impl PlaybackEngine {
                         seed: clip.id.0.as_u64_pair().0,
                     };
 
-                    let motion_blur = title_data.motion_blur.filter(|mb| mb.samples >= 2);
+                    let motion_blur = title_data.motion_blur().filter(|mb| mb.samples >= 2);
 
                     if let Some(mb) = motion_blur {
                         let frame_dur = self.fps.frame_duration_secs();

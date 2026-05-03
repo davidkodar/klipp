@@ -86,7 +86,7 @@ impl NewInspectorPanel {
                 let (clip_name, name_color) = if let Some((_, c)) = clip_info {
                     let name = match &c.kind {
                         klipp_timeline::ClipKind::Title(td) => {
-                            let text_preview = if td.text.len() > 30 { format!("{}...", &td.text[..27]) } else { td.text.clone() };
+                            let text_preview = if td.text().len() > 30 { format!("{}...", &td.text()[..27]) } else { td.text().clone() };
                             format!("Title: {}", text_preview)
                         }
                         klipp_timeline::ClipKind::Gap => "Gap".into(),
@@ -501,15 +501,15 @@ fn show_title_editor(
 
     // Text preview (read-only) — editing happens in the viewer (double-click)
     ui.label(egui::RichText::new("Text").strong().size(11.0));
-    let preview = if td.text.len() > 80 {
-        format!("{}...", &td.text[..77])
+    let preview = if td.text().len() > 80 {
+        format!("{}...", &td.text()[..77])
     } else {
-        td.text.clone()
+        td.text().clone()
     };
     ui.label(egui::RichText::new(&preview).size(11.0).color(theme.text_secondary));
     if state.viewer_text_edit {
         if let Some((s, e)) = state.viewer_text_selection.or(state.viewer_text_selection_locked) {
-            let selected_text = if e <= td.text.len() { &td.text[s..e] } else { "" };
+            let selected_text = if e <= td.text().len() { &td.text()[s..e] } else { "" };
             if !selected_text.is_empty() {
                 ui.label(egui::RichText::new(format!("Selected: \"{}\"", selected_text)).size(9.0).color(theme.accent));
             }
@@ -521,7 +521,7 @@ fn show_title_editor(
 
     // Font family
     ui.label(egui::RichText::new("Font").strong().size(11.0));
-    let current_font = &td.font_name;
+    let current_font = &td.font_name();
     let display_name = if current_font == "sans-serif" || current_font.is_empty() {
         "Noto Sans (Default)"
     } else { current_font };
@@ -531,16 +531,16 @@ fn show_title_editor(
         .show_ui(ui, |ui| {
             if ui.selectable_label(current_font == "sans-serif" || current_font.is_empty(), "Noto Sans (Default)").clicked() {
                 cmds.push(AppCommand::UpdateTitleData {
-                    clip_id, text: td.text.clone(), font_size: td.font_size,
-                    font_name: "sans-serif".to_string(), font_style: font_style_to_u8(td.font_style), color: td.color,
+                    clip_id, text: td.text().clone(), font_size: td.font_size(),
+                    font_name: "sans-serif".to_string(), font_style: font_style_to_u8(td.font_style()), color: td.color(),
                 });
             }
             ui.separator();
             for family in &state.available_fonts {
                 if ui.selectable_label(current_font == family, family).clicked() {
                     cmds.push(AppCommand::UpdateTitleData {
-                        clip_id, text: td.text.clone(), font_size: td.font_size,
-                        font_name: family.clone(), font_style: font_style_to_u8(td.font_style), color: td.color,
+                        clip_id, text: td.text().clone(), font_size: td.font_size(),
+                        font_name: family.clone(), font_style: font_style_to_u8(td.font_style()), color: td.color(),
                     });
                 }
             }
@@ -548,8 +548,8 @@ fn show_title_editor(
     ui.add_space(4.0);
 
     // Bold / Italic toggles
-    let is_bold = matches!(td.font_style, klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic);
-    let is_italic = matches!(td.font_style, klipp_timeline::FontStyle::Italic | klipp_timeline::FontStyle::BoldItalic);
+    let is_bold = matches!(td.font_style(), klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic);
+    let is_italic = matches!(td.font_style(), klipp_timeline::FontStyle::Italic | klipp_timeline::FontStyle::BoldItalic);
     ui.horizontal(|ui| {
         let bold_text = if is_bold { egui::RichText::new(" B ").strong() } else { egui::RichText::new(" B ").color(theme.text_dim) };
         let italic_text = if is_italic { egui::RichText::new(" I ").italics() } else { egui::RichText::new(" I ").color(theme.text_dim) };
@@ -558,14 +558,14 @@ fn show_title_editor(
                 (true, true) => klipp_timeline::FontStyle::BoldItalic, (true, false) => klipp_timeline::FontStyle::Bold,
                 (false, true) => klipp_timeline::FontStyle::Italic, (false, false) => klipp_timeline::FontStyle::Regular,
             };
-            cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text.clone(), font_size: td.font_size, font_name: td.font_name.clone(), font_style: font_style_to_u8(new_style), color: td.color });
+            cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text().clone(), font_size: td.font_size(), font_name: td.font_name().clone(), font_style: font_style_to_u8(new_style), color: td.color() });
         }
         if ui.selectable_label(is_italic, italic_text).clicked() {
             let new_style = match (is_bold, !is_italic) {
                 (true, true) => klipp_timeline::FontStyle::BoldItalic, (true, false) => klipp_timeline::FontStyle::Bold,
                 (false, true) => klipp_timeline::FontStyle::Italic, (false, false) => klipp_timeline::FontStyle::Regular,
             };
-            cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text.clone(), font_size: td.font_size, font_name: td.font_name.clone(), font_style: font_style_to_u8(new_style), color: td.color });
+            cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text().clone(), font_size: td.font_size(), font_name: td.font_name().clone(), font_style: font_style_to_u8(new_style), color: td.color() });
         }
     });
     ui.add_space(8.0);
@@ -579,15 +579,15 @@ fn show_title_editor(
     let sel_range = effective_selection.unwrap_or((0, 0));
 
     // Determine effective font size for display
-    let (display_size, size_is_mixed) = if has_selection && !td.style_runs.is_empty() {
+    let (display_size, size_is_mixed) = if has_selection && !td.style_runs().is_empty() {
         let mut sizes: Vec<f32> = Vec::new();
-        for run in &td.style_runs {
+        for run in &td.style_runs() {
             if run.start < sel_range.1 && run.end > sel_range.0 {
-                sizes.push(run.font_size.unwrap_or(td.font_size));
+                sizes.push(run.font_size.unwrap_or(td.font_size()));
             }
         }
         if sizes.is_empty() {
-            (td.font_size, false)
+            (td.font_size(), false)
         } else if sizes.iter().all(|s| (*s - sizes[0]).abs() < 0.5) {
             (sizes[0], false)
         } else {
@@ -595,9 +595,9 @@ fn show_title_editor(
         }
     } else if state.viewer_text_edit {
         // No selection — show font size at cursor position
-        (state.viewer_text_cursor_font_size.unwrap_or(td.font_size), false)
+        (state.viewer_text_cursor_font_size.unwrap_or(td.font_size()), false)
     } else {
-        (td.font_size, false)
+        (td.font_size(), false)
     };
 
     ui.horizontal(|ui| {
@@ -615,21 +615,21 @@ fn show_title_editor(
                 property: "font_size".into(), value: format!("{font_size}"),
             });
         } else {
-            cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text.clone(), font_size, font_name: td.font_name.clone(), font_style: font_style_to_u8(td.font_style), color: td.color });
+            cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text().clone(), font_size, font_name: td.font_name().clone(), font_style: font_style_to_u8(td.font_style()), color: td.color() });
         }
     }
     ui.add_space(8.0);
 
     // Text color — selection-aware
-    let (display_color, color_is_mixed) = if has_selection && !td.style_runs.is_empty() {
+    let (display_color, color_is_mixed) = if has_selection && !td.style_runs().is_empty() {
         let mut colors: Vec<[u8; 4]> = Vec::new();
-        for run in &td.style_runs {
+        for run in &td.style_runs() {
             if run.start < sel_range.1 && run.end > sel_range.0 {
-                colors.push(run.color.unwrap_or(td.color));
+                colors.push(run.color.unwrap_or(td.color()));
             }
         }
         if colors.is_empty() {
-            (td.color, false)
+            (td.color(), false)
         } else if colors.iter().all(|c| *c == colors[0]) {
             (colors[0], false)
         } else {
@@ -637,9 +637,9 @@ fn show_title_editor(
         }
     } else if state.viewer_text_edit {
         // No selection — show color at cursor position
-        (state.viewer_text_cursor_color.unwrap_or(td.color), false)
+        (state.viewer_text_cursor_color.unwrap_or(td.color()), false)
     } else {
-        (td.color, false)
+        (td.color(), false)
     };
 
     ui.horizontal(|ui| {
@@ -657,7 +657,7 @@ fn show_title_editor(
                 property: "color".into(), value: serde_json::to_string(&c).unwrap_or_default(),
             });
         } else {
-            cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text.clone(), font_size: td.font_size, font_name: td.font_name.clone(), font_style: font_style_to_u8(td.font_style), color: [color.r(), color.g(), color.b(), color.a()] });
+            cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text().clone(), font_size: td.font_size(), font_name: td.font_name().clone(), font_style: font_style_to_u8(td.font_style()), color: [color.r(), color.g(), color.b(), color.a()] });
         }
     }
 
@@ -687,7 +687,7 @@ fn show_title_editor(
                         property: "color".into(), value: serde_json::to_string(c).unwrap_or_default(),
                     });
                 } else {
-                    cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text.clone(), font_size: td.font_size, font_name: td.font_name.clone(), font_style: font_style_to_u8(td.font_style), color: *c });
+                    cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text().clone(), font_size: td.font_size(), font_name: td.font_name().clone(), font_style: font_style_to_u8(td.font_style()), color: *c });
                 }
             }
         }
@@ -706,7 +706,7 @@ fn show_title_editor(
                         property: "color".into(), value: serde_json::to_string(&c).unwrap_or_default(),
                     });
                 } else {
-                    cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text.clone(), font_size: td.font_size, font_name: td.font_name.clone(), font_style: font_style_to_u8(td.font_style), color: c });
+                    cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text().clone(), font_size: td.font_size(), font_name: td.font_name().clone(), font_style: font_style_to_u8(td.font_style()), color: c });
                 }
             }
         }
@@ -729,7 +729,7 @@ fn show_title_editor(
                     [100, 50, 255, 255],  // indigo
                     [200, 50, 200, 255],  // violet
                 ];
-                let sel_text = &td.text[sel_range.0..sel_range.1.min(td.text.len())];
+                let sel_text = &td.text()[sel_range.0..sel_range.1.min(td.text().len())];
                 let mut byte_pos = sel_range.0;
                 for (ci, ch) in sel_text.chars().enumerate() {
                     let color_idx = ci % rainbow.len();
@@ -744,7 +744,7 @@ fn show_title_editor(
             }
             // Fire — red to yellow gradient per character
             if ui.small_button("Fire").clicked() {
-                let sel_text = &td.text[sel_range.0..sel_range.1.min(td.text.len())];
+                let sel_text = &td.text()[sel_range.0..sel_range.1.min(td.text().len())];
                 let char_count = sel_text.chars().count().max(1);
                 let mut byte_pos = sel_range.0;
                 for (ci, ch) in sel_text.chars().enumerate() {
@@ -763,7 +763,7 @@ fn show_title_editor(
             }
             // Ocean — blue to cyan gradient
             if ui.small_button("Ocean").clicked() {
-                let sel_text = &td.text[sel_range.0..sel_range.1.min(td.text.len())];
+                let sel_text = &td.text()[sel_range.0..sel_range.1.min(td.text().len())];
                 let char_count = sel_text.chars().count().max(1);
                 let mut byte_pos = sel_range.0;
                 for (ci, ch) in sel_text.chars().enumerate() {
@@ -782,7 +782,7 @@ fn show_title_editor(
             }
             // Sunset — purple to orange
             if ui.small_button("Sunset").clicked() {
-                let sel_text = &td.text[sel_range.0..sel_range.1.min(td.text.len())];
+                let sel_text = &td.text()[sel_range.0..sel_range.1.min(td.text().len())];
                 let char_count = sel_text.chars().count().max(1);
                 let mut byte_pos = sel_range.0;
                 for (ci, ch) in sel_text.chars().enumerate() {
@@ -804,10 +804,10 @@ fn show_title_editor(
     ui.add_space(4.0);
 
     // Show style runs indicator
-    if !td.style_runs.is_empty() {
+    if !td.style_runs().is_empty() {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("{} style runs", td.style_runs.len())).size(9.0).color(theme.text_dim));
+            ui.label(egui::RichText::new(format!("{} style runs", td.style_runs().len())).size(9.0).color(theme.text_dim));
             if ui.small_button("Clear All").clicked() {
                 cmds.push(AppCommand::ClearTitleStyleRuns { clip_id });
             }
@@ -818,7 +818,7 @@ fn show_title_editor(
     // Alignment
     ui.label(egui::RichText::new("Alignment").strong().size(11.0));
     ui.horizontal(|ui| {
-        let current = match td.alignment { klipp_timeline::TextAlignment::Left => 0u8, klipp_timeline::TextAlignment::Center => 1, klipp_timeline::TextAlignment::Right => 2 };
+        let current = match td.alignment() { klipp_timeline::TextAlignment::Left => 0u8, klipp_timeline::TextAlignment::Center => 1, klipp_timeline::TextAlignment::Right => 2 };
         for (val, label) in [(0, "Left"), (1, "Center"), (2, "Right")] {
             if ui.selectable_label(current == val, label).clicked() && current != val {
                 cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: val });
@@ -829,8 +829,9 @@ fn show_title_editor(
 
     // Position
     ui.label(egui::RichText::new("Position").strong().size(11.0));
-    let mut pos_x = td.position.x;
-    let mut pos_y = td.position.y;
+    let _td_pos = td.position();
+    let mut pos_x = _td_pos.x;
+    let mut pos_y = _td_pos.y;
     let mut pos_changed = false;
     pos_changed |= ui.add(egui::Slider::new(&mut pos_x, 0.0..=1.0).text("X").step_by(0.01)).changed();
     pos_changed |= ui.add(egui::Slider::new(&mut pos_y, 0.0..=1.0).text("Y").step_by(0.01)).changed();
@@ -876,8 +877,8 @@ fn show_title_editor(
 
     // Shadow
     ui.label(egui::RichText::new("Shadow").strong().size(11.0));
-    let has_shadow = td.shadow.is_some();
-    let shadow = td.shadow.unwrap_or(klipp_timeline::TitleShadow { color: [0, 0, 0, 180], offset_x: 3.0, offset_y: 3.0, blur: 0.0 });
+    let has_shadow = td.shadow().is_some();
+    let shadow = td.shadow().unwrap_or(klipp_timeline::TitleShadow { color: [0, 0, 0, 180], offset_x: 3.0, offset_y: 3.0, blur: 0.0 });
     let mut shadow_enabled = has_shadow;
     if ui.checkbox(&mut shadow_enabled, "Enable Shadow").changed() {
         cmds.push(AppCommand::SetTitleShadow { clip_id, enabled: shadow_enabled, color: shadow.color, offset_x: shadow.offset_x, offset_y: shadow.offset_y, blur: shadow.blur });
@@ -906,8 +907,9 @@ fn show_title_editor(
     // Outline
     ui.separator();
     ui.label(egui::RichText::new("Outline").strong().size(11.0));
-    let has_outline = td.outline.is_some();
-    let outline = td.outline.unwrap_or(klipp_timeline::TextOutline { color: [255, 255, 255, 255], width: 2.0 });
+    let outlines = td.outlines();
+    let has_outline = !outlines.is_empty();
+    let outline = outlines.first().copied().unwrap_or(klipp_timeline::TextOutline { color: [255, 255, 255, 255], width: 2.0 });
     let mut outline_enabled = has_outline;
     if ui.checkbox(&mut outline_enabled, "Enable Outline").changed() {
         cmds.push(AppCommand::SetTitleOutline { clip_id, enabled: outline_enabled, color: outline.color, width: outline.width });
@@ -936,8 +938,8 @@ fn show_title_editor(
     // Glow
     ui.separator();
     ui.label(egui::RichText::new("Glow").strong().size(11.0));
-    let has_glow = td.glow.is_some();
-    let glow = td.glow.unwrap_or(klipp_timeline::TextGlow { color: [0, 200, 255, 255], radius: 10.0, intensity: 0.8 });
+    let has_glow = td.glow().is_some();
+    let glow = td.glow().unwrap_or(klipp_timeline::TextGlow { color: [0, 200, 255, 255], radius: 10.0, intensity: 0.8 });
     let mut glow_enabled = has_glow;
     if ui.checkbox(&mut glow_enabled, "Enable Glow").changed() {
         cmds.push(AppCommand::SetTitleGlow { clip_id, enabled: glow_enabled, color: glow.color, radius: glow.radius, intensity: glow.intensity });
@@ -968,8 +970,8 @@ fn show_title_editor(
     // Gradient Fill
     ui.separator();
     ui.label(egui::RichText::new("Gradient Fill").strong().size(11.0));
-    let has_gradient = td.gradient.is_some();
-    let gradient = td.gradient.clone().unwrap_or(klipp_timeline::TextGradient { top_color: [255, 200, 50, 255], bottom_color: [255, 50, 50, 255] });
+    let has_gradient = td.gradient().is_some();
+    let gradient = td.gradient().clone().unwrap_or(klipp_timeline::TextGradient { top_color: [255, 200, 50, 255], bottom_color: [255, 50, 50, 255] });
     let mut gradient_enabled = has_gradient;
     if ui.checkbox(&mut gradient_enabled, "Enable Gradient").changed() {
         cmds.push(AppCommand::SetTitleGradient { clip_id, enabled: gradient_enabled, top_color: gradient.top_color, bottom_color: gradient.bottom_color });
@@ -1000,7 +1002,7 @@ fn show_title_editor(
     ui.separator();
     ui.label(egui::RichText::new("Outline Layers").strong().size(11.0));
     {
-        let outlines = &td.outlines;
+        let outlines = &td.outlines();
         let mut new_outlines = outlines.clone();
         let mut outlines_changed = false;
 
@@ -1040,8 +1042,8 @@ fn show_title_editor(
     // ── Inner Shadow ──
     ui.separator();
     ui.label(egui::RichText::new("Inner Shadow").strong().size(11.0));
-    let has_inner = td.inner_shadow.is_some();
-    let inner = td.inner_shadow.unwrap_or(klipp_timeline::InnerShadow { color: [0, 0, 0, 180], offset_x: 2.0, offset_y: 2.0, blur: 3.0 });
+    let has_inner = td.inner_shadow().is_some();
+    let inner = td.inner_shadow().unwrap_or(klipp_timeline::InnerShadow { color: [0, 0, 0, 180], offset_x: 2.0, offset_y: 2.0, blur: 3.0 });
     let mut inner_enabled = has_inner;
     if ui.checkbox(&mut inner_enabled, "Enable").changed() {
         cmds.push(AppCommand::SetTitleInnerShadow { clip_id, enabled: inner_enabled, color: inner.color, offset_x: inner.offset_x, offset_y: inner.offset_y, blur: inner.blur });
@@ -1075,7 +1077,7 @@ fn show_title_editor(
     ui.separator();
     ui.label(egui::RichText::new("Pattern Fill").strong().size(11.0));
     {
-        let pattern_idx: usize = match &td.pattern_fill {
+        let pattern_idx: usize = match &td.pattern_fill() {
             None => 0,
             Some(klipp_timeline::TextPattern::HorizontalStripes { .. }) => 1,
             Some(klipp_timeline::TextPattern::VerticalStripes { .. }) => 2,
@@ -1104,7 +1106,7 @@ fn show_title_editor(
             });
         }
         // Show pattern params if active
-        if let Some(pf) = &td.pattern_fill {
+        if let Some(pf) = &td.pattern_fill() {
             let (mut ca, mut cb, mut size) = match pf {
                 klipp_timeline::TextPattern::HorizontalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
                 klipp_timeline::TextPattern::VerticalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
@@ -1140,14 +1142,14 @@ fn show_title_editor(
     ui.separator();
     ui.label(egui::RichText::new("Texture Fill").strong().size(11.0));
     {
-        let has_texture = td.texture_fill_path.is_some();
+        let has_texture = td.texture_fill_path().is_some();
         let mut tex_enabled = has_texture;
         if ui.checkbox(&mut tex_enabled, "Enable").changed()
             && !tex_enabled {
                 cmds.push(AppCommand::SetTitleTextureFill { clip_id, path: None });
             }
         if has_texture {
-            if let Some(ref tex_path) = td.texture_fill_path {
+            if let Some(ref tex_path) = td.texture_fill_path() {
                 let display_name = std::path::Path::new(tex_path)
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -1184,8 +1186,8 @@ fn show_title_editor(
     // ── 3D Extrusion ──
     ui.separator();
     ui.label(egui::RichText::new("3D Extrusion").strong().size(11.0));
-    let has_ext = td.extrusion.is_some();
-    let ext = td.extrusion.unwrap_or(klipp_timeline::TextExtrusion {
+    let has_ext = td.extrusion().is_some();
+    let ext = td.extrusion().unwrap_or(klipp_timeline::TextExtrusion {
         depth: 10.0,
         angle: 135.0,
         face_color: [0, 0, 0, 0],
@@ -1233,15 +1235,15 @@ fn show_title_editor(
     // ── Typography ──
     ui.separator();
     ui.label(egui::RichText::new("Typography").strong().size(11.0));
-    let mut tracking = td.tracking;
+    let mut tracking = td.tracking();
     if ui.add(egui::DragValue::new(&mut tracking).range(-10.0..=50.0).speed(0.2).suffix(" px").prefix("Tracking: ").fixed_decimals(1)).changed() {
         cmds.push(AppCommand::SetTitleTracking { clip_id, tracking });
     }
-    let mut line_sp = td.line_spacing;
+    let mut line_sp = td.line_spacing();
     if ui.add(egui::DragValue::new(&mut line_sp).range(0.5..=4.0).speed(0.05).suffix("x").prefix("Line Spacing: ").fixed_decimals(2)).changed() {
         cmds.push(AppCommand::SetTitleLineSpacing { clip_id, line_spacing: line_sp });
     }
-    let mut write_on = td.write_on;
+    let mut write_on = td.write_on();
     if ui.add(egui::Slider::new(&mut write_on, 0.0..=1.0).text("Write-On").step_by(0.01)).changed() {
         cmds.push(AppCommand::SetTitleWriteOn { clip_id, write_on });
     }
@@ -1251,7 +1253,7 @@ fn show_title_editor(
     ui.separator();
     ui.label(egui::RichText::new("Text Path").strong().size(11.0));
     {
-        let path_idx: usize = match &td.text_path {
+        let path_idx: usize = match &td.text_path() {
             None => 0,
             Some(klipp_timeline::TextPath::Arc { .. }) => 1,
             Some(klipp_timeline::TextPath::Circle { .. }) => 2,
@@ -1279,7 +1281,7 @@ fn show_title_editor(
             cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: pk, p1, p2, p3 });
         }
         // Show path params if active
-        if let Some(path) = &td.text_path {
+        if let Some(path) = &td.text_path() {
             let mut path_changed = false;
             match path {
                 klipp_timeline::TextPath::Arc { radius, start_angle, sweep } => {
@@ -1316,7 +1318,7 @@ fn show_title_editor(
     ui.separator();
     ui.label(egui::RichText::new("Character Animation").strong().size(11.0));
     {
-        let mut enabled = td.char_animation.is_some();
+        let mut enabled = td.char_animation().is_some();
         if ui.checkbox(&mut enabled, "Enable").changed() {
             cmds.push(AppCommand::SetTitleCharAnimation {
                 clip_id,
@@ -1327,7 +1329,7 @@ fn show_title_editor(
                 wave_speed: 1.0,
             });
         }
-        if let Some(anim) = &td.char_animation {
+        if let Some(anim) = &td.char_animation() {
             let mut stagger = anim.stagger;
             let mut wave_amp = anim.wave_amplitude;
             let mut wave_spd = anim.wave_speed;
@@ -1523,7 +1525,7 @@ fn show_title_editor(
     ui.separator();
     ui.label(egui::RichText::new("Motion Blur").strong().size(11.0));
     {
-        let mut enabled = td.motion_blur.is_some();
+        let mut enabled = td.motion_blur().is_some();
         if ui.checkbox(&mut enabled, "Enable").changed() {
             cmds.push(AppCommand::SetTitleMotionBlur {
                 clip_id,
@@ -1532,7 +1534,7 @@ fn show_title_editor(
                 samples: 8,
             });
         }
-        if let Some(mb) = &td.motion_blur {
+        if let Some(mb) = &td.motion_blur() {
             let mut shutter = mb.shutter_angle;
             let mut samples = mb.samples as i32;
             let mut mb_changed = false;

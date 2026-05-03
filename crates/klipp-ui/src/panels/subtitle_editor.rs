@@ -60,11 +60,11 @@ fn collect_subtitle_clips(seq: &klipp_timeline::Sequence) -> Vec<SubRow> {
                     timeline_out: clip.timeline_out,
                     source_in: clip.source_in,
                     source_out: clip.source_out,
-                    text: td.text.clone(),
-                    font_size: td.font_size,
-                    font_name: td.font_name.clone(),
-                    font_style_u8: font_style_to_u8(td.font_style),
-                    color: td.color,
+                    text: td.text().clone(),
+                    font_size: td.font_size(),
+                    font_name: td.font_name().clone(),
+                    font_style_u8: font_style_to_u8(td.font_style()),
+                    color: td.color(),
                 });
             }
         }
@@ -652,10 +652,12 @@ mod tests {
         let to = Timecode::from_frames(end_frames, 24);
         Clip {
             id: ClipId::new(),
-            kind: ClipKind::Title(TitleData {
-                text: text.to_string(),
-                ..TitleData::default()
-            }),
+            kind: ClipKind::Title({
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = text.to_string();
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td
+}),
             timeline_in: ti,
             timeline_out: to,
             source_in: Timecode::from_frames(0, 24),

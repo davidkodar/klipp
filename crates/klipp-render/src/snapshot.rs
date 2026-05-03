@@ -258,7 +258,7 @@ impl SequenceSnapshot {
                     clips.push(SubtitleClipSnapshot {
                         timeline_start_frame: time_to_frame(&clip.timeline_in, fps),
                         timeline_end_frame: time_to_frame(&clip.timeline_out, fps),
-                        text: data.text.clone(),
+                        text: data.text(),
                     });
                 }
             }
@@ -1019,7 +1019,7 @@ mod tests {
         let v1 = snap.video_tracks.iter().find(|t| !t.clips.is_empty()).unwrap();
         match &v1.clips[0].kind {
             ClipKindSnapshot::Title(data) => {
-                assert_eq!(data.text, title.text);
+                assert_eq!(data.text(), title.text());
             }
             _ => panic!("expected Title clip"),
         }
@@ -1422,9 +1422,10 @@ mod tests {
         let mut sub_track = klipp_timeline::Track::new("Subtitles", TrackKind::Subtitle);
         sub_track.clips.push(Clip {
             id: ClipId::new(),
-            kind: ClipKind::Title(klipp_timeline::TitleData {
-                text: "Hello World".to_string(),
-                ..klipp_timeline::TitleData::default()
+            kind: ClipKind::Title({
+                let mut tb = klipp_timeline::TextBox::default();
+                tb.text = "Hello World".to_string();
+                klipp_timeline::TitleData::single_text(tb)
             }),
             timeline_in: make_rational(24, 24),
             timeline_out: make_rational(72, 24),
@@ -1434,9 +1435,10 @@ mod tests {
         });
         sub_track.clips.push(Clip {
             id: ClipId::new(),
-            kind: ClipKind::Title(klipp_timeline::TitleData {
-                text: "Second subtitle".to_string(),
-                ..klipp_timeline::TitleData::default()
+            kind: ClipKind::Title({
+                let mut tb = klipp_timeline::TextBox::default();
+                tb.text = "Second subtitle".to_string();
+                klipp_timeline::TitleData::single_text(tb)
             }),
             timeline_in: make_rational(96, 24),
             timeline_out: make_rational(120, 24),
@@ -1479,9 +1481,10 @@ mod tests {
         let mut sub_track = klipp_timeline::Track::new("Subs", TrackKind::Subtitle);
         sub_track.clips.push(Clip {
             id: ClipId::new(),
-            kind: ClipKind::Title(klipp_timeline::TitleData {
-                text: "Test".to_string(),
-                ..klipp_timeline::TitleData::default()
+            kind: ClipKind::Title({
+                let mut tb = klipp_timeline::TextBox::default();
+                tb.text = "Test".to_string();
+                klipp_timeline::TitleData::single_text(tb)
             }),
             timeline_in: make_rational(0, 24),
             timeline_out: make_rational(24, 24),

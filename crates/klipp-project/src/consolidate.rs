@@ -296,7 +296,8 @@ fn build_copy_plan(
         for track in &seq.tracks {
             for clip in &track.clips {
                 if let ClipKind::Title(td) = &clip.kind {
-                    if let Some(tex) = &td.texture_fill_path {
+                    let tex_owned = td.texture_fill_path();
+                    if let Some(tex) = tex_owned.as_deref() {
                         if texture_new_paths.contains_key(tex) {
                             continue;
                         }
@@ -324,7 +325,7 @@ fn build_copy_plan(
                             subfolder: "textures",
                         });
                         texture_new_paths.insert(
-                            tex.clone(),
+                            tex.to_string(),
                             options.dest_dir.join("media").join("textures").join(&dst),
                         );
                     }
@@ -448,9 +449,12 @@ fn remap_sequences(original: &[Sequence], plan: &CopyPlan) -> Vec<Sequence> {
         for track in &mut seq.tracks {
             for clip in &mut track.clips {
                 if let ClipKind::Title(td) = &mut clip.kind {
-                    if let Some(orig) = td.texture_fill_path.clone() {
+                    if let Some(orig) = td.texture_fill_path() {
                         if let Some(new) = plan.texture_new_paths.get(&orig) {
-                            td.texture_fill_path = Some(new.to_string_lossy().to_string());
+                            if let Some(tb) = td.primary_text_mut() {
+                                tb.texture_fill_path =
+                                    Some(new.to_string_lossy().to_string());
+                            }
                         }
                     }
                 }

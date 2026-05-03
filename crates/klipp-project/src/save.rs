@@ -327,41 +327,50 @@ fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
         ClipKind::Media { media_id } => ClipKindJson::Media {
             media_id: media_id.to_string(),
         },
-        ClipKind::Title(data) => ClipKindJson::Title {
-            text: data.text.clone(),
-            font_size: data.font_size,
-            font_name: data.font_name.clone(),
-            font_style: format!("{:?}", data.font_style),
-            color: data.color,
-            alignment: format!("{:?}", data.alignment),
-            position_x: data.position.x,
-            position_y: data.position.y,
-            background: serde_json::to_value(&data.background).unwrap_or_default(),
-            shadow: serde_json::to_value(&data.shadow).unwrap_or_default(),
-            outline: serde_json::to_value(&data.outline).unwrap_or_default(),
-            outlines: serde_json::to_value(&data.outlines).unwrap_or_default(),
-            glow: serde_json::to_value(&data.glow).unwrap_or_default(),
-            gradient: serde_json::to_value(&data.gradient).unwrap_or_default(),
-            inner_shadow: serde_json::to_value(&data.inner_shadow).unwrap_or_default(),
-            pattern_fill: serde_json::to_value(&data.pattern_fill).unwrap_or_default(),
-            tracking: data.tracking,
-            line_spacing: data.line_spacing,
-            write_on: data.write_on,
-            extrusion: serde_json::to_value(&data.extrusion).unwrap_or_default(),
-            text_path: serde_json::to_value(&data.text_path).unwrap_or_default(),
-            char_animation: serde_json::to_value(&data.char_animation).unwrap_or_default(),
-            // Store texture fill paths relative to the project dir for
-            // portability. An empty relative path is impossible here (a
-            // texture is always an actual file), so the fallback just
-            // keeps the original string.
-            texture_fill_path: data.texture_fill_path.as_ref().map(|p| {
-                crate::path_util::to_project_relative(project_dir, Path::new(p))
-                    .to_string_lossy()
-                    .to_string()
-            }),
-            motion_blur: serde_json::to_value(&data.motion_blur).unwrap_or_default(),
-            style_runs: serde_json::to_value(&data.style_runs).unwrap_or_default(),
-        },
+        ClipKind::Title(data) => {
+            // Serialise via the legacy single-text-flat shape for
+            // commit 1: read the primary TextBox + first object's
+            // transform centre. Multi-object titles will get a
+            // proper `objects` array in the JSON in a follow-up
+            // commit when the loader can read them.
+            let tb = data.primary_text_or_default();
+            let pos = data.position();
+            ClipKindJson::Title {
+                text: tb.text.clone(),
+                font_size: tb.font_size,
+                font_name: tb.font_name.clone(),
+                font_style: format!("{:?}", tb.font_style),
+                color: tb.color,
+                alignment: format!("{:?}", tb.alignment),
+                position_x: pos.x,
+                position_y: pos.y,
+                background: serde_json::to_value(&data.background).unwrap_or_default(),
+                shadow: serde_json::to_value(&tb.shadow).unwrap_or_default(),
+                // Single-outline JSON field is legacy; the canonical
+                // list lives under `outlines`. Emit the first outline
+                // as `outline` for compat with older readers, and the
+                // full list under `outlines`.
+                outline: serde_json::to_value(tb.outlines.first()).unwrap_or_default(),
+                outlines: serde_json::to_value(&tb.outlines).unwrap_or_default(),
+                glow: serde_json::to_value(&tb.glow).unwrap_or_default(),
+                gradient: serde_json::to_value(&tb.gradient).unwrap_or_default(),
+                inner_shadow: serde_json::to_value(&tb.inner_shadow).unwrap_or_default(),
+                pattern_fill: serde_json::to_value(&tb.pattern_fill).unwrap_or_default(),
+                tracking: tb.tracking,
+                line_spacing: tb.line_spacing,
+                write_on: tb.write_on,
+                extrusion: serde_json::to_value(&tb.extrusion).unwrap_or_default(),
+                text_path: serde_json::to_value(&tb.text_path).unwrap_or_default(),
+                char_animation: serde_json::to_value(&tb.char_animation).unwrap_or_default(),
+                texture_fill_path: tb.texture_fill_path.as_ref().map(|p| {
+                    crate::path_util::to_project_relative(project_dir, Path::new(p))
+                        .to_string_lossy()
+                        .to_string()
+                }),
+                motion_blur: serde_json::to_value(&tb.motion_blur).unwrap_or_default(),
+                style_runs: serde_json::to_value(&tb.style_runs).unwrap_or_default(),
+            }
+        }
         ClipKind::Gap => ClipKindJson::Gap,
         ClipKind::Sequence { sequence_id } => ClipKindJson::Sequence {
             sequence_id: sequence_id.to_string(),

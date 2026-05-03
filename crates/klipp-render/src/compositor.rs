@@ -15,11 +15,13 @@ use std::sync::Arc;
 /// or None when the animation is Static or non-typewriter.
 fn typewriter_override(td: &TitleData, clip_elapsed_secs: f64) -> Option<TitleData> {
     if let TitleAnimationType::Typewriter { chars_per_sec } = td.animation_type {
-        let chars = td.text.chars().count().max(1);
+        let chars = td.text().chars().count().max(1);
         let write_on = ((clip_elapsed_secs * chars_per_sec as f64) / chars as f64)
             .clamp(0.0, 1.0) as f32;
         let mut out = td.clone();
-        out.write_on = write_on;
+        if let Some(tb) = out.primary_text_mut() {
+            tb.write_on = write_on;
+        }
         Some(out)
     } else {
         None

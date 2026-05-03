@@ -1103,7 +1103,7 @@ impl ViewerPanel {
                                 .find_map(|t| t.find_clip(clip_id))
                                 .and_then(|c| c.title_data())
                             {
-                                state.viewer_text_edit_buffer = td.text.clone();
+                                state.viewer_text_edit_buffer = td.text().clone();
                             }
                         }
                     }
@@ -1158,7 +1158,7 @@ impl ViewerPanel {
                 .and_then(|cid| state.sequence().tracks.iter()
                     .find_map(|t| t.find_clip(cid))
                     .and_then(|c| c.title_data())
-                    .map(|td| td.font_size))
+                    .map(|td| td.font_size()))
                 .unwrap_or(72.0);
 
             // Scale the editor font to approximate the title size in the viewer.
@@ -1245,7 +1245,7 @@ impl ViewerPanel {
                 let style_info: Option<(Vec<klipp_timeline::StyleRun>, f32, [u8; 4])> = state.sequence().tracks.iter()
                     .find_map(|t| t.find_clip(clip_id))
                     .and_then(|c| c.title_data())
-                    .map(|td| (td.style_runs.clone(), td.font_size, td.color));
+                    .map(|td| (td.style_runs().clone(), td.font_size(), td.color()));
                 if let Some((runs, base_size, base_color)) = style_info {
                     let cursor_byte = char_to_byte(&state.viewer_text_edit_buffer, state.viewer_text_cursor);
                     let check_byte = if cursor_byte > 0 { cursor_byte - 1 } else { cursor_byte };
@@ -1272,7 +1272,7 @@ impl ViewerPanel {
                         .find_map(|t| t.find_clip(clip_id))
                         .and_then(|c| c.title_data())
                     {
-                        let font_style = match td.font_style {
+                        let font_style = match td.font_style() {
                             klipp_timeline::FontStyle::Regular => 0u8,
                             klipp_timeline::FontStyle::Bold => 1,
                             klipp_timeline::FontStyle::Italic => 2,
@@ -1281,10 +1281,10 @@ impl ViewerPanel {
                         cmds.push(AppCommand::UpdateTitleData {
                             clip_id,
                             text: update_text,
-                            font_size: td.font_size,
-                            font_name: td.font_name.clone(),
+                            font_size: td.font_size(),
+                            font_name: td.font_name().clone(),
                             font_style,
-                            color: td.color,
+                            color: td.color(),
                         });
                     }
                 }
@@ -4069,11 +4069,13 @@ mod text_editor_tests {
         let mut cursor = text.chars().count(); // start at end
 
         // Compute positions
-        let td = klipp_timeline::TitleData {
-            text: text.clone(),
-            font_size: 72.0,
-            ..klipp_timeline::TitleData::default()
-        };
+        let td = {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = text.clone();
+    tb.font_size = 72.0;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td
+};
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
 
         // Verify we have correct number of positions
@@ -4112,11 +4114,13 @@ mod text_editor_tests {
             sim_insert(&mut text, &mut cursor, &ch.to_string());
 
             // Simulate UpdateTitleData: create TitleData with new text
-            let td = klipp_timeline::TitleData {
-                text: text.clone(),
-                font_size: 72.0,
-                ..klipp_timeline::TitleData::default()
-            };
+            let td = {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = text.clone();
+    tb.font_size = 72.0;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td
+};
 
             // Recompute char positions (as upload_title_overlay would)
             let positions = renderer.compute_char_positions(&td, 1920, 1080);
@@ -4165,11 +4169,13 @@ mod text_editor_tests {
         for ch in "Beautiful ".chars() {
             sim_insert(&mut text, &mut cursor, &ch.to_string());
 
-            let td = klipp_timeline::TitleData {
-                text: text.clone(),
-                font_size: 72.0,
-                ..klipp_timeline::TitleData::default()
-            };
+            let td = {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = text.clone();
+    tb.font_size = 72.0;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td
+};
             let positions = renderer.compute_char_positions(&td, 1920, 1080);
 
             let cc = text.chars().count();
@@ -4238,11 +4244,13 @@ mod text_editor_tests {
     fn test_mouse_click_then_type() {
         let mut renderer = klipp_title::TitleRenderer::new();
         let text = "Hello World";
-        let td = klipp_timeline::TitleData {
-            text: text.to_string(),
-            font_size: 72.0,
-            ..klipp_timeline::TitleData::default()
-        };
+        let td = {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = text.to_string();
+    tb.font_size = 72.0;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td
+};
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
 
         // Verify positions are sequential

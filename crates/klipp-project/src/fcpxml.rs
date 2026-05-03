@@ -133,11 +133,11 @@ pub fn generate_fcpxml(seq: &Sequence, media_pool: &MediaPool) -> String {
                     let duration = tc_str(clip.duration(), fps);
                     xml.push_str(&format!(
                         "            <title name=\"{}\" offset=\"{}\" duration=\"{}\">\n",
-                        escape_xml(&td.text), offset, duration
+                        escape_xml(&td.text()), offset, duration
                     ));
                     xml.push_str(&format!(
                         "              <text>{}</text>\n",
-                        escape_xml(&td.text)
+                        escape_xml(&td.text())
                     ));
                     xml.push_str("            </title>\n");
                 }
@@ -548,7 +548,7 @@ mod tests {
         let pool = MediaPool::new();
 
         let mut td = TitleData::default();
-        td.text = "Hello World".into();
+        if let Some(tb) = td.primary_text_mut() { tb.text = "Hello World".into(); }
         let clip = make_clip_with_kind(
             ClipKind::Title(td),
             RationalTime { value: 0, rate: 24 },
@@ -710,7 +710,7 @@ mod tests {
         let pool = MediaPool::new();
 
         let mut td = TitleData::default();
-        td.text = "Rock & Roll <Live> \"Show\"".into();
+        if let Some(tb) = td.primary_text_mut() { tb.text = "Rock & Roll <Live> \"Show\"".into(); }
         let clip = make_clip_with_kind(
             ClipKind::Title(td),
             RationalTime { value: 0, rate: 24 },

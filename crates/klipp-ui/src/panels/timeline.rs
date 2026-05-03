@@ -4455,7 +4455,7 @@ impl TimelinePanel {
                 // Text preview
                 if max_text_width > 10.0 {
                     let text_pos = egui::pos2(clip_rect.left() + 22.0, clip_rect.center().y);
-                    let truncated = truncate_text(&title_data.text, max_text_width, font_size);
+                    let truncated = truncate_text(&title_data.text(), max_text_width, font_size);
                     let font = egui::FontId::proportional(font_size);
                     let shadow_color = egui::Color32::from_rgba_premultiplied(0, 0, 0, 200);
                     for &(dx, dy) in &[(-1.0f32, 0.0f32), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
@@ -6688,7 +6688,7 @@ impl TimelinePanel {
                         state.viewer_char_positions.clear();
                         state.viewer_text_cursor = 0;
                         state.viewer_text_select_anchor = None;
-                        state.viewer_text_edit_buffer = td.text.clone();
+                        state.viewer_text_edit_buffer = td.text().clone();
                         cmds.push(AppCommand::SelectClip(Some(clip_id)));
                         ui.close_menu();
                     }
@@ -6727,7 +6727,7 @@ impl TimelinePanel {
                     ui.separator();
                     {
                         // Alignment submenu
-                        let current_align = &td.alignment;
+                        let current_align = &td.alignment();
                         ui.menu_button(format!("\u{2630} Alignment: {}", match current_align {
                             klipp_timeline::TextAlignment::Left => "Left",
                             klipp_timeline::TextAlignment::Center => "Center",
@@ -6747,43 +6747,43 @@ impl TimelinePanel {
                             }
                         });
                         // Font style submenu
-                        let is_bold = matches!(td.font_style, klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic);
-                        let is_italic = matches!(td.font_style, klipp_timeline::FontStyle::Italic | klipp_timeline::FontStyle::BoldItalic);
+                        let is_bold = matches!(td.font_style(), klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic);
+                        let is_italic = matches!(td.font_style(), klipp_timeline::FontStyle::Italic | klipp_timeline::FontStyle::BoldItalic);
                         ui.menu_button("A Font Style", |ui| {
                             if ui.selectable_label(!is_bold && !is_italic, "Regular").clicked() {
                                 cmds.push(AppCommand::UpdateTitleData {
-                                    clip_id, text: td.text.clone(), font_size: td.font_size,
-                                    font_name: td.font_name.clone(), font_style: 0, color: td.color,
+                                    clip_id, text: td.text().clone(), font_size: td.font_size(),
+                                    font_name: td.font_name().clone(), font_style: 0, color: td.color(),
                                 });
                                 ui.close_menu();
                             }
                             if ui.selectable_label(is_bold && !is_italic, "Bold").clicked() {
                                 cmds.push(AppCommand::UpdateTitleData {
-                                    clip_id, text: td.text.clone(), font_size: td.font_size,
-                                    font_name: td.font_name.clone(), font_style: 1, color: td.color,
+                                    clip_id, text: td.text().clone(), font_size: td.font_size(),
+                                    font_name: td.font_name().clone(), font_style: 1, color: td.color(),
                                 });
                                 ui.close_menu();
                             }
                             if ui.selectable_label(!is_bold && is_italic, "Italic").clicked() {
                                 cmds.push(AppCommand::UpdateTitleData {
-                                    clip_id, text: td.text.clone(), font_size: td.font_size,
-                                    font_name: td.font_name.clone(), font_style: 2, color: td.color,
+                                    clip_id, text: td.text().clone(), font_size: td.font_size(),
+                                    font_name: td.font_name().clone(), font_style: 2, color: td.color(),
                                 });
                                 ui.close_menu();
                             }
                             if ui.selectable_label(is_bold && is_italic, "Bold Italic").clicked() {
                                 cmds.push(AppCommand::UpdateTitleData {
-                                    clip_id, text: td.text.clone(), font_size: td.font_size,
-                                    font_name: td.font_name.clone(), font_style: 3, color: td.color,
+                                    clip_id, text: td.text().clone(), font_size: td.font_size(),
+                                    font_name: td.font_name().clone(), font_style: 3, color: td.color(),
                                 });
                                 ui.close_menu();
                             }
                         });
                         // Reset styles (clear all style runs)
-                        if !td.style_runs.is_empty()
+                        if !td.style_runs().is_empty()
                             && ui.button("\u{21BA} Reset Text Styles").clicked() {
                                 cmds.push(AppCommand::ApplyTitleStyle {
-                                    clip_id, range_start: 0, range_end: td.text.len(),
+                                    clip_id, range_start: 0, range_end: td.text().len(),
                                     property: "clear_all".into(), value: String::new(),
                                 });
                                 ui.close_menu();

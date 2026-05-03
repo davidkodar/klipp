@@ -157,77 +157,402 @@ pub struct TitleAsset {
     pub animation: Option<String>,
 }
 
+/// Stable identifier for a `TitleObject` within its parent `TitleData`.
+/// Used by selection state (which object is active for editing) and
+/// command dispatch (which object to move / resize / restyle). Plain
+/// `u32` keyed via a per-`TitleData` counter rather than a UUID — the
+/// scope is tiny (typically 1-5 objects per title), and integer keys
+/// are cheap to compare and serialise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TitleObjectId(pub u32);
+
+/// Position + size + rotation + anchor for a `TitleObject` on the
+/// title canvas. All in normalised (0.0..1.0) coordinates, so a title
+/// renders identically at 720p, 1080p, 4K, etc. The renderer maps
+/// these to absolute pixels at the target resolution.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct ObjectTransform {
+    /// Normalised centre of the object's bounding box.
+    pub center: TitlePosition,
+    /// Normalised width / height of the bounding box (1.0 = full
+    /// frame extent). `width = 1.0, height = 0.2` is a full-frame-
+    /// width × 20%-frame-height bar — a typical lower-third bar.
+    pub size: TitlePosition,
+    /// Rotation in degrees, positive = clockwise.
+    #[serde(default)]
+    pub rotation: f32,
+    /// Anchor point inside the bounding box (normalised 0..1 within
+    /// the box). 0.5,0.5 = centre (default). Drives rotation pivot
+    /// and resize behaviour.
+    #[serde(default = "default_anchor_norm")]
+    pub anchor_norm: TitlePosition,
+}
+
+fn default_anchor_norm() -> TitlePosition {
+    TitlePosition { x: 0.5, y: 0.5 }
+}
+
+/// One layer in a `TitleData`. Each object is independently selectable,
+/// movable, resizable, and rotatable on the title canvas, with its own
+/// style and content. Objects render in order — the first object is at
+/// the back, the last at the front (Photoshop-style stacking).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TitleData {
+pub struct TitleObject {
+    pub id: TitleObjectId,
+    /// Display name for the object list panel. Empty string falls
+    /// back to the variant kind in the UI.
+    #[serde(default)]
+    pub name: String,
+    pub transform: ObjectTransform,
+    /// Hide the object in the renderer. Selection state still
+    /// tracks it; toggling visibility via the eye icon doesn't
+    /// disturb editing focus.
+    #[serde(default = "default_true")]
+    pub visible: bool,
+    /// Lock the object — prevents on-canvas dragging/handle-resize
+    /// without affecting Inspector property edits.
+    #[serde(default)]
+    pub locked: bool,
+    pub content: TitleObjectContent,
+}
+
+fn default_true() -> bool { true }
+
+/// What kind of layer an object is. `TextBox` for typography,
+/// `Shape` for primitives like the bar in a lower-third. New layer
+/// kinds (image, mask, sub-title, etc.) extend this enum without
+/// disturbing existing instances.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum TitleObjectContent {
+    TextBox(TextBox),
+    Shape(Shape),
+}
+
+/// A text layer's content + style. All the rich-text styling fields
+/// (fonts, colour, gradients, outlines, glow, extrusion, path,
+/// per-character animation, motion blur, style runs) live here so
+/// each text layer is independently stylable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TextBox {
     pub text: String,
-    /// Font size in points, default 72.0
+    /// Font size in points, default 72.0. The renderer scales by
+    /// `frame_h / 1080` so this stays resolution-stable.
     pub font_size: f32,
-    /// Font family name, default "sans-serif"
     pub font_name: String,
-    /// Font style (Regular, Bold, Italic, Bold Italic)
     #[serde(default)]
     pub font_style: FontStyle,
-    /// Text colour RGBA
     pub color: [u8; 4],
     pub alignment: TextAlignment,
-    /// Normalized 0.0–1.0 position
-    pub position: TitlePosition,
-    pub background: TitleBackground,
-    pub shadow: Option<TitleShadow>,
-    /// Outline/stroke around text (single legacy, kept for backward compat)
     #[serde(default)]
-    pub outline: Option<TextOutline>,
-    /// Multiple outline layers (rendered widest-first, back-to-front)
+    pub shadow: Option<TitleShadow>,
+    /// Outline/stroke layers, rendered widest-first, back-to-front.
     #[serde(default)]
     pub outlines: Vec<TextOutline>,
-    /// Outer glow effect
     #[serde(default)]
     pub glow: Option<TextGlow>,
-    /// Gradient fill (overrides solid color when set)
+    /// Gradient fill (overrides solid colour when set).
     #[serde(default)]
     pub gradient: Option<TextGradient>,
-    /// Inner shadow (engraved/inset look)
     #[serde(default)]
     pub inner_shadow: Option<InnerShadow>,
-    /// Pattern fill (overrides solid color and gradient when set)
+    /// Pattern fill (overrides solid colour and gradient when set).
     #[serde(default)]
     pub pattern_fill: Option<TextPattern>,
-    /// Additional pixels between characters (tracking), default 0.0
+    /// Extra pixels between characters (tracking).
     #[serde(default)]
     pub tracking: f32,
-    /// Line spacing multiplier, default 1.0 (normal)
+    /// Line spacing multiplier, default 1.0.
     #[serde(default = "default_one")]
     pub line_spacing: f32,
-    /// Write-on reveal: 0.0 = no text, 1.0 = all text visible
+    /// Write-on reveal: 0.0 = no text, 1.0 = all visible. Animation
+    /// overrides this per frame for Typewriter; otherwise 1.0.
     #[serde(default = "default_one")]
     pub write_on: f32,
-    /// 3D text extrusion (pseudo-depth effect)
+    /// 3D extrusion (pseudo-depth).
     #[serde(default)]
     pub extrusion: Option<TextExtrusion>,
-    /// Text follows a geometric path (arc, circle, wave)
+    /// Text follows a geometric path (arc / circle / wave).
     #[serde(default)]
     pub text_path: Option<TextPath>,
-    /// Per-character animation (staggered entrance, wave)
+    /// Per-character entrance animation.
     #[serde(default)]
     pub char_animation: Option<CharAnimation>,
-    /// Image file path to use as text fill texture (None = use color/gradient/pattern)
+    /// Image file used as text fill.
     #[serde(default)]
     pub texture_fill_path: Option<String>,
-    /// Motion blur settings (None = disabled)
+    /// Motion blur settings (None = disabled).
     #[serde(default)]
     pub motion_blur: Option<MotionBlur>,
-    /// Per-character style runs. Empty = uniform style from base properties.
+    /// Per-character style runs. Empty = uniform style.
     #[serde(default)]
     pub style_runs: Vec<StyleRun>,
-    /// ASS/SSA style name this subtitle uses (for round-tripping imported .ass files).
-    /// None = uses a synthetic "Default" style on export.
+    /// ASS/SSA style name for round-tripping imported .ass files.
     #[serde(default)]
     pub ass_style_name: Option<String>,
-    /// Title motion animation (scroll/crawl/typewriter). Defaults to Static.
-    /// Scroll/crawl variants auto-generate `transform_pos_x/y_keyframes`.
-    /// Typewriter overrides `write_on` per frame at render time (no keyframes).
+}
+
+impl Default for TextBox {
+    fn default() -> Self {
+        Self {
+            text: String::from("Title"),
+            font_size: 72.0,
+            font_name: String::from("sans-serif"),
+            font_style: FontStyle::Regular,
+            color: [255, 255, 255, 255],
+            alignment: TextAlignment::Center,
+            shadow: None,
+            outlines: Vec::new(),
+            glow: None,
+            gradient: None,
+            inner_shadow: None,
+            pattern_fill: None,
+            tracking: 0.0,
+            line_spacing: 1.0,
+            write_on: 1.0,
+            extrusion: None,
+            text_path: None,
+            char_animation: None,
+            texture_fill_path: None,
+            motion_blur: None,
+            style_runs: Vec::new(),
+            ass_style_name: None,
+        }
+    }
+}
+
+/// Vector primitive layer. The simplest first cut — rectangles with
+/// fill / stroke / corner radius — covers lower-third bars and
+/// generic backdrop bars. New variants (ellipse, polygon, path) are
+/// future additions to `ShapeKind`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Shape {
+    pub kind: ShapeKind,
+    pub fill: Option<[u8; 4]>,
+    pub stroke: Option<ShapeStroke>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ShapeKind {
+    Rectangle {
+        /// Corner radius in pixels at 1080p reference resolution.
+        /// 0.0 = sharp corners.
+        #[serde(default)]
+        corner_radius: f32,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct ShapeStroke {
+    pub color: [u8; 4],
+    /// Stroke width in pixels at 1080p reference resolution.
+    pub width: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TitleData {
+    /// Stacking-order list of layers (back → front). The first
+    /// object renders at the back; the last on top. A new title
+    /// starts with one default `TextBox` object.
+    pub objects: Vec<TitleObject>,
+    /// Monotonic counter for assigning unique `TitleObjectId`s as
+    /// new objects are added. Never decreases — deletion leaves
+    /// gaps in the id space, which is harmless.
+    #[serde(default)]
+    pub next_object_id: u32,
+    /// Title-level motion animation (scroll/crawl/typewriter)
+    /// applied to every object as a unit. Per-object animation
+    /// is a future extension.
     #[serde(default)]
     pub animation_type: TitleAnimationType,
+    /// Optional title-level background bar. Lower-third templates
+    /// use this to paint a coloured strip behind the text. This
+    /// stays as a clip-level field for commit 1; a future commit
+    /// migrates lower-third templates to a `Shape` object instead,
+    /// at which point this field can be retired.
+    #[serde(default)]
+    pub background: TitleBackground,
+}
+
+impl TitleData {
+    /// Create a TitleData with one default-styled TextBox at frame
+    /// centre — the canonical "fresh title" shape used by `Default`
+    /// and most templates.
+    pub fn single_text(text_box: TextBox) -> Self {
+        let mut td = Self {
+            objects: Vec::new(),
+            next_object_id: 0,
+            animation_type: TitleAnimationType::default(),
+            background: TitleBackground::None,
+        };
+        td.add_object(TitleObjectContent::TextBox(text_box), default_text_transform());
+        td
+    }
+
+    /// Push a new object onto the stack with a freshly-allocated id.
+    /// Returns the assigned id so callers can immediately reference
+    /// the new object (e.g. for selection).
+    pub fn add_object(
+        &mut self,
+        content: TitleObjectContent,
+        transform: ObjectTransform,
+    ) -> TitleObjectId {
+        let id = TitleObjectId(self.next_object_id);
+        self.next_object_id = self.next_object_id.saturating_add(1);
+        let name = match &content {
+            TitleObjectContent::TextBox(_) => format!("Text {}", id.0 + 1),
+            TitleObjectContent::Shape(_) => format!("Shape {}", id.0 + 1),
+        };
+        self.objects.push(TitleObject {
+            id,
+            name,
+            transform,
+            visible: true,
+            locked: false,
+            content,
+        });
+        id
+    }
+
+    /// Look up an object by id. Returns `None` if the id was deleted
+    /// or never existed in this title.
+    pub fn object(&self, id: TitleObjectId) -> Option<&TitleObject> {
+        self.objects.iter().find(|o| o.id == id)
+    }
+
+    pub fn object_mut(&mut self, id: TitleObjectId) -> Option<&mut TitleObject> {
+        self.objects.iter_mut().find(|o| o.id == id)
+    }
+
+    /// First TextBox object on the stack, or `None` if the title is
+    /// shape-only. The "primary text" is the single-text-clip
+    /// abstraction most legacy code reads through; new code that
+    /// needs to operate on every text object should iterate
+    /// `self.objects` directly.
+    pub fn primary_text(&self) -> Option<&TextBox> {
+        self.objects.iter().find_map(|o| match &o.content {
+            TitleObjectContent::TextBox(tb) => Some(tb),
+            _ => None,
+        })
+    }
+
+    pub fn primary_text_mut(&mut self) -> Option<&mut TextBox> {
+        self.objects.iter_mut().find_map(|o| match &mut o.content {
+            TitleObjectContent::TextBox(tb) => Some(tb),
+            _ => None,
+        })
+    }
+
+    /// Convenience for tests / templates / single-object cases:
+    /// returns a default TextBox if no text object exists. Avoids
+    /// `unwrap()` everywhere reading typography from a title that's
+    /// expected to have one.
+    pub fn primary_text_or_default(&self) -> TextBox {
+        self.primary_text().cloned().unwrap_or_default()
+    }
+
+    // ── Single-text-object convenience accessors ──
+    //
+    // The old flat `TitleData` shape had typography fields directly
+    // on the struct; lots of call sites (renderer, inspector, viewer
+    // text edit, etc.) read `td.text` / `td.font_size` / `td.color`
+    // etc. These accessors keep those reads working as method calls
+    // (`td.text()`) so the migration to the object model is a
+    // mechanical add-`()` change at each call site. Mutation goes
+    // through `primary_text_mut()` (or, for full multi-object
+    // editing, direct iteration over `self.objects`).
+    pub fn text(&self) -> String {
+        self.primary_text().map(|tb| tb.text.clone()).unwrap_or_default()
+    }
+    pub fn font_size(&self) -> f32 {
+        self.primary_text().map_or(72.0, |tb| tb.font_size)
+    }
+    pub fn font_name(&self) -> String {
+        self.primary_text()
+            .map(|tb| tb.font_name.clone())
+            .unwrap_or_else(|| "sans-serif".into())
+    }
+    pub fn font_style(&self) -> FontStyle {
+        self.primary_text().map_or(FontStyle::Regular, |tb| tb.font_style)
+    }
+    pub fn color(&self) -> [u8; 4] {
+        self.primary_text().map_or([255, 255, 255, 255], |tb| tb.color)
+    }
+    pub fn alignment(&self) -> TextAlignment {
+        self.primary_text().map_or(TextAlignment::Center, |tb| tb.alignment)
+    }
+    /// Position of the primary text object on the title canvas.
+    /// Sourced from the object's transform.center, falling back to
+    /// frame centre.
+    pub fn position(&self) -> TitlePosition {
+        self.objects
+            .iter()
+            .find_map(|o| match o.content {
+                TitleObjectContent::TextBox(_) => Some(o.transform.center),
+                _ => None,
+            })
+            .unwrap_or(TitlePosition { x: 0.5, y: 0.5 })
+    }
+    pub fn shadow(&self) -> Option<TitleShadow> {
+        self.primary_text().and_then(|tb| tb.shadow)
+    }
+    pub fn outlines(&self) -> Vec<TextOutline> {
+        self.primary_text().map(|tb| tb.outlines.clone()).unwrap_or_default()
+    }
+    pub fn glow(&self) -> Option<TextGlow> {
+        self.primary_text().and_then(|tb| tb.glow)
+    }
+    pub fn gradient(&self) -> Option<TextGradient> {
+        self.primary_text().and_then(|tb| tb.gradient.clone())
+    }
+    pub fn inner_shadow(&self) -> Option<InnerShadow> {
+        self.primary_text().and_then(|tb| tb.inner_shadow)
+    }
+    pub fn pattern_fill(&self) -> Option<TextPattern> {
+        self.primary_text().and_then(|tb| tb.pattern_fill)
+    }
+    pub fn tracking(&self) -> f32 {
+        self.primary_text().map_or(0.0, |tb| tb.tracking)
+    }
+    pub fn line_spacing(&self) -> f32 {
+        self.primary_text().map_or(1.0, |tb| tb.line_spacing)
+    }
+    pub fn write_on(&self) -> f32 {
+        self.primary_text().map_or(1.0, |tb| tb.write_on)
+    }
+    pub fn extrusion(&self) -> Option<TextExtrusion> {
+        self.primary_text().and_then(|tb| tb.extrusion)
+    }
+    pub fn text_path(&self) -> Option<TextPath> {
+        self.primary_text().and_then(|tb| tb.text_path.clone())
+    }
+    pub fn char_animation(&self) -> Option<CharAnimation> {
+        self.primary_text().and_then(|tb| tb.char_animation)
+    }
+    pub fn texture_fill_path(&self) -> Option<String> {
+        self.primary_text().and_then(|tb| tb.texture_fill_path.clone())
+    }
+    pub fn motion_blur(&self) -> Option<MotionBlur> {
+        self.primary_text().and_then(|tb| tb.motion_blur)
+    }
+    pub fn style_runs(&self) -> Vec<StyleRun> {
+        self.primary_text().map(|tb| tb.style_runs.clone()).unwrap_or_default()
+    }
+    pub fn ass_style_name(&self) -> Option<String> {
+        self.primary_text().and_then(|tb| tb.ass_style_name.clone())
+    }
+}
+
+/// Default ObjectTransform for a fresh full-frame text object —
+/// centred at (0.5, 0.5), sized 1.0×1.0, no rotation, anchor at
+/// box centre. Templates that need a smaller/positioned object
+/// override the relevant fields.
+pub fn default_text_transform() -> ObjectTransform {
+    ObjectTransform {
+        center: TitlePosition { x: 0.5, y: 0.5 },
+        size: TitlePosition { x: 1.0, y: 1.0 },
+        rotation: 0.0,
+        anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
+    }
 }
 
 /// Title motion preset — drives keyframe generation (scroll/crawl) or
@@ -317,34 +642,7 @@ fn default_one() -> f32 { 1.0 }
 
 impl Default for TitleData {
     fn default() -> Self {
-        Self {
-            text: String::from("Title"),
-            font_size: 72.0,
-            font_name: String::from("sans-serif"),
-            font_style: FontStyle::Regular,
-            color: [255, 255, 255, 255],
-            alignment: TextAlignment::Center,
-            position: TitlePosition { x: 0.5, y: 0.5 },
-            background: TitleBackground::None,
-            shadow: None,
-            outline: None,
-            outlines: Vec::new(),
-            glow: None,
-            gradient: None,
-            inner_shadow: None,
-            pattern_fill: None,
-            tracking: 0.0,
-            line_spacing: 1.0,
-            write_on: 1.0,
-            extrusion: None,
-            text_path: None,
-            char_animation: None,
-            texture_fill_path: None,
-            motion_blur: None,
-            style_runs: Vec::new(),
-            ass_style_name: None,
-            animation_type: TitleAnimationType::default(),
-        }
+        TitleData::single_text(TextBox::default())
     }
 }
 
@@ -373,8 +671,9 @@ pub struct TitlePosition {
     pub y: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum TitleBackground {
+    #[default]
     None,
     Color {
         color: [u8; 4],

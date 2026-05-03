@@ -233,11 +233,18 @@ impl TitleRenderer {
 
     /// Phase 1: Font loading, glyph rasterization into alpha mask, returns layout info.
     pub fn render_layout(&mut self, title: &TitleData, width: u32, height: u32) -> TitleLayout {
+        // Object-model bridge: this function still operates on the
+        // legacy single-text shape; commit-1 keeps the renderer's
+        // internal flow intact by extracting the primary TextBox
+        // up-front. A follow-up commit teaches the renderer to walk
+        // every object in `title.objects` for proper multi-layer
+        // titles.
+        let tb = title.primary_text_or_default();
         let w = width as usize;
         let h = height as usize;
 
         // Resolve the font: load into cache if needed, then get reference
-        let cache_key = self.ensure_font_loaded(&title.font_name, title.font_style);
+        let cache_key = self.ensure_font_loaded(&tb.font_name, tb.font_style);
         let font = self
             .font_cache
             .get(&cache_key)
@@ -245,10 +252,10 @@ impl TitleRenderer {
 
         // Scale font size relative to frame height (72pt at 1080p)
         let scale = height as f32 / 1080.0;
-        let font_px = title.font_size * scale;
+        let font_px = tb.font_size * scale;
 
         // Lay out text
-        let h_align = match title.alignment {
+        let h_align = match tb.alignment {
             TextAlignment::Left => HorizontalAlign::Left,
             TextAlignment::Center => HorizontalAlign::Center,
             TextAlignment::Right => HorizontalAlign::Right,
@@ -270,24 +277,24 @@ impl TitleRenderer {
         // Track (glyph_count_before, segment_byte_start) for byte_offset fixup.
         let mut segment_info: Vec<(usize, usize)> = Vec::new();
 
-        if title.style_runs.is_empty() {
+        if tb.style_runs.is_empty() {
             segment_info.push((0, 0));
-            layout.append(&[font], &TextStyle::new(&title.text, font_px, 0));
+            layout.append(&[font], &TextStyle::new(&tb.text, font_px, 0));
         } else {
             let mut pos = 0usize;
-            for run in &title.style_runs {
-                if run.start > pos && run.start <= title.text.len() {
-                    let segment = &title.text[pos..run.start];
+            for run in &tb.style_runs {
+                if run.start > pos && run.start <= tb.text.len() {
+                    let segment = &tb.text[pos..run.start];
                     if !segment.is_empty() {
                         segment_info.push((layout.glyphs().len(), pos));
                         layout.append(&[font], &TextStyle::new(segment, font_px, 0));
                     }
                     pos = run.start;
                 }
-                let run_end = run.end.min(title.text.len());
+                let run_end = run.end.min(tb.text.len());
                 if run_end > pos {
-                    let segment = &title.text[pos..run_end];
-                    let run_size = run.font_size.unwrap_or(title.font_size) * scale;
+                    let segment = &tb.text[pos..run_end];
+                    let run_size = run.font_size.unwrap_or(tb.font_size) * scale;
                     if !segment.is_empty() {
                         segment_info.push((layout.glyphs().len(), pos));
                         layout.append(&[font], &TextStyle::new(segment, run_size, 0));
@@ -295,8 +302,8 @@ impl TitleRenderer {
                     pos = run_end;
                 }
             }
-            if pos < title.text.len() {
-                let segment = &title.text[pos..];
+            if pos < tb.text.len() {
+                let segment = &tb.text[pos..];
                 if !segment.is_empty() {
                     segment_info.push((layout.glyphs().len(), pos));
                     layout.append(&[font], &TextStyle::new(segment, font_px, 0));
@@ -336,7 +343,7 @@ impl TitleRenderer {
         }
 
         // Apply line spacing multiplier (shift lines after the first)
-        if title.line_spacing != 1.0 {
+        if tb.line_spacing != 1.0 {
             let line_height_scale = height as f32 / 1080.0;
             let mut line_starts: Vec<(usize, f32)> = Vec::new();
             let mut last_y: Option<f32> = None;
@@ -355,7 +362,7 @@ impl TitleRenderer {
                 };
                 let _ = line_height_scale;
                 for line_idx in 1..line_starts.len() {
-                    let y_shift = base_line_height * (title.line_spacing - 1.0) * line_idx as f32;
+                    let y_shift = base_line_height * (tb.line_spacing - 1.0) * line_idx as f32;
                     let start = line_starts[line_idx].0;
                     let end = if line_idx + 1 < line_starts.len() {
                         line_starts[line_idx + 1].0
@@ -370,8 +377,8 @@ impl TitleRenderer {
         }
 
         // Apply tracking (extra pixel spacing per character)
-        if title.tracking != 0.0 {
-            let tracking_px = title.tracking * scale;
+        if tb.tracking != 0.0 {
+            let tracking_px = tb.tracking * scale;
             for (i, g) in glyphs_owned.iter_mut().enumerate() {
                 g.x += tracking_px * i as f32;
             }
@@ -380,7 +387,7 @@ impl TitleRenderer {
         let glyphs = &glyphs_owned;
 
         // ── Text on path: rasterize per-glyph with rotation ──
-        if let Some(text_path) = &title.text_path {
+        if let Some(text_path) = &tb.text_path {
             return self.render_layout_on_path(
                 font, glyphs, title, text_path, width, height, w, h, scale,
             );
@@ -403,12 +410,12 @@ impl TitleRenderer {
         // Position offset — alignment affects horizontal anchor point.
         // The layout's max_width is width*0.9, leaving 5% margin each side.
         let margin = width as f32 * 0.05;
-        let offset_x = match title.alignment {
+        let offset_x = match tb.alignment {
             TextAlignment::Left => margin - text_min_x,
             TextAlignment::Right => width as f32 - margin - text_w - text_min_x,
-            TextAlignment::Center => title.position.x * width as f32 - text_w * 0.5 - text_min_x,
+            TextAlignment::Center => title.position().x * width as f32 - text_w * 0.5 - text_min_x,
         };
-        let offset_y = title.position.y * height as f32 - text_h * 0.5 - text_min_y;
+        let offset_y = title.position().y * height as f32 - text_h * 0.5 - text_min_y;
 
         // Compute the mask bounding box (padded for effects)
         let max_pad = effect_padding(title, scale);
@@ -440,16 +447,16 @@ impl TitleRenderer {
         rasterize_to_mask(font, glyphs, offset_x, offset_y, &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0);
 
         // ── Rich text: resolve per-glyph styles ──
-        let has_rich_text = !title.style_runs.is_empty();
+        let has_rich_text = !tb.style_runs.is_empty();
         let resolved_colors: Vec<[u8; 4]> = if has_rich_text {
-            resolve_glyph_colors(title, glyphs, &title.style_runs)
+            resolve_glyph_colors(title, glyphs, &tb.style_runs)
         } else {
             Vec::new()
         };
 
         // Apply write-on reveal
-        if title.write_on < 1.0 {
-            let cutoff_x = ((text_min_x + offset_x) + text_w * title.write_on.clamp(0.0, 1.0)) as i32;
+        if tb.write_on < 1.0 {
+            let cutoff_x = ((text_min_x + offset_x) + text_w * tb.write_on.clamp(0.0, 1.0)) as i32;
             for my in 0..mask_h {
                 for mx in 0..mask_w {
                     let global_x = (mask_x0 + mx) as i32;
@@ -499,6 +506,7 @@ impl TitleRenderer {
         h: usize,
         scale: f32,
     ) -> TitleLayout {
+        let tb = title.primary_text_or_default();
         // Compute cumulative advance widths to map each glyph to an arc-length parameter
         let mut advances: Vec<f32> = Vec::with_capacity(glyphs.len());
         let mut cumulative = 0.0f32;
@@ -514,8 +522,8 @@ impl TitleRenderer {
         let total_advance = cumulative.max(1.0);
 
         // Center of the path is at the title position
-        let center_x = title.position.x * width as f32;
-        let center_y = title.position.y * height as f32;
+        let center_x = title.position().x * width as f32;
+        let center_y = title.position().y * height as f32;
 
         // For each glyph, compute its position and rotation on the path
         // Then rasterize into a small buffer and blit rotated onto the full-frame mask
@@ -570,8 +578,8 @@ impl TitleRenderer {
         }
 
         // Apply write-on reveal
-        if title.write_on < 1.0 {
-            let cutoff_x = (text_min_x + (text_max_x - text_min_x) * title.write_on.clamp(0.0, 1.0)) as i32;
+        if tb.write_on < 1.0 {
+            let cutoff_x = (text_min_x + (text_max_x - text_min_x) * tb.write_on.clamp(0.0, 1.0)) as i32;
             for my in 0..mask_h {
                 for mx in 0..mask_w {
                     let global_x = (mask_x0 + mx) as i32;
@@ -641,6 +649,7 @@ impl TitleRenderer {
         height: u32,
         gpu: Option<&mut dyn AlphaMaskProcessor>,
     ) -> Vec<u8> {
+        let tb = title.primary_text_or_default();
         let w = width as usize;
         let h = height as usize;
         let mut buf = vec![0u8; w * h * 4];
@@ -705,13 +714,13 @@ impl TitleRenderer {
         // ── Render effects back-to-front ──
 
         // 1. Outer glow
-        if let Some(glow) = &title.glow {
+        if let Some(glow) = &tb.glow {
             let blurred = do_blur(alpha_mask, mask_w, mask_h, glow.radius * scale, &mut gpu);
             draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &glow.color, glow.intensity);
         }
 
         // 2. Shadow (with blur support)
-        if let Some(shadow) = &title.shadow {
+        if let Some(shadow) = &tb.shadow {
             let sox = (shadow.offset_x * scale).round() as i32;
             let soy = (shadow.offset_y * scale).round() as i32;
 
@@ -728,14 +737,11 @@ impl TitleRenderer {
         // 3. Outline/stroke — multiple layers (widest first) then legacy single
         {
             let mut all_outlines: Vec<&klipp_timeline::TextOutline> = Vec::new();
-            for ol in &title.outlines {
+            for ol in &tb.outlines {
                 all_outlines.push(ol);
             }
-            if title.outlines.is_empty() {
-                if let Some(ref ol) = title.outline {
-                    all_outlines.push(ol);
-                }
-            }
+            // Legacy single-outline support is gone — outline data
+            // lives entirely in `tb.outlines` now.
             all_outlines.sort_by(|a, b| b.width.partial_cmp(&a.width).unwrap_or(std::cmp::Ordering::Equal));
 
             for outline in &all_outlines {
@@ -749,26 +755,26 @@ impl TitleRenderer {
         }
 
         // 4. 3D Text Extrusion (rendered before face text, after outlines)
-        if let Some(ref ext) = title.extrusion {
+        if let Some(ref ext) = tb.extrusion {
             render_extrusion(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, ext, title);
         }
 
         // 5. Text fill (pattern > gradient > solid) — this is the face text
         {
             // If extrusion is active and has a non-transparent face_color, use that
-            let face_color = if let Some(ref ext) = title.extrusion {
+            let face_color = if let Some(ref ext) = tb.extrusion {
                 if ext.face_color[3] > 0 {
                     ext.face_color
                 } else {
-                    title.color
+                    tb.color
                 }
             } else {
-                title.color
+                tb.color
             };
 
-            if let Some(pattern) = &title.pattern_fill {
+            if let Some(pattern) = &tb.pattern_fill {
                 draw_pattern_fill(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, pattern, scale);
-            } else if let Some(gradient) = &title.gradient {
+            } else if let Some(gradient) = &tb.gradient {
                 let text_top = layout.text_top as i32;
                 let text_bot = layout.text_bottom as i32;
                 let text_height = (text_bot - text_top).max(1) as f32;
@@ -803,7 +809,7 @@ impl TitleRenderer {
         }
 
         // 6. Inner shadow (rendered inside the text shape)
-        if let Some(inner) = &title.inner_shadow {
+        if let Some(inner) = &tb.inner_shadow {
             let sox = (inner.offset_x * scale).round() as i32;
             let soy = (inner.offset_y * scale).round() as i32;
             let mut inverted = vec![0u8; mask_w * mask_h];
@@ -836,6 +842,7 @@ impl TitleRenderer {
     /// the full shaping + rasterisation; cache hit cost is one
     /// memcpy of the rasterised buffer.
     pub fn render(&mut self, title: &TitleData, width: u32, height: u32) -> Vec<u8> {
+        let tb = title.primary_text_or_default();
         if let Some(buf) = self.cache_lookup(title, width, height) {
             return buf;
         }
@@ -874,6 +881,7 @@ impl TitleRenderer {
     /// dimensions. On hit, moves the entry to the front of the LRU
     /// (most-recently-used end) and returns a memcpy of the buffer.
     fn cache_lookup(&mut self, title: &TitleData, width: u32, height: u32) -> Option<Vec<u8>> {
+        let tb = title.primary_text_or_default();
         let pos = self.render_cache.iter().position(|c| {
             c.width == width && c.height == height && &c.title == title
         })?;
@@ -914,18 +922,19 @@ impl TitleRenderer {
     /// algorithm as `render_layout`. Returns positions in frame pixel coordinates.
     /// Used by the viewer for cursor placement and click hit-testing.
     pub fn compute_char_positions(&mut self, title: &TitleData, width: u32, height: u32) -> Vec<CharPosition> {
-        if title.text.is_empty() {
+        let tb = title.primary_text_or_default();
+        if tb.text.is_empty() {
             return Vec::new();
         }
 
         // Same font + layout as render_layout
-        let cache_key = self.ensure_font_loaded(&title.font_name, title.font_style);
+        let cache_key = self.ensure_font_loaded(&tb.font_name, tb.font_style);
         let font = self.font_cache.get(&cache_key).unwrap_or(&self.fallback_font);
 
         let scale = height as f32 / 1080.0;
-        let font_px = title.font_size * scale;
+        let font_px = tb.font_size * scale;
 
-        let h_align = match title.alignment {
+        let h_align = match tb.alignment {
             TextAlignment::Left => HorizontalAlign::Left,
             TextAlignment::Center => HorizontalAlign::Center,
             TextAlignment::Right => HorizontalAlign::Right,
@@ -947,24 +956,24 @@ impl TitleRenderer {
         // so we can fix up fontdue's per-segment byte_offset → absolute byte_offset.
         let mut segment_info: Vec<(usize, usize)> = Vec::new();
 
-        if title.style_runs.is_empty() {
+        if tb.style_runs.is_empty() {
             segment_info.push((0, 0));
-            layout.append(&[font], &TextStyle::new(&title.text, font_px, 0));
+            layout.append(&[font], &TextStyle::new(&tb.text, font_px, 0));
         } else {
             let mut pos = 0usize;
-            for run in &title.style_runs {
-                if run.start > pos && run.start <= title.text.len() {
-                    let segment = &title.text[pos..run.start];
+            for run in &tb.style_runs {
+                if run.start > pos && run.start <= tb.text.len() {
+                    let segment = &tb.text[pos..run.start];
                     if !segment.is_empty() {
                         segment_info.push((layout.glyphs().len(), pos));
                         layout.append(&[font], &TextStyle::new(segment, font_px, 0));
                     }
                     pos = run.start;
                 }
-                let run_end = run.end.min(title.text.len());
+                let run_end = run.end.min(tb.text.len());
                 if run_end > pos {
-                    let segment = &title.text[pos..run_end];
-                    let run_size = run.font_size.unwrap_or(title.font_size) * scale;
+                    let segment = &tb.text[pos..run_end];
+                    let run_size = run.font_size.unwrap_or(tb.font_size) * scale;
                     if !segment.is_empty() {
                         segment_info.push((layout.glyphs().len(), pos));
                         layout.append(&[font], &TextStyle::new(segment, run_size, 0));
@@ -972,8 +981,8 @@ impl TitleRenderer {
                     pos = run_end;
                 }
             }
-            if pos < title.text.len() {
-                let segment = &title.text[pos..];
+            if pos < tb.text.len() {
+                let segment = &tb.text[pos..];
                 if !segment.is_empty() {
                     segment_info.push((layout.glyphs().len(), pos));
                     layout.append(&[font], &TextStyle::new(segment, font_px, 0));
@@ -987,8 +996,8 @@ impl TitleRenderer {
             return vec![CharPosition {
                 char_index: 0,
                 byte_offset: 0,
-                x: title.position.x * width as f32,
-                y: title.position.y * height as f32,
+                x: title.position().x * width as f32,
+                y: title.position().y * height as f32,
                 advance: font_px * 0.5,
                 height: font_px,
             }];
@@ -997,7 +1006,7 @@ impl TitleRenderer {
         let mut glyphs_owned: Vec<fontdue::layout::GlyphPosition> = glyphs.to_vec();
 
         // Fix up byte_offset: fontdue's byte_offset is relative to each append() call's string,
-        // but we need it relative to the full title.text.
+        // but we need it relative to the full tb.text.
         for (seg_idx, &(glyph_start, byte_start)) in segment_info.iter().enumerate() {
             let glyph_end = if seg_idx + 1 < segment_info.len() {
                 segment_info[seg_idx + 1].0
@@ -1010,7 +1019,7 @@ impl TitleRenderer {
         }
 
         // Apply line spacing (same as render_layout)
-        if title.line_spacing != 1.0 {
+        if tb.line_spacing != 1.0 {
             let mut line_starts: Vec<(usize, f32)> = Vec::new();
             let mut last_y: Option<f32> = None;
             for (i, g) in glyphs_owned.iter().enumerate() {
@@ -1023,7 +1032,7 @@ impl TitleRenderer {
             if line_starts.len() > 1 {
                 let base_line_height = line_starts[1].1 - line_starts[0].1;
                 for line_idx in 1..line_starts.len() {
-                    let y_shift = base_line_height * (title.line_spacing - 1.0) * line_idx as f32;
+                    let y_shift = base_line_height * (tb.line_spacing - 1.0) * line_idx as f32;
                     let start = line_starts[line_idx].0;
                     let end = if line_idx + 1 < line_starts.len() {
                         line_starts[line_idx + 1].0
@@ -1038,8 +1047,8 @@ impl TitleRenderer {
         }
 
         // Apply tracking (same as render_layout)
-        if title.tracking != 0.0 {
-            let tracking_px = title.tracking * scale;
+        if tb.tracking != 0.0 {
+            let tracking_px = tb.tracking * scale;
             for (i, g) in glyphs_owned.iter_mut().enumerate() {
                 g.x += tracking_px * i as f32;
             }
@@ -1060,12 +1069,12 @@ impl TitleRenderer {
         let text_h = text_max_y - text_min_y;
 
         let margin = width as f32 * 0.05;
-        let offset_x = match title.alignment {
+        let offset_x = match tb.alignment {
             TextAlignment::Left => margin - text_min_x,
             TextAlignment::Right => width as f32 - margin - text_w - text_min_x,
-            TextAlignment::Center => title.position.x * width as f32 - text_w * 0.5 - text_min_x,
+            TextAlignment::Center => title.position().x * width as f32 - text_w * 0.5 - text_min_x,
         };
-        let offset_y = title.position.y * height as f32 - text_h * 0.5 - text_min_y;
+        let offset_y = title.position().y * height as f32 - text_h * 0.5 - text_min_y;
 
         // Build character positions from glyph data.
         // fontdue gives us one glyph per visible character (spaces may have width=0).
@@ -1073,13 +1082,13 @@ impl TitleRenderer {
         let mut positions: Vec<CharPosition> = Vec::with_capacity(glyphs_owned.len() + 1);
 
         // Build a byte_offset → char_index lookup
-        let byte_to_char: Vec<(usize, usize)> = title.text
+        let byte_to_char: Vec<(usize, usize)> = tb.text
             .char_indices()
             .enumerate()
             .map(|(ci, (bi, _))| (bi, ci))
             .collect();
 
-        let char_count = title.text.chars().count();
+        let char_count = tb.text.chars().count();
 
         for g in &glyphs_owned {
             let char_index = byte_to_char.iter()
@@ -1126,7 +1135,7 @@ impl TitleRenderer {
                 if let Some(prev) = filled.last() {
                     filled.push(CharPosition {
                         char_index: ci,
-                        byte_offset: title.text.char_indices().nth(ci).map(|(bi, _)| bi).unwrap_or(0),
+                        byte_offset: tb.text.char_indices().nth(ci).map(|(bi, _)| bi).unwrap_or(0),
                         x: prev.x + prev.advance,
                         y: prev.y,
                         advance: 0.0,
@@ -1150,7 +1159,7 @@ impl TitleRenderer {
         if let Some(last) = filled.last() {
             filled.push(CharPosition {
                 char_index: char_count,
-                byte_offset: title.text.len(),
+                byte_offset: tb.text.len(),
                 x: last.x + last.advance,
                 y: last.y,
                 advance: 0.0,
@@ -1199,7 +1208,8 @@ impl TitleRenderer {
         width: u32,
         _height: u32,
     ) {
-        let tex_path = match &title.texture_fill_path {
+        let tb = title.primary_text_or_default();
+        let tex_path = match &tb.texture_fill_path {
             Some(p) if !p.is_empty() => p.clone(),
             _ => return,
         };
@@ -1278,13 +1288,14 @@ fn render_extrusion(
     ext: &klipp_timeline::TextExtrusion,
     title: &TitleData,
 ) {
+    let tb = title.primary_text_or_default();
     let depth = ext.depth.clamp(1.0, 50.0) as i32;
     let angle_rad = ext.angle.to_radians();
     let cos_a = angle_rad.cos();
     let sin_a = angle_rad.sin();
 
     // Determine face color (for exclusion — we don't draw the face here)
-    let _face_color = if ext.face_color[3] > 0 { ext.face_color } else { title.color };
+    let _face_color = if ext.face_color[3] > 0 { ext.face_color } else { tb.color };
 
     // Draw layers from back (farthest) to front (closest to face)
     for i in (1..=depth).rev() {
@@ -1323,24 +1334,22 @@ fn render_extrusion(
 
 /// Compute the maximum padding needed around the text bounding box for effects.
 fn effect_padding(title: &TitleData, scale: f32) -> i32 {
+    let tb = title.primary_text_or_default();
     let mut pad = 0i32;
-    if let Some(outline) = &title.outline {
+    for outline in &tb.outlines {
         pad = pad.max((outline.width * scale).ceil() as i32 + 1);
     }
-    for outline in &title.outlines {
-        pad = pad.max((outline.width * scale).ceil() as i32 + 1);
-    }
-    if let Some(glow) = &title.glow {
+    if let Some(glow) = &tb.glow {
         pad = pad.max((glow.radius * scale * 2.0).ceil() as i32 + 1);
     }
-    if let Some(shadow) = &title.shadow {
+    if let Some(shadow) = &tb.shadow {
         let sx = (shadow.offset_x.abs() * scale).ceil() as i32;
         let sy = (shadow.offset_y.abs() * scale).ceil() as i32;
         let sb = (shadow.blur * scale * 2.0).ceil() as i32;
         pad = pad.max(sx + sb + 1);
         pad = pad.max(sy + sb + 1);
     }
-    if let Some(inner) = &title.inner_shadow {
+    if let Some(inner) = &tb.inner_shadow {
         let sx = (inner.offset_x.abs() * scale).ceil() as i32;
         let sy = (inner.offset_y.abs() * scale).ceil() as i32;
         let sb = (inner.blur * scale * 2.0).ceil() as i32;
@@ -1348,11 +1357,11 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
         pad = pad.max(sy + sb + 1);
     }
     // Extra padding for tracking (text extends further right)
-    if title.tracking > 0.0 {
-        pad = pad.max((title.tracking * scale * 200.0).ceil() as i32); // generous for long text
+    if tb.tracking > 0.0 {
+        pad = pad.max((tb.tracking * scale * 200.0).ceil() as i32); // generous for long text
     }
     // Extra padding for extrusion depth
-    if let Some(ext) = &title.extrusion {
+    if let Some(ext) = &tb.extrusion {
         let depth = ext.depth.clamp(1.0, 50.0);
         let ex = (depth * ext.angle.to_radians().cos().abs()).ceil() as i32 + 1;
         let ey = (depth * ext.angle.to_radians().sin().abs()).ceil() as i32 + 1;
@@ -1373,7 +1382,7 @@ fn resolve_glyph_colors(
     glyphs: &[fontdue::layout::GlyphPosition],
     style_runs: &[StyleRun],
 ) -> Vec<[u8; 4]> {
-    let base_color = title.color;
+    let base_color = title.color();
     glyphs
         .iter()
         .map(|g| {
@@ -1806,13 +1815,15 @@ mod tests {
     #[test]
     fn white_text_has_correct_color() {
         let mut renderer = TitleRenderer::new();
-        let title = TitleData {
-            text: "X".to_string(),
-            font_size: 200.0,
-            color: [255, 255, 255, 255],
-            position: TitlePosition { x: 0.5, y: 0.5 },
-            ..TitleData::default()
-        };
+        let title = {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "X".to_string();
+    tb.font_size = 200.0;
+    tb.color = [255, 255, 255, 255];
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.5 }; }
+    td
+};
         let buf = renderer.render(&title, 640, 480);
         // Find a fully opaque text pixel
         let has_white = buf.chunks_exact(4).any(|p| p[0] == 255 && p[3] == 255);
@@ -1822,13 +1833,15 @@ mod tests {
     #[test]
     fn full_frame_background() {
         let mut renderer = TitleRenderer::new();
-        let title = TitleData {
-            text: "BG".to_string(),
-            background: TitleBackground::FullFrame {
+        let title = {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "BG".to_string();
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::FullFrame {
                 color: [0, 0, 128, 255],
-            },
-            ..TitleData::default()
-        };
+            };
+    td
+};
         let buf = renderer.render(&title, 320, 240);
         // Corner pixel should be the background color (no text there)
         assert_eq!(&buf[0..4], &[0, 0, 128, 255]);
@@ -1837,21 +1850,26 @@ mod tests {
     #[test]
     fn shadow_adds_extra_pixels() {
         let mut renderer = TitleRenderer::new();
-        let no_shadow = TitleData {
-            text: "S".to_string(),
-            font_size: 100.0,
-            shadow: None,
-            ..TitleData::default()
-        };
-        let with_shadow = TitleData {
-            shadow: Some(klipp_timeline::TitleShadow {
+        let no_shadow = {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "S".to_string();
+    tb.font_size = 100.0;
+    tb.shadow = None;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td
+};
+        let with_shadow = {
+    let mut td = no_shadow.clone();
+    if let Some(tb) = td.primary_text_mut() {
+        tb.shadow = Some(klipp_timeline::TitleShadow {
                 color: [0, 0, 0, 200],
                 offset_x: 4.0,
                 offset_y: 4.0,
                 blur: 0.0,
-            }),
-            ..no_shadow.clone()
-        };
+            });
+    }
+    td
+};
         let buf1 = renderer.render(&no_shadow, 640, 480);
         let buf2 = renderer.render(&with_shadow, 640, 480);
         let count1 = buf1.chunks_exact(4).filter(|p| p[3] > 0).count();
@@ -1862,18 +1880,23 @@ mod tests {
     #[test]
     fn outline_adds_extra_pixels() {
         let mut renderer = TitleRenderer::new();
-        let no_outline = TitleData {
-            text: "O".to_string(),
-            font_size: 100.0,
-            ..TitleData::default()
-        };
-        let with_outline = TitleData {
-            outline: Some(klipp_timeline::TextOutline {
+        let no_outline = {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "O".to_string();
+    tb.font_size = 100.0;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td
+};
+        let with_outline = {
+    let mut td = no_outline.clone();
+    if let Some(tb) = td.primary_text_mut() {
+        if let Some(ol) = (Some(klipp_timeline::TextOutline {
                 color: [255, 0, 0, 255],
                 width: 4.0,
-            }),
-            ..no_outline.clone()
-        };
+            })) { tb.outlines.insert(0, ol); }
+    }
+    td
+};
         let buf1 = renderer.render(&no_outline, 640, 480);
         let buf2 = renderer.render(&with_outline, 640, 480);
         let count1 = buf1.chunks_exact(4).filter(|p| p[3] > 0).count();
@@ -1884,19 +1907,24 @@ mod tests {
     #[test]
     fn glow_adds_extra_pixels() {
         let mut renderer = TitleRenderer::new();
-        let no_glow = TitleData {
-            text: "G".to_string(),
-            font_size: 100.0,
-            ..TitleData::default()
-        };
-        let with_glow = TitleData {
-            glow: Some(klipp_timeline::TextGlow {
+        let no_glow = {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "G".to_string();
+    tb.font_size = 100.0;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td
+};
+        let with_glow = {
+    let mut td = no_glow.clone();
+    if let Some(tb) = td.primary_text_mut() {
+        tb.glow = Some(klipp_timeline::TextGlow {
                 color: [0, 255, 0, 255],
                 radius: 10.0,
                 intensity: 0.8,
-            }),
-            ..no_glow.clone()
-        };
+            });
+    }
+    td
+};
         let buf1 = renderer.render(&no_glow, 640, 480);
         let buf2 = renderer.render(&with_glow, 640, 480);
         let count1 = buf1.chunks_exact(4).filter(|p| p[3] > 0).count();
@@ -1907,15 +1935,17 @@ mod tests {
     #[test]
     fn gradient_produces_color_variation() {
         let mut renderer = TitleRenderer::new();
-        let title = TitleData {
-            text: "GRADIENT".to_string(),
-            font_size: 100.0,
-            gradient: Some(klipp_timeline::TextGradient {
+        let title = {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "GRADIENT".to_string();
+    tb.font_size = 100.0;
+    tb.gradient = Some(klipp_timeline::TextGradient {
                 top_color: [255, 0, 0, 255],
                 bottom_color: [0, 0, 255, 255],
-            }),
-            ..TitleData::default()
-        };
+            });
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td
+};
         let buf = renderer.render(&title, 640, 480);
         // Should have both reddish and bluish pixels
         let has_red = buf.chunks_exact(4).any(|p| p[3] > 0 && p[0] > 100 && p[2] < 50);
@@ -1939,21 +1969,26 @@ mod tests {
     #[test]
     fn extrusion_adds_extra_pixels() {
         let mut renderer = TitleRenderer::new();
-        let no_ext = TitleData {
-            text: "3D".to_string(),
-            font_size: 100.0,
-            ..TitleData::default()
-        };
-        let with_ext = TitleData {
-            extrusion: Some(klipp_timeline::TextExtrusion {
+        let no_ext = {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "3D".to_string();
+    tb.font_size = 100.0;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td
+};
+        let with_ext = {
+    let mut td = no_ext.clone();
+    if let Some(tb) = td.primary_text_mut() {
+        tb.extrusion = Some(klipp_timeline::TextExtrusion {
                 depth: 10.0,
                 angle: 135.0,
                 face_color: [0, 0, 0, 0],
                 side_color: [100, 50, 50, 255],
                 lighting: 0.5,
-            }),
-            ..no_ext.clone()
-        };
+            });
+    }
+    td
+};
         let buf1 = renderer.render(&no_ext, 640, 480);
         let buf2 = renderer.render(&with_ext, 640, 480);
         let count1 = buf1.chunks_exact(4).filter(|p| p[3] > 0).count();
@@ -1964,11 +1999,13 @@ mod tests {
     #[test]
     fn test_char_positions_simple() {
         let mut renderer = TitleRenderer::new();
-        let td = TitleData {
-            text: "Hello".to_string(),
-            font_size: 72.0,
-            ..TitleData::default()
-        };
+        let td = {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "Hello".to_string();
+    tb.font_size = 72.0;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td
+};
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
         // Should have 6 entries: 5 chars + 1 end-of-text cursor position
         assert_eq!(positions.len(), 6, "Expected 6 positions (5 chars + end), got {}", positions.len());
@@ -1986,11 +2023,13 @@ mod tests {
     #[test]
     fn test_char_positions_multiline() {
         let mut renderer = TitleRenderer::new();
-        let td = TitleData {
-            text: "Line1\nLine2".to_string(),
-            font_size: 72.0,
-            ..TitleData::default()
-        };
+        let td = {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "Line1\nLine2".to_string();
+    tb.font_size = 72.0;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td
+};
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
         let char_count = "Line1\nLine2".chars().count(); // 11
         assert_eq!(positions.len(), char_count + 1, "Expected {} positions, got {}", char_count + 1, positions.len());
@@ -2008,15 +2047,17 @@ mod tests {
     #[test]
     fn test_char_positions_with_style_runs() {
         let mut renderer = TitleRenderer::new();
-        let td = TitleData {
-            text: "Hello World".to_string(),
-            font_size: 72.0,
-            style_runs: vec![
+        let td = {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "Hello World".to_string();
+    tb.font_size = 72.0;
+    tb.style_runs = vec![
                 StyleRun { start: 0, end: 5, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },
                 StyleRun { start: 6, end: 11, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },
-            ],
-            ..TitleData::default()
-        };
+            ];
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td
+};
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
         let char_count = "Hello World".chars().count(); // 11
         assert_eq!(positions.len(), char_count + 1, "Expected {} positions, got {}", char_count + 1, positions.len());
@@ -2030,11 +2071,13 @@ mod tests {
     fn test_char_positions_byte_offsets_match_text() {
         let mut renderer = TitleRenderer::new();
         let text = "Hi there!";
-        let td = TitleData {
-            text: text.to_string(),
-            font_size: 72.0,
-            ..TitleData::default()
-        };
+        let td = {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = text.to_string();
+    tb.font_size = 72.0;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td
+};
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
         // Every non-end position should have a byte_offset that points to the right character
         for cp in &positions {
@@ -2050,16 +2093,18 @@ mod tests {
     fn test_char_positions_style_runs_byte_offsets() {
         let mut renderer = TitleRenderer::new();
         let text = "ABCDEFGHIJ";
-        let td = TitleData {
-            text: text.to_string(),
-            font_size: 72.0,
-            style_runs: vec![
+        let td = {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = text.to_string();
+    tb.font_size = 72.0;
+    tb.style_runs = vec![
                 StyleRun { start: 0, end: 3, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None }, // ABC
                 StyleRun { start: 3, end: 7, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },  // DEFG
                 StyleRun { start: 7, end: 10, font_size: Some(72.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None }, // HIJ
-            ],
-            ..TitleData::default()
-        };
+            ];
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td
+};
         let positions = renderer.compute_char_positions(&td, 1920, 1080);
         // All ASCII so byte_offset == char_index
         for cp in &positions {

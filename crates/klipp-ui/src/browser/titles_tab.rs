@@ -59,71 +59,76 @@ struct TitleTemplate {
 
 /// Centered title with optional shadow.
 fn centered(text: &str, size: f32, style: FontStyle, color: [u8; 4], shadow: bool) -> TitleData {
-    TitleData {
-        text: text.into(),
-        font_size: size,
-        font_name: "sans-serif".into(),
-        font_style: style,
-        color,
-        alignment: TextAlignment::Center,
-        position: TitlePosition { x: 0.5, y: 0.5 },
-        background: TitleBackground::None,
-        shadow: if shadow {
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = text.into();
+    tb.font_size = size;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = style;
+    tb.alignment = TextAlignment::Center;
+    tb.shadow = if shadow {
             Some(TitleShadow { color: [0, 0, 0, 160], offset_x: 3.0, offset_y: 3.0, blur: 6.0 })
         } else {
             None
-        },
-        ..TitleData::default()
-    }
+        };
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::None;
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.5 }; }
+    td
+}
 }
 
 /// Centered on a full-frame background.
 fn centered_on_bg(text: &str, size: f32, style: FontStyle, fg: [u8; 4], bg: [u8; 4]) -> TitleData {
-    TitleData {
-        text: text.into(),
-        font_size: size,
-        font_name: "sans-serif".into(),
-        font_style: style,
-        color: fg,
-        alignment: TextAlignment::Center,
-        position: TitlePosition { x: 0.5, y: 0.5 },
-        background: TitleBackground::FullFrame { color: bg },
-        shadow: None,
-        ..TitleData::default()
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = text.into();
+    tb.font_size = size;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = style;
+    tb.color = fg;
+    tb.alignment = TextAlignment::Center;
+    tb.shadow = None;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::FullFrame { color: bg };
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.5 }; }
+    td
+}
 }
 
 /// Lower-third style: left-aligned near bottom, with box background.
 fn lower_third_style(text: &str, size: f32, style: FontStyle, fg: [u8; 4], bg: [u8; 4], x: f32, y: f32) -> TitleData {
-    TitleData {
-        text: text.into(),
-        font_size: size,
-        font_name: "sans-serif".into(),
-        font_style: style,
-        color: fg,
-        alignment: TextAlignment::Left,
-        position: TitlePosition { x, y },
-        background: TitleBackground::Color { color: bg, padding: 12.0 },
-        shadow: None,
-        ..TitleData::default()
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = text.into();
+    tb.font_size = size;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = style;
+    tb.color = fg;
+    tb.alignment = TextAlignment::Left;
+    tb.shadow = None;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::Color { color: bg, padding: 12.0 };
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x, y }; }
+    td
+}
 }
 
 /// Positioned text with optional shadow, no background.
 #[allow(clippy::too_many_arguments)]
 fn positioned(text: &str, size: f32, style: FontStyle, color: [u8; 4], align: TextAlignment, x: f32, y: f32, shadow: Option<TitleShadow>) -> TitleData {
-    TitleData {
-        text: text.into(),
-        font_size: size,
-        font_name: "sans-serif".into(),
-        font_style: style,
-        color,
-        alignment: align,
-        position: TitlePosition { x, y },
-        background: TitleBackground::None,
-        shadow,
-        ..TitleData::default()
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = text.into();
+    tb.font_size = size;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = style;
+    tb.alignment = align;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::None;
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x, y }; }
+    td
+}
 }
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
@@ -160,18 +165,20 @@ fn shadow_glow(color: [u8; 4]) -> Option<TitleShadow> {
 
 fn basic_plain_title() -> TitleData { centered("[Your Title]", 72.0, FontStyle::Regular, WHITE, true) }
 fn basic_subtitle() -> TitleData {
-    TitleData {
-        text: "[Subtitle text]".into(),
-        font_size: 28.0,
-        font_name: "sans-serif".into(),
-        font_style: FontStyle::Regular,
-        color: WHITE,
-        alignment: TextAlignment::Center,
-        position: TitlePosition { x: 0.5, y: 0.88 },
-        background: TitleBackground::Color { color: [0, 0, 0, 153], padding: 10.0 },
-        shadow: None,
-        ..TitleData::default()
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "[Subtitle text]".into();
+    tb.font_size = 28.0;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = FontStyle::Regular;
+    tb.color = WHITE;
+    tb.alignment = TextAlignment::Center;
+    tb.shadow = None;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::Color { color: [0, 0, 0, 153], padding: 10.0 };
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.88 }; }
+    td
+}
 }
 fn basic_credits() -> TitleData { centered("DIRECTED BY\n[Your Name]", 48.0, FontStyle::Regular, WHITE, false) }
 fn basic_big_bold() -> TitleData { centered("[Your Title]", 96.0, FontStyle::Bold, WHITE, true) }
@@ -254,49 +261,55 @@ fn sm_thumbnail() -> TitleData {
     positioned("THUMBNAIL", 96.0, FontStyle::Bold, [255, 255, 0, 255], TextAlignment::Center, 0.5, 0.5, shadow_hard())
 }
 fn sm_subscribe_cta() -> TitleData {
-    TitleData {
-        text: "SUBSCRIBE to [Channel Name]".into(),
-        font_size: 42.0,
-        font_name: "sans-serif".into(),
-        font_style: FontStyle::Bold,
-        color: WHITE,
-        alignment: TextAlignment::Center,
-        position: TitlePosition { x: 0.5, y: 0.8 },
-        background: TitleBackground::Color { color: [200, 20, 20, 230], padding: 16.0 },
-        shadow: None,
-        ..TitleData::default()
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "SUBSCRIBE to [Channel Name]".into();
+    tb.font_size = 42.0;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = FontStyle::Bold;
+    tb.color = WHITE;
+    tb.alignment = TextAlignment::Center;
+    tb.shadow = None;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::Color { color: [200, 20, 20, 230], padding: 16.0 };
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.8 }; }
+    td
+}
 }
 fn sm_like_share() -> TitleData {
-    TitleData {
-        text: "LIKE & SHARE".into(),
-        font_size: 36.0,
-        font_name: "sans-serif".into(),
-        font_style: FontStyle::Bold,
-        color: WHITE,
-        alignment: TextAlignment::Center,
-        position: TitlePosition { x: 0.5, y: 0.85 },
-        background: TitleBackground::Color { color: [40, 100, 200, 220], padding: 12.0 },
-        shadow: None,
-        ..TitleData::default()
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "LIKE & SHARE".into();
+    tb.font_size = 36.0;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = FontStyle::Bold;
+    tb.color = WHITE;
+    tb.alignment = TextAlignment::Center;
+    tb.shadow = None;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::Color { color: [40, 100, 200, 220], padding: 12.0 };
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.85 }; }
+    td
+}
 }
 fn sm_hashtag() -> TitleData {
     positioned("#[hashtag]", 48.0, FontStyle::Bold, CYAN, TextAlignment::Center, 0.5, 0.5, shadow_soft())
 }
 fn sm_comment() -> TitleData {
-    TitleData {
-        text: "[Your comment here...]".into(),
-        font_size: 28.0,
-        font_name: "sans-serif".into(),
-        font_style: FontStyle::Regular,
-        color: WHITE,
-        alignment: TextAlignment::Left,
-        position: TitlePosition { x: 0.15, y: 0.75 },
-        background: TitleBackground::Color { color: [50, 50, 60, 200], padding: 14.0 },
-        shadow: None,
-        ..TitleData::default()
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "[Your comment here...]".into();
+    tb.font_size = 28.0;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = FontStyle::Regular;
+    tb.color = WHITE;
+    tb.alignment = TextAlignment::Left;
+    tb.shadow = None;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::Color { color: [50, 50, 60, 200], padding: 14.0 };
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.15, y: 0.75 }; }
+    td
+}
 }
 fn sm_poll() -> TitleData {
     positioned("What do you think?", 42.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.3, shadow_default())
@@ -357,81 +370,91 @@ fn anim_smooth_cycle() -> TitleData { centered("Smooth Cycle", 56.0, FontStyle::
 // ---------------------------------------------------------------------------
 
 fn bc_breaking_news() -> TitleData {
-    TitleData {
-        text: "BREAKING NEWS".into(),
-        font_size: 48.0,
-        font_name: "sans-serif".into(),
-        font_style: FontStyle::Bold,
-        color: WHITE,
-        alignment: TextAlignment::Center,
-        position: TitlePosition { x: 0.5, y: 0.12 },
-        background: TitleBackground::Color { color: [200, 20, 20, 230], padding: 16.0 },
-        shadow: None,
-        ..TitleData::default()
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "BREAKING NEWS".into();
+    tb.font_size = 48.0;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = FontStyle::Bold;
+    tb.color = WHITE;
+    tb.alignment = TextAlignment::Center;
+    tb.shadow = None;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::Color { color: [200, 20, 20, 230], padding: 16.0 };
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.12 }; }
+    td
+}
 }
 fn bc_news_ticker() -> TitleData { lower_third_style("Breaking: [Story details here...]", 26.0, FontStyle::Regular, WHITE, [20, 20, 80, 220], 0.05, 0.94) }
 fn bc_weather() -> TitleData { lower_third_style("[City]  [Temp]\u{00b0}F", 28.0, FontStyle::Regular, WHITE, [0, 80, 160, 210], 0.08, 0.87) }
 fn bc_score_bug() -> TitleData {
-    TitleData {
-        text: "[HOME] 0 - 0 [AWAY]".into(),
-        font_size: 28.0,
-        font_name: "sans-serif".into(),
-        font_style: FontStyle::Bold,
-        color: WHITE,
-        alignment: TextAlignment::Center,
-        position: TitlePosition { x: 0.5, y: 0.06 },
-        background: TitleBackground::Color { color: [0, 0, 0, 200], padding: 10.0 },
-        shadow: None,
-        ..TitleData::default()
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "[HOME] 0 - 0 [AWAY]".into();
+    tb.font_size = 28.0;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = FontStyle::Bold;
+    tb.color = WHITE;
+    tb.alignment = TextAlignment::Center;
+    tb.shadow = None;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::Color { color: [0, 0, 0, 200], padding: 10.0 };
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.06 }; }
+    td
+}
 }
 fn bc_reporter() -> TitleData { lower_third_style("[Reporter Name]\n[City Bureau]", 28.0, FontStyle::Bold, WHITE, [0, 60, 140, 220], 0.08, 0.84) }
 fn bc_program_title() -> TitleData { centered_on_bg("[PROGRAM TITLE]", 56.0, FontStyle::Bold, WHITE, [20, 30, 60, 240]) }
 fn bc_live_badge() -> TitleData {
-    TitleData {
-        text: "LIVE".into(),
-        font_size: 24.0,
-        font_name: "sans-serif".into(),
-        font_style: FontStyle::Bold,
-        color: WHITE,
-        alignment: TextAlignment::Center,
-        position: TitlePosition { x: 0.92, y: 0.06 },
-        background: TitleBackground::Color { color: [220, 20, 20, 240], padding: 8.0 },
-        shadow: None,
-        ..TitleData::default()
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "LIVE".into();
+    tb.font_size = 24.0;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = FontStyle::Bold;
+    tb.color = WHITE;
+    tb.alignment = TextAlignment::Center;
+    tb.shadow = None;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::Color { color: [220, 20, 20, 240], padding: 8.0 };
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.92, y: 0.06 }; }
+    td
+}
 }
 fn bc_time_zone() -> TitleData {
-    TitleData {
-        text: "12:00 PM EST".into(),
-        font_size: 22.0,
-        font_name: "sans-serif".into(),
-        font_style: FontStyle::Regular,
-        color: WHITE_DIM,
-        alignment: TextAlignment::Right,
-        position: TitlePosition { x: 0.94, y: 0.94 },
-        background: TitleBackground::Color { color: [0, 0, 0, 150], padding: 6.0 },
-        shadow: None,
-        ..TitleData::default()
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "12:00 PM EST".into();
+    tb.font_size = 22.0;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = FontStyle::Regular;
+    tb.color = WHITE_DIM;
+    tb.alignment = TextAlignment::Right;
+    tb.shadow = None;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::Color { color: [0, 0, 0, 150], padding: 6.0 };
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.94, y: 0.94 }; }
+    td
+}
 }
 fn bc_network_bug() -> TitleData {
     positioned("NET", 18.0, FontStyle::Bold, [255, 255, 255, 120], TextAlignment::Right, 0.95, 0.05, None)
 }
 fn bc_alert() -> TitleData {
-    TitleData {
-        text: "SEVERE WEATHER ALERT".into(),
-        font_size: 36.0,
-        font_name: "sans-serif".into(),
-        font_style: FontStyle::Bold,
-        color: WHITE,
-        alignment: TextAlignment::Center,
-        position: TitlePosition { x: 0.5, y: 0.5 },
-        background: TitleBackground::Color { color: [180, 40, 0, 230], padding: 18.0 },
-        shadow: None,
-        ..TitleData::default()
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "SEVERE WEATHER ALERT".into();
+    tb.font_size = 36.0;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = FontStyle::Bold;
+    tb.color = WHITE;
+    tb.alignment = TextAlignment::Center;
+    tb.shadow = None;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::Color { color: [180, 40, 0, 230], padding: 18.0 };
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.5 }; }
+    td
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -440,65 +463,73 @@ fn bc_alert() -> TitleData {
 
 fn edu_lesson() -> TitleData { centered_on_bg("Lesson [#]: [Topic]", 48.0, FontStyle::Bold, WHITE, [30, 30, 60, 240]) }
 fn edu_key_point() -> TitleData {
-    TitleData {
-        text: "Key Point: [Important fact here]".into(),
-        font_size: 36.0,
-        font_name: "sans-serif".into(),
-        font_style: FontStyle::Bold,
-        color: [255, 255, 100, 255],
-        alignment: TextAlignment::Center,
-        position: TitlePosition { x: 0.5, y: 0.5 },
-        background: TitleBackground::Color { color: [0, 0, 0, 180], padding: 16.0 },
-        shadow: None,
-        ..TitleData::default()
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "Key Point: [Important fact here]".into();
+    tb.font_size = 36.0;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = FontStyle::Bold;
+    tb.color = [255, 255, 100, 255];
+    tb.alignment = TextAlignment::Center;
+    tb.shadow = None;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::Color { color: [0, 0, 0, 180], padding: 16.0 };
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.5 }; }
+    td
+}
 }
 fn edu_definition() -> TitleData {
-    TitleData {
-        text: "[Term]: [Definition goes here]".into(),
-        font_size: 32.0,
-        font_name: "sans-serif".into(),
-        font_style: FontStyle::Regular,
-        color: WHITE,
-        alignment: TextAlignment::Left,
-        position: TitlePosition { x: 0.15, y: 0.5 },
-        background: TitleBackground::Color { color: [20, 60, 80, 200], padding: 14.0 },
-        shadow: None,
-        ..TitleData::default()
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "[Term]: [Definition goes here]".into();
+    tb.font_size = 32.0;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = FontStyle::Regular;
+    tb.color = WHITE;
+    tb.alignment = TextAlignment::Left;
+    tb.shadow = None;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::Color { color: [20, 60, 80, 200], padding: 14.0 };
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.15, y: 0.5 }; }
+    td
+}
 }
 fn edu_step() -> TitleData { centered_on_bg("Step [#]: [Description]", 42.0, FontStyle::Bold, WHITE, [40, 60, 40, 240]) }
 fn edu_formula() -> TitleData {
     positioned("E = mc\u{00b2}", 48.0, FontStyle::Regular, GREEN, TextAlignment::Center, 0.5, 0.5, shadow_default())
 }
 fn edu_annotation() -> TitleData {
-    TitleData {
-        text: "Note: See details".into(),
-        font_size: 22.0,
-        font_name: "sans-serif".into(),
-        font_style: FontStyle::Italic,
-        color: [255, 255, 200, 255],
-        alignment: TextAlignment::Right,
-        position: TitlePosition { x: 0.92, y: 0.15 },
-        background: TitleBackground::Color { color: [0, 0, 0, 140], padding: 8.0 },
-        shadow: None,
-        ..TitleData::default()
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "Note: See details".into();
+    tb.font_size = 22.0;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = FontStyle::Italic;
+    tb.color = [255, 255, 200, 255];
+    tb.alignment = TextAlignment::Right;
+    tb.shadow = None;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::Color { color: [0, 0, 0, 140], padding: 8.0 };
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.92, y: 0.15 }; }
+    td
+}
 }
 fn edu_summary() -> TitleData { centered_on_bg("Summary", 48.0, FontStyle::Bold, WHITE, [50, 30, 80, 240]) }
 fn edu_quiz() -> TitleData {
-    TitleData {
-        text: "[Your question here?]".into(),
-        font_size: 42.0,
-        font_name: "sans-serif".into(),
-        font_style: FontStyle::Bold,
-        color: WHITE,
-        alignment: TextAlignment::Center,
-        position: TitlePosition { x: 0.5, y: 0.35 },
-        background: TitleBackground::Color { color: [80, 40, 160, 210], padding: 16.0 },
-        shadow: None,
-        ..TitleData::default()
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = "[Your question here?]".into();
+    tb.font_size = 42.0;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = FontStyle::Bold;
+    tb.color = WHITE;
+    tb.alignment = TextAlignment::Center;
+    tb.shadow = None;
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::Color { color: [80, 40, 160, 210], padding: 16.0 };
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.35 }; }
+    td
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -506,18 +537,23 @@ fn edu_quiz() -> TitleData {
 // ---------------------------------------------------------------------------
 
 fn sty_neon() -> TitleData {
-    TitleData {
-        glow: Some(TextGlow { color: [0, 255, 200, 255], radius: 15.0, intensity: 0.8 }),
-        outline: Some(TextOutline { color: [0, 255, 200, 255], width: 2.0 }),
-        ..positioned("NEON", 72.0, FontStyle::Bold, CYAN, TextAlignment::Center, 0.5, 0.5, None)
+    {
+    let mut td = positioned("NEON", 72.0, FontStyle::Bold, CYAN, TextAlignment::Center, 0.5, 0.5, None);
+    if let Some(tb) = td.primary_text_mut() {
+        tb.glow = Some(TextGlow { color: [0, 255, 200, 255], radius: 15.0, intensity: 0.8 });
+        if let Some(ol) = (Some(TextOutline { color: [0, 255, 200, 255], width: 2.0 })) { tb.outlines.insert(0, ol); }
     }
+    td
+}
 }
 fn sty_outline() -> TitleData {
-    TitleData {
-        outline: Some(TextOutline { color: [255, 255, 255, 255], width: 3.0 }),
-        color: [255, 255, 255, 80], // semi-transparent fill to emphasise the outline
-        ..positioned("OUTLINE", 72.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, None)
-    }
+    {
+    let mut tb = klipp_timeline::TextBox::default();
+    if let Some(ol) = (Some(TextOutline { color: [255, 255, 255, 255], width: 3.0 })) { tb.outlines.insert(0, ol); }
+    tb.color = [255, 255, 255, 80];
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td
+}
 }
 fn sty_handwritten() -> TitleData {
     positioned("handwritten feel", 48.0, FontStyle::Italic, WHITE_DIM, TextAlignment::Center, 0.5, 0.5, shadow_soft())
@@ -526,10 +562,13 @@ fn sty_stamp() -> TitleData {
     positioned("APPROVED", 72.0, FontStyle::Bold, RED, TextAlignment::Center, 0.5, 0.5, shadow_hard())
 }
 fn sty_gradient() -> TitleData {
-    TitleData {
-        gradient: Some(TextGradient { top_color: [255, 200, 50, 255], bottom_color: [255, 50, 50, 255] }),
-        ..positioned("GRADIENT", 72.0, FontStyle::Bold, PURPLE, TextAlignment::Center, 0.5, 0.5, shadow_glow([160, 80, 255, 150]))
+    {
+    let mut td = positioned("GRADIENT", 72.0, FontStyle::Bold, PURPLE, TextAlignment::Center, 0.5, 0.5, shadow_glow([160, 80, 255, 150]));
+    if let Some(tb) = td.primary_text_mut() {
+        tb.gradient = Some(TextGradient { top_color: [255, 200, 50, 255], bottom_color: [255, 50, 50, 255] });
     }
+    td
+}
 }
 fn sty_vintage() -> TitleData {
     positioned("Vintage", 56.0, FontStyle::Regular, [255, 220, 150, 255], TextAlignment::Center, 0.5, 0.5, shadow_soft())
@@ -548,37 +587,43 @@ fn sty_brush() -> TitleData {
 // ---------------------------------------------------------------------------
 
 fn tex_fill_bold() -> TitleData {
-    TitleData {
-        text: String::from("TEXTURE"),
-        font_size: 96.0,
-        font_style: FontStyle::Bold,
-        texture_fill_path: None, // User selects image in inspector
-        outline: Some(TextOutline { color: [40, 40, 40, 255], width: 2.0 }),
-        ..positioned("TEXTURE", 96.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, None)
+    {
+    let mut td = positioned("TEXTURE", 96.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, None);
+    if let Some(tb) = td.primary_text_mut() {
+        tb.text = String::from("TEXTURE");
+        tb.font_size = 96.0;
+        tb.font_style = FontStyle::Bold;
+        tb.texture_fill_path = None;
     }
+    td
+}
 }
 
 fn tex_fill_shadow() -> TitleData {
-    TitleData {
-        text: String::from("IMAGE FILL"),
-        font_size: 72.0,
-        font_style: FontStyle::Bold,
-        texture_fill_path: None, // User selects image in inspector
-        shadow: Some(TitleShadow { color: [0, 0, 0, 200], offset_x: 4.0, offset_y: 4.0, blur: 8.0 }),
-        outline: Some(TextOutline { color: [255, 255, 255, 180], width: 1.0 }),
-        ..positioned("IMAGE FILL", 72.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, None)
+    {
+    let mut td = positioned("IMAGE FILL", 72.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, None);
+    if let Some(tb) = td.primary_text_mut() {
+        tb.text = String::from("IMAGE FILL");
+        tb.font_size = 72.0;
+        tb.font_style = FontStyle::Bold;
+        tb.texture_fill_path = None;
+        if let Some(ol) = (Some(TextOutline { color: [255, 255, 255, 180], width: 1.0 })) { tb.outlines.insert(0, ol); }
     }
+    td
+}
 }
 
 fn tex_fill_glow() -> TitleData {
-    TitleData {
-        text: String::from("PHOTO TEXT"),
-        font_size: 84.0,
-        font_style: FontStyle::Bold,
-        texture_fill_path: None, // User selects image in inspector
-        glow: Some(TextGlow { color: [255, 200, 100, 255], radius: 12.0, intensity: 0.6 }),
-        ..positioned("PHOTO TEXT", 84.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, None)
+    {
+    let mut td = positioned("PHOTO TEXT", 84.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, None);
+    if let Some(tb) = td.primary_text_mut() {
+        tb.text = String::from("PHOTO TEXT");
+        tb.font_size = 84.0;
+        tb.font_style = FontStyle::Bold;
+        tb.texture_fill_path = None;
     }
+    td
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -586,62 +631,77 @@ fn tex_fill_glow() -> TitleData {
 // ---------------------------------------------------------------------------
 
 fn three_d_block() -> TitleData {
-    TitleData {
-        extrusion: Some(TextExtrusion {
+    {
+    let mut td = positioned("BLOCK", 84.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, None);
+    if let Some(tb) = td.primary_text_mut() {
+        tb.extrusion = Some(TextExtrusion {
             depth: 15.0, angle: 135.0,
             face_color: [255, 255, 255, 255],
             side_color: [80, 80, 120, 255],
             lighting: 0.6,
-        }),
-        ..positioned("BLOCK", 84.0, FontStyle::Bold, WHITE, TextAlignment::Center, 0.5, 0.5, None)
+        });
     }
+    td
+}
 }
 fn three_d_gold_emboss() -> TitleData {
-    TitleData {
-        extrusion: Some(TextExtrusion {
+    {
+    let mut td = positioned("EMBOSS", 72.0, FontStyle::Bold, GOLD, TextAlignment::Center, 0.5, 0.5, None);
+    if let Some(tb) = td.primary_text_mut() {
+        tb.extrusion = Some(TextExtrusion {
             depth: 8.0, angle: 135.0,
             face_color: [0, 0, 0, 0],
             side_color: [160, 120, 40, 255],
             lighting: 0.8,
-        }),
-        gradient: Some(TextGradient { top_color: [255, 220, 100, 255], bottom_color: [200, 150, 50, 255] }),
-        ..positioned("EMBOSS", 72.0, FontStyle::Bold, GOLD, TextAlignment::Center, 0.5, 0.5, None)
+        });
+        tb.gradient = Some(TextGradient { top_color: [255, 220, 100, 255], bottom_color: [200, 150, 50, 255] });
     }
+    td
+}
 }
 fn three_d_deep_shadow() -> TitleData {
-    TitleData {
-        extrusion: Some(TextExtrusion {
+    {
+    let mut td = positioned("DEEP", 96.0, FontStyle::Bold, RED, TextAlignment::Center, 0.5, 0.5, None);
+    if let Some(tb) = td.primary_text_mut() {
+        tb.extrusion = Some(TextExtrusion {
             depth: 30.0, angle: 150.0,
             face_color: [220, 50, 50, 255],
             side_color: [60, 20, 20, 255],
             lighting: 0.4,
-        }),
-        ..positioned("DEEP", 96.0, FontStyle::Bold, RED, TextAlignment::Center, 0.5, 0.5, None)
+        });
     }
+    td
+}
 }
 fn three_d_neon_extrude() -> TitleData {
-    TitleData {
-        extrusion: Some(TextExtrusion {
+    {
+    let mut td = positioned("NEON 3D", 72.0, FontStyle::Bold, CYAN, TextAlignment::Center, 0.5, 0.5, None);
+    if let Some(tb) = td.primary_text_mut() {
+        tb.extrusion = Some(TextExtrusion {
             depth: 12.0, angle: 180.0,
             face_color: [0, 255, 200, 255],
             side_color: [0, 80, 60, 255],
             lighting: 0.7,
-        }),
-        glow: Some(TextGlow { color: [0, 255, 200, 255], radius: 12.0, intensity: 0.6 }),
-        ..positioned("NEON 3D", 72.0, FontStyle::Bold, CYAN, TextAlignment::Center, 0.5, 0.5, None)
+        });
+        tb.glow = Some(TextGlow { color: [0, 255, 200, 255], radius: 12.0, intensity: 0.6 });
     }
+    td
+}
 }
 fn three_d_retro_stack() -> TitleData {
-    TitleData {
-        extrusion: Some(TextExtrusion {
+    {
+    let mut td = positioned("RETRO", 84.0, FontStyle::Bold, ORANGE, TextAlignment::Center, 0.5, 0.5, None);
+    if let Some(tb) = td.primary_text_mut() {
+        tb.extrusion = Some(TextExtrusion {
             depth: 20.0, angle: 120.0,
             face_color: [255, 220, 50, 255],
             side_color: [150, 80, 30, 255],
             lighting: 0.5,
-        }),
-        outline: Some(TextOutline { color: [40, 30, 20, 255], width: 2.0 }),
-        ..positioned("RETRO", 84.0, FontStyle::Bold, ORANGE, TextAlignment::Center, 0.5, 0.5, None)
+        });
+        if let Some(ol) = (Some(TextOutline { color: [40, 30, 20, 255], width: 2.0 })) { tb.outlines.insert(0, ol); }
     }
+    td
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -669,22 +729,31 @@ fn wed_invitation() -> TitleData {
 // ---------------------------------------------------------------------------
 
 fn path_arc_title() -> TitleData {
-    TitleData {
-        text_path: Some(TextPath::Arc { radius: 250.0, start_angle: -90.0, sweep: 180.0 }),
-        ..centered("ARC TITLE", 56.0, FontStyle::Bold, WHITE, true)
+    {
+    let mut td = centered("ARC TITLE", 56.0, FontStyle::Bold, WHITE, true);
+    if let Some(tb) = td.primary_text_mut() {
+        tb.text_path = Some(TextPath::Arc { radius: 250.0, start_angle: -90.0, sweep: 180.0 });
     }
+    td
+}
 }
 fn path_circle_text() -> TitleData {
-    TitleData {
-        text_path: Some(TextPath::Circle { radius: 200.0 }),
-        ..centered("CIRCLE TEXT", 48.0, FontStyle::Bold, WHITE, true)
+    {
+    let mut td = centered("CIRCLE TEXT", 48.0, FontStyle::Bold, WHITE, true);
+    if let Some(tb) = td.primary_text_mut() {
+        tb.text_path = Some(TextPath::Circle { radius: 200.0 });
     }
+    td
+}
 }
 fn path_wave_text() -> TitleData {
-    TitleData {
-        text_path: Some(TextPath::Wave { amplitude: 30.0, frequency: 2.0, phase: 0.0 }),
-        ..centered("WAVE TEXT", 56.0, FontStyle::Bold, WHITE, true)
+    {
+    let mut td = centered("WAVE TEXT", 56.0, FontStyle::Bold, WHITE, true);
+    if let Some(tb) = td.primary_text_mut() {
+        tb.text_path = Some(TextPath::Wave { amplitude: 30.0, frequency: 2.0, phase: 0.0 });
     }
+    td
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -692,26 +761,32 @@ fn path_wave_text() -> TitleData {
 // ---------------------------------------------------------------------------
 
 fn char_stagger_fade() -> TitleData {
-    TitleData {
-        char_animation: Some(CharAnimation {
+    {
+    let mut td = centered("Stagger Fade", 64.0, FontStyle::Regular, WHITE, true);
+    if let Some(tb) = td.primary_text_mut() {
+        tb.char_animation = Some(CharAnimation {
             stagger: 0.05,
             entrance: CharEntrance::FadeIn,
             wave_amplitude: 0.0,
             wave_speed: 0.0,
-        }),
-        ..centered("Stagger Fade", 64.0, FontStyle::Regular, WHITE, true)
+        });
     }
+    td
+}
 }
 fn char_wave_bounce() -> TitleData {
-    TitleData {
-        char_animation: Some(CharAnimation {
+    {
+    let mut td = centered("Wave Bounce", 64.0, FontStyle::Bold, WHITE, true);
+    if let Some(tb) = td.primary_text_mut() {
+        tb.char_animation = Some(CharAnimation {
             stagger: 0.0,
             entrance: CharEntrance::None,
             wave_amplitude: 15.0,
             wave_speed: 2.0,
-        }),
-        ..centered("Wave Bounce", 64.0, FontStyle::Bold, WHITE, true)
+        });
     }
+    td
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -893,7 +968,7 @@ const TITLES: &[TitleTemplate] = &[
     TitleTemplate { name: "Glitch", category: "Motion", preview_text: "GL!TCH", create_data: || centered("GL!TCH", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("glitch_0.6") },
     TitleTemplate { name: "Float Up", category: "Motion", preview_text: "floating...", create_data: || centered("floating...", 48.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("fade_in_0.5+float_up_5.0") },
     TitleTemplate { name: "Spin & Bounce", category: "Motion", preview_text: "WOW", create_data: || centered("WOW", 96.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("spin_in_0.6+bounce_in_1.0") },
-    TitleTemplate { name: "Shake & Fade", category: "Motion", preview_text: "ALERT!", create_data: || { let mut t = centered("ALERT!", 64.0, FontStyle::Regular, [255,255,255,255], true); t.color = [255, 60, 60, 255]; t }, animation: Some("shake_0.5+fade_in_out_2.0") },
+    TitleTemplate { name: "Shake & Fade", category: "Motion", preview_text: "ALERT!", create_data: || { let mut t = centered("ALERT!", 64.0, FontStyle::Regular, [255,255,255,255], true); if let Some(tb) = t.primary_text_mut() { tb.color = [255, 60, 60, 255]; } t }, animation: Some("shake_0.5+fade_in_out_2.0") },
     TitleTemplate { name: "Elastic Slide", category: "Motion", preview_text: "SNAP!", create_data: || centered("SNAP!", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("slide_left_0.3+elastic_1.0") },
     TitleTemplate { name: "Zoom & Spin", category: "Motion", preview_text: "ZOOM", create_data: || centered("ZOOM", 96.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("zoom_in_0.5+spin_in_0.8") },
     TitleTemplate { name: "Bounce & Fade Out", category: "Motion", preview_text: "BYE!", create_data: || centered("BYE!", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("bounce_in_0.8+fade_out_1.0") },
@@ -910,61 +985,61 @@ const TITLES: &[TitleTemplate] = &[
     TitleTemplate { name: "Credits Roll", category: "Scrolling", preview_text: "Credits...", create_data: || centered("Directed by\nJohn Doe\n\nProduced by\nJane Smith\n\nEditor\nAlex Johnson", 36.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("scroll_up_1.0") },
     TitleTemplate { name: "News Ticker", category: "Scrolling", preview_text: "\u{2190} BREAKING NEWS", create_data: || { let mut t = lower_third_style("BREAKING: Major event reported \u{2014} More details at 11", 28.0, FontStyle::Regular, [255, 255, 255, 255], [0, 0, 0, 180], 0.15, 0.85); t.background = TitleBackground::Color { color: [180, 30, 30, 220], padding: 8.0 }; t }, animation: Some("ticker_left_1.0") },
     TitleTemplate { name: "Continuous Spin", category: "Scrolling", preview_text: "\u{21bb} Spin", create_data: || centered("LOGO", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("spinning_1.0") },
-    TitleTemplate { name: "Pulsing Text", category: "Scrolling", preview_text: "\u{2764} Pulse", create_data: || { let mut t = centered("LIVE", 64.0, FontStyle::Regular, [255,255,255,255], true); t.color = [255, 60, 60, 255]; t }, animation: Some("pulsing_1.0") },
+    TitleTemplate { name: "Pulsing Text", category: "Scrolling", preview_text: "\u{2764} Pulse", create_data: || { let mut t = centered("LIVE", 64.0, FontStyle::Regular, [255,255,255,255], true); if let Some(tb) = t.primary_text_mut() { tb.color = [255, 60, 60, 255]; } t }, animation: Some("pulsing_1.0") },
     TitleTemplate { name: "Breathing Text", category: "Scrolling", preview_text: "~ Breathe ~", create_data: || centered("breathe", 48.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("breathing_1.0") },
     TitleTemplate { name: "Floating Text", category: "Scrolling", preview_text: "\u{2601} Float", create_data: || centered("drifting...", 36.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("floating_1.0") },
     // ---- Rich Text (8) — pre-styled multi-color/size templates ----
     TitleTemplate { name: "Name & Title", category: "Rich Text", preview_text: "Name + Title", create_data: || {
         let text = "John Smith\nCreative Director"; // 28 bytes
         let mut t = centered(text, 48.0, FontStyle::Bold, [255, 255, 255, 255], true);
-        t.style_runs = vec![
+        if let Some(tb) = t.primary_text_mut() { tb.style_runs = vec![
             StyleRun { start: 0, end: 10, font_size: Some(48.0), font_style: Some(FontStyle::Bold), color: Some([255, 255, 255, 255]), ..StyleRun::default_for_range(0, 10) },
             StyleRun { start: 11, end: 28, font_size: Some(28.0), font_style: Some(FontStyle::Regular), color: Some([180, 180, 190, 255]), ..StyleRun::default_for_range(11, 28) },
-        ];
+        ]; }
         t
     }, animation: Some("fade_in_0.5") },
     TitleTemplate { name: "Highlight Word", category: "Rich Text", preview_text: "BOLD color", create_data: || {
         let text = "This is IMPORTANT text";
         let mut t = centered(text, 48.0, FontStyle::Regular, [255, 255, 255, 255], true);
-        t.style_runs = vec![
+        if let Some(tb) = t.primary_text_mut() { tb.style_runs = vec![
             StyleRun { start: 0, end: 8, color: Some([200, 200, 210, 255]), ..StyleRun::default_for_range(0, 8) },
             StyleRun { start: 8, end: 17, font_style: Some(FontStyle::Bold), color: Some([255, 195, 50, 255]), font_size: Some(56.0), ..StyleRun::default_for_range(8, 17) },
             StyleRun { start: 17, end: 22, color: Some([200, 200, 210, 255]), ..StyleRun::default_for_range(17, 22) },
-        ];
+        ]; }
         t
     }, animation: None },
     TitleTemplate { name: "Duo Tone", category: "Rich Text", preview_text: "Two Colors", create_data: || {
         let text = "HELLO WORLD";
         let mut t = centered(text, 72.0, FontStyle::Bold, [255, 255, 255, 255], true);
-        t.style_runs = vec![
+        if let Some(tb) = t.primary_text_mut() { tb.style_runs = vec![
             StyleRun { start: 0, end: 5, color: Some([80, 180, 255, 255]), ..StyleRun::default_for_range(0, 5) },
             StyleRun { start: 5, end: 11, color: Some([255, 100, 150, 255]), ..StyleRun::default_for_range(5, 11) },
-        ];
+        ]; }
         t
     }, animation: Some("fade_in_0.5") },
     TitleTemplate { name: "Quote + Author", category: "Rich Text", preview_text: "\"Quote\" — Author", create_data: || {
         let text = "\"The best way to predict\nthe future is to create it.\"\n\n— Abraham Lincoln"; // 72 bytes
         let author_start = text.find('\u{2014}').unwrap_or(55); // em dash
         let mut t = centered(text, 36.0, FontStyle::Italic, [255, 255, 255, 255], true);
-        t.style_runs = vec![
+        if let Some(tb) = t.primary_text_mut() { tb.style_runs = vec![
             StyleRun { start: 0, end: author_start, font_size: Some(36.0), font_style: Some(FontStyle::Italic), color: Some([230, 230, 240, 255]), ..StyleRun::default_for_range(0, author_start) },
             StyleRun { start: author_start, end: text.len(), font_size: Some(24.0), font_style: Some(FontStyle::Regular), color: Some([180, 160, 120, 255]), ..StyleRun::default_for_range(author_start, text.len()) },
-        ];
+        ]; }
         t
     }, animation: Some("fade_in_1.0") },
     TitleTemplate { name: "Big + Small", category: "Rich Text", preview_text: "BIG small", create_data: || {
         let text = "MEGA tiny";
         let mut t = centered(text, 72.0, FontStyle::Bold, [255, 255, 255, 255], false);
-        t.style_runs = vec![
+        if let Some(tb) = t.primary_text_mut() { tb.style_runs = vec![
             StyleRun { start: 0, end: 4, font_size: Some(96.0), font_style: Some(FontStyle::Bold), color: Some([255, 255, 255, 255]), ..StyleRun::default_for_range(0, 4) },
             StyleRun { start: 5, end: 9, font_size: Some(28.0), font_style: Some(FontStyle::Regular), color: Some([160, 160, 170, 255]), ..StyleRun::default_for_range(5, 9) },
-        ];
+        ]; }
         t
     }, animation: None },
     TitleTemplate { name: "Rainbow Text", category: "Rich Text", preview_text: "Rainbow!", create_data: || {
         let text = "RAINBOW";
         let mut t = centered(text, 72.0, FontStyle::Bold, [255, 255, 255, 255], true);
-        t.style_runs = vec![
+        if let Some(tb) = t.primary_text_mut() { tb.style_runs = vec![
             StyleRun { start: 0, end: 1, color: Some([255, 50, 50, 255]), ..StyleRun::default_for_range(0, 1) },
             StyleRun { start: 1, end: 2, color: Some([255, 150, 0, 255]), ..StyleRun::default_for_range(1, 2) },
             StyleRun { start: 2, end: 3, color: Some([255, 255, 0, 255]), ..StyleRun::default_for_range(2, 3) },
@@ -972,38 +1047,40 @@ const TITLES: &[TitleTemplate] = &[
             StyleRun { start: 4, end: 5, color: Some([50, 150, 255, 255]), ..StyleRun::default_for_range(4, 5) },
             StyleRun { start: 5, end: 6, color: Some([100, 50, 255, 255]), ..StyleRun::default_for_range(5, 6) },
             StyleRun { start: 6, end: 7, color: Some([200, 50, 200, 255]), ..StyleRun::default_for_range(6, 7) },
-        ];
+        ]; }
         t
     }, animation: Some("pop_in_0.5") },
     TitleTemplate { name: "Price Tag", category: "Rich Text", preview_text: "$9.99/mo", create_data: || {
         let text = "$9.99/month";
         let mut t = centered(text, 48.0, FontStyle::Bold, [255, 255, 255, 255], false);
         t.background = TitleBackground::Color { color: [30, 30, 40, 220], padding: 20.0 };
-        t.style_runs = vec![
+        if let Some(tb) = t.primary_text_mut() { tb.style_runs = vec![
             StyleRun { start: 0, end: 1, font_size: Some(36.0), color: Some([180, 180, 190, 255]), ..StyleRun::default_for_range(0, 1) },
             StyleRun { start: 1, end: 5, font_size: Some(72.0), font_style: Some(FontStyle::Bold), color: Some([255, 220, 50, 255]), ..StyleRun::default_for_range(1, 5) },
             StyleRun { start: 5, end: 11, font_size: Some(24.0), color: Some([140, 140, 150, 255]), ..StyleRun::default_for_range(5, 11) },
-        ];
+        ]; }
         t
     }, animation: Some("fade_in_0.3") },
     TitleTemplate { name: "Breaking + Detail", category: "Rich Text", preview_text: "BREAKING + info", create_data: || {
         let text = "BREAKING NEWS\nExplosion reported downtown, emergency services responding";
         let tlen = text.len();
-        TitleData {
-            text: text.into(),
-            font_size: 36.0,
-            font_name: "sans-serif".into(),
-            font_style: FontStyle::Bold,
-            color: [255, 255, 255, 255],
-            alignment: TextAlignment::Left,
-            position: TitlePosition { x: 0.15, y: 0.85 },
-            background: TitleBackground::Color { color: [180, 20, 20, 220], padding: 12.0 },
-            style_runs: vec![
+        {
+    let mut tb = klipp_timeline::TextBox::default();
+    tb.text = text.into();
+    tb.font_size = 36.0;
+    tb.font_name = "sans-serif".into();
+    tb.font_style = FontStyle::Bold;
+    tb.color = [255, 255, 255, 255];
+    tb.alignment = TextAlignment::Left;
+    tb.style_runs = vec![
                 StyleRun { start: 0, end: 13, font_size: Some(42.0), font_style: Some(FontStyle::Bold), color: Some([255, 255, 255, 255]), ..StyleRun::default_for_range(0, 13) },
                 StyleRun { start: 14, end: tlen, font_size: Some(24.0), font_style: Some(FontStyle::Regular), color: Some([240, 220, 200, 255]), ..StyleRun::default_for_range(14, tlen) },
-            ],
-            ..TitleData::default()
-        }
+            ];
+    let mut td = klipp_timeline::TitleData::single_text(tb);
+    td.background = TitleBackground::Color { color: [180, 20, 20, 220], padding: 12.0 };
+    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.15, y: 0.85 }; }
+    td
+}
     }, animation: Some("slide_left_0.5") },
 ];
 
@@ -1770,9 +1847,9 @@ fn paint_card_text(
     // template's hand-crafted preview_text. For Rich-Text templates
     // with style runs, we always use the original text since the runs
     // are pinned to character indices in that string.
-    let use_template_text = !data.style_runs.is_empty();
+    let use_template_text = !data.style_runs().is_empty();
     let display_text_raw: String = if use_template_text {
-        data.text.clone()
+        data.text().clone()
     } else if !preview_text_override.trim().is_empty() {
         preview_text_override.to_string()
     } else {
@@ -1780,11 +1857,12 @@ fn paint_card_text(
     };
 
     // Translate the title's normalized 0–1 position into card pixels.
+    let data_pos = data.position();
     let pos_unanimated = egui::pos2(
-        rect.min.x + data.position.x * rect.width(),
-        rect.min.y + data.position.y * rect.height(),
+        rect.min.x + data_pos.x * rect.width(),
+        rect.min.y + data_pos.y * rect.height(),
     );
-    let align = match data.alignment {
+    let align = match data.alignment() {
         TextAlignment::Left => egui::Align2::LEFT_CENTER,
         TextAlignment::Right => egui::Align2::RIGHT_CENTER,
         TextAlignment::Center => egui::Align2::CENTER_CENTER,
@@ -1798,7 +1876,7 @@ fn paint_card_text(
     };
 
     let pos = pos_unanimated + xform.offset;
-    let font_size = ((data.font_size / 5.0) * xform.scale).clamp(8.0, 28.0);
+    let font_size = ((data.font_size() / 5.0) * xform.scale).clamp(8.0, 28.0);
 
     // Apply animation_type (Typewriter / Scroll / Crawl) on hover. On
     // a static card we render the full text in its anchor pose; while
@@ -1827,12 +1905,12 @@ fn paint_card_text(
     );
 
     // ── 2. Glow (soft outer halo, multi-pass) ──
-    if let Some(ref glow) = data.glow {
+    if let Some(ref glow) = data.glow() {
         paint_glow(painter, pos, align, font_size, &display_text, glow, xform.alpha);
     }
 
     // ── 3. Extrusion (3D depth — repeated offset draws) ──
-    if let Some(ref ext) = data.extrusion {
+    if let Some(ref ext) = data.extrusion() {
         paint_extrusion(
             painter,
             pos,
@@ -1840,26 +1918,22 @@ fn paint_card_text(
             font_size,
             &display_text,
             ext,
-            data.color,
+            data.color(),
             xform.alpha,
         );
     }
 
     // ── 4. Outline(s) — multi-layer stroke behind main fill ──
-    let outlines: Vec<&TextOutline> = data
-        .outlines
-        .iter()
-        .chain(data.outline.iter())
-        .collect();
+    let outlines = data.outlines();
     for outline in &outlines {
         paint_outline(painter, pos, align, font_size, &display_text, outline, xform.alpha);
     }
 
     // ── 5. Shadow ──
-    if let Some(ref shadow) = data.shadow {
+    if let Some(ref shadow) = data.shadow() {
         let shadow_color = scaled_color(shadow.color, xform.alpha);
         // For Bold weight we paint shadow twice (slightly thicker).
-        let bold = matches!(data.font_style, FontStyle::Bold | FontStyle::BoldItalic);
+        let bold = matches!(data.font_style(), FontStyle::Bold | FontStyle::BoldItalic);
         let offsets: &[(f32, f32)] = if bold {
             &[(0.0, 0.0), (0.5, 0.0)]
         } else {
@@ -1880,36 +1954,36 @@ fn paint_card_text(
     }
 
     // ── 6. Main fill (gradient / pattern / style runs / per-char anim / text path) ──
-    if let Some(ref path) = data.text_path {
+    if let Some(ref path) = data.text_path() {
         paint_text_along_path(
             painter,
             rect,
             &display_text,
             font_size,
-            data.color,
+            data.color(),
             path,
             xform.alpha,
-            &data.font_style,
+            &data.font_style(),
         );
-    } else if let Some(ref ca) = data.char_animation {
+    } else if let Some(ref ca) = data.char_animation() {
         paint_char_animated(
             painter,
             pos,
             align,
             font_size,
             &display_text,
-            data.color,
+            data.color(),
             ca,
             elapsed_secs,
             xform.alpha,
-            &data.font_style,
+            &data.font_style(),
         );
-    } else if !data.style_runs.is_empty() {
+    } else if !data.style_runs().is_empty() {
         paint_styled_runs(painter, pos, align, font_size, &data, xform.alpha);
-    } else if let Some(ref grad) = data.gradient {
+    } else if let Some(ref grad) = data.gradient() {
         paint_gradient_text(
             painter, pos, align, font_size, &display_text, grad, xform.alpha,
-            &data.font_style,
+            &data.font_style(),
         );
     } else {
         paint_styled_text(
@@ -1918,8 +1992,8 @@ fn paint_card_text(
             align,
             font_size,
             &display_text,
-            scaled_color(data.color, xform.alpha),
-            &data.font_style,
+            scaled_color(data.color(), xform.alpha),
+            &data.font_style(),
         );
     }
 }
@@ -2656,14 +2730,14 @@ fn paint_styled_runs(
     data: &TitleData,
     alpha_mul: f32,
 ) {
-    let chars: Vec<char> = data.text.chars().collect();
+    let chars: Vec<char> = data.text().chars().collect();
     // Default colour for any character not covered by a run.
-    let default_color = scaled_color(data.color, alpha_mul);
+    let default_color = scaled_color(data.color(), alpha_mul);
     // Helper: resolve (color, size) at a character index, falling back
     // to the template's defaults when the run leaves a field None.
+    let style_runs = data.style_runs();
     let style_at = |idx: usize| -> (egui::Color32, f32) {
-        let run = data
-            .style_runs
+        let run = style_runs
             .iter()
             .find(|r| r.start <= idx && idx < r.end);
         match run {
@@ -2676,7 +2750,7 @@ fn paint_styled_runs(
                 // card-relative scale we're already using by ratio
                 // against the template's base font_size.
                 let size_ratio = match r.font_size {
-                    Some(sz) => sz / data.font_size.max(1.0),
+                    Some(sz) => sz / data.font_size().max(1.0),
                     None => 1.0,
                 };
                 (color, size_ratio)

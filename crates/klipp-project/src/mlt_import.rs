@@ -737,10 +737,12 @@ fn build_clip_from_entry(
         }
         ProducerKind::KdenliveTitled { text, font, font_size, color } => {
             let mut td = klipp_timeline::TitleData::default();
-            td.text = text;
-            td.font_name = font;
-            td.font_size = font_size;
-            td.color = color;
+            if let Some(tb) = td.primary_text_mut() {
+                tb.text = text;
+                tb.font_name = font;
+                tb.font_size = font_size;
+                tb.color = color;
+            }
             clip.kind = ClipKind::Title(td);
         }
         ProducerKind::Unknown { service } => {

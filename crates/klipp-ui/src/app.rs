@@ -12708,7 +12708,7 @@ impl KlippApp {
         // something they can recognise in the Media tab. Falls back
         // to "Title Asset" when the text is empty/placeholder-only.
         let raw_name = title_data
-            .text
+            .text()
             .lines()
             .next()
             .unwrap_or("")
@@ -12964,22 +12964,25 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            let old_len = td.text.len();
-                            td.text = text.clone();
-                            td.font_size = *font_size;
-                            td.font_name = font_name.clone();
-                            td.font_style = match font_style {
+                            let old_len = td.text().len();
+                            let new_style = match font_style {
                                 1 => klipp_timeline::FontStyle::Bold,
                                 2 => klipp_timeline::FontStyle::Italic,
                                 3 => klipp_timeline::FontStyle::BoldItalic,
                                 _ => klipp_timeline::FontStyle::Regular,
                             };
-                            td.color = *color;
-                            if td.text.len() != old_len {
-                                klipp_timeline::adjust_style_runs_for_text_change(
-                                    &mut td.style_runs,
-                                    td.text.len(),
-                                );
+                            if let Some(tb) = td.primary_text_mut() {
+                                tb.text = text.clone();
+                                tb.font_size = *font_size;
+                                tb.font_name = font_name.clone();
+                                tb.font_style = new_style;
+                                tb.color = *color;
+                                if tb.text.len() != old_len {
+                                    klipp_timeline::adjust_style_runs_for_text_change(
+                                        &mut tb.style_runs,
+                                        tb.text.len(),
+                                    );
+                                }
                             }
                         }
                     }
@@ -12996,7 +12999,7 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.tracking = *tracking;
+                            if let Some(tb) = td.primary_text_mut() { tb.tracking = *tracking; }
                         }
                     }
                 }
@@ -13012,7 +13015,7 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.line_spacing = *line_spacing;
+                            if let Some(tb) = td.primary_text_mut() { tb.line_spacing = *line_spacing; }
                         }
                     }
                 }
@@ -13030,14 +13033,14 @@ impl KlippApp {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             // Special: clear_all removes all style runs
                             if property == "clear_all" {
-                                td.style_runs.clear();
+                                td.style_runs().clear();
                                 break;
                             }
-                            let text_len = td.text.len();
+                            let text_len = td.text().len();
                             let prop = property.as_str();
                             let val = value.as_str();
                             klipp_timeline::apply_style_to_range(
-                                &mut td.style_runs,
+                                &mut td.style_runs(),
                                 text_len,
                                 *range_start,
                                 *range_end,
@@ -13087,7 +13090,7 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.style_runs.clear();
+                            td.style_runs().clear();
                         }
                     }
                 }
@@ -13111,11 +13114,11 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.alignment = match alignment {
+                            if let Some(tb) = td.primary_text_mut() { tb.alignment = match alignment {
                                 0 => klipp_timeline::TextAlignment::Left,
                                 2 => klipp_timeline::TextAlignment::Right,
                                 _ => klipp_timeline::TextAlignment::Center,
-                            };
+                            }; }
                         }
                     }
                 }
@@ -13144,7 +13147,9 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.position = klipp_timeline::TitlePosition { x: *x, y: *y };
+                            if let Some(o) = td.objects.first_mut() {
+                                o.transform.center = klipp_timeline::TitlePosition { x: *x, y: *y };
+                            }
                         }
                     }
                 }
@@ -13166,7 +13171,7 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.text_path = path.clone();
+                            if let Some(tb) = td.primary_text_mut() { tb.text_path = path.clone(); }
                         }
                     }
                 }
@@ -13208,11 +13213,11 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.gradient = if *enabled {
+                            if let Some(tb) = td.primary_text_mut() { tb.gradient = if *enabled {
                                 Some(klipp_timeline::TextGradient { top_color: *top_color, bottom_color: *bottom_color })
                             } else {
                                 None
-                            };
+                            }; }
                         }
                     }
                 }
@@ -13228,13 +13233,13 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.pattern_fill = match pattern_kind {
+                            if let Some(tb) = td.primary_text_mut() { tb.pattern_fill = match pattern_kind {
                                 1 => Some(klipp_timeline::TextPattern::HorizontalStripes { color_a: *color_a, color_b: *color_b, stripe_width: *size }),
                                 2 => Some(klipp_timeline::TextPattern::VerticalStripes { color_a: *color_a, color_b: *color_b, stripe_width: *size }),
                                 3 => Some(klipp_timeline::TextPattern::Checkerboard { color_a: *color_a, color_b: *color_b, cell_size: *size }),
                                 4 => Some(klipp_timeline::TextPattern::DiagonalStripes { color_a: *color_a, color_b: *color_b, stripe_width: *size }),
                                 _ => None,
-                            };
+                            }; }
                         }
                     }
                 }
@@ -13249,7 +13254,7 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.texture_fill_path = path.clone();
+                            if let Some(tb) = td.primary_text_mut() { tb.texture_fill_path = path.clone(); }
                         }
                     }
                 }
@@ -13271,14 +13276,14 @@ impl KlippApp {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if *enabled {
-                                td.shadow = Some(klipp_timeline::TitleShadow {
+                                if let Some(tb) = td.primary_text_mut() { tb.shadow = Some(klipp_timeline::TitleShadow {
                                     color: *color,
                                     offset_x: *offset_x,
                                     offset_y: *offset_y,
                                     blur: *blur,
-                                });
+                                }); }
                             } else {
-                                td.shadow = None;
+                                if let Some(tb) = td.primary_text_mut() { tb.shadow = None; }
                             }
                         }
                     }
@@ -13295,11 +13300,20 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.outline = if *enabled {
-                                Some(klipp_timeline::TextOutline { color: *color, width: *width })
-                            } else {
-                                None
-                            };
+                            if let Some(tb) = td.primary_text_mut() {
+                                if *enabled {
+                                    let new_ol = klipp_timeline::TextOutline {
+                                        color: *color, width: *width,
+                                    };
+                                    if let Some(first) = tb.outlines.first_mut() {
+                                        *first = new_ol;
+                                    } else {
+                                        tb.outlines.push(new_ol);
+                                    }
+                                } else {
+                                    tb.outlines.clear();
+                                }
+                            }
                         }
                     }
                 }
@@ -13315,11 +13329,11 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.glow = if *enabled {
+                            if let Some(tb) = td.primary_text_mut() { tb.glow = if *enabled {
                                 Some(klipp_timeline::TextGlow { color: *color, radius: *radius, intensity: *intensity })
                             } else {
                                 None
-                            };
+                            }; }
                         }
                     }
                 }
@@ -13335,11 +13349,10 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.outlines = outlines.iter().map(|(color, width)| {
-                                klipp_timeline::TextOutline { color: *color, width: *width }
-                            }).collect();
-                            if !outlines.is_empty() {
-                                td.outline = None;
+                            if let Some(tb) = td.primary_text_mut() {
+                                tb.outlines = outlines.iter().map(|(color, width)| {
+                                    klipp_timeline::TextOutline { color: *color, width: *width }
+                                }).collect();
                             }
                         }
                     }
@@ -13356,13 +13369,13 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.inner_shadow = if *enabled {
+                            if let Some(tb) = td.primary_text_mut() { tb.inner_shadow = if *enabled {
                                 Some(klipp_timeline::InnerShadow {
                                     color: *color, offset_x: *offset_x, offset_y: *offset_y, blur: *blur,
                                 })
                             } else {
                                 None
-                            };
+                            }; }
                         }
                     }
                 }
@@ -13378,7 +13391,7 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.extrusion = if *enabled {
+                            if let Some(tb) = td.primary_text_mut() { tb.extrusion = if *enabled {
                                 Some(klipp_timeline::TextExtrusion {
                                     depth: *depth,
                                     angle: *angle,
@@ -13388,7 +13401,7 @@ impl KlippApp {
                                 })
                             } else {
                                 None
-                            };
+                            }; }
                         }
                     }
                 }
@@ -13412,7 +13425,7 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.motion_blur = mb;
+                            if let Some(tb) = td.primary_text_mut() { tb.motion_blur = mb; }
                         }
                     }
                 }
@@ -13434,7 +13447,7 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.write_on = *write_on;
+                            if let Some(tb) = td.primary_text_mut() { tb.write_on = *write_on; }
                         }
                     }
                 }
@@ -13466,7 +13479,7 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.char_animation = anim;
+                            if let Some(tb) = td.primary_text_mut() { tb.char_animation = anim; }
                         }
                     }
                 }
@@ -15755,20 +15768,20 @@ impl KlippApp {
                                     ),
                                 };
 
-                                let title_data = klipp_timeline::TitleData {
-                                    text: entry.text.clone(),
-                                    font_size,
-                                    font_name,
-                                    font_style,
-                                    color,
-                                    position: klipp_timeline::TitlePosition { x: 0.5, y: 0.88 },
-                                    alignment: klipp_timeline::TextAlignment::Center,
-                                    background: klipp_timeline::TitleBackground::None,
-                                    outline,
-                                    shadow,
-                                    ass_style_name: if entry.style_name.is_empty() { None } else { Some(entry.style_name.clone()) },
-                                    ..Default::default()
-                                };
+                                let mut tb = klipp_timeline::TextBox::default();
+                                tb.text = entry.text.clone();
+                                tb.font_size = font_size;
+                                tb.font_name = font_name;
+                                tb.font_style = font_style;
+                                tb.color = color;
+                                tb.alignment = klipp_timeline::TextAlignment::Center;
+                                if let Some(o) = outline { tb.outlines.push(o); }
+                                tb.shadow = shadow;
+                                tb.ass_style_name = if entry.style_name.is_empty() { None } else { Some(entry.style_name.clone()) };
+                                let mut title_data = klipp_timeline::TitleData::single_text(tb);
+                                if let Some(o) = title_data.objects.first_mut() {
+                                    o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
+                                }
                                 let clip = klipp_timeline::Clip {
                                     id: klipp_core::ClipId::new(),
                                     kind: klipp_timeline::ClipKind::Title(title_data),
@@ -15787,16 +15800,16 @@ impl KlippApp {
                                 let timeline_in = klipp_core::RationalTime::from_secs_f64(sub.start_secs, fps_rate);
                                 let timeline_out = klipp_core::RationalTime::from_secs_f64(sub.end_secs, fps_rate);
                                 let dur = timeline_out - timeline_in;
-                                let title_data = klipp_timeline::TitleData {
-                                    text: sub.text.clone(),
-                                    font_size: 32.0,
-                                    font_name: String::new(),
-                                    position: klipp_timeline::TitlePosition { x: 0.5, y: 0.88 },
-                                    alignment: klipp_timeline::TextAlignment::Center,
-                                    background: klipp_timeline::TitleBackground::None,
-                                    outline: Some(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0 }),
-                                    ..Default::default()
-                                };
+                                let mut tb = klipp_timeline::TextBox::default();
+                                tb.text = sub.text.clone();
+                                tb.font_size = 32.0;
+                                tb.font_name = String::new();
+                                tb.alignment = klipp_timeline::TextAlignment::Center;
+                                tb.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0 });
+                                let mut title_data = klipp_timeline::TitleData::single_text(tb);
+                                if let Some(o) = title_data.objects.first_mut() {
+                                    o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
+                                }
                                 let clip = klipp_timeline::Clip {
                                     id: klipp_core::ClipId::new(),
                                     kind: klipp_timeline::ClipKind::Title(title_data),
@@ -16027,18 +16040,18 @@ impl KlippApp {
                         seq.tracks.iter().position(|t| t.id == id).unwrap()
                     });
 
-                let title_data = klipp_timeline::TitleData {
-                    text: String::new(),
-                    font_size: 32.0,
-                    font_name: String::new(),
-                    position: klipp_timeline::TitlePosition { x: 0.5, y: 0.88 },
-                    alignment: klipp_timeline::TextAlignment::Center,
-                    background: klipp_timeline::TitleBackground::None,
-                    outline: Some(klipp_timeline::TextOutline {
-                        color: [0, 0, 0, 200], width: 2.0,
-                    }),
-                    ..Default::default()
-                };
+                let mut tb = klipp_timeline::TextBox::default();
+                tb.text = String::new();
+                tb.font_size = 32.0;
+                tb.font_name = String::new();
+                tb.alignment = klipp_timeline::TextAlignment::Center;
+                tb.outlines.push(klipp_timeline::TextOutline {
+                    color: [0, 0, 0, 200], width: 2.0,
+                });
+                let mut title_data = klipp_timeline::TitleData::single_text(tb);
+                if let Some(o) = title_data.objects.first_mut() {
+                    o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
+                }
 
                 let new_clip = klipp_timeline::Clip {
                     id: klipp_core::ClipId::new(),
@@ -16070,7 +16083,7 @@ impl KlippApp {
                             subs.push(SubtitleEntry {
                                 start_secs: clip.timeline_in.to_secs_f64(),
                                 end_secs: clip.timeline_out.to_secs_f64(),
-                                text: td.text.clone(),
+                                text: td.text().clone(),
                             });
                         }
                     }
@@ -28917,15 +28930,15 @@ fn apply_title_animation_keyframes(
     let render_scale = frame_height / 1080.0;
     let (text_h, text_w) = match &clip.kind {
         klipp_timeline::ClipKind::Title(td) => {
-            let line_count = td.text.lines().count().max(1) as f32;
+            let line_count = td.text().lines().count().max(1) as f32;
             let max_chars = td
-                .text
+                .text()
                 .lines()
                 .map(|l| l.chars().count())
                 .max()
                 .unwrap_or(0)
                 .max(1) as f32;
-            let scaled_font = td.font_size * render_scale;
+            let scaled_font = td.font_size() * render_scale;
             let h = line_count * scaled_font * 1.4;
             let w = max_chars * scaled_font * 0.55;
             (h, w)

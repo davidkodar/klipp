@@ -635,20 +635,21 @@ fn paint_synthetic_title_thumb(
     // there's content). Bias to the asset's own data field — this
     // is a Project Asset, the user named it, the displayed text
     // should match the asset.
-    let display_text = if data.text.trim().is_empty() {
+    let display_text = if data.text().trim().is_empty() {
         "Title".to_string()
     } else {
         // Single-line preview — multi-line titles get squashed at
         // thumbnail size anyway. Strip past the first newline.
-        data.text.lines().next().unwrap_or("").to_string()
+        data.text().lines().next().unwrap_or("").to_string()
     };
 
     let inner = rect.shrink2(egui::vec2(rect.width() * 0.06, rect.height() * 0.10));
+    let data_pos = data.position();
     let pos = egui::pos2(
-        inner.min.x + data.position.x * inner.width(),
-        inner.min.y + data.position.y * inner.height(),
+        inner.min.x + data_pos.x * inner.width(),
+        inner.min.y + data_pos.y * inner.height(),
     );
-    let align = match data.alignment {
+    let align = match data.alignment() {
         klipp_timeline::TextAlignment::Left => egui::Align2::LEFT_CENTER,
         klipp_timeline::TextAlignment::Right => egui::Align2::RIGHT_CENTER,
         klipp_timeline::TextAlignment::Center => egui::Align2::CENTER_CENTER,
@@ -656,11 +657,11 @@ fn paint_synthetic_title_thumb(
     // Scale the title's font_size into a card-friendly range. The
     // template stores e.g. 72 px which would dwarf the thumbnail; we
     // map it down by a fixed factor and clamp the result.
-    let font_size = (data.font_size / 7.0).clamp(8.0, 18.0);
+    let font_size = (data.font_size() / 7.0).clamp(8.0, 18.0);
     let color = egui::Color32::from_rgba_unmultiplied(
-        data.color[0], data.color[1], data.color[2], data.color[3],
+        data.color()[0], data.color()[1], data.color()[2], data.color()[3],
     );
-    if let Some(ref shadow) = data.shadow {
+    if let Some(ref shadow) = data.shadow() {
         let sc = egui::Color32::from_rgba_unmultiplied(
             shadow.color[0], shadow.color[1], shadow.color[2], shadow.color[3],
         );

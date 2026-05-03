@@ -600,21 +600,25 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                 let ca: Option<klipp_timeline::CharAnimation> = serde_json::from_value(char_animation.clone()).ok().flatten();
                 let mb: Option<klipp_timeline::MotionBlur> = serde_json::from_value(motion_blur.clone()).ok().flatten();
                 let sr: Vec<klipp_timeline::StyleRun> = serde_json::from_value(style_runs.clone()).unwrap_or_default();
-                ClipKind::Title(TitleData {
+                // Build a TextBox from the legacy flat JSON fields,
+                // then wrap it in a TitleData with one TextBox object.
+                // The legacy single-outline `outline` field is folded
+                // into the `outlines` vec (rendered widest-first).
+                let mut outlines_vec = ols;
+                if let Some(o) = ol {
+                    if !outlines_vec.iter().any(|existing| existing == &o) {
+                        outlines_vec.insert(0, o);
+                    }
+                }
+                let tb = klipp_timeline::TextBox {
                     text: text.clone(),
                     font_size: *font_size,
                     font_name: font_name.clone(),
                     font_style: fs,
                     color: *color,
                     alignment: align,
-                    position: TitlePosition {
-                        x: *position_x,
-                        y: *position_y,
-                    },
-                    background: bg,
                     shadow: sh,
-                    outline: ol,
-                    outlines: ols,
+                    outlines: outlines_vec,
                     glow: gl,
                     gradient: gr,
                     inner_shadow: is,
@@ -625,8 +629,6 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     extrusion: ext,
                     text_path: tp,
                     char_animation: ca,
-                    // texture_fill_path stored relative for portability —
-                    // resolve against the project directory on load.
                     texture_fill_path: texture_fill_path.as_ref().map(|p| {
                         crate::path_util::resolve_media_path(project_dir, Path::new(p))
                             .to_string_lossy()
@@ -635,8 +637,16 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     motion_blur: mb,
                     style_runs: sr,
                     ass_style_name: None,
-                    animation_type: klipp_timeline::TitleAnimationType::default(),
-                })
+                };
+                let mut td = klipp_timeline::TitleData::single_text(tb);
+                if let Some(obj) = td.objects.first_mut() {
+                    obj.transform.center = TitlePosition {
+                        x: *position_x,
+                        y: *position_y,
+                    };
+                }
+                td.background = bg;
+                ClipKind::Title(td)
             }
             ClipKindJson::Gap => ClipKind::Gap,
             ClipKindJson::Sequence { sequence_id } => {
