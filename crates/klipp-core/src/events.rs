@@ -1350,6 +1350,17 @@ pub enum AppCommand {
     SetTitleWriteOn { clip_id: ClipId, write_on: f32 },
     /// Set line spacing multiplier.
     SetTitleLineSpacing { clip_id: ClipId, line_spacing: f32 },
+    /// Toggle text underline rendering.
+    SetTitleUnderline { clip_id: ClipId, underline: bool },
+    /// Toggle text strikethrough rendering.
+    SetTitleStrikethrough { clip_id: ClipId, strikethrough: bool },
+    /// Set the pre-layout case transform applied to the text body.
+    /// `case_kind`: 0 = None, 1 = Uppercase, 2 = Lowercase, 3 = SmallCaps.
+    SetTitleCaseTransform { clip_id: ClipId, case_kind: u8 },
+    /// Vertical baseline shift in 1080p reference pixels (positive
+    /// shifts text DOWN). Resolution-stable: scales with frame height
+    /// at render time.
+    SetTitleBaselineShift { clip_id: ClipId, shift_px: f32 },
     /// Set 3D text extrusion. `enabled=false` = disable.
     SetTitleExtrusion { clip_id: ClipId, enabled: bool, depth: f32, angle: f32, face_color: [u8; 4], side_color: [u8; 4], lighting: f32 },
     /// Set text path. path_kind: 0=None, 1=Arc, 2=Circle, 3=Wave.

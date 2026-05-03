@@ -289,6 +289,39 @@ pub struct TextBox {
     /// ASS/SSA style name for round-tripping imported .ass files.
     #[serde(default)]
     pub ass_style_name: Option<String>,
+    /// Underline the entire text body (one full-width line below the
+    /// baseline; thickness scales with the resolved font size).
+    #[serde(default)]
+    pub underline: bool,
+    /// Strikethrough the entire text body (one full-width line at the
+    /// x-height midpoint).
+    #[serde(default)]
+    pub strikethrough: bool,
+    /// Case transform applied to `text` BEFORE layout — the resting
+    /// `text` field is preserved verbatim so the user can flip the
+    /// case treatment without re-typing.
+    #[serde(default)]
+    pub case_transform: TextCase,
+    /// Vertical baseline shift in pixels at the 1080p reference
+    /// resolution; positive shifts text DOWN (away from cap-height),
+    /// negative shifts UP. Useful for fine-tuning lower-thirds against
+    /// a bar background.
+    #[serde(default)]
+    pub baseline_shift: f32,
+}
+
+/// Pre-layout case transform applied to `TextBox.text` before glyphs
+/// are produced. `SmallCaps` uppercases lower-case input but renders
+/// the upper-cased glyphs at 80 % of the configured `font_size` so
+/// they read like genuine smallcaps even on fonts that don't ship
+/// dedicated smallcaps glyph variants.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+pub enum TextCase {
+    #[default]
+    None,
+    Uppercase,
+    Lowercase,
+    SmallCaps,
 }
 
 impl Default for TextBox {
@@ -316,6 +349,10 @@ impl Default for TextBox {
             motion_blur: None,
             style_runs: Vec::new(),
             ass_style_name: None,
+            underline: false,
+            strikethrough: false,
+            case_transform: TextCase::None,
+            baseline_shift: 0.0,
         }
     }
 }
@@ -533,6 +570,18 @@ impl TitleData {
     }
     pub fn motion_blur(&self) -> Option<MotionBlur> {
         self.primary_text().and_then(|tb| tb.motion_blur)
+    }
+    pub fn underline(&self) -> bool {
+        self.primary_text().map_or(false, |tb| tb.underline)
+    }
+    pub fn strikethrough(&self) -> bool {
+        self.primary_text().map_or(false, |tb| tb.strikethrough)
+    }
+    pub fn case_transform(&self) -> TextCase {
+        self.primary_text().map_or(TextCase::None, |tb| tb.case_transform)
+    }
+    pub fn baseline_shift(&self) -> f32 {
+        self.primary_text().map_or(0.0, |tb| tb.baseline_shift)
     }
     pub fn style_runs(&self) -> Vec<StyleRun> {
         self.primary_text().map(|tb| tb.style_runs.clone()).unwrap_or_default()

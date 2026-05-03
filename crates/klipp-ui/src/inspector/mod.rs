@@ -1714,6 +1714,57 @@ fn show_title_editor(
     if ui.add(egui::Slider::new(&mut write_on, 0.0..=1.0).text("Write-On").step_by(0.01)).changed() {
         cmds.push(AppCommand::SetTitleWriteOn { clip_id, write_on });
     }
+    let mut baseline = td.baseline_shift();
+    if ui.add(
+        egui::DragValue::new(&mut baseline)
+            .range(-200.0..=200.0)
+            .speed(0.5)
+            .suffix(" px")
+            .prefix("Baseline shift: ")
+            .fixed_decimals(0),
+    ).changed() {
+        cmds.push(AppCommand::SetTitleBaselineShift { clip_id, shift_px: baseline });
+    }
+    ui.horizontal(|ui| {
+        let mut underline = td.underline();
+        if ui.checkbox(&mut underline, "Underline").changed() {
+            cmds.push(AppCommand::SetTitleUnderline { clip_id, underline });
+        }
+        let mut strikethrough = td.strikethrough();
+        if ui.checkbox(&mut strikethrough, "Strikethrough").changed() {
+            cmds.push(AppCommand::SetTitleStrikethrough { clip_id, strikethrough });
+        }
+    });
+    {
+        let current_case = td.case_transform();
+        let case_idx: u8 = match current_case {
+            klipp_timeline::TextCase::None => 0,
+            klipp_timeline::TextCase::Uppercase => 1,
+            klipp_timeline::TextCase::Lowercase => 2,
+            klipp_timeline::TextCase::SmallCaps => 3,
+        };
+        let case_label = match current_case {
+            klipp_timeline::TextCase::None => "None",
+            klipp_timeline::TextCase::Uppercase => "UPPERCASE",
+            klipp_timeline::TextCase::Lowercase => "lowercase",
+            klipp_timeline::TextCase::SmallCaps => "Small Caps",
+        };
+        let mut sel = case_idx;
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Case:").size(11.0).color(theme.text_secondary));
+            egui::ComboBox::from_id_salt("title_case_transform")
+                .selected_text(case_label)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut sel, 0, "None");
+                    ui.selectable_value(&mut sel, 1, "UPPERCASE");
+                    ui.selectable_value(&mut sel, 2, "lowercase");
+                    ui.selectable_value(&mut sel, 3, "Small Caps");
+                });
+        });
+        if sel != case_idx {
+            cmds.push(AppCommand::SetTitleCaseTransform { clip_id, case_kind: sel });
+        }
+    }
     ui.add_space(8.0);
 
     // ── Text Path ──

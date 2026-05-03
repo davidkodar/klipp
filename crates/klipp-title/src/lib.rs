@@ -274,9 +274,16 @@ impl TitleRenderer {
             .get(&cache_key)
             .unwrap_or(&self.fallback_font);
 
-        // Scale font size relative to frame height (72pt at 1080p)
+        // Scale font size relative to frame height (72pt at 1080p).
+        // SmallCaps renders at 80 % of the configured size so the
+        // upper-cased glyphs read like smallcaps even on fonts
+        // without dedicated smallcaps glyph variants.
         let scale = height as f32 / 1080.0;
-        let font_px = tb.font_size * scale;
+        let case_scale = match tb.case_transform {
+            klipp_timeline::TextCase::SmallCaps => 0.80,
+            _ => 1.0,
+        };
+        let font_px = tb.font_size * scale * case_scale;
 
         // Lay out text
         let h_align = match tb.alignment {
@@ -297,28 +304,38 @@ impl TitleRenderer {
             ..LayoutSettings::default()
         });
 
+        // Resolve the laid-out text, honouring the pre-layout case
+        // transform. The `text` field on TextBox is preserved verbatim
+        // so the user can flip the treatment without re-typing.
+        let resolved_text: String = match tb.case_transform {
+            klipp_timeline::TextCase::None => tb.text.clone(),
+            klipp_timeline::TextCase::Uppercase
+            | klipp_timeline::TextCase::SmallCaps => tb.text.to_uppercase(),
+            klipp_timeline::TextCase::Lowercase => tb.text.to_lowercase(),
+        };
+
         // Append text with per-run font sizes when style runs exist.
         // Track (glyph_count_before, segment_byte_start) for byte_offset fixup.
         let mut segment_info: Vec<(usize, usize)> = Vec::new();
 
         if tb.style_runs.is_empty() {
             segment_info.push((0, 0));
-            layout.append(&[font], &TextStyle::new(&tb.text, font_px, 0));
+            layout.append(&[font], &TextStyle::new(&resolved_text, font_px, 0));
         } else {
             let mut pos = 0usize;
             for run in &tb.style_runs {
-                if run.start > pos && run.start <= tb.text.len() {
-                    let segment = &tb.text[pos..run.start];
+                if run.start > pos && run.start <= resolved_text.len() {
+                    let segment = &resolved_text[pos..run.start];
                     if !segment.is_empty() {
                         segment_info.push((layout.glyphs().len(), pos));
                         layout.append(&[font], &TextStyle::new(segment, font_px, 0));
                     }
                     pos = run.start;
                 }
-                let run_end = run.end.min(tb.text.len());
+                let run_end = run.end.min(resolved_text.len());
                 if run_end > pos {
-                    let segment = &tb.text[pos..run_end];
-                    let run_size = run.font_size.unwrap_or(tb.font_size) * scale;
+                    let segment = &resolved_text[pos..run_end];
+                    let run_size = run.font_size.unwrap_or(tb.font_size) * scale * case_scale;
                     if !segment.is_empty() {
                         segment_info.push((layout.glyphs().len(), pos));
                         layout.append(&[font], &TextStyle::new(segment, run_size, 0));
@@ -326,8 +343,8 @@ impl TitleRenderer {
                     pos = run_end;
                 }
             }
-            if pos < tb.text.len() {
-                let segment = &tb.text[pos..];
+            if pos < resolved_text.len() {
+                let segment = &resolved_text[pos..];
                 if !segment.is_empty() {
                     segment_info.push((layout.glyphs().len(), pos));
                     layout.append(&[font], &TextStyle::new(segment, font_px, 0));
@@ -446,14 +463,28 @@ impl TitleRenderer {
             TextAlignment::Center => anchor_x - text_w * 0.5 - text_min_x,
             TextAlignment::Right => anchor_x - text_w - text_min_x,
         };
-        let offset_y = title.position().y * height as f32 - text_h * 0.5 - text_min_y;
+        // Baseline shift is authored in 1080p reference pixels and
+        // scales with the frame so a +20 px offset on a 1080p edit
+        // looks the same on a 4K master. Positive shifts text DOWN.
+        let baseline_shift_px = tb.baseline_shift * scale;
+        let offset_y = title.position().y * height as f32 - text_h * 0.5 - text_min_y
+            + baseline_shift_px;
 
-        // Compute the mask bounding box (padded for effects)
+        // Compute the mask bounding box (padded for effects). When
+        // an underline is enabled the stripe sits ~5 % below the
+        // visible text bottom — the mask must extend that far down
+        // or the underline gets clipped on the descender side.
         let max_pad = effect_padding(title, scale);
+        let underline_pad = if tb.underline {
+            (text_h * 0.10).ceil() as i32 + (font_px * 0.06).ceil() as i32
+        } else {
+            0
+        };
         let mask_x0 = ((text_min_x + offset_x).floor() as i32 - max_pad).max(0) as usize;
         let mask_y0 = ((text_min_y + offset_y).floor() as i32 - max_pad).max(0) as usize;
         let mask_x1 = ((text_max_x + offset_x).ceil() as i32 + max_pad + 1).min(w as i32) as usize;
-        let mask_y1 = ((text_max_y + offset_y).ceil() as i32 + max_pad + 1).min(h as i32) as usize;
+        let mask_y1 = ((text_max_y + offset_y).ceil() as i32 + max_pad + underline_pad + 1)
+            .min(h as i32) as usize;
         let mask_w = mask_x1.saturating_sub(mask_x0);
         let mask_h = mask_y1.saturating_sub(mask_y0);
 
@@ -493,6 +524,43 @@ impl TitleRenderer {
                     font, glyphs,
                     offset_x, offset_y,
                     &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0,
+                );
+            }
+        }
+
+        // Underline / strikethrough: paint a horizontal stripe across
+        // the text bounds inside the alpha mask. Thickness scales
+        // with font_px so it stays proportional at any resolution;
+        // capped at a 1-pixel minimum so it doesn't disappear at
+        // small sizes. Strikethrough sits at ~40 % from the bottom
+        // (covering the x-height midpoint for most fonts);
+        // underline sits 10 % below the visible bottom (descender
+        // territory) so it doesn't crash into descenders.
+        if tb.underline || tb.strikethrough {
+            let stripe_thickness = (font_px * 0.06).max(1.0).round() as i32;
+            let line_x0 = ((text_min_x + offset_x).floor() as i32 - mask_x0 as i32).max(0);
+            let line_x1 = ((text_max_x + offset_x).ceil() as i32 - mask_x0 as i32)
+                .min(mask_w as i32);
+            // Strikethrough: 40 % from text_min_y → text_max_y
+            // (visually covers the x-height midline).
+            if tb.strikethrough {
+                let line_y_centre = (text_min_y + offset_y) + text_h * 0.40;
+                let stripe_top = (line_y_centre.round() as i32 - mask_y0 as i32
+                    - stripe_thickness / 2)
+                    .max(0);
+                paint_alpha_mask_stripe(
+                    &mut alpha_mask, mask_w, mask_h,
+                    line_x0, line_x1, stripe_top, stripe_top + stripe_thickness,
+                );
+            }
+            if tb.underline {
+                let line_y_centre = (text_min_y + offset_y) + text_h * 1.05;
+                let stripe_top = (line_y_centre.round() as i32 - mask_y0 as i32
+                    - stripe_thickness / 2)
+                    .max(0);
+                paint_alpha_mask_stripe(
+                    &mut alpha_mask, mask_w, mask_h,
+                    line_x0, line_x1, stripe_top, stripe_top + stripe_thickness,
                 );
             }
         }
@@ -1099,12 +1167,26 @@ impl TitleRenderer {
             return Vec::new();
         }
 
+        // Mirror render_layout's case-transform handling so cursor
+        // positions land on the rendered (possibly upper/lower-cased)
+        // text rather than the original characters.
+        let resolved_text: String = match tb.case_transform {
+            klipp_timeline::TextCase::None => tb.text.clone(),
+            klipp_timeline::TextCase::Uppercase
+            | klipp_timeline::TextCase::SmallCaps => tb.text.to_uppercase(),
+            klipp_timeline::TextCase::Lowercase => tb.text.to_lowercase(),
+        };
+
         // Same font + layout as render_layout
         let cache_key = self.ensure_font_loaded(&tb.font_name, tb.font_style);
         let font = self.font_cache.get(&cache_key).unwrap_or(&self.fallback_font);
 
         let scale = height as f32 / 1080.0;
-        let font_px = tb.font_size * scale;
+        let case_scale = match tb.case_transform {
+            klipp_timeline::TextCase::SmallCaps => 0.80,
+            _ => 1.0,
+        };
+        let font_px = tb.font_size * scale * case_scale;
 
         let h_align = match tb.alignment {
             TextAlignment::Left => HorizontalAlign::Left,
@@ -1130,22 +1212,22 @@ impl TitleRenderer {
 
         if tb.style_runs.is_empty() {
             segment_info.push((0, 0));
-            layout.append(&[font], &TextStyle::new(&tb.text, font_px, 0));
+            layout.append(&[font], &TextStyle::new(&resolved_text, font_px, 0));
         } else {
             let mut pos = 0usize;
             for run in &tb.style_runs {
-                if run.start > pos && run.start <= tb.text.len() {
-                    let segment = &tb.text[pos..run.start];
+                if run.start > pos && run.start <= resolved_text.len() {
+                    let segment = &resolved_text[pos..run.start];
                     if !segment.is_empty() {
                         segment_info.push((layout.glyphs().len(), pos));
                         layout.append(&[font], &TextStyle::new(segment, font_px, 0));
                     }
                     pos = run.start;
                 }
-                let run_end = run.end.min(tb.text.len());
+                let run_end = run.end.min(resolved_text.len());
                 if run_end > pos {
-                    let segment = &tb.text[pos..run_end];
-                    let run_size = run.font_size.unwrap_or(tb.font_size) * scale;
+                    let segment = &resolved_text[pos..run_end];
+                    let run_size = run.font_size.unwrap_or(tb.font_size) * scale * case_scale;
                     if !segment.is_empty() {
                         segment_info.push((layout.glyphs().len(), pos));
                         layout.append(&[font], &TextStyle::new(segment, run_size, 0));
@@ -1153,8 +1235,8 @@ impl TitleRenderer {
                     pos = run_end;
                 }
             }
-            if pos < tb.text.len() {
-                let segment = &tb.text[pos..];
+            if pos < resolved_text.len() {
+                let segment = &resolved_text[pos..];
                 if !segment.is_empty() {
                     segment_info.push((layout.glyphs().len(), pos));
                     layout.append(&[font], &TextStyle::new(segment, font_px, 0));
@@ -1248,7 +1330,12 @@ impl TitleRenderer {
             TextAlignment::Center => anchor_x - text_w * 0.5 - text_min_x,
             TextAlignment::Right => anchor_x - text_w - text_min_x,
         };
-        let offset_y = title.position().y * height as f32 - text_h * 0.5 - text_min_y;
+        // Baseline shift is authored in 1080p reference pixels and
+        // scales with the frame so a +20 px offset on a 1080p edit
+        // looks the same on a 4K master. Positive shifts text DOWN.
+        let baseline_shift_px = tb.baseline_shift * scale;
+        let offset_y = title.position().y * height as f32 - text_h * 0.5 - text_min_y
+            + baseline_shift_px;
 
         // Build character positions from glyph data.
         // fontdue gives us one glyph per visible character (spaces may have width=0).
@@ -1804,6 +1891,33 @@ fn rasterize_to_mask(
                 // Max blend so overlapping glyphs don't exceed 255
                 mask[idx] = mask[idx].max(cov);
             }
+        }
+    }
+}
+
+/// Paint a solid alpha-255 horizontal stripe into the mask between
+/// `(x0, y0)` and `(x1, y1)`, with bounds-checking. Used for
+/// underline / strikethrough decoration so they share the rest of
+/// the text rendering pipeline (outline / shadow / glow / texture
+/// fill all naturally cover the stripe pixels).
+fn paint_alpha_mask_stripe(
+    mask: &mut [u8],
+    mask_w: usize,
+    mask_h: usize,
+    x0: i32,
+    x1: i32,
+    y0: i32,
+    y1: i32,
+) {
+    let x_lo = x0.max(0) as usize;
+    let x_hi = (x1.min(mask_w as i32).max(0)) as usize;
+    let y_lo = y0.max(0) as usize;
+    let y_hi = (y1.min(mask_h as i32).max(0)) as usize;
+    for y in y_lo..y_hi {
+        let row_start = y * mask_w;
+        for x in x_lo..x_hi {
+            let idx = row_start + x;
+            mask[idx] = mask[idx].max(255);
         }
     }
 }
@@ -2566,6 +2680,100 @@ mod tests {
         let line2_first = positions.iter().find(|p| p.char_index == 6).unwrap(); // 'L' of Line2
         assert!(line2_first.y > line1_y + 5.0,
             "Line2 y ({}) should be below Line1 y ({})", line2_first.y, line1_y);
+    }
+
+    /// Underline / strikethrough must add visible pixels to the
+    /// rendered output beyond what plain text alone produces.
+    #[test]
+    fn underline_and_strikethrough_add_visible_pixels() {
+        let mut renderer = TitleRenderer::new();
+        let mk = |underline: bool, strike: bool| {
+            let mut tb = klipp_timeline::TextBox::default();
+            tb.text = "abc".to_string();
+            tb.font_size = 80.0;
+            tb.underline = underline;
+            tb.strikethrough = strike;
+            klipp_timeline::TitleData::single_text(tb)
+        };
+        let count_nonzero = |buf: &[u8]| buf.chunks_exact(4).filter(|p| p[3] > 0).count();
+        let plain = renderer.render(&mk(false, false), 1280, 720);
+        let with_underline = renderer.render(&mk(true, false), 1280, 720);
+        let with_strike = renderer.render(&mk(false, true), 1280, 720);
+        let n_plain = count_nonzero(&plain);
+        let n_under = count_nonzero(&with_underline);
+        let n_strike = count_nonzero(&with_strike);
+        assert!(
+            n_under > n_plain + 50,
+            "Underline must add ≥50 visible pixels. plain={n_plain} under={n_under}"
+        );
+        assert!(
+            n_strike > n_plain + 50,
+            "Strikethrough must add ≥50 visible pixels. plain={n_plain} strike={n_strike}"
+        );
+    }
+
+    /// Case transform changes the rendered glyphs — uppercase `abc`
+    /// uses different glyphs than lowercase `abc`, so the alpha mask
+    /// pattern must differ.
+    #[test]
+    fn case_transform_changes_rendered_text() {
+        let mut renderer = TitleRenderer::new();
+        let mk = |case: klipp_timeline::TextCase| {
+            let mut tb = klipp_timeline::TextBox::default();
+            tb.text = "abc".to_string();
+            tb.font_size = 80.0;
+            tb.case_transform = case;
+            klipp_timeline::TitleData::single_text(tb)
+        };
+        let lower = renderer.render(&mk(klipp_timeline::TextCase::None), 1280, 720);
+        let upper = renderer.render(&mk(klipp_timeline::TextCase::Uppercase), 1280, 720);
+        assert_ne!(
+            &lower[..], &upper[..],
+            "Uppercase should produce different bitmap than the original lowercase text"
+        );
+        // SmallCaps: same glyphs as Uppercase but at 80% size — must
+        // differ from the full-size uppercase render.
+        let smallcaps = renderer.render(&mk(klipp_timeline::TextCase::SmallCaps), 1280, 720);
+        assert_ne!(
+            &upper[..], &smallcaps[..],
+            "SmallCaps (80%) should differ from full-size Uppercase render"
+        );
+    }
+
+    /// Baseline shift moves the rendered text vertically without
+    /// changing the glyph shapes, so a +20 shift should produce the
+    /// same total pixel count as a 0 shift but at different y rows.
+    #[test]
+    fn baseline_shift_moves_text_vertically() {
+        let mut renderer = TitleRenderer::new();
+        let mk = |shift: f32| {
+            let mut tb = klipp_timeline::TextBox::default();
+            tb.text = "X".to_string();
+            tb.font_size = 80.0;
+            tb.baseline_shift = shift;
+            klipp_timeline::TitleData::single_text(tb)
+        };
+        // Find first row with a non-transparent pixel for each render.
+        let first_visible_row = |buf: &[u8], w: u32, h: u32| -> Option<u32> {
+            for y in 0..h {
+                let row_start = (y * w * 4) as usize;
+                if buf[row_start..row_start + (w * 4) as usize]
+                    .chunks_exact(4)
+                    .any(|p| p[3] > 0)
+                {
+                    return Some(y);
+                }
+            }
+            None
+        };
+        let center = renderer.render(&mk(0.0), 1280, 720);
+        let lower = renderer.render(&mk(50.0), 1280, 720);
+        let row_center = first_visible_row(&center, 1280, 720).expect("center has visible pixels");
+        let row_lower = first_visible_row(&lower, 1280, 720).expect("shifted has visible pixels");
+        assert!(
+            row_lower > row_center,
+            "+50 baseline_shift should move the text DOWN; row_center={row_center} row_lower={row_lower}"
+        );
     }
 
     /// Pin the contract that `char_animation` actually changes the
