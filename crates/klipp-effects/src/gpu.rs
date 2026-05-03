@@ -4977,6 +4977,95 @@ impl GpuEffectsPipeline {
         self.download_linear_rgba_as_u8(buf_b, (width * height) as usize)
     }
 
+    /// Linear-f32 input/output transition. Identical shader work to
+    /// [`render_transition`] but skips the sRGB encode on the output
+    /// path *and* the linear decode on the input path — callers
+    /// already speaking linear (the engine compositor + display
+    /// chain) hand off and pick up linear-f32 buffers directly,
+    /// shaving the two CPU pow loops that the u8 boundary version
+    /// pays per frame.
+    ///
+    /// The compute shader itself doesn't care about the colour
+    /// space — it just lerps RGBA. By keeping the boundary in
+    /// linear f32 we avoid round-tripping a colour-space encode
+    /// purely to satisfy a u8 storage format.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_transition_linear(
+        &mut self,
+        from_linear: &[f32],
+        to_linear: &[f32],
+        kind_id: u32,
+        progress: f32,
+        width: u32,
+        height: u32,
+        user_param0: f32,
+        user_param1: f32,
+        user_param2: f32,
+        user_param3: f32,
+        user_color: [f32; 4],
+    ) -> Vec<f32> {
+        if self.is_device_lost() {
+            let _ = to_linear;
+            return from_linear.to_vec();
+        }
+        let byte_size = (width * height * 16) as u64;
+        self.ensure_buffers(byte_size);
+
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+        let buf_c = self.buf_c.as_ref().unwrap();
+
+        // Upload linear-f32 directly — no sRGB conversion needed.
+        self.queue.write_buffer(buf_a, 0, bytemuck::cast_slice(from_linear));
+        self.queue.write_buffer(buf_c, 0, bytemuck::cast_slice(to_linear));
+
+        self.write_params(&TransitionParams {
+            width,
+            height,
+            progress,
+            kind_id,
+            param0: user_param0,
+            param1: user_param1,
+            param2: user_param2,
+            param3: user_param3,
+            color_r: user_color[0],
+            color_g: user_color[1],
+            color_b: user_color[2],
+            color_a: user_color[3],
+        });
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("render_transition_linear_bg"),
+            layout: &self.transition_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: buf_a.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: buf_c.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: buf_b.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+
+        let pixel_count = width * height;
+        let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("render_transition_linear"),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.transition_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.device.poll(wgpu::Maintain::Poll);
+
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
+    }
+
     /// Dispatch bloom blend: additive blend of bright (buf_c) onto original (input) → output
     fn dispatch_bloom_blend(
         &self, input: &wgpu::Buffer, bright: &wgpu::Buffer, output: &wgpu::Buffer,

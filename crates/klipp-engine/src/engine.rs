@@ -1099,11 +1099,20 @@ pub struct PlaybackEngine {
     // Transition decoder — secondary decoder for the partner clip during transitions
     transition_decoder: Option<VideoDecoder>,
     transition_clip_id: Option<klipp_core::ClipId>,
-    transition_frame_cache: Option<crate::types::DecodedFrame>,
+    /// Latest partner-clip frame as **linear-f32 RGBA** (Phase B of
+    /// the GPU end-to-end pipeline). Caching as linear skips two
+    /// per-pixel pow loops per frame: the sRGB encode that the old
+    /// `Option<DecodedFrame>` cache did when popping, and the sRGB
+    /// decode the GPU transition's u8 boundary did when uploading.
+    /// The width/height go alongside so the GPU upload can validate
+    /// dimensions without consulting the partner decoder.
+    transition_frame_cache: Option<crate::types::LinearFrame>,
     /// Cached clip_a frame captured during the first half of a centered transition
     /// window. Reused as the "from" frame during the second half, after the main
-    /// decoder has advanced to clip_b. Cleared when the transition ends.
-    transition_clip_a_last_frame: Option<Vec<u8>>,
+    /// decoder has advanced to clip_b. Stored as linear-f32 so the
+    /// transition shader consumes it directly without a sRGB round-
+    /// trip. Cleared when the transition ends.
+    transition_clip_a_last_frame: Option<Vec<f32>>,
     /// True when the partner decoder has signaled EOF during the current
     /// transition — the clip ran out of source material. This is the ONLY
     /// trigger for tagging frames as `Frozen`. Transient cache reuse
@@ -4017,16 +4026,29 @@ impl PlaybackEngine {
             }
         }
 
+        // Run the transition (if any) on the linear-f32 composite
+        // BEFORE the sRGB display encode. This is the Phase B
+        // boundary — transitions blend in linear light, the GPU
+        // path stays linear end-to-end, and `display_encode` is the
+        // single seam that converts to u8 for the viewer / export.
+        let t_transition = std::time::Instant::now();
+        let transitioned_linear = self.apply_transition_if_active(accumulated_linear, final_w, final_h);
+        let transition_us = t_transition.elapsed().as_micros();
+        let transition_ms = transition_us as f64 / 1000.0;
+        if transition_ms > 2.0 {
+            debug!("PERF apply_transition: {transition_ms:.1}ms");
+        }
+
         // Encode the final linear composite to u8 for downstream (viewer,
         // export, cache). This is the display boundary — applies the
         // user-selected tone-map operator (None = identity for SDR) then
         // sRGB-encodes the result. For `ToneMapOp::None` + SDR content
         // this is bit-identical to the old linear_rgba_to_u8 path.
         let t_display = std::time::Instant::now();
-        let final_rgba = self.display_encode(&accumulated_linear);
+        let final_rgba = self.display_encode(&transitioned_linear);
         let display_us = t_display.elapsed().as_micros();
         // Return the linear scratch to the pool for the next frame.
-        self.composite_scratch_linear = accumulated_linear;
+        self.composite_scratch_linear = transitioned_linear;
 
         let composite_ms = t_composite.elapsed().as_secs_f64() * 1000.0;
         let overlay_count = {
@@ -4054,17 +4076,9 @@ impl PlaybackEngine {
 
         let composite_full_us = t_composite_full.elapsed().as_micros();
 
-        // Check for active transition and blend if needed.
-        // If a transition is active this may build a new Vec — in that case
-        // the composite_scratch pool contribution is lost for this frame
-        // but restored on the next frame when no transition is active.
-        let t_transition = std::time::Instant::now();
-        let mut final_rgba = self.apply_transition_if_active(final_rgba, final_w, final_h);
-        let transition_us = t_transition.elapsed().as_micros();
-        let transition_ms = transition_us as f64 / 1000.0;
-        if transition_ms > 2.0 {
-            debug!("PERF apply_transition: {transition_ms:.1}ms");
-        }
+        // Transition is now applied above; final_rgba already
+        // reflects the blended result.
+        let mut final_rgba = final_rgba;
 
         // Snapshot how much time the "big middle" (post_process +
         // composite + apply_transition) actually took. Expected ~15 ms
@@ -6220,7 +6234,21 @@ impl PlaybackEngine {
     /// Apply the full post-processing pipeline to a raw decoded RGBA frame:
     /// color grade → OFX effects → built-in effects → global LUT.
     /// Check for an active transition at the current playhead and blend if needed.
-    fn apply_transition_if_active(&mut self, from_rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+    /// Phase B GPU end-to-end transition path: consumes linear-f32
+    /// RGBA from the compositor and returns linear-f32 RGBA back to
+    /// the caller. Display-encode runs **after** this method, so
+    /// the transition shader operates on the same colour space as
+    /// the rest of the GPU pipeline (linear light), and we save the
+    /// pre-transition `display_encode` + post-transition u8→linear
+    /// conversion that the old u8 boundary path paid every frame.
+    ///
+    /// The shape `Vec<f32>` is the same `composite_scratch_linear`
+    /// the engine pools across frames; on transition-active frames
+    /// we may build a new Vec (from the GPU download), and the
+    /// caller restores the input back to the pool for the next
+    /// frame. On no-transition frames we hand the buffer straight
+    /// back so the pool stays warm.
+    fn apply_transition_if_active(&mut self, from_linear: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
         // Read sequence to check for transitions
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         let active = crate::transition::find_active_transition(&seq, self.playhead);
@@ -6252,7 +6280,7 @@ impl PlaybackEngine {
                 self.transition_clip_a_last_frame = None;
                 self.transition_partner_eof = false;
                 self.transition_degradation = Default::default();
-                return from_rgba;
+                return from_linear;
             }
         };
 
@@ -6291,8 +6319,11 @@ impl PlaybackEngine {
             }
         }
 
-        // Pop frame from transition decoder — comparison must be in partner source time,
-        // not master clock / timeline time. Mirrors the seek formula at lines 3473-3474.
+        // Pop the latest partner-decoder frame. We hold the popped
+        // LinearFrame in `transition_frame_cache` so the GPU
+        // transition shader gets linear-f32 RGBA directly — no
+        // sRGB encode on the cache write, no sRGB decode on the
+        // shader upload.
         let partner_source_secs = active.partner_clip.source_in.to_secs_f64()
             + (self.playhead - active.partner_clip.timeline_in)
                 .to_secs_f64()
@@ -6305,22 +6336,24 @@ impl PlaybackEngine {
             while let Some(f) = queue.front() {
                 if f.is_eof {
                     let _ = queue.pop();
-                    // EOF from the partner decoder — the source file has no
-                    // more frames. Any subsequent use of transition_frame_cache
-                    // is a freeze-frame. This flag is the ONLY trigger for
-                    // tagging frames as Frozen.
                     self.transition_partner_eof = true;
                     break;
                 }
                 let pts = f.pts_secs();
                 if pts <= current_source_secs + frame_tolerance {
-                    let tf = queue.pop().unwrap();
+                    let mut tf = queue.pop().unwrap();
                     if let Some(next) = queue.front() {
                         if !next.is_eof && next.pts_secs() <= current_source_secs + frame_tolerance {
                             continue;
                         }
                     }
-                    self.transition_frame_cache = Some(tf.to_srgb_u8());
+                    // Realise CPU-side `data` if the decoder produced a
+                    // GPU-only frame. Phase B feeds the existing
+                    // partner-cache via CPU-side linear-f32 — Phase F
+                    // (NVDEC ↔ wgpu external memory) will route the GPU
+                    // buffer directly without the bounce.
+                    tf.ensure_cpu_data();
+                    self.transition_frame_cache = Some(tf);
                     break;
                 } else {
                     break;
@@ -6329,91 +6362,117 @@ impl PlaybackEngine {
         }
 
         let kind_id = crate::transition::transition_kind_to_id(active.kind);
+        let pixel_count = (width as usize) * (height as usize);
+        let f32_count = pixel_count * 4;
+
+        // Fall back to unblended main when the transition cache
+        // can't supply a partner / clip-A buffer of the right
+        // dimensions. Returning `from_linear` is correct because the
+        // linear-f32 shape matches `composite_scratch_linear`.
+        let cache_ok = self
+            .transition_frame_cache
+            .as_ref()
+            .is_some_and(|f| (f.width as usize) * (f.height as usize) * 4 == f32_count);
+
+        let up = active.user_params;
+        let gpu_progress = if matches!(active.kind, klipp_timeline::TransitionKind::CrossDissolve) {
+            crate::transition::apply_easing(active.progress, up.param0)
+        } else {
+            active.progress
+        };
 
         if !active.past_cut {
-            // First half: main decoder is on clip_a, partner decoder is on clip_b.
-            // Need the partner frame to blend. Cache from_rgba (clip_a) so the
-            // second-half branch can still show it after the main decoder advances.
-            let to_rgba = match &self.transition_frame_cache {
-                Some(f) => f.to_rgba(),
-                None => {
-                    // No partner frame yet — show main (clip_a) unblended
-                    return from_rgba;
-                }
-            };
-            // Track degradation: partner provides the B-side in first half.
+            // First half: clip_a is the main side (`from_linear`),
+            // clip_b is the partner cache (`to`).
+            if !cache_ok {
+                return from_linear;
+            }
             if self.transition_partner_eof {
                 self.transition_degradation.frozen_b_count += 1;
             }
-            self.transition_clip_a_last_frame = Some(from_rgba.clone());
-            let up = active.user_params;
-            // CrossDissolve progress reshaping must happen before the GPU call
-            // (the shader receives progress as-is). The CPU fallback wrapper
-            // reshapes internally, so we pass the raw value there.
-            let gpu_progress = if matches!(active.kind, klipp_timeline::TransitionKind::CrossDissolve) {
-                crate::transition::apply_easing(active.progress, up.param0)
-            } else {
-                active.progress
-            };
-            if let Some(gpu) = &mut self.gpu_effects {
-                gpu.render_transition(
-                    &from_rgba, &to_rgba, kind_id, gpu_progress, width, height,
-                    up.param0, up.param1, up.param2, up.param3, up.color,
-                )
-            } else {
-                crate::transition::render_transition_with_params(
-                    active.kind, &from_rgba, &to_rgba, active.progress, width, height, &up,
-                )
-            }
+            // Cache the linear clip_a frame so the second-half
+            // branch can still show it after the main decoder
+            // advances. Single clone per render — the same shape
+            // the previous u8 path paid (`Vec<u8>` clone of the same
+            // size); linear-f32 is 4× larger but a single memcpy
+            // here costs ~1 ms even at 4K and saves us the round
+            // trip through sRGB on the next frame.
+            self.transition_clip_a_last_frame = Some(from_linear.clone());
+            // Clone the partner data to release the borrow on `self`
+            // before the mutable call. The buffer is already in CPU
+            // RAM at this point (the cache pop did `ensure_cpu_data`)
+            // so this is a single memcpy of the active partner frame.
+            let to_linear = self.transition_frame_cache.as_ref().unwrap().data.clone();
+            self.run_transition_blend_linear(
+                active.kind, kind_id, gpu_progress,
+                &from_linear, &to_linear, width, height, &up,
+            )
         } else {
-            // Second half: main decoder has advanced to clip_b. Use the cached
-            // clip_a frame as "from" and the main (clip_b) frame as "to". The
-            // partner decoder is still running on clip_b; its frames are ignored
-            // here but we keep it open so there's no teardown mid-window.
-            //
-            // Exception — StartAtCut alignment: the entire window is "past the cut",
-            // so the cache is never populated. In that mode the partner decoder is
-            // pointed at clip_a's tail (because there's no first half to occupy it),
-            // and we use its live frames as the "from" side directly.
-            let blend_from = if active.alignment == klipp_core::TransitionAlignment::StartAtCut {
-                // partner decoder frame for clip_a tail
-                match &self.transition_frame_cache {
-                    Some(f) => {
-                        // Track degradation: partner provides the A-side in StartAtCut.
-                        if self.transition_partner_eof {
-                            self.transition_degradation.frozen_a_count += 1;
-                        }
-                        f.to_rgba()
-                    }
-                    None => return from_rgba,
+            // Second half: main is on clip_b (`from_linear`),
+            // clip_a's tail comes from either the partner decoder
+            // (StartAtCut alignment) or the cached pre-cut frame.
+            let blend_from_linear: Vec<f32> = if active.alignment
+                == klipp_core::TransitionAlignment::StartAtCut
+            {
+                if !cache_ok {
+                    return from_linear;
                 }
+                if self.transition_partner_eof {
+                    self.transition_degradation.frozen_a_count += 1;
+                }
+                self.transition_frame_cache.as_ref().unwrap().data.clone()
             } else {
                 match self.transition_clip_a_last_frame.clone() {
-                    Some(f) => f,
-                    None => {
-                        // No cached clip_a frame (e.g. seeked directly into second half).
-                        // Fall back to unblended main.
-                        return from_rgba;
-                    }
+                    Some(buf) if buf.len() == f32_count => buf,
+                    _ => return from_linear,
                 }
             };
-            let up = active.user_params;
-            let gpu_progress = if matches!(active.kind, klipp_timeline::TransitionKind::CrossDissolve) {
-                crate::transition::apply_easing(active.progress, up.param0)
-            } else {
-                active.progress
-            };
-            if let Some(gpu) = &mut self.gpu_effects {
-                gpu.render_transition(
-                    &blend_from, &from_rgba, kind_id, gpu_progress, width, height,
-                    up.param0, up.param1, up.param2, up.param3, up.color,
-                )
-            } else {
-                crate::transition::render_transition_with_params(
-                    active.kind, &blend_from, &from_rgba, active.progress, width, height, &up,
-                )
-            }
+            self.run_transition_blend_linear(
+                active.kind, kind_id, gpu_progress,
+                &blend_from_linear, &from_linear, width, height, &up,
+            )
         }
+    }
+
+    /// Dispatch the actual blend — GPU when available, CPU fallback
+    /// otherwise. Both paths consume linear-f32 input and produce
+    /// linear-f32 output. The GPU path skips the u8 boundary entirely;
+    /// the CPU path wraps the existing parallel u8 implementation
+    /// with a thin linear↔u8 conversion at the boundary (a future
+    /// commit can add a native linear-f32 CPU implementation —
+    /// rayon already covers most of the speed-up today).
+    #[allow(clippy::too_many_arguments)]
+    fn run_transition_blend_linear(
+        &mut self,
+        kind: klipp_timeline::TransitionKind,
+        kind_id: u32,
+        gpu_progress: f32,
+        from_linear: &[f32],
+        to_linear: &[f32],
+        width: u32,
+        height: u32,
+        up: &klipp_core::TransitionUserParams,
+    ) -> Vec<f32> {
+        if let Some(gpu) = &mut self.gpu_effects {
+            return gpu.render_transition_linear(
+                from_linear, to_linear, kind_id, gpu_progress, width, height,
+                up.param0, up.param1, up.param2, up.param3, up.color,
+            );
+        }
+        // CPU fallback. The existing rayon-parallelised CPU path
+        // operates on u8 sRGB; bridge linear → u8 at entry and
+        // u8 → linear at exit. The conversion is a few ms at 1080p
+        // (≈8 MB per channel × 3 channels of pow ops) — meaningful
+        // but dwarfed by the per-pixel transition math, and far
+        // cheaper than the unparallelised single-threaded loop the
+        // previous engine path paid (~125 ms for barn-door at
+        // 1080p, observed in production logs).
+        let from_u8 = klipp_effects::linear_f32_rgba_to_srgb_u8(from_linear);
+        let to_u8 = klipp_effects::linear_f32_rgba_to_srgb_u8(to_linear);
+        let blended_u8 = klipp_transitions::render_transition_with_params(
+            kind, &from_u8, &to_u8, gpu_progress, width, height, up,
+        );
+        klipp_effects::srgb_u8_to_linear_f32_rgba(&blended_u8)
     }
 
     /// Smart linear-f32 RGBA → sRGB-u8 RGBA encode. Routes to the
