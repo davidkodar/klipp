@@ -30,7 +30,10 @@ use fontdue::layout::{
     WrapStyle,
 };
 use fontdue::Font;
-use klipp_timeline::{FontStyle, StyleRun, TextAlignment, TextPath, TextPattern, TitleBackground, TitleData};
+use klipp_timeline::{
+    FontStyle, ObjectTransform, Shape, ShapeKind, StyleRun, TextAlignment, TextPath,
+    TextPattern, TitleBackground, TitleData, TitleObjectContent,
+};
 use std::collections::HashMap;
 
 pub mod font_discovery;
@@ -842,13 +845,10 @@ impl TitleRenderer {
     /// the full shaping + rasterisation; cache hit cost is one
     /// memcpy of the rasterised buffer.
     pub fn render(&mut self, title: &TitleData, width: u32, height: u32) -> Vec<u8> {
-        let tb = title.primary_text_or_default();
         if let Some(buf) = self.cache_lookup(title, width, height) {
             return buf;
         }
-        let layout = self.render_layout(title, width, height);
-        let mut buf = Self::compose(&layout, title, width, height, None);
-        self.apply_texture_fill(&mut buf, &layout, title, width, height);
+        let buf = self.render_inner(title, width, height, None);
         self.cache_store(title.clone(), width, height, buf.clone());
         buf
     }
@@ -870,10 +870,95 @@ impl TitleRenderer {
         if let Some(buf) = self.cache_lookup(title, width, height) {
             return buf;
         }
+        let buf = self.render_inner(title, width, height, gpu);
+        self.cache_store(title.clone(), width, height, buf.clone());
+        buf
+    }
+
+    /// Object-model composition: walk every layer in the title (back
+    /// → front), rasterise each onto a transparent frame-sized RGBA
+    /// buffer, then alpha-composite the stack onto the title-level
+    /// background. Each `TextBox` object goes through the existing
+    /// single-text raster path via a synthesised single-object
+    /// `TitleData` wrapper so all the rich styling effects (shadow,
+    /// outline, glow, gradient, extrusion, text-on-path, character
+    /// animation, motion blur) work per-object without duplicating
+    /// the whole pipeline. `Shape` objects are painted directly.
+    /// Hidden objects (`visible == false`) are skipped.
+    fn render_inner(
+        &mut self,
+        title: &TitleData,
+        width: u32,
+        height: u32,
+        gpu: Option<&mut dyn AlphaMaskProcessor>,
+    ) -> Vec<u8> {
+        // The GPU alpha-mask processor is consumable: we use it for
+        // the first TextBox layer (the most common case is one text
+        // object per title — credits, lower-third title, single-line
+        // banner). Additional TextBox layers in the same title fall
+        // back to the CPU mask path. When per-object animation lands,
+        // we'll likely refactor this to per-layer GPU dispatch via
+        // the `wgpu` queue.
+        let mut gpu_for_first_text = gpu;
+        let pixel_count = (width as usize) * (height as usize);
+        let mut buf = vec![0u8; pixel_count * 4];
+        // Title-level background fill (legacy field — will move to a
+        // Shape object once on-canvas editing lands).
+        if let TitleBackground::FullFrame { color } = &title.background {
+            for pixel in buf.chunks_exact_mut(4) {
+                pixel.copy_from_slice(color);
+            }
+        }
+
+        for obj in &title.objects {
+            if !obj.visible {
+                continue;
+            }
+            match &obj.content {
+                TitleObjectContent::TextBox(tb) => {
+                    // Synthesise a one-object TitleData carrying just
+                    // this TextBox + its transform centre, then route
+                    // through the existing single-text raster path.
+                    // The clip-level `background` is intentionally
+                    // dropped from the synthesised view so background
+                    // paint happens once at the outer compose, not
+                    // per text layer.
+                    let mut single = TitleData::single_text(tb.clone());
+                    single.background = TitleBackground::None;
+                    if let Some(o) = single.objects.first_mut() {
+                        o.transform = obj.transform;
+                    }
+                    let layer = self.render_text_layer(
+                        &single,
+                        width,
+                        height,
+                        gpu_for_first_text.take(),
+                    );
+                    over_blend(&mut buf, &layer);
+                }
+                TitleObjectContent::Shape(shape) => {
+                    paint_shape_layer(&mut buf, shape, &obj.transform, width, height);
+                }
+            }
+        }
+        buf
+    }
+
+    /// Single-text rasterisation: layout → compose → texture-fill,
+    /// returns a frame-sized RGBA buffer with the text composited
+    /// onto a transparent canvas. The synthesised `TitleData` from
+    /// `render_inner` always has exactly one `TextBox` object, so
+    /// the existing single-text helpers stay unchanged.
+    fn render_text_layer(
+        &mut self,
+        title: &TitleData,
+        width: u32,
+        height: u32,
+        gpu: Option<&mut dyn AlphaMaskProcessor>,
+    ) -> Vec<u8> {
         let layout = self.render_layout(title, width, height);
         let mut buf = Self::compose(&layout, title, width, height, gpu);
         self.apply_texture_fill(&mut buf, &layout, title, width, height);
-        self.cache_store(title.clone(), width, height, buf.clone());
         buf
     }
 
@@ -1276,6 +1361,160 @@ impl TitleRenderer {
 
 /// Render pseudo-3D text extrusion by drawing offset layers of the alpha mask.
 #[allow(clippy::too_many_arguments)]
+/// Standard "source over destination" alpha compositing on
+/// straight-alpha 8-bit RGBA buffers, in-place into `dst`. Both
+/// buffers must be the same size. The blend formula:
+///
+///   out_rgb   = src_rgb * src_a + dst_rgb * (1 - src_a)
+///   out_alpha = src_a + dst_a * (1 - src_a)
+///
+/// Skips writes for fully-transparent source pixels — the common
+/// case for the empty regions around each rasterised TextBox.
+fn over_blend(dst: &mut [u8], src: &[u8]) {
+    debug_assert_eq!(dst.len(), src.len());
+    debug_assert_eq!(dst.len() % 4, 0);
+    for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+        let sa = s[3] as f32 / 255.0;
+        if sa <= 0.0 {
+            continue;
+        }
+        let inv_sa = 1.0 - sa;
+        let da = d[3] as f32 / 255.0;
+        let out_a = sa + da * inv_sa;
+        if out_a <= 0.0 {
+            continue;
+        }
+        // Straight-alpha "over" on RGB.
+        for i in 0..3 {
+            let sc = s[i] as f32;
+            let dc = d[i] as f32;
+            d[i] = (sc * sa + dc * inv_sa).round().clamp(0.0, 255.0) as u8;
+        }
+        d[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+}
+
+/// Paint a `Shape` layer onto `buf` using its `ObjectTransform`.
+/// `transform.center` and `transform.size` are normalised
+/// 0..1 frame-relative coords; this maps to absolute pixel rect on
+/// the frame, then fills + strokes per the shape's parameters.
+/// Rotation is currently ignored (the on-canvas editor in commit 3
+/// will wire it through). Phase 1 supports only the rectangle
+/// primitive; future shape kinds extend the inner match.
+fn paint_shape_layer(
+    buf: &mut [u8],
+    shape: &Shape,
+    transform: &ObjectTransform,
+    width: u32,
+    height: u32,
+) {
+    let w_f = width as f32;
+    let h_f = height as f32;
+    let half_w = (transform.size.x * w_f * 0.5).max(0.0);
+    let half_h = (transform.size.y * h_f * 0.5).max(0.0);
+    let cx = transform.center.x * w_f;
+    let cy = transform.center.y * h_f;
+    let x0 = ((cx - half_w).floor() as i32).max(0);
+    let y0 = ((cy - half_h).floor() as i32).max(0);
+    let x1 = ((cx + half_w).ceil() as i32).min(width as i32);
+    let y1 = ((cy + half_h).ceil() as i32).min(height as i32);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+
+    match &shape.kind {
+        ShapeKind::Rectangle { corner_radius } => {
+            let r = corner_radius.max(0.0);
+            // Render-scale the corner radius the same way the
+            // text renderer scales font_size, so a value tuned at
+            // 1080p reads the same at 720p / 4K.
+            let scaled_r = (r * (height as f32 / 1080.0)).max(0.0);
+            let r2 = scaled_r * scaled_r;
+
+            let fill = shape.fill;
+            let stroke = shape.stroke;
+            let stroke_w = stroke.map(|s| s.width).unwrap_or(0.0).max(0.0);
+            let scaled_sw = stroke_w * (height as f32 / 1080.0);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    // Distance from the rectangle's edge — used both
+                    // for the rounded-corner mask and for stroke
+                    // detection.
+                    let in_rect = is_in_rounded_rect(
+                        x as f32 + 0.5, y as f32 + 0.5,
+                        cx - half_w, cy - half_h, cx + half_w, cy + half_h,
+                        scaled_r, r2,
+                    );
+                    if !in_rect {
+                        continue;
+                    }
+                    // Stroke band (inside the rect, near the edge).
+                    let in_stroke = scaled_sw > 0.0 && {
+                        let pad = scaled_sw;
+                        !is_in_rounded_rect(
+                            x as f32 + 0.5, y as f32 + 0.5,
+                            cx - half_w + pad, cy - half_h + pad,
+                            cx + half_w - pad, cy + half_h - pad,
+                            (scaled_r - pad).max(0.0),
+                            (scaled_r - pad).max(0.0).powi(2),
+                        )
+                    };
+                    let pixel_color = if in_stroke {
+                        stroke.map(|s| s.color)
+                    } else {
+                        fill
+                    };
+                    if let Some(c) = pixel_color {
+                        // Composite this single pixel using "over".
+                        let idx = ((y as usize) * (width as usize) + (x as usize)) * 4;
+                        let one = [c[0], c[1], c[2], c[3]];
+                        let mut tmp = [0u8; 4];
+                        tmp.copy_from_slice(&buf[idx..idx + 4]);
+                        let sa = one[3] as f32 / 255.0;
+                        let inv_sa = 1.0 - sa;
+                        let da = tmp[3] as f32 / 255.0;
+                        let out_a = sa + da * inv_sa;
+                        for i in 0..3 {
+                            let sc = one[i] as f32;
+                            let dc = tmp[i] as f32;
+                            buf[idx + i] = (sc * sa + dc * inv_sa)
+                                .round().clamp(0.0, 255.0) as u8;
+                        }
+                        buf[idx + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Test whether a point lies inside a rounded rectangle defined by
+/// its bounds and corner radius. The four corners use a circular
+/// quadrant; the body is a plain rectangle inset by `r` on each
+/// side. `r2` is `r * r` precomputed.
+fn is_in_rounded_rect(px: f32, py: f32, x0: f32, y0: f32, x1: f32, y1: f32, r: f32, r2: f32) -> bool {
+    if px < x0 || px > x1 || py < y0 || py > y1 {
+        return false;
+    }
+    if r <= 0.0 {
+        return true;
+    }
+    // Inside the rounded-rect except for the four corners.
+    let near_left = px < x0 + r;
+    let near_right = px > x1 - r;
+    let near_top = py < y0 + r;
+    let near_bot = py > y1 - r;
+    if !(near_left || near_right) || !(near_top || near_bot) {
+        return true;
+    }
+    // Corner: pick the matching quadrant centre and check distance.
+    let cx = if near_left { x0 + r } else { x1 - r };
+    let cy = if near_top { y0 + r } else { y1 - r };
+    let dx = px - cx;
+    let dy = py - cy;
+    dx * dx + dy * dy <= r2
+}
+
 fn render_extrusion(
     buf: &mut [u8],
     alpha_mask: &[u8],
@@ -1845,6 +2084,82 @@ mod tests {
         let buf = renderer.render(&title, 320, 240);
         // Corner pixel should be the background color (no text there)
         assert_eq!(&buf[0..4], &[0, 0, 128, 255]);
+    }
+
+    #[test]
+    fn multi_object_composes_in_stack_order() {
+        // Two-layer title: a bottom shape (red rectangle filling a
+        // 100×100 region centred at frame centre) + a top text layer.
+        // Verify the shape's red pixels actually land in the buffer
+        // (proving the Shape path runs) and that the alpha-composite
+        // doesn't blank them.
+        let mut td = TitleData {
+            objects: Vec::new(),
+            next_object_id: 0,
+            animation_type: klipp_timeline::TitleAnimationType::default(),
+            background: TitleBackground::None,
+        };
+        let _shape_id = td.add_object(
+            TitleObjectContent::Shape(klipp_timeline::Shape {
+                kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 0.0 },
+                fill: Some([255, 0, 0, 255]),
+                stroke: None,
+            }),
+            klipp_timeline::ObjectTransform {
+                center: TitlePosition { x: 0.5, y: 0.5 },
+                size: TitlePosition { x: 0.5, y: 0.5 },
+                rotation: 0.0,
+                anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
+            },
+        );
+        // Plain text on top. Use a short string so it doesn't
+        // blanket the whole rectangle.
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 60.0;
+        tb.color = [0, 255, 0, 255];
+        let _text_id = td.add_object(
+            TitleObjectContent::TextBox(tb),
+            klipp_timeline::default_text_transform(),
+        );
+
+        let mut renderer = TitleRenderer::new();
+        let buf = renderer.render(&td, 320, 200);
+        // Must find at least one fully-opaque red pixel (shape) and
+        // one fully-opaque green pixel (text). If multi-object
+        // compositing fails, only one of the two would survive.
+        let has_red = buf.chunks_exact(4)
+            .any(|p| p[0] >= 200 && p[1] < 30 && p[2] < 30 && p[3] >= 200);
+        let has_green = buf.chunks_exact(4)
+            .any(|p| p[0] < 30 && p[1] >= 200 && p[2] < 30 && p[3] >= 200);
+        assert!(has_red, "expected red pixels from the bottom shape layer");
+        assert!(has_green, "expected green pixels from the top text layer");
+    }
+
+    #[test]
+    fn hidden_object_is_skipped() {
+        let mut td = TitleData::default();
+        // Add a second TextBox with a unique colour, then hide it.
+        // The visible-flag path must keep it out of the composite.
+        let mut tb2 = klipp_timeline::TextBox::default();
+        tb2.text = "MARK".to_string();
+        tb2.font_size = 80.0;
+        tb2.color = [0, 0, 255, 255];
+        let id2 = td.add_object(
+            TitleObjectContent::TextBox(tb2),
+            klipp_timeline::default_text_transform(),
+        );
+        if let Some(o) = td.object_mut(id2) {
+            o.visible = false;
+        }
+
+        let mut renderer = TitleRenderer::new();
+        let buf = renderer.render(&td, 320, 200);
+        // The hidden TextBox uses pure blue. If it were rendered we'd
+        // see fully-opaque blue pixels; with it hidden we shouldn't.
+        let has_blue = buf.chunks_exact(4)
+            .any(|p| p[0] < 30 && p[1] < 30 && p[2] >= 200 && p[3] >= 200);
+        assert!(!has_blue, "hidden TextBox layer leaked into the render");
     }
 
     #[test]
