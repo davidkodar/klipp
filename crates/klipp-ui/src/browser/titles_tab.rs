@@ -109,6 +109,37 @@ fn lower_third_style(text: &str, size: f32, style: FontStyle, fg: [u8; 4], bg: [
     td
 }
 
+/// Attach a `TitleAnimationType` to a static template. Used as a
+/// thin wrapper around the existing factory helpers so animated
+/// templates ship with their animation_type wired through to
+/// playback / export — picking "Fade Up" actually fades, picking
+/// "Bounce In" actually bounces. Without this the `animation:` field
+/// on TitleTemplate was a cosmetic UI badge with no runtime effect.
+fn with_anim(mut td: TitleData, anim: TitleAnimationType) -> TitleData {
+    td.animation_type = anim;
+    td
+}
+
+/// Apply a `glitch_intensity` value to the primary text of a static
+/// template. Wraps the cinematic / motion-glitch presets so they
+/// actually glitch on playback instead of just looking glitchy in
+/// the card preview.
+fn with_glitch(mut td: TitleData, intensity: f32) -> TitleData {
+    if let Some(tb) = td.primary_text_mut() {
+        tb.glitch_intensity = intensity.clamp(0.0, 1.0);
+    }
+    td
+}
+
+/// Apply a chromatic-aberration offset to the primary text. Used by
+/// the cyberpunk / VHS template presets.
+fn with_chromatic(mut td: TitleData, offset_px: f32) -> TitleData {
+    if let Some(tb) = td.primary_text_mut() {
+        tb.chromatic_aberration_px = offset_px.max(0.0);
+    }
+    td
+}
+
 /// Positioned text with optional shadow, no background.
 #[allow(clippy::too_many_arguments)]
 fn positioned(text: &str, size: f32, style: FontStyle, color: [u8; 4], align: TextAlignment, x: f32, y: f32, shadow: Option<TitleShadow>) -> TitleData {
@@ -229,10 +260,17 @@ fn cin_retro_title() -> TitleData {
     positioned("RETRO", 72.0, FontStyle::Bold, [255, 220, 150, 255], TextAlignment::Center, 0.5, 0.5, shadow_soft())
 }
 fn cin_typewriter() -> TitleData {
-    positioned("typewriter_text", 36.0, FontStyle::Regular, [200, 200, 180, 255], TextAlignment::Left, 0.15, 0.5, None)
+    with_anim(
+        positioned("typewriter_text", 36.0, FontStyle::Regular, [200, 200, 180, 255], TextAlignment::Left, 0.15, 0.5, None),
+        TitleAnimationType::Typewriter { chars_per_sec: 12.0 },
+    )
 }
 fn cin_glitch() -> TitleData {
-    positioned("GL1TCH", 72.0, FontStyle::Bold, RED, TextAlignment::Center, 0.5, 0.5, Some(TitleShadow { color: [0, 255, 255, 120], offset_x: 4.0, offset_y: -2.0, blur: 2.0 }))
+    // Real glitch: cyan/magenta channel offset + slice displacement +
+    // distinctive red colour. The CRT/VHS look in one preset.
+    let td = positioned("GL1TCH", 72.0, FontStyle::Bold, RED, TextAlignment::Center, 0.5, 0.5, Some(TitleShadow { color: [0, 255, 255, 120], offset_x: 4.0, offset_y: -2.0, blur: 2.0 }));
+    let td = with_chromatic(td, 6.0);
+    with_glitch(td, 0.35)
 }
 fn cin_minimal_cinematic() -> TitleData { centered("m i n i m a l", 36.0, FontStyle::Regular, WHITE_DIM, false) }
 fn cin_epic() -> TitleData {
@@ -315,51 +353,51 @@ fn sm_poll() -> TitleData {
 // Animated Intros (15) — all have baked-in entrance animations
 // ---------------------------------------------------------------------------
 
-fn anim_fade_up() -> TitleData { centered("Fade Up", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_slide_left() -> TitleData { centered("Slide Left", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_slide_right() -> TitleData { centered("Slide Right", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_drop_down() -> TitleData { centered("Drop Down", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_rise_up() -> TitleData { centered("Rise Up", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_pop_in() -> TitleData { centered("Pop In", 64.0, FontStyle::Bold, WHITE, true) }
-fn anim_zoom_in() -> TitleData { centered("Zoom In", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_fade_slide_left() -> TitleData { centered("Fade & Slide", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_fade_slide_right() -> TitleData { centered("Fade & Slide", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_fade_rise() -> TitleData { centered("Fade & Rise", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_fade_drop() -> TitleData { centered("Fade & Drop", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_bounce_in() -> TitleData { centered("Bounce In", 64.0, FontStyle::Bold, WHITE, true) }
-fn anim_grow_fade() -> TitleData { centered("Grow & Fade", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_wipe_in() -> TitleData { centered("Wipe In", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_elegant_fade() -> TitleData { centered("Elegant Fade", 56.0, FontStyle::Regular, WHITE_DIM, false) }
+// Animated Intros — every factory now wires its TitleAnimationType
+// so picking the template actually animates on playback / export.
+fn anim_fade_up() -> TitleData { with_anim(centered("Fade Up", 64.0, FontStyle::Regular, WHITE, true), TitleAnimationType::FadeIn { duration_secs: 0.5 }) }
+fn anim_slide_left() -> TitleData { with_anim(centered("Slide Left", 64.0, FontStyle::Regular, WHITE, true), TitleAnimationType::SlideInLeft { duration_secs: 0.5 }) }
+fn anim_slide_right() -> TitleData { with_anim(centered("Slide Right", 64.0, FontStyle::Regular, WHITE, true), TitleAnimationType::SlideInRight { duration_secs: 0.5 }) }
+fn anim_drop_down() -> TitleData { with_anim(centered("Drop Down", 64.0, FontStyle::Regular, WHITE, true), TitleAnimationType::SlideInTop { duration_secs: 0.5 }) }
+fn anim_rise_up() -> TitleData { with_anim(centered("Rise Up", 64.0, FontStyle::Regular, WHITE, true), TitleAnimationType::SlideInBottom { duration_secs: 0.5 }) }
+fn anim_zoom_in() -> TitleData { with_anim(centered("Zoom In", 64.0, FontStyle::Regular, WHITE, true), TitleAnimationType::ZoomIn { duration_secs: 0.6, from_scale: 0.5 }) }
+fn anim_grow_fade() -> TitleData { with_anim(centered("Grow & Fade", 64.0, FontStyle::Regular, WHITE, true), TitleAnimationType::ZoomIn { duration_secs: 0.6, from_scale: 0.4 }) }
+fn anim_wipe_in() -> TitleData { with_anim(centered("Wipe In", 64.0, FontStyle::Regular, WHITE, true), TitleAnimationType::SlideInLeft { duration_secs: 0.3 }) }
+fn anim_elegant_fade() -> TitleData { with_anim(centered("Elegant Fade", 56.0, FontStyle::Regular, WHITE_DIM, false), TitleAnimationType::FadeIn { duration_secs: 2.0 }) }
+// Removed (no underlying impl or duplicate):
+//   anim_pop_in (collapsed into Motion's "Bounce In")
+//   anim_fade_slide_left / _right / _rise / _drop (dupes of plain slide variants)
+//   anim_bounce_in (collapsed into Motion's "Bounce In")
 
 // ---------------------------------------------------------------------------
 // Animated Outros (10) — all have exit animations
 // ---------------------------------------------------------------------------
 
-fn anim_fade_down() -> TitleData { centered("Fade Down", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_slide_out_left() -> TitleData { centered("Slide Out Left", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_slide_out_right() -> TitleData { centered("Slide Out Right", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_shrink_out() -> TitleData { centered("Shrink Out", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_fade_out_slow() -> TitleData { centered("Fade Out Slow", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_rise_fade() -> TitleData { centered("Rise & Fade", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_drop_fade() -> TitleData { centered("Drop & Fade", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_pop_out() -> TitleData { centered("Pop Out", 64.0, FontStyle::Bold, WHITE, true) }
-fn anim_dissolve() -> TitleData { centered("Dissolve", 56.0, FontStyle::Regular, WHITE_DIM, false) }
-fn anim_quick_exit() -> TitleData { centered("Quick Exit", 64.0, FontStyle::Bold, WHITE, true) }
+// Animated Outros — wired through to FadeOut / ZoomOut.
+fn anim_fade_out() -> TitleData { with_anim(centered("Fade Out", 64.0, FontStyle::Regular, WHITE, true), TitleAnimationType::FadeOut { duration_secs: 0.5 }) }
+fn anim_shrink_out() -> TitleData { with_anim(centered("Shrink Out", 64.0, FontStyle::Regular, WHITE, true), TitleAnimationType::ZoomOut { duration_secs: 0.5, to_scale: 0.05 }) }
+fn anim_fade_out_slow() -> TitleData { with_anim(centered("Fade Out Slow", 64.0, FontStyle::Regular, WHITE, true), TitleAnimationType::FadeOut { duration_secs: 2.0 }) }
+fn anim_pop_out() -> TitleData { with_anim(centered("Pop Out", 64.0, FontStyle::Bold, WHITE, true), TitleAnimationType::ZoomOut { duration_secs: 0.5, to_scale: 1.5 }) }
+fn anim_dissolve() -> TitleData { with_anim(centered("Dissolve", 56.0, FontStyle::Regular, WHITE_DIM, false), TitleAnimationType::FadeOut { duration_secs: 1.5 }) }
+fn anim_quick_exit() -> TitleData { with_anim(centered("Quick Exit", 64.0, FontStyle::Bold, WHITE, true), TitleAnimationType::FadeOut { duration_secs: 0.3 }) }
+// Removed (no underlying impl):
+//   anim_slide_out_left / _right (no SlideOut* variants in the core engine)
+//   anim_rise_fade / anim_drop_fade (combo animations not representable as a single TitleAnimationType)
 
 // ---------------------------------------------------------------------------
 // Full Animations (10) — entrance + exit
 // ---------------------------------------------------------------------------
 
-fn anim_fade_in_out() -> TitleData { centered("Fade In & Out", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_slide_lr() -> TitleData { centered("Slide Left\u{2192}Right", 56.0, FontStyle::Regular, WHITE, true) }
-fn anim_pop_fade() -> TitleData { centered("Pop In, Fade Out", 64.0, FontStyle::Bold, WHITE, true) }
-fn anim_rise_hold_drop() -> TitleData { centered("Rise, Hold, Drop", 56.0, FontStyle::Regular, WHITE, true) }
-fn anim_zoom_in_out() -> TitleData { centered("Zoom In & Out", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_fade_slide_both() -> TitleData { centered("Fade Slide Both", 56.0, FontStyle::Regular, WHITE, true) }
-fn anim_gentle_in_out() -> TitleData { centered("Gentle In & Out", 56.0, FontStyle::Regular, WHITE_DIM, false) }
-fn anim_quick_flash() -> TitleData { centered("Quick Flash", 72.0, FontStyle::Bold, WHITE, true) }
-fn anim_dramatic_fade() -> TitleData { centered("Dramatic Enter", 64.0, FontStyle::Regular, WHITE, true) }
-fn anim_smooth_cycle() -> TitleData { centered("Smooth Cycle", 56.0, FontStyle::Regular, WHITE, true) }
+// Full Animations — only the variants representable as a single
+// TitleAnimationType remain. Combo animations (Slide-in then Slide-
+// out, Pop-in then Fade-out, etc.) need separate Set commands or a
+// future "AnimationChain" type and are tracked elsewhere.
+fn anim_fade_in_out() -> TitleData { with_anim(centered("Fade In & Out", 64.0, FontStyle::Regular, WHITE, true), TitleAnimationType::FadeInOut { fade_secs: 0.5 }) }
+fn anim_gentle_in_out() -> TitleData { with_anim(centered("Gentle In & Out", 56.0, FontStyle::Regular, WHITE_DIM, false), TitleAnimationType::FadeInOut { fade_secs: 2.0 }) }
+fn anim_quick_flash() -> TitleData { with_anim(centered("Quick Flash", 72.0, FontStyle::Bold, WHITE, true), TitleAnimationType::FadeInOut { fade_secs: 0.3 }) }
+// Removed (combo animations needing two TitleAnimationType slots):
+//   anim_slide_lr / anim_pop_fade / anim_rise_hold_drop / anim_zoom_in_out
+//   anim_fade_slide_both / anim_dramatic_fade / anim_smooth_cycle
 
 // ---------------------------------------------------------------------------
 // Broadcast (10)
@@ -842,46 +880,42 @@ const TITLES: &[TitleTemplate] = &[
     TitleTemplate { name: "Comment Highlight", category: "Social Media", preview_text: "User comment...", create_data: sm_comment, animation: None },
     TitleTemplate { name: "Poll Question", category: "Social Media", preview_text: "What do you think?", create_data: sm_poll, animation: None },
 
-    // ---- Animated Intros (15) ----
-    TitleTemplate { name: "Fade Up", category: "Animated Intros", preview_text: "Fade Up", create_data: anim_fade_up, animation: Some("fade_in_0.5") },
-    TitleTemplate { name: "Slide from Left", category: "Animated Intros", preview_text: "Slide Left", create_data: anim_slide_left, animation: Some("slide_left_0.5") },
-    TitleTemplate { name: "Slide from Right", category: "Animated Intros", preview_text: "Slide Right", create_data: anim_slide_right, animation: Some("slide_right_0.5") },
-    TitleTemplate { name: "Drop Down", category: "Animated Intros", preview_text: "Drop Down", create_data: anim_drop_down, animation: Some("slide_down_0.5") },
-    TitleTemplate { name: "Rise Up", category: "Animated Intros", preview_text: "Rise Up", create_data: anim_rise_up, animation: Some("slide_up_0.5") },
-    TitleTemplate { name: "Pop In", category: "Animated Intros", preview_text: "Pop In", create_data: anim_pop_in, animation: Some("pop_in_0.5") },
-    TitleTemplate { name: "Zoom In", category: "Animated Intros", preview_text: "Zoom In", create_data: anim_zoom_in, animation: Some("zoom_in_0.6") },
-    TitleTemplate { name: "Fade & Slide Left", category: "Animated Intros", preview_text: "Fade+Slide", create_data: anim_fade_slide_left, animation: Some("fade_in_0.8+slide_left_0.8") },
-    TitleTemplate { name: "Fade & Slide Right", category: "Animated Intros", preview_text: "Fade+Slide", create_data: anim_fade_slide_right, animation: Some("fade_in_0.8+slide_right_0.8") },
-    TitleTemplate { name: "Fade & Rise", category: "Animated Intros", preview_text: "Fade+Rise", create_data: anim_fade_rise, animation: Some("fade_in_0.8+slide_up_0.8") },
-    TitleTemplate { name: "Fade & Drop", category: "Animated Intros", preview_text: "Fade+Drop", create_data: anim_fade_drop, animation: Some("fade_in_0.8+slide_down_0.8") },
-    TitleTemplate { name: "Bounce In", category: "Animated Intros", preview_text: "Bounce In", create_data: anim_bounce_in, animation: Some("pop_in_0.6") },
-    TitleTemplate { name: "Grow & Fade", category: "Animated Intros", preview_text: "Grow+Fade", create_data: anim_grow_fade, animation: Some("fade_in_0.6+grow_in_0.6") },
-    TitleTemplate { name: "Wipe In", category: "Animated Intros", preview_text: "Wipe In", create_data: anim_wipe_in, animation: Some("slide_left_0.3") },
-    TitleTemplate { name: "Elegant Fade", category: "Animated Intros", preview_text: "Elegant Fade", create_data: anim_elegant_fade, animation: Some("fade_in_2.0") },
+    // ---- Animated Intros (10) ----
+    // Each template wires a TitleAnimationType in its create_data so
+    // it actually animates on playback / export. The pre-cleanup
+    // catalogue had 15 entries; "Pop In", "Bounce In" and the four
+    // "Fade & Slide" variants were either duplicates of simpler
+    // entries or combo animations not representable as a single
+    // TitleAnimationType — those have been collapsed.
+    TitleTemplate { name: "Fade Up", category: "Animated Intros", preview_text: "Fade Up", create_data: anim_fade_up, animation: Some("FadeIn(0.5s)") },
+    TitleTemplate { name: "Slide from Left", category: "Animated Intros", preview_text: "Slide Left", create_data: anim_slide_left, animation: Some("SlideInLeft(0.5s)") },
+    TitleTemplate { name: "Slide from Right", category: "Animated Intros", preview_text: "Slide Right", create_data: anim_slide_right, animation: Some("SlideInRight(0.5s)") },
+    TitleTemplate { name: "Drop Down", category: "Animated Intros", preview_text: "Drop Down", create_data: anim_drop_down, animation: Some("SlideInTop(0.5s)") },
+    TitleTemplate { name: "Rise Up", category: "Animated Intros", preview_text: "Rise Up", create_data: anim_rise_up, animation: Some("SlideInBottom(0.5s)") },
+    TitleTemplate { name: "Zoom In", category: "Animated Intros", preview_text: "Zoom In", create_data: anim_zoom_in, animation: Some("ZoomIn(0.6s, 0.5\u{00d7})") },
+    TitleTemplate { name: "Grow & Fade", category: "Animated Intros", preview_text: "Grow+Fade", create_data: anim_grow_fade, animation: Some("ZoomIn(0.6s, 0.4\u{00d7})") },
+    TitleTemplate { name: "Wipe In", category: "Animated Intros", preview_text: "Wipe In", create_data: anim_wipe_in, animation: Some("SlideInLeft(0.3s)") },
+    TitleTemplate { name: "Elegant Fade", category: "Animated Intros", preview_text: "Elegant Fade", create_data: anim_elegant_fade, animation: Some("FadeIn(2.0s)") },
 
-    // ---- Animated Outros (10) ----
-    TitleTemplate { name: "Fade Down", category: "Animated Outros", preview_text: "Fade Down", create_data: anim_fade_down, animation: Some("fade_out_0.5") },
-    TitleTemplate { name: "Slide Out Left", category: "Animated Outros", preview_text: "Exit Left", create_data: anim_slide_out_left, animation: Some("slide_out_left_0.5") },
-    TitleTemplate { name: "Slide Out Right", category: "Animated Outros", preview_text: "Exit Right", create_data: anim_slide_out_right, animation: Some("slide_out_right_0.5") },
-    TitleTemplate { name: "Shrink Out", category: "Animated Outros", preview_text: "Shrink Out", create_data: anim_shrink_out, animation: Some("shrink_out_0.5") },
-    TitleTemplate { name: "Fade Out Slow", category: "Animated Outros", preview_text: "Slow Fade", create_data: anim_fade_out_slow, animation: Some("fade_out_2.0") },
-    TitleTemplate { name: "Rise & Fade", category: "Animated Outros", preview_text: "Rise+Fade", create_data: anim_rise_fade, animation: Some("fade_out_0.8+slide_out_up_0.8") },
-    TitleTemplate { name: "Drop & Fade", category: "Animated Outros", preview_text: "Drop+Fade", create_data: anim_drop_fade, animation: Some("fade_out_0.8+slide_out_down_0.8") },
-    TitleTemplate { name: "Pop Out", category: "Animated Outros", preview_text: "Pop Out", create_data: anim_pop_out, animation: Some("pop_out_0.5") },
-    TitleTemplate { name: "Dissolve", category: "Animated Outros", preview_text: "Dissolve", create_data: anim_dissolve, animation: Some("fade_out_1.5") },
-    TitleTemplate { name: "Quick Exit", category: "Animated Outros", preview_text: "Quick Exit", create_data: anim_quick_exit, animation: Some("fade_out_0.3") },
+    // ---- Animated Outros (6) ----
+    // Wired through to FadeOut / ZoomOut. SlideOut and combo outros
+    // ("Rise & Fade", "Drop & Fade") removed — their effects need
+    // SlideOut* TitleAnimationType variants we don't yet ship; will
+    // be re-added when those land.
+    TitleTemplate { name: "Fade Out", category: "Animated Outros", preview_text: "Fade Out", create_data: anim_fade_out, animation: Some("FadeOut(0.5s)") },
+    TitleTemplate { name: "Shrink Out", category: "Animated Outros", preview_text: "Shrink Out", create_data: anim_shrink_out, animation: Some("ZoomOut(0.5s, 0.05\u{00d7})") },
+    TitleTemplate { name: "Fade Out Slow", category: "Animated Outros", preview_text: "Slow Fade", create_data: anim_fade_out_slow, animation: Some("FadeOut(2.0s)") },
+    TitleTemplate { name: "Pop Out", category: "Animated Outros", preview_text: "Pop Out", create_data: anim_pop_out, animation: Some("ZoomOut(0.5s, 1.5\u{00d7})") },
+    TitleTemplate { name: "Dissolve", category: "Animated Outros", preview_text: "Dissolve", create_data: anim_dissolve, animation: Some("FadeOut(1.5s)") },
+    TitleTemplate { name: "Quick Exit", category: "Animated Outros", preview_text: "Quick Exit", create_data: anim_quick_exit, animation: Some("FadeOut(0.3s)") },
 
-    // ---- Full Animations (10) ----
-    TitleTemplate { name: "Fade In & Out", category: "Full Animations", preview_text: "Fade In/Out", create_data: anim_fade_in_out, animation: Some("fade_in_out_0.5") },
-    TitleTemplate { name: "Slide Left, Exit Right", category: "Full Animations", preview_text: "Left\u{2192}Right", create_data: anim_slide_lr, animation: Some("slide_left_0.5+slide_out_right_0.5") },
-    TitleTemplate { name: "Pop In, Fade Out", category: "Full Animations", preview_text: "Pop+Fade", create_data: anim_pop_fade, animation: Some("pop_in_0.5+fade_out_0.5") },
-    TitleTemplate { name: "Rise, Hold, Drop", category: "Full Animations", preview_text: "Rise\u{2192}Drop", create_data: anim_rise_hold_drop, animation: Some("slide_up_0.5+slide_out_down_0.5") },
-    TitleTemplate { name: "Zoom In, Zoom Out", category: "Full Animations", preview_text: "Zoom In/Out", create_data: anim_zoom_in_out, animation: Some("zoom_in_0.6+zoom_out_0.6") },
-    TitleTemplate { name: "Fade Slide In & Out", category: "Full Animations", preview_text: "Fade+Slide", create_data: anim_fade_slide_both, animation: Some("fade_in_0.8+slide_left_0.8+fade_out_0.8+slide_out_right_0.8") },
-    TitleTemplate { name: "Gentle In & Out", category: "Full Animations", preview_text: "Gentle", create_data: anim_gentle_in_out, animation: Some("fade_in_out_2.0") },
-    TitleTemplate { name: "Quick Flash", category: "Full Animations", preview_text: "Flash!", create_data: anim_quick_flash, animation: Some("fade_in_out_0.3") },
-    TitleTemplate { name: "Dramatic Enter, Fade Exit", category: "Full Animations", preview_text: "Drama+Fade", create_data: anim_dramatic_fade, animation: Some("fade_in_1.5+fade_out_0.8") },
-    TitleTemplate { name: "Smooth Cycle", category: "Full Animations", preview_text: "Smooth", create_data: anim_smooth_cycle, animation: Some("fade_in_1.0+grow_in_1.0+fade_out_1.0+shrink_out_1.0") },
+    // ---- Full Animations (3) ----
+    // FadeInOut at three time scales. Slide+Slide-out / Pop+Fade /
+    // Rise+Drop / Zoom+Zoom combos removed — they need a future
+    // "AnimationChain" type to sequence two TitleAnimationType slots.
+    TitleTemplate { name: "Fade In & Out", category: "Full Animations", preview_text: "Fade In/Out", create_data: anim_fade_in_out, animation: Some("FadeInOut(0.5s)") },
+    TitleTemplate { name: "Gentle In & Out", category: "Full Animations", preview_text: "Gentle", create_data: anim_gentle_in_out, animation: Some("FadeInOut(2.0s)") },
+    TitleTemplate { name: "Quick Flash", category: "Full Animations", preview_text: "Flash!", create_data: anim_quick_flash, animation: Some("FadeInOut(0.3s)") },
 
     // ---- Broadcast (10) ----
     TitleTemplate { name: "Breaking News", category: "Broadcast", preview_text: "BREAKING NEWS", create_data: bc_breaking_news, animation: None },
@@ -948,43 +982,40 @@ const TITLES: &[TitleTemplate] = &[
     TitleTemplate { name: "Thank You", category: "Wedding / Event", preview_text: "Thank You", create_data: wed_thank_you, animation: None },
     TitleTemplate { name: "Event Details", category: "Wedding / Event", preview_text: "Saturday, June 15", create_data: wed_event_details, animation: None },
     TitleTemplate { name: "Invitation", category: "Wedding / Event", preview_text: "You Are Invited", create_data: wed_invitation, animation: None },
-    // ---- Motion Effects (20) ----
-    TitleTemplate { name: "Spin In", category: "Motion", preview_text: "SPIN", create_data: || centered("SPIN", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("spin_in_1.0") },
-    TitleTemplate { name: "Spin Out", category: "Motion", preview_text: "SPIN", create_data: || centered("SPIN", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("fade_in_0.3+spin_out_1.0") },
-    TitleTemplate { name: "Swirl In", category: "Motion", preview_text: "SWIRL", create_data: || centered("SWIRL", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("swirl_in_1.5") },
-    TitleTemplate { name: "Bounce In", category: "Motion", preview_text: "BOUNCE", create_data: || centered("BOUNCE", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("bounce_in_1.0") },
-    TitleTemplate { name: "Elastic", category: "Motion", preview_text: "ELASTIC", create_data: || centered("ELASTIC", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("elastic_1.2") },
-    TitleTemplate { name: "Shake", category: "Motion", preview_text: "SHAKE!", create_data: || centered("SHAKE!", 64.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("fade_in_0.2+shake_0.8") },
-    TitleTemplate { name: "Swing In", category: "Motion", preview_text: "SWING", create_data: || centered("SWING", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("swing_in_1.0") },
-    TitleTemplate { name: "Explode Out", category: "Motion", preview_text: "BOOM!", create_data: || centered("BOOM!", 96.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("fade_in_0.3+explode_out_0.5") },
-    TitleTemplate { name: "Implode In", category: "Motion", preview_text: "IMPLODE", create_data: || centered("IMPLODE", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("implode_in_1.0") },
-    TitleTemplate { name: "Pulse", category: "Motion", preview_text: "PULSE", create_data: || centered("PULSE", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("fade_in_0.3+pulse_0.6") },
-    TitleTemplate { name: "Rotate In", category: "Motion", preview_text: "ROTATE", create_data: || centered("ROTATE", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("rotate_in_0.8") },
-    TitleTemplate { name: "Rotate Out", category: "Motion", preview_text: "ROTATE", create_data: || centered("ROTATE", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("fade_in_0.3+rotate_out_0.8") },
-    TitleTemplate { name: "Glitch", category: "Motion", preview_text: "GL!TCH", create_data: || centered("GL!TCH", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("glitch_0.6") },
-    TitleTemplate { name: "Float Up", category: "Motion", preview_text: "floating...", create_data: || centered("floating...", 48.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("fade_in_0.5+float_up_5.0") },
-    TitleTemplate { name: "Spin & Bounce", category: "Motion", preview_text: "WOW", create_data: || centered("WOW", 96.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("spin_in_0.6+bounce_in_1.0") },
-    TitleTemplate { name: "Shake & Fade", category: "Motion", preview_text: "ALERT!", create_data: || { let mut t = centered("ALERT!", 64.0, FontStyle::Regular, [255,255,255,255], true); if let Some(tb) = t.primary_text_mut() { tb.color = [255, 60, 60, 255]; } t }, animation: Some("shake_0.5+fade_in_out_2.0") },
-    TitleTemplate { name: "Elastic Slide", category: "Motion", preview_text: "SNAP!", create_data: || centered("SNAP!", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("slide_left_0.3+elastic_1.0") },
-    TitleTemplate { name: "Zoom & Spin", category: "Motion", preview_text: "ZOOM", create_data: || centered("ZOOM", 96.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("zoom_in_0.5+spin_in_0.8") },
-    TitleTemplate { name: "Bounce & Fade Out", category: "Motion", preview_text: "BYE!", create_data: || centered("BYE!", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("bounce_in_0.8+fade_out_1.0") },
-    TitleTemplate { name: "Implode & Explode", category: "Motion", preview_text: "FLASH", create_data: || centered("FLASH", 96.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("implode_in_0.5+explode_out_0.5") },
-    // ---- Scrolling / Continuous ----
+    // ---- Motion (8) ----
+    // Each template wires a TitleAnimationType. Templates that
+    // promised animations the engine doesn't yet support
+    // (Swirl / Elastic / Swing / Explode / Implode / Float / and
+    // every "X & Y" combo from the pre-cleanup catalogue) have been
+    // removed — they shipped as static-only despite their names.
+    TitleTemplate { name: "Spin In", category: "Motion", preview_text: "SPIN", create_data: || with_anim(centered("SPIN", 72.0, FontStyle::Regular, [255,255,255,255], true), TitleAnimationType::SpinIn { duration_secs: 0.8, from_degrees: -360.0 }), animation: Some("SpinIn(0.8s, -360\u{00b0})") },
+    TitleTemplate { name: "Rotate In", category: "Motion", preview_text: "ROTATE", create_data: || with_anim(centered("ROTATE", 72.0, FontStyle::Regular, [255,255,255,255], true), TitleAnimationType::SpinIn { duration_secs: 0.8, from_degrees: 90.0 }), animation: Some("SpinIn(0.8s, 90\u{00b0})") },
+    TitleTemplate { name: "Bounce In", category: "Motion", preview_text: "BOUNCE", create_data: || with_anim(centered("BOUNCE", 72.0, FontStyle::Bold, [255,255,255,255], true), TitleAnimationType::BounceIn { duration_secs: 0.6 }), animation: Some("BounceIn(0.6s)") },
+    TitleTemplate { name: "Pulse", category: "Motion", preview_text: "PULSE", create_data: || with_anim(centered("PULSE", 72.0, FontStyle::Regular, [255,255,255,255], true), TitleAnimationType::Pulse { rate_hz: 1.0, min_opacity: 0.4 }), animation: Some("Pulse(1\u{00a0}Hz)") },
+    TitleTemplate { name: "Wave", category: "Motion", preview_text: "WAVE", create_data: || with_anim(centered("WAVE", 72.0, FontStyle::Regular, [255,255,255,255], true), TitleAnimationType::Wave { amplitude_px: 25.0, rate_hz: 0.8 }), animation: Some("Wave(25\u{00a0}px, 0.8\u{00a0}Hz)") },
+    TitleTemplate { name: "Shake", category: "Motion", preview_text: "SHAKE!", create_data: || with_anim({ let mut t = centered("SHAKE!", 64.0, FontStyle::Bold, [255,255,255,255], true); if let Some(tb) = t.primary_text_mut() { tb.color = [255, 60, 60, 255]; } t }, TitleAnimationType::Shake { amplitude_px: 12.0, rate_hz: 14.0 }), animation: Some("Shake(12\u{00a0}px, 14\u{00a0}Hz)") },
+    TitleTemplate { name: "Glitch", category: "Motion", preview_text: "GL!TCH", create_data: || { let t = centered("GL!TCH", 72.0, FontStyle::Bold, [255,255,255,255], true); with_chromatic(with_glitch(t, 0.4), 5.0) }, animation: Some("Glitch + chromatic") },
+    TitleTemplate { name: "Colour Cycle", category: "Motion", preview_text: "RAINBOW", create_data: || with_anim({ let mut t = centered("RAINBOW", 72.0, FontStyle::Bold, [255, 100, 100, 255], true); if let Some(tb) = t.primary_text_mut() { tb.color = [255, 100, 100, 255]; } t }, TitleAnimationType::ColorCycle { rate_hz: 0.5 }), animation: Some("ColorCycle(0.5\u{00a0}Hz)") },
+
+    // ---- Scrolling / Continuous (5) ----
     // Two generic scroll templates: "Credits Roll" (full-frame, scroll
     // up by default) and "News Ticker" (lower-third bar, crawl left by
     // default). Users change direction (Up / Down / Left / Right) and
     // speed via the Inspector's "Scroll & Animation" section — one
-    // entry per visual style instead of one per direction. The four
-    // continuous-motion variants (Spin / Pulse / Breathe / Float) stay
-    // separate because they're conceptually different effects, not
-    // direction variants.
-    TitleTemplate { name: "Credits Roll", category: "Scrolling", preview_text: "Credits...", create_data: || centered("Directed by\nJohn Doe\n\nProduced by\nJane Smith\n\nEditor\nAlex Johnson", 36.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("scroll_up_1.0") },
-    TitleTemplate { name: "News Ticker", category: "Scrolling", preview_text: "\u{2190} BREAKING NEWS", create_data: || { let mut t = lower_third_style("BREAKING: Major event reported \u{2014} More details at 11", 28.0, FontStyle::Regular, [255, 255, 255, 255], [0, 0, 0, 180], 0.15, 0.85); t.background = TitleBackground::Color { color: [180, 30, 30, 220], padding: 8.0 }; t }, animation: Some("ticker_left_1.0") },
-    TitleTemplate { name: "Continuous Spin", category: "Scrolling", preview_text: "\u{21bb} Spin", create_data: || centered("LOGO", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("spinning_1.0") },
-    TitleTemplate { name: "Pulsing Text", category: "Scrolling", preview_text: "\u{2764} Pulse", create_data: || { let mut t = centered("LIVE", 64.0, FontStyle::Regular, [255,255,255,255], true); if let Some(tb) = t.primary_text_mut() { tb.color = [255, 60, 60, 255]; } t }, animation: Some("pulsing_1.0") },
-    TitleTemplate { name: "Breathing Text", category: "Scrolling", preview_text: "~ Breathe ~", create_data: || centered("breathe", 48.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("breathing_1.0") },
-    TitleTemplate { name: "Floating Text", category: "Scrolling", preview_text: "\u{2601} Float", create_data: || centered("drifting...", 36.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("floating_1.0") },
+    // entry per visual style instead of one per direction. The
+    // continuous-motion variants stay separate because they're
+    // conceptually different effects, not direction variants.
+    // "Continuous Spin" removed — there's no Spin-loop variant; users
+    // pick "Spin In" with a long duration if they want extended rotation.
+    TitleTemplate { name: "Credits Roll", category: "Scrolling", preview_text: "Credits...", create_data: || with_anim(centered("Directed by\nJohn Doe\n\nProduced by\nJane Smith\n\nEditor\nAlex Johnson", 36.0, FontStyle::Regular, [255,255,255,255], true), TitleAnimationType::ScrollUp { speed_px_per_sec: 0.0 }), animation: Some("ScrollUp(Auto)") },
+    TitleTemplate { name: "News Ticker", category: "Scrolling", preview_text: "\u{2190} BREAKING NEWS", create_data: || { let mut t = lower_third_style("BREAKING: Major event reported \u{2014} More details at 11", 28.0, FontStyle::Regular, [255, 255, 255, 255], [0, 0, 0, 180], 0.15, 0.85); t.background = TitleBackground::Color { color: [180, 30, 30, 220], padding: 8.0 }; with_anim(t, TitleAnimationType::Marquee { speed_px_per_sec: 200.0 }) }, animation: Some("Marquee(200\u{00a0}px/s)") },
+    TitleTemplate { name: "Pulsing Text", category: "Scrolling", preview_text: "\u{2764} Pulse", create_data: || with_anim({ let mut t = centered("LIVE", 64.0, FontStyle::Regular, [255,255,255,255], true); if let Some(tb) = t.primary_text_mut() { tb.color = [255, 60, 60, 255]; } t }, TitleAnimationType::Pulse { rate_hz: 1.5, min_opacity: 0.3 }), animation: Some("Pulse(1.5\u{00a0}Hz)") },
+    TitleTemplate { name: "Breathing Text", category: "Scrolling", preview_text: "~ Breathe ~", create_data: || with_anim(centered("breathe", 48.0, FontStyle::Regular, [255,255,255,255], true), TitleAnimationType::Pulse { rate_hz: 0.3, min_opacity: 0.6 }), animation: Some("Pulse(0.3\u{00a0}Hz)") },
+    TitleTemplate { name: "Floating Text", category: "Scrolling", preview_text: "\u{2601} Float", create_data: || with_anim(centered("drifting...", 36.0, FontStyle::Regular, [255,255,255,255], true), TitleAnimationType::Wave { amplitude_px: 30.0, rate_hz: 0.4 }), animation: Some("Wave(30\u{00a0}px, 0.4\u{00a0}Hz)") },
     // ---- Rich Text (8) — pre-styled multi-color/size templates ----
+    // Each template ships its rich style_runs; the few that promise
+    // a fade/pop intro now wire FadeIn / BounceIn so the promised
+    // effect actually happens on playback.
     TitleTemplate { name: "Name & Title", category: "Rich Text", preview_text: "Name + Title", create_data: || {
         let text = "John Smith\nCreative Director"; // 28 bytes
         let mut t = centered(text, 48.0, FontStyle::Bold, [255, 255, 255, 255], true);
@@ -992,8 +1023,8 @@ const TITLES: &[TitleTemplate] = &[
             StyleRun { start: 0, end: 10, font_size: Some(48.0), font_style: Some(FontStyle::Bold), color: Some([255, 255, 255, 255]), ..StyleRun::default_for_range(0, 10) },
             StyleRun { start: 11, end: 28, font_size: Some(28.0), font_style: Some(FontStyle::Regular), color: Some([180, 180, 190, 255]), ..StyleRun::default_for_range(11, 28) },
         ]; }
-        t
-    }, animation: Some("fade_in_0.5") },
+        with_anim(t, TitleAnimationType::FadeIn { duration_secs: 0.5 })
+    }, animation: Some("FadeIn(0.5s)") },
     TitleTemplate { name: "Highlight Word", category: "Rich Text", preview_text: "BOLD color", create_data: || {
         let text = "This is IMPORTANT text";
         let mut t = centered(text, 48.0, FontStyle::Regular, [255, 255, 255, 255], true);
@@ -1011,8 +1042,8 @@ const TITLES: &[TitleTemplate] = &[
             StyleRun { start: 0, end: 5, color: Some([80, 180, 255, 255]), ..StyleRun::default_for_range(0, 5) },
             StyleRun { start: 5, end: 11, color: Some([255, 100, 150, 255]), ..StyleRun::default_for_range(5, 11) },
         ]; }
-        t
-    }, animation: Some("fade_in_0.5") },
+        with_anim(t, TitleAnimationType::FadeIn { duration_secs: 0.5 })
+    }, animation: Some("FadeIn(0.5s)") },
     TitleTemplate { name: "Quote + Author", category: "Rich Text", preview_text: "\"Quote\" — Author", create_data: || {
         let text = "\"The best way to predict\nthe future is to create it.\"\n\n— Abraham Lincoln"; // 72 bytes
         let author_start = text.find('\u{2014}').unwrap_or(55); // em dash
@@ -1021,8 +1052,8 @@ const TITLES: &[TitleTemplate] = &[
             StyleRun { start: 0, end: author_start, font_size: Some(36.0), font_style: Some(FontStyle::Italic), color: Some([230, 230, 240, 255]), ..StyleRun::default_for_range(0, author_start) },
             StyleRun { start: author_start, end: text.len(), font_size: Some(24.0), font_style: Some(FontStyle::Regular), color: Some([180, 160, 120, 255]), ..StyleRun::default_for_range(author_start, text.len()) },
         ]; }
-        t
-    }, animation: Some("fade_in_1.0") },
+        with_anim(t, TitleAnimationType::FadeIn { duration_secs: 1.0 })
+    }, animation: Some("FadeIn(1.0s)") },
     TitleTemplate { name: "Big + Small", category: "Rich Text", preview_text: "BIG small", create_data: || {
         let text = "MEGA tiny";
         let mut t = centered(text, 72.0, FontStyle::Bold, [255, 255, 255, 255], false);
@@ -1044,8 +1075,8 @@ const TITLES: &[TitleTemplate] = &[
             StyleRun { start: 5, end: 6, color: Some([100, 50, 255, 255]), ..StyleRun::default_for_range(5, 6) },
             StyleRun { start: 6, end: 7, color: Some([200, 50, 200, 255]), ..StyleRun::default_for_range(6, 7) },
         ]; }
-        t
-    }, animation: Some("pop_in_0.5") },
+        with_anim(t, TitleAnimationType::BounceIn { duration_secs: 0.6 })
+    }, animation: Some("BounceIn(0.6s)") },
     TitleTemplate { name: "Price Tag", category: "Rich Text", preview_text: "$9.99/mo", create_data: || {
         let text = "$9.99/month";
         let mut t = centered(text, 48.0, FontStyle::Bold, [255, 255, 255, 255], false);
@@ -1055,8 +1086,8 @@ const TITLES: &[TitleTemplate] = &[
             StyleRun { start: 1, end: 5, font_size: Some(72.0), font_style: Some(FontStyle::Bold), color: Some([255, 220, 50, 255]), ..StyleRun::default_for_range(1, 5) },
             StyleRun { start: 5, end: 11, font_size: Some(24.0), color: Some([140, 140, 150, 255]), ..StyleRun::default_for_range(5, 11) },
         ]; }
-        t
-    }, animation: Some("fade_in_0.3") },
+        with_anim(t, TitleAnimationType::FadeIn { duration_secs: 0.3 })
+    }, animation: Some("FadeIn(0.3s)") },
     TitleTemplate { name: "Breaking + Detail", category: "Rich Text", preview_text: "BREAKING + info", create_data: || {
         let text = "BREAKING NEWS\nExplosion reported downtown, emergency services responding";
         let tlen = text.len();
@@ -1075,9 +1106,145 @@ const TITLES: &[TitleTemplate] = &[
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [180, 20, 20, 220], padding: 12.0 };
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.15, y: 0.85 }; }
-    td
+    with_anim(td, TitleAnimationType::SlideInLeft { duration_secs: 0.5 })
 }
-    }, animation: Some("slide_left_0.5") },
+    }, animation: Some("SlideInLeft(0.5s)") },
+
+    // ─────────── New Effects category — combos hard to author manually ───────────
+    // These exercise multi-field combinations that would take a user
+    // many Inspector clicks to reproduce from scratch.
+    TitleTemplate { name: "Cyberpunk", category: "Effects", preview_text: "[CYBERPUNK]", create_data: || {
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "[CYBERPUNK]".into();
+        tb.font_size = 84.0;
+        tb.font_style = FontStyle::Bold;
+        tb.color = [50, 255, 220, 255];
+        tb.alignment = TextAlignment::Center;
+        tb.outlines.push(klipp_timeline::TextOutline { color: [10, 10, 14, 220], width: 2.0 });
+        tb.glow = Some(klipp_timeline::TextGlow { color: [50, 255, 220, 200], radius: 14.0, intensity: 1.5 });
+        tb.chromatic_aberration_px = 4.0;
+        tb.glitch_intensity = 0.15;
+        let mut td = klipp_timeline::TitleData::single_text(tb);
+        td.animation_type = TitleAnimationType::ColorCycle { rate_hz: 0.25 };
+        td
+    }, animation: Some("ColorCycle + glitch + chromatic") },
+    TitleTemplate { name: "Heartbeat Pulse", category: "Effects", preview_text: "\u{2764} LIVE", create_data: || {
+        let mut t = centered("LIVE", 72.0, FontStyle::Bold, [255, 60, 60, 255], true);
+        if let Some(tb) = t.primary_text_mut() {
+            tb.outlines.push(klipp_timeline::TextOutline { color: [40, 0, 0, 220], width: 2.5 });
+        }
+        with_anim(t, TitleAnimationType::Pulse { rate_hz: 1.2, min_opacity: 0.55 })
+    }, animation: Some("Pulse(1.2\u{00a0}Hz)") },
+    TitleTemplate { name: "Stock Ticker", category: "Effects", preview_text: "AAPL +1.24% \u{2014} TSLA \u{2212}0.55%", create_data: || {
+        let mut t = lower_third_style(
+            "AAPL +1.24% \u{2014} TSLA \u{2212}0.55% \u{2014} MSFT +0.42% \u{2014} GOOG +0.88%",
+            28.0, FontStyle::Bold,
+            [120, 255, 140, 255], [10, 14, 20, 230],
+            0.5, 0.92,
+        );
+        if let Some(tb) = t.primary_text_mut() {
+            tb.alignment = TextAlignment::Left;
+        }
+        with_anim(t, TitleAnimationType::Marquee { speed_px_per_sec: 220.0 })
+    }, animation: Some("Marquee(220\u{00a0}px/s)") },
+    TitleTemplate { name: "Award Reveal", category: "Effects", preview_text: "Best Picture", create_data: || {
+        let mut t = centered("Best Picture", 84.0, FontStyle::Bold, [240, 200, 90, 255], true);
+        if let Some(tb) = t.primary_text_mut() {
+            tb.drop_cap_scale = 2.5;
+            tb.glow = Some(klipp_timeline::TextGlow { color: [240, 200, 90, 180], radius: 18.0, intensity: 1.2 });
+            tb.alignment = TextAlignment::Left;
+        }
+        if let Some(o) = t.objects.first_mut() {
+            o.transform.center = TitlePosition { x: 0.15, y: 0.5 };
+        }
+        with_anim(t, TitleAnimationType::BounceIn { duration_secs: 0.8 })
+    }, animation: Some("BounceIn + drop cap + glow") },
+    TitleTemplate { name: "Subtitle Track", category: "Effects", preview_text: "[Spoken line of dialogue]", create_data: || {
+        let mut t = positioned(
+            "[Spoken line of dialogue]",
+            32.0, FontStyle::Regular,
+            [255, 255, 255, 255], TextAlignment::Center,
+            0.5, 0.88,
+            Some(TitleShadow { color: [0, 0, 0, 200], offset_x: 1.5, offset_y: 1.5, blur: 3.0 }),
+        );
+        if let Some(tb) = t.primary_text_mut() {
+            tb.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 220], width: 1.5 });
+        }
+        with_anim(t, TitleAnimationType::Typewriter { chars_per_sec: 60.0 })
+    }, animation: Some("Typewriter(60 ch/s)") },
+    TitleTemplate { name: "Multi-Column Article", category: "Effects", preview_text: "Lorem ipsum dolor sit amet \u{2026}", create_data: || {
+        let body = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod \
+                    tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim \
+                    veniam quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea \
+                    commodo consequat.";
+        let mut t = centered(body, 24.0, FontStyle::Regular, [240, 240, 240, 255], false);
+        if let Some(tb) = t.primary_text_mut() {
+            tb.alignment = TextAlignment::Left;
+            tb.columns = 3;
+            tb.line_spacing = 1.25;
+        }
+        t
+    }, animation: None },
+    TitleTemplate { name: "Vertical CJK", category: "Effects", preview_text: "\u{6587}\u{5B57}", create_data: || {
+        let mut t = centered("\u{6587}\u{5B57}\u{5782}\u{76F4}", 80.0, FontStyle::Regular, [240, 240, 240, 255], true);
+        if let Some(tb) = t.primary_text_mut() {
+            tb.vertical_layout = true;
+        }
+        t
+    }, animation: None },
+    TitleTemplate { name: "Hebrew (RTL)", category: "Effects", preview_text: "\u{05E9}\u{05DC}\u{05D5}\u{05DD}", create_data: || {
+        let mut t = centered("\u{05E9}\u{05DC}\u{05D5}\u{05DD} \u{05E2}\u{05D5}\u{05DC}\u{05DD}", 72.0, FontStyle::Bold, [255, 255, 255, 255], true);
+        if let Some(tb) = t.primary_text_mut() {
+            tb.alignment = TextAlignment::Right;
+            tb.text_direction = klipp_timeline::TextDirection::Rtl;
+        }
+        with_anim(t, TitleAnimationType::FadeIn { duration_secs: 0.6 })
+    }, animation: Some("FadeIn(0.6s) + RTL") },
+    TitleTemplate { name: "Countdown 10\u{2192}0", category: "Effects", preview_text: "10", create_data: || {
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "10".into();
+        tb.font_size = 200.0;
+        tb.font_style = FontStyle::Bold;
+        tb.color = [255, 70, 70, 255];
+        tb.alignment = TextAlignment::Center;
+        tb.outlines.push(klipp_timeline::TextOutline { color: [40, 0, 0, 220], width: 4.0 });
+        let mut td = klipp_timeline::TitleData::single_text(tb);
+        td.animation_type = TitleAnimationType::Counter {
+            from_value: 10.0,
+            to_value: 0.0,
+            duration_secs: 10.0,
+            decimals: 0,
+        };
+        td
+    }, animation: Some("Counter(10\u{2192}0, 10s)") },
+    TitleTemplate { name: "Drop Cap Pull Quote", category: "Effects", preview_text: "Lorem ipsum dolor sit \u{2026}", create_data: || {
+        let body = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod \
+                    tempor incididunt ut labore et dolore magna aliqua.";
+        let mut t = centered(body, 32.0, FontStyle::Italic, [240, 240, 240, 255], false);
+        if let Some(tb) = t.primary_text_mut() {
+            tb.alignment = TextAlignment::Left;
+            tb.drop_cap_scale = 3.5;
+            tb.line_spacing = 1.3;
+        }
+        if let Some(o) = t.objects.first_mut() {
+            o.transform.center = TitlePosition { x: 0.5, y: 0.5 };
+        }
+        t
+    }, animation: None },
+    TitleTemplate { name: "Neon Sign", category: "Effects", preview_text: "OPEN", create_data: || {
+        let accent: [u8; 4] = [255, 60, 200, 255];
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "OPEN".into();
+        tb.font_size = 120.0;
+        tb.font_style = FontStyle::Bold;
+        tb.color = accent;
+        tb.alignment = TextAlignment::Center;
+        tb.outlines.push(klipp_timeline::TextOutline { color: [10, 10, 14, 200], width: 3.0 });
+        tb.glow = Some(klipp_timeline::TextGlow { color: accent, radius: 22.0, intensity: 1.6 });
+        let mut td = klipp_timeline::TitleData::single_text(tb);
+        td.animation_type = TitleAnimationType::Pulse { rate_hz: 0.5, min_opacity: 0.7 };
+        td
+    }, animation: Some("Pulse(0.5\u{00a0}Hz) + neon") },
 ];
 
 /// Ordered list of categories for display.
@@ -1099,6 +1266,7 @@ const CATEGORIES: &[&str] = &[
     "Text on Path",
     "Per-Character",
     "Rich Text",
+    "Effects",
     "Wedding / Event",
 ];
 
@@ -3555,4 +3723,83 @@ fn titles_result_strip(
         },
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// No template may claim it animates (`animation: Some(_)`) and
+    /// ship its `TitleData::animation_type` as `Static` AND have
+    /// every TextBox-level effect field at default. Pre-cleanup, 60+
+    /// templates failed this contract — they wore "+ ANIMATED" badges
+    /// in the browser but dropped static text into the timeline.
+    /// This test pins the contract that the animation badge means
+    /// the template actually does something at render time.
+    #[test]
+    fn every_animated_template_actually_animates() {
+        for tpl in TITLES {
+            if tpl.animation.is_none() {
+                continue;
+            }
+            let td = (tpl.create_data)();
+            let has_animation_type =
+                !matches!(td.animation_type, klipp_timeline::TitleAnimationType::Static);
+            let has_text_effect = td.objects.iter().any(|obj| {
+                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &obj.content {
+                    tb.glitch_intensity > 0.0
+                        || tb.chromatic_aberration_px > 0.0
+                        || tb.char_animation.is_some()
+                } else {
+                    false
+                }
+            });
+            assert!(
+                has_animation_type || has_text_effect,
+                "Template '{}' (category '{}') claims animation '{:?}' but its create_data \
+                 returns a fully-static title — set TitleData::animation_type or a TextBox \
+                 effect field, or change `animation` to None.",
+                tpl.name, tpl.category, tpl.animation,
+            );
+        }
+    }
+
+    /// Every template's stated category must appear in the
+    /// `CATEGORIES` sidebar list, otherwise the template is
+    /// invisible in the browser.
+    #[test]
+    fn every_template_category_is_in_sidebar() {
+        for tpl in TITLES {
+            assert!(
+                CATEGORIES.contains(&tpl.category),
+                "Template '{}' has category '{}' which is not in CATEGORIES — \
+                 it will never appear in the browser sidebar.",
+                tpl.name, tpl.category,
+            );
+        }
+    }
+
+    /// Template names must be unique within a category — duplicates
+    /// confuse the user (two cards with the same label and no way
+    /// to tell them apart).
+    #[test]
+    fn template_names_unique_within_category() {
+        for cat in CATEGORIES {
+            let names: Vec<&str> = TITLES
+                .iter()
+                .filter(|t| t.category == *cat)
+                .map(|t| t.name)
+                .collect();
+            for (i, name) in names.iter().enumerate() {
+                for other in &names[i + 1..] {
+                    assert_ne!(
+                        name, other,
+                        "Duplicate template name '{name}' in category '{cat}' — \
+                         each category must have unique names."
+                    );
+                }
+            }
+        }
+    }
+}
+
 
