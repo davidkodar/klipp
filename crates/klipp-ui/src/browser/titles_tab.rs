@@ -2559,6 +2559,19 @@ fn apply_animation_type(
             let v = from_value + (to_value - from_value) * t as f64;
             (format!("{v:.0}"), base_pos, 1.0, 1.0)
         }
+        TitleAnimationType::OutlineDrawOn { .. } => {
+            // The card preview shares the static text colour; the
+            // outline-progress effect only manifests when the
+            // template has authored outlines, and the timeline
+            // applies it faithfully there. No alpha/scale tweak.
+            (text.to_string(), base_pos, 1.0, 1.0)
+        }
+        TitleAnimationType::ColorBlend { .. } => {
+            // Same caveat as ColorCycle — the card preview's text
+            // colour pipeline is a separate routing; the timeline
+            // and export apply the full colour blend.
+            (text.to_string(), base_pos, 1.0, 1.0)
+        }
     }
 }
 

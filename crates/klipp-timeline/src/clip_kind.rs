@@ -224,6 +224,7 @@ pub struct TitleObject {
 }
 
 fn default_one_f32() -> f32 { 1.0 }
+fn default_one_f32_tb() -> f32 { 1.0 }
 
 fn default_true() -> bool { true }
 
@@ -317,6 +318,13 @@ pub struct TextBox {
     /// a bar background.
     #[serde(default)]
     pub baseline_shift: f32,
+    /// Outline draw-on progress 0..1 — clips the rendered outline
+    /// horizontally so it appears to "draw on" from the text's left
+    /// edge. `1.0` (default) = fully drawn; `0.0` = no outline visible.
+    /// Independent of `write_on` (which clips the whole text body).
+    /// Driven by the OutlineDrawOn TitleAnimationType variant.
+    #[serde(default = "default_one_f32_tb")]
+    pub outline_write_on: f32,
     /// Drop-cap scale factor for the first character of `text`.
     /// `0.0` (default) = no drop cap. `>= 1.0` = enlarge the first
     /// character by this factor; e.g. 3.0 = three-line drop cap (the
@@ -374,6 +382,7 @@ impl Default for TextBox {
             case_transform: TextCase::None,
             baseline_shift: 0.0,
             drop_cap_scale: 0.0,
+            outline_write_on: 1.0,
         }
     }
 }
@@ -741,6 +750,21 @@ pub enum TitleAnimationType {
         to_value: f64,
         duration_secs: f32,
         decimals: u8,
+    },
+    /// Outline draw-on: text outlines reveal progressively from the
+    /// left edge over `duration_secs`. Drives `outline_write_on`
+    /// from 0 → 1 inside the renderer; the body fill remains
+    /// stationary so the outline "draws onto" the text.
+    OutlineDrawOn { duration_secs: f32 },
+    /// Two-colour blend: text fill smoothly oscillates between
+    /// `color_a` and `color_b` at `rate_hz`. Distinct from
+    /// ColorCycle (which rotates through the whole hue wheel) —
+    /// use this when the design calls for two specific colours
+    /// (brand A / B, accent / accent_alt, day / night).
+    ColorBlend {
+        color_a: [u8; 4],
+        color_b: [u8; 4],
+        rate_hz: f32,
     },
 }
 

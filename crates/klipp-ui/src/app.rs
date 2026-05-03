@@ -14024,6 +14024,29 @@ impl KlippApp {
                 self.state.title_fade_duration = *duration;
                 true
             }
+            AppCommand::SetTitleColorBlend { clip_id, color_a, color_b, rate_hz } => {
+                let animation = klipp_timeline::TitleAnimationType::ColorBlend {
+                    color_a: *color_a,
+                    color_b: *color_b,
+                    rate_hz: *rate_hz,
+                };
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let frame_w = seq.resolution.width as f32;
+                let frame_h = seq.resolution.height as f32;
+                for track in &mut seq.tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.animation_type = animation.clone();
+                        }
+                        apply_title_animation_keyframes(clip, &animation, frame_h, frame_w);
+                    }
+                }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetTitleCounterAnimation { clip_id, from_value, to_value, duration_secs, decimals } => {
                 let animation = klipp_timeline::TitleAnimationType::Counter {
                     from_value: *from_value,
@@ -29507,6 +29530,14 @@ fn decode_title_animation(kind: u8, speed: f32, param2: f32) -> klipp_timeline::
             duration_secs: if speed > 0.0 { speed } else { 2.0 },
             decimals: 0,
         },
+        26 => T::OutlineDrawOn { duration_secs: speed },
+        27 => T::ColorBlend {
+            // Sensible defaults — user tunes colours via the dedicated
+            // SetTitleColorBlend event.
+            color_a: [255, 255, 255, 255],
+            color_b: [255, 200, 0, 255],
+            rate_hz: speed,
+        },
         _ => T::Static,
     }
 }
@@ -29837,6 +29868,11 @@ fn apply_title_animation_keyframes(
             // typewriter_override; no clip-level keyframes needed.
             // The clear-all at the top of this function already
             // wiped any leftover keyframes from a previous variant.
+        }
+        T::OutlineDrawOn { .. } | T::ColorBlend { .. } => {
+            // Both apply per-frame inside the title renderer
+            // (render_with_time → derived TitleData) — no clip-level
+            // keyframes to write here.
         }
         T::Marquee { speed_px_per_sec } => {
             // Sawtooth pos_x keyframes: linear ramp from +offset

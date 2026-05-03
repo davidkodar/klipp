@@ -926,11 +926,34 @@ impl TitleRenderer {
             // lives entirely in `tb.outlines` now.
             all_outlines.sort_by(|a, b| b.width.partial_cmp(&a.width).unwrap_or(std::cmp::Ordering::Equal));
 
+            // Stroke draw-on: clip the rendered outline horizontally
+            // to a left-anchored fraction of the text bounds. When
+            // `outline_write_on >= 1.0` the cutoff exceeds the text
+            // right edge and every pixel passes — branch-free fast
+            // path. Below 1.0, pixels with global x past the cutoff
+            // are zeroed before draw_mask_to_buf.
+            let outline_progress = tb.outline_write_on.clamp(0.0, 1.0);
+            let outline_cutoff_x = if outline_progress >= 1.0 {
+                i32::MAX
+            } else {
+                (layout.text_left + (layout.text_right - layout.text_left) * outline_progress).floor() as i32
+            };
+
             for outline in &all_outlines {
                 let dilated = do_dilate(alpha_mask, mask_w, mask_h, outline.width * scale, &mut gpu);
                 let mut outline_mask = vec![0u8; mask_w * mask_h];
                 for i in 0..outline_mask.len() {
                     outline_mask[i] = dilated[i].saturating_sub(alpha_mask[i]);
+                }
+                if outline_progress < 1.0 {
+                    for my in 0..mask_h {
+                        for mx in 0..mask_w {
+                            let global_x = (mask_x0 + mx) as i32;
+                            if global_x >= outline_cutoff_x {
+                                outline_mask[my * mask_w + mx] = 0;
+                            }
+                        }
+                    }
                 }
                 draw_mask_to_buf(&mut buf, &outline_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &outline.color, 1.0);
             }
@@ -1083,12 +1106,30 @@ impl TitleRenderer {
                 false
             }
         });
+        // Detect every per-frame override the renderer applies on
+        // top of `title`. We compute them up front so a single
+        // clone (when any are active) can apply all of them.
         let color_cycle_rate = match title.animation_type {
             klipp_timeline::TitleAnimationType::ColorCycle { rate_hz } => Some(rate_hz),
             _ => None,
         };
+        let color_blend = match title.animation_type {
+            klipp_timeline::TitleAnimationType::ColorBlend { color_a, color_b, rate_hz } => {
+                Some((color_a, color_b, rate_hz))
+            }
+            _ => None,
+        };
+        let outline_draw_on_dur = match title.animation_type {
+            klipp_timeline::TitleAnimationType::OutlineDrawOn { duration_secs } => Some(duration_secs),
+            _ => None,
+        };
 
-        if !any_char_anim && color_cycle_rate.is_none() {
+        let any_render_time_override = any_char_anim
+            || color_cycle_rate.is_some()
+            || color_blend.is_some()
+            || outline_draw_on_dur.is_some();
+
+        if !any_render_time_override {
             if let Some(buf) = self.cache_lookup(title, width, height) {
                 return buf;
             }
@@ -1097,31 +1138,53 @@ impl TitleRenderer {
             return buf;
         }
 
-        // ColorCycle: clone the title and rewrite the primary
-        // textbox's colour to a hue-shifted variant for this frame.
-        // Saturation and value are pulled from the resting colour so
-        // the cycle stays in the same brightness band the user
-        // chose; only hue varies. The clone is one allocation per
-        // frame for ColorCycle titles, an acceptable cost given the
-        // effect is decorative-by-nature.
-        let recoloured: Option<TitleData> = color_cycle_rate.map(|rate| {
+        // Build a one-frame derived TitleData that applies every
+        // active render-time override. The clone is bounded to
+        // exactly one allocation per render call.
+        let derived: TitleData = {
             let mut td = title.clone();
-            let resting = title.color();
-            let (_, sat, val) = rgba_u8_to_hsv(resting);
-            let hue = (time_secs * rate * 360.0).rem_euclid(360.0);
-            let new_color = hsv_to_rgba_u8(hue, sat, val, resting[3]);
-            // Apply to every TextBox object so multi-text titles
-            // cycle in unison.
-            for obj in &mut td.objects {
-                if let TitleObjectContent::TextBox(tb) = &mut obj.content {
-                    tb.color = new_color;
+            // ColorCycle: hue-rotate the resting colour.
+            if let Some(rate) = color_cycle_rate {
+                let resting = title.color();
+                let (_, sat, val) = rgba_u8_to_hsv(resting);
+                let hue = (time_secs * rate * 360.0).rem_euclid(360.0);
+                let new_color = hsv_to_rgba_u8(hue, sat, val, resting[3]);
+                for obj in &mut td.objects {
+                    if let TitleObjectContent::TextBox(tb) = &mut obj.content {
+                        tb.color = new_color;
+                    }
+                }
+            }
+            // ColorBlend: lerp between two user-chosen colours.
+            if let Some((color_a, color_b, rate)) = color_blend {
+                let phase = time_secs * rate * std::f32::consts::TAU;
+                let mix = 0.5 + 0.5 * phase.sin();
+                let new_color = lerp_rgba_u8(color_a, color_b, mix);
+                for obj in &mut td.objects {
+                    if let TitleObjectContent::TextBox(tb) = &mut obj.content {
+                        tb.color = new_color;
+                    }
+                }
+            }
+            // OutlineDrawOn: ramp `outline_write_on` 0 → 1 over the
+            // configured duration.
+            if let Some(dur) = outline_draw_on_dur {
+                let progress = if dur <= 0.0 {
+                    1.0
+                } else {
+                    (time_secs / dur).clamp(0.0, 1.0)
+                };
+                for obj in &mut td.objects {
+                    if let TitleObjectContent::TextBox(tb) = &mut obj.content {
+                        tb.outline_write_on = progress;
+                    }
                 }
             }
             td
-        });
-        let title_to_render = recoloured.as_ref().unwrap_or(title);
+        };
+
         let time_arg = if any_char_anim { Some(time_secs) } else { None };
-        self.render_inner(title_to_render, width, height, gpu, time_arg)
+        self.render_inner(&derived, width, height, gpu, time_arg)
     }
 
     /// Object-model composition: walk every layer in the title (back
@@ -1878,6 +1941,18 @@ fn layout_drop_cap_wrap(
         out.push(g);
     }
     out
+}
+
+/// Linearly interpolate two RGBA-u8 colours. `t = 0` returns `a`,
+/// `t = 1` returns `b`. Used by the two-colour blend animation.
+fn lerp_rgba_u8(a: [u8; 4], b: [u8; 4], t: f32) -> [u8; 4] {
+    let t = t.clamp(0.0, 1.0);
+    [
+        (a[0] as f32 * (1.0 - t) + b[0] as f32 * t).round().clamp(0.0, 255.0) as u8,
+        (a[1] as f32 * (1.0 - t) + b[1] as f32 * t).round().clamp(0.0, 255.0) as u8,
+        (a[2] as f32 * (1.0 - t) + b[2] as f32 * t).round().clamp(0.0, 255.0) as u8,
+        (a[3] as f32 * (1.0 - t) + b[3] as f32 * t).round().clamp(0.0, 255.0) as u8,
+    ]
 }
 
 /// HSV → RGBA-u8. Hue in degrees [0, 360), sat / val in [0, 1].
@@ -3108,6 +3183,71 @@ mod tests {
         let line2_first = positions.iter().find(|p| p.char_index == 6).unwrap(); // 'L' of Line2
         assert!(line2_first.y > line1_y + 5.0,
             "Line2 y ({}) should be below Line1 y ({})", line2_first.y, line1_y);
+    }
+
+    /// OutlineDrawOn must clip the rendered outline horizontally
+    /// during the draw-on window, so partial-progress renders show
+    /// fewer outline pixels than fully-drawn renders.
+    #[test]
+    fn outline_draw_on_clips_outline_horizontally() {
+        let mut renderer = TitleRenderer::new();
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "ABCDE".to_string();
+        tb.font_size = 80.0;
+        tb.outlines.push(klipp_timeline::TextOutline {
+            color: [255, 0, 0, 255],
+            width: 4.0,
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let count_red = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4)
+                .filter(|p| p[0] > 200 && p[1] < 80 && p[2] < 80 && p[3] > 50)
+                .count()
+        };
+
+        // Animation: half-drawn vs fully-drawn.
+        let mut td_half = td.clone();
+        td_half.animation_type = klipp_timeline::TitleAnimationType::OutlineDrawOn {
+            duration_secs: 1.0,
+        };
+        let buf_half = renderer.render_with_time(&td_half, 1280, 720, None, 0.5);
+        let buf_full = renderer.render_with_time(&td_half, 1280, 720, None, 2.0);
+
+        let n_half = count_red(&buf_half);
+        let n_full = count_red(&buf_full);
+        assert!(
+            n_half < n_full,
+            "Mid-progress outline should have FEWER red pixels than fully-drawn. half={n_half} full={n_full}"
+        );
+        assert!(n_half > 0, "Mid-progress should still show SOME outline pixels, got {n_half}");
+    }
+
+    /// ColorBlend must produce different pixel colours at different
+    /// times — the t=0 pose (mix=0.5 → midway between A and B) must
+    /// differ from the t=π/2-rate pose (mix=1.0 → pure B).
+    #[test]
+    fn color_blend_produces_distinct_colours_over_time() {
+        let mut renderer = TitleRenderer::new();
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 80.0;
+        let mut td = klipp_timeline::TitleData::single_text(tb);
+        td.animation_type = klipp_timeline::TitleAnimationType::ColorBlend {
+            color_a: [255, 0, 0, 255],
+            color_b: [0, 0, 255, 255],
+            rate_hz: 1.0,
+        };
+        let frame_t0 = renderer.render_with_time(&td, 1280, 720, None, 0.0);
+        let frame_t_quarter = renderer.render_with_time(&td, 1280, 720, None, 0.25); // peak at sin = 1, mix = 1.0 → pure B
+        let first_visible_rgb = |buf: &[u8]| -> Option<[u8; 3]> {
+            buf.chunks_exact(4)
+                .find(|p| p[3] > 200)
+                .map(|p| [p[0], p[1], p[2]])
+        };
+        let c0 = first_visible_rgb(&frame_t0).expect("t=0 has glyph pixels");
+        let c1 = first_visible_rgb(&frame_t_quarter).expect("t=0.25 has glyph pixels");
+        assert_ne!(c0, c1, "ColorBlend should produce different colours at different times");
     }
 
     /// Wrap-under drop cap: with alignment=Left, a body long enough

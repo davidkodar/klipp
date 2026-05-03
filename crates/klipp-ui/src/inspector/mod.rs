@@ -1990,6 +1990,8 @@ fn show_title_editor(
             T::Marquee { .. } => 23,
             T::TypewriterOut { .. } => 24,
             T::Counter { .. } => 25,
+            T::OutlineDrawOn { .. } => 26,
+            T::ColorBlend { .. } => 27,
         };
         let kind_label = |k: u8| -> &'static str {
             match k {
@@ -2019,6 +2021,8 @@ fn show_title_editor(
                 23 => "Marquee (continuous loop)",
                 24 => "Typewriter Out (delete-on)",
                 25 => "Counter (animated value)",
+                26 => "Outline Draw-On",
+                27 => "Colour Blend (two-colour)",
                 _ => "Static (no animation)",
             }
         };
@@ -2044,6 +2048,8 @@ fn show_title_editor(
                 23 => (200.0, 0.0),              // Marquee 200 px/s
                 24 => (15.0, 0.0),               // TypewriterOut 15 chars/sec
                 25 => (2.0, 0.0),                // Counter default duration 2s
+                26 => (0.5, 0.0),                // OutlineDrawOn 0.5s
+                27 => (1.0, 0.0),                // ColorBlend 1 Hz default
                 _ => (0.0, 0.0),
             }
         };
@@ -2100,6 +2106,10 @@ fn show_title_editor(
                     ui.label(egui::RichText::new("Reveal / Counter").size(10.0).color(theme.text_dim));
                     ui.selectable_value(&mut selected, 24, kind_label(24));
                     ui.selectable_value(&mut selected, 25, kind_label(25));
+                    ui.selectable_value(&mut selected, 26, kind_label(26));
+                    ui.separator();
+                    ui.label(egui::RichText::new("Two-Colour Blend").size(10.0).color(theme.text_dim));
+                    ui.selectable_value(&mut selected, 27, kind_label(27));
                 });
         });
         if selected != current_kind {
@@ -2332,6 +2342,44 @@ fn show_title_editor(
                         cmds.push(AppCommand::SetTitleAnimation {
                             clip_id, animation_kind: 18, speed: dur, param2: deg,
                         });
+                    }
+                });
+            }
+            T::OutlineDrawOn { duration_secs } => {
+                let mut v = *duration_secs;
+                ui.horizontal(|ui| {
+                    ui.label("Duration:");
+                    if ui.add(egui::DragValue::new(&mut v).range(0.05..=10.0).speed(0.05).fixed_decimals(2).suffix(" s")).changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: 26, speed: v, param2: 0.0,
+                        });
+                    }
+                });
+            }
+            T::ColorBlend { color_a, color_b, rate_hz } => {
+                let mut a = egui::Color32::from_rgba_unmultiplied(color_a[0], color_a[1], color_a[2], color_a[3]);
+                let mut b = egui::Color32::from_rgba_unmultiplied(color_b[0], color_b[1], color_b[2], color_b[3]);
+                let mut rate = *rate_hz;
+                let dispatch = |cmds: &mut Vec<AppCommand>, a: egui::Color32, b: egui::Color32, rate: f32| {
+                    cmds.push(AppCommand::SetTitleColorBlend {
+                        clip_id,
+                        color_a: [a.r(), a.g(), a.b(), a.a()],
+                        color_b: [b.r(), b.g(), b.b(), b.a()],
+                        rate_hz: rate,
+                    });
+                };
+                ui.horizontal(|ui| {
+                    ui.label("Colour A:");
+                    if ui.color_edit_button_srgba(&mut a).changed() { dispatch(cmds, a, b, rate); }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Colour B:");
+                    if ui.color_edit_button_srgba(&mut b).changed() { dispatch(cmds, a, b, rate); }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Rate:");
+                    if ui.add(egui::DragValue::new(&mut rate).range(0.05..=10.0).speed(0.05).fixed_decimals(2).suffix(" Hz")).changed() {
+                        dispatch(cmds, a, b, rate);
                     }
                 });
             }

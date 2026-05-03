@@ -1439,6 +1439,15 @@ pub enum AppCommand {
         duration_secs: f32,
         decimals: u8,
     },
+    /// ColorBlend has two RGBA colour endpoints + a rate, doesn't
+    /// fit `SetTitleAnimation`'s scalar pair. Direct event so the
+    /// Inspector's two colour pickers can drive both endpoints.
+    SetTitleColorBlend {
+        clip_id: ClipId,
+        color_a: [u8; 4],
+        color_b: [u8; 4],
+        rate_hz: f32,
+    },
 
     // Linked clips
     ImportMediaLinked { media_id: MediaId },
