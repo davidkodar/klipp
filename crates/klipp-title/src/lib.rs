@@ -410,13 +410,20 @@ impl TitleRenderer {
         let text_w = text_max_x - text_min_x;
         let text_h = text_max_y - text_min_y;
 
-        // Position offset — alignment affects horizontal anchor point.
-        // The layout's max_width is width*0.9, leaving 5% margin each side.
-        let margin = width as f32 * 0.05;
+        // Position offset. `transform.center` is the textbox's anchor
+        // on the frame; alignment determines which edge of the
+        // rendered text rests at that anchor — Left = text's left
+        // edge at anchor, Center = text's centre at anchor, Right =
+        // text's right edge at anchor. This is the standard NLE model
+        // (matches DaVinci / FCP / Premiere) and is the *only* way
+        // dragging a Left/Right-aligned textbox actually moves the
+        // text — the previous implementation pinned Left/Right to a
+        // fixed frame-edge margin, silently dropping the user's drag.
+        let anchor_x = title.position().x * width as f32;
         let offset_x = match tb.alignment {
-            TextAlignment::Left => margin - text_min_x,
-            TextAlignment::Right => width as f32 - margin - text_w - text_min_x,
-            TextAlignment::Center => title.position().x * width as f32 - text_w * 0.5 - text_min_x,
+            TextAlignment::Left => anchor_x - text_min_x,
+            TextAlignment::Center => anchor_x - text_w * 0.5 - text_min_x,
+            TextAlignment::Right => anchor_x - text_w - text_min_x,
         };
         let offset_y = title.position().y * height as f32 - text_h * 0.5 - text_min_y;
 
@@ -1152,11 +1159,13 @@ impl TitleRenderer {
         let text_w = text_max_x - text_min_x;
         let text_h = text_max_y - text_min_y;
 
-        let margin = width as f32 * 0.05;
+        // Mirrors render_layout's offset calc — kept in lockstep so
+        // cursor hit-testing matches the rendered glyph positions.
+        let anchor_x = title.position().x * width as f32;
         let offset_x = match tb.alignment {
-            TextAlignment::Left => margin - text_min_x,
-            TextAlignment::Right => width as f32 - margin - text_w - text_min_x,
-            TextAlignment::Center => title.position().x * width as f32 - text_w * 0.5 - text_min_x,
+            TextAlignment::Left => anchor_x - text_min_x,
+            TextAlignment::Center => anchor_x - text_w * 0.5 - text_min_x,
+            TextAlignment::Right => anchor_x - text_w - text_min_x,
         };
         let offset_y = title.position().y * height as f32 - text_h * 0.5 - text_min_y;
 
@@ -2356,6 +2365,62 @@ mod tests {
         let line2_first = positions.iter().find(|p| p.char_index == 6).unwrap(); // 'L' of Line2
         assert!(line2_first.y > line1_y + 5.0,
             "Line2 y ({}) should be below Line1 y ({})", line2_first.y, line1_y);
+    }
+
+    /// Pin the contract that `transform.center.x` is honoured for
+    /// every alignment. Dragging a Left/Right-aligned textbox on the
+    /// canvas must move the rendered text — the previous renderer
+    /// pinned Left to a fixed left margin and Right to a fixed right
+    /// margin, silently dropping the user's drag for those two
+    /// alignments. Asserts via the public layout's `text_left` /
+    /// `text_right` so the test fails the second the renderer
+    /// regresses.
+    #[test]
+    fn alignment_honours_transform_center_x() {
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 1920;
+        let frame_h: u32 = 1080;
+        let mut mk = |alignment: klipp_timeline::TextAlignment, cx: f32| -> TitleLayout {
+            let mut tb = klipp_timeline::TextBox::default();
+            tb.text = "X".to_string();
+            tb.font_size = 100.0;
+            tb.alignment = alignment;
+            let mut td = klipp_timeline::TitleData::single_text(tb);
+            if let Some(o) = td.objects.first_mut() {
+                o.transform.center = TitlePosition { x: cx, y: 0.5 };
+            }
+            renderer.render_layout(&td, frame_w, frame_h)
+        };
+
+        // Center alignment: text centred on the anchor.
+        let centred_at_quarter = mk(klipp_timeline::TextAlignment::Center, 0.25);
+        let centred_at_three_quarter = mk(klipp_timeline::TextAlignment::Center, 0.75);
+        let q_mid = (centred_at_quarter.text_left + centred_at_quarter.text_right) * 0.5;
+        let tq_mid = (centred_at_three_quarter.text_left + centred_at_three_quarter.text_right) * 0.5;
+        assert!((q_mid - 480.0).abs() < 2.0,
+            "Center @ 0.25 should mid at 480px, got {q_mid}");
+        assert!((tq_mid - 1440.0).abs() < 2.0,
+            "Center @ 0.75 should mid at 1440px, got {tq_mid}");
+
+        // Left alignment: text's left edge at the anchor.
+        let left_at_left = mk(klipp_timeline::TextAlignment::Left, 0.1);
+        let left_at_right = mk(klipp_timeline::TextAlignment::Left, 0.6);
+        assert!((left_at_left.text_left - 192.0).abs() < 2.0,
+            "Left @ 0.1 should start at 192px, got {}", left_at_left.text_left);
+        assert!((left_at_right.text_left - 1152.0).abs() < 2.0,
+            "Left @ 0.6 should start at 1152px, got {}", left_at_right.text_left);
+        assert!(left_at_right.text_left > left_at_left.text_left + 100.0,
+            "Dragging a Left-aligned textbox right must move the rendered text right");
+
+        // Right alignment: text's right edge at the anchor.
+        let right_at_left = mk(klipp_timeline::TextAlignment::Right, 0.4);
+        let right_at_right = mk(klipp_timeline::TextAlignment::Right, 0.9);
+        assert!((right_at_left.text_right - 768.0).abs() < 2.0,
+            "Right @ 0.4 should end at 768px, got {}", right_at_left.text_right);
+        assert!((right_at_right.text_right - 1728.0).abs() < 2.0,
+            "Right @ 0.9 should end at 1728px, got {}", right_at_right.text_right);
+        assert!(right_at_right.text_right > right_at_left.text_right + 100.0,
+            "Dragging a Right-aligned textbox right must move the rendered text right");
     }
 
     #[test]
