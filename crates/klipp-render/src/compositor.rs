@@ -188,6 +188,29 @@ impl FrameCompositor {
 
     /// Check if there's an active transition at this frame and render it.
     /// Returns `Some(blended_frame)` if a transition is active, `None` otherwise.
+    ///
+    /// The compositor iterates clips left-to-right; whichever clip is
+    /// active at `frame_num` (i.e. the one whose `[start, end)` range
+    /// contains the frame) calls this function. For a transition
+    /// whose window straddles the cut between two adjacent clips:
+    ///
+    /// - In the **first half** the active clip is `clip_a`. We have
+    ///   `clip_a`'s frame as `current_frame`; we decode `clip_b`'s
+    ///   frame for the same `frame_num` (its decoder is alive
+    ///   throughout the render and lockstep-advanced) and blend
+    ///   `from = clip_a`, `to = clip_b`.
+    /// - In the **second half** the active clip is `clip_b`. We have
+    ///   `clip_b`'s frame; we decode `clip_a`'s tail for the same
+    ///   `frame_num` and blend `from = clip_a`, `to = clip_b`.
+    ///
+    /// Window placement is alignment-aware so the **default Center**
+    /// alignment (which places `[cut - D/2, cut + D/2)`) is honoured.
+    /// Earlier this function only matched
+    /// `current_clip.id == transition.clip_a_id` AND used a
+    /// hard-coded `[cut, cut+D)` window — that combination meant
+    /// **every Center-aligned transition silently disappeared** in
+    /// exported renders, since the cut-aligned window didn't overlap
+    /// `clip_a`'s active range.
     #[allow(clippy::too_many_arguments)]
     fn apply_transition(
         &mut self,
@@ -200,36 +223,40 @@ impl FrameCompositor {
         width: u32,
         height: u32,
     ) -> Result<Option<Vec<u8>>, RenderError> {
-        // Find a transition where this clip is clip_a (outgoing)
+        // Find a transition that's active at this frame AND
+        // involves the current clip on either side of the cut.
         let transition = track.transitions.iter().find(|t| {
-            t.clip_a_id == current_clip.id && self.is_in_transition_region(frame_num, t, track)
+            (t.clip_a_id == current_clip.id || t.clip_b_id == current_clip.id)
+                && self.is_in_transition_region(frame_num, t, track)
         });
-
         let transition = match transition {
             Some(t) => t,
             None => return Ok(None),
         };
 
-        // Find the partner clip (clip_b = incoming)
-        let partner_clip = track
-            .clips
-            .iter()
-            .find(|c| c.id == transition.clip_b_id);
-
-        let partner_clip = match partner_clip {
-            Some(c) => c,
-            None => return Ok(None),
+        // Resolve which clip we have (`current_clip`) and which we
+        // need to decode for the partner side of the blend.
+        let clip_a = track.clips.iter().find(|c| c.id == transition.clip_a_id);
+        let clip_b = track.clips.iter().find(|c| c.id == transition.clip_b_id);
+        let (clip_a, clip_b) = match (clip_a, clip_b) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return Ok(None),
         };
 
-        // Get frames from both clips
-        let from_frame = match current_frame {
-            Some(f) => f.clone(),
-            None => black_frame(width, height),
-        };
-
-        let to_frame = match self.decode_clip_frame(partner_clip, decoders, frame_num, fps, width, height)? {
-            Some(f) => f,
-            None => black_frame(width, height),
+        let (from_frame, to_frame) = if current_clip.id == clip_a.id {
+            // We have clip_a; decode clip_b's frame for blending.
+            let from = current_frame.cloned().unwrap_or_else(|| black_frame(width, height));
+            let to = self
+                .decode_clip_frame(clip_b, decoders, frame_num, fps, width, height)?
+                .unwrap_or_else(|| black_frame(width, height));
+            (from, to)
+        } else {
+            // We have clip_b; decode clip_a's tail for blending.
+            let to = current_frame.cloned().unwrap_or_else(|| black_frame(width, height));
+            let from = self
+                .decode_clip_frame(clip_a, decoders, frame_num, fps, width, height)?
+                .unwrap_or_else(|| black_frame(width, height));
+            (from, to)
         };
 
         // Calculate transition progress
@@ -247,21 +274,43 @@ impl FrameCompositor {
         )))
     }
 
-    /// Check if frame_num falls within the transition region.
-    /// The transition region is at the overlap between clip_a's end and clip_b's start.
+    /// Compute the alignment-aware `[start, end)` frame window of a
+    /// transition. Mirrors the engine's `find_active_transition`
+    /// placement so the export sees the same window the user sees
+    /// during preview playback.
+    ///
+    /// - `Center`     → `[cut - D/2, cut + D - D/2)`
+    /// - `StartAtCut` → `[cut, cut + D)`
+    /// - `EndAtCut`   → `[cut - D, cut)`
+    fn transition_window(
+        &self,
+        transition: &TransitionSnapshot,
+        track: &VideoTrackSnapshot,
+    ) -> Option<(u64, u64)> {
+        let clip_b = track.clips.iter().find(|c| c.id == transition.clip_b_id)?;
+        let cut = clip_b.timeline_start_frame;
+        let d = transition.duration_frames;
+        let half = d / 2;
+        let (start, end) = match transition.alignment {
+            klipp_core::TransitionAlignment::Center => (cut.saturating_sub(half), cut + (d - half)),
+            klipp_core::TransitionAlignment::StartAtCut => (cut, cut + d),
+            klipp_core::TransitionAlignment::EndAtCut => (cut.saturating_sub(d), cut),
+        };
+        Some((start, end))
+    }
+
+    /// Check if frame_num falls within the transition's active window.
     fn is_in_transition_region(
         &self,
         frame_num: u64,
         transition: &TransitionSnapshot,
         track: &VideoTrackSnapshot,
     ) -> bool {
-        if let Some(clip_b) = track.clips.iter().find(|c| c.id == transition.clip_b_id) {
-            let trans_start = clip_b.timeline_start_frame;
-            let trans_end = trans_start + transition.duration_frames;
-            frame_num >= trans_start && frame_num < trans_end
-        } else {
-            false
-        }
+        let (start, end) = match self.transition_window(transition, track) {
+            Some(w) => w,
+            None => return false,
+        };
+        frame_num >= start && frame_num < end
     }
 
     /// Calculate transition progress (0.0 to 1.0) at the given frame.
@@ -271,16 +320,15 @@ impl FrameCompositor {
         transition: &TransitionSnapshot,
         track: &VideoTrackSnapshot,
     ) -> f32 {
-        if let Some(clip_b) = track.clips.iter().find(|c| c.id == transition.clip_b_id) {
-            let trans_start = clip_b.timeline_start_frame;
-            let elapsed = frame_num.saturating_sub(trans_start);
-            if transition.duration_frames > 0 {
-                (elapsed as f32 / transition.duration_frames as f32).clamp(0.0, 1.0)
-            } else {
-                1.0
-            }
+        let (start, _end) = match self.transition_window(transition, track) {
+            Some(w) => w,
+            None => return 0.0,
+        };
+        if transition.duration_frames > 0 {
+            let elapsed = frame_num.saturating_sub(start);
+            (elapsed as f32 / transition.duration_frames as f32).clamp(0.0, 1.0)
         } else {
-            0.0
+            1.0
         }
     }
 }
@@ -960,5 +1008,118 @@ mod tests {
             "should be grayscale after chained adjustment layers: R={r} G={g} B={b}");
         // Half-brightness white: ≈127
         assert!((r - 127).abs() < 5, "should be ≈127 after chain, got R={r}");
+    }
+
+    /// Build a minimal `ClipSnapshot` with just the fields needed
+    /// for transition-window math. The tests below don't render, so
+    /// most fields can be zero/default.
+    fn mk_clip(start: u64, end: u64) -> ClipSnapshot {
+        ClipSnapshot {
+            id: klipp_core::ClipId::new(),
+            kind: ClipKindSnapshot::Gap,
+            timeline_start_frame: start,
+            timeline_end_frame: end,
+            source_start_secs: 0.0,
+            source_end_secs: 1.0,
+            speed: 1.0,
+            node_graph: klipp_nodes::NodeGraph::default(),
+            effects: Vec::new(),
+            builtin_effects: Vec::new(),
+            source_rotation: 0,
+            stabilization_data: None,
+            smoothed_trajectory: None,
+            effect_keyframes: HashMap::new(),
+            audio_effect_keyframes: HashMap::new(),
+            opacity_keyframes: Vec::new(),
+            transform_pos_x_keyframes: Vec::new(),
+            transform_pos_y_keyframes: Vec::new(),
+            transform_scale_keyframes: Vec::new(),
+            transform_rotation_keyframes: Vec::new(),
+        }
+    }
+
+    /// Pin the alignment-aware transition-window calculation. The
+    /// pre-fix logic always treated the window as `[cut, cut+D)`,
+    /// which is correct for `StartAtCut` but wrong for `Center`
+    /// (the default — should be `[cut - D/2, cut + D/2)`) and for
+    /// `EndAtCut` (`[cut - D, cut)`). Mis-placement caused the export
+    /// path to miss every Center-aligned transition entirely.
+    #[test]
+    fn transition_window_respects_alignment() {
+        use klipp_core::TransitionAlignment;
+        let comp = FrameCompositor::new();
+
+        let mk = |alignment, cut: u64, dur: u64| -> (TransitionSnapshot, VideoTrackSnapshot) {
+            let a = mk_clip(cut.saturating_sub(100), cut);
+            let b = mk_clip(cut, cut + 100);
+            let trans = TransitionSnapshot {
+                id: klipp_core::TransitionId::new(),
+                clip_a_id: a.id,
+                clip_b_id: b.id,
+                kind: klipp_timeline::TransitionKind::CrossDissolve,
+                duration_frames: dur,
+                user_params: klipp_core::TransitionUserParams::default(),
+                alignment,
+            };
+            let track = VideoTrackSnapshot {
+                opacity: 1.0,
+                visible: true,
+                clips: vec![a, b],
+                transitions: vec![trans.clone()],
+            };
+            (trans, track)
+        };
+
+        // Center: cut=100, dur=20 → window [90, 110).
+        let (trans, track) = mk(TransitionAlignment::Center, 100, 20);
+        assert!(!comp.is_in_transition_region(89, &trans, &track));
+        assert!(comp.is_in_transition_region(90, &trans, &track), "Center should start at cut - D/2");
+        assert!(comp.is_in_transition_region(99, &trans, &track), "first half (clip_a active)");
+        assert!(comp.is_in_transition_region(100, &trans, &track), "the cut itself");
+        assert!(comp.is_in_transition_region(109, &trans, &track), "second half (clip_b active)");
+        assert!(!comp.is_in_transition_region(110, &trans, &track), "ends at cut + D/2");
+
+        // StartAtCut: cut=100, dur=20 → window [100, 120).
+        let (trans, track) = mk(TransitionAlignment::StartAtCut, 100, 20);
+        assert!(!comp.is_in_transition_region(99, &trans, &track));
+        assert!(comp.is_in_transition_region(100, &trans, &track));
+        assert!(comp.is_in_transition_region(119, &trans, &track));
+        assert!(!comp.is_in_transition_region(120, &trans, &track));
+
+        // EndAtCut: cut=100, dur=20 → window [80, 100).
+        let (trans, track) = mk(TransitionAlignment::EndAtCut, 100, 20);
+        assert!(!comp.is_in_transition_region(79, &trans, &track));
+        assert!(comp.is_in_transition_region(80, &trans, &track));
+        assert!(comp.is_in_transition_region(99, &trans, &track));
+        assert!(!comp.is_in_transition_region(100, &trans, &track));
+    }
+
+    /// Progress is computed relative to the alignment-aware window
+    /// start, not the cut. Center alignment with the playhead at the
+    /// cut should report ~0.5 (halfway through).
+    #[test]
+    fn transition_progress_is_window_relative() {
+        use klipp_core::TransitionAlignment;
+        let comp = FrameCompositor::new();
+        let a = mk_clip(0, 100);
+        let b = mk_clip(100, 200);
+        let trans = TransitionSnapshot {
+            id: klipp_core::TransitionId::new(),
+            clip_a_id: a.id,
+            clip_b_id: b.id,
+            kind: klipp_timeline::TransitionKind::CrossDissolve,
+            duration_frames: 20,
+            user_params: klipp_core::TransitionUserParams::default(),
+            alignment: TransitionAlignment::Center,
+        };
+        let track = VideoTrackSnapshot {
+            opacity: 1.0, visible: true,
+            clips: vec![a, b],
+            transitions: vec![trans.clone()],
+        };
+        // Window = [90, 110). Cut at 100 = halfway.
+        assert!((comp.transition_progress(90, &trans, &track) - 0.0).abs() < 0.05);
+        assert!((comp.transition_progress(100, &trans, &track) - 0.5).abs() < 0.05);
+        assert!((comp.transition_progress(109, &trans, &track) - 0.95).abs() < 0.06);
     }
 }

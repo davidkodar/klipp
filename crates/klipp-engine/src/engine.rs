@@ -6226,6 +6226,17 @@ impl PlaybackEngine {
         let active = crate::transition::find_active_transition(&seq, self.playhead);
         drop(seq);
 
+        // Make sure the GPU pipeline is up before we hit the
+        // hot blend path. `post_process_rgba` initialises it for
+        // every graded frame, but if the user hits a transition
+        // on a clip whose grade chain is empty (no node graph,
+        // no global LUT) post_process can early-return without
+        // calling `ensure_gpu_effects`, leaving us on the CPU
+        // pixel-loop fallback at 100+ ms / frame.
+        if active.is_some() {
+            self.ensure_gpu_effects();
+        }
+
         let active = match active {
             Some(a) => a,
             None => {
