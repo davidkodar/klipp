@@ -13165,6 +13165,154 @@ impl KlippApp {
                     .map(|id| (*clip_id, klipp_timeline::TitleObjectId(id)));
                 true
             }
+            AppCommand::AddTitleObject { clip_id, kind } => {
+                let old = self.snapshot_title(*clip_id);
+                let mut new_id: Option<klipp_timeline::TitleObjectId> = None;
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            // New objects ship at half-frame, centred,
+                            // so the user immediately sees them at a
+                            // sensible default position. Drag /
+                            // resize from there.
+                            let xform = klipp_timeline::ObjectTransform {
+                                center: klipp_timeline::TitlePosition { x: 0.5, y: 0.5 },
+                                size: klipp_timeline::TitlePosition { x: 0.5, y: 0.3 },
+                                rotation: 0.0,
+                                anchor_norm: klipp_timeline::TitlePosition { x: 0.5, y: 0.5 },
+                            };
+                            let content = match kind {
+                                1 => klipp_timeline::TitleObjectContent::Shape(
+                                    klipp_timeline::Shape {
+                                        kind: klipp_timeline::ShapeKind::Rectangle {
+                                            corner_radius: 0.0,
+                                        },
+                                        fill: Some([60, 60, 70, 220]),
+                                        stroke: None,
+                                    },
+                                ),
+                                _ => {
+                                    let mut tb = klipp_timeline::TextBox::default();
+                                    tb.text = "New Text".to_string();
+                                    klipp_timeline::TitleObjectContent::TextBox(tb)
+                                }
+                            };
+                            new_id = Some(td.add_object(content, xform));
+                        }
+                    }
+                }
+                if let Some(old) = old {
+                    self.push_title_undo(*clip_id, "Add Title Object", old);
+                }
+                if let Some(id) = new_id {
+                    self.state.selected_title_object = Some((*clip_id, id));
+                }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::DeleteTitleObject { clip_id, object_id } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.objects.retain(|o| o.id != target);
+                        }
+                    }
+                }
+                if let Some(old) = old {
+                    self.push_title_undo(*clip_id, "Delete Title Object", old);
+                }
+                if self.state.selected_title_object == Some((*clip_id, target)) {
+                    self.state.selected_title_object = None;
+                }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleObjectVisible { clip_id, object_id, visible } => {
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                o.visible = *visible;
+                            }
+                        }
+                    }
+                }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleObjectLocked { clip_id, object_id, locked } => {
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                o.locked = *locked;
+                            }
+                        }
+                    }
+                }
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::RenameTitleObject { clip_id, object_id, name } => {
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                o.name = name.clone();
+                            }
+                        }
+                    }
+                }
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::ReorderTitleObjects { clip_id, new_order } => {
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            // Pull objects out, drop them back in
+                            // the requested order; any object not in
+                            // `new_order` keeps its existing position
+                            // at the end (defensive vs partial races).
+                            let mut by_id: std::collections::HashMap<u32, klipp_timeline::TitleObject> =
+                                td.objects.drain(..).map(|o| (o.id.0, o)).collect();
+                            for id in new_order {
+                                if let Some(o) = by_id.remove(id) {
+                                    td.objects.push(o);
+                                }
+                            }
+                            // Append leftover objects (preserve their
+                            // existing relative order via id).
+                            let mut leftover: Vec<_> = by_id.into_values().collect();
+                            leftover.sort_by_key(|o| o.id.0);
+                            td.objects.extend(leftover);
+                        }
+                    }
+                }
+                if let Some(old) = old {
+                    self.push_title_undo(*clip_id, "Reorder Title Objects", old);
+                }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetTitleObjectTransform {
                 clip_id, object_id,
                 center_x, center_y, size_x, size_y,

@@ -1277,6 +1277,29 @@ pub enum AppCommand {
     /// Select a Title-object on the on-canvas editor. `object_id`
     /// = `None` deselects (reverts to clip-level transform handles).
     SelectTitleObject { clip_id: ClipId, object_id: Option<u32> },
+    /// Add a new object to the title's object stack. `kind`:
+    /// 0 = TextBox (default styling, "New Text" placeholder),
+    /// 1 = Shape (rectangle filling the centre of the frame).
+    /// The new object is appended at the top of the stack and
+    /// becomes the selected object so the user can immediately
+    /// drag / edit it.
+    AddTitleObject { clip_id: ClipId, kind: u8 },
+    /// Remove an object from a title. Selection clears if the
+    /// removed object was the active one.
+    DeleteTitleObject { clip_id: ClipId, object_id: u32 },
+    /// Toggle the eye-icon visibility flag on an object.
+    SetTitleObjectVisible { clip_id: ClipId, object_id: u32, visible: bool },
+    /// Toggle the lock flag on an object — locked objects are
+    /// skipped on canvas hit-test and resist on-canvas drag, but
+    /// remain editable from the Inspector.
+    SetTitleObjectLocked { clip_id: ClipId, object_id: u32, locked: bool },
+    /// Rename the layer-list label for an object.
+    RenameTitleObject { clip_id: ClipId, object_id: u32, name: String },
+    /// Reorder objects in the stack. `new_order` is the full list
+    /// of object ids in the new back→front order; ids missing from
+    /// the list are left at the end in their existing relative order
+    /// (defensive against partial-update races).
+    ReorderTitleObjects { clip_id: ClipId, new_order: Vec<u32> },
     /// Same as SetTitleObjectTransform but also updates the primary
     /// TextBox's font_size — used by the corner-handle drag where
     /// the pro-NLE convention is "scale the font, not just the box".

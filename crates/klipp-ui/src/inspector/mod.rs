@@ -6,6 +6,7 @@ pub mod effects_tab;
 pub mod info_tab;
 pub mod modifier_ui;
 
+use crate::icons::Icon;
 use crate::layout_state::InspectorTab;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -413,6 +414,251 @@ fn font_style_to_u8(style: klipp_timeline::FontStyle) -> u8 {
     }
 }
 
+/// Draw the Layers panel: a Photoshop-style stack of objects, with
+/// visibility / lock toggles, click-to-select, and a delete button.
+/// Plus an "Add Text" / "Add Shape" footer to spawn new objects.
+/// The list paints back-to-front so the topmost row in the UI is
+/// the topmost rendered layer (matches the convention from FCP /
+/// AE / Premiere Essential Graphics).
+fn show_title_layers_panel(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: klipp_core::ClipId,
+    td: &klipp_timeline::TitleData,
+    state: &AppState,
+    cmds: &mut Vec<AppCommand>,
+) {
+    use klipp_timeline::TitleObjectContent;
+    let selected_oid = state.selected_title_object
+        .filter(|(c, _)| *c == clip_id)
+        .map(|(_, oid)| oid);
+
+    // Iterate top-down (last in objects = front layer = top of list).
+    let total = td.objects.len();
+    egui::Frame::none()
+        .fill(theme.bg_panel)
+        .stroke(egui::Stroke::new(1.0_f32, theme.border))
+        .rounding(4.0)
+        .inner_margin(egui::Margin::symmetric(4.0, 4.0))
+        .show(ui, |ui| {
+            if total == 0 {
+                ui.label(
+                    egui::RichText::new("No layers — add one below.")
+                        .size(10.0)
+                        .color(theme.text_dim),
+                );
+            }
+            // We render reversed so the visual top of the list is
+            // the front of the stack (last element of `td.objects`).
+            for (rev_idx, obj) in td.objects.iter().enumerate().rev() {
+                let is_selected = Some(obj.id) == selected_oid;
+                let row_h = 22.0;
+                let (rect, resp) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), row_h),
+                    egui::Sense::click(),
+                );
+                let hovered = resp.hovered();
+                if is_selected {
+                    ui.painter().rect_filled(rect, 3.0, theme.accent_subtle);
+                } else if hovered {
+                    ui.painter().rect_filled(rect, 3.0, theme.bg_raised);
+                }
+                if resp.clicked() {
+                    cmds.push(AppCommand::SelectTitleObject {
+                        clip_id,
+                        object_id: Some(obj.id.0),
+                    });
+                }
+
+                let mut x = rect.min.x + 6.0;
+                let icon_size = 14.0;
+                let icon_y = rect.center().y - icon_size * 0.5;
+
+                // Eye toggle.
+                let eye_rect = egui::Rect::from_min_size(
+                    egui::pos2(x, icon_y),
+                    egui::vec2(icon_size, icon_size),
+                );
+                let eye_resp = ui.interact(
+                    eye_rect,
+                    ui.id().with(("title_layer_eye", obj.id.0)),
+                    egui::Sense::click(),
+                );
+                let eye_icon = if obj.visible { Icon::Eye } else { Icon::EyeSlash };
+                let eye_tint = if obj.visible {
+                    theme.text_secondary
+                } else {
+                    theme.text_dim
+                };
+                ui.allocate_new_ui(
+                    egui::UiBuilder::new().max_rect(eye_rect),
+                    |ui| {
+                        ui.add(eye_icon.image(icon_size).tint(eye_tint));
+                    },
+                );
+                if eye_resp.clicked() {
+                    cmds.push(AppCommand::SetTitleObjectVisible {
+                        clip_id,
+                        object_id: obj.id.0,
+                        visible: !obj.visible,
+                    });
+                }
+                x += icon_size + 4.0;
+
+                // Lock toggle.
+                let lock_rect = egui::Rect::from_min_size(
+                    egui::pos2(x, icon_y),
+                    egui::vec2(icon_size, icon_size),
+                );
+                let lock_resp = ui.interact(
+                    lock_rect,
+                    ui.id().with(("title_layer_lock", obj.id.0)),
+                    egui::Sense::click(),
+                );
+                let lock_icon = if obj.locked { Icon::Lock } else { Icon::LockOpen };
+                let lock_tint = if obj.locked {
+                    theme.accent
+                } else {
+                    theme.text_dim
+                };
+                ui.allocate_new_ui(
+                    egui::UiBuilder::new().max_rect(lock_rect),
+                    |ui| {
+                        ui.add(lock_icon.image(icon_size).tint(lock_tint));
+                    },
+                );
+                if lock_resp.clicked() {
+                    cmds.push(AppCommand::SetTitleObjectLocked {
+                        clip_id,
+                        object_id: obj.id.0,
+                        locked: !obj.locked,
+                    });
+                }
+                x += icon_size + 6.0;
+
+                // Layer name + kind tag.
+                let kind_tag = match &obj.content {
+                    TitleObjectContent::TextBox(_) => "T",
+                    TitleObjectContent::Shape(_) => "S",
+                };
+                let display_name = if obj.name.is_empty() {
+                    match &obj.content {
+                        TitleObjectContent::TextBox(tb) => {
+                            let trimmed = tb.text.lines().next().unwrap_or("").trim();
+                            if trimmed.is_empty() {
+                                format!("Text {}", obj.id.0 + 1)
+                            } else if trimmed.chars().count() > 24 {
+                                format!("{}\u{2026}", trimmed.chars().take(22).collect::<String>())
+                            } else {
+                                trimmed.to_string()
+                            }
+                        }
+                        TitleObjectContent::Shape(_) => format!("Shape {}", obj.id.0 + 1),
+                    }
+                } else {
+                    obj.name.clone()
+                };
+                let label_color = if is_selected {
+                    theme.text_primary
+                } else if obj.visible {
+                    theme.text_secondary
+                } else {
+                    theme.text_dim
+                };
+                ui.painter().text(
+                    egui::pos2(x, rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    format!("[{kind_tag}] {display_name}"),
+                    egui::FontId::proportional(11.0),
+                    label_color,
+                );
+
+                // Trailing info: position in stack ("Front" / "Back" /
+                // "N of T") so the user can tell at a glance where in
+                // the order this layer sits.
+                let stack_label = if rev_idx + 1 == total {
+                    "Front".to_string()
+                } else if rev_idx == 0 {
+                    "Back".to_string()
+                } else {
+                    format!("{}/{}", rev_idx + 1, total)
+                };
+
+                // Trailing: stack position then delete button.
+                let del_size = 16.0;
+                let del_rect = egui::Rect::from_min_size(
+                    egui::pos2(rect.max.x - del_size - 6.0, rect.center().y - del_size * 0.5),
+                    egui::vec2(del_size, del_size),
+                );
+                let del_resp = ui.interact(
+                    del_rect,
+                    ui.id().with(("title_layer_del", obj.id.0)),
+                    egui::Sense::click(),
+                );
+                let del_tint = if del_resp.hovered() {
+                    egui::Color32::from_rgb(220, 70, 70)
+                } else {
+                    theme.text_dim
+                };
+                ui.allocate_new_ui(
+                    egui::UiBuilder::new().max_rect(del_rect),
+                    |ui| {
+                        ui.add(Icon::XCircle.image(del_size).tint(del_tint));
+                    },
+                );
+                if del_resp.clicked() {
+                    cmds.push(AppCommand::DeleteTitleObject {
+                        clip_id,
+                        object_id: obj.id.0,
+                    });
+                }
+
+                let stack_galley = ui.painter().layout_no_wrap(
+                    stack_label,
+                    egui::FontId::monospace(9.5),
+                    theme.text_dim,
+                );
+                ui.painter().galley(
+                    egui::pos2(
+                        del_rect.min.x - stack_galley.size().x - 8.0,
+                        rect.center().y - stack_galley.size().y * 0.5,
+                    ),
+                    stack_galley,
+                    theme.text_dim,
+                );
+            }
+        });
+
+    // ── Add buttons ──
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        if ui
+            .add(
+                egui::Button::new(
+                    egui::RichText::new("\u{002B} Text").size(11.0).color(theme.text_primary),
+                )
+                .fill(theme.bg_raised),
+            )
+            .on_hover_text("Add a new TextBox layer")
+            .clicked()
+        {
+            cmds.push(AppCommand::AddTitleObject { clip_id, kind: 0 });
+        }
+        if ui
+            .add(
+                egui::Button::new(
+                    egui::RichText::new("\u{002B} Shape").size(11.0).color(theme.text_primary),
+                )
+                .fill(theme.bg_raised),
+            )
+            .on_hover_text("Add a new Shape layer (rectangle)")
+            .clicked()
+        {
+            cmds.push(AppCommand::AddTitleObject { clip_id, kind: 1 });
+        }
+    });
+}
+
 fn show_title_editor(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -498,6 +744,19 @@ fn show_title_editor(
             ui.add_space(4.0);
         }
     }
+
+    // ── Layers panel ──
+    // Shows every object in the title (back → front), with
+    // visibility / lock toggles, click-to-select, delete. This is
+    // the primary entry point to multi-object titles — the user
+    // adds new TextBox / Shape layers here and switches between
+    // them. Selection feeds `state.selected_title_object`, which
+    // both the inspector and the on-canvas editor share.
+    ui.label(egui::RichText::new("Layers").strong().size(11.0));
+    ui.add_space(4.0);
+    show_title_layers_panel(ui, theme, clip_id, td, state, cmds);
+    ui.separator();
+    ui.add_space(4.0);
 
     // Text preview (read-only) — editing happens in the viewer (double-click)
     ui.label(egui::RichText::new("Text").strong().size(11.0));
