@@ -314,25 +314,62 @@ impl TitleRenderer {
             klipp_timeline::TextCase::Lowercase => tb.text.to_lowercase(),
         };
 
+        // Drop cap: synthesise a one-character segment at the head
+        // of the laid-out text when `drop_cap_scale >= 1.0`. The
+        // first character renders at `font_px * drop_cap_scale` so a
+        // 3.0 scale gives a "three-line drop initial" — the body
+        // text continues at the same baseline (true wrap-under is a
+        // future addition).
+        let drop_cap_active = tb.drop_cap_scale >= 1.0 && !resolved_text.is_empty();
+        let drop_cap_byte_end = if drop_cap_active {
+            // The byte length of the first char (1 for ASCII, 2-4 for
+            // multibyte). chars().next() is None only when text is
+            // empty, which we already excluded above.
+            resolved_text.chars().next().unwrap().len_utf8()
+        } else { 0 };
+        let body_start = drop_cap_byte_end;
+
         // Append text with per-run font sizes when style runs exist.
         // Track (glyph_count_before, segment_byte_start) for byte_offset fixup.
         let mut segment_info: Vec<(usize, usize)> = Vec::new();
 
-        if tb.style_runs.is_empty() {
+        // Lay out the drop cap as its own segment first so its
+        // metrics propagate naturally into fontdue's layout (the
+        // following segment continues from the drop cap's right
+        // edge).
+        if drop_cap_active {
+            let cap_text = &resolved_text[..drop_cap_byte_end];
+            let cap_size = font_px * tb.drop_cap_scale;
             segment_info.push((0, 0));
-            layout.append(&[font], &TextStyle::new(&resolved_text, font_px, 0));
+            layout.append(&[font], &TextStyle::new(cap_text, cap_size, 0));
+        }
+
+        if tb.style_runs.is_empty() {
+            if !drop_cap_active {
+                segment_info.push((0, 0));
+                layout.append(&[font], &TextStyle::new(&resolved_text, font_px, 0));
+            } else if body_start < resolved_text.len() {
+                segment_info.push((layout.glyphs().len(), body_start));
+                layout.append(&[font], &TextStyle::new(&resolved_text[body_start..], font_px, 0));
+            }
         } else {
-            let mut pos = 0usize;
+            // Style runs cover the body text from `body_start`
+            // onwards (the drop cap, if active, was laid out above).
+            // Run boundaries are clamped against `body_start` so a
+            // run that overlaps the drop cap collapses to its
+            // post-cap remainder.
+            let mut pos = body_start;
             for run in &tb.style_runs {
-                if run.start > pos && run.start <= resolved_text.len() {
-                    let segment = &resolved_text[pos..run.start];
+                let run_start = run.start.max(body_start);
+                let run_end = run.end.max(body_start).min(resolved_text.len());
+                if run_start > pos && run_start <= resolved_text.len() {
+                    let segment = &resolved_text[pos..run_start];
                     if !segment.is_empty() {
                         segment_info.push((layout.glyphs().len(), pos));
                         layout.append(&[font], &TextStyle::new(segment, font_px, 0));
                     }
-                    pos = run.start;
+                    pos = run_start;
                 }
-                let run_end = run.end.min(resolved_text.len());
                 if run_end > pos {
                     let segment = &resolved_text[pos..run_end];
                     let run_size = run.font_size.unwrap_or(tb.font_size) * scale * case_scale;
@@ -2816,6 +2853,34 @@ mod tests {
         let line2_first = positions.iter().find(|p| p.char_index == 6).unwrap(); // 'L' of Line2
         assert!(line2_first.y > line1_y + 5.0,
             "Line2 y ({}) should be below Line1 y ({})", line2_first.y, line1_y);
+    }
+
+    /// Drop cap must enlarge the first character in the rendered
+    /// output — the alpha mask should grow taller (the drop cap
+    /// extends above the body's cap height).
+    #[test]
+    fn drop_cap_enlarges_first_character() {
+        let mut renderer = TitleRenderer::new();
+        let mk = |scale: f32| {
+            let mut tb = klipp_timeline::TextBox::default();
+            tb.text = "Lorem ipsum".to_string();
+            tb.font_size = 50.0;
+            tb.drop_cap_scale = scale;
+            klipp_timeline::TitleData::single_text(tb)
+        };
+        let plain = renderer.render_layout(&mk(0.0), 1920, 1080);
+        let with_cap = renderer.render_layout(&mk(3.0), 1920, 1080);
+        // The drop-capped layout should have a taller mask (taller
+        // first char extends below the body baseline) and more
+        // visible coverage than the plain version.
+        assert!(
+            with_cap.mask_h > plain.mask_h,
+            "Drop cap should enlarge the layout mask. plain.mask_h={} with_cap.mask_h={}",
+            plain.mask_h, with_cap.mask_h
+        );
+        // Below 1.0 disables — equivalent to no drop cap.
+        let off = renderer.render_layout(&mk(0.5), 1920, 1080);
+        assert_eq!(off.mask_h, plain.mask_h, "drop_cap_scale<1.0 should disable");
     }
 
     /// ColorCycle must change the rendered colour over time even

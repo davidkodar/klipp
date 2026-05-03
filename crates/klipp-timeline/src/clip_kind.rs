@@ -317,6 +317,17 @@ pub struct TextBox {
     /// a bar background.
     #[serde(default)]
     pub baseline_shift: f32,
+    /// Drop-cap scale factor for the first character of `text`.
+    /// `0.0` (default) = no drop cap. `>= 1.0` = enlarge the first
+    /// character by this factor; e.g. 3.0 = three-line drop cap (the
+    /// classic graphic-design "drop initial"). Implementation is a
+    /// per-character font-size override on the first glyph, layered
+    /// on top of any user-authored `style_runs`. Body text wrap is
+    /// NOT yet aware of the drop cap's bounds — the body flows on
+    /// the same baseline; future work will lay out the body around
+    /// the drop cap's box for true wrap-under behaviour.
+    #[serde(default)]
+    pub drop_cap_scale: f32,
 }
 
 /// Pre-layout case transform applied to `TextBox.text` before glyphs
@@ -362,6 +373,7 @@ impl Default for TextBox {
             strikethrough: false,
             case_transform: TextCase::None,
             baseline_shift: 0.0,
+            drop_cap_scale: 0.0,
         }
     }
 }
@@ -593,6 +605,9 @@ impl TitleData {
     pub fn baseline_shift(&self) -> f32 {
         self.primary_text().map_or(0.0, |tb| tb.baseline_shift)
     }
+    pub fn drop_cap_scale(&self) -> f32 {
+        self.primary_text().map_or(0.0, |tb| tb.drop_cap_scale)
+    }
     pub fn style_runs(&self) -> Vec<StyleRun> {
         self.primary_text().map(|tb| tb.style_runs.clone()).unwrap_or_default()
     }
@@ -702,6 +717,14 @@ pub enum TitleAnimationType {
     /// are taken from the resting fill colour. Primary use cases
     /// are music-video titles, party invites, kids' content.
     ColorCycle { rate_hz: f32 },
+    /// Continuous looping horizontal scroll — the title travels
+    /// across the frame and instantly re-enters from the opposite
+    /// edge, repeating for the entire clip duration. Distinct from
+    /// CrawlLeft / CrawlRight, which are one-shot (text exits the
+    /// frame and is gone). `speed_px_per_sec` drives travel speed
+    /// in 1080p reference pixels; positive = right→left (newsroom
+    /// ticker direction), negative = left→right.
+    Marquee { speed_px_per_sec: f32 },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]

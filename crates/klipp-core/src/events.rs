@@ -1365,6 +1365,10 @@ pub enum AppCommand {
     /// shifts text DOWN). Resolution-stable: scales with frame height
     /// at render time.
     SetTitleBaselineShift { clip_id: ClipId, shift_px: f32 },
+    /// Drop-cap scale factor for the first character. `0.0` = off,
+    /// `>= 1.0` = enlarge first char by this factor (3.0 = three-line
+    /// drop initial). Body text continues at the same baseline.
+    SetTitleDropCap { clip_id: ClipId, scale: f32 },
     /// Set 3D text extrusion. `enabled=false` = disable.
     SetTitleExtrusion { clip_id: ClipId, enabled: bool, depth: f32, angle: f32, face_color: [u8; 4], side_color: [u8; 4], lighting: f32 },
     /// Set text path. path_kind: 0=None, 1=Arc, 2=Circle, 3=Wave.

@@ -2535,6 +2535,13 @@ fn apply_animation_type(
             // and export apply the full hue rotation.
             (text.to_string(), base_pos, 1.0, 1.0)
         }
+        TitleAnimationType::Marquee { .. } => {
+            // Looping right→left scroll. The fractional part of t
+            // gives a fresh sweep each loop.
+            let t_loop = t.rem_euclid(1.0);
+            let dx = rect.width() * 0.5 - rect.width() * t_loop;
+            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y), 1.0, 1.0)
+        }
     }
 }
 

@@ -641,6 +641,7 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     strikethrough: false,
                     case_transform: klipp_timeline::TextCase::None,
                     baseline_shift: 0.0,
+                    drop_cap_scale: 0.0,
                 };
                 let mut td = klipp_timeline::TitleData::single_text(tb);
                 if let Some(obj) = td.objects.first_mut() {

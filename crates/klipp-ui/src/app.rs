@@ -13139,6 +13139,27 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleDropCap { clip_id, scale } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                // 0..0.999 collapses to off — the
+                                // renderer ignores anything below 1.0.
+                                tb.drop_cap_scale = if *scale < 1.0 { 0.0 } else { (*scale).min(8.0) };
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Drop Cap", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetTitleBaselineShift { clip_id, shift_px } => {
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_text_target_id(*clip_id);
@@ -29451,6 +29472,7 @@ fn decode_title_animation(kind: u8, speed: f32, param2: f32) -> klipp_timeline::
         20 => T::Wave { amplitude_px: speed, rate_hz: param2 },
         21 => T::Shake { amplitude_px: speed, rate_hz: param2 },
         22 => T::ColorCycle { rate_hz: speed },
+        23 => T::Marquee { speed_px_per_sec: speed },
         _ => T::Static,
     }
 }
@@ -29775,6 +29797,49 @@ fn apply_title_animation_keyframes(
             // keyframes to write. The clear-all at the top of this
             // function already wiped any leftover keyframes from a
             // previous variant.
+        }
+        T::Marquee { speed_px_per_sec } => {
+            // Sawtooth pos_x keyframes: linear ramp from +offset
+            // (off-screen-right) to -offset (off-screen-left), then
+            // a Step jump back to +offset, then ramp again. The Step
+            // interpolation gives the instant snap-back without a
+            // visible interpolated traversal across the frame.
+            //
+            // `speed_px_per_sec` is the *travel* speed; sign chooses
+            // direction (positive = right→left, the newsroom ticker
+            // default). speed = 0 falls back to clip-bounded auto.
+            let travel = (2.0 * crawl_offset) as f64;
+            let signed_speed = (*speed_px_per_sec).abs() as f64;
+            let direction: f32 = if *speed_px_per_sec >= 0.0 { 1.0 } else { -1.0 };
+            let cycle_secs = if signed_speed <= 0.001 {
+                clip_dur_secs.max(0.001)
+            } else {
+                (travel / signed_speed).max(0.001)
+            };
+            let mut kfs = Vec::new();
+            let mut t = 0.0;
+            while t < clip_dur_secs - 1e-6 {
+                let cycle_end = (t + cycle_secs).min(clip_dur_secs);
+                kfs.push(mk_linear_kf(t, direction * crawl_offset));
+                if cycle_end < clip_dur_secs {
+                    // Linear ramp to the far edge, then snap back.
+                    kfs.push(Keyframe {
+                        time_secs: cycle_end,
+                        value: -direction * crawl_offset,
+                        interpolation: Interpolation::Step,
+                        tangent_out: (0.0, 0.0),
+                        tangent_in: (0.0, 0.0),
+                    });
+                } else {
+                    // Last (possibly partial) cycle — no snap-back
+                    // since the clip ends here.
+                    let traversed = (cycle_end - t) / cycle_secs;
+                    let end_x = direction * (crawl_offset - travel as f32 * traversed as f32);
+                    kfs.push(mk_linear_kf(cycle_end, end_x));
+                }
+                t = cycle_end;
+            }
+            clip.transform_pos_x_keyframes = kfs;
         }
         T::Shake { amplitude_px, rate_hz } => {
             // Pseudo-random jitter via a deterministic LCG so the
@@ -30204,6 +30269,8 @@ Dialogue: 0,0:00:09.00,0:00:11.00,Default,,0,0,0,,Text, with commas, inside
         assert_eq!(decode_title_animation(19, 0.5, 0.0), T::BounceIn { duration_secs: 0.5 });
         assert_eq!(decode_title_animation(20, 20.0, 1.0), T::Wave { amplitude_px: 20.0, rate_hz: 1.0 });
         assert_eq!(decode_title_animation(21, 10.0, 12.0), T::Shake { amplitude_px: 10.0, rate_hz: 12.0 });
+        assert_eq!(decode_title_animation(22, 0.5, 0.0), T::ColorCycle { rate_hz: 0.5 });
+        assert_eq!(decode_title_animation(23, 200.0, 0.0), T::Marquee { speed_px_per_sec: 200.0 });
         // Unknown → Static (defensive)
         assert_eq!(decode_title_animation(99, 0.0, 0.0), T::Static);
     }
@@ -30490,6 +30557,43 @@ Dialogue: 0,0:00:09.00,0:00:11.00,Default,,0,0,0,,Text, with commas, inside
             clip.transform_pos_y_keyframes.len(),
             "Shake should produce matching X / Y keyframe counts"
         );
+    }
+
+    /// Marquee writes pos_x keyframes covering the full clip
+    /// duration with at least one Step jump per cycle (the snap-back
+    /// from off-screen-left to off-screen-right).
+    #[test]
+    fn apply_title_animation_keyframes_marquee_writes_looping_pos_x() {
+        use klipp_core::{Interpolation, RationalTime};
+        use klipp_timeline::TitleAnimationType;
+        let ti = RationalTime::from_secs_f64(0.0, 24);
+        let to = RationalTime::from_secs_f64(8.0, 24);
+        let mut clip = klipp_timeline::Clip::gap(ti, to);
+        clip.timeline_in = ti;
+        clip.timeline_out = to;
+        // 8s clip, ~3840 px traversal at 1080p (offset≈1920+text), at
+        // 200 px/s = ~19s per cycle → less than one full cycle in
+        // the clip duration.
+        let anim = TitleAnimationType::Marquee { speed_px_per_sec: 200.0 };
+        apply_title_animation_keyframes(&mut clip, &anim, 1080.0, 1920.0);
+        assert!(!clip.transform_pos_x_keyframes.is_empty(),
+            "Marquee should write pos_x keyframes");
+        // Last keyframe lands at or past clip end.
+        let last_t = clip.transform_pos_x_keyframes.last().unwrap().time_secs;
+        assert!(last_t >= 8.0 - 0.01, "Last keyframe should reach clip end, got {last_t}");
+        // Higher speed → multiple cycles → at least one Step jump.
+        let mut clip_fast = klipp_timeline::Clip::gap(ti, to);
+        clip_fast.timeline_in = ti;
+        clip_fast.timeline_out = to;
+        apply_title_animation_keyframes(
+            &mut clip_fast,
+            &TitleAnimationType::Marquee { speed_px_per_sec: 2000.0 },
+            1080.0, 1920.0,
+        );
+        let step_count = clip_fast.transform_pos_x_keyframes.iter()
+            .filter(|k| k.interpolation == Interpolation::Step)
+            .count();
+        assert!(step_count >= 1, "Fast marquee should include at least one Step snap-back");
     }
 
     /// Switching from a previous animation back to Static must clear

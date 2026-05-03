@@ -1749,6 +1749,31 @@ fn show_title_editor(
     ).changed() {
         cmds.push(AppCommand::SetTitleBaselineShift { clip_id, shift_px: baseline });
     }
+    {
+        // Drop cap scale: 0 = off, >=1 enlarges first character.
+        // Surface as a normal numeric drag clamped to a useful
+        // range; the handler folds anything below 1.0 back to 0.0
+        // so an off→on→off toggle is a single drag.
+        let mut dc = td.drop_cap_scale();
+        let resp = ui.add(
+            egui::DragValue::new(&mut dc)
+                .range(0.0..=8.0)
+                .speed(0.05)
+                .fixed_decimals(2)
+                .prefix("Drop cap: ")
+                .custom_formatter(|n, _| {
+                    if n < 1.0 { "off".to_string() } else { format!("{n:.2}\u{00d7}") }
+                })
+                .custom_parser(|s| {
+                    let t = s.trim().to_lowercase();
+                    if t == "off" || t.is_empty() { Some(0.0) }
+                    else { t.trim_end_matches('×').trim_end_matches("x").trim().parse::<f64>().ok() }
+                }),
+        );
+        if resp.changed() {
+            cmds.push(AppCommand::SetTitleDropCap { clip_id, scale: dc });
+        }
+    }
     ui.horizontal(|ui| {
         let mut underline = td.underline();
         if ui.checkbox(&mut underline, "Underline").changed() {
@@ -1962,6 +1987,7 @@ fn show_title_editor(
             T::Wave { .. } => 20,
             T::Shake { .. } => 21,
             T::ColorCycle { .. } => 22,
+            T::Marquee { .. } => 23,
         };
         let kind_label = |k: u8| -> &'static str {
             match k {
@@ -1988,6 +2014,7 @@ fn show_title_editor(
                 20 => "Wave (continuous)",
                 21 => "Shake (continuous)",
                 22 => "Colour Cycle (continuous)",
+                23 => "Marquee (continuous loop)",
                 _ => "Static (no animation)",
             }
         };
@@ -2010,6 +2037,7 @@ fn show_title_editor(
                 20 => (20.0, 1.0),               // Wave 20px @ 1Hz
                 21 => (10.0, 12.0),              // Shake 10px @ 12Hz
                 22 => (0.5, 0.0),                // ColorCycle 0.5 Hz hue rotation
+                23 => (200.0, 0.0),              // Marquee 200 px/s
                 _ => (0.0, 0.0),
             }
         };
@@ -2059,6 +2087,9 @@ fn show_title_editor(
                     ui.separator();
                     ui.label(egui::RichText::new("Colour").size(10.0).color(theme.text_dim));
                     ui.selectable_value(&mut selected, 22, kind_label(22));
+                    ui.separator();
+                    ui.label(egui::RichText::new("Looping").size(10.0).color(theme.text_dim));
+                    ui.selectable_value(&mut selected, 23, kind_label(23));
                 });
         });
         if selected != current_kind {
@@ -2243,6 +2274,30 @@ fn show_title_editor(
                         });
                     }
                 });
+            }
+            T::Marquee { speed_px_per_sec } => {
+                let mut v = *speed_px_per_sec;
+                ui.horizontal(|ui| {
+                    ui.label("Speed:");
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut v)
+                            .range(-2000.0..=2000.0)
+                            .speed(2.0)
+                            .min_decimals(0)
+                            .max_decimals(0)
+                            .suffix(" px/s"),
+                    );
+                    if resp.changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: 23, speed: v, param2: 0.0,
+                        });
+                    }
+                });
+                ui.label(
+                    egui::RichText::new("Positive = right \u{2192} left, negative = left \u{2192} right")
+                        .size(10.0)
+                        .color(theme.text_dim),
+                );
             }
             T::ColorCycle { rate_hz } => {
                 let mut v = *rate_hz;
