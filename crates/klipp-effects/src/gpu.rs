@@ -6064,15 +6064,35 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     sx = sx + params.anchor_x;
     sy = sy + params.anchor_y;
 
-    let src_x = i32(round(sx));
-    let src_y = i32(round(sy));
+    // Bilinear sample — same reasoning as the CPU path in
+    // klipp-effects/src/transform.rs: nearest-neighbour quantises
+    // sub-pixel motion to integer steps and produces a low-rate
+    // stutter on slow scrolls (credits, slides, ticker crawls).
+    // Storage buffers are linear-f32 here, so the lerp is in
+    // linear light — cleaner than the CPU path's sRGB approximation.
+    let x0 = i32(floor(sx));
+    let y0 = i32(floor(sy));
+    let x1 = x0 + 1;
+    let y1 = y0 + 1;
+    let fx = sx - f32(x0);
+    let fy = sy - f32(y0);
 
-    if src_x >= 0 && src_x < i32(params.width) && src_y >= 0 && src_y < i32(params.height) {
-        let src_idx = u32(src_y) * params.width + u32(src_x);
-        output[idx] = input[src_idx];
-    } else {
-        output[idx] = vec4<f32>(0.0);
+    let p00 = sample_pixel(x0, y0);
+    let p10 = sample_pixel(x1, y0);
+    let p01 = sample_pixel(x0, y1);
+    let p11 = sample_pixel(x1, y1);
+
+    let top = mix(p00, p10, fx);
+    let bot = mix(p01, p11, fx);
+    output[idx] = mix(top, bot, fy);
+}
+
+fn sample_pixel(x: i32, y: i32) -> vec4<f32> {
+    if x < 0 || y < 0 || x >= i32(params.width) || y >= i32(params.height) {
+        return vec4<f32>(0.0);
     }
+    let src_idx = u32(y) * params.width + u32(x);
+    return input[src_idx];
 }
 "
 );
