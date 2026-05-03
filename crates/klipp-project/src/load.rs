@@ -6,8 +6,8 @@ use crate::path_util::{
 use klipp_core::*;
 use klipp_media::{MediaItem, MediaItemKind, MediaPool};
 use klipp_timeline::{
-    Clip, ClipKind, FontStyle, Look, Sequence, TextAlignment, TitleBackground, TitleData,
-    TitlePosition, TitleShadow, Track, TrackKind,
+    Clip, ClipKind, FontStyle, Look, Sequence, TextAlignment, TitleBackground, TitlePosition,
+    TitleShadow, Track, TrackKind,
 };
 use klipp_nodes::{NodeGraph, NodeKind, NodeId};
 use std::collections::HashMap;

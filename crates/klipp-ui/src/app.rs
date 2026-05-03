@@ -13061,16 +13061,26 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            // Resolve the target TextBox up-front so
+                            // both the special-case branch and the
+                            // range-apply path mutate the *real*
+                            // style_runs (`td.style_runs()` is a
+                            // by-value accessor — mutating its
+                            // return value would no-op).
+                            let tb = match target_textbox_mut(td, target_oid) {
+                                Some(tb) => tb,
+                                None => continue,
+                            };
                             // Special: clear_all removes all style runs
                             if property == "clear_all" {
-                                td.style_runs().clear();
+                                tb.style_runs.clear();
                                 break;
                             }
-                            let text_len = td.text().len();
+                            let text_len = tb.text.len();
                             let prop = property.as_str();
                             let val = value.as_str();
                             klipp_timeline::apply_style_to_range(
-                                &mut td.style_runs(),
+                                &mut tb.style_runs,
                                 text_len,
                                 *range_start,
                                 *range_end,
@@ -13121,7 +13131,9 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            td.style_runs().clear();
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                tb.style_runs.clear();
+                            }
                         }
                     }
                 }
@@ -13180,7 +13192,20 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(o) = td.objects.first_mut() {
+                            // Position edits target the selected
+                            // object's transform when there's a
+                            // text-object selection; fall back to
+                            // the first object so legacy single-
+                            // text titles keep working. Resolved
+                            // via index to keep one borrow alive at
+                            // a time (the closure-chain version
+                            // confused the borrow checker).
+                            let idx = match target_oid {
+                                Some(oid) => td.objects.iter()
+                                    .position(|o| o.id == oid),
+                                None => None,
+                            }.unwrap_or(0);
+                            if let Some(o) = td.objects.get_mut(idx) {
                                 o.transform.center = klipp_timeline::TitlePosition { x: *x, y: *y };
                             }
                         }
@@ -13315,7 +13340,6 @@ impl KlippApp {
             }
             AppCommand::ReorderTitleObjects { clip_id, new_order } => {
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -13539,7 +13563,6 @@ impl KlippApp {
         match cmd {
             AppCommand::SetTitleBackground { clip_id, bg_kind, color } => {
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {

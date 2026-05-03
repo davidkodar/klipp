@@ -966,7 +966,6 @@ impl TitleRenderer {
     /// dimensions. On hit, moves the entry to the front of the LRU
     /// (most-recently-used end) and returns a memcpy of the buffer.
     fn cache_lookup(&mut self, title: &TitleData, width: u32, height: u32) -> Option<Vec<u8>> {
-        let tb = title.primary_text_or_default();
         let pos = self.render_cache.iter().position(|c| {
             c.width == width && c.height == height && &c.title == title
         })?;

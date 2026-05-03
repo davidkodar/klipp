@@ -59,28 +59,27 @@ struct TitleTemplate {
 
 /// Centered title with optional shadow.
 fn centered(text: &str, size: f32, style: FontStyle, color: [u8; 4], shadow: bool) -> TitleData {
-    {
     let mut tb = klipp_timeline::TextBox::default();
     tb.text = text.into();
     tb.font_size = size;
     tb.font_name = "sans-serif".into();
     tb.font_style = style;
+    tb.color = color;
     tb.alignment = TextAlignment::Center;
     tb.shadow = if shadow {
-            Some(TitleShadow { color: [0, 0, 0, 160], offset_x: 3.0, offset_y: 3.0, blur: 6.0 })
-        } else {
-            None
-        };
+        Some(TitleShadow { color: [0, 0, 0, 160], offset_x: 3.0, offset_y: 3.0, blur: 6.0 })
+    } else {
+        None
+    };
     let mut td = klipp_timeline::TitleData::single_text(tb);
-    td.background = TitleBackground::None;
-    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.5 }; }
+    if let Some(o) = td.objects.first_mut() {
+        o.transform.center = TitlePosition { x: 0.5, y: 0.5 };
+    }
     td
-}
 }
 
 /// Centered on a full-frame background.
 fn centered_on_bg(text: &str, size: f32, style: FontStyle, fg: [u8; 4], bg: [u8; 4]) -> TitleData {
-    {
     let mut tb = klipp_timeline::TextBox::default();
     tb.text = text.into();
     tb.font_size = size;
@@ -88,17 +87,13 @@ fn centered_on_bg(text: &str, size: f32, style: FontStyle, fg: [u8; 4], bg: [u8;
     tb.font_style = style;
     tb.color = fg;
     tb.alignment = TextAlignment::Center;
-    tb.shadow = None;
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::FullFrame { color: bg };
-    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.5 }; }
     td
-}
 }
 
 /// Lower-third style: left-aligned near bottom, with box background.
 fn lower_third_style(text: &str, size: f32, style: FontStyle, fg: [u8; 4], bg: [u8; 4], x: f32, y: f32) -> TitleData {
-    {
     let mut tb = klipp_timeline::TextBox::default();
     tb.text = text.into();
     tb.font_size = size;
@@ -106,29 +101,30 @@ fn lower_third_style(text: &str, size: f32, style: FontStyle, fg: [u8; 4], bg: [
     tb.font_style = style;
     tb.color = fg;
     tb.alignment = TextAlignment::Left;
-    tb.shadow = None;
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: bg, padding: 12.0 };
-    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x, y }; }
+    if let Some(o) = td.objects.first_mut() {
+        o.transform.center = TitlePosition { x, y };
+    }
     td
-}
 }
 
 /// Positioned text with optional shadow, no background.
 #[allow(clippy::too_many_arguments)]
 fn positioned(text: &str, size: f32, style: FontStyle, color: [u8; 4], align: TextAlignment, x: f32, y: f32, shadow: Option<TitleShadow>) -> TitleData {
-    {
     let mut tb = klipp_timeline::TextBox::default();
     tb.text = text.into();
     tb.font_size = size;
     tb.font_name = "sans-serif".into();
     tb.font_style = style;
+    tb.color = color;
     tb.alignment = align;
+    tb.shadow = shadow;
     let mut td = klipp_timeline::TitleData::single_text(tb);
-    td.background = TitleBackground::None;
-    if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x, y }; }
+    if let Some(o) = td.objects.first_mut() {
+        o.transform.center = TitlePosition { x, y };
+    }
     td
-}
 }
 
 const WHITE: [u8; 4] = [255, 255, 255, 255];
@@ -541,7 +537,7 @@ fn sty_neon() -> TitleData {
     let mut td = positioned("NEON", 72.0, FontStyle::Bold, CYAN, TextAlignment::Center, 0.5, 0.5, None);
     if let Some(tb) = td.primary_text_mut() {
         tb.glow = Some(TextGlow { color: [0, 255, 200, 255], radius: 15.0, intensity: 0.8 });
-        if let Some(ol) = (Some(TextOutline { color: [0, 255, 200, 255], width: 2.0 })) { tb.outlines.insert(0, ol); }
+        tb.outlines.insert(0, TextOutline { color: [0, 255, 200, 255], width: 2.0 });
     }
     td
 }
@@ -549,9 +545,9 @@ fn sty_neon() -> TitleData {
 fn sty_outline() -> TitleData {
     {
     let mut tb = klipp_timeline::TextBox::default();
-    if let Some(ol) = (Some(TextOutline { color: [255, 255, 255, 255], width: 3.0 })) { tb.outlines.insert(0, ol); }
+    tb.outlines.insert(0, TextOutline { color: [255, 255, 255, 255], width: 3.0 });
     tb.color = [255, 255, 255, 80];
-    let mut td = klipp_timeline::TitleData::single_text(tb);
+    let td = klipp_timeline::TitleData::single_text(tb);
     td
 }
 }
@@ -607,7 +603,7 @@ fn tex_fill_shadow() -> TitleData {
         tb.font_size = 72.0;
         tb.font_style = FontStyle::Bold;
         tb.texture_fill_path = None;
-        if let Some(ol) = (Some(TextOutline { color: [255, 255, 255, 180], width: 1.0 })) { tb.outlines.insert(0, ol); }
+        tb.outlines.insert(0, TextOutline { color: [255, 255, 255, 180], width: 1.0 });
     }
     td
 }
@@ -698,7 +694,7 @@ fn three_d_retro_stack() -> TitleData {
             side_color: [150, 80, 30, 255],
             lighting: 0.5,
         });
-        if let Some(ol) = (Some(TextOutline { color: [40, 30, 20, 255], width: 2.0 })) { tb.outlines.insert(0, ol); }
+        tb.outlines.insert(0, TextOutline { color: [40, 30, 20, 255], width: 2.0 });
     }
     td
 }
