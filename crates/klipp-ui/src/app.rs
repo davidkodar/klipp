@@ -2821,7 +2821,21 @@ impl KlippApp {
             .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
             .and_then(|c| c.title_data());
         if let Some(td) = td {
-            let td = td.clone();
+            let mut td = td.clone();
+            // While the user is editing one TextBox object inline,
+            // suppress its rendered copy so the egui TextEdit
+            // floating in the bounding box doesn't double-print
+            // against the styled raster underneath. The bounding-
+            // box editor IS the WYSIWYG view during edit mode —
+            // stamping the rendered text behind it would show the
+            // string twice.
+            if self.state.viewer_text_edit {
+                if let Some(oid) = self.state.viewer_text_edit_object {
+                    if let Some(o) = td.object_mut(oid) {
+                        o.visible = false;
+                    }
+                }
+            }
             let (w, h) = (seq.resolution.width, seq.resolution.height);
             let title_rgba = self.title_renderer.render(&td, w, h);
 
@@ -12503,11 +12517,24 @@ impl KlippApp {
             AppCommand::BeginTitleEdit { clip_id } => {
                 self.state.viewer_text_edit_clip = Some(*clip_id);
                 self.state.viewer_text_edit = true;
+                // Re-rasterise the title overlay so the editing
+                // object disappears from the static preview. The
+                // egui TextEdit floating in the bounding box owns
+                // the visible text from now until exit.
+                self.render_title_to_viewer(*clip_id);
                 return true;
             }
             AppCommand::EndTitleEdit => {
+                let clip_id = self.state.viewer_text_edit_clip;
                 self.state.viewer_text_edit_clip = None;
                 self.state.viewer_text_edit = false;
+                self.state.viewer_text_edit_object = None;
+                // Re-rasterise so the previously-hidden object's
+                // styled text reappears in the overlay now that
+                // edit mode is finished.
+                if let Some(cid) = clip_id {
+                    self.render_title_to_viewer(cid);
+                }
                 return true;
             }
             AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames } => {
