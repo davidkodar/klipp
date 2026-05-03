@@ -493,44 +493,22 @@ fn show_title_position_block(
     );
     ui.add_space(4.0);
 
+    // X / Y stacked scrubby rows. Position keyframes on a per-layer
+    // basis aren't wired yet (only clip-level transform_pos_*_keyframes
+    // exist today, which apply to the whole title clip rather than the
+    // selected TitleObject). When per-layer position keyframing lands
+    // we'll thread a `KeyframeState` into the calls below; until then
+    // the rows are scrubby for visual consistency without keyframe
+    // affordances.
     let mut x = pos.x;
     let mut y = pos.y;
     let mut pos_changed = false;
-    ui.horizontal(|ui| {
-        let avail = ui.available_width();
-        let half = (avail - 8.0) * 0.5;
-        ui.allocate_ui_with_layout(
-            egui::vec2(half, 28.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.label(egui::RichText::new("X").size(11.0).color(theme.text_dim));
-                pos_changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut x)
-                            .speed(0.001)
-                            .range(0.0..=1.0)
-                            .fixed_decimals(2),
-                    )
-                    .changed();
-            },
-        );
-        ui.add_space(8.0);
-        ui.allocate_ui_with_layout(
-            egui::vec2(half, 28.0),
-            egui::Layout::left_to_right(egui::Align::Center),
-            |ui| {
-                ui.label(egui::RichText::new("Y").size(11.0).color(theme.text_dim));
-                pos_changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut y)
-                            .speed(0.001)
-                            .range(0.0..=1.0)
-                            .fixed_decimals(2),
-                    )
-                    .changed();
-            },
-        );
-    });
+    pos_changed |= crate::widgets::scrubby_param::scrubby_param_row(
+        ui, "X", &mut x, 0.0..=1.0, 0.5, 0.001, 2, "", None,
+    ).changed;
+    pos_changed |= crate::widgets::scrubby_param::scrubby_param_row(
+        ui, "Y", &mut y, 0.0..=1.0, 0.5, 0.001, 2, "", None,
+    ).changed;
     if pos_changed {
         cmds.push(AppCommand::SetTitlePosition { clip_id, x, y });
     }
@@ -949,14 +927,12 @@ fn show_title_effects_group(
                 ui.label(egui::RichText::new("Color").size(11.0).color(theme.text_dim));
                 changed |= ui.color_edit_button_srgba(&mut col).changed();
             });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Radius").size(11.0).color(theme.text_dim));
-                changed |= ui.add(egui::Slider::new(&mut radius, 1.0..=40.0).step_by(0.5).suffix(" px")).changed();
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Intensity").size(11.0).color(theme.text_dim));
-                changed |= ui.add(egui::Slider::new(&mut intensity, 0.0..=1.0).step_by(0.05)).changed();
-            });
+            changed |= crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Radius", &mut radius, 1.0..=40.0, 10.0, 0.5, 1, " px", None,
+            ).changed;
+            changed |= crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Intensity", &mut intensity, 0.0..=1.0, 0.8, 0.05, 2, "", None,
+            ).changed;
             if changed {
                 cmds.push(AppCommand::SetTitleGlow {
                     clip_id, enabled: true,
@@ -990,10 +966,9 @@ fn show_title_effects_group(
                 ui.label(egui::RichText::new("Color").size(11.0).color(theme.text_dim));
                 changed |= ui.color_edit_button_srgba(&mut col).changed();
             });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Width").size(11.0).color(theme.text_dim));
-                changed |= ui.add(egui::Slider::new(&mut width, 0.5..=12.0).step_by(0.5).suffix(" px")).changed();
-            });
+            changed |= crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Width", &mut width, 0.5..=12.0, 2.0, 0.5, 1, " px", None,
+            ).changed;
             if changed {
                 cmds.push(AppCommand::SetTitleOutline {
                     clip_id, enabled: true,
@@ -1029,18 +1004,15 @@ fn show_title_effects_group(
                 ui.label(egui::RichText::new("Color").size(11.0).color(theme.text_dim));
                 changed |= ui.color_edit_button_srgba(&mut col).changed();
             });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Offset X").size(11.0).color(theme.text_dim));
-                changed |= ui.add(egui::Slider::new(&mut ox, -20.0..=20.0).step_by(0.5).suffix(" px")).changed();
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Offset Y").size(11.0).color(theme.text_dim));
-                changed |= ui.add(egui::Slider::new(&mut oy, -20.0..=20.0).step_by(0.5).suffix(" px")).changed();
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Blur").size(11.0).color(theme.text_dim));
-                changed |= ui.add(egui::Slider::new(&mut blur, 0.0..=30.0).step_by(0.5).suffix(" px")).changed();
-            });
+            changed |= crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Offset X", &mut ox, -20.0..=20.0, 3.0, 0.5, 1, " px", None,
+            ).changed;
+            changed |= crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Offset Y", &mut oy, -20.0..=20.0, 3.0, 0.5, 1, " px", None,
+            ).changed;
+            changed |= crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Blur", &mut blur, 0.0..=30.0, 0.0, 0.5, 1, " px", None,
+            ).changed;
             if changed {
                 cmds.push(AppCommand::SetTitleShadow {
                     clip_id, enabled: true,
@@ -1078,18 +1050,15 @@ fn show_title_effects_group(
                 ui.label(egui::RichText::new("Color").size(11.0).color(theme.text_dim));
                 changed |= ui.color_edit_button_srgba(&mut col).changed();
             });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Offset X").size(11.0).color(theme.text_dim));
-                changed |= ui.add(egui::Slider::new(&mut ox, -20.0..=20.0).step_by(0.5).suffix(" px")).changed();
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Offset Y").size(11.0).color(theme.text_dim));
-                changed |= ui.add(egui::Slider::new(&mut oy, -20.0..=20.0).step_by(0.5).suffix(" px")).changed();
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Blur").size(11.0).color(theme.text_dim));
-                changed |= ui.add(egui::Slider::new(&mut blur, 0.0..=20.0).step_by(0.5).suffix(" px")).changed();
-            });
+            changed |= crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Offset X", &mut ox, -20.0..=20.0, 2.0, 0.5, 1, " px", None,
+            ).changed;
+            changed |= crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Offset Y", &mut oy, -20.0..=20.0, 2.0, 0.5, 1, " px", None,
+            ).changed;
+            changed |= crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Blur", &mut blur, 0.0..=20.0, 3.0, 0.5, 1, " px", None,
+            ).changed;
             if changed {
                 cmds.push(AppCommand::SetTitleInnerShadow {
                     clip_id, enabled: true,
@@ -1195,10 +1164,9 @@ fn show_title_effects_group(
                     ui.label(egui::RichText::new("B").size(11.0).color(theme.text_dim));
                     changed |= ui.color_edit_button_srgba(&mut col_b).changed();
                 });
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Size").size(11.0).color(theme.text_dim));
-                    changed |= ui.add(egui::Slider::new(&mut size, 2.0..=50.0).step_by(1.0).suffix(" px")).changed();
-                });
+                changed |= crate::widgets::scrubby_param::scrubby_param_row(
+                    ui, "Size", &mut size, 2.0..=50.0, 10.0, 1.0, 0, " px", None,
+                ).changed;
                 if changed {
                     ca = [col_a.r(), col_a.g(), col_a.b(), col_a.a()];
                     cb = [col_b.r(), col_b.g(), col_b.b(), col_b.a()];
