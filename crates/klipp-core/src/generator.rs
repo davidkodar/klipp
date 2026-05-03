@@ -1,6 +1,6 @@
 //! Generator frame rendering — produces RGBA8 pixel buffers for each GeneratorData variant.
 
-use crate::GeneratorData;
+use crate::{FourPointGradient, GeneratorData};
 
 /// Render a generator frame at the given resolution.
 /// `elapsed_secs` and `total_secs` are only used by Countdown.
@@ -13,7 +13,13 @@ pub fn render_generator(
 ) -> Vec<u8> {
     match data {
         GeneratorData::SolidColor { color } => render_solid_color(*color, width, height),
-        GeneratorData::Gradient { top, bottom } => render_gradient(*top, *bottom, width, height),
+        GeneratorData::Gradient { top, bottom, angle_deg, four_point } => {
+            if let Some(corners) = four_point {
+                render_four_point_gradient(*corners, width, height)
+            } else {
+                render_gradient(*top, *bottom, *angle_deg, width, height)
+            }
+        }
         GeneratorData::ColorBars => render_color_bars(width, height),
         GeneratorData::Countdown => render_countdown(width, height, elapsed_secs, total_secs),
         GeneratorData::StillFrame { png_path, .. } => render_still_frame(png_path, width, height),
@@ -50,25 +56,100 @@ pub fn render_solid_color(color: [u8; 4], width: u32, height: u32) -> Vec<u8> {
     buf
 }
 
-/// Render a vertical gradient between two colors.
-/// `top` is the color at y=0, `bottom` is the color at y=height-1.
-pub fn render_gradient(top: [u8; 4], bottom: [u8; 4], width: u32, height: u32) -> Vec<u8> {
+/// Render a 2-point linear gradient between two colours along
+/// `angle_deg`. 0 = top→bottom (the historical default — `top` at
+/// y=0, `bottom` at y=height-1), 90 = left→right, 180 = bottom→top,
+/// 270 = right→left. Any angle is supported; the gradient axis is
+/// projected through the frame's centre and the band of constant
+/// colour runs perpendicular to it.
+pub fn render_gradient(
+    top: [u8; 4],
+    bottom: [u8; 4],
+    angle_deg: f32,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
     let pixel_count = (width as usize) * (height as usize);
-    let mut buf = Vec::with_capacity(pixel_count * 4);
+    let mut buf = vec![0u8; pixel_count * 4];
+
+    let w = width as f32;
+    let h = height as f32;
+    // Direction unit vector. 0° = down (+Y), 90° = right (+X). Sin/cos
+    // chosen so the legacy "top→bottom" mapping (angle 0) keeps top
+    // at y=0. Using image coordinates where +Y is downward.
+    let theta = angle_deg.to_radians();
+    let dir_x = theta.sin();
+    let dir_y = theta.cos();
+    // Pixel-grid extents use `(dim - 1)` so the corner pixels
+    // (indices 0 and dim-1) project exactly onto t=0 and t=1.
+    // Using `dim` would shift the start/end colours inward by half a
+    // pixel — a barely-visible 1/255 quantization error on small
+    // frames, but enough to break "endpoint-correct" tests and
+    // visually nudge the start of a credits-style scroll.
+    let span_w = (w - 1.0).max(0.0);
+    let span_h = (h - 1.0).max(0.0);
+    let cx = span_w * 0.5;
+    let cy = span_h * 0.5;
+    let half_extent = (dir_x.abs() * span_w * 0.5) + (dir_y.abs() * span_h * 0.5);
+    let extent = (half_extent * 2.0).max(1.0);
+
     for y in 0..height {
-        let t = if height <= 1 {
-            0.0
-        } else {
-            y as f32 / (height - 1) as f32
-        };
-        let pixel = [
-            lerp_u8(top[0], bottom[0], t),
-            lerp_u8(top[1], bottom[1], t),
-            lerp_u8(top[2], bottom[2], t),
-            lerp_u8(top[3], bottom[3], t),
+        for x in 0..width {
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let proj = dx * dir_x + dy * dir_y;
+            let t = ((proj + half_extent) / extent).clamp(0.0, 1.0);
+            let i = ((y as usize) * (width as usize) + (x as usize)) * 4;
+            buf[i] = lerp_u8(top[0], bottom[0], t);
+            buf[i + 1] = lerp_u8(top[1], bottom[1], t);
+            buf[i + 2] = lerp_u8(top[2], bottom[2], t);
+            buf[i + 3] = lerp_u8(top[3], bottom[3], t);
+        }
+    }
+    buf
+}
+
+/// Render a 4-point bilinear gradient. Each frame corner gets one of
+/// the four colours; the body interpolates linearly along both axes
+/// (horizontal first, then vertical between the resulting top/bottom
+/// rows), which is the standard cinematic 4-corner colour wash.
+pub fn render_four_point_gradient(
+    corners: FourPointGradient,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let pixel_count = (width as usize) * (height as usize);
+    let mut buf = vec![0u8; pixel_count * 4];
+    let w_div = (width.saturating_sub(1)).max(1) as f32;
+    let h_div = (height.saturating_sub(1)).max(1) as f32;
+
+    for y in 0..height {
+        let ty = y as f32 / h_div;
+        // Top row blend: TL → TR
+        let row_top = [
+            lerp_u8(corners.top_left[0], corners.top_right[0], 0.0),
+            lerp_u8(corners.top_left[1], corners.top_right[1], 0.0),
+            lerp_u8(corners.top_left[2], corners.top_right[2], 0.0),
+            lerp_u8(corners.top_left[3], corners.top_right[3], 0.0),
         ];
-        for _ in 0..width {
-            buf.extend_from_slice(&pixel);
+        let _ = row_top; // kept for clarity; per-pixel blend below
+        for x in 0..width {
+            let tx = x as f32 / w_div;
+            // Bilinear: blend horizontally on top + bottom rows, then
+            // blend the two results vertically.
+            let r_top_h = lerp_u8(corners.top_left[0], corners.top_right[0], tx);
+            let g_top_h = lerp_u8(corners.top_left[1], corners.top_right[1], tx);
+            let b_top_h = lerp_u8(corners.top_left[2], corners.top_right[2], tx);
+            let a_top_h = lerp_u8(corners.top_left[3], corners.top_right[3], tx);
+            let r_bot_h = lerp_u8(corners.bottom_left[0], corners.bottom_right[0], tx);
+            let g_bot_h = lerp_u8(corners.bottom_left[1], corners.bottom_right[1], tx);
+            let b_bot_h = lerp_u8(corners.bottom_left[2], corners.bottom_right[2], tx);
+            let a_bot_h = lerp_u8(corners.bottom_left[3], corners.bottom_right[3], tx);
+            let i = ((y as usize) * (width as usize) + (x as usize)) * 4;
+            buf[i] = lerp_u8(r_top_h, r_bot_h, ty);
+            buf[i + 1] = lerp_u8(g_top_h, g_bot_h, ty);
+            buf[i + 2] = lerp_u8(b_top_h, b_bot_h, ty);
+            buf[i + 3] = lerp_u8(a_top_h, a_bot_h, ty);
         }
     }
     buf
@@ -220,7 +301,8 @@ mod tests {
 
     #[test]
     fn gradient_endpoints_correct() {
-        let buf = render_gradient([0, 0, 0, 255], [255, 255, 255, 255], 1, 100);
+        // angle 0 = top→bottom (the historical default)
+        let buf = render_gradient([0, 0, 0, 255], [255, 255, 255, 255], 0.0, 1, 100);
         assert_eq!(buf.len(), 400);
         // First pixel (y=0): black
         assert_eq!(&buf[0..4], &[0, 0, 0, 255]);
@@ -230,7 +312,7 @@ mod tests {
 
     #[test]
     fn gradient_midpoint_interpolation() {
-        let buf = render_gradient([0, 0, 0, 255], [255, 255, 255, 255], 1, 101);
+        let buf = render_gradient([0, 0, 0, 255], [255, 255, 255, 255], 0.0, 1, 101);
         // Middle pixel at y=50
         let mid = &buf[50 * 4..50 * 4 + 4];
         // Should be approximately 127-128 due to rounding
@@ -242,10 +324,44 @@ mod tests {
 
     #[test]
     fn gradient_single_row_no_panic() {
-        let buf = render_gradient([10, 20, 30, 255], [200, 100, 50, 128], 10, 1);
+        let buf = render_gradient([10, 20, 30, 255], [200, 100, 50, 128], 0.0, 10, 1);
         assert_eq!(buf.len(), 40);
-        // height=1 → t=0.0 → should be top color
+        // height=1 + angle=0 → degenerate vertical: span_h=0, extent
+        // collapses to 1, every pixel evaluates to t=0 → top colour.
+        // Confirm no panic and that the start colour reads cleanly.
         assert_eq!(&buf[0..4], &[10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn gradient_horizontal_angle_90() {
+        // angle 90 = left→right: first pixel is `top`, last column is `bottom`.
+        let buf = render_gradient([0, 0, 0, 255], [255, 255, 255, 255], 90.0, 100, 1);
+        assert_eq!(buf.len(), 400);
+        assert_eq!(&buf[0..4], &[0, 0, 0, 255]);
+        assert_eq!(&buf[396..400], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn four_point_gradient_corners_match() {
+        let corners = FourPointGradient {
+            top_left: [255, 0, 0, 255],
+            top_right: [0, 255, 0, 255],
+            bottom_left: [0, 0, 255, 255],
+            bottom_right: [255, 255, 0, 255],
+        };
+        let buf = render_four_point_gradient(corners, 4, 4);
+        assert_eq!(buf.len(), 4 * 4 * 4);
+        // Pixel (0,0) — top-left
+        assert_eq!(&buf[0..4], &[255, 0, 0, 255]);
+        // Pixel (3,0) — top-right
+        let i = 3 * 4;
+        assert_eq!(&buf[i..i + 4], &[0, 255, 0, 255]);
+        // Pixel (0,3) — bottom-left
+        let i = (3 * 4) * 4;
+        assert_eq!(&buf[i..i + 4], &[0, 0, 255, 255]);
+        // Pixel (3,3) — bottom-right
+        let i = (3 * 4 + 3) * 4;
+        assert_eq!(&buf[i..i + 4], &[255, 255, 0, 255]);
     }
 
     #[test]
@@ -291,7 +407,10 @@ mod tests {
     fn all_generators_produce_correct_byte_count() {
         let expected = 640 * 480 * 4;
         assert_eq!(render_solid_color([0, 0, 0, 255], 640, 480).len(), expected);
-        assert_eq!(render_gradient([0, 0, 0, 255], [255, 255, 255, 255], 640, 480).len(), expected);
+        assert_eq!(
+            render_gradient([0, 0, 0, 255], [255, 255, 255, 255], 0.0, 640, 480).len(),
+            expected,
+        );
         assert_eq!(render_color_bars(640, 480).len(), expected);
         assert_eq!(render_countdown(640, 480, 2.0, 10.0).len(), expected);
     }

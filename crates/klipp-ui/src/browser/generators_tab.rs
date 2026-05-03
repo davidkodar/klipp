@@ -3,7 +3,7 @@ use crate::drag_drop::DragPayload;
 use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
-use klipp_core::{AppCommand, GeneratorData};
+use klipp_core::{AppCommand, FourPointGradient, GeneratorData};
 
 /// Built-in vs user-imported source filter for the Generators tab.
 /// Mirrors `TitlesSourceFilter` / `TransitionsSourceFilter` so the
@@ -46,13 +46,36 @@ fn solid_magenta() -> GeneratorData { GeneratorData::SolidColor { color: [210, 6
 fn solid_yellow() -> GeneratorData { GeneratorData::SolidColor { color: [230, 210, 50, 255] } }
 fn solid_grey() -> GeneratorData { GeneratorData::SolidColor { color: [128, 128, 128, 255] } }
 
-fn gradient_bw() -> GeneratorData { GeneratorData::Gradient { top: [0, 0, 0, 255], bottom: [255, 255, 255, 255] } }
-fn gradient_wb() -> GeneratorData { GeneratorData::Gradient { top: [255, 255, 255, 255], bottom: [0, 0, 0, 255] } }
-fn gradient_blue() -> GeneratorData { GeneratorData::Gradient { top: [80, 140, 220, 255], bottom: [0, 0, 30, 255] } }
-fn gradient_sunset() -> GeneratorData { GeneratorData::Gradient { top: [255, 140, 60, 255], bottom: [90, 40, 120, 255] } }
-fn gradient_dawn() -> GeneratorData { GeneratorData::Gradient { top: [255, 200, 220, 255], bottom: [120, 100, 200, 255] } }
-fn gradient_forest() -> GeneratorData { GeneratorData::Gradient { top: [40, 90, 60, 255], bottom: [10, 20, 15, 255] } }
-fn gradient_amber() -> GeneratorData { GeneratorData::Gradient { top: [255, 180, 80, 255], bottom: [60, 25, 10, 255] } }
+fn gradient(top: [u8; 4], bottom: [u8; 4], angle_deg: f32) -> GeneratorData {
+    GeneratorData::Gradient { top, bottom, angle_deg, four_point: None }
+}
+fn gradient_bw() -> GeneratorData { gradient([0, 0, 0, 255], [255, 255, 255, 255], 0.0) }
+fn gradient_wb() -> GeneratorData { gradient([255, 255, 255, 255], [0, 0, 0, 255], 0.0) }
+fn gradient_blue() -> GeneratorData { gradient([80, 140, 220, 255], [0, 0, 30, 255], 0.0) }
+fn gradient_sunset() -> GeneratorData { gradient([255, 140, 60, 255], [90, 40, 120, 255], 0.0) }
+fn gradient_dawn() -> GeneratorData { gradient([255, 200, 220, 255], [120, 100, 200, 255], 0.0) }
+fn gradient_forest() -> GeneratorData { gradient([40, 90, 60, 255], [10, 20, 15, 255], 0.0) }
+fn gradient_amber() -> GeneratorData { gradient([255, 180, 80, 255], [60, 25, 10, 255], 0.0) }
+// Diagonal preset showcases the new `angle_deg` axis without needing
+// the user to dig into the inspector first.
+fn gradient_diagonal_neon() -> GeneratorData {
+    gradient([255, 80, 200, 255], [40, 220, 255, 255], 45.0)
+}
+// Cinematic 4-corner wash — each corner a different colour. Demonstrates
+// the new `four_point` mode straight from the browser.
+fn gradient_4pt_warm_cool() -> GeneratorData {
+    GeneratorData::Gradient {
+        top: [0, 0, 0, 0],
+        bottom: [0, 0, 0, 0],
+        angle_deg: 0.0,
+        four_point: Some(FourPointGradient {
+            top_left: [255, 140, 60, 255],
+            top_right: [255, 80, 120, 255],
+            bottom_left: [40, 90, 180, 255],
+            bottom_right: [80, 200, 220, 255],
+        }),
+    }
+}
 
 fn color_bars() -> GeneratorData { GeneratorData::ColorBars }
 fn countdown() -> GeneratorData { GeneratorData::Countdown }
@@ -78,6 +101,8 @@ const GENERATORS: &[GeneratorTemplate] = &[
     GeneratorTemplate { name: "Dawn",                 category: "Gradient", create_data: gradient_dawn,   animated: false },
     GeneratorTemplate { name: "Forest",               category: "Gradient", create_data: gradient_forest, animated: false },
     GeneratorTemplate { name: "Amber",                category: "Gradient", create_data: gradient_amber,  animated: false },
+    GeneratorTemplate { name: "Neon Diagonal",        category: "Gradient", create_data: gradient_diagonal_neon, animated: false },
+    GeneratorTemplate { name: "4-Corner Wash",        category: "Gradient", create_data: gradient_4pt_warm_cool, animated: false },
     // Test Pattern
     GeneratorTemplate { name: "SMPTE 75% Bars", category: "Test Pattern", create_data: color_bars, animated: false },
     // Countdown
@@ -505,42 +530,39 @@ fn paint_generator_preview(
             painter.rect_filled(rect, rounding, c);
         }
 
-        GeneratorData::Gradient { top, bottom } => {
-            // Rounded background first so corners are clean; strips
-            // get the full width inside the rect.
-            painter.rect_filled(rect, rounding, egui::Color32::from_rgba_premultiplied(top[0], top[1], top[2], top[3]));
-            let strips = 32;
-            let strip_h = rect.height() / strips as f32;
-            for i in 0..strips {
-                let t = if strips <= 1 { 0.0 } else { i as f32 / (strips - 1) as f32 };
-                let r = lerp_u8(top[0], bottom[0], t);
-                let g = lerp_u8(top[1], bottom[1], t);
-                let b = lerp_u8(top[2], bottom[2], t);
-                let a = lerp_u8(top[3], bottom[3], t);
-                let y = rect.min.y + i as f32 * strip_h;
-                let strip_rect = egui::Rect::from_min_size(
-                    egui::pos2(rect.min.x, y),
-                    egui::vec2(rect.width(), strip_h + 0.5),
-                );
-                // Skip rounding on the inner strips — the outer rect
-                // above already rounded the corners.
-                painter.rect_filled(
-                    strip_rect.intersect(rect),
-                    egui::Rounding::ZERO,
-                    egui::Color32::from_rgba_premultiplied(r, g, b, a),
-                );
+        GeneratorData::Gradient { top, bottom, angle_deg, four_point } => {
+            // Cards are small; we sample the gradient on a coarse
+            // grid (32×18 cells) and paint each cell as a tiny rect.
+            // That's enough resolution for the thumbnail to read
+            // honestly at any angle / 4-corner combination without
+            // doing a per-pixel bilinear blend.
+            painter.rect_filled(rect, rounding, egui::Color32::BLACK);
+            let cols = 32usize;
+            let rows = 18usize;
+            let cell_w = rect.width() / cols as f32;
+            let cell_h = rect.height() / rows as f32;
+            for ry in 0..rows {
+                for cx in 0..cols {
+                    let tx = cx as f32 / (cols - 1).max(1) as f32;
+                    let ty = ry as f32 / (rows - 1).max(1) as f32;
+                    let color = sample_gradient(top, bottom, *angle_deg, *four_point, tx, ty);
+                    let cell_rect = egui::Rect::from_min_size(
+                        egui::pos2(
+                            rect.min.x + cx as f32 * cell_w,
+                            rect.min.y + ry as f32 * cell_h,
+                        ),
+                        egui::vec2(cell_w + 0.5, cell_h + 0.5),
+                    );
+                    painter.rect_filled(
+                        cell_rect.intersect(rect),
+                        egui::Rounding::ZERO,
+                        color,
+                    );
+                }
             }
-            // Re-round the corners by re-drawing the outermost strips
-            // with the rounded shape so the bottom edge cleans up too.
-            let bottom_rect = egui::Rect::from_min_size(
-                egui::pos2(rect.min.x, rect.max.y - 4.0),
-                egui::vec2(rect.width(), 4.0),
-            );
-            painter.rect_filled(
-                bottom_rect.intersect(rect),
-                egui::Rounding { nw: 0.0, ne: 0.0, sw: 5.0, se: 5.0 },
-                egui::Color32::from_rgba_premultiplied(bottom[0], bottom[1], bottom[2], bottom[3]),
-            );
+            // Re-stroke the rounded outline so the cells don't show
+            // square corners.
+            painter.rect_stroke(rect, rounding, egui::Stroke::NONE);
         }
 
         GeneratorData::ColorBars => {
@@ -611,6 +633,55 @@ fn paint_generator_preview(
 
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+}
+
+/// Sample a gradient at normalized coordinates `(tx, ty)` (0..1 across
+/// the rect). Mirrors the renderer's logic in
+/// `klipp_core::generator::render_gradient` /
+/// `render_four_point_gradient` so card previews and on-timeline
+/// renders agree.
+fn sample_gradient(
+    top: &[u8; 4],
+    bottom: &[u8; 4],
+    angle_deg: f32,
+    four_point: Option<klipp_core::FourPointGradient>,
+    tx: f32,
+    ty: f32,
+) -> egui::Color32 {
+    if let Some(c) = four_point {
+        let r_top_h = lerp_u8(c.top_left[0], c.top_right[0], tx);
+        let g_top_h = lerp_u8(c.top_left[1], c.top_right[1], tx);
+        let b_top_h = lerp_u8(c.top_left[2], c.top_right[2], tx);
+        let a_top_h = lerp_u8(c.top_left[3], c.top_right[3], tx);
+        let r_bot_h = lerp_u8(c.bottom_left[0], c.bottom_right[0], tx);
+        let g_bot_h = lerp_u8(c.bottom_left[1], c.bottom_right[1], tx);
+        let b_bot_h = lerp_u8(c.bottom_left[2], c.bottom_right[2], tx);
+        let a_bot_h = lerp_u8(c.bottom_left[3], c.bottom_right[3], tx);
+        return egui::Color32::from_rgba_premultiplied(
+            lerp_u8(r_top_h, r_bot_h, ty),
+            lerp_u8(g_top_h, g_bot_h, ty),
+            lerp_u8(b_top_h, b_bot_h, ty),
+            lerp_u8(a_top_h, a_bot_h, ty),
+        );
+    }
+    // 2-point at angle. tx/ty are in normalized image space; project
+    // onto the gradient axis and lerp.
+    let theta = angle_deg.to_radians();
+    let dir_x = theta.sin();
+    let dir_y = theta.cos();
+    // Centre offset = position relative to (0.5, 0.5)
+    let dx = tx - 0.5;
+    let dy = ty - 0.5;
+    let proj = dx * dir_x + dy * dir_y;
+    let half_extent = (dir_x.abs() + dir_y.abs()) * 0.5;
+    let extent = (half_extent * 2.0).max(f32::EPSILON);
+    let t = ((proj + half_extent) / extent).clamp(0.0, 1.0);
+    egui::Color32::from_rgba_premultiplied(
+        lerp_u8(top[0], bottom[0], t),
+        lerp_u8(top[1], bottom[1], t),
+        lerp_u8(top[2], bottom[2], t),
+        lerp_u8(top[3], bottom[3], t),
+    )
 }
 
 // ────────────────────────── Sidebar primitives ──────────────────────────

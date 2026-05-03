@@ -297,14 +297,39 @@ impl TransitionUserParams {
     }
 }
 
+/// 4-point gradient: one colour per frame corner, bilinearly
+/// interpolated across the body. Used when `Gradient.four_point` is
+/// `Some`. Field names match the visual corners (no Y-flip surprise).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct FourPointGradient {
+    pub top_left: [u8; 4],
+    pub top_right: [u8; 4],
+    pub bottom_left: [u8; 4],
+    pub bottom_right: [u8; 4],
+}
+
 /// Data for a generator clip (solid color, gradient, bars, countdown, still).
 /// Lives in klipp-core so AppCommand can carry it directly.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum GeneratorData {
     /// Solid color fill.
     SolidColor { color: [u8; 4] },
-    /// Vertical gradient between two colors.
-    Gradient { top: [u8; 4], bottom: [u8; 4] },
+    /// Two-point linear gradient (`top` → `bottom` along
+    /// `angle_deg`) or, when `four_point` is `Some`, a 4-corner
+    /// bilinear gradient that ignores `top` / `bottom` / `angle_deg`.
+    /// `angle_deg` is the gradient direction in degrees: 0 = top→bottom
+    /// (the historical default), 90 = left→right, 180 = bottom→top,
+    /// 270 = right→left. The two `#[serde(default)]` fields keep older
+    /// projects loadable — they deserialize to angle 0 / `None` and
+    /// render exactly as before.
+    Gradient {
+        top: [u8; 4],
+        bottom: [u8; 4],
+        #[serde(default)]
+        angle_deg: f32,
+        #[serde(default)]
+        four_point: Option<FourPointGradient>,
+    },
     /// SMPTE color bars (broadcast test pattern).
     ColorBars,
     /// Countdown timer (seconds remaining overlaid on black).

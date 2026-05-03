@@ -3782,40 +3782,214 @@ fn show_generator_editor(
             });
         }
 
-        klipp_core::GeneratorData::Gradient { top, bottom } => {
+        klipp_core::GeneratorData::Gradient { top, bottom, angle_deg, four_point } => {
             ui.label(egui::RichText::new("Gradient").size(11.0).color(theme.text_secondary));
             ui.add_space(4.0);
+
+            // Mode toggle: 2-point (angled) vs 4-point (corner).
+            let mut is_four_point = four_point.is_some();
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Top").strong().size(11.0));
-                let mut c = egui::Color32::from_rgba_premultiplied(
-                    top[0], top[1], top[2], top[3],
-                );
-                if ui.color_edit_button_srgba(&mut c).changed() {
-                    cmds.push(AppCommand::UpdateGeneratorData {
-                        clip_id,
-                        data: klipp_core::GeneratorData::Gradient {
-                            top: [c.r(), c.g(), c.b(), c.a()],
-                            bottom,
-                        },
-                    });
-                }
-            });
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Bottom").strong().size(11.0));
-                let mut c = egui::Color32::from_rgba_premultiplied(
-                    bottom[0], bottom[1], bottom[2], bottom[3],
-                );
-                if ui.color_edit_button_srgba(&mut c).changed() {
+                ui.label(egui::RichText::new("Mode").strong().size(11.0));
+                if ui
+                    .selectable_label(!is_four_point, "2-point")
+                    .clicked()
+                    && is_four_point
+                {
+                    is_four_point = false;
                     cmds.push(AppCommand::UpdateGeneratorData {
                         clip_id,
                         data: klipp_core::GeneratorData::Gradient {
                             top,
-                            bottom: [c.r(), c.g(), c.b(), c.a()],
+                            bottom,
+                            angle_deg,
+                            four_point: None,
+                        },
+                    });
+                }
+                if ui
+                    .selectable_label(is_four_point, "4-point")
+                    .clicked()
+                    && !is_four_point
+                {
+                    // Seed corners from the current 2-point pair so
+                    // the mode swap is visually continuous: top
+                    // colour → top corners, bottom colour → bottom
+                    // corners. The user can then tune each corner
+                    // independently.
+                    is_four_point = true;
+                    cmds.push(AppCommand::UpdateGeneratorData {
+                        clip_id,
+                        data: klipp_core::GeneratorData::Gradient {
+                            top,
+                            bottom,
+                            angle_deg,
+                            four_point: Some(klipp_core::FourPointGradient {
+                                top_left: top,
+                                top_right: top,
+                                bottom_left: bottom,
+                                bottom_right: bottom,
+                            }),
                         },
                     });
                 }
             });
+            ui.add_space(6.0);
+
+            if let Some(corners) = four_point {
+                // 2×2 colour-picker grid mirrors the visual frame so
+                // "top-left" actually edits the top-left corner.
+                ui.horizontal(|ui| {
+                    let mut tl = egui::Color32::from_rgba_premultiplied(
+                        corners.top_left[0], corners.top_left[1],
+                        corners.top_left[2], corners.top_left[3],
+                    );
+                    let mut tr = egui::Color32::from_rgba_premultiplied(
+                        corners.top_right[0], corners.top_right[1],
+                        corners.top_right[2], corners.top_right[3],
+                    );
+                    if ui.color_edit_button_srgba(&mut tl).changed() {
+                        let mut new_corners = corners;
+                        new_corners.top_left = [tl.r(), tl.g(), tl.b(), tl.a()];
+                        cmds.push(AppCommand::UpdateGeneratorData {
+                            clip_id,
+                            data: klipp_core::GeneratorData::Gradient {
+                                top, bottom, angle_deg,
+                                four_point: Some(new_corners),
+                            },
+                        });
+                    }
+                    ui.label(egui::RichText::new("TL").size(10.0).color(theme.text_dim));
+                    ui.add_space(8.0);
+                    if ui.color_edit_button_srgba(&mut tr).changed() {
+                        let mut new_corners = corners;
+                        new_corners.top_right = [tr.r(), tr.g(), tr.b(), tr.a()];
+                        cmds.push(AppCommand::UpdateGeneratorData {
+                            clip_id,
+                            data: klipp_core::GeneratorData::Gradient {
+                                top, bottom, angle_deg,
+                                four_point: Some(new_corners),
+                            },
+                        });
+                    }
+                    ui.label(egui::RichText::new("TR").size(10.0).color(theme.text_dim));
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let mut bl = egui::Color32::from_rgba_premultiplied(
+                        corners.bottom_left[0], corners.bottom_left[1],
+                        corners.bottom_left[2], corners.bottom_left[3],
+                    );
+                    let mut br = egui::Color32::from_rgba_premultiplied(
+                        corners.bottom_right[0], corners.bottom_right[1],
+                        corners.bottom_right[2], corners.bottom_right[3],
+                    );
+                    if ui.color_edit_button_srgba(&mut bl).changed() {
+                        let mut new_corners = corners;
+                        new_corners.bottom_left = [bl.r(), bl.g(), bl.b(), bl.a()];
+                        cmds.push(AppCommand::UpdateGeneratorData {
+                            clip_id,
+                            data: klipp_core::GeneratorData::Gradient {
+                                top, bottom, angle_deg,
+                                four_point: Some(new_corners),
+                            },
+                        });
+                    }
+                    ui.label(egui::RichText::new("BL").size(10.0).color(theme.text_dim));
+                    ui.add_space(8.0);
+                    if ui.color_edit_button_srgba(&mut br).changed() {
+                        let mut new_corners = corners;
+                        new_corners.bottom_right = [br.r(), br.g(), br.b(), br.a()];
+                        cmds.push(AppCommand::UpdateGeneratorData {
+                            clip_id,
+                            data: klipp_core::GeneratorData::Gradient {
+                                top, bottom, angle_deg,
+                                four_point: Some(new_corners),
+                            },
+                        });
+                    }
+                    ui.label(egui::RichText::new("BR").size(10.0).color(theme.text_dim));
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Start").strong().size(11.0));
+                    let mut c = egui::Color32::from_rgba_premultiplied(
+                        top[0], top[1], top[2], top[3],
+                    );
+                    if ui.color_edit_button_srgba(&mut c).changed() {
+                        cmds.push(AppCommand::UpdateGeneratorData {
+                            clip_id,
+                            data: klipp_core::GeneratorData::Gradient {
+                                top: [c.r(), c.g(), c.b(), c.a()],
+                                bottom,
+                                angle_deg,
+                                four_point: None,
+                            },
+                        });
+                    }
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("End").strong().size(11.0));
+                    let mut c = egui::Color32::from_rgba_premultiplied(
+                        bottom[0], bottom[1], bottom[2], bottom[3],
+                    );
+                    if ui.color_edit_button_srgba(&mut c).changed() {
+                        cmds.push(AppCommand::UpdateGeneratorData {
+                            clip_id,
+                            data: klipp_core::GeneratorData::Gradient {
+                                top,
+                                bottom: [c.r(), c.g(), c.b(), c.a()],
+                                angle_deg,
+                                four_point: None,
+                            },
+                        });
+                    }
+                });
+                ui.add_space(6.0);
+                // Angle slider — 0 = top→bottom (legacy default), 90 =
+                // left→right, 180 = bottom→top, 270 = right→left.
+                let mut angle = angle_deg;
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut angle, 0.0..=360.0)
+                                .text("Angle")
+                                .step_by(1.0)
+                                .suffix("\u{00B0}"),
+                        )
+                        .changed()
+                    {
+                        cmds.push(AppCommand::UpdateGeneratorData {
+                            clip_id,
+                            data: klipp_core::GeneratorData::Gradient {
+                                top, bottom,
+                                angle_deg: angle,
+                                four_point: None,
+                            },
+                        });
+                    }
+                });
+                // Quick-direction buttons (cardinals) — quicker than
+                // dragging the slider for the common cases.
+                ui.horizontal(|ui| {
+                    let mut emit = |a: f32| {
+                        cmds.push(AppCommand::UpdateGeneratorData {
+                            clip_id,
+                            data: klipp_core::GeneratorData::Gradient {
+                                top, bottom,
+                                angle_deg: a,
+                                four_point: None,
+                            },
+                        });
+                    };
+                    if ui.small_button("\u{2193}").on_hover_text("Top → Bottom").clicked() { emit(0.0); }
+                    if ui.small_button("\u{2192}").on_hover_text("Left → Right").clicked() { emit(90.0); }
+                    if ui.small_button("\u{2191}").on_hover_text("Bottom → Top").clicked() { emit(180.0); }
+                    if ui.small_button("\u{2190}").on_hover_text("Right → Left").clicked() { emit(270.0); }
+                    if ui.small_button("\u{2198}").on_hover_text("TL → BR (45°)").clicked() { emit(135.0); }
+                    if ui.small_button("\u{2197}").on_hover_text("BL → TR (45°)").clicked() { emit(45.0); }
+                });
+            }
         }
 
         klipp_core::GeneratorData::ColorBars => {
