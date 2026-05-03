@@ -1805,9 +1805,12 @@ fn show_title_editor(
                 klipp_timeline::CharEntrance::FadeIn => 1,
                 klipp_timeline::CharEntrance::SlideUp => 2,
                 klipp_timeline::CharEntrance::SlideDown => 3,
-                klipp_timeline::CharEntrance::ScaleUp => 4,
+                klipp_timeline::CharEntrance::SlideLeft => 4,
+                klipp_timeline::CharEntrance::SlideRight => 5,
+                klipp_timeline::CharEntrance::ScaleUp => 6,
+                klipp_timeline::CharEntrance::ScaleDown => 7,
             };
-            let entrance_labels = ["None", "Fade In", "Slide Up", "Slide Down", "Scale Up"];
+            let entrance_labels = ["None", "Fade In", "Slide Up", "Slide Down", "Slide Left", "Slide Right", "Scale Up", "Scale Down"];
             let mut new_entrance_idx = entrance_idx;
             egui::ComboBox::from_label("Entrance")
                 .selected_text(entrance_labels[entrance_idx])
@@ -1849,14 +1852,12 @@ fn show_title_editor(
     ui.label(egui::RichText::new("Scroll & Animation").strong().size(11.0));
     {
         use klipp_timeline::TitleAnimationType as T;
-        let current_label = match &td.animation_type {
-            T::Static => "Static (no animation)",
-            T::ScrollUp { .. } => "Scroll \u{2191} (bottom \u{2192} top)",
-            T::ScrollDown { .. } => "Scroll \u{2193} (top \u{2192} bottom)",
-            T::CrawlLeft { .. } => "Crawl \u{2190} (right \u{2192} left)",
-            T::CrawlRight { .. } => "Crawl \u{2192} (left \u{2192} right)",
-            T::Typewriter { .. } => "Typewriter",
-        };
+        // Single source of truth: every variant's display label, kind
+        // code, primary parameter, and (where applicable) secondary
+        // parameter all flow through these helpers. Adding a new
+        // variant means extending the enum, then this block in one
+        // place — no risk of the combo, the spinner, and the encoder
+        // drifting out of sync.
         let current_kind: u8 = match &td.animation_type {
             T::Static => 0,
             T::ScrollUp { .. } => 1,
@@ -1864,43 +1865,111 @@ fn show_title_editor(
             T::CrawlLeft { .. } => 3,
             T::CrawlRight { .. } => 4,
             T::Typewriter { .. } => 5,
+            T::FadeIn { .. } => 6,
+            T::FadeOut { .. } => 7,
+            T::FadeInOut { .. } => 8,
+            T::Flash { .. } => 9,
+            T::Blink { .. } => 10,
+            T::Pulse { .. } => 11,
+            T::ZoomIn { .. } => 12,
+            T::ZoomOut { .. } => 13,
+            T::SlideInLeft { .. } => 14,
+            T::SlideInRight { .. } => 15,
+            T::SlideInTop { .. } => 16,
+            T::SlideInBottom { .. } => 17,
         };
+        let kind_label = |k: u8| -> &'static str {
+            match k {
+                0 => "Static (no animation)",
+                1 => "Scroll \u{2191} (bottom \u{2192} top)",
+                2 => "Scroll \u{2193} (top \u{2192} bottom)",
+                3 => "Crawl \u{2190} (right \u{2192} left)",
+                4 => "Crawl \u{2192} (left \u{2192} right)",
+                5 => "Typewriter",
+                6 => "Fade In",
+                7 => "Fade Out",
+                8 => "Fade In + Out",
+                9 => "Flash",
+                10 => "Blink (custom duty)",
+                11 => "Pulse (smooth)",
+                12 => "Zoom In",
+                13 => "Zoom Out",
+                14 => "Slide In \u{2190} (from left)",
+                15 => "Slide In \u{2192} (from right)",
+                16 => "Slide In \u{2191} (from top)",
+                17 => "Slide In \u{2193} (from bottom)",
+                _ => "Static (no animation)",
+            }
+        };
+        // Sensible defaults when switching kinds. Picked to look right
+        // out of the box on a typical 3-5s title clip.
+        let kind_defaults = |k: u8| -> (f32, f32) {
+            match k {
+                1 | 2 | 3 | 4 => (0.0, 0.0),     // scroll/crawl: Auto
+                5 => (15.0, 0.0),                // Typewriter chars/sec
+                6 | 7 => (0.5, 0.0),             // FadeIn/Out 0.5s
+                8 => (0.5, 0.0),                 // FadeInOut fade_secs
+                9 => (4.0, 0.0),                 // Flash 4 Hz
+                10 => (4.0, 0.3),                // Blink 4 Hz, 30% on
+                11 => (1.0, 0.4),                // Pulse 1 Hz, min_op 0.4
+                12 => (0.5, 1.5),                // ZoomIn 0.5s from 1.5x
+                13 => (0.5, 1.5),                // ZoomOut 0.5s to 1.5x
+                14 | 15 | 16 | 17 => (0.5, 0.0), // Slide 0.5s
+                _ => (0.0, 0.0),
+            }
+        };
+
         let mut selected = current_kind;
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Direction:").size(11.0).color(theme.text_secondary));
+            ui.label(egui::RichText::new("Animation:").size(11.0).color(theme.text_secondary));
             egui::ComboBox::from_id_salt("title_animation")
-                .selected_text(current_label)
+                .selected_text(kind_label(current_kind))
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut selected, 0, "Static (no animation)");
+                    ui.selectable_value(&mut selected, 0, kind_label(0));
                     ui.separator();
-                    ui.selectable_value(&mut selected, 1, "Scroll \u{2191} (bottom \u{2192} top)");
-                    ui.selectable_value(&mut selected, 2, "Scroll \u{2193} (top \u{2192} bottom)");
-                    ui.selectable_value(&mut selected, 3, "Crawl \u{2190} (right \u{2192} left)");
-                    ui.selectable_value(&mut selected, 4, "Crawl \u{2192} (left \u{2192} right)");
+                    ui.label(egui::RichText::new("Continuous").size(10.0).color(theme.text_dim));
+                    ui.selectable_value(&mut selected, 1, kind_label(1));
+                    ui.selectable_value(&mut selected, 2, kind_label(2));
+                    ui.selectable_value(&mut selected, 3, kind_label(3));
+                    ui.selectable_value(&mut selected, 4, kind_label(4));
+                    ui.selectable_value(&mut selected, 5, kind_label(5));
                     ui.separator();
-                    ui.selectable_value(&mut selected, 5, "Typewriter");
+                    ui.label(egui::RichText::new("Fade").size(10.0).color(theme.text_dim));
+                    ui.selectable_value(&mut selected, 6, kind_label(6));
+                    ui.selectable_value(&mut selected, 7, kind_label(7));
+                    ui.selectable_value(&mut selected, 8, kind_label(8));
+                    ui.separator();
+                    ui.label(egui::RichText::new("Flashing").size(10.0).color(theme.text_dim));
+                    ui.selectable_value(&mut selected, 9, kind_label(9));
+                    ui.selectable_value(&mut selected, 10, kind_label(10));
+                    ui.selectable_value(&mut selected, 11, kind_label(11));
+                    ui.separator();
+                    ui.label(egui::RichText::new("Zoom").size(10.0).color(theme.text_dim));
+                    ui.selectable_value(&mut selected, 12, kind_label(12));
+                    ui.selectable_value(&mut selected, 13, kind_label(13));
+                    ui.separator();
+                    ui.label(egui::RichText::new("Slide In").size(10.0).color(theme.text_dim));
+                    ui.selectable_value(&mut selected, 14, kind_label(14));
+                    ui.selectable_value(&mut selected, 15, kind_label(15));
+                    ui.selectable_value(&mut selected, 16, kind_label(16));
+                    ui.selectable_value(&mut selected, 17, kind_label(17));
                 });
         });
         if selected != current_kind {
-            // Switching kind defaults to speed = 0 ("Auto" / clip-bounded)
-            // for scroll/crawl — the motion fills the entire clip
-            // duration regardless of length, matching the original
-            // baked-in template behaviour. Typewriter still gets a
-            // sensible chars/sec default since "0 chars/sec" isn't
-            // meaningful.
-            let speed = match selected {
-                1 | 2 | 3 | 4 => 0.0,
-                5 => 15.0,
-                _ => 0.0,
-            };
+            let (speed, param2) = kind_defaults(selected);
             cmds.push(AppCommand::SetTitleAnimation {
                 clip_id,
                 animation_kind: selected,
                 speed,
+                param2,
             });
         }
 
-        // Speed / chars_per_sec spinner, shown only for animated variants
+        // ── Per-variant parameter spinners ──
+        // The Static / Typewriter / scroll-crawl variants keep their
+        // existing UX. New variants get a single-purpose spinner per
+        // parameter so the user can tune the effect without leaving
+        // the Inspector.
         match &td.animation_type {
             T::ScrollUp { speed_px_per_sec }
             | T::ScrollDown { speed_px_per_sec }
@@ -1909,30 +1978,13 @@ fn show_title_editor(
                 let mut v = *speed_px_per_sec;
                 ui.horizontal(|ui| {
                     ui.label("Speed:");
-                    // 0 = Auto (clip-bounded — animation fills clip duration).
-                    // Custom formatter shows "Auto" instead of "0 px/s" at the
-                    // bottom of the range so the semantics are obvious.
                     let resp = ui.add(
                         egui::DragValue::new(&mut v)
                             .range(0.0..=2000.0)
-                            // 1 px/s per drag-pixel keeps the useful
-                            // range (10–500 px/s for visible slow
-                            // scroll, 500+ for fast) reachable in a
-                            // few centimetres of mouse travel. Sub-1
-                            // px/s torture-mode is still available
-                            // by typing the value (custom_parser
-                            // accepts decimals) — but those rates
-                            // produce single-pixel motion over tens
-                            // of seconds, so they're niche enough to
-                            // hide behind keyboard entry rather than
-                            // make the slider drag through them.
                             .speed(1.0)
                             .min_decimals(0)
                             .max_decimals(2)
                             .custom_formatter(|n, _| {
-                                // Treat near-zero as the explicit
-                                // Auto (clip-bounded) sentinel —
-                                // anything ≥ 0.005 is a real speed.
                                 if n < 0.005 {
                                     "Auto".to_string()
                                 } else if (n - n.round()).abs() < 1e-3 {
@@ -1946,18 +1998,13 @@ fn show_title_editor(
                                 if t == "auto" || t.is_empty() {
                                     Some(0.0)
                                 } else {
-                                    t.trim_end_matches("px/s")
-                                        .trim()
-                                        .parse::<f64>()
-                                        .ok()
+                                    t.trim_end_matches("px/s").trim().parse::<f64>().ok()
                                 }
                             }),
                     );
                     if resp.changed() {
                         cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id,
-                            animation_kind: current_kind,
-                            speed: v,
+                            clip_id, animation_kind: current_kind, speed: v, param2: 0.0,
                         });
                     }
                 });
@@ -1966,19 +2013,106 @@ fn show_title_editor(
                 let mut v = *chars_per_sec;
                 ui.horizontal(|ui| {
                     ui.label("Chars/sec:");
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut v)
-                                .range(1.0..=100.0)
-                                .speed(0.5)
-                                .fixed_decimals(1),
-                        )
-                        .changed()
-                    {
+                    if ui.add(egui::DragValue::new(&mut v).range(1.0..=100.0).speed(0.5).fixed_decimals(1)).changed() {
                         cmds.push(AppCommand::SetTitleAnimation {
-                            clip_id,
-                            animation_kind: 5,
-                            speed: v,
+                            clip_id, animation_kind: 5, speed: v, param2: 0.0,
+                        });
+                    }
+                });
+            }
+            T::FadeIn { duration_secs } | T::FadeOut { duration_secs } | T::FadeInOut { fade_secs: duration_secs } => {
+                let mut v = *duration_secs;
+                ui.horizontal(|ui| {
+                    ui.label("Duration:");
+                    if ui.add(egui::DragValue::new(&mut v).range(0.05..=10.0).speed(0.05).fixed_decimals(2).suffix(" s")).changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: current_kind, speed: v, param2: 0.0,
+                        });
+                    }
+                });
+            }
+            T::Flash { rate_hz } => {
+                let mut v = *rate_hz;
+                ui.horizontal(|ui| {
+                    ui.label("Rate:");
+                    if ui.add(egui::DragValue::new(&mut v).range(0.5..=20.0).speed(0.1).fixed_decimals(1).suffix(" Hz")).changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: 9, speed: v, param2: 0.0,
+                        });
+                    }
+                });
+            }
+            T::Blink { rate_hz, duty_cycle } => {
+                let mut r = *rate_hz;
+                let mut d = *duty_cycle;
+                ui.horizontal(|ui| {
+                    ui.label("Rate:");
+                    if ui.add(egui::DragValue::new(&mut r).range(0.5..=20.0).speed(0.1).fixed_decimals(1).suffix(" Hz")).changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: 10, speed: r, param2: d,
+                        });
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Duty cycle:");
+                    if ui.add(egui::DragValue::new(&mut d).range(0.05..=0.95).speed(0.01).fixed_decimals(2)).changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: 10, speed: r, param2: d,
+                        });
+                    }
+                });
+            }
+            T::Pulse { rate_hz, min_opacity } => {
+                let mut r = *rate_hz;
+                let mut m = *min_opacity;
+                ui.horizontal(|ui| {
+                    ui.label("Rate:");
+                    if ui.add(egui::DragValue::new(&mut r).range(0.1..=10.0).speed(0.05).fixed_decimals(2).suffix(" Hz")).changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: 11, speed: r, param2: m,
+                        });
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Min opacity:");
+                    if ui.add(egui::DragValue::new(&mut m).range(0.0..=0.95).speed(0.01).fixed_decimals(2)).changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: 11, speed: r, param2: m,
+                        });
+                    }
+                });
+            }
+            T::ZoomIn { duration_secs, from_scale } | T::ZoomOut { duration_secs, to_scale: from_scale } => {
+                let mut dur = *duration_secs;
+                let mut scale = *from_scale;
+                let scale_label = if matches!(td.animation_type, T::ZoomIn { .. }) { "From scale:" } else { "To scale:" };
+                ui.horizontal(|ui| {
+                    ui.label("Duration:");
+                    if ui.add(egui::DragValue::new(&mut dur).range(0.05..=10.0).speed(0.05).fixed_decimals(2).suffix(" s")).changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: current_kind, speed: dur, param2: scale,
+                        });
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(scale_label);
+                    if ui.add(egui::DragValue::new(&mut scale).range(0.05..=8.0).speed(0.02).fixed_decimals(2).suffix("\u{00d7}")).changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: current_kind, speed: dur, param2: scale,
+                        });
+                    }
+                });
+            }
+            T::SlideInLeft { duration_secs }
+            | T::SlideInRight { duration_secs }
+            | T::SlideInTop { duration_secs }
+            | T::SlideInBottom { duration_secs } => {
+                let mut v = *duration_secs;
+                ui.horizontal(|ui| {
+                    ui.label("Duration:");
+                    if ui.add(egui::DragValue::new(&mut v).range(0.05..=10.0).speed(0.05).fixed_decimals(2).suffix(" s")).changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: current_kind, speed: v, param2: 0.0,
                         });
                     }
                 });

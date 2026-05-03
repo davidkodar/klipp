@@ -1878,7 +1878,7 @@ fn paint_card_text(
     // a static card we render the full text in its anchor pose; while
     // hovered, these modify either the visible character count or the
     // anchor position.
-    let (display_text, type_pos) = apply_animation_type(
+    let (display_text, type_pos, anim_alpha, anim_scale) = apply_animation_type(
         &data,
         &display_text_raw,
         rect,
@@ -1887,6 +1887,15 @@ fn paint_card_text(
         elapsed_secs,
     );
     let pos = type_pos;
+    // Multiply animation alpha/scale on top of the text-style xform so
+    // fade/flash/zoom previews also respect any underlying card-level
+    // transition (e.g. card hover-in alpha).
+    let xform = TextTransform {
+        alpha: xform.alpha * anim_alpha,
+        offset: xform.offset,
+        scale: xform.scale * anim_scale,
+    };
+    let font_size = ((data.font_size() / 5.0) * xform.scale).clamp(8.0, 28.0);
 
     // ── 1. Background ──
     paint_title_background(
@@ -2268,8 +2277,8 @@ fn paint_char_animated(
             0.0
         };
         // Entrance pose offset.
-        let (mut entrance_alpha, mut entrance_dy, mut entrance_scale) =
-            (1.0, 0.0, 1.0);
+        let (mut entrance_alpha, mut entrance_dx, mut entrance_dy, mut entrance_scale) =
+            (1.0, 0.0, 0.0, 1.0);
         match ca.entrance {
             CharEntrance::None => {}
             CharEntrance::FadeIn => {
@@ -2283,12 +2292,28 @@ fn paint_char_animated(
                 entrance_alpha = local_t;
                 entrance_dy = -(1.0 - local_t) * font_size;
             }
+            CharEntrance::SlideLeft => {
+                entrance_alpha = local_t;
+                entrance_dx = (1.0 - local_t) * font_size;
+            }
+            CharEntrance::SlideRight => {
+                entrance_alpha = local_t;
+                entrance_dx = -(1.0 - local_t) * font_size;
+            }
             CharEntrance::ScaleUp => {
                 entrance_alpha = local_t;
                 entrance_scale = local_t.max(0.05);
             }
+            CharEntrance::ScaleDown => {
+                // Start oversized and settle to 1.0 — the symmetric
+                // counterpart to ScaleUp. Cap to avoid the first-frame
+                // glyph being painted ~3× the cell size and disappearing
+                // under siblings.
+                entrance_alpha = local_t;
+                entrance_scale = (2.0 - local_t).max(1.0).min(2.0);
+            }
         }
-        let cx = start_x + i as f32 * char_w + char_w * 0.5;
+        let cx = start_x + i as f32 * char_w + char_w * 0.5 + entrance_dx;
         let cy = pos.y + wave_y + entrance_dy;
         let color = scaled_color(base_color, alpha_mul * entrance_alpha);
         paint_styled_text(
@@ -2341,8 +2366,10 @@ fn paint_gradient_text(
 }
 
 /// Apply the template's animation_type to the card-preview pose. On
-/// a static card we keep the full text at its anchor position; while
-/// hovered, scroll/crawl/typewriter advance through a 3-second loop.
+/// a static card we render the full text in its anchor pose; while
+/// hovered, animation variants advance through a 3-second loop. Returns
+/// `(text, pos, alpha_mul, scale_mul)` so the caller can layer the
+/// preview pose on top of the text-style transform.
 fn apply_animation_type(
     data: &TitleData,
     text: &str,
@@ -2350,36 +2377,111 @@ fn apply_animation_type(
     base_pos: egui::Pos2,
     _font_size: f32,
     elapsed: f32,
-) -> (String, egui::Pos2) {
+) -> (String, egui::Pos2, f32, f32) {
     if elapsed <= 0.0 {
-        return (text.to_string(), base_pos);
+        return (text.to_string(), base_pos, 1.0, 1.0);
     }
     const LOOP_SECS: f32 = 3.0;
     let t = elapsed.rem_euclid(LOOP_SECS) / LOOP_SECS;
     match &data.animation_type {
-        TitleAnimationType::Static => (text.to_string(), base_pos),
+        TitleAnimationType::Static => (text.to_string(), base_pos, 1.0, 1.0),
         TitleAnimationType::ScrollUp { .. } => {
             let dy = rect.height() * 0.5 - rect.height() * t;
-            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy))
+            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy), 1.0, 1.0)
         }
         TitleAnimationType::ScrollDown { .. } => {
             let dy = -rect.height() * 0.5 + rect.height() * t;
-            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy))
+            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy), 1.0, 1.0)
         }
         TitleAnimationType::CrawlLeft { .. } => {
             let dx = rect.width() * 0.5 - rect.width() * t;
-            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y))
+            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y), 1.0, 1.0)
         }
         TitleAnimationType::CrawlRight { .. } => {
             let dx = -rect.width() * 0.5 + rect.width() * t;
-            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y))
+            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y), 1.0, 1.0)
         }
         TitleAnimationType::Typewriter { .. } => {
             let chars: Vec<char> = text.chars().collect();
             let visible = ((t * (chars.len() as f32 + 6.0)) as usize)
                 .min(chars.len());
             let revealed: String = chars.iter().take(visible).collect();
-            (revealed, base_pos)
+            (revealed, base_pos, 1.0, 1.0)
+        }
+        TitleAnimationType::FadeIn { .. } => {
+            // Fade in over first 33% of preview loop, hold for the rest.
+            let alpha = (t / 0.33).clamp(0.0, 1.0);
+            (text.to_string(), base_pos, alpha, 1.0)
+        }
+        TitleAnimationType::FadeOut { .. } => {
+            // Hold opaque for first 67% then fade out.
+            let alpha = (1.0 - (t - 0.67) / 0.33).clamp(0.0, 1.0);
+            (text.to_string(), base_pos, alpha, 1.0)
+        }
+        TitleAnimationType::FadeInOut { .. } => {
+            // Fade in 0..0.25, hold 0.25..0.75, fade out 0.75..1.
+            let alpha = if t < 0.25 {
+                t / 0.25
+            } else if t > 0.75 {
+                (1.0 - t) / 0.25
+            } else {
+                1.0
+            };
+            (text.to_string(), base_pos, alpha.clamp(0.0, 1.0), 1.0)
+        }
+        TitleAnimationType::Flash { rate_hz } => {
+            // Square wave preview at the configured rate (cap to keep
+            // hover preview readable — 8 Hz visible flicker, anything
+            // higher just looks like dimmed solid text).
+            let rate = (*rate_hz).clamp(0.5, 8.0);
+            let phase = (elapsed * rate) % 1.0;
+            let alpha = if phase < 0.5 { 1.0 } else { 0.0 };
+            (text.to_string(), base_pos, alpha, 1.0)
+        }
+        TitleAnimationType::Blink { rate_hz, duty_cycle } => {
+            let rate = (*rate_hz).clamp(0.5, 8.0);
+            let phase = (elapsed * rate) % 1.0;
+            let alpha = if phase < *duty_cycle { 1.0 } else { 0.0 };
+            (text.to_string(), base_pos, alpha, 1.0)
+        }
+        TitleAnimationType::Pulse { rate_hz, min_opacity } => {
+            let rate = (*rate_hz).clamp(0.1, 4.0);
+            let phase = (elapsed * rate) * std::f32::consts::TAU;
+            let s = 0.5 + 0.5 * phase.sin();
+            let alpha = min_opacity + (1.0 - min_opacity) * s;
+            (text.to_string(), base_pos, alpha.clamp(0.0, 1.0), 1.0)
+        }
+        TitleAnimationType::ZoomIn { from_scale, .. } => {
+            // Scale ramps from `from_scale` → 1.0 over first 50% of loop.
+            let p = (t / 0.5).clamp(0.0, 1.0);
+            let scale = from_scale + (1.0 - from_scale) * p;
+            (text.to_string(), base_pos, 1.0, scale.clamp(0.05, 4.0))
+        }
+        TitleAnimationType::ZoomOut { to_scale, .. } => {
+            // Scale 1.0 → to_scale over second 50% of loop.
+            let p = ((t - 0.5) / 0.5).clamp(0.0, 1.0);
+            let scale = 1.0 + (to_scale - 1.0) * p;
+            (text.to_string(), base_pos, 1.0, scale.clamp(0.05, 4.0))
+        }
+        TitleAnimationType::SlideInLeft { .. } => {
+            let p = (t / 0.5).clamp(0.0, 1.0);
+            let dx = (1.0 - p) * -rect.width() * 0.5;
+            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y), 1.0, 1.0)
+        }
+        TitleAnimationType::SlideInRight { .. } => {
+            let p = (t / 0.5).clamp(0.0, 1.0);
+            let dx = (1.0 - p) * rect.width() * 0.5;
+            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y), 1.0, 1.0)
+        }
+        TitleAnimationType::SlideInTop { .. } => {
+            let p = (t / 0.5).clamp(0.0, 1.0);
+            let dy = (1.0 - p) * -rect.height() * 0.5;
+            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy), 1.0, 1.0)
+        }
+        TitleAnimationType::SlideInBottom { .. } => {
+            let p = (t / 0.5).clamp(0.0, 1.0);
+            let dy = (1.0 - p) * rect.height() * 0.5;
+            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy), 1.0, 1.0)
         }
     }
 }

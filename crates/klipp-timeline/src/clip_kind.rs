@@ -557,6 +557,20 @@ pub fn default_text_transform() -> ObjectTransform {
 
 /// Title motion preset — drives keyframe generation (scroll/crawl) or
 /// per-frame `write_on` override (typewriter). Static = no animation.
+///
+/// Variant authoring conventions:
+/// - "Continuous" motion (Scroll/Crawl/Pulse/Flash/Blink) animate the
+///   entire clip duration; the parameter (speed / rate) drives the
+///   period of motion.
+/// - "One-shot enter" animations (FadeIn/SlideInX/ZoomIn) play once
+///   over `duration_secs` from the start of the clip and hold the
+///   final pose for the rest. Their counterparts FadeOut/ZoomOut
+///   play once over `duration_secs` ending at the clip's end.
+/// - FadeInOut combines the two into a single `fade_secs` envelope.
+/// - All variants compose with the textbox's `transform.center` so
+///   the user can drag the textbox while keeping the animation; the
+///   keyframes write to clip-level opacity / scale / pos channels
+///   that translate the entire title.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum TitleAnimationType {
     #[default]
@@ -572,6 +586,41 @@ pub enum TitleAnimationType {
     CrawlRight { speed_px_per_sec: f32 },
     /// Per-character reveal (typewriter effect).
     Typewriter { chars_per_sec: f32 },
+    /// Opacity ramps 0 → 1 over `duration_secs` at clip start, then
+    /// holds at 1 for the rest of the clip.
+    FadeIn { duration_secs: f32 },
+    /// Opacity ramps 1 → 0 over `duration_secs` ending at clip end;
+    /// holds at 1 before that.
+    FadeOut { duration_secs: f32 },
+    /// Combined: fade in at start, hold full opacity, fade out at end.
+    /// Both ramps are `fade_secs` long.
+    FadeInOut { fade_secs: f32 },
+    /// Square-wave opacity at `rate_hz` (50% duty cycle on/off). Use
+    /// for "ALERT" / "WARNING" style flashing titles.
+    Flash { rate_hz: f32 },
+    /// Like Flash but with an authored `duty_cycle` (fraction of the
+    /// period that the title is visible — 0.1 = brief blip, 0.9 =
+    /// brief gap). 0.5 is identical to Flash.
+    Blink { rate_hz: f32, duty_cycle: f32 },
+    /// Smooth sinusoidal opacity oscillation between `min_opacity` and
+    /// 1.0 at `rate_hz`. Common for "breathing" emphasis.
+    Pulse { rate_hz: f32, min_opacity: f32 },
+    /// Scale ramps from `from_scale` → 1.0 over `duration_secs` at
+    /// clip start. `from_scale > 1.0` zooms IN from a larger size;
+    /// `from_scale < 1.0` zooms in from smaller.
+    ZoomIn { duration_secs: f32, from_scale: f32 },
+    /// Scale ramps 1.0 → `to_scale` over `duration_secs` ending at
+    /// clip end. Symmetric counterpart to ZoomIn.
+    ZoomOut { duration_secs: f32, to_scale: f32 },
+    /// Title slides in from off-screen-left to its anchor over
+    /// `duration_secs`. Holds in place for the rest of the clip.
+    SlideInLeft { duration_secs: f32 },
+    /// Slides in from off-screen-right.
+    SlideInRight { duration_secs: f32 },
+    /// Slides in from off-screen-top.
+    SlideInTop { duration_secs: f32 },
+    /// Slides in from off-screen-bottom.
+    SlideInBottom { duration_secs: f32 },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -635,7 +684,10 @@ pub enum CharEntrance {
     FadeIn,
     SlideUp,
     SlideDown,
+    SlideLeft,
+    SlideRight,
     ScaleUp,
+    ScaleDown,
 }
 
 fn default_one() -> f32 { 1.0 }

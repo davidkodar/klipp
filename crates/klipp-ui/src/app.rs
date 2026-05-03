@@ -13875,7 +13875,10 @@ impl KlippApp {
                         1 => klipp_timeline::CharEntrance::FadeIn,
                         2 => klipp_timeline::CharEntrance::SlideUp,
                         3 => klipp_timeline::CharEntrance::SlideDown,
-                        4 => klipp_timeline::CharEntrance::ScaleUp,
+                        4 => klipp_timeline::CharEntrance::SlideLeft,
+                        5 => klipp_timeline::CharEntrance::SlideRight,
+                        6 => klipp_timeline::CharEntrance::ScaleUp,
+                        7 => klipp_timeline::CharEntrance::ScaleDown,
                         _ => klipp_timeline::CharEntrance::None,
                     };
                     Some(klipp_timeline::CharAnimation {
@@ -13905,8 +13908,8 @@ impl KlippApp {
                 self.state.title_fade_duration = *duration;
                 true
             }
-            AppCommand::SetTitleAnimation { clip_id, animation_kind, speed } => {
-                let animation = decode_title_animation(*animation_kind, *speed);
+            AppCommand::SetTitleAnimation { clip_id, animation_kind, speed, param2 } => {
+                let animation = decode_title_animation(*animation_kind, *speed, *param2);
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 let frame_w = seq.resolution.width as f32;
                 let frame_h = seq.resolution.height as f32;
@@ -29325,9 +29328,10 @@ fn format_ass_time(secs: f64) -> String {
 
 // ── Title animation helpers ──
 
-/// Decode the (animation_kind, speed) pair from `AppCommand::SetTitleAnimation`
-/// into a `TitleAnimationType` enum variant.
-fn decode_title_animation(kind: u8, speed: f32) -> klipp_timeline::TitleAnimationType {
+/// Decode the (animation_kind, speed, param2) tuple from
+/// `AppCommand::SetTitleAnimation` into a `TitleAnimationType` enum
+/// variant. The `kind` codes are documented on the AppCommand variant.
+fn decode_title_animation(kind: u8, speed: f32, param2: f32) -> klipp_timeline::TitleAnimationType {
     use klipp_timeline::TitleAnimationType as T;
     match kind {
         1 => T::ScrollUp { speed_px_per_sec: speed },
@@ -29335,6 +29339,18 @@ fn decode_title_animation(kind: u8, speed: f32) -> klipp_timeline::TitleAnimatio
         3 => T::CrawlLeft { speed_px_per_sec: speed },
         4 => T::CrawlRight { speed_px_per_sec: speed },
         5 => T::Typewriter { chars_per_sec: speed },
+        6 => T::FadeIn { duration_secs: speed },
+        7 => T::FadeOut { duration_secs: speed },
+        8 => T::FadeInOut { fade_secs: speed },
+        9 => T::Flash { rate_hz: speed },
+        10 => T::Blink { rate_hz: speed, duty_cycle: param2 },
+        11 => T::Pulse { rate_hz: speed, min_opacity: param2 },
+        12 => T::ZoomIn { duration_secs: speed, from_scale: param2 },
+        13 => T::ZoomOut { duration_secs: speed, to_scale: param2 },
+        14 => T::SlideInLeft { duration_secs: speed },
+        15 => T::SlideInRight { duration_secs: speed },
+        16 => T::SlideInTop { duration_secs: speed },
+        17 => T::SlideInBottom { duration_secs: speed },
         _ => T::Static,
     }
 }
@@ -29440,34 +29456,180 @@ fn apply_title_animation_keyframes(
         }
     };
 
+    let mk_step_kf = |time_secs: f64, value: f32| Keyframe {
+        time_secs,
+        value,
+        interpolation: Interpolation::Step,
+        tangent_out: (0.0, 0.0),
+        tangent_in: (0.0, 0.0),
+    };
+
+    // Always clear ALL animation-driven channels at the start so that
+    // switching animation types doesn't leave ghost keyframes from a
+    // previous variant (e.g. Flash → Static used to leave the opacity
+    // square wave still active).
+    clip.transform_pos_x_keyframes.clear();
+    clip.transform_pos_y_keyframes.clear();
+    clip.transform_scale_keyframes.clear();
+    clip.opacity_keyframes.clear();
+
     match animation {
+        T::Static | T::Typewriter { .. } => {
+            // Already cleared above; nothing further to write.
+        }
         T::ScrollUp { speed_px_per_sec } => {
             let (sy, st, ey, et) = plan(scroll_offset, *speed_px_per_sec);
-            clip.transform_pos_x_keyframes.clear();
             clip.transform_pos_y_keyframes =
                 vec![mk_linear_kf(st, sy), mk_linear_kf(et, ey)];
         }
         T::ScrollDown { speed_px_per_sec } => {
             let (sy, st, ey, et) = plan(scroll_offset, *speed_px_per_sec);
-            clip.transform_pos_x_keyframes.clear();
             clip.transform_pos_y_keyframes =
                 vec![mk_linear_kf(st, -sy), mk_linear_kf(et, -ey)];
         }
         T::CrawlLeft { speed_px_per_sec } => {
             let (sx, st, ex, et) = plan(crawl_offset, *speed_px_per_sec);
-            clip.transform_pos_y_keyframes.clear();
             clip.transform_pos_x_keyframes =
                 vec![mk_linear_kf(st, sx), mk_linear_kf(et, ex)];
         }
         T::CrawlRight { speed_px_per_sec } => {
             let (sx, st, ex, et) = plan(crawl_offset, *speed_px_per_sec);
-            clip.transform_pos_y_keyframes.clear();
             clip.transform_pos_x_keyframes =
                 vec![mk_linear_kf(st, -sx), mk_linear_kf(et, -ex)];
         }
-        T::Typewriter { .. } | T::Static => {
-            clip.transform_pos_x_keyframes.clear();
-            clip.transform_pos_y_keyframes.clear();
+        T::FadeIn { duration_secs } => {
+            // Opacity 0 → 1 over `duration_secs`, hold at 1 for the
+            // rest of the clip. Clamp to clip duration so 0-length
+            // clips still get a sensible one-keyframe fully-on track.
+            let dur = (*duration_secs as f64).clamp(0.0, clip_dur_secs);
+            clip.opacity_keyframes = vec![
+                mk_linear_kf(0.0, 0.0),
+                mk_linear_kf(dur.max(0.001), 1.0),
+            ];
+        }
+        T::FadeOut { duration_secs } => {
+            // Hold at 1 until `clip_end - duration_secs`, then ramp to 0.
+            let dur = (*duration_secs as f64).clamp(0.0, clip_dur_secs);
+            let start_fade = (clip_dur_secs - dur).max(0.0);
+            clip.opacity_keyframes = vec![
+                mk_linear_kf(start_fade, 1.0),
+                mk_linear_kf(clip_dur_secs, 0.0),
+            ];
+        }
+        T::FadeInOut { fade_secs } => {
+            // Fade in at start, hold, fade out at end. Cap each ramp
+            // at half the clip so there's always a hold (or the two
+            // ramps just meet in the middle for very short clips).
+            let max_fade = (clip_dur_secs * 0.5).max(0.001);
+            let dur = (*fade_secs as f64).clamp(0.0, max_fade);
+            clip.opacity_keyframes = vec![
+                mk_linear_kf(0.0, 0.0),
+                mk_linear_kf(dur, 1.0),
+                mk_linear_kf(clip_dur_secs - dur, 1.0),
+                mk_linear_kf(clip_dur_secs, 0.0),
+            ];
+        }
+        T::Flash { rate_hz } => {
+            // Square-wave 50% duty cycle. Step interpolation gives
+            // hard on/off edges; alternating 1/0 keyframes at the
+            // half-period.
+            let rate = (*rate_hz as f64).max(0.1);
+            let half_period = 0.5 / rate;
+            let mut t = 0.0;
+            let mut on = true;
+            let mut kfs = Vec::new();
+            while t <= clip_dur_secs + 1e-6 {
+                kfs.push(mk_step_kf(t, if on { 1.0 } else { 0.0 }));
+                t += half_period;
+                on = !on;
+            }
+            clip.opacity_keyframes = kfs;
+        }
+        T::Blink { rate_hz, duty_cycle } => {
+            // Like Flash but with a custom on-fraction. duty_cycle
+            // 0..1; 0.5 reproduces Flash. Clamp to a sane band to
+            // avoid degenerate zero-length on/off pulses.
+            let rate = (*rate_hz as f64).max(0.1);
+            let duty = (*duty_cycle as f64).clamp(0.05, 0.95);
+            let period = 1.0 / rate;
+            let on_dur = period * duty;
+            let mut t = 0.0;
+            let mut kfs = Vec::new();
+            while t <= clip_dur_secs + 1e-6 {
+                kfs.push(mk_step_kf(t, 1.0));
+                kfs.push(mk_step_kf((t + on_dur).min(clip_dur_secs), 0.0));
+                t += period;
+            }
+            clip.opacity_keyframes = kfs;
+        }
+        T::Pulse { rate_hz, min_opacity } => {
+            // Sinusoidal opacity oscillation between min_opacity and 1.0.
+            // Approximate with linear-interpolated waypoints — 16 per
+            // cycle gives a visually-smooth pulse and stays cheap to
+            // evaluate (the engine's keyframe.evaluate is O(log n)
+            // via binary search in practice).
+            let rate = (*rate_hz as f64).max(0.05);
+            let period = 1.0 / rate;
+            let min_op = (*min_opacity).clamp(0.0, 0.95);
+            let amp = 1.0 - min_op;
+            let samples_per_cycle = 16usize;
+            let dt = period / samples_per_cycle as f64;
+            let mut t = 0.0;
+            let mut kfs = Vec::new();
+            while t <= clip_dur_secs + 1e-6 {
+                let phase = (t / period) * std::f64::consts::TAU;
+                // 0.5 * (1 + sin) maps sin(0) = 0 → 0.5, sin(pi/2) = 1 → 1, sin(-pi/2) = -1 → 0.
+                let s = (0.5 + 0.5 * phase.sin()) as f32;
+                let v = min_op + amp * s;
+                kfs.push(mk_linear_kf(t, v));
+                t += dt;
+            }
+            clip.opacity_keyframes = kfs;
+        }
+        T::ZoomIn { duration_secs, from_scale } => {
+            let dur = (*duration_secs as f64).clamp(0.001, clip_dur_secs);
+            let from = (*from_scale).clamp(0.05, 8.0);
+            clip.transform_scale_keyframes = vec![
+                mk_linear_kf(0.0, from),
+                mk_linear_kf(dur, 1.0),
+            ];
+        }
+        T::ZoomOut { duration_secs, to_scale } => {
+            let dur = (*duration_secs as f64).clamp(0.001, clip_dur_secs);
+            let to = (*to_scale).clamp(0.05, 8.0);
+            let start_zoom = (clip_dur_secs - dur).max(0.0);
+            clip.transform_scale_keyframes = vec![
+                mk_linear_kf(start_zoom, 1.0),
+                mk_linear_kf(clip_dur_secs, to),
+            ];
+        }
+        T::SlideInLeft { duration_secs } => {
+            let dur = (*duration_secs as f64).clamp(0.001, clip_dur_secs);
+            clip.transform_pos_x_keyframes = vec![
+                mk_linear_kf(0.0, -crawl_offset),
+                mk_linear_kf(dur, 0.0),
+            ];
+        }
+        T::SlideInRight { duration_secs } => {
+            let dur = (*duration_secs as f64).clamp(0.001, clip_dur_secs);
+            clip.transform_pos_x_keyframes = vec![
+                mk_linear_kf(0.0, crawl_offset),
+                mk_linear_kf(dur, 0.0),
+            ];
+        }
+        T::SlideInTop { duration_secs } => {
+            let dur = (*duration_secs as f64).clamp(0.001, clip_dur_secs);
+            clip.transform_pos_y_keyframes = vec![
+                mk_linear_kf(0.0, scroll_offset),
+                mk_linear_kf(dur, 0.0),
+            ];
+        }
+        T::SlideInBottom { duration_secs } => {
+            let dur = (*duration_secs as f64).clamp(0.001, clip_dur_secs);
+            clip.transform_pos_y_keyframes = vec![
+                mk_linear_kf(0.0, -scroll_offset),
+                mk_linear_kf(dur, 0.0),
+            ];
         }
     }
 }
@@ -29851,14 +30013,26 @@ Dialogue: 0,0:00:09.00,0:00:11.00,Default,,0,0,0,,Text, with commas, inside
     #[test]
     fn decode_title_animation_roundtrip() {
         use klipp_timeline::TitleAnimationType as T;
-        assert_eq!(decode_title_animation(0, 0.0), T::Static);
-        assert_eq!(decode_title_animation(1, 100.0), T::ScrollUp { speed_px_per_sec: 100.0 });
-        assert_eq!(decode_title_animation(2, 100.0), T::ScrollDown { speed_px_per_sec: 100.0 });
-        assert_eq!(decode_title_animation(3, 100.0), T::CrawlLeft { speed_px_per_sec: 100.0 });
-        assert_eq!(decode_title_animation(4, 100.0), T::CrawlRight { speed_px_per_sec: 100.0 });
-        assert_eq!(decode_title_animation(5, 15.0), T::Typewriter { chars_per_sec: 15.0 });
+        assert_eq!(decode_title_animation(0, 0.0, 0.0), T::Static);
+        assert_eq!(decode_title_animation(1, 100.0, 0.0), T::ScrollUp { speed_px_per_sec: 100.0 });
+        assert_eq!(decode_title_animation(2, 100.0, 0.0), T::ScrollDown { speed_px_per_sec: 100.0 });
+        assert_eq!(decode_title_animation(3, 100.0, 0.0), T::CrawlLeft { speed_px_per_sec: 100.0 });
+        assert_eq!(decode_title_animation(4, 100.0, 0.0), T::CrawlRight { speed_px_per_sec: 100.0 });
+        assert_eq!(decode_title_animation(5, 15.0, 0.0), T::Typewriter { chars_per_sec: 15.0 });
+        assert_eq!(decode_title_animation(6, 0.5, 0.0), T::FadeIn { duration_secs: 0.5 });
+        assert_eq!(decode_title_animation(7, 0.5, 0.0), T::FadeOut { duration_secs: 0.5 });
+        assert_eq!(decode_title_animation(8, 0.4, 0.0), T::FadeInOut { fade_secs: 0.4 });
+        assert_eq!(decode_title_animation(9, 4.0, 0.0), T::Flash { rate_hz: 4.0 });
+        assert_eq!(decode_title_animation(10, 4.0, 0.3), T::Blink { rate_hz: 4.0, duty_cycle: 0.3 });
+        assert_eq!(decode_title_animation(11, 1.0, 0.4), T::Pulse { rate_hz: 1.0, min_opacity: 0.4 });
+        assert_eq!(decode_title_animation(12, 0.5, 1.5), T::ZoomIn { duration_secs: 0.5, from_scale: 1.5 });
+        assert_eq!(decode_title_animation(13, 0.5, 0.5), T::ZoomOut { duration_secs: 0.5, to_scale: 0.5 });
+        assert_eq!(decode_title_animation(14, 0.5, 0.0), T::SlideInLeft { duration_secs: 0.5 });
+        assert_eq!(decode_title_animation(15, 0.5, 0.0), T::SlideInRight { duration_secs: 0.5 });
+        assert_eq!(decode_title_animation(16, 0.5, 0.0), T::SlideInTop { duration_secs: 0.5 });
+        assert_eq!(decode_title_animation(17, 0.5, 0.0), T::SlideInBottom { duration_secs: 0.5 });
         // Unknown → Static (defensive)
-        assert_eq!(decode_title_animation(99, 0.0), T::Static);
+        assert_eq!(decode_title_animation(99, 0.0, 0.0), T::Static);
     }
 
     #[test]
@@ -29973,6 +30147,126 @@ Dialogue: 0,0:00:09.00,0:00:11.00,Default,,0,0,0,,Text, with commas, inside
         apply_title_animation_keyframes(&mut clip, &TitleAnimationType::Static, 1080.0, 1920.0);
         assert!(clip.transform_pos_x_keyframes.is_empty());
         assert!(clip.transform_pos_y_keyframes.is_empty());
+    }
+
+    /// FadeIn writes 2 opacity keyframes (0 at t=0, 1 at t=duration).
+    #[test]
+    fn apply_title_animation_keyframes_fade_in_writes_opacity_track() {
+        use klipp_core::RationalTime;
+        use klipp_timeline::TitleAnimationType;
+        let ti = RationalTime::from_secs_f64(0.0, 24);
+        let to = RationalTime::from_secs_f64(4.0, 24);
+        let mut clip = klipp_timeline::Clip::gap(ti, to);
+        clip.timeline_in = ti;
+        clip.timeline_out = to;
+        let anim = TitleAnimationType::FadeIn { duration_secs: 0.5 };
+        apply_title_animation_keyframes(&mut clip, &anim, 1080.0, 1920.0);
+        assert_eq!(clip.opacity_keyframes.len(), 2);
+        assert!((clip.opacity_keyframes[0].value - 0.0).abs() < 1e-3);
+        assert!((clip.opacity_keyframes[1].value - 1.0).abs() < 1e-3);
+        assert!((clip.opacity_keyframes[1].time_secs - 0.5).abs() < 1e-3);
+        // No position / scale keyframes for a fade.
+        assert!(clip.transform_pos_x_keyframes.is_empty());
+        assert!(clip.transform_pos_y_keyframes.is_empty());
+        assert!(clip.transform_scale_keyframes.is_empty());
+    }
+
+    /// Flash writes a square-wave opacity track at the configured rate.
+    /// 4 Hz over 4s → 8 cycles → 16 keyframes (alternating 1/0).
+    #[test]
+    fn apply_title_animation_keyframes_flash_writes_square_wave() {
+        use klipp_core::{Interpolation, RationalTime};
+        use klipp_timeline::TitleAnimationType;
+        let ti = RationalTime::from_secs_f64(0.0, 24);
+        let to = RationalTime::from_secs_f64(4.0, 24);
+        let mut clip = klipp_timeline::Clip::gap(ti, to);
+        clip.timeline_in = ti;
+        clip.timeline_out = to;
+        let anim = TitleAnimationType::Flash { rate_hz: 4.0 };
+        apply_title_animation_keyframes(&mut clip, &anim, 1080.0, 1920.0);
+        assert!(clip.opacity_keyframes.len() >= 16,
+            "Expected ≥16 keyframes for 4Hz over 4s, got {}", clip.opacity_keyframes.len());
+        // First keyframe is on (1.0), second is off (0.0), all Step.
+        assert!((clip.opacity_keyframes[0].value - 1.0).abs() < 1e-3);
+        assert!((clip.opacity_keyframes[1].value - 0.0).abs() < 1e-3);
+        assert_eq!(clip.opacity_keyframes[0].interpolation, Interpolation::Step);
+    }
+
+    /// ZoomIn writes a scale ramp from `from_scale` to 1.0.
+    #[test]
+    fn apply_title_animation_keyframes_zoom_in_writes_scale_track() {
+        use klipp_core::RationalTime;
+        use klipp_timeline::TitleAnimationType;
+        let ti = RationalTime::from_secs_f64(0.0, 24);
+        let to = RationalTime::from_secs_f64(4.0, 24);
+        let mut clip = klipp_timeline::Clip::gap(ti, to);
+        clip.timeline_in = ti;
+        clip.timeline_out = to;
+        let anim = TitleAnimationType::ZoomIn { duration_secs: 0.5, from_scale: 2.0 };
+        apply_title_animation_keyframes(&mut clip, &anim, 1080.0, 1920.0);
+        assert_eq!(clip.transform_scale_keyframes.len(), 2);
+        assert!((clip.transform_scale_keyframes[0].value - 2.0).abs() < 1e-3);
+        assert!((clip.transform_scale_keyframes[1].value - 1.0).abs() < 1e-3);
+        assert!((clip.transform_scale_keyframes[1].time_secs - 0.5).abs() < 1e-3);
+        // No opacity / position keyframes for a zoom.
+        assert!(clip.opacity_keyframes.is_empty());
+        assert!(clip.transform_pos_x_keyframes.is_empty());
+        assert!(clip.transform_pos_y_keyframes.is_empty());
+    }
+
+    /// SlideInLeft writes pos_x keyframes from -crawl_offset → 0.
+    #[test]
+    fn apply_title_animation_keyframes_slide_in_left_writes_pos_x() {
+        use klipp_core::RationalTime;
+        use klipp_timeline::TitleAnimationType;
+        let ti = RationalTime::from_secs_f64(0.0, 24);
+        let to = RationalTime::from_secs_f64(4.0, 24);
+        let mut clip = klipp_timeline::Clip::gap(ti, to);
+        clip.timeline_in = ti;
+        clip.timeline_out = to;
+        let anim = TitleAnimationType::SlideInLeft { duration_secs: 0.5 };
+        apply_title_animation_keyframes(&mut clip, &anim, 1080.0, 1920.0);
+        assert_eq!(clip.transform_pos_x_keyframes.len(), 2);
+        // Start off-screen-left (negative offset).
+        assert!(clip.transform_pos_x_keyframes[0].value < 0.0);
+        // End at the anchor (0).
+        assert!((clip.transform_pos_x_keyframes[1].value - 0.0).abs() < 1e-3);
+        assert!((clip.transform_pos_x_keyframes[1].time_secs - 0.5).abs() < 1e-3);
+        // No vertical / scale / opacity keyframes for a horizontal slide.
+        assert!(clip.transform_pos_y_keyframes.is_empty());
+        assert!(clip.transform_scale_keyframes.is_empty());
+        assert!(clip.opacity_keyframes.is_empty());
+    }
+
+    /// Switching from a previous animation back to Static must clear
+    /// every keyframe channel — without this, picking Flash and then
+    /// Static would leave the opacity square wave still active.
+    #[test]
+    fn apply_title_animation_keyframes_static_clears_all_channels() {
+        use klipp_core::RationalTime;
+        use klipp_timeline::TitleAnimationType;
+        let ti = RationalTime::from_secs_f64(0.0, 24);
+        let to = RationalTime::from_secs_f64(4.0, 24);
+        let mut clip = klipp_timeline::Clip::gap(ti, to);
+        clip.timeline_in = ti;
+        clip.timeline_out = to;
+        // First arm a Flash to populate opacity_keyframes.
+        apply_title_animation_keyframes(
+            &mut clip,
+            &TitleAnimationType::Flash { rate_hz: 4.0 },
+            1080.0, 1920.0,
+        );
+        assert!(!clip.opacity_keyframes.is_empty());
+        // Then switch to Static — every channel must be empty again.
+        apply_title_animation_keyframes(
+            &mut clip,
+            &TitleAnimationType::Static,
+            1080.0, 1920.0,
+        );
+        assert!(clip.opacity_keyframes.is_empty());
+        assert!(clip.transform_pos_x_keyframes.is_empty());
+        assert!(clip.transform_pos_y_keyframes.is_empty());
+        assert!(clip.transform_scale_keyframes.is_empty());
     }
 }
 

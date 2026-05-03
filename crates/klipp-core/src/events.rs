@@ -1379,15 +1379,34 @@ pub enum AppCommand {
     /// Update the title animation fade duration stored in AppState.
     SetTitleFadeDuration { duration: f32 },
     ClearTitleOverlay,
-    /// Set the title motion animation (scroll/crawl/typewriter).
-    /// `animation_kind`: 0=Static, 1=ScrollUp, 2=ScrollDown, 3=CrawlLeft, 4=CrawlRight, 5=Typewriter.
-    /// `speed` is `speed_px_per_sec` for scroll/crawl or `chars_per_sec` for Typewriter
-    /// (ignored for Static). Regenerates transform_pos_x/y_keyframes for scroll/crawl,
-    /// clears them for Static/Typewriter.
+    /// Set the title motion animation. The handler picks which
+    /// clip-level keyframe channel(s) to write (`opacity_keyframes`
+    /// for fade/flash/blink/pulse, `transform_scale_keyframes` for
+    /// zoom, `transform_pos_x/y_keyframes` for scroll/crawl/slide-in)
+    /// based on the variant.
+    ///
+    /// `animation_kind` codes (see `decode_title_animation` in
+    /// klipp-ui/src/app.rs for the canonical mapping):
+    ///   0  Static
+    ///   1  ScrollUp        2  ScrollDown        3  CrawlLeft       4  CrawlRight
+    ///   5  Typewriter
+    ///   6  FadeIn          7  FadeOut           8  FadeInOut
+    ///   9  Flash          10  Blink            11  Pulse
+    ///  12  ZoomIn         13  ZoomOut
+    ///  14  SlideInLeft    15  SlideInRight    16  SlideInTop    17  SlideInBottom
+    ///
+    /// `speed` is the primary numeric parameter and meaning depends
+    /// on the variant: speed_px_per_sec for scroll/crawl, chars_per_sec
+    /// for Typewriter, duration_secs for fade/zoom/slide-in,
+    /// rate_hz for flash/blink/pulse.
+    /// `param2` is the secondary parameter used by variants that need
+    /// one (Blink: duty_cycle; Pulse: min_opacity; ZoomIn: from_scale;
+    /// ZoomOut: to_scale). Ignored otherwise.
     SetTitleAnimation {
         clip_id: ClipId,
         animation_kind: u8,
         speed: f32,
+        param2: f32,
     },
 
     // Linked clips
