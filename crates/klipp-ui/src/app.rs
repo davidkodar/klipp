@@ -3762,7 +3762,11 @@ impl KlippApp {
                 AppCommand::CreateAdjustmentLayer => {
                     let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
                     let ph = self.state.playhead.rescale_to(fps_rate);
-                    let duration = klipp_core::RationalTime::from_frames(120, fps_rate); // 5 seconds at 24fps
+                    // 5s default, expressed in seconds rather than
+                    // raw ticks — `from_frames(120, fps_rate)` gives
+                    // 5 ms on fractional-fps projects (e.g. 23.976
+                    // NTSC where rate = 24000).
+                    let duration = klipp_core::RationalTime::from_secs_f64(5.0, fps_rate);
                     let timeline_out = ph + duration;
                     let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                     // Find or create the top video track
@@ -3796,7 +3800,13 @@ impl KlippApp {
                 AppCommand::CreateGeneratorClip { track_index, data } => {
                     let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
                     let ph = self.state.playhead.rescale_to(fps_rate);
-                    let duration = klipp_core::RationalTime::from_frames(120, fps_rate);
+                    // 5s default, expressed in seconds rather than
+                    // raw frames. `Fps::rate()` returns the numerator
+                    // (e.g. 24000 for 23.976 NTSC), so a literal
+                    // `from_frames(120, fps_rate)` produces a 5 ms
+                    // clip on fractional-fps projects — visible only
+                    // as a green flash before the playhead skips past.
+                    let duration = klipp_core::RationalTime::from_secs_f64(5.0, fps_rate);
                     let timeline_out = ph + duration;
                     let label = match &data {
                         klipp_core::GeneratorData::SolidColor { .. } => "Solid Color",

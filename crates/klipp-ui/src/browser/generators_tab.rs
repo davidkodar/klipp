@@ -1,12 +1,40 @@
+use crate::browser::effects_tab::{EffectSort, EffectViewMode};
 use crate::drag_drop::DragPayload;
+use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, GeneratorData};
 
+/// Built-in vs user-imported source filter for the Generators tab.
+/// Mirrors `TitlesSourceFilter` / `TransitionsSourceFilter` so the
+/// segmented control reads the same across the Library tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeneratorsSourceFilter {
+    All,
+    Builtin,
+    User,
+}
+
+impl Default for GeneratorsSourceFilter {
+    fn default() -> Self {
+        GeneratorsSourceFilter::All
+    }
+}
+
 struct GeneratorTemplate {
     name: &'static str,
+    category: &'static str,
     create_data: fn() -> GeneratorData,
+    /// `true` for generators whose visible content advances over the
+    /// clip (e.g. countdown). Drives the "Animated only" filter and
+    /// the per-card ANIMATED badge so the pattern matches the other
+    /// Library tabs.
+    animated: bool,
 }
+
+// ---------------------------------------------------------------------------
+// Generator factories
+// ---------------------------------------------------------------------------
 
 fn solid_black() -> GeneratorData { GeneratorData::SolidColor { color: [0, 0, 0, 255] } }
 fn solid_white() -> GeneratorData { GeneratorData::SolidColor { color: [255, 255, 255, 255] } }
@@ -22,85 +50,279 @@ fn gradient_bw() -> GeneratorData { GeneratorData::Gradient { top: [0, 0, 0, 255
 fn gradient_wb() -> GeneratorData { GeneratorData::Gradient { top: [255, 255, 255, 255], bottom: [0, 0, 0, 255] } }
 fn gradient_blue() -> GeneratorData { GeneratorData::Gradient { top: [80, 140, 220, 255], bottom: [0, 0, 30, 255] } }
 fn gradient_sunset() -> GeneratorData { GeneratorData::Gradient { top: [255, 140, 60, 255], bottom: [90, 40, 120, 255] } }
+fn gradient_dawn() -> GeneratorData { GeneratorData::Gradient { top: [255, 200, 220, 255], bottom: [120, 100, 200, 255] } }
+fn gradient_forest() -> GeneratorData { GeneratorData::Gradient { top: [40, 90, 60, 255], bottom: [10, 20, 15, 255] } }
+fn gradient_amber() -> GeneratorData { GeneratorData::Gradient { top: [255, 180, 80, 255], bottom: [60, 25, 10, 255] } }
 
 fn color_bars() -> GeneratorData { GeneratorData::ColorBars }
 fn countdown() -> GeneratorData { GeneratorData::Countdown }
 
+const CATEGORIES: &[&str] = &["Solid Color", "Gradient", "Test Pattern", "Countdown"];
+
 const GENERATORS: &[GeneratorTemplate] = &[
-    GeneratorTemplate { name: "Black",           create_data: solid_black },
-    GeneratorTemplate { name: "White",           create_data: solid_white },
-    GeneratorTemplate { name: "Red",             create_data: solid_red },
-    GeneratorTemplate { name: "Green",           create_data: solid_green },
-    GeneratorTemplate { name: "Blue",            create_data: solid_blue },
-    GeneratorTemplate { name: "Cyan",            create_data: solid_cyan },
-    GeneratorTemplate { name: "Magenta",         create_data: solid_magenta },
-    GeneratorTemplate { name: "Yellow",          create_data: solid_yellow },
-    GeneratorTemplate { name: "50% Grey",        create_data: solid_grey },
-    GeneratorTemplate { name: "Black \u{2192} White", create_data: gradient_bw },
-    GeneratorTemplate { name: "White \u{2192} Black", create_data: gradient_wb },
-    GeneratorTemplate { name: "Blue Fade",       create_data: gradient_blue },
-    GeneratorTemplate { name: "Sunset",          create_data: gradient_sunset },
-    GeneratorTemplate { name: "SMPTE 75% Bars",  create_data: color_bars },
-    GeneratorTemplate { name: "Countdown",       create_data: countdown },
+    // Solid Color
+    GeneratorTemplate { name: "Black",       category: "Solid Color", create_data: solid_black,   animated: false },
+    GeneratorTemplate { name: "White",       category: "Solid Color", create_data: solid_white,   animated: false },
+    GeneratorTemplate { name: "Red",         category: "Solid Color", create_data: solid_red,     animated: false },
+    GeneratorTemplate { name: "Green",       category: "Solid Color", create_data: solid_green,   animated: false },
+    GeneratorTemplate { name: "Blue",        category: "Solid Color", create_data: solid_blue,    animated: false },
+    GeneratorTemplate { name: "Cyan",        category: "Solid Color", create_data: solid_cyan,    animated: false },
+    GeneratorTemplate { name: "Magenta",     category: "Solid Color", create_data: solid_magenta, animated: false },
+    GeneratorTemplate { name: "Yellow",      category: "Solid Color", create_data: solid_yellow,  animated: false },
+    GeneratorTemplate { name: "50% Grey",    category: "Solid Color", create_data: solid_grey,    animated: false },
+    // Gradient
+    GeneratorTemplate { name: "Black \u{2192} White", category: "Gradient", create_data: gradient_bw,     animated: false },
+    GeneratorTemplate { name: "White \u{2192} Black", category: "Gradient", create_data: gradient_wb,     animated: false },
+    GeneratorTemplate { name: "Blue Fade",            category: "Gradient", create_data: gradient_blue,   animated: false },
+    GeneratorTemplate { name: "Sunset",               category: "Gradient", create_data: gradient_sunset, animated: false },
+    GeneratorTemplate { name: "Dawn",                 category: "Gradient", create_data: gradient_dawn,   animated: false },
+    GeneratorTemplate { name: "Forest",               category: "Gradient", create_data: gradient_forest, animated: false },
+    GeneratorTemplate { name: "Amber",                category: "Gradient", create_data: gradient_amber,  animated: false },
+    // Test Pattern
+    GeneratorTemplate { name: "SMPTE 75% Bars", category: "Test Pattern", create_data: color_bars, animated: false },
+    // Countdown
+    GeneratorTemplate { name: "Countdown",      category: "Countdown",    create_data: countdown,  animated: true },
 ];
+
+const GENERATORS_SIDEBAR_W: f32 = 180.0;
 
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut AppState,
     theme: &KlippTheme,
-    search_query: &str,
+    search_query: &mut String,
+    active_category: &mut Option<&'static str>,
+    source_filter: &mut GeneratorsSourceFilter,
+    animated_only: &mut bool,
+    view_mode: &mut EffectViewMode,
+    sort_mode: &mut EffectSort,
+    selected: &mut Option<String>,
 ) -> Vec<AppCommand> {
     let mut cmds = Vec::new();
-    let search_lower = search_query.to_lowercase();
+    let avail = ui.available_rect_before_wrap();
 
-    let filtered: Vec<_> = GENERATORS
-        .iter()
-        .filter(|t| search_lower.is_empty() || t.name.to_lowercase().contains(&search_lower))
-        .collect();
+    // ── Sidebar (left) | content (right) ──
+    let sidebar_w = GENERATORS_SIDEBAR_W.min(avail.width() * 0.40);
+    let sidebar_rect = egui::Rect::from_min_size(
+        avail.min,
+        egui::vec2(sidebar_w, avail.height()),
+    );
+    let content_rect = egui::Rect::from_min_max(
+        egui::pos2(avail.min.x + sidebar_w, avail.min.y),
+        avail.max,
+    );
 
-    egui::ScrollArea::vertical()
-        .id_salt("browser_generators_scroll")
-        .show(ui, |ui| {
-            let avail_w = ui.available_width() - 16.0;
-            let card_w = (avail_w - 6.0) / 2.0;
+    // ── Sidebar ─────────────────────────────────────────────────────
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+        ui.set_min_size(sidebar_rect.size());
+        ui.painter().rect_filled(sidebar_rect, 0.0, theme.bg_panel);
+        ui.painter().vline(
+            sidebar_rect.max.x,
+            sidebar_rect.y_range(),
+            egui::Stroke::new(1.0_f32, theme.border),
+        );
 
-            egui::Grid::new("generators_grid")
-                .num_columns(2)
-                .spacing([6.0, 6.0])
-                .min_col_width(card_w)
-                .show(ui, |ui| {
-                    for (i, tmpl) in filtered.iter().enumerate() {
-                        let resp = generator_card(ui, theme, tmpl, card_w);
+        egui::ScrollArea::vertical()
+            .id_salt("generators_sidebar_scroll")
+            .show(ui, |ui| {
+                ui.add_space(6.0);
 
-                        if resp.double_clicked() {
-                            cmds.push(AppCommand::CreateGeneratorClip {
-                                track_index: None,
-                                data: (tmpl.create_data)(),
-                            });
-                            state.toast.show(format!(
-                                "\"{}\" generator added to timeline",
-                                tmpl.name,
-                            ));
-                        }
+                // Counts (registry-wide). Favorites/Recent are stubs
+                // mirroring the Audio FX / Titles sidebars until a
+                // persistence layer lands.
+                let installed_total = GENERATORS.len();
+                gen_general_row(ui, theme, Icon::Star, "Favorites", 0, false, "generators_general_favourites");
+                gen_general_row(ui, theme, Icon::ArrowCounterClockwise, "Recent", 0, false, "generators_general_recent");
+                gen_general_row(ui, theme, Icon::UploadSimple, "Installed", installed_total, false, "generators_general_installed");
 
-                        if resp.drag_started() {
-                            state.drag_drop.begin(DragPayload::Generator {
-                                name: tmpl.name.to_string(),
-                                data: (tmpl.create_data)(),
-                            });
-                        }
+                ui.add_space(8.0);
+                gen_section_separator(ui, theme);
+                gen_section_header(ui, theme, Some(Icon::Star), "Generators");
 
-                        if i % 2 == 1 {
-                            ui.end_row();
-                        }
-                    }
-                    if filtered.len() % 2 == 1 {
-                        ui.end_row();
-                    }
+                gen_sidebar_row(
+                    ui, theme, Some(Icon::List), "All",
+                    installed_total, active_category.is_none(),
+                    "generators_cat_all",
+                    &mut |opt| *active_category = opt,
+                    None,
+                );
+                for cat in CATEGORIES {
+                    let count = GENERATORS.iter().filter(|t| t.category == *cat).count();
+                    let is_active = *active_category == Some(*cat);
+                    gen_sidebar_row(
+                        ui, theme, Some(category_icon(cat)), cat,
+                        count, is_active,
+                        &format!("generators_cat_{cat}"),
+                        &mut |opt| *active_category = opt,
+                        Some(*cat),
+                    );
+                }
+                ui.add_space(8.0);
+            });
+    });
+
+    // ── Right pane ──────────────────────────────────────────────────
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+        ui.set_min_size(content_rect.size());
+
+        ui.add_space(8.0);
+
+        // Search bar
+        egui::Frame::none()
+            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+            .show(ui, |ui| {
+                gen_search_field(ui, theme, search_query);
+            });
+        ui.add_space(6.0);
+
+        // Filter row: All / Built-in / User + Animated only + view toggle
+        let scoped_total = GENERATORS
+            .iter()
+            .filter(|t| match active_category {
+                Some(cat) => t.category == *cat,
+                None => true,
+            })
+            .count();
+        // Every entry is Built-in today (no user-importable generators
+        // yet); User stays at zero so the chip honestly reports.
+        let builtin_count = scoped_total;
+        let user_count: usize = 0;
+
+        egui::Frame::none()
+            .inner_margin(egui::Margin::symmetric(8.0, 0.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    gen_segmented_filter(
+                        ui, theme, source_filter,
+                        scoped_total, builtin_count, user_count,
+                    );
+                    ui.add_space(6.0);
+                    animated_only_pill(ui, theme, animated_only);
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            view_mode_button(ui, theme, view_mode, EffectViewMode::List, Icon::List, "List view");
+                            view_mode_button(ui, theme, view_mode, EffectViewMode::Grid, Icon::GridFour, "Grid view");
+                        },
+                    );
                 });
-        });
+            });
+
+        ui.add_space(8.0);
+
+        // Filter the registry
+        let search_lower = search_query.to_lowercase();
+        let mut filtered: Vec<&GeneratorTemplate> = GENERATORS
+            .iter()
+            .filter(|t| match active_category {
+                Some(cat) => t.category == *cat,
+                None => true,
+            })
+            .filter(|_| match *source_filter {
+                GeneratorsSourceFilter::All | GeneratorsSourceFilter::Builtin => true,
+                GeneratorsSourceFilter::User => false,
+            })
+            .filter(|t| !*animated_only || t.animated)
+            .filter(|t| {
+                if search_lower.is_empty() {
+                    return true;
+                }
+                t.name.to_lowercase().contains(&search_lower)
+                    || t.category.to_lowercase().contains(&search_lower)
+            })
+            .collect();
+        match *sort_mode {
+            EffectSort::NameAsc => filtered.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+            EffectSort::NameDesc => filtered.sort_by(|a, b| b.name.to_lowercase().cmp(&a.name.to_lowercase())),
+            EffectSort::Category => filtered.sort_by(|a, b| {
+                a.category.to_lowercase().cmp(&b.category.to_lowercase())
+                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            }),
+            EffectSort::Source => filtered.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+        }
+
+        // Result strip: count + sort dropdown
+        gen_result_strip(ui, theme, filtered.len(), sort_mode);
+        ui.add_space(4.0);
+
+        // Card grid / list
+        egui::ScrollArea::vertical()
+            .id_salt("generators_grid_scroll")
+            .show(ui, |ui| {
+                if filtered.is_empty() {
+                    ui.add_space(20.0);
+                    ui.vertical_centered(|ui| {
+                        let msg = if !search_query.is_empty() {
+                            format!("No generators match \"{}\"", search_query)
+                        } else {
+                            "No generators in this category".to_string()
+                        };
+                        ui.label(egui::RichText::new(msg).size(11.0).color(theme.text_dim));
+                    });
+                    return;
+                }
+
+                let avail_w = ui.available_width() - 8.0;
+                let spacing = 6.0;
+                let render_grid = *view_mode == EffectViewMode::Grid;
+
+                if render_grid {
+                    let card_w = ((avail_w - spacing) / 2.0).floor();
+                    let card_h = (card_w * 9.0 / 16.0).round().max(72.0);
+                    egui::Grid::new("generators_grid")
+                        .num_columns(2)
+                        .spacing([spacing, spacing])
+                        .min_col_width(card_w)
+                        .show(ui, |ui| {
+                            for (i, tmpl) in filtered.iter().enumerate() {
+                                let is_selected = selected.as_deref() == Some(tmpl.name);
+                                let resp = generator_card(ui, theme, tmpl, card_w, card_h, is_selected);
+                                handle_card_interaction(state, &mut cmds, selected, tmpl, &resp);
+                                if i % 2 == 1 {
+                                    ui.end_row();
+                                }
+                            }
+                            if filtered.len() % 2 == 1 {
+                                ui.end_row();
+                            }
+                        });
+                } else {
+                    for tmpl in filtered.iter() {
+                        let is_selected = selected.as_deref() == Some(tmpl.name);
+                        let resp = generator_list_row(ui, theme, tmpl, avail_w, is_selected);
+                        handle_card_interaction(state, &mut cmds, selected, tmpl, &resp);
+                        ui.add_space(2.0);
+                    }
+                }
+            });
+    });
 
     cmds
+}
+
+fn handle_card_interaction(
+    state: &mut AppState,
+    cmds: &mut Vec<AppCommand>,
+    selected: &mut Option<String>,
+    tmpl: &GeneratorTemplate,
+    resp: &egui::Response,
+) {
+    if resp.clicked() {
+        *selected = Some(tmpl.name.to_string());
+    }
+    if resp.double_clicked() {
+        cmds.push(AppCommand::CreateGeneratorClip {
+            track_index: None,
+            data: (tmpl.create_data)(),
+        });
+        state.toast.show(format!("\"{}\" generator added to timeline", tmpl.name));
+    }
+    if resp.drag_started() {
+        state.drag_drop.begin(DragPayload::Generator {
+            name: tmpl.name.to_string(),
+            data: (tmpl.create_data)(),
+        });
+    }
 }
 
 fn generator_card(
@@ -108,38 +330,166 @@ fn generator_card(
     theme: &KlippTheme,
     tmpl: &GeneratorTemplate,
     width: f32,
+    height: f32,
+    is_selected: bool,
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
-        egui::vec2(width, 76.0),
+        egui::vec2(width, height),
         egui::Sense::click_and_drag(),
     );
 
     let hovered = resp.hovered();
-    let border_color = if hovered { theme.accent_dim } else { theme.border };
+    let border_color = if is_selected {
+        theme.accent
+    } else if hovered {
+        theme.accent_dim
+    } else {
+        theme.border
+    };
 
-    // Card background
     ui.painter().rect_filled(rect, 6.0, theme.bg_raised);
-    ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(1.0_f32, border_color));
 
-    // Preview area (top 56px)
-    let preview_rect = egui::Rect::from_min_size(rect.min, egui::vec2(width, 56.0));
+    // Generator preview fills the card; a thin 2px border at the top
+    // hints at the card edge but lets the swatch read edge-to-edge.
+    let preview_rect = rect.shrink(1.0);
     let data = (tmpl.create_data)();
     paint_generator_preview(ui.painter(), preview_rect, &data);
 
-    // Name label (bottom 20px)
-    let name_rect = egui::Rect::from_min_size(
-        egui::pos2(rect.min.x, rect.min.y + 56.0),
-        egui::vec2(width, 20.0),
-    );
-    ui.painter().text(
-        name_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        tmpl.name,
-        egui::FontId::proportional(10.0),
-        theme.text_dim,
+    // Top-right BUILT-IN / USER badge — same shape as titles_tab so
+    // the visual language is consistent across Library tabs.
+    paint_corner_badge(
+        ui.painter(),
+        theme,
+        egui::Rect::from_min_max(
+            egui::pos2(rect.max.x - 80.0, rect.min.y + 4.0),
+            egui::pos2(rect.max.x - 4.0, rect.min.y + 22.0),
+        ),
+        "BUILT-IN",
+        theme.text_secondary,
+        theme.bg_panel,
     );
 
+    // Top-left ANIMATED chip when applicable — matches transitions_tab
+    // pattern (animated transitions wear the same chip).
+    if tmpl.animated {
+        paint_animated_chip(
+            ui.painter(),
+            theme,
+            egui::Rect::from_min_max(
+                egui::pos2(rect.min.x + 4.0, rect.min.y + 4.0),
+                egui::pos2(rect.min.x + 92.0, rect.min.y + 22.0),
+            ),
+        );
+    }
+
+    ui.painter().rect_stroke(rect, 6.0, egui::Stroke::new(if is_selected { 2.0 } else { 1.0 }, border_color));
+
     resp
+}
+
+fn generator_list_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    tmpl: &GeneratorTemplate,
+    width: f32,
+    is_selected: bool,
+) -> egui::Response {
+    let row_h = 40.0;
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(width, row_h),
+        egui::Sense::click_and_drag(),
+    );
+
+    let hovered = resp.hovered();
+    let bg = if is_selected {
+        theme.accent_subtle
+    } else if hovered {
+        theme.bg_raised
+    } else {
+        theme.bg_panel
+    };
+    ui.painter().rect_filled(rect, 4.0, bg);
+
+    // Thumb (40×24) on the left
+    let thumb_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x + 6.0, rect.center().y - 12.0),
+        egui::vec2(40.0, 24.0),
+    );
+    let data = (tmpl.create_data)();
+    paint_generator_preview(ui.painter(), thumb_rect, &data);
+
+    // Name
+    ui.painter().text(
+        egui::pos2(thumb_rect.max.x + 10.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        tmpl.name,
+        egui::FontId::proportional(11.5),
+        theme.text_primary,
+    );
+
+    // Right-side ANIMATED + BUILT-IN chips
+    let mut x = rect.max.x - 6.0;
+    let badge_w = 64.0;
+    let badge_h = 16.0;
+    let badge_rect = egui::Rect::from_min_size(
+        egui::pos2(x - badge_w, rect.center().y - badge_h * 0.5),
+        egui::vec2(badge_w, badge_h),
+    );
+    paint_corner_badge(
+        ui.painter(), theme, badge_rect, "BUILT-IN",
+        theme.text_secondary, theme.bg_panel,
+    );
+    x -= badge_w + 6.0;
+    if tmpl.animated {
+        let badge_rect = egui::Rect::from_min_size(
+            egui::pos2(x - badge_w, rect.center().y - badge_h * 0.5),
+            egui::vec2(badge_w, badge_h),
+        );
+        paint_animated_chip(ui.painter(), theme, badge_rect);
+    }
+
+    if is_selected {
+        ui.painter().rect_stroke(
+            rect, 4.0, egui::Stroke::new(1.0, theme.accent),
+        );
+    }
+
+    resp
+}
+
+fn paint_corner_badge(
+    p: &egui::Painter,
+    theme: &KlippTheme,
+    rect: egui::Rect,
+    label: &str,
+    fg: egui::Color32,
+    bg: egui::Color32,
+) {
+    p.rect_filled(rect, 3.0, bg);
+    p.rect_stroke(rect, 3.0, egui::Stroke::new(1.0_f32, theme.border));
+    p.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(9.0),
+        fg,
+    );
+}
+
+fn paint_animated_chip(p: &egui::Painter, theme: &KlippTheme, rect: egui::Rect) {
+    // Opaque underlay first so the chip never lets the preview
+    // (e.g. countdown circle stroke) bleed through the semi-
+    // transparent accent fill on top.
+    p.rect_filled(rect, 3.0, theme.bg_panel);
+    p.rect_filled(rect, 3.0, theme.accent_subtle);
+    p.rect_stroke(rect, 3.0, egui::Stroke::new(1.0_f32, theme.accent_dim));
+    p.text(
+        egui::pos2(rect.min.x + 6.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        "+ ANIMATED",
+        egui::FontId::proportional(9.0),
+        theme.accent,
+    );
 }
 
 fn paint_generator_preview(
@@ -147,7 +497,7 @@ fn paint_generator_preview(
     rect: egui::Rect,
     data: &GeneratorData,
 ) {
-    let rounding = egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 };
+    let rounding = egui::Rounding::same(5.0);
 
     match data {
         GeneratorData::SolidColor { color } => {
@@ -156,8 +506,10 @@ fn paint_generator_preview(
         }
 
         GeneratorData::Gradient { top, bottom } => {
-            // Approximate gradient with horizontal strips
-            let strips = 28;
+            // Rounded background first so corners are clean; strips
+            // get the full width inside the rect.
+            painter.rect_filled(rect, rounding, egui::Color32::from_rgba_premultiplied(top[0], top[1], top[2], top[3]));
+            let strips = 32;
             let strip_h = rect.height() / strips as f32;
             for i in 0..strips {
                 let t = if strips <= 1 { 0.0 } else { i as f32 / (strips - 1) as f32 };
@@ -166,21 +518,33 @@ fn paint_generator_preview(
                 let b = lerp_u8(top[2], bottom[2], t);
                 let a = lerp_u8(top[3], bottom[3], t);
                 let y = rect.min.y + i as f32 * strip_h;
-                let strip_rounding = if i == 0 {
-                    egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }
-                } else {
-                    egui::Rounding::ZERO
-                };
                 let strip_rect = egui::Rect::from_min_size(
                     egui::pos2(rect.min.x, y),
                     egui::vec2(rect.width(), strip_h + 0.5),
                 );
-                painter.rect_filled(strip_rect, strip_rounding, egui::Color32::from_rgba_premultiplied(r, g, b, a));
+                // Skip rounding on the inner strips — the outer rect
+                // above already rounded the corners.
+                painter.rect_filled(
+                    strip_rect.intersect(rect),
+                    egui::Rounding::ZERO,
+                    egui::Color32::from_rgba_premultiplied(r, g, b, a),
+                );
             }
+            // Re-round the corners by re-drawing the outermost strips
+            // with the rounded shape so the bottom edge cleans up too.
+            let bottom_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.min.x, rect.max.y - 4.0),
+                egui::vec2(rect.width(), 4.0),
+            );
+            painter.rect_filled(
+                bottom_rect.intersect(rect),
+                egui::Rounding { nw: 0.0, ne: 0.0, sw: 5.0, se: 5.0 },
+                egui::Color32::from_rgba_premultiplied(bottom[0], bottom[1], bottom[2], bottom[3]),
+            );
         }
 
         GeneratorData::ColorBars => {
-            // SMPTE 75% bars (values duplicated from klipp_core::generator::render_color_bars)
+            // SMPTE 75% bars (values mirror klipp_core::generator::render_color_bars).
             const BARS: [[u8; 4]; 7] = [
                 [191, 191, 191, 255],
                 [191, 191, 0, 255],
@@ -190,7 +554,6 @@ fn paint_generator_preview(
                 [191, 0, 0, 255],
                 [0, 0, 191, 255],
             ];
-            // Background with rounded corners
             painter.rect_filled(rect, rounding, egui::Color32::BLACK);
             let bar_w = rect.width() / 7.0;
             for (i, bar) in BARS.iter().enumerate() {
@@ -198,30 +561,48 @@ fn paint_generator_preview(
                     egui::pos2(rect.min.x + i as f32 * bar_w, rect.min.y),
                     egui::vec2(bar_w + 0.5, rect.height()),
                 );
-                painter.rect_filled(bar_rect, egui::Rounding::ZERO, egui::Color32::from_rgba_premultiplied(bar[0], bar[1], bar[2], bar[3]));
+                painter.rect_filled(
+                    bar_rect.intersect(rect),
+                    egui::Rounding::ZERO,
+                    egui::Color32::from_rgba_premultiplied(bar[0], bar[1], bar[2], bar[3]),
+                );
             }
         }
 
         GeneratorData::Countdown => {
             painter.rect_filled(rect, rounding, egui::Color32::BLACK);
+            // Reserve a top strip for the corner badges (BUILT-IN /
+            // ANIMATED) so the ring stroke never crowds them. Numeral
+            // and ring centre in the remaining space; both scale with
+            // the card so wide and narrow cards both keep clearance.
+            let badge_strip = 28.0_f32;
+            let inner_top = (rect.min.y + badge_strip).min(rect.max.y);
+            let inner_rect = egui::Rect::from_min_max(
+                egui::pos2(rect.min.x, inner_top),
+                rect.max,
+            );
+            let ring_radius = (inner_rect.height() * 0.40).min(inner_rect.width() * 0.18);
+            let ring_centre = inner_rect.center();
+            let ring_stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_white_alpha(140));
+            painter.circle_stroke(ring_centre, ring_radius, ring_stroke);
             painter.text(
-                rect.center(),
+                ring_centre,
                 egui::Align2::CENTER_CENTER,
                 "5",
-                egui::FontId::proportional(28.0),
+                egui::FontId::proportional(inner_rect.height() * 0.55),
                 egui::Color32::WHITE,
             );
         }
 
         GeneratorData::StillFrame { .. } => {
-            // Freeze frames live on the timeline only, not in the generator
-            // browser — render a neutral placeholder if one ever shows up.
+            // Freeze frames live on the timeline only, not in the
+            // Library — paint a neutral placeholder if one ever shows.
             painter.rect_filled(rect, rounding, egui::Color32::from_gray(60));
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "❄",
-                egui::FontId::proportional(24.0),
+                "\u{2744}",
+                egui::FontId::proportional(rect.height() * 0.5),
                 egui::Color32::WHITE,
             );
         }
@@ -230,4 +611,422 @@ fn paint_generator_preview(
 
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+}
+
+// ────────────────────────── Sidebar primitives ──────────────────────────
+//
+// The visual rules (row geometry, hover/active treatment, count
+// pill, icon tinting) duplicate the equivalents in `titles_tab` and
+// `transitions_tab`. Sharing them via a common module is a clean
+// refactor but out of scope for this redesign — keep the duplication
+// localized so the three tabs stay self-contained.
+
+fn gen_sidebar_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    icon: Option<Icon>,
+    label: &str,
+    count: usize,
+    is_active: bool,
+    id_salt: &str,
+    on_click: &mut dyn FnMut(Option<&'static str>),
+    target_cat: Option<&'static str>,
+) {
+    let row_h = 26.0;
+    let avail_w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(avail_w, row_h),
+        egui::Sense::click(),
+    );
+    let click_resp = ui.interact(rect, ui.id().with(id_salt), egui::Sense::click());
+    let hovered = resp.hovered() || click_resp.hovered();
+
+    if is_active {
+        ui.painter().rect_filled(rect, 0.0, theme.accent_subtle);
+        let stripe = egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height()));
+        ui.painter().rect_filled(stripe, 0.0, theme.accent);
+    } else if hovered {
+        ui.painter().rect_filled(rect, 0.0, theme.bg_raised);
+    }
+
+    let indent = 14.0;
+    let icon_size = 13.0;
+    let icon_gap = 8.0;
+    let label_x = rect.min.x + indent + icon_size + icon_gap;
+    let label_color = if is_active || hovered { theme.text_primary } else { theme.text_secondary };
+    let icon_tint = if is_active { theme.accent } else { theme.text_dim };
+
+    if let Some(icon) = icon {
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.min.x + indent, rect.center().y - icon_size * 0.5),
+            egui::vec2(icon_size, icon_size),
+        );
+        let img = icon.image(icon_size).tint(icon_tint);
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
+    }
+
+    let label_galley = ui.painter().layout_no_wrap(
+        label.to_string(),
+        egui::FontId::proportional(11.5),
+        label_color,
+    );
+    ui.painter().galley(
+        egui::pos2(label_x, rect.center().y - label_galley.size().y * 0.5),
+        label_galley,
+        label_color,
+    );
+
+    let count_color = if is_active { theme.accent } else { theme.text_dim };
+    let count_galley = ui.painter().layout_no_wrap(
+        format!("{}", count),
+        egui::FontId::monospace(10.0),
+        count_color,
+    );
+    ui.painter().galley(
+        egui::pos2(rect.max.x - 14.0 - count_galley.size().x, rect.center().y - count_galley.size().y * 0.5),
+        count_galley,
+        count_color,
+    );
+
+    if click_resp.clicked() || resp.clicked() {
+        on_click(target_cat);
+    }
+}
+
+fn gen_general_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    icon: Icon,
+    label: &str,
+    count: usize,
+    is_active: bool,
+    id_salt: &str,
+) {
+    let row_h = 26.0;
+    let avail_w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(avail_w, row_h),
+        egui::Sense::click(),
+    );
+    let click_resp = ui.interact(rect, ui.id().with(id_salt), egui::Sense::click());
+    let hovered = resp.hovered() || click_resp.hovered();
+    if is_active {
+        ui.painter().rect_filled(rect, 0.0, theme.accent_subtle);
+    } else if hovered {
+        ui.painter().rect_filled(rect, 0.0, theme.bg_raised);
+    }
+    let indent = 14.0;
+    let icon_size = 13.0;
+    let icon_gap = 8.0;
+    let label_x = rect.min.x + indent + icon_size + icon_gap;
+    let icon_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x + indent, rect.center().y - icon_size * 0.5),
+        egui::vec2(icon_size, icon_size),
+    );
+    let img = icon.image(icon_size).tint(theme.text_dim);
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
+    let label_galley = ui.painter().layout_no_wrap(
+        label.to_string(),
+        egui::FontId::proportional(11.5),
+        theme.text_secondary,
+    );
+    ui.painter().galley(
+        egui::pos2(label_x, rect.center().y - label_galley.size().y * 0.5),
+        label_galley,
+        theme.text_secondary,
+    );
+    let count_galley = ui.painter().layout_no_wrap(
+        format!("{}", count),
+        egui::FontId::monospace(10.0),
+        theme.text_dim,
+    );
+    ui.painter().galley(
+        egui::pos2(rect.max.x - 14.0 - count_galley.size().x, rect.center().y - count_galley.size().y * 0.5),
+        count_galley,
+        theme.text_dim,
+    );
+}
+
+fn gen_section_separator(ui: &mut egui::Ui, theme: &KlippTheme) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 1.0),
+        egui::Sense::hover(),
+    );
+    ui.painter().hline(
+        (rect.min.x + 8.0)..=(rect.max.x - 8.0),
+        rect.center().y,
+        egui::Stroke::new(1.0_f32, theme.border),
+    );
+    ui.add_space(4.0);
+}
+
+fn gen_section_header(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    icon: Option<Icon>,
+    label: &str,
+) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 20.0),
+        egui::Sense::hover(),
+    );
+    let indent = 14.0;
+    let icon_size = 11.0;
+    let icon_gap = 6.0;
+    let label_x = if icon.is_some() {
+        rect.min.x + indent + icon_size + icon_gap
+    } else {
+        rect.min.x + indent
+    };
+    if let Some(icon) = icon {
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.min.x + indent, rect.center().y - icon_size * 0.5),
+            egui::vec2(icon_size, icon_size),
+        );
+        let img = icon.image(icon_size).tint(theme.text_dim);
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
+    }
+    ui.painter().text(
+        egui::pos2(label_x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label.to_uppercase(),
+        egui::FontId::proportional(9.5),
+        theme.text_dim,
+    );
+}
+
+fn category_icon(cat: &str) -> Icon {
+    match cat {
+        "Solid Color" => Icon::Eyedropper,
+        "Gradient" => Icon::Sliders,
+        "Test Pattern" => Icon::GridFour,
+        "Countdown" => Icon::ArrowCounterClockwise,
+        _ => Icon::Star,
+    }
+}
+
+fn gen_search_field(ui: &mut egui::Ui, theme: &KlippTheme, query: &mut String) {
+    let h = 32.0;
+    let avail_w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(avail_w, h), egui::Sense::hover());
+    let rounding = egui::Rounding::same(6.0);
+    ui.painter().rect_filled(rect, rounding, theme.bg_panel);
+    ui.painter().rect_stroke(rect, rounding, egui::Stroke::new(1.0_f32, theme.border));
+
+    let icon_size = 13.0;
+    let icon_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x + 10.0, rect.center().y - icon_size * 0.5),
+        egui::vec2(icon_size, icon_size),
+    );
+    let img = Icon::MagnifyingGlass.image(icon_size).tint(theme.text_dim);
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
+
+    let edit_left = rect.min.x + 10.0 + icon_size + 8.0;
+    let edit_right = rect.max.x - 8.0;
+    let edit_rect = egui::Rect::from_min_max(
+        egui::pos2(edit_left, rect.min.y),
+        egui::pos2(edit_right, rect.max.y),
+    );
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(edit_rect), |ui| {
+        ui.set_clip_rect(edit_rect);
+        let edit = egui::TextEdit::singleline(query)
+            .hint_text(egui::RichText::new("Search generators\u{2026}").color(theme.text_dim))
+            .desired_width(edit_rect.width())
+            .font(egui::FontId::proportional(11.5))
+            .text_color(theme.text_primary)
+            .frame(false);
+        ui.add_sized(edit_rect.size(), edit);
+    });
+}
+
+fn gen_segmented_filter(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    filter: &mut GeneratorsSourceFilter,
+    all_count: usize,
+    builtin_count: usize,
+    user_count: usize,
+) {
+    let outer_h = 26.0;
+    let pad = 2.0;
+    let segments = [
+        (GeneratorsSourceFilter::All, "All", all_count),
+        (GeneratorsSourceFilter::Builtin, "Built-in", builtin_count),
+        (GeneratorsSourceFilter::User, "User", user_count),
+    ];
+    let mut seg_widths = [0.0f32; 3];
+    let mut total_w = pad * 2.0;
+    for (i, (_, label, count)) in segments.iter().enumerate() {
+        let label_galley = ui.painter().layout_no_wrap(
+            (*label).to_string(),
+            egui::FontId::proportional(11.0),
+            theme.text_secondary,
+        );
+        let count_galley = ui.painter().layout_no_wrap(
+            format!("{}", count),
+            egui::FontId::monospace(10.0),
+            theme.text_dim,
+        );
+        let w = label_galley.size().x + 6.0 + count_galley.size().x + 22.0;
+        seg_widths[i] = w;
+        total_w += w + 1.0;
+    }
+    total_w -= 1.0;
+    let (outer_rect, _) = ui.allocate_exact_size(egui::vec2(total_w, outer_h), egui::Sense::hover());
+    ui.painter().rect_filled(outer_rect, 5.0, theme.bg_panel);
+    ui.painter().rect_stroke(outer_rect, 5.0, egui::Stroke::new(1.0_f32, theme.border));
+    let mut x = outer_rect.min.x + pad;
+    for (i, (variant, label, count)) in segments.iter().enumerate() {
+        let seg_rect = egui::Rect::from_min_size(
+            egui::pos2(x, outer_rect.min.y + pad),
+            egui::vec2(seg_widths[i], outer_h - pad * 2.0),
+        );
+        let resp = ui.interact(seg_rect, ui.id().with(("generators_source_seg", i)), egui::Sense::click());
+        let is_active = *filter == *variant;
+        let hovered = resp.hovered();
+        if is_active {
+            ui.painter().rect_filled(seg_rect, 3.0, theme.bg_raised);
+        } else if hovered {
+            ui.painter().rect_filled(seg_rect, 3.0, theme.accent_subtle);
+        }
+        let label_color = if is_active || hovered { theme.text_primary } else { theme.text_secondary };
+        let count_color = if is_active { theme.accent } else { theme.text_dim };
+        let label_galley = ui.painter().layout_no_wrap(
+            (*label).to_string(),
+            egui::FontId::proportional(11.0),
+            label_color,
+        );
+        let count_galley = ui.painter().layout_no_wrap(
+            format!("{}", count),
+            egui::FontId::monospace(10.0),
+            count_color,
+        );
+        let inner_w = label_galley.size().x + 6.0 + count_galley.size().x;
+        let lx = seg_rect.center().x - inner_w * 0.5;
+        ui.painter().galley(
+            egui::pos2(lx, seg_rect.center().y - label_galley.size().y * 0.5),
+            label_galley.clone(),
+            label_color,
+        );
+        ui.painter().galley(
+            egui::pos2(lx + label_galley.size().x + 6.0, seg_rect.center().y - count_galley.size().y * 0.5),
+            count_galley,
+            count_color,
+        );
+        if resp.clicked() {
+            *filter = *variant;
+        }
+        x += seg_widths[i] + 1.0;
+    }
+}
+
+fn animated_only_pill(ui: &mut egui::Ui, theme: &KlippTheme, active: &mut bool) {
+    let label_galley = ui.painter().layout_no_wrap(
+        "Animated only".to_string(),
+        egui::FontId::proportional(11.0),
+        theme.text_secondary,
+    );
+    let icon_size = 11.0;
+    let pad_x = 10.0;
+    let gap = 5.0;
+    let w = pad_x * 2.0 + icon_size + gap + label_galley.size().x;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 26.0), egui::Sense::click());
+    let hovered = resp.hovered();
+    let (bg, border, fg) = if *active {
+        (theme.accent_subtle, theme.accent, theme.accent)
+    } else if hovered {
+        (theme.bg_raised, theme.border, theme.text_primary)
+    } else {
+        (theme.bg_panel, theme.border, theme.text_secondary)
+    };
+    ui.painter().rect_filled(rect, 12.0, bg);
+    ui.painter().rect_stroke(rect, 12.0, egui::Stroke::new(1.0_f32, border));
+    let icon_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x + pad_x, rect.center().y - icon_size * 0.5),
+        egui::vec2(icon_size, icon_size),
+    );
+    let img = Icon::Lightning.image(icon_size).tint(fg);
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
+    ui.painter().text(
+        egui::pos2(rect.min.x + pad_x + icon_size + gap, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        "Animated only",
+        egui::FontId::proportional(11.0),
+        fg,
+    );
+    if resp.clicked() {
+        *active = !*active;
+    }
+}
+
+fn view_mode_button(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    current: &mut EffectViewMode,
+    target: EffectViewMode,
+    icon: Icon,
+    tooltip: &str,
+) {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
+    let is_active = *current == target;
+    let hovered = resp.hovered();
+    let (bg, border, fg) = if is_active {
+        (theme.accent_subtle, theme.accent, theme.accent)
+    } else if hovered {
+        (theme.bg_raised, theme.border, theme.text_primary)
+    } else {
+        (theme.bg_panel, theme.border, theme.text_secondary)
+    };
+    ui.painter().rect_filled(rect, 4.0, bg);
+    ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, border));
+    let size = 13.0;
+    let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(size, size));
+    let img = icon.image(size).tint(fg);
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| { ui.add(img); });
+    let _ = resp.clone().on_hover_text(tooltip);
+    if resp.clicked() {
+        *current = target;
+    }
+}
+
+fn gen_result_strip(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    count: usize,
+    sort_mode: &mut EffectSort,
+) {
+    let avail_w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(avail_w, 24.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, theme.bg_panel);
+    ui.painter().hline(
+        rect.x_range(),
+        rect.max.y,
+        egui::Stroke::new(1.0_f32, theme.border),
+    );
+    ui.painter().text(
+        egui::pos2(rect.min.x + 12.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        format!("{} Generators", count),
+        egui::FontId::proportional(10.5),
+        theme.text_secondary,
+    );
+
+    let dropdown_w = 116.0;
+    let dropdown_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.max.x - dropdown_w - 8.0, rect.min.y + 1.0),
+        egui::pos2(rect.max.x - 8.0, rect.max.y - 1.0),
+    );
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(dropdown_rect), |ui| {
+        ui.style_mut().visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+        ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+        let label = format!("Sort: {}", sort_mode.label());
+        egui::ComboBox::from_id_salt("generators_sort_dd")
+            .selected_text(egui::RichText::new(label).size(10.5).color(theme.text_dim))
+            .width(dropdown_w - 4.0)
+            .show_ui(ui, |ui| {
+                for variant in [EffectSort::NameAsc, EffectSort::NameDesc, EffectSort::Category] {
+                    ui.selectable_value(sort_mode, variant, variant.label());
+                }
+            });
+    });
 }

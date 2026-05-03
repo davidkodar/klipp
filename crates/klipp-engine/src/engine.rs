@@ -822,6 +822,14 @@ pub struct PlaybackEngine {
     overlay_clips: HashMap<usize, usize>,        // track_index -> clip_index within that track
     overlay_frames: HashMap<usize, crate::types::LinearFrame>, // track_index -> latest decoded/rendered frame (linear f32 RGBA)
     overlay_synth_frame: HashMap<usize, i64>,    // track_index -> last rendered frame number (for synthetic clip caching)
+    // Track which time-invariant generator content was last rendered
+    // per overlay track. SolidColor / Gradient / ColorBars / StillFrame
+    // produce identical pixels for every frame of the clip, so once we
+    // have one in `overlay_frames` we can short-circuit subsequent
+    // ticks regardless of the playhead frame number — no allocation,
+    // no sRGB→linear conversion. Countdown is intentionally excluded
+    // because its rendered numeral changes per second.
+    overlay_static_gen: HashMap<usize, (klipp_core::GeneratorData, u32, u32)>,
     // Audio — one source per active track, mixed through mix thread
     audio_sources: Vec<ActiveAudioSource>,
     audio_output: Option<SendAudioOutput>,
@@ -1279,6 +1287,7 @@ impl PlaybackEngine {
             overlay_clips: HashMap::new(),
             overlay_frames: HashMap::new(),
             overlay_synth_frame: HashMap::new(),
+            overlay_static_gen: HashMap::new(),
             audio_sources: Vec::new(),
             audio_output,
             mix_thread: Some(mix_thread),
@@ -2393,6 +2402,7 @@ impl PlaybackEngine {
                     // Clear synth frame cache so update_overlay_decoders re-renders
                     // all synthetic clips, reflecting any parameter changes.
                     self.overlay_synth_frame.clear();
+                    self.overlay_static_gen.clear();
                     self.update_overlay_decoders(self.playhead);
                     self.regrade_cached_frame();
                 }
@@ -2960,6 +2970,7 @@ impl PlaybackEngine {
         self.overlay_clips.clear();
         self.overlay_frames.clear();
         self.overlay_synth_frame.clear();
+        self.overlay_static_gen.clear();
     }
 
     /// Wipe all engine-side state to a clean slate.
@@ -4517,6 +4528,7 @@ impl PlaybackEngine {
             self.overlay_clips.remove(&track_idx);
             self.overlay_frames.remove(&track_idx);
             self.overlay_synth_frame.remove(&track_idx);
+            self.overlay_static_gen.remove(&track_idx);
         }
 
         // Count live media decoders (for cap enforcement later)
@@ -4538,6 +4550,29 @@ impl PlaybackEngine {
             {
                 // Same synthetic clip at same frame already rendered — skip
                 continue;
+            }
+
+            // Static-generator fast path: SolidColor / Gradient /
+            // ColorBars / StillFrame produce identical pixels at every
+            // frame of the clip. The frame-tagged throttle above still
+            // pays a full 8.3 MB allocation + sRGB→linear conversion
+            // every time the playhead frame advances (24× per second
+            // at 24 fps for content that never changes), which slows
+            // playback when several generator overlays stack up.
+            // Bypass the render entirely when the cached
+            // `(GeneratorData, width, height)` matches the live clip
+            // — bumping `overlay_synth_frame` so the throttle above
+            // catches subsequent ticks too.
+            if let Some(gen_data) = clip.generator_data() {
+                if !matches!(gen_data, klipp_core::GeneratorData::Countdown)
+                    && self.overlay_clips.get(&track_idx) == Some(&clip_idx)
+                    && self.overlay_static_gen.get(&track_idx)
+                        == Some(&(gen_data.clone(), res.width, res.height))
+                    && self.overlay_frames.contains_key(&track_idx)
+                {
+                    self.overlay_synth_frame.insert(track_idx, current_frame);
+                    continue;
+                }
             }
 
             // Title clip — render directly to overlay_frames
@@ -4711,6 +4746,16 @@ impl PlaybackEngine {
                 self.overlay_frames.insert(track_idx, u8_frame.to_linear());
                 self.overlay_clips.insert(track_idx, clip_idx);
                 self.overlay_synth_frame.insert(track_idx, current_frame);
+                // Record the static-generator fingerprint so the
+                // fast path above can short-circuit subsequent ticks.
+                // Countdown is excluded — its rendered numeral changes
+                // per second so we want the regular per-frame path.
+                if !matches!(gen_data, klipp_core::GeneratorData::Countdown) {
+                    self.overlay_static_gen
+                        .insert(track_idx, (gen_data.clone(), res.width, res.height));
+                } else {
+                    self.overlay_static_gen.remove(&track_idx);
+                }
                 continue;
             }
 

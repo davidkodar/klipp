@@ -649,6 +649,13 @@ pub struct BrowserPanel {
     pub transitions_view_mode: effects_tab::EffectViewMode,
     pub transitions_sort: effects_tab::EffectSort,
     pub transitions_selected: Option<String>,
+    // ── Generators tab state ──
+    pub generators_category: Option<&'static str>,
+    pub generators_source_filter: generators_tab::GeneratorsSourceFilter,
+    pub generators_animated_only: bool,
+    pub generators_view_mode: effects_tab::EffectViewMode,
+    pub generators_sort: effects_tab::EffectSort,
+    pub generators_selected: Option<String>,
     // Library tab category
     pub library_category: LibraryCategory,
     // Scroll-to request from RevealMediaInBrowser
@@ -858,6 +865,12 @@ impl Default for BrowserPanel {
             transitions_view_mode: effects_tab::EffectViewMode::Grid,
             transitions_sort: effects_tab::EffectSort::NameAsc,
             transitions_selected: None,
+            generators_category: None,
+            generators_source_filter: generators_tab::GeneratorsSourceFilter::All,
+            generators_animated_only: false,
+            generators_view_mode: effects_tab::EffectViewMode::Grid,
+            generators_sort: effects_tab::EffectSort::NameAsc,
+            generators_selected: None,
             audio_fx_audition_playing: false,
             audio_fx_audition_source: None,
             audio_fx_audition_volume: 1.0,
@@ -4498,7 +4511,18 @@ impl BrowserPanel {
                 )
             }
             LibraryCategory::Generators => {
-                generators_tab::show(ui, state, theme, &self.search_query)
+                generators_tab::show(
+                    ui,
+                    state,
+                    theme,
+                    &mut self.search_query,
+                    &mut self.generators_category,
+                    &mut self.generators_source_filter,
+                    &mut self.generators_animated_only,
+                    &mut self.generators_view_mode,
+                    &mut self.generators_sort,
+                    &mut self.generators_selected,
+                )
             }
         }
     }
