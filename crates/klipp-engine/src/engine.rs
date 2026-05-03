@@ -3582,7 +3582,7 @@ impl PlaybackEngine {
                     let td_for_render = typewriter.as_ref().unwrap_or(title_data);
                     let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
                     let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-                    self.title_renderer.render_with_gpu(td_for_render, w, h, gpu)
+                    self.title_renderer.render_with_time(td_for_render, w, h, gpu, clip_elapsed as f32)
                 } else if let Some(gen_data) = clip.generator_data() {
                     let clip_relative = (self.playhead - clip.timeline_in).to_secs_f64().max(0.0);
                     let total = (clip.timeline_out - clip.timeline_in).to_secs_f64();
@@ -4603,7 +4603,7 @@ impl PlaybackEngine {
                 let td_for_render = typewriter_td.as_ref().unwrap_or(title_data);
                 let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
                 let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-                let mut rgba = self.title_renderer.render_with_gpu(td_for_render, res.width, res.height, gpu);
+                let mut rgba = self.title_renderer.render_with_time(td_for_render, res.width, res.height, gpu, clip_elapsed_tw as f32);
 
                 // Note: clip-level opacity is NOT baked in here. It is applied at
                 // composite time so paused opacity drags update the visible frame
@@ -5174,7 +5174,7 @@ impl PlaybackEngine {
             let td_for_render = typewriter_td.as_ref().unwrap_or(&title_data);
             let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
                 let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-            let rgba = self.title_renderer.render_with_gpu(td_for_render, res.width, res.height, gpu);
+            let rgba = self.title_renderer.render_with_time(td_for_render, res.width, res.height, gpu, clip_elapsed_tw as f32);
             // Title renderer emits u8; bridge at this viewer boundary.
             let linear = u8_rgba_to_linear(&rgba);
             let final_linear = self.post_process_rgba(linear, res.width, res.height);
@@ -5346,7 +5346,7 @@ impl PlaybackEngine {
                 let td_for_render = typewriter_td.as_ref().unwrap_or(&title_data);
                 let mut gpu_adapter = self.gpu_effects.as_mut().map(GpuAlphaMaskAdapter);
                 let gpu: Option<&mut dyn klipp_title::AlphaMaskProcessor> = gpu_adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-                let rgba = self.title_renderer.render_with_gpu(td_for_render, res.width, res.height, gpu);
+                let rgba = self.title_renderer.render_with_time(td_for_render, res.width, res.height, gpu, clip_elapsed_tw as f32);
                 let linear = u8_rgba_to_linear(&rgba);
                 let final_linear = self.post_process_rgba(linear, res.width, res.height);
                 let final_rgba = self.display_encode(&final_linear);

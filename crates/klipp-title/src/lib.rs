@@ -31,8 +31,8 @@ use fontdue::layout::{
 };
 use fontdue::Font;
 use klipp_timeline::{
-    FontStyle, ObjectTransform, Shape, ShapeKind, StyleRun, TextAlignment, TextPath,
-    TextPattern, TitleBackground, TitleData, TitleObjectContent,
+    CharAnimation, CharEntrance, FontStyle, ObjectTransform, Shape, ShapeKind, StyleRun,
+    TextAlignment, TextPath, TextPattern, TitleBackground, TitleData, TitleObjectContent,
 };
 use std::collections::HashMap;
 
@@ -235,7 +235,28 @@ impl TitleRenderer {
     }
 
     /// Phase 1: Font loading, glyph rasterization into alpha mask, returns layout info.
+    /// Static (time = 0 / no animation) layout — thin wrapper over
+    /// `render_layout_at_time` so existing callers (tests, cursor
+    /// hit-testing) keep their signature.
     pub fn render_layout(&mut self, title: &TitleData, width: u32, height: u32) -> TitleLayout {
+        self.render_layout_at_time(title, width, height, None)
+    }
+
+    /// Time-aware variant of `render_layout`. When `time_secs` is
+    /// `Some` AND the primary `TextBox` has `char_animation` set, the
+    /// alpha mask is built per-glyph with the entrance pose applied
+    /// (FadeIn alpha, Slide{Up,Down,Left,Right} offsets, Scale{Up,Down}
+    /// re-rasterized at the scaled size, plus the wave bobble). Every
+    /// other field of `TitleLayout` is computed from the static glyph
+    /// positions so cursor hit-testing keeps tracking the resting
+    /// glyph layout — only the visible bitmap shifts during entrance.
+    pub fn render_layout_at_time(
+        &mut self,
+        title: &TitleData,
+        width: u32,
+        height: u32,
+        time_secs: Option<f32>,
+    ) -> TitleLayout {
         // Object-model bridge: this function still operates on the
         // legacy single-text shape; commit-1 keeps the renderer's
         // internal flow intact by extracting the primary TextBox
@@ -452,9 +473,29 @@ impl TitleRenderer {
             };
         }
 
-        // Rasterize glyphs into alpha mask
+        // Rasterize glyphs into alpha mask. When the textbox has a
+        // `char_animation` AND the renderer was called with a clip
+        // time, dispatch to the per-glyph animated rasterizer; the
+        // rest of the pipeline (compose, outline, shadow, glow,
+        // texture fill) consumes the resulting mask unmodified.
         let mut alpha_mask = vec![0u8; mask_w * mask_h];
-        rasterize_to_mask(font, glyphs, offset_x, offset_y, &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0);
+        match (time_secs, tb.char_animation.as_ref()) {
+            (Some(t), Some(ca)) => {
+                rasterize_to_mask_animated(
+                    font, glyphs,
+                    offset_x, offset_y,
+                    &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0,
+                    ca, t, font_px,
+                );
+            }
+            _ => {
+                rasterize_to_mask(
+                    font, glyphs,
+                    offset_x, offset_y,
+                    &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0,
+                );
+            }
+        }
 
         // ── Rich text: resolve per-glyph styles ──
         let has_rich_text = !tb.style_runs.is_empty();
@@ -855,7 +896,7 @@ impl TitleRenderer {
         if let Some(buf) = self.cache_lookup(title, width, height) {
             return buf;
         }
-        let buf = self.render_inner(title, width, height, None);
+        let buf = self.render_inner(title, width, height, None, None);
         self.cache_store(title.clone(), width, height, buf.clone());
         buf
     }
@@ -877,9 +918,46 @@ impl TitleRenderer {
         if let Some(buf) = self.cache_lookup(title, width, height) {
             return buf;
         }
-        let buf = self.render_inner(title, width, height, gpu);
+        let buf = self.render_inner(title, width, height, gpu, None);
         self.cache_store(title.clone(), width, height, buf.clone());
         buf
+    }
+
+    /// Render at a specific clip-relative time for time-aware
+    /// animations such as per-character entrance staggering. The
+    /// cache is bypassed entirely when ANY object's `char_animation`
+    /// is set, since the visual output varies per frame for the
+    /// duration of the entrance ramp; once every glyph has settled
+    /// (every `local_t = 1`) the per-glyph path produces an output
+    /// identical to the static cached render — the engine could
+    /// elide the call there as a future optimisation.
+    pub fn render_with_time(
+        &mut self,
+        title: &TitleData,
+        width: u32,
+        height: u32,
+        gpu: Option<&mut dyn AlphaMaskProcessor>,
+        time_secs: f32,
+    ) -> Vec<u8> {
+        // Cache only when nothing is time-varying — same key as the
+        // static path.
+        let any_char_anim = title.objects.iter().any(|o| {
+            if let TitleObjectContent::TextBox(tb) = &o.content {
+                tb.char_animation.is_some()
+            } else {
+                false
+            }
+        });
+        if !any_char_anim {
+            if let Some(buf) = self.cache_lookup(title, width, height) {
+                return buf;
+            }
+            let buf = self.render_inner(title, width, height, gpu, None);
+            self.cache_store(title.clone(), width, height, buf.clone());
+            return buf;
+        }
+        // Animated → bypass cache, thread time through.
+        self.render_inner(title, width, height, gpu, Some(time_secs))
     }
 
     /// Object-model composition: walk every layer in the title (back
@@ -898,6 +976,7 @@ impl TitleRenderer {
         width: u32,
         height: u32,
         gpu: Option<&mut dyn AlphaMaskProcessor>,
+        time_secs: Option<f32>,
     ) -> Vec<u8> {
         // The GPU alpha-mask processor is consumable: we use it for
         // the first TextBox layer (the most common case is one text
@@ -940,6 +1019,7 @@ impl TitleRenderer {
                         width,
                         height,
                         gpu_for_first_text.take(),
+                        time_secs,
                     );
                     over_blend(&mut buf, &layer);
                 }
@@ -962,8 +1042,9 @@ impl TitleRenderer {
         width: u32,
         height: u32,
         gpu: Option<&mut dyn AlphaMaskProcessor>,
+        time_secs: Option<f32>,
     ) -> Vec<u8> {
-        let layout = self.render_layout(title, width, height);
+        let layout = self.render_layout_at_time(title, width, height, time_secs);
         let mut buf = Self::compose(&layout, title, width, height, gpu);
         self.apply_texture_fill(&mut buf, &layout, title, width, height);
         buf
@@ -1727,6 +1808,126 @@ fn rasterize_to_mask(
     }
 }
 
+/// Rasterize the alpha mask with `CharAnimation` applied per-glyph.
+///
+/// For each glyph i, compute a `local_t ∈ [0, 1]` from
+/// `(time_secs - i × stagger) / entrance_dur` and use it to drive
+/// the entrance pose (alpha, offset, scale) for that glyph alone.
+/// Glyphs whose `local_t < 0` are not yet visible (entrance hasn't
+/// started); glyphs whose `local_t = 1` are fully resting at their
+/// final pose.
+///
+/// `entrance_dur` is the length of each glyph's entrance ramp. We
+/// hard-code 0.4 s as a sensible default — the field is reserved on
+/// `CharAnimation` for a future per-instance override.
+///
+/// Wave oscillation (when `wave_amplitude > 0`) is layered on top of
+/// the entrance pose as a steady sinusoidal y-bob, matching the
+/// browser hover preview's behaviour so the editor and the player
+/// agree on what the title looks like.
+#[allow(clippy::too_many_arguments)]
+fn rasterize_to_mask_animated(
+    font: &Font,
+    glyphs: &[fontdue::layout::GlyphPosition],
+    offset_x: f32,
+    offset_y: f32,
+    mask: &mut [u8],
+    mask_w: usize,
+    mask_h: usize,
+    mask_x0: usize,
+    mask_y0: usize,
+    char_anim: &CharAnimation,
+    time_secs: f32,
+    base_font_px: f32,
+) {
+    let stagger = char_anim.stagger.max(0.0);
+    const ENTRANCE_DUR: f32 = 0.4;
+    let amp = char_anim.wave_amplitude;
+    let speed = char_anim.wave_speed;
+
+    for (i, glyph) in glyphs.iter().enumerate() {
+        if glyph.width == 0 || glyph.height == 0 {
+            continue;
+        }
+        let glyph_start = i as f32 * stagger;
+        let local_t = ((time_secs - glyph_start) / ENTRANCE_DUR).clamp(0.0, 1.0);
+
+        let wave_dy = if amp > 0.0 {
+            let phase = time_secs * speed * std::f32::consts::TAU + i as f32 * 0.5;
+            phase.sin() * amp * 0.3
+        } else {
+            0.0
+        };
+
+        let (alpha, dx, dy, scale) = match char_anim.entrance {
+            CharEntrance::None => (1.0, 0.0, 0.0, 1.0),
+            CharEntrance::FadeIn => (local_t, 0.0, 0.0, 1.0),
+            CharEntrance::SlideUp => (local_t, 0.0, (1.0 - local_t) * base_font_px * 0.5, 1.0),
+            CharEntrance::SlideDown => (local_t, 0.0, -(1.0 - local_t) * base_font_px * 0.5, 1.0),
+            CharEntrance::SlideLeft => (local_t, (1.0 - local_t) * base_font_px * 0.5, 0.0, 1.0),
+            CharEntrance::SlideRight => (local_t, -(1.0 - local_t) * base_font_px * 0.5, 0.0, 1.0),
+            CharEntrance::ScaleUp => (local_t, 0.0, 0.0, local_t.max(0.05)),
+            CharEntrance::ScaleDown => {
+                // Settle from 2× → 1×; clamp to keep the first frame
+                // from ballooning beyond the canvas.
+                (local_t, 0.0, 0.0, (2.0 - local_t).clamp(1.0, 2.0))
+            }
+        };
+        if alpha <= 0.001 {
+            continue;
+        }
+
+        // For non-trivial scale we re-rasterize the glyph at the
+        // scaled size — fontdue's per-config cache only covers the
+        // base font size, so each scaled raster is a fresh kernel
+        // call. This is bounded: once the entrance ramp is over
+        // (local_t = 1) every glyph's scale settles to 1.0 and we
+        // fall back to the fast cached path.
+        let (coverage, raw_w, raw_h) = if (scale - 1.0).abs() > 0.001 {
+            let scaled_px = (base_font_px * scale).max(1.0);
+            let (m, cov) = font.rasterize(glyph.parent, scaled_px);
+            (cov, m.width, m.height)
+        } else {
+            let (_, cov) = font.rasterize_config(glyph.key);
+            (cov.to_vec(), glyph.width, glyph.height)
+        };
+
+        // Centre the (possibly scaled) glyph on the static glyph's
+        // visual midpoint plus the entrance offset, so scale changes
+        // pivot around the glyph centre rather than the top-left
+        // corner.
+        let cx = glyph.x + offset_x + dx + glyph.width as f32 * 0.5;
+        let cy = glyph.y + offset_y + dy + wave_dy + glyph.height as f32 * 0.5;
+        let gx = (cx - raw_w as f32 * 0.5).round() as i32;
+        let gy = (cy - raw_h as f32 * 0.5).round() as i32;
+
+        for row in 0..raw_h {
+            let py = gy + row as i32;
+            let my = py - mask_y0 as i32;
+            if my < 0 || my >= mask_h as i32 {
+                continue;
+            }
+            for col in 0..raw_w {
+                let px = gx + col as i32;
+                let mx = px - mask_x0 as i32;
+                if mx < 0 || mx >= mask_w as i32 {
+                    continue;
+                }
+                let cov = coverage[row * raw_w + col];
+                if cov == 0 {
+                    continue;
+                }
+                let scaled_cov = (cov as f32 * alpha).round() as u8;
+                if scaled_cov == 0 {
+                    continue;
+                }
+                let idx = my as usize * mask_w + mx as usize;
+                mask[idx] = mask[idx].max(scaled_cov);
+            }
+        }
+    }
+}
+
 /// Draw an alpha mask onto an RGBA buffer using a given color and intensity.
 #[allow(clippy::too_many_arguments)]
 fn draw_mask_to_buf(
@@ -2365,6 +2566,74 @@ mod tests {
         let line2_first = positions.iter().find(|p| p.char_index == 6).unwrap(); // 'L' of Line2
         assert!(line2_first.y > line1_y + 5.0,
             "Line2 y ({}) should be below Line1 y ({})", line2_first.y, line1_y);
+    }
+
+    /// Pin the contract that `char_animation` actually changes the
+    /// rendered output during the entrance window. Without this test
+    /// we would silently regress to the pre-fix behaviour where
+    /// per-character animation was honoured by the browser hover
+    /// preview but completely dropped by the playback / export
+    /// renderer.
+    ///
+    /// Test strategy: render the same title at t=0 (fully un-entered,
+    /// every glyph at alpha = 0) and t=10s (fully settled, every
+    /// glyph at alpha = 1). The total non-zero pixel count at t=0
+    /// must be strictly less than at t=10s for FadeIn — proving the
+    /// alpha mask responds to time.
+    #[test]
+    fn char_animation_alters_output_during_entrance() {
+        let mut renderer = TitleRenderer::new();
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "ABCDEFG".to_string();
+        tb.font_size = 80.0;
+        tb.char_animation = Some(klipp_timeline::CharAnimation {
+            stagger: 0.05,
+            entrance: klipp_timeline::CharEntrance::FadeIn,
+            wave_amplitude: 0.0,
+            wave_speed: 1.0,
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_t0 = renderer.render_with_time(&td, 1920, 1080, None, 0.0);
+        let buf_t_settled = renderer.render_with_time(&td, 1920, 1080, None, 10.0);
+
+        let count_nonzero = |buf: &[u8]| buf.chunks_exact(4).filter(|p| p[3] > 0).count();
+        let n0 = count_nonzero(&buf_t0);
+        let n1 = count_nonzero(&buf_t_settled);
+        assert!(
+            n0 < n1,
+            "FadeIn at t=0 should have FEWER visible pixels than at settled t. n0={n0} n1={n1}"
+        );
+        // Sanity: the settled frame must have non-trivial content.
+        assert!(n1 > 1000, "Settled frame should have >1000 visible pixels, got {n1}");
+    }
+
+    /// Cache MUST be bypassed when char_animation is present; without
+    /// this guard, the first-frame bitmap (often zero-alpha) would
+    /// stick around forever.
+    #[test]
+    fn char_animation_bypasses_cache_at_different_times() {
+        let mut renderer = TitleRenderer::new();
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "TEST".to_string();
+        tb.font_size = 80.0;
+        tb.char_animation = Some(klipp_timeline::CharAnimation {
+            stagger: 0.1,
+            entrance: klipp_timeline::CharEntrance::SlideUp,
+            wave_amplitude: 0.0,
+            wave_speed: 1.0,
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let frame_a = renderer.render_with_time(&td, 1280, 720, None, 0.05);
+        let frame_b = renderer.render_with_time(&td, 1280, 720, None, 0.20);
+        // Different times during the entrance ramp must produce
+        // different frames (slide offset / alpha both shift).
+        assert_ne!(
+            &frame_a[..],
+            &frame_b[..],
+            "render_with_time should produce different frames at different mid-entrance times"
+        );
     }
 
     /// Pin the contract that `transform.center.x` is honoured for

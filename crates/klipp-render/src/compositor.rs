@@ -161,7 +161,12 @@ impl FrameCompositor {
                 let elapsed_secs = clip_frame as f64 / fps.max(1.0);
                 let typewriter = typewriter_override(data, elapsed_secs);
                 let td = typewriter.as_ref().unwrap_or(data);
-                Ok(Some(self.title_renderer.render(td, width, height)))
+                // Time-aware so per-character entrance animations
+                // (FadeIn, SlideX, ScaleX) render correctly during
+                // export, not just at the typewriter override.
+                Ok(Some(self.title_renderer.render_with_time(
+                    td, width, height, None, elapsed_secs as f32,
+                )))
             }
             ClipKindSnapshot::Generator(data) => {
                 let clip_frame = frame_num.saturating_sub(clip.timeline_start_frame);
