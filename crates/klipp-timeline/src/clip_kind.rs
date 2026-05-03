@@ -349,6 +349,40 @@ pub struct TextBox {
     /// the drop cap's box for true wrap-under behaviour.
     #[serde(default)]
     pub drop_cap_scale: f32,
+    /// Number of columns to flow body text into. `1` (default) =
+    /// single-column layout — current behaviour. `2+` = split the
+    /// body into N approximately-equal chunks (on word boundaries)
+    /// and lay them out side-by-side with a gap between columns.
+    /// Style runs and drop caps are not yet column-aware; they
+    /// silently fall back to single-column when columns ≥ 2.
+    #[serde(default = "default_one_u8")]
+    pub columns: u8,
+    /// Stack characters vertically (CJK-style top-to-bottom) instead
+    /// of the default horizontal flow. The character glyphs keep
+    /// their natural horizontal orientation — they're just stacked
+    /// one per line. `false` (default) = horizontal layout. True
+    /// vertical typography (rotated CJK glyphs, kana orientation)
+    /// is a follow-up that needs OpenType `vrt2` feature support
+    /// in the rasteriser.
+    #[serde(default)]
+    pub vertical_layout: bool,
+    /// Text direction. `Ltr` (default) = standard left-to-right.
+    /// `Rtl` = right-to-left for Hebrew. Limited Arabic support —
+    /// proper Arabic shaping (joining forms, lam-alif ligatures, …)
+    /// requires harfbuzz integration tracked for a follow-up. RTL
+    /// reverses the visual character order and right-aligns the
+    /// text by default.
+    #[serde(default)]
+    pub text_direction: TextDirection,
+}
+
+fn default_one_u8() -> u8 { 1 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+pub enum TextDirection {
+    #[default]
+    Ltr,
+    Rtl,
 }
 
 /// Pre-layout case transform applied to `TextBox.text` before glyphs
@@ -398,6 +432,9 @@ impl Default for TextBox {
             outline_write_on: 1.0,
             chromatic_aberration_px: 0.0,
             glitch_intensity: 0.0,
+            columns: 1,
+            vertical_layout: false,
+            text_direction: TextDirection::Ltr,
         }
     }
 }

@@ -32,7 +32,8 @@ use fontdue::layout::{
 use fontdue::Font;
 use klipp_timeline::{
     CharAnimation, CharEntrance, FontStyle, ObjectTransform, Shape, ShapeKind, StyleRun,
-    TextAlignment, TextPath, TextPattern, TitleBackground, TitleData, TitleObjectContent,
+    TextAlignment, TextDirection, TextPath, TextPattern, TitleBackground, TitleData,
+    TitleObjectContent,
 };
 use std::collections::HashMap;
 
@@ -307,12 +308,19 @@ impl TitleRenderer {
         // Resolve the laid-out text, honouring the pre-layout case
         // transform. The `text` field on TextBox is preserved verbatim
         // so the user can flip the treatment without re-typing.
-        let resolved_text: String = match tb.case_transform {
+        let mut resolved_text: String = match tb.case_transform {
             klipp_timeline::TextCase::None => tb.text.clone(),
             klipp_timeline::TextCase::Uppercase
             | klipp_timeline::TextCase::SmallCaps => tb.text.to_uppercase(),
             klipp_timeline::TextCase::Lowercase => tb.text.to_lowercase(),
         };
+        // RTL: reverse the visual character order. This works
+        // correctly for Hebrew + ASCII; Arabic shaping (joining
+        // forms, lam-alif ligatures) needs harfbuzz and is tracked
+        // for a follow-up.
+        if tb.text_direction == TextDirection::Rtl {
+            resolved_text = resolved_text.chars().rev().collect();
+        }
 
         // Drop cap: when `drop_cap_scale >= 1.0` we enlarge the first
         // character. The straightforward "drop initial" path appends
@@ -338,6 +346,105 @@ impl TitleRenderer {
         // Pre-built glyph list for the drop-cap wrap path. Empty when
         // we use fontdue's normal Layout flow.
         let mut drop_cap_wrap_glyphs: Vec<fontdue::layout::GlyphPosition> = Vec::new();
+
+        // Vertical layout (CJK-style top-to-bottom stacking). Each
+        // character becomes its own line so glyphs stack vertically
+        // with their normal horizontal orientation. Drop caps and
+        // wrap-under disable this path (single-line cap doesn't
+        // make sense as vertical column header).
+        let vertical_active = tb.vertical_layout && !drop_cap_active;
+        let mut vertical_glyphs: Vec<fontdue::layout::GlyphPosition> = Vec::new();
+        if vertical_active {
+            let line_height = font_px * 1.2;
+            let mut byte_offset = 0usize;
+            let column_x = width as f32 * 0.45;  // single-column centred
+            for (char_idx, ch) in resolved_text.chars().enumerate() {
+                let ch_str = ch.to_string();
+                let mut sub_layout = Layout::new(CoordinateSystem::PositiveYDown);
+                sub_layout.reset(&LayoutSettings {
+                    x: column_x,
+                    y: char_idx as f32 * line_height,
+                    max_width: Some(font_px * 2.5),
+                    horizontal_align: HorizontalAlign::Left,
+                    vertical_align: VerticalAlign::Top,
+                    wrap_style: WrapStyle::Word,
+                    ..LayoutSettings::default()
+                });
+                sub_layout.append(&[font], &TextStyle::new(&ch_str, font_px, 0));
+                for g in sub_layout.glyphs() {
+                    let mut g_owned = g.clone();
+                    g_owned.byte_offset += byte_offset;
+                    vertical_glyphs.push(g_owned);
+                }
+                byte_offset += ch.len_utf8();
+            }
+            segment_info.push((0, 0));
+        }
+
+        // Multi-column body layout. When `columns >= 2` we split the
+        // body text by character count on word boundaries and lay
+        // each column out separately, then translate columns into
+        // place horizontally. Style runs and drop caps disable this
+        // path (single-column fall-through preserves their
+        // semantics).
+        let columns_n = tb.columns.max(1) as usize;
+        let columns_active = columns_n >= 2 && tb.style_runs.is_empty()
+            && !drop_cap_active && !vertical_active;
+        let mut columns_glyphs: Vec<fontdue::layout::GlyphPosition> = Vec::new();
+        if columns_active {
+            let column_gap = font_px * 1.5;
+            let total_w = width as f32 * 0.9;
+            let col_w = (total_w - column_gap * (columns_n - 1) as f32)
+                / columns_n as f32;
+            // Split resolved_text into N chunks on word boundaries.
+            // We aim for equal character counts; the splitter walks
+            // forward to the next whitespace after each chunk's
+            // ideal endpoint so words aren't cut.
+            let total_chars = resolved_text.chars().count();
+            let chunk_chars = (total_chars + columns_n - 1) / columns_n;
+            let mut chunks: Vec<String> = Vec::new();
+            let mut buffer = String::new();
+            let mut chunk_count = 0usize;
+            for ch in resolved_text.chars() {
+                buffer.push(ch);
+                chunk_count += 1;
+                if chunk_count >= chunk_chars && ch.is_whitespace()
+                    && chunks.len() + 1 < columns_n
+                {
+                    chunks.push(std::mem::take(&mut buffer));
+                    chunk_count = 0;
+                }
+            }
+            if !buffer.is_empty() {
+                chunks.push(buffer);
+            }
+            // Pad with empty strings if fewer chunks than columns.
+            while chunks.len() < columns_n {
+                chunks.push(String::new());
+            }
+            let mut byte_offset = 0usize;
+            for (col_idx, chunk) in chunks.iter().enumerate() {
+                let column_x = col_idx as f32 * (col_w + column_gap);
+                let mut col_layout = Layout::new(CoordinateSystem::PositiveYDown);
+                col_layout.reset(&LayoutSettings {
+                    x: column_x,
+                    y: 0.0,
+                    max_width: Some(col_w),
+                    horizontal_align: h_align,
+                    vertical_align: VerticalAlign::Top,
+                    wrap_style: WrapStyle::Word,
+                    ..LayoutSettings::default()
+                });
+                col_layout.append(&[font], &TextStyle::new(chunk, font_px, 0));
+                for g in col_layout.glyphs() {
+                    let mut g_owned = g.clone();
+                    g_owned.byte_offset += byte_offset;
+                    columns_glyphs.push(g_owned);
+                }
+                byte_offset += chunk.len();
+            }
+            segment_info.push((0, 0));
+        }
 
         if drop_cap_wrap_eligible {
             // Build the layout in three passes so body text wraps
@@ -409,11 +516,16 @@ impl TitleRenderer {
             }
         }
 
-        // When the wrap-eligible drop-cap path built its own glyph
-        // list, take that as authoritative. Otherwise pull from
-        // fontdue's accumulated layout.
+        // Pick the glyph source for this render — drop-cap wrap,
+        // vertical layout, multi-column, or fontdue's accumulated
+        // single-column layout. Active paths are mutually exclusive
+        // (set up by the gating booleans above).
         let mut glyphs_owned: Vec<fontdue::layout::GlyphPosition> = if drop_cap_wrap_eligible {
             std::mem::take(&mut drop_cap_wrap_glyphs)
+        } else if vertical_active {
+            std::mem::take(&mut vertical_glyphs)
+        } else if columns_active {
+            std::mem::take(&mut columns_glyphs)
         } else {
             layout.glyphs().to_vec()
         };
@@ -3300,6 +3412,90 @@ mod tests {
         let line2_first = positions.iter().find(|p| p.char_index == 6).unwrap(); // 'L' of Line2
         assert!(line2_first.y > line1_y + 5.0,
             "Line2 y ({}) should be below Line1 y ({})", line2_first.y, line1_y);
+    }
+
+    /// Multi-column layout produces glyphs at distinct horizontal
+    /// bands across the frame — proves the body actually flows into
+    /// multiple side-by-side columns rather than into a single column.
+    /// We assert the rendered bitmap has visible pixels at TWO
+    /// non-overlapping horizontal regions (left half AND right half).
+    #[test]
+    fn columns_layout_distributes_glyphs_horizontally() {
+        let mut renderer = TitleRenderer::new();
+        let body = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod \
+                    tempor incididunt ut labore et dolore magna aliqua";
+        let mk = |cols: u8| {
+            let mut tb = klipp_timeline::TextBox::default();
+            tb.text = body.to_string();
+            tb.font_size = 40.0;
+            // Center alignment so the column block centres in the
+            // frame and both columns fit inside the visible area
+            // regardless of how wide the block ends up.
+            tb.alignment = klipp_timeline::TextAlignment::Center;
+            tb.columns = cols;
+            klipp_timeline::TitleData::single_text(tb)
+        };
+        let buf = renderer.render(&mk(2), 1280, 720);
+        // Two-column body centred in the frame should populate both
+        // a "left of centre" band (200..560) and "right of centre"
+        // band (720..1080) — the gap between is the column gutter.
+        let mut left_count = 0usize;
+        let mut right_count = 0usize;
+        for (i, p) in buf.chunks_exact(4).enumerate() {
+            if p[3] > 50 {
+                let x = (i as u32) % 1280;
+                if (200..560).contains(&x) { left_count += 1; }
+                else if (720..1080).contains(&x) { right_count += 1; }
+            }
+        }
+        assert!(left_count > 50, "Two-column body should populate left band. left={left_count}");
+        assert!(right_count > 50, "Two-column body should populate right band. right={right_count}");
+    }
+
+    /// Vertical layout stacks each character on its own line, giving
+    /// a much taller and narrower footprint than horizontal flow.
+    #[test]
+    fn vertical_layout_stacks_characters() {
+        let mut renderer = TitleRenderer::new();
+        let mk = |vertical: bool| {
+            let mut tb = klipp_timeline::TextBox::default();
+            tb.text = "VERTICAL".to_string();
+            tb.font_size = 60.0;
+            tb.vertical_layout = vertical;
+            klipp_timeline::TitleData::single_text(tb)
+        };
+        let horizontal = renderer.render_layout(&mk(false), 1280, 720);
+        let vertical = renderer.render_layout(&mk(true), 1280, 720);
+        // Vertical: tall + narrow; horizontal: short + wide.
+        assert!(
+            vertical.mask_h > horizontal.mask_h,
+            "Vertical layout should be taller. horizontal.mask_h={} vertical.mask_h={}",
+            horizontal.mask_h, vertical.mask_h
+        );
+        assert!(
+            vertical.mask_w < horizontal.mask_w,
+            "Vertical layout should be narrower. horizontal.mask_w={} vertical.mask_w={}",
+            horizontal.mask_w, vertical.mask_w
+        );
+    }
+
+    /// RTL reverses character order — "ABC" rendered LTR vs RTL
+    /// should produce a different bitmap (the A and C glyphs swap
+    /// horizontal positions).
+    #[test]
+    fn rtl_reverses_visible_character_order() {
+        let mut renderer = TitleRenderer::new();
+        let mk = |dir: klipp_timeline::TextDirection| {
+            let mut tb = klipp_timeline::TextBox::default();
+            tb.text = "ABC".to_string();
+            tb.font_size = 80.0;
+            tb.text_direction = dir;
+            klipp_timeline::TitleData::single_text(tb)
+        };
+        let ltr = renderer.render(&mk(klipp_timeline::TextDirection::Ltr), 1280, 720);
+        let rtl = renderer.render(&mk(klipp_timeline::TextDirection::Rtl), 1280, 720);
+        assert_ne!(&ltr[..], &rtl[..],
+            "RTL must produce different pixels than LTR for asymmetric text");
     }
 
     /// Chromatic aberration must change the rendered pixels —

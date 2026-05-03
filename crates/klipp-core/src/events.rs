@@ -1380,6 +1380,12 @@ pub enum AppCommand {
     /// `accent_color` is the neon hue; saturation and value are
     /// pinned for legibility regardless of what the user picks.
     SetTitleNeonPreset { clip_id: ClipId, accent_color: [u8; 4] },
+    /// Number of columns to flow body text into (1 = single column).
+    SetTitleColumns { clip_id: ClipId, columns: u8 },
+    /// Toggle vertical (CJK-style) character stacking.
+    SetTitleVerticalLayout { clip_id: ClipId, vertical: bool },
+    /// Set text direction (0 = Ltr, 1 = Rtl).
+    SetTitleDirection { clip_id: ClipId, direction: u8 },
     /// Set 3D text extrusion. `enabled=false` = disable.
     SetTitleExtrusion { clip_id: ClipId, enabled: bool, depth: f32, angle: f32, face_color: [u8; 4], side_color: [u8; 4], lighting: f32 },
     /// Set text path. path_kind: 0=None, 1=Arc, 2=Circle, 3=Wave.

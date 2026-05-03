@@ -1784,6 +1784,36 @@ fn show_title_editor(
             cmds.push(AppCommand::SetTitleNeonPreset { clip_id, accent_color: accent });
         }
     });
+    ui.horizontal(|ui| {
+        // Columns: 1..=8 with reset.
+        let mut cols = td.primary_text().map_or(1u8, |tb| tb.columns) as i32;
+        if ui.add(
+            egui::DragValue::new(&mut cols)
+                .range(1..=8)
+                .speed(0.05)
+                .prefix("Columns: "),
+        ).changed() {
+            cmds.push(AppCommand::SetTitleColumns { clip_id, columns: cols.clamp(1, 8) as u8 });
+        }
+        let mut vertical = td.primary_text().map_or(false, |tb| tb.vertical_layout);
+        if ui.checkbox(&mut vertical, "Vertical").changed() {
+            cmds.push(AppCommand::SetTitleVerticalLayout { clip_id, vertical });
+        }
+        let dir_idx = match td.primary_text().map_or(klipp_timeline::TextDirection::Ltr, |tb| tb.text_direction) {
+            klipp_timeline::TextDirection::Ltr => 0u8,
+            klipp_timeline::TextDirection::Rtl => 1u8,
+        };
+        let mut sel = dir_idx;
+        egui::ComboBox::from_id_salt("title_text_direction")
+            .selected_text(if dir_idx == 1 { "RTL" } else { "LTR" })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut sel, 0, "LTR");
+                ui.selectable_value(&mut sel, 1, "RTL");
+            });
+        if sel != dir_idx {
+            cmds.push(AppCommand::SetTitleDirection { clip_id, direction: sel });
+        }
+    });
     ui.add_space(4.0);
     {
         // Drop cap scale: 0 = off, >=1 enlarges first character.
