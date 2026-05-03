@@ -670,6 +670,22 @@ pub enum TitleAnimationType {
     SlideInTop { duration_secs: f32 },
     /// Slides in from off-screen-bottom.
     SlideInBottom { duration_secs: f32 },
+    /// Rotates from `from_degrees` → 0 over `duration_secs` while
+    /// holding the textbox at its anchor. Negative angles spin
+    /// clockwise; positive counter-clockwise.
+    SpinIn { duration_secs: f32, from_degrees: f32 },
+    /// Scale-based overshoot entrance: 0 → ~1.15× → 1.0 over
+    /// `duration_secs`, giving a tactile "pop" before settling.
+    BounceIn { duration_secs: f32 },
+    /// Continuous vertical sine wave across the whole clip;
+    /// `amplitude_px` is the peak displacement in 1080p reference
+    /// pixels, `rate_hz` the cycle frequency.
+    Wave { amplitude_px: f32, rate_hz: f32 },
+    /// Continuous random jitter on both axes — emphasis for
+    /// "ALERT" / "EARTHQUAKE" style titles. `amplitude_px` is the
+    /// max displacement; `rate_hz` controls how rapidly the jitter
+    /// updates (higher = more frenetic).
+    Shake { amplitude_px: f32, rate_hz: f32 },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -737,6 +753,14 @@ pub enum CharEntrance {
     SlideRight,
     ScaleUp,
     ScaleDown,
+    /// Overshoot scale: each glyph briefly grows past 1.0 before
+    /// settling, giving a tactile "pop" entrance per character.
+    Pop,
+    /// Soft entrance that simulates a focus-pull: the per-glyph
+    /// alpha ramps up while the glyph is rendered at a slightly
+    /// reduced scale (cheap stand-in for a true Gaussian blur —
+    /// real blur requires a separate offscreen render pass).
+    BlurIn,
 }
 
 fn default_one() -> f32 { 1.0 }

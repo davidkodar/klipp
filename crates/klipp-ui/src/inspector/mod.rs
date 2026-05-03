@@ -1860,8 +1860,13 @@ fn show_title_editor(
                 klipp_timeline::CharEntrance::SlideRight => 5,
                 klipp_timeline::CharEntrance::ScaleUp => 6,
                 klipp_timeline::CharEntrance::ScaleDown => 7,
+                klipp_timeline::CharEntrance::Pop => 8,
+                klipp_timeline::CharEntrance::BlurIn => 9,
             };
-            let entrance_labels = ["None", "Fade In", "Slide Up", "Slide Down", "Slide Left", "Slide Right", "Scale Up", "Scale Down"];
+            let entrance_labels = [
+                "None", "Fade In", "Slide Up", "Slide Down", "Slide Left", "Slide Right",
+                "Scale Up", "Scale Down", "Pop", "Blur In",
+            ];
             let mut new_entrance_idx = entrance_idx;
             egui::ComboBox::from_label("Entrance")
                 .selected_text(entrance_labels[entrance_idx])
@@ -1928,6 +1933,10 @@ fn show_title_editor(
             T::SlideInRight { .. } => 15,
             T::SlideInTop { .. } => 16,
             T::SlideInBottom { .. } => 17,
+            T::SpinIn { .. } => 18,
+            T::BounceIn { .. } => 19,
+            T::Wave { .. } => 20,
+            T::Shake { .. } => 21,
         };
         let kind_label = |k: u8| -> &'static str {
             match k {
@@ -1949,6 +1958,10 @@ fn show_title_editor(
                 15 => "Slide In \u{2192} (from right)",
                 16 => "Slide In \u{2191} (from top)",
                 17 => "Slide In \u{2193} (from bottom)",
+                18 => "Spin In",
+                19 => "Bounce In",
+                20 => "Wave (continuous)",
+                21 => "Shake (continuous)",
                 _ => "Static (no animation)",
             }
         };
@@ -1966,6 +1979,10 @@ fn show_title_editor(
                 12 => (0.5, 1.5),                // ZoomIn 0.5s from 1.5x
                 13 => (0.5, 1.5),                // ZoomOut 0.5s to 1.5x
                 14 | 15 | 16 | 17 => (0.5, 0.0), // Slide 0.5s
+                18 => (0.5, -180.0),             // SpinIn 0.5s, from -180°
+                19 => (0.5, 0.0),                // BounceIn 0.5s
+                20 => (20.0, 1.0),               // Wave 20px @ 1Hz
+                21 => (10.0, 12.0),              // Shake 10px @ 12Hz
                 _ => (0.0, 0.0),
             }
         };
@@ -2004,6 +2021,14 @@ fn show_title_editor(
                     ui.selectable_value(&mut selected, 15, kind_label(15));
                     ui.selectable_value(&mut selected, 16, kind_label(16));
                     ui.selectable_value(&mut selected, 17, kind_label(17));
+                    ui.separator();
+                    ui.label(egui::RichText::new("Pose Entrance").size(10.0).color(theme.text_dim));
+                    ui.selectable_value(&mut selected, 18, kind_label(18));
+                    ui.selectable_value(&mut selected, 19, kind_label(19));
+                    ui.separator();
+                    ui.label(egui::RichText::new("Continuous Motion").size(10.0).color(theme.text_dim));
+                    ui.selectable_value(&mut selected, 20, kind_label(20));
+                    ui.selectable_value(&mut selected, 21, kind_label(21));
                 });
         });
         if selected != current_kind {
@@ -2157,13 +2182,54 @@ fn show_title_editor(
             T::SlideInLeft { duration_secs }
             | T::SlideInRight { duration_secs }
             | T::SlideInTop { duration_secs }
-            | T::SlideInBottom { duration_secs } => {
+            | T::SlideInBottom { duration_secs }
+            | T::BounceIn { duration_secs } => {
                 let mut v = *duration_secs;
                 ui.horizontal(|ui| {
                     ui.label("Duration:");
                     if ui.add(egui::DragValue::new(&mut v).range(0.05..=10.0).speed(0.05).fixed_decimals(2).suffix(" s")).changed() {
                         cmds.push(AppCommand::SetTitleAnimation {
                             clip_id, animation_kind: current_kind, speed: v, param2: 0.0,
+                        });
+                    }
+                });
+            }
+            T::SpinIn { duration_secs, from_degrees } => {
+                let mut dur = *duration_secs;
+                let mut deg = *from_degrees;
+                ui.horizontal(|ui| {
+                    ui.label("Duration:");
+                    if ui.add(egui::DragValue::new(&mut dur).range(0.05..=10.0).speed(0.05).fixed_decimals(2).suffix(" s")).changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: 18, speed: dur, param2: deg,
+                        });
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("From angle:");
+                    if ui.add(egui::DragValue::new(&mut deg).range(-720.0..=720.0).speed(2.0).fixed_decimals(0).suffix("\u{00b0}")).changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: 18, speed: dur, param2: deg,
+                        });
+                    }
+                });
+            }
+            T::Wave { amplitude_px, rate_hz } | T::Shake { amplitude_px, rate_hz } => {
+                let mut amp = *amplitude_px;
+                let mut rate = *rate_hz;
+                ui.horizontal(|ui| {
+                    ui.label("Amplitude:");
+                    if ui.add(egui::DragValue::new(&mut amp).range(0.0..=200.0).speed(0.5).fixed_decimals(1).suffix(" px")).changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: current_kind, speed: amp, param2: rate,
+                        });
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Rate:");
+                    if ui.add(egui::DragValue::new(&mut rate).range(0.1..=30.0).speed(0.1).fixed_decimals(2).suffix(" Hz")).changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: current_kind, speed: amp, param2: rate,
                         });
                     }
                 });

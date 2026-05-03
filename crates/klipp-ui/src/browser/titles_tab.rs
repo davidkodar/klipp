@@ -2312,6 +2312,18 @@ fn paint_char_animated(
                 entrance_alpha = local_t;
                 entrance_scale = (2.0 - local_t).max(1.0).min(2.0);
             }
+            CharEntrance::Pop => {
+                entrance_alpha = local_t;
+                entrance_scale = if local_t < 0.6 {
+                    local_t / 0.6 * 1.4
+                } else {
+                    1.4 - (local_t - 0.6) / 0.4 * 0.4
+                };
+            }
+            CharEntrance::BlurIn => {
+                entrance_alpha = local_t;
+                entrance_scale = 0.7 + 0.3 * local_t;
+            }
         }
         let cx = start_x + i as f32 * char_w + char_w * 0.5 + entrance_dx;
         let cy = pos.y + wave_y + entrance_dy;
@@ -2482,6 +2494,38 @@ fn apply_animation_type(
             let p = (t / 0.5).clamp(0.0, 1.0);
             let dy = (1.0 - p) * rect.height() * 0.5;
             (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy), 1.0, 1.0)
+        }
+        TitleAnimationType::SpinIn { .. } => {
+            // Browser preview can't rotate text easily — fall back
+            // to a fade so the user at least sees there IS animation.
+            // The real renderer applies the rotation in the timeline.
+            let alpha = (t / 0.5).clamp(0.0, 1.0);
+            (text.to_string(), base_pos, alpha, 1.0)
+        }
+        TitleAnimationType::BounceIn { .. } => {
+            // 0 → 1.15 → 1.0 over the first 50% of preview loop.
+            let p = (t / 0.5).clamp(0.0, 1.0);
+            let scale = if p < 0.6 { p / 0.6 * 1.15 } else { 1.15 - (p - 0.6) / 0.4 * 0.15 };
+            (text.to_string(), base_pos, 1.0, scale.clamp(0.05, 4.0))
+        }
+        TitleAnimationType::Wave { amplitude_px, rate_hz } => {
+            // Rate-aware vertical bob using elapsed (not loop t)
+            // so the preview reads "this is a wave at 1.5 Hz" even
+            // though the loop is bounded to 3 s.
+            let phase = elapsed * rate_hz * std::f32::consts::TAU;
+            let dy = phase.sin() * amplitude_px * 0.5; // half-amp in card preview
+            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy), 1.0, 1.0)
+        }
+        TitleAnimationType::Shake { amplitude_px, rate_hz } => {
+            // Same deterministic LCG used at render time so the
+            // preview matches the export.
+            let n = (elapsed * rate_hz) as u32;
+            let seed = 0x9E37_79B9u32
+                .wrapping_mul(1664525)
+                .wrapping_add(n.wrapping_mul(2654435761));
+            let dx = ((seed >> 16) as f32 / u16::MAX as f32 - 0.5) * amplitude_px;
+            let dy = ((seed >> 1) as f32 / u32::MAX as f32 - 0.5) * amplitude_px * 2.0;
+            (text.to_string(), egui::pos2(base_pos.x + dx * 0.5, base_pos.y + dy * 0.5), 1.0, 1.0)
         }
     }
 }

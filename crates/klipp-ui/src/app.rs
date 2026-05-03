@@ -13953,6 +13953,8 @@ impl KlippApp {
                         5 => klipp_timeline::CharEntrance::SlideRight,
                         6 => klipp_timeline::CharEntrance::ScaleUp,
                         7 => klipp_timeline::CharEntrance::ScaleDown,
+                        8 => klipp_timeline::CharEntrance::Pop,
+                        9 => klipp_timeline::CharEntrance::BlurIn,
                         _ => klipp_timeline::CharEntrance::None,
                     };
                     Some(klipp_timeline::CharAnimation {
@@ -29425,6 +29427,10 @@ fn decode_title_animation(kind: u8, speed: f32, param2: f32) -> klipp_timeline::
         15 => T::SlideInRight { duration_secs: speed },
         16 => T::SlideInTop { duration_secs: speed },
         17 => T::SlideInBottom { duration_secs: speed },
+        18 => T::SpinIn { duration_secs: speed, from_degrees: param2 },
+        19 => T::BounceIn { duration_secs: speed },
+        20 => T::Wave { amplitude_px: speed, rate_hz: param2 },
+        21 => T::Shake { amplitude_px: speed, rate_hz: param2 },
         _ => T::Static,
     }
 }
@@ -29704,6 +29710,68 @@ fn apply_title_animation_keyframes(
                 mk_linear_kf(0.0, -scroll_offset),
                 mk_linear_kf(dur, 0.0),
             ];
+        }
+        T::SpinIn { duration_secs, from_degrees } => {
+            let dur = (*duration_secs as f64).clamp(0.001, clip_dur_secs);
+            clip.transform_rotation_keyframes = vec![
+                mk_linear_kf(0.0, *from_degrees),
+                mk_linear_kf(dur, 0.0),
+            ];
+        }
+        T::BounceIn { duration_secs } => {
+            // Three-keyframe overshoot: 0 → 1.15 → 1.0. The 60% / 100%
+            // split puts the peak just before settling, which is the
+            // shape that reads as a satisfying "bounce" rather than a
+            // soft-landing sigmoid.
+            let dur = (*duration_secs as f64).clamp(0.001, clip_dur_secs);
+            let peak_t = dur * 0.6;
+            clip.transform_scale_keyframes = vec![
+                mk_linear_kf(0.0, 0.0),
+                mk_linear_kf(peak_t, 1.15),
+                mk_linear_kf(dur, 1.0),
+            ];
+        }
+        T::Wave { amplitude_px, rate_hz } => {
+            // Continuous sine wave on transform_pos_y. We sample 16
+            // points per cycle for visually-smooth motion; binary
+            // search in keyframe::evaluate keeps lookup O(log n)
+            // even at long clip durations.
+            let amp = *amplitude_px;
+            let rate = (*rate_hz as f64).max(0.05);
+            let period = 1.0 / rate;
+            let dt = period / 16.0;
+            let mut t = 0.0;
+            let mut kfs = Vec::new();
+            while t <= clip_dur_secs + 1e-6 {
+                let phase = (t / period) * std::f64::consts::TAU;
+                kfs.push(mk_linear_kf(t, (phase.sin() as f32) * amp));
+                t += dt;
+            }
+            clip.transform_pos_y_keyframes = kfs;
+        }
+        T::Shake { amplitude_px, rate_hz } => {
+            // Pseudo-random jitter via a deterministic LCG so the
+            // same clip + same params always produce the same shake
+            // — no surprises on re-render or export. Both axes get
+            // independent samples per tick at `rate_hz`.
+            let amp = *amplitude_px;
+            let rate = (*rate_hz as f64).max(0.5);
+            let period = 1.0 / rate;
+            let mut t = 0.0;
+            let mut seed: u32 = 0x9E37_79B9;
+            let mut kfs_x = Vec::new();
+            let mut kfs_y = Vec::new();
+            while t <= clip_dur_secs + 1e-6 {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let dx = (((seed >> 8) as f32 / u16::MAX as f32) - 1.0) * amp;
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let dy = (((seed >> 8) as f32 / u16::MAX as f32) - 1.0) * amp;
+                kfs_x.push(mk_linear_kf(t, dx));
+                kfs_y.push(mk_linear_kf(t, dy));
+                t += period;
+            }
+            clip.transform_pos_x_keyframes = kfs_x;
+            clip.transform_pos_y_keyframes = kfs_y;
         }
     }
 }
@@ -30105,6 +30173,10 @@ Dialogue: 0,0:00:09.00,0:00:11.00,Default,,0,0,0,,Text, with commas, inside
         assert_eq!(decode_title_animation(15, 0.5, 0.0), T::SlideInRight { duration_secs: 0.5 });
         assert_eq!(decode_title_animation(16, 0.5, 0.0), T::SlideInTop { duration_secs: 0.5 });
         assert_eq!(decode_title_animation(17, 0.5, 0.0), T::SlideInBottom { duration_secs: 0.5 });
+        assert_eq!(decode_title_animation(18, 0.5, -180.0), T::SpinIn { duration_secs: 0.5, from_degrees: -180.0 });
+        assert_eq!(decode_title_animation(19, 0.5, 0.0), T::BounceIn { duration_secs: 0.5 });
+        assert_eq!(decode_title_animation(20, 20.0, 1.0), T::Wave { amplitude_px: 20.0, rate_hz: 1.0 });
+        assert_eq!(decode_title_animation(21, 10.0, 12.0), T::Shake { amplitude_px: 10.0, rate_hz: 12.0 });
         // Unknown → Static (defensive)
         assert_eq!(decode_title_animation(99, 0.0, 0.0), T::Static);
     }
@@ -30310,6 +30382,87 @@ Dialogue: 0,0:00:09.00,0:00:11.00,Default,,0,0,0,,Text, with commas, inside
         assert!(clip.transform_pos_y_keyframes.is_empty());
         assert!(clip.transform_scale_keyframes.is_empty());
         assert!(clip.opacity_keyframes.is_empty());
+    }
+
+    /// SpinIn writes rotation keyframes from `from_degrees` → 0.
+    #[test]
+    fn apply_title_animation_keyframes_spin_in_writes_rotation_track() {
+        use klipp_core::RationalTime;
+        use klipp_timeline::TitleAnimationType;
+        let ti = RationalTime::from_secs_f64(0.0, 24);
+        let to = RationalTime::from_secs_f64(4.0, 24);
+        let mut clip = klipp_timeline::Clip::gap(ti, to);
+        clip.timeline_in = ti;
+        clip.timeline_out = to;
+        let anim = TitleAnimationType::SpinIn { duration_secs: 0.5, from_degrees: -180.0 };
+        apply_title_animation_keyframes(&mut clip, &anim, 1080.0, 1920.0);
+        assert_eq!(clip.transform_rotation_keyframes.len(), 2);
+        assert!((clip.transform_rotation_keyframes[0].value - (-180.0)).abs() < 1e-3);
+        assert!((clip.transform_rotation_keyframes[1].value - 0.0).abs() < 1e-3);
+    }
+
+    /// BounceIn writes a 3-keyframe scale ramp with overshoot peak at 1.15.
+    #[test]
+    fn apply_title_animation_keyframes_bounce_in_overshoots_then_settles() {
+        use klipp_core::RationalTime;
+        use klipp_timeline::TitleAnimationType;
+        let ti = RationalTime::from_secs_f64(0.0, 24);
+        let to = RationalTime::from_secs_f64(4.0, 24);
+        let mut clip = klipp_timeline::Clip::gap(ti, to);
+        clip.timeline_in = ti;
+        clip.timeline_out = to;
+        let anim = TitleAnimationType::BounceIn { duration_secs: 0.5 };
+        apply_title_animation_keyframes(&mut clip, &anim, 1080.0, 1920.0);
+        assert_eq!(clip.transform_scale_keyframes.len(), 3);
+        assert!(clip.transform_scale_keyframes[0].value < 0.05);
+        // Peak overshoots 1.0.
+        assert!(clip.transform_scale_keyframes[1].value > 1.0);
+        // Settles back to 1.0.
+        assert!((clip.transform_scale_keyframes[2].value - 1.0).abs() < 1e-3);
+    }
+
+    /// Wave writes many pos_y keyframes covering the clip duration.
+    /// 1 Hz over 4s × 16 samples per cycle → 64+ keyframes.
+    #[test]
+    fn apply_title_animation_keyframes_wave_writes_pos_y_oscillation() {
+        use klipp_core::RationalTime;
+        use klipp_timeline::TitleAnimationType;
+        let ti = RationalTime::from_secs_f64(0.0, 24);
+        let to = RationalTime::from_secs_f64(4.0, 24);
+        let mut clip = klipp_timeline::Clip::gap(ti, to);
+        clip.timeline_in = ti;
+        clip.timeline_out = to;
+        let anim = TitleAnimationType::Wave { amplitude_px: 50.0, rate_hz: 1.0 };
+        apply_title_animation_keyframes(&mut clip, &anim, 1080.0, 1920.0);
+        assert!(clip.transform_pos_y_keyframes.len() >= 60,
+            "Expected ≥60 keyframes for 1Hz×4s, got {}", clip.transform_pos_y_keyframes.len());
+        // Peak amplitudes should cap near ±50.
+        let max_v = clip.transform_pos_y_keyframes.iter()
+            .map(|k| k.value.abs())
+            .fold(0.0f32, f32::max);
+        assert!((max_v - 50.0).abs() < 5.0,
+            "Peak amplitude should be ~50, got {max_v}");
+    }
+
+    /// Shake writes pos_x AND pos_y keyframes (jitter on both axes).
+    #[test]
+    fn apply_title_animation_keyframes_shake_writes_both_axes() {
+        use klipp_core::RationalTime;
+        use klipp_timeline::TitleAnimationType;
+        let ti = RationalTime::from_secs_f64(0.0, 24);
+        let to = RationalTime::from_secs_f64(4.0, 24);
+        let mut clip = klipp_timeline::Clip::gap(ti, to);
+        clip.timeline_in = ti;
+        clip.timeline_out = to;
+        let anim = TitleAnimationType::Shake { amplitude_px: 10.0, rate_hz: 12.0 };
+        apply_title_animation_keyframes(&mut clip, &anim, 1080.0, 1920.0);
+        assert!(!clip.transform_pos_x_keyframes.is_empty());
+        assert!(!clip.transform_pos_y_keyframes.is_empty());
+        assert_eq!(
+            clip.transform_pos_x_keyframes.len(),
+            clip.transform_pos_y_keyframes.len(),
+            "Shake should produce matching X / Y keyframe counts"
+        );
     }
 
     /// Switching from a previous animation back to Static must clear

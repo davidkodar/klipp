@@ -1986,6 +1986,28 @@ fn rasterize_to_mask_animated(
                 // from ballooning beyond the canvas.
                 (local_t, 0.0, 0.0, (2.0 - local_t).clamp(1.0, 2.0))
             }
+            CharEntrance::Pop => {
+                // Overshoot scale: 0 → 1.4 (peak at local_t=0.6) → 1.0.
+                // Per-glyph version of the title-level BounceIn.
+                let scale = if local_t < 0.6 {
+                    // 0 .. 0.6 → ramp 0 → 1.4
+                    local_t / 0.6 * 1.4
+                } else {
+                    // 0.6 .. 1.0 → settle 1.4 → 1.0
+                    1.4 - (local_t - 0.6) / 0.4 * 0.4
+                };
+                (local_t, 0.0, 0.0, scale.max(0.05))
+            }
+            CharEntrance::BlurIn => {
+                // Cheap stand-in for a Gaussian blur entrance: the
+                // glyph fades in while rendered at a slightly
+                // smaller scale (visually similar to defocus on
+                // screen at preview-typical scrub rates). A true
+                // blur kernel is a separate offscreen pass tracked
+                // for a follow-up commit.
+                let scale = 0.7 + 0.3 * local_t;
+                (local_t, 0.0, 0.0, scale)
+            }
         };
         if alpha <= 0.001 {
             continue;
