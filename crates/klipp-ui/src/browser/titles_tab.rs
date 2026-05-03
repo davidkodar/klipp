@@ -2054,7 +2054,7 @@ fn paint_card_text(
     // a static card we render the full text in its anchor pose; while
     // hovered, these modify either the visible character count or the
     // anchor position.
-    let (display_text, type_pos, anim_alpha, anim_scale) = apply_animation_type(
+    let (display_text, type_pos, anim_alpha, anim_scale, anim_color_override) = apply_animation_type(
         &data,
         &display_text_raw,
         rect,
@@ -2072,6 +2072,10 @@ fn paint_card_text(
         scale: xform.scale * anim_scale,
     };
     let font_size = ((data.font_size() / 5.0) * xform.scale).clamp(8.0, 28.0);
+    // Resolve the effective fill colour: ColorCycle / ColorBlend
+    // animations supply a per-frame override; everything else uses
+    // the static authored colour.
+    let effective_color = anim_color_override.unwrap_or_else(|| data.color());
 
     // ── 1. Background ──
     paint_title_background(
@@ -2099,7 +2103,7 @@ fn paint_card_text(
             font_size,
             &display_text,
             ext,
-            data.color(),
+            effective_color,
             xform.alpha,
         );
     }
@@ -2141,7 +2145,7 @@ fn paint_card_text(
             rect,
             &display_text,
             font_size,
-            data.color(),
+            effective_color,
             path,
             xform.alpha,
             &data.font_style(),
@@ -2153,7 +2157,7 @@ fn paint_card_text(
             align,
             font_size,
             &display_text,
-            data.color(),
+            effective_color,
             ca,
             elapsed_secs,
             xform.alpha,
@@ -2167,15 +2171,61 @@ fn paint_card_text(
             &data.font_style(),
         );
     } else {
-        paint_styled_text(
-            painter,
-            pos,
-            align,
-            font_size,
-            &display_text,
-            scaled_color(data.color(), xform.alpha),
-            &data.font_style(),
-        );
+        // Chromatic aberration preview: when the template carries
+        // chromatic_aberration_px > 0, paint the text three times with
+        // R / G / B colour separations offset horizontally. Cheap and
+        // reads as "this template has the chromatic-glitch look" even
+        // without the renderer's per-pixel split.
+        let ca_px = data
+            .primary_text()
+            .map_or(0.0, |tb| tb.chromatic_aberration_px)
+            .clamp(0.0, 40.0);
+        if ca_px > 0.5 {
+            // Card preview is small (~font_px/5); scale CA accordingly.
+            let off = (ca_px / 5.0).max(1.0);
+            let r = scaled_color([255, 60, 60, effective_color[3]], xform.alpha * 0.85);
+            let g = scaled_color(effective_color, xform.alpha);
+            let b = scaled_color([60, 60, 255, effective_color[3]], xform.alpha * 0.85);
+            paint_styled_text(painter, egui::pos2(pos.x - off, pos.y), align, font_size, &display_text, r, &data.font_style());
+            paint_styled_text(painter, egui::pos2(pos.x + off, pos.y), align, font_size, &display_text, b, &data.font_style());
+            paint_styled_text(painter, pos, align, font_size, &display_text, g, &data.font_style());
+        } else {
+            paint_styled_text(
+                painter,
+                pos,
+                align,
+                font_size,
+                &display_text,
+                scaled_color(effective_color, xform.alpha),
+                &data.font_style(),
+            );
+        }
+        // Glitch preview: deterministic per-elapsed horizontal offset
+        // overlaid on top of the main text. Same seed pattern as the
+        // renderer's apply_glitch so card preview matches export.
+        let glitch = data
+            .primary_text()
+            .map_or(0.0, |tb| tb.glitch_intensity)
+            .clamp(0.0, 1.0);
+        if glitch > 0.05 {
+            let n = (elapsed_secs * 12.0) as u32;
+            let seed = 0x9E37_79B9u32
+                .wrapping_mul(1664525)
+                .wrapping_add(n.wrapping_mul(2654435761));
+            let dx = ((seed >> 16) as f32 / u16::MAX as f32 - 0.5) * 8.0 * glitch;
+            // Faint duplicate of the text shifted horizontally — shows
+            // the slice-displacement character of the glitch effect at
+            // card scale.
+            paint_styled_text(
+                painter,
+                egui::pos2(pos.x + dx, pos.y),
+                align,
+                font_size,
+                &display_text,
+                scaled_color(effective_color, xform.alpha * 0.5),
+                &data.font_style(),
+            );
+        }
     }
 }
 
@@ -2555,9 +2605,11 @@ fn paint_gradient_text(
 
 /// Apply the template's animation_type to the card-preview pose. On
 /// a static card we render the full text in its anchor pose; while
-/// hovered, animation variants advance through a 3-second loop. Returns
-/// `(text, pos, alpha_mul, scale_mul)` so the caller can layer the
-/// preview pose on top of the text-style transform.
+/// hovered, animation variants advance through a 3-second loop.
+/// Returns `(text, pos, alpha_mul, scale_mul, color_override)` so the
+/// caller can layer the preview pose on top of the text-style transform
+/// AND substitute a per-frame colour for the colour-driven animations
+/// (ColorCycle hue rotation, ColorBlend two-colour lerp).
 fn apply_animation_type(
     data: &TitleData,
     text: &str,
@@ -2565,49 +2617,46 @@ fn apply_animation_type(
     base_pos: egui::Pos2,
     _font_size: f32,
     elapsed: f32,
-) -> (String, egui::Pos2, f32, f32) {
+) -> (String, egui::Pos2, f32, f32, Option<[u8; 4]>) {
     if elapsed <= 0.0 {
-        return (text.to_string(), base_pos, 1.0, 1.0);
+        return (text.to_string(), base_pos, 1.0, 1.0, None);
     }
     const LOOP_SECS: f32 = 3.0;
     let t = elapsed.rem_euclid(LOOP_SECS) / LOOP_SECS;
     match &data.animation_type {
-        TitleAnimationType::Static => (text.to_string(), base_pos, 1.0, 1.0),
+        TitleAnimationType::Static => (text.to_string(), base_pos, 1.0, 1.0, None),
         TitleAnimationType::ScrollUp { .. } => {
             let dy = rect.height() * 0.5 - rect.height() * t;
-            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy), 1.0, 1.0)
+            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy), 1.0, 1.0, None)
         }
         TitleAnimationType::ScrollDown { .. } => {
             let dy = -rect.height() * 0.5 + rect.height() * t;
-            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy), 1.0, 1.0)
+            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy), 1.0, 1.0, None)
         }
         TitleAnimationType::CrawlLeft { .. } => {
             let dx = rect.width() * 0.5 - rect.width() * t;
-            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y), 1.0, 1.0)
+            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y), 1.0, 1.0, None)
         }
         TitleAnimationType::CrawlRight { .. } => {
             let dx = -rect.width() * 0.5 + rect.width() * t;
-            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y), 1.0, 1.0)
+            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y), 1.0, 1.0, None)
         }
         TitleAnimationType::Typewriter { .. } => {
             let chars: Vec<char> = text.chars().collect();
             let visible = ((t * (chars.len() as f32 + 6.0)) as usize)
                 .min(chars.len());
             let revealed: String = chars.iter().take(visible).collect();
-            (revealed, base_pos, 1.0, 1.0)
+            (revealed, base_pos, 1.0, 1.0, None)
         }
         TitleAnimationType::FadeIn { .. } => {
-            // Fade in over first 33% of preview loop, hold for the rest.
             let alpha = (t / 0.33).clamp(0.0, 1.0);
-            (text.to_string(), base_pos, alpha, 1.0)
+            (text.to_string(), base_pos, alpha, 1.0, None)
         }
         TitleAnimationType::FadeOut { .. } => {
-            // Hold opaque for first 67% then fade out.
             let alpha = (1.0 - (t - 0.67) / 0.33).clamp(0.0, 1.0);
-            (text.to_string(), base_pos, alpha, 1.0)
+            (text.to_string(), base_pos, alpha, 1.0, None)
         }
         TitleAnimationType::FadeInOut { .. } => {
-            // Fade in 0..0.25, hold 0.25..0.75, fade out 0.75..1.
             let alpha = if t < 0.25 {
                 t / 0.25
             } else if t > 0.75 {
@@ -2615,140 +2664,185 @@ fn apply_animation_type(
             } else {
                 1.0
             };
-            (text.to_string(), base_pos, alpha.clamp(0.0, 1.0), 1.0)
+            (text.to_string(), base_pos, alpha.clamp(0.0, 1.0), 1.0, None)
         }
         TitleAnimationType::Flash { rate_hz } => {
-            // Square wave preview at the configured rate (cap to keep
-            // hover preview readable — 8 Hz visible flicker, anything
-            // higher just looks like dimmed solid text).
             let rate = (*rate_hz).clamp(0.5, 8.0);
             let phase = (elapsed * rate) % 1.0;
             let alpha = if phase < 0.5 { 1.0 } else { 0.0 };
-            (text.to_string(), base_pos, alpha, 1.0)
+            (text.to_string(), base_pos, alpha, 1.0, None)
         }
         TitleAnimationType::Blink { rate_hz, duty_cycle } => {
             let rate = (*rate_hz).clamp(0.5, 8.0);
             let phase = (elapsed * rate) % 1.0;
             let alpha = if phase < *duty_cycle { 1.0 } else { 0.0 };
-            (text.to_string(), base_pos, alpha, 1.0)
+            (text.to_string(), base_pos, alpha, 1.0, None)
         }
         TitleAnimationType::Pulse { rate_hz, min_opacity } => {
             let rate = (*rate_hz).clamp(0.1, 4.0);
             let phase = (elapsed * rate) * std::f32::consts::TAU;
             let s = 0.5 + 0.5 * phase.sin();
             let alpha = min_opacity + (1.0 - min_opacity) * s;
-            (text.to_string(), base_pos, alpha.clamp(0.0, 1.0), 1.0)
+            (text.to_string(), base_pos, alpha.clamp(0.0, 1.0), 1.0, None)
         }
         TitleAnimationType::ZoomIn { from_scale, .. } => {
-            // Scale ramps from `from_scale` → 1.0 over first 50% of loop.
             let p = (t / 0.5).clamp(0.0, 1.0);
             let scale = from_scale + (1.0 - from_scale) * p;
-            (text.to_string(), base_pos, 1.0, scale.clamp(0.05, 4.0))
+            (text.to_string(), base_pos, 1.0, scale.clamp(0.05, 4.0), None)
         }
         TitleAnimationType::ZoomOut { to_scale, .. } => {
-            // Scale 1.0 → to_scale over second 50% of loop.
             let p = ((t - 0.5) / 0.5).clamp(0.0, 1.0);
             let scale = 1.0 + (to_scale - 1.0) * p;
-            (text.to_string(), base_pos, 1.0, scale.clamp(0.05, 4.0))
+            (text.to_string(), base_pos, 1.0, scale.clamp(0.05, 4.0), None)
         }
         TitleAnimationType::SlideInLeft { .. } => {
             let p = (t / 0.5).clamp(0.0, 1.0);
             let dx = (1.0 - p) * -rect.width() * 0.5;
-            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y), 1.0, 1.0)
+            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y), 1.0, 1.0, None)
         }
         TitleAnimationType::SlideInRight { .. } => {
             let p = (t / 0.5).clamp(0.0, 1.0);
             let dx = (1.0 - p) * rect.width() * 0.5;
-            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y), 1.0, 1.0)
+            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y), 1.0, 1.0, None)
         }
         TitleAnimationType::SlideInTop { .. } => {
             let p = (t / 0.5).clamp(0.0, 1.0);
             let dy = (1.0 - p) * -rect.height() * 0.5;
-            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy), 1.0, 1.0)
+            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy), 1.0, 1.0, None)
         }
         TitleAnimationType::SlideInBottom { .. } => {
             let p = (t / 0.5).clamp(0.0, 1.0);
             let dy = (1.0 - p) * rect.height() * 0.5;
-            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy), 1.0, 1.0)
+            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy), 1.0, 1.0, None)
         }
         TitleAnimationType::SpinIn { .. } => {
-            // Browser preview can't rotate text easily — fall back
-            // to a fade so the user at least sees there IS animation.
-            // The real renderer applies the rotation in the timeline.
+            // Browser preview can't rotate text easily; fade-in stand-
+            // in so the user sees there IS animation. Real renderer
+            // applies the rotation in the timeline.
             let alpha = (t / 0.5).clamp(0.0, 1.0);
-            (text.to_string(), base_pos, alpha, 1.0)
+            (text.to_string(), base_pos, alpha, 1.0, None)
         }
         TitleAnimationType::BounceIn { .. } => {
-            // 0 → 1.15 → 1.0 over the first 50% of preview loop.
             let p = (t / 0.5).clamp(0.0, 1.0);
             let scale = if p < 0.6 { p / 0.6 * 1.15 } else { 1.15 - (p - 0.6) / 0.4 * 0.15 };
-            (text.to_string(), base_pos, 1.0, scale.clamp(0.05, 4.0))
+            (text.to_string(), base_pos, 1.0, scale.clamp(0.05, 4.0), None)
         }
         TitleAnimationType::Wave { amplitude_px, rate_hz } => {
-            // Rate-aware vertical bob using elapsed (not loop t)
-            // so the preview reads "this is a wave at 1.5 Hz" even
-            // though the loop is bounded to 3 s.
             let phase = elapsed * rate_hz * std::f32::consts::TAU;
-            let dy = phase.sin() * amplitude_px * 0.5; // half-amp in card preview
-            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy), 1.0, 1.0)
+            let dy = phase.sin() * amplitude_px * 0.5;
+            (text.to_string(), egui::pos2(base_pos.x, base_pos.y + dy), 1.0, 1.0, None)
         }
         TitleAnimationType::Shake { amplitude_px, rate_hz } => {
-            // Same deterministic LCG used at render time so the
-            // preview matches the export.
             let n = (elapsed * rate_hz) as u32;
             let seed = 0x9E37_79B9u32
                 .wrapping_mul(1664525)
                 .wrapping_add(n.wrapping_mul(2654435761));
             let dx = ((seed >> 16) as f32 / u16::MAX as f32 - 0.5) * amplitude_px;
             let dy = ((seed >> 1) as f32 / u32::MAX as f32 - 0.5) * amplitude_px * 2.0;
-            (text.to_string(), egui::pos2(base_pos.x + dx * 0.5, base_pos.y + dy * 0.5), 1.0, 1.0)
+            (text.to_string(), egui::pos2(base_pos.x + dx * 0.5, base_pos.y + dy * 0.5), 1.0, 1.0, None)
         }
-        TitleAnimationType::ColorCycle { .. } => {
-            // The card preview's text colour is taken from
-            // data.color() and isn't easily hue-shifted here without
-            // breaking the existing per-card colour pipeline. The
-            // hover preview shows the static colour; the timeline
-            // and export apply the full hue rotation.
-            (text.to_string(), base_pos, 1.0, 1.0)
+        TitleAnimationType::ColorCycle { rate_hz } => {
+            // Hue-rotate the resting fill colour. Saturation and value
+            // are taken from the authored colour so the cycle stays in
+            // the user's chosen brightness band.
+            let resting = data.color();
+            let (_, sat, val) = rgba_to_hsv(resting);
+            let hue = (elapsed * rate_hz * 360.0).rem_euclid(360.0);
+            let new_color = hsv_to_rgba(hue, sat, val, resting[3]);
+            (text.to_string(), base_pos, 1.0, 1.0, Some(new_color))
         }
         TitleAnimationType::Marquee { .. } => {
-            // Looping right→left scroll. The fractional part of t
-            // gives a fresh sweep each loop.
             let t_loop = t.rem_euclid(1.0);
             let dx = rect.width() * 0.5 - rect.width() * t_loop;
-            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y), 1.0, 1.0)
+            (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y), 1.0, 1.0, None)
         }
         TitleAnimationType::TypewriterOut { .. } => {
-            // Inverse of Typewriter — start full, lose chars right→left.
             let chars: Vec<char> = text.chars().collect();
             let kept = chars.len().saturating_sub(
                 ((t * (chars.len() as f32 + 6.0)) as usize).min(chars.len()),
             );
             let revealed: String = chars.iter().take(kept).collect();
-            (revealed, base_pos, 1.0, 1.0)
+            (revealed, base_pos, 1.0, 1.0, None)
         }
         TitleAnimationType::Counter { from_value, to_value, .. } => {
-            // Linearly interpolate the value across the preview loop
-            // so the user sees the count tick. Decimals=0 reads
-            // cleanest on a thumbnail; the real renderer respects
-            // the user's chosen decimal count.
             let v = from_value + (to_value - from_value) * t as f64;
-            (format!("{v:.0}"), base_pos, 1.0, 1.0)
+            (format!("{v:.0}"), base_pos, 1.0, 1.0, None)
         }
         TitleAnimationType::OutlineDrawOn { .. } => {
-            // The card preview shares the static text colour; the
-            // outline-progress effect only manifests when the
-            // template has authored outlines, and the timeline
-            // applies it faithfully there. No alpha/scale tweak.
-            (text.to_string(), base_pos, 1.0, 1.0)
+            // The preview painter doesn't expose per-outline alpha, so
+            // we emulate the draw-on as a brief fade-in over the first
+            // half of the loop. Conveys "outline appears" even if the
+            // real left-to-right reveal is renderer-only.
+            let alpha = (t / 0.5).clamp(0.0, 1.0);
+            (text.to_string(), base_pos, alpha, 1.0, None)
         }
-        TitleAnimationType::ColorBlend { .. } => {
-            // Same caveat as ColorCycle — the card preview's text
-            // colour pipeline is a separate routing; the timeline
-            // and export apply the full colour blend.
-            (text.to_string(), base_pos, 1.0, 1.0)
+        TitleAnimationType::ColorBlend { color_a, color_b, rate_hz } => {
+            // Sinusoidal lerp between the two authored colours,
+            // matching what the renderer does at playback.
+            let phase = elapsed * rate_hz * std::f32::consts::TAU;
+            let mix = 0.5 + 0.5 * phase.sin();
+            let new_color = lerp_rgba(*color_a, *color_b, mix);
+            (text.to_string(), base_pos, 1.0, 1.0, Some(new_color))
         }
     }
+}
+
+/// Linearly interpolate two RGBA-u8 colours. Used by the ColorBlend
+/// hover preview to match the title renderer's blend at playback.
+fn lerp_rgba(a: [u8; 4], b: [u8; 4], t: f32) -> [u8; 4] {
+    let t = t.clamp(0.0, 1.0);
+    [
+        (a[0] as f32 * (1.0 - t) + b[0] as f32 * t).round().clamp(0.0, 255.0) as u8,
+        (a[1] as f32 * (1.0 - t) + b[1] as f32 * t).round().clamp(0.0, 255.0) as u8,
+        (a[2] as f32 * (1.0 - t) + b[2] as f32 * t).round().clamp(0.0, 255.0) as u8,
+        (a[3] as f32 * (1.0 - t) + b[3] as f32 * t).round().clamp(0.0, 255.0) as u8,
+    ]
+}
+
+/// HSV → RGBA-u8. Hue in degrees [0, 360), sat / val in [0, 1].
+fn hsv_to_rgba(h: f32, s: f32, v: f32, alpha: u8) -> [u8; 4] {
+    let h = h.rem_euclid(360.0);
+    let s = s.clamp(0.0, 1.0);
+    let v = v.clamp(0.0, 1.0);
+    let c = v * s;
+    let h_prime = h / 60.0;
+    let x = c * (1.0 - (h_prime.rem_euclid(2.0) - 1.0).abs());
+    let (r1, g1, b1) = match h_prime as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = v - c;
+    [
+        ((r1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((g1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((b1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        alpha,
+    ]
+}
+
+/// RGBA-u8 → (hue degrees, sat 0..1, val 0..1).
+fn rgba_to_hsv(rgba: [u8; 4]) -> (f32, f32, f32) {
+    let r = rgba[0] as f32 / 255.0;
+    let g = rgba[1] as f32 / 255.0;
+    let b = rgba[2] as f32 / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let delta = max - min;
+    let h = if delta < 1e-6 {
+        0.0
+    } else if (max - r).abs() < 1e-6 {
+        60.0 * (((g - b) / delta).rem_euclid(6.0))
+    } else if (max - g).abs() < 1e-6 {
+        60.0 * ((b - r) / delta + 2.0)
+    } else {
+        60.0 * ((r - g) / delta + 4.0)
+    };
+    let s = if max < 1e-6 { 0.0 } else { delta / max };
+    (h, s, max)
 }
 
 /// Build a `Color32` from a u8 RGBA tuple with `alpha_mul` (0–1)
@@ -3782,6 +3876,58 @@ mod tests {
                 "Template '{}' has category '{}' which is not in CATEGORIES — \
                  it will never appear in the browser sidebar.",
                 tpl.name, tpl.category,
+            );
+        }
+    }
+
+    /// Every template that ships an animated TitleAnimationType must
+    /// produce a non-static result from `apply_animation_type` at
+    /// SOME point in the preview loop — otherwise the hover preview
+    /// looks identical to a static template and the user has no
+    /// indication that something will animate on playback.
+    ///
+    /// We sample t=0.0, 0.5, 1.5 (covers the entrance window, mid-
+    /// loop, and post-entrance hold) and assert that at least one
+    /// sample differs from the t=0 baseline (text content, position,
+    /// alpha, scale, or colour override). Static templates skip.
+    #[test]
+    fn every_animated_template_changes_preview_over_time() {
+        use klipp_timeline::TitleAnimationType as T;
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(120.0, 80.0));
+        let pos = egui::pos2(60.0, 40.0);
+
+        for tpl in TITLES {
+            let td = (tpl.create_data)();
+            if matches!(td.animation_type, T::Static) {
+                // Static templates with char_animation drive their
+                // animation through paint_char_animated, not
+                // apply_animation_type — those are tested elsewhere.
+                continue;
+            }
+
+            let preview_text = "Sample Text";
+            let baseline = apply_animation_type(&td, preview_text, rect, pos, 18.0, 0.0);
+            let samples = [0.5_f32, 1.5_f32, 2.5_f32];
+            let mut differs = false;
+            for &t in &samples {
+                let s = apply_animation_type(&td, preview_text, rect, pos, 18.0, t);
+                let pos_changed = (s.1.x - baseline.1.x).abs() > 0.01
+                    || (s.1.y - baseline.1.y).abs() > 0.01;
+                let alpha_changed = (s.2 - baseline.2).abs() > 0.001;
+                let scale_changed = (s.3 - baseline.3).abs() > 0.001;
+                let text_changed = s.0 != baseline.0;
+                let color_changed = s.4 != baseline.4;
+                if pos_changed || alpha_changed || scale_changed || text_changed || color_changed {
+                    differs = true;
+                    break;
+                }
+            }
+            assert!(
+                differs,
+                "Template '{}' (category '{}', animation_type={:?}) produces an \
+                 identical apply_animation_type result at every sampled time — \
+                 the hover preview will look static even though playback animates.",
+                tpl.name, tpl.category, td.animation_type,
             );
         }
     }
