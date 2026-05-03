@@ -34,25 +34,67 @@ fn fade_curve_to_u32(c: klipp_timeline::FadeCurve) -> u32 {
     }
 }
 
-/// If `td.animation_type == Typewriter`, return an Owned TitleData with
-/// `write_on` overridden based on clip-elapsed seconds. Otherwise return None.
-/// This lets callers avoid the clone when no animation is active.
+/// Time-aware override that rewrites the title for the current clip
+/// time. Returns `Some(owned)` when the animation_type evaluates to a
+/// per-frame derived view of the title (Typewriter / TypewriterOut
+/// drive `write_on`; Counter rewrites the text body to the current
+/// interpolated number). Returns `None` for animation kinds that
+/// don't depend on time at the title-content level — those are
+/// evaluated by the compositor via clip-level keyframe channels.
 fn typewriter_override(
     td: &klipp_timeline::TitleData,
     clip_elapsed_secs: f64,
 ) -> Option<klipp_timeline::TitleData> {
-    if let klipp_timeline::TitleAnimationType::Typewriter { chars_per_sec } = td.animation_type {
-        let chars = td.text().chars().count().max(1);
-        let write_on = ((clip_elapsed_secs * chars_per_sec as f64) / chars as f64)
-            .clamp(0.0, 1.0) as f32;
-        let mut out = td.clone();
-        if let Some(tb) = out.primary_text_mut() {
-            tb.write_on = write_on;
+    use klipp_timeline::TitleAnimationType as T;
+    match td.animation_type {
+        T::Typewriter { chars_per_sec } => {
+            let chars = td.text().chars().count().max(1);
+            let write_on = ((clip_elapsed_secs * chars_per_sec as f64) / chars as f64)
+                .clamp(0.0, 1.0) as f32;
+            let mut out = td.clone();
+            if let Some(tb) = out.primary_text_mut() {
+                tb.write_on = write_on;
+            }
+            Some(out)
         }
-        Some(out)
-    } else {
-        None
+        T::TypewriterOut { chars_per_sec } => {
+            let chars = td.text().chars().count().max(1);
+            // Ramp from 1.0 (fully visible) → 0.0 (cleared); each
+            // step exposes `chars_per_sec` characters per second of
+            // deletion travelling right→left.
+            let write_on = (1.0 - (clip_elapsed_secs * chars_per_sec as f64) / chars as f64)
+                .clamp(0.0, 1.0) as f32;
+            let mut out = td.clone();
+            if let Some(tb) = out.primary_text_mut() {
+                tb.write_on = write_on;
+            }
+            Some(out)
+        }
+        T::Counter { from_value, to_value, duration_secs, decimals } => {
+            let progress = if duration_secs <= 0.0 {
+                1.0
+            } else {
+                (clip_elapsed_secs / duration_secs as f64).clamp(0.0, 1.0)
+            };
+            let value = from_value + (to_value - from_value) * progress;
+            let formatted = format_counter_value(value, decimals);
+            let mut out = td.clone();
+            if let Some(tb) = out.primary_text_mut() {
+                tb.text = formatted;
+            }
+            Some(out)
+        }
+        _ => None,
     }
+}
+
+/// Render a Counter's current value as a display string with the
+/// requested decimal-place count. `decimals` is clamped to 0..=3 —
+/// values higher than 3 are visually noisy and lose precision when
+/// rasterised at common font sizes.
+fn format_counter_value(value: f64, decimals: u8) -> String {
+    let d = decimals.min(3) as usize;
+    format!("{value:.d$}", d = d)
 }
 
 fn channel_config_to_u32(c: klipp_timeline::ChannelConfig) -> u32 {

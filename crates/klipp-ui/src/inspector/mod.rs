@@ -1988,6 +1988,8 @@ fn show_title_editor(
             T::Shake { .. } => 21,
             T::ColorCycle { .. } => 22,
             T::Marquee { .. } => 23,
+            T::TypewriterOut { .. } => 24,
+            T::Counter { .. } => 25,
         };
         let kind_label = |k: u8| -> &'static str {
             match k {
@@ -2015,6 +2017,8 @@ fn show_title_editor(
                 21 => "Shake (continuous)",
                 22 => "Colour Cycle (continuous)",
                 23 => "Marquee (continuous loop)",
+                24 => "Typewriter Out (delete-on)",
+                25 => "Counter (animated value)",
                 _ => "Static (no animation)",
             }
         };
@@ -2038,6 +2042,8 @@ fn show_title_editor(
                 21 => (10.0, 12.0),              // Shake 10px @ 12Hz
                 22 => (0.5, 0.0),                // ColorCycle 0.5 Hz hue rotation
                 23 => (200.0, 0.0),              // Marquee 200 px/s
+                24 => (15.0, 0.0),               // TypewriterOut 15 chars/sec
+                25 => (2.0, 0.0),                // Counter default duration 2s
                 _ => (0.0, 0.0),
             }
         };
@@ -2090,6 +2096,10 @@ fn show_title_editor(
                     ui.separator();
                     ui.label(egui::RichText::new("Looping").size(10.0).color(theme.text_dim));
                     ui.selectable_value(&mut selected, 23, kind_label(23));
+                    ui.separator();
+                    ui.label(egui::RichText::new("Reveal / Counter").size(10.0).color(theme.text_dim));
+                    ui.selectable_value(&mut selected, 24, kind_label(24));
+                    ui.selectable_value(&mut selected, 25, kind_label(25));
                 });
         });
         if selected != current_kind {
@@ -2154,6 +2164,56 @@ fn show_title_editor(
                         cmds.push(AppCommand::SetTitleAnimation {
                             clip_id, animation_kind: 5, speed: v, param2: 0.0,
                         });
+                    }
+                });
+            }
+            T::TypewriterOut { chars_per_sec } => {
+                let mut v = *chars_per_sec;
+                ui.horizontal(|ui| {
+                    ui.label("Chars/sec:");
+                    if ui.add(egui::DragValue::new(&mut v).range(1.0..=100.0).speed(0.5).fixed_decimals(1)).changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: 24, speed: v, param2: 0.0,
+                        });
+                    }
+                });
+            }
+            T::Counter { from_value, to_value, duration_secs, decimals } => {
+                let mut from_v = *from_value;
+                let mut to_v = *to_value;
+                let mut dur = *duration_secs;
+                let mut dec = *decimals as i32;
+                let dispatch = |cmds: &mut Vec<AppCommand>, from_v: f64, to_v: f64, dur: f32, dec: u8| {
+                    cmds.push(AppCommand::SetTitleCounterAnimation {
+                        clip_id,
+                        from_value: from_v,
+                        to_value: to_v,
+                        duration_secs: dur,
+                        decimals: dec,
+                    });
+                };
+                ui.horizontal(|ui| {
+                    ui.label("From:");
+                    if ui.add(egui::DragValue::new(&mut from_v).speed(1.0).max_decimals(3)).changed() {
+                        dispatch(cmds, from_v, to_v, dur, dec.clamp(0, 3) as u8);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("To:");
+                    if ui.add(egui::DragValue::new(&mut to_v).speed(1.0).max_decimals(3)).changed() {
+                        dispatch(cmds, from_v, to_v, dur, dec.clamp(0, 3) as u8);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Duration:");
+                    if ui.add(egui::DragValue::new(&mut dur).range(0.05..=60.0).speed(0.1).fixed_decimals(2).suffix(" s")).changed() {
+                        dispatch(cmds, from_v, to_v, dur, dec.clamp(0, 3) as u8);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Decimals:");
+                    if ui.add(egui::DragValue::new(&mut dec).range(0..=3).speed(0.05)).changed() {
+                        dispatch(cmds, from_v, to_v, dur, dec.clamp(0, 3) as u8);
                     }
                 });
             }

@@ -14024,6 +14024,30 @@ impl KlippApp {
                 self.state.title_fade_duration = *duration;
                 true
             }
+            AppCommand::SetTitleCounterAnimation { clip_id, from_value, to_value, duration_secs, decimals } => {
+                let animation = klipp_timeline::TitleAnimationType::Counter {
+                    from_value: *from_value,
+                    to_value: *to_value,
+                    duration_secs: *duration_secs,
+                    decimals: *decimals,
+                };
+                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                let frame_w = seq.resolution.width as f32;
+                let frame_h = seq.resolution.height as f32;
+                for track in &mut seq.tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            td.animation_type = animation.clone();
+                        }
+                        apply_title_animation_keyframes(clip, &animation, frame_h, frame_w);
+                    }
+                }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetTitleAnimation { clip_id, animation_kind, speed, param2 } => {
                 let animation = decode_title_animation(*animation_kind, *speed, *param2);
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
@@ -29473,6 +29497,16 @@ fn decode_title_animation(kind: u8, speed: f32, param2: f32) -> klipp_timeline::
         21 => T::Shake { amplitude_px: speed, rate_hz: param2 },
         22 => T::ColorCycle { rate_hz: speed },
         23 => T::Marquee { speed_px_per_sec: speed },
+        24 => T::TypewriterOut { chars_per_sec: speed },
+        25 => T::Counter {
+            // Sensible defaults when the user picks Counter from
+            // the dropdown — they tune the values via the dedicated
+            // SetTitleCounterAnimation event afterwards.
+            from_value: 0.0,
+            to_value: 100.0,
+            duration_secs: if speed > 0.0 { speed } else { 2.0 },
+            decimals: 0,
+        },
         _ => T::Static,
     }
 }
@@ -29797,6 +29831,12 @@ fn apply_title_animation_keyframes(
             // keyframes to write. The clear-all at the top of this
             // function already wiped any leftover keyframes from a
             // previous variant.
+        }
+        T::TypewriterOut { .. } | T::Counter { .. } => {
+            // Both rewrite the title at render time via
+            // typewriter_override; no clip-level keyframes needed.
+            // The clear-all at the top of this function already
+            // wiped any leftover keyframes from a previous variant.
         }
         T::Marquee { speed_px_per_sec } => {
             // Sawtooth pos_x keyframes: linear ramp from +offset
@@ -30271,6 +30311,18 @@ Dialogue: 0,0:00:09.00,0:00:11.00,Default,,0,0,0,,Text, with commas, inside
         assert_eq!(decode_title_animation(21, 10.0, 12.0), T::Shake { amplitude_px: 10.0, rate_hz: 12.0 });
         assert_eq!(decode_title_animation(22, 0.5, 0.0), T::ColorCycle { rate_hz: 0.5 });
         assert_eq!(decode_title_animation(23, 200.0, 0.0), T::Marquee { speed_px_per_sec: 200.0 });
+        assert_eq!(decode_title_animation(24, 12.0, 0.0), T::TypewriterOut { chars_per_sec: 12.0 });
+        // Counter via SetTitleAnimation gets default endpoints; the
+        // user tunes them via SetTitleCounterAnimation afterwards.
+        assert_eq!(
+            decode_title_animation(25, 2.0, 0.0),
+            T::Counter {
+                from_value: 0.0,
+                to_value: 100.0,
+                duration_secs: 2.0,
+                decimals: 0,
+            }
+        );
         // Unknown → Static (defensive)
         assert_eq!(decode_title_animation(99, 0.0, 0.0), T::Static);
     }

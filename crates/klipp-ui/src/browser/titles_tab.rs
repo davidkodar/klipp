@@ -2542,6 +2542,23 @@ fn apply_animation_type(
             let dx = rect.width() * 0.5 - rect.width() * t_loop;
             (text.to_string(), egui::pos2(base_pos.x + dx, base_pos.y), 1.0, 1.0)
         }
+        TitleAnimationType::TypewriterOut { .. } => {
+            // Inverse of Typewriter — start full, lose chars right→left.
+            let chars: Vec<char> = text.chars().collect();
+            let kept = chars.len().saturating_sub(
+                ((t * (chars.len() as f32 + 6.0)) as usize).min(chars.len()),
+            );
+            let revealed: String = chars.iter().take(kept).collect();
+            (revealed, base_pos, 1.0, 1.0)
+        }
+        TitleAnimationType::Counter { from_value, to_value, .. } => {
+            // Linearly interpolate the value across the preview loop
+            // so the user sees the count tick. Decimals=0 reads
+            // cleanest on a thumbnail; the real renderer respects
+            // the user's chosen decimal count.
+            let v = from_value + (to_value - from_value) * t as f64;
+            (format!("{v:.0}"), base_pos, 1.0, 1.0)
+        }
     }
 }
 

@@ -314,30 +314,48 @@ impl TitleRenderer {
             klipp_timeline::TextCase::Lowercase => tb.text.to_lowercase(),
         };
 
-        // Drop cap: synthesise a one-character segment at the head
-        // of the laid-out text when `drop_cap_scale >= 1.0`. The
-        // first character renders at `font_px * drop_cap_scale` so a
-        // 3.0 scale gives a "three-line drop initial" — the body
-        // text continues at the same baseline (true wrap-under is a
-        // future addition).
+        // Drop cap: when `drop_cap_scale >= 1.0` we enlarge the first
+        // character. The straightforward "drop initial" path appends
+        // the cap as a head-segment of the main layout — body text
+        // continues on the same baseline. The "wrap-under" path
+        // (alignment = Left + no style runs) builds the layout from
+        // three sub-layouts so the body wraps to the right of the
+        // cap for the cap's vertical extent and re-flows at full
+        // width below it.
         let drop_cap_active = tb.drop_cap_scale >= 1.0 && !resolved_text.is_empty();
         let drop_cap_byte_end = if drop_cap_active {
-            // The byte length of the first char (1 for ASCII, 2-4 for
-            // multibyte). chars().next() is None only when text is
-            // empty, which we already excluded above.
             resolved_text.chars().next().unwrap().len_utf8()
         } else { 0 };
         let body_start = drop_cap_byte_end;
+        let drop_cap_wrap_eligible = drop_cap_active
+            && tb.alignment == TextAlignment::Left
+            && tb.style_runs.is_empty();
 
         // Append text with per-run font sizes when style runs exist.
         // Track (glyph_count_before, segment_byte_start) for byte_offset fixup.
         let mut segment_info: Vec<(usize, usize)> = Vec::new();
 
-        // Lay out the drop cap as its own segment first so its
-        // metrics propagate naturally into fontdue's layout (the
-        // following segment continues from the drop cap's right
-        // edge).
-        if drop_cap_active {
+        // Pre-built glyph list for the drop-cap wrap path. Empty when
+        // we use fontdue's normal Layout flow.
+        let mut drop_cap_wrap_glyphs: Vec<fontdue::layout::GlyphPosition> = Vec::new();
+
+        if drop_cap_wrap_eligible {
+            // Build the layout in three passes so body text wraps
+            // properly around the drop cap. See `layout_drop_cap_wrap`.
+            let cap_size = font_px * tb.drop_cap_scale;
+            let body_text = &resolved_text[body_start..];
+            drop_cap_wrap_glyphs = layout_drop_cap_wrap(
+                font,
+                &resolved_text[..body_start],
+                body_text,
+                cap_size,
+                font_px,
+                width as f32 * 0.9,
+            );
+            segment_info.push((0, 0));
+            // We synthesise byte-offsets later from drop_cap_wrap_glyphs.
+        } else if drop_cap_active {
+            // "Drop initial" path: cap as the head segment.
             let cap_text = &resolved_text[..drop_cap_byte_end];
             let cap_size = font_px * tb.drop_cap_scale;
             segment_info.push((0, 0));
@@ -345,7 +363,9 @@ impl TitleRenderer {
         }
 
         if tb.style_runs.is_empty() {
-            if !drop_cap_active {
+            if drop_cap_wrap_eligible {
+                // Glyphs already built; nothing further to append.
+            } else if !drop_cap_active {
                 segment_info.push((0, 0));
                 layout.append(&[font], &TextStyle::new(&resolved_text, font_px, 0));
             } else if body_start < resolved_text.len() {
@@ -389,8 +409,15 @@ impl TitleRenderer {
             }
         }
 
-        let glyphs = layout.glyphs();
-        if glyphs.is_empty() {
+        // When the wrap-eligible drop-cap path built its own glyph
+        // list, take that as authoritative. Otherwise pull from
+        // fontdue's accumulated layout.
+        let mut glyphs_owned: Vec<fontdue::layout::GlyphPosition> = if drop_cap_wrap_eligible {
+            std::mem::take(&mut drop_cap_wrap_glyphs)
+        } else {
+            layout.glyphs().to_vec()
+        };
+        if glyphs_owned.is_empty() {
             return TitleLayout {
                 alpha_mask: Vec::new(),
                 mask_w: 0, mask_h: 0,
@@ -405,7 +432,6 @@ impl TitleRenderer {
         }
 
         // ── Post-process glyph positions for tracking and line spacing ──
-        let mut glyphs_owned: Vec<fontdue::layout::GlyphPosition> = glyphs.to_vec();
 
         // Fix up byte_offset: fontdue's byte_offset is per-segment, but style runs
         // use absolute byte positions. Add each segment's byte start.
@@ -1637,6 +1663,223 @@ impl TitleRenderer {
 ///
 /// Skips writes for fully-transparent source pixels — the common
 /// case for the empty regions around each rasterised TextBox.
+/// Two-pass separable Gaussian blur on a single-channel coverage
+/// buffer, expanding the canvas by `ceil(sigma * 2.5)` pixels on
+/// every side so the diffused tail isn't clipped at the original
+/// glyph bounds. Returns `(blurred, new_w, new_h)`.
+///
+/// `sigma` is in pixels; `< 0.5` short-circuits to a no-op. The
+/// kernel is precomputed once per call (small allocation, cheap
+/// even at 60 fps × 20-glyph titles).
+fn gaussian_blur_expand(
+    input: &[u8],
+    in_w: usize,
+    in_h: usize,
+    sigma: f32,
+) -> (Vec<u8>, usize, usize) {
+    if sigma < 0.5 || in_w == 0 || in_h == 0 {
+        return (input.to_vec(), in_w, in_h);
+    }
+    let radius = (sigma * 2.5).ceil().max(1.0) as usize;
+    let kernel_size = 2 * radius + 1;
+    let mut kernel = vec![0.0f32; kernel_size];
+    let inv_2sigma2 = 1.0 / (2.0 * sigma * sigma);
+    let mut sum = 0.0;
+    for i in 0..kernel_size {
+        let x = i as f32 - radius as f32;
+        let v = (-x * x * inv_2sigma2).exp();
+        kernel[i] = v;
+        sum += v;
+    }
+    for k in &mut kernel { *k /= sum; }
+
+    let new_w = in_w + 2 * radius;
+    let new_h = in_h + 2 * radius;
+
+    // Zero-pad the input into the expanded buffer's centre.
+    let mut padded = vec![0u8; new_w * new_h];
+    for y in 0..in_h {
+        let dst_row = (y + radius) * new_w + radius;
+        let src_row = y * in_w;
+        padded[dst_row..dst_row + in_w].copy_from_slice(&input[src_row..src_row + in_w]);
+    }
+
+    // Horizontal pass into a float buffer, then vertical pass back to u8.
+    let mut tmp = vec![0.0f32; new_w * new_h];
+    for y in 0..new_h {
+        for x in 0..new_w {
+            let mut acc = 0.0;
+            for (k, w) in kernel.iter().enumerate() {
+                let dx = k as i32 - radius as i32;
+                let sx = (x as i32 + dx).clamp(0, new_w as i32 - 1) as usize;
+                acc += padded[y * new_w + sx] as f32 * w;
+            }
+            tmp[y * new_w + x] = acc;
+        }
+    }
+    let mut out = vec![0u8; new_w * new_h];
+    for y in 0..new_h {
+        for x in 0..new_w {
+            let mut acc = 0.0;
+            for (k, w) in kernel.iter().enumerate() {
+                let dy = k as i32 - radius as i32;
+                let sy = (y as i32 + dy).clamp(0, new_h as i32 - 1) as usize;
+                acc += tmp[sy * new_w + x] * w;
+            }
+            out[y * new_w + x] = acc.round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    (out, new_w, new_h)
+}
+
+/// True wrap-under drop cap layout. The body text is laid out in
+/// two stages so it wraps to the right of the drop cap for the
+/// cap's vertical extent, then re-flows at full width below it.
+///
+/// Algorithm:
+///   1. Lay out the cap glyph at its enlarged size; measure its
+///      width and height.
+///   2. Lay out the body text in a narrow column to the right of
+///      the cap (`max_width = full_max - cap_w`). Identify the
+///      first glyph whose top exceeds `cap_h`.
+///   3. Re-lay out the body text from that byte boundary at full
+///      width. Translate those glyphs down by `cap_h` so they sit
+///      below the drop cap.
+///   4. Combine: cap glyphs + narrow body glyphs (shifted right by
+///      cap_w) + wide body glyphs (shifted down by cap_h).
+///
+/// Returns a single Vec<GlyphPosition> with byte_offsets that point
+/// into the FULL `cap_text + body_text` source string, so downstream
+/// hit-testing and rich-text resolution work as if the layout had
+/// been a single fontdue pass.
+fn layout_drop_cap_wrap(
+    font: &Font,
+    cap_text: &str,
+    body_text: &str,
+    cap_size: f32,
+    body_size: f32,
+    full_max_w: f32,
+) -> Vec<fontdue::layout::GlyphPosition> {
+    let cap_byte_len = cap_text.len();
+
+    // ── Stage 1: drop cap ──
+    let mut cap_layout = Layout::new(CoordinateSystem::PositiveYDown);
+    cap_layout.reset(&LayoutSettings {
+        x: 0.0,
+        y: 0.0,
+        max_width: Some(full_max_w),
+        max_height: None,
+        horizontal_align: HorizontalAlign::Left,
+        vertical_align: VerticalAlign::Top,
+        wrap_style: WrapStyle::Word,
+        ..LayoutSettings::default()
+    });
+    cap_layout.append(&[font], &TextStyle::new(cap_text, cap_size, 0));
+    let cap_glyphs: Vec<fontdue::layout::GlyphPosition> = cap_layout.glyphs().to_vec();
+    if cap_glyphs.is_empty() {
+        // Defensive: no glyph for the first character (shouldn't
+        // happen for a non-empty string + valid font, but if it
+        // does, fall through to plain body layout).
+        let mut body_layout = Layout::new(CoordinateSystem::PositiveYDown);
+        body_layout.reset(&LayoutSettings {
+            max_width: Some(full_max_w),
+            horizontal_align: HorizontalAlign::Left,
+            vertical_align: VerticalAlign::Top,
+            wrap_style: WrapStyle::Word,
+            ..LayoutSettings::default()
+        });
+        body_layout.append(&[font], &TextStyle::new(body_text, body_size, 0));
+        return body_layout.glyphs().to_vec();
+    }
+    let cap_w = cap_glyphs.iter()
+        .map(|g| g.x + g.width as f32)
+        .fold(0.0f32, f32::max);
+    let cap_h = cap_glyphs.iter()
+        .map(|g| g.y + g.height as f32)
+        .fold(0.0f32, f32::max);
+
+    // Add a small horizontal gutter so the body doesn't kiss the
+    // cap's right edge — half a body-em is the conventional spacing.
+    let gutter = body_size * 0.25;
+    let body_x_offset = cap_w + gutter;
+
+    // ── Stage 2: narrow body to the right of the cap ──
+    let narrow_w = (full_max_w - body_x_offset).max(body_size);
+    let mut narrow_layout = Layout::new(CoordinateSystem::PositiveYDown);
+    narrow_layout.reset(&LayoutSettings {
+        x: 0.0,
+        y: 0.0,
+        max_width: Some(narrow_w),
+        max_height: None,
+        horizontal_align: HorizontalAlign::Left,
+        vertical_align: VerticalAlign::Top,
+        wrap_style: WrapStyle::Word,
+        ..LayoutSettings::default()
+    });
+    narrow_layout.append(&[font], &TextStyle::new(body_text, body_size, 0));
+    let narrow_glyphs: Vec<fontdue::layout::GlyphPosition> = narrow_layout.glyphs().to_vec();
+
+    // Find the first glyph whose top exceeds cap_h — that's the
+    // first body character that no longer fits beside the cap.
+    let first_below = narrow_glyphs.iter().position(|g| g.y >= cap_h);
+    let (in_column, byte_consumed) = match first_below {
+        None => (narrow_glyphs.clone(), body_text.len()),
+        Some(0) => (Vec::new(), 0),
+        Some(idx) => {
+            let last_kept = &narrow_glyphs[idx - 1];
+            // byte_offset on GlyphPosition is the byte offset into
+            // the appended segment (not into the full source). Since
+            // we appended `body_text` as one segment, this lines up
+            // 1:1 with body_text's byte indices.
+            let consumed = last_kept.byte_offset + last_kept.parent.len_utf8();
+            (narrow_glyphs[..idx].to_vec(), consumed)
+        }
+    };
+
+    // ── Stage 3: full-width body below the cap ──
+    let remaining_body = if byte_consumed < body_text.len() {
+        &body_text[byte_consumed..]
+    } else { "" };
+    let wide_glyphs: Vec<fontdue::layout::GlyphPosition> = if remaining_body.is_empty() {
+        Vec::new()
+    } else {
+        let mut wide_layout = Layout::new(CoordinateSystem::PositiveYDown);
+        wide_layout.reset(&LayoutSettings {
+            x: 0.0,
+            y: 0.0,
+            max_width: Some(full_max_w),
+            max_height: None,
+            horizontal_align: HorizontalAlign::Left,
+            vertical_align: VerticalAlign::Top,
+            wrap_style: WrapStyle::Word,
+            ..LayoutSettings::default()
+        });
+        wide_layout.append(&[font], &TextStyle::new(remaining_body, body_size, 0));
+        wide_layout.glyphs().to_vec()
+    };
+
+    // ── Combine ──
+    // Cap glyphs keep their byte_offsets (point into cap_text, i.e.
+    // bytes 0..cap_byte_len of the full source).
+    let mut out: Vec<fontdue::layout::GlyphPosition> = cap_glyphs;
+    // Narrow body glyphs: shift x by body_x_offset; rewrite
+    // byte_offset to point into the full source by adding cap_byte_len.
+    for mut g in in_column {
+        g.x += body_x_offset;
+        g.byte_offset += cap_byte_len;
+        out.push(g);
+    }
+    // Wide body glyphs: shift y by cap_h; byte_offset points into
+    // remaining_body, which started at `byte_consumed` in body_text,
+    // so add cap_byte_len + byte_consumed for the absolute index.
+    for mut g in wide_glyphs {
+        g.y += cap_h;
+        g.byte_offset += cap_byte_len + byte_consumed;
+        out.push(g);
+    }
+    out
+}
+
 /// HSV → RGBA-u8. Hue in degrees [0, 360), sat / val in [0, 1].
 fn hsv_to_rgba_u8(h: f32, s: f32, v: f32, alpha: u8) -> [u8; 4] {
     let h = h.rem_euclid(360.0);
@@ -2150,14 +2393,12 @@ fn rasterize_to_mask_animated(
                 (local_t, 0.0, 0.0, scale.max(0.05))
             }
             CharEntrance::BlurIn => {
-                // Cheap stand-in for a Gaussian blur entrance: the
-                // glyph fades in while rendered at a slightly
-                // smaller scale (visually similar to defocus on
-                // screen at preview-typical scrub rates). A true
-                // blur kernel is a separate offscreen pass tracked
-                // for a follow-up commit.
-                let scale = 0.7 + 0.3 * local_t;
-                (local_t, 0.0, 0.0, scale)
+                // Real Gaussian blur entrance. Glyph renders at full
+                // scale; the per-glyph coverage gets a separable
+                // blur with sigma scaling 1.0 → 0 across local_t,
+                // so the glyph diffuses out at t=0 and snaps into
+                // sharp focus by t=1. Alpha ramps with local_t.
+                (local_t, 0.0, 0.0, 1.0)
             }
         };
         if alpha <= 0.001 {
@@ -2170,13 +2411,27 @@ fn rasterize_to_mask_animated(
         // call. This is bounded: once the entrance ramp is over
         // (local_t = 1) every glyph's scale settles to 1.0 and we
         // fall back to the fast cached path.
-        let (coverage, raw_w, raw_h) = if (scale - 1.0).abs() > 0.001 {
+        let (coverage_base, base_w, base_h) = if (scale - 1.0).abs() > 0.001 {
             let scaled_px = (base_font_px * scale).max(1.0);
             let (m, cov) = font.rasterize(glyph.parent, scaled_px);
             (cov, m.width, m.height)
         } else {
             let (_, cov) = font.rasterize_config(glyph.key);
             (cov.to_vec(), glyph.width, glyph.height)
+        };
+
+        // BlurIn during entrance: apply a separable Gaussian blur
+        // to the coverage buffer with sigma scaling 1→0 across
+        // local_t. The blurred buffer expands by `ceil(2.5σ)` on
+        // every side so the soft tail doesn't get clipped at the
+        // original glyph bounds; gx/gy below recentre on the cell.
+        let (coverage, raw_w, raw_h) = if matches!(char_anim.entrance, CharEntrance::BlurIn)
+            && local_t < 0.999
+        {
+            let sigma = (1.0 - local_t) * base_font_px * 0.10;
+            gaussian_blur_expand(&coverage_base, base_w, base_h, sigma)
+        } else {
+            (coverage_base, base_w, base_h)
         };
 
         // Centre the (possibly scaled) glyph on the static glyph's
@@ -2855,6 +3110,43 @@ mod tests {
             "Line2 y ({}) should be below Line1 y ({})", line2_first.y, line1_y);
     }
 
+    /// Wrap-under drop cap: with alignment=Left, a body long enough
+    /// to overflow the narrow column past cap height MUST re-flow
+    /// onto a full-width band below the cap. Pinned by checking
+    /// that the rendered mask is taller than the cap alone — the
+    /// failing pre-fix behaviour was a `drop_cap_active` path that
+    /// only enlarged the first character without ever flowing the
+    /// rest of the body below it.
+    #[test]
+    fn drop_cap_wrap_lays_body_below_at_full_width() {
+        let mut renderer = TitleRenderer::new();
+        let body_text = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod \
+                         tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim \
+                         veniam quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea \
+                         commodo consequat duis aute irure dolor in reprehenderit in voluptate \
+                         velit esse cillum dolore eu fugiat nulla pariatur excepteur sint occaecat";
+        let mk = |scale: f32| {
+            let mut tb = klipp_timeline::TextBox::default();
+            tb.text = body_text.to_string();
+            tb.font_size = 50.0;
+            tb.alignment = klipp_timeline::TextAlignment::Left;
+            tb.drop_cap_scale = scale;
+            klipp_timeline::TitleData::single_text(tb)
+        };
+        let no_cap = renderer.render_layout(&mk(0.0), 1280, 720);
+        let with_wrap = renderer.render_layout(&mk(3.0), 1280, 720);
+        assert!(no_cap.mask_h > 0);
+        assert!(with_wrap.mask_h > 0);
+        // The wrap-under variant must add the cap's vertical extent
+        // on top of the body — the resulting mask is materially
+        // taller than the no-cap layout.
+        assert!(
+            with_wrap.mask_h > no_cap.mask_h,
+            "Wrap-under drop cap should grow the mask vs. no-cap. with_wrap.mask_h={} no_cap.mask_h={}",
+            with_wrap.mask_h, no_cap.mask_h
+        );
+    }
+
     /// Drop cap must enlarge the first character in the rendered
     /// output — the alpha mask should grow taller (the drop cap
     /// extends above the body's cap height).
@@ -2910,6 +3202,48 @@ mod tests {
         let c0 = first_visible_rgb(&frame_t0).expect("t=0 has glyph pixels");
         let c1 = first_visible_rgb(&frame_t_quarter).expect("t=0.25 has glyph pixels");
         assert_ne!(c0, c1, "ColorCycle must produce different fill colours at different times. c0={c0:?} c1={c1:?}");
+    }
+
+    /// True Gaussian BlurIn must diffuse the glyph's footprint
+    /// outward during entrance — the bounding box of any-non-zero
+    /// pixels at mid-entrance must be wider than at settled t=1.0
+    /// (proves the blur extends beyond the natural glyph extent).
+    #[test]
+    fn gaussian_blur_in_diffuses_glyph_during_entrance() {
+        let mut renderer = TitleRenderer::new();
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 100.0;
+        tb.char_animation = Some(klipp_timeline::CharAnimation {
+            stagger: 0.0,
+            entrance: klipp_timeline::CharEntrance::BlurIn,
+            wave_amplitude: 0.0,
+            wave_speed: 1.0,
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        // local_t at t=0.2 = 0.5 → mid-entrance, decent alpha.
+        let buf_blurred = renderer.render_with_time(&td, 1280, 720, None, 0.20);
+        let buf_sharp = renderer.render_with_time(&td, 1280, 720, None, 10.0);
+
+        let bbox_width = |buf: &[u8], w: u32| -> u32 {
+            let mut min_x = u32::MAX;
+            let mut max_x = 0u32;
+            for (i, p) in buf.chunks_exact(4).enumerate() {
+                if p[3] > 0 {
+                    let x = (i as u32) % w;
+                    if x < min_x { min_x = x; }
+                    if x > max_x { max_x = x; }
+                }
+            }
+            if min_x == u32::MAX { 0 } else { max_x - min_x }
+        };
+        let blur_w = bbox_width(&buf_blurred, 1280);
+        let sharp_w = bbox_width(&buf_sharp, 1280);
+        assert!(
+            blur_w > sharp_w,
+            "Mid-entrance Gaussian blur footprint must extend beyond the sharp glyph's bounding box. blur_w={blur_w} sharp_w={sharp_w}"
+        );
     }
 
     /// Per-object opacity multiplies into the rendered alpha.

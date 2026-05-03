@@ -1427,6 +1427,18 @@ pub enum AppCommand {
         speed: f32,
         param2: f32,
     },
+    /// Counter has more parameters than `SetTitleAnimation` carries,
+    /// so it gets its own event. `from_value` / `to_value` are the
+    /// interpolation endpoints (linearly tweened over `duration_secs`
+    /// from clip start; held at `to_value` after). `decimals` is the
+    /// formatted-output decimal-place count, clamped to 0..=3.
+    SetTitleCounterAnimation {
+        clip_id: ClipId,
+        from_value: f64,
+        to_value: f64,
+        duration_secs: f32,
+        decimals: u8,
+    },
 
     // Linked clips
     ImportMediaLinked { media_id: MediaId },

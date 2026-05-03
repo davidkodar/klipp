@@ -725,6 +725,23 @@ pub enum TitleAnimationType {
     /// in 1080p reference pixels; positive = right→left (newsroom
     /// ticker direction), negative = left→right.
     Marquee { speed_px_per_sec: f32 },
+    /// Inverse of `Typewriter`: text starts fully visible and
+    /// deletes one character at a time from the right at the given
+    /// rate. Drives `write_on` from 1.0 → 0.0 over the clip.
+    TypewriterOut { chars_per_sec: f32 },
+    /// Animated number ticker: the rendered text is rewritten each
+    /// frame to a value linearly interpolated between `from_value`
+    /// and `to_value` over `duration_secs`. After the ramp, holds
+    /// at `to_value` for the rest of the clip. `decimals` controls
+    /// formatting (0..3); the user-authored `text` field is ignored
+    /// while Counter is active. Common uses: stats, sports scores,
+    /// fundraiser totals, sequence countdowns.
+    Counter {
+        from_value: f64,
+        to_value: f64,
+        duration_secs: f32,
+        decimals: u8,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
