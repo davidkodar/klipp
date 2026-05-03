@@ -1124,10 +1124,22 @@ impl TitleRenderer {
             _ => None,
         };
 
+        // Glitch is per-frame (deterministic seed bound to clip
+        // time, but pattern shifts ~12 times/sec) so it bypasses
+        // cache too.
+        let any_glitch_active = title.objects.iter().any(|o| {
+            if let TitleObjectContent::TextBox(tb) = &o.content {
+                tb.glitch_intensity > 0.0
+            } else {
+                false
+            }
+        });
+
         let any_render_time_override = any_char_anim
             || color_cycle_rate.is_some()
             || color_blend.is_some()
-            || outline_draw_on_dur.is_some();
+            || outline_draw_on_dur.is_some()
+            || any_glitch_active;
 
         if !any_render_time_override {
             if let Some(buf) = self.cache_lookup(title, width, height) {
@@ -1183,7 +1195,14 @@ impl TitleRenderer {
             td
         };
 
-        let time_arg = if any_char_anim { Some(time_secs) } else { None };
+        // Pass time through whenever ANY render-time effect needs
+        // it — char_animation drives per-glyph staggering, glitch
+        // seeds its stripe pattern from the clip clock.
+        let time_arg = if any_char_anim || any_glitch_active {
+            Some(time_secs)
+        } else {
+            None
+        };
         self.render_inner(&derived, width, height, gpu, time_arg)
     }
 
@@ -1295,6 +1314,32 @@ impl TitleRenderer {
         let layout = self.render_layout_at_time(title, width, height, time_secs);
         let mut buf = Self::compose(&layout, title, width, height, gpu);
         self.apply_texture_fill(&mut buf, &layout, title, width, height);
+
+        // Post-pass effects: applied to the fully-composed layer
+        // buffer so they pick up outline, shadow, glow, gradient,
+        // texture-fill, and any other decorative layer the user
+        // configured. Cheap; only run when the corresponding field
+        // is non-zero.
+        if let Some(tb) = title.primary_text() {
+            let scale = height as f32 / 1080.0;
+            if tb.chromatic_aberration_px > 0.0 {
+                apply_chromatic_aberration(
+                    &mut buf, width, height,
+                    tb.chromatic_aberration_px * scale,
+                );
+            }
+            if tb.glitch_intensity > 0.0 {
+                let seed = time_secs.map_or(0u32, |t| {
+                    // Quantise to ~12 steps/sec so the glitch
+                    // pattern doesn't change every single frame
+                    // (looks like static noise) while still feeling
+                    // alive. 12 steps/s reads as TV-glitchy.
+                    (t * 12.0) as u32
+                });
+                apply_glitch(&mut buf, width, height, tb.glitch_intensity, seed);
+            }
+        }
+
         buf
     }
 
@@ -1726,6 +1771,78 @@ impl TitleRenderer {
 ///
 /// Skips writes for fully-transparent source pixels — the common
 /// case for the empty regions around each rasterised TextBox.
+/// Apply a chromatic-aberration colour-channel split to a fully
+/// composited RGBA buffer. The R channel is sourced from `(x - off, y)`,
+/// G from `(x, y)`, B from `(x + off, y)`; the new alpha is the max
+/// of the three sample alphas so the visible silhouette grows
+/// naturally instead of clipping. Out-of-bounds samples clamp.
+fn apply_chromatic_aberration(buf: &mut [u8], width: u32, height: u32, offset_px: f32) {
+    let off = offset_px.round() as i32;
+    if off == 0 || width == 0 || height == 0 {
+        return;
+    }
+    let original = buf.to_vec();
+    let w = width as i32;
+    let h = height as i32;
+    let stride = (w * 4) as usize;
+    for y in 0..h {
+        let row = y as usize * stride;
+        for x in 0..w {
+            let dst = row + (x * 4) as usize;
+            let rx = (x - off).clamp(0, w - 1);
+            let bx = (x + off).clamp(0, w - 1);
+            let r_idx = (y * w + rx) as usize * 4;
+            let g_idx = (y * w + x) as usize * 4;
+            let b_idx = (y * w + bx) as usize * 4;
+            buf[dst] = original[r_idx];
+            buf[dst + 1] = original[g_idx + 1];
+            buf[dst + 2] = original[b_idx + 2];
+            buf[dst + 3] = original[r_idx + 3]
+                .max(original[g_idx + 3])
+                .max(original[b_idx + 3]);
+        }
+    }
+}
+
+/// Apply a horizontal-stripe glitch displacement to a fully composited
+/// RGBA buffer. The buffer is sliced into 8-pixel stripes; each stripe
+/// gets a deterministic ±N pixel x-offset (max N = ⌈intensity × 30⌉).
+/// The seed is mixed with `time_seed` so each frame produces a fresh
+/// pattern but the same `(intensity, time_seed)` pair always renders
+/// identical pixels — no surprises on re-render or export.
+fn apply_glitch(buf: &mut [u8], width: u32, height: u32, intensity: f32, time_seed: u32) {
+    if intensity <= 0.001 || width == 0 || height == 0 {
+        return;
+    }
+    const STRIPE_H: u32 = 8;
+    let max_offset = ((intensity * 30.0).round() as i32).max(1);
+    let original = buf.to_vec();
+    let w = width as i32;
+    let stride = (width * 4) as usize;
+    let mut seed: u32 = 0x9E37_79B9u32
+        .wrapping_mul(1664525)
+        .wrapping_add(time_seed.wrapping_mul(2_654_435_761));
+    let mut stripe_y = 0u32;
+    while stripe_y < height {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        let stripe_offset = ((seed >> 8) as i32).rem_euclid(2 * max_offset + 1) - max_offset;
+        let stripe_end = (stripe_y + STRIPE_H).min(height);
+        for y in stripe_y..stripe_end {
+            let dst_row = y as usize * stride;
+            for x in 0..w {
+                let src_x = (x - stripe_offset).clamp(0, w - 1);
+                let src_idx = (y as i32 * w + src_x) as usize * 4;
+                let dst_idx = dst_row + (x * 4) as usize;
+                buf[dst_idx] = original[src_idx];
+                buf[dst_idx + 1] = original[src_idx + 1];
+                buf[dst_idx + 2] = original[src_idx + 2];
+                buf[dst_idx + 3] = original[src_idx + 3];
+            }
+        }
+        stripe_y = stripe_end;
+    }
+}
+
 /// Two-pass separable Gaussian blur on a single-channel coverage
 /// buffer, expanding the canvas by `ceil(sigma * 2.5)` pixels on
 /// every side so the diffused tail isn't clipped at the original
@@ -3183,6 +3300,52 @@ mod tests {
         let line2_first = positions.iter().find(|p| p.char_index == 6).unwrap(); // 'L' of Line2
         assert!(line2_first.y > line1_y + 5.0,
             "Line2 y ({}) should be below Line1 y ({})", line2_first.y, line1_y);
+    }
+
+    /// Chromatic aberration must change the rendered pixels —
+    /// applying a non-zero offset_px must alter the output relative
+    /// to no-CA. The CA-rendered text has red fringing where it
+    /// previously had the resting colour.
+    #[test]
+    fn chromatic_aberration_alters_output() {
+        let mut renderer = TitleRenderer::new();
+        let mk = |ca_px: f32| {
+            let mut tb = klipp_timeline::TextBox::default();
+            tb.text = "ABC".to_string();
+            tb.font_size = 80.0;
+            tb.color = [255, 255, 255, 255];
+            tb.chromatic_aberration_px = ca_px;
+            klipp_timeline::TitleData::single_text(tb)
+        };
+        let plain = renderer.render(&mk(0.0), 1280, 720);
+        let with_ca = renderer.render(&mk(8.0), 1280, 720);
+        assert_ne!(&plain[..], &with_ca[..],
+            "Chromatic aberration must modify the rendered pixels");
+        // CA must produce some pixels with mostly-red content (R > 200,
+        // G < 50, B < 50) — the red-shifted left fringe of the white text.
+        let red_pixels = with_ca.chunks_exact(4)
+            .filter(|p| p[0] > 200 && p[1] < 100 && p[2] < 100 && p[3] > 50)
+            .count();
+        assert!(red_pixels > 50,
+            "CA on white text should produce ≥50 red-fringe pixels, got {red_pixels}");
+    }
+
+    /// Glitch must produce different pixel layouts at different time
+    /// seeds — the same clip with intensity > 0 must shift its
+    /// stripes per frame.
+    #[test]
+    fn glitch_produces_different_frames_over_time() {
+        let mut renderer = TitleRenderer::new();
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "GLITCH".to_string();
+        tb.font_size = 80.0;
+        tb.glitch_intensity = 0.5;
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let frame_a = renderer.render_with_time(&td, 1280, 720, None, 0.0);
+        let frame_b = renderer.render_with_time(&td, 1280, 720, None, 0.5);
+        assert_ne!(&frame_a[..], &frame_b[..],
+            "Glitch should produce different stripe patterns at different times");
     }
 
     /// OutlineDrawOn must clip the rendered outline horizontally

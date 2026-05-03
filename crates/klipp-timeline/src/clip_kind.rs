@@ -325,6 +325,19 @@ pub struct TextBox {
     /// Driven by the OutlineDrawOn TitleAnimationType variant.
     #[serde(default = "default_one_f32_tb")]
     pub outline_write_on: f32,
+    /// Chromatic aberration in 1080p reference pixels. `0.0` (default)
+    /// = no effect. Positive values split the rendered fill into
+    /// R/G/B colour channels and offset them: red shifted left by
+    /// this amount, blue shifted right, green left in the middle.
+    /// The classic VHS / glitch / synthwave fringing look.
+    #[serde(default)]
+    pub chromatic_aberration_px: f32,
+    /// Glitch intensity 0..1 — slices the rendered text into
+    /// horizontal stripes, each shifted by a random amount per
+    /// frame. `0.0` (default) = no effect. Pattern is seeded by
+    /// the current clip time so playback is reproducible.
+    #[serde(default)]
+    pub glitch_intensity: f32,
     /// Drop-cap scale factor for the first character of `text`.
     /// `0.0` (default) = no drop cap. `>= 1.0` = enlarge the first
     /// character by this factor; e.g. 3.0 = three-line drop cap (the
@@ -383,6 +396,8 @@ impl Default for TextBox {
             baseline_shift: 0.0,
             drop_cap_scale: 0.0,
             outline_write_on: 1.0,
+            chromatic_aberration_px: 0.0,
+            glitch_intensity: 0.0,
         }
     }
 }

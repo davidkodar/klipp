@@ -1369,6 +1369,17 @@ pub enum AppCommand {
     /// `>= 1.0` = enlarge first char by this factor (3.0 = three-line
     /// drop initial). Body text continues at the same baseline.
     SetTitleDropCap { clip_id: ClipId, scale: f32 },
+    /// Chromatic aberration in 1080p reference pixels. `0.0` = off.
+    SetTitleChromaticAberration { clip_id: ClipId, offset_px: f32 },
+    /// Glitch intensity 0..1 (random horizontal slice displacement).
+    /// `0.0` = off; `1.0` = max chaos.
+    SetTitleGlitch { clip_id: ClipId, intensity: f32 },
+    /// One-click "neon" preset: rewrites the textbox with a bright
+    /// fill, a strong outer glow tinted to match, and a thin dark
+    /// outline so the text reads against any background. The
+    /// `accent_color` is the neon hue; saturation and value are
+    /// pinned for legibility regardless of what the user picks.
+    SetTitleNeonPreset { clip_id: ClipId, accent_color: [u8; 4] },
     /// Set 3D text extrusion. `enabled=false` = disable.
     SetTitleExtrusion { clip_id: ClipId, enabled: bool, depth: f32, angle: f32, face_color: [u8; 4], side_color: [u8; 4], lighting: f32 },
     /// Set text path. path_kind: 0=None, 1=Arc, 2=Circle, 3=Wave.

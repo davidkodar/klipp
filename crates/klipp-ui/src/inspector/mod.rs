@@ -1750,6 +1750,42 @@ fn show_title_editor(
         cmds.push(AppCommand::SetTitleBaselineShift { clip_id, shift_px: baseline });
     }
     {
+        // Chromatic aberration: 0 = off, sub-pixel = silent, max ~40px.
+        let mut ca = td.primary_text().map_or(0.0, |tb| tb.chromatic_aberration_px);
+        let resp = ui.add(
+            egui::DragValue::new(&mut ca)
+                .range(0.0..=40.0)
+                .speed(0.1)
+                .fixed_decimals(1)
+                .prefix("Chromatic aberration: ")
+                .suffix(" px"),
+        );
+        if resp.changed() {
+            cmds.push(AppCommand::SetTitleChromaticAberration { clip_id, offset_px: ca });
+        }
+    }
+    {
+        // Glitch intensity 0..1.
+        let mut g = td.primary_text().map_or(0.0, |tb| tb.glitch_intensity);
+        let resp = ui.add(
+            egui::Slider::new(&mut g, 0.0..=1.0)
+                .step_by(0.01)
+                .text("Glitch"),
+        );
+        if resp.changed() {
+            cmds.push(AppCommand::SetTitleGlitch { clip_id, intensity: g });
+        }
+    }
+    ui.horizontal(|ui| {
+        // Neon preset — one-click style. Uses the resting fill colour
+        // as the accent so the user can pick any hue.
+        if ui.small_button("Apply Neon Preset").clicked() {
+            let accent = td.primary_text().map_or([0, 220, 255, 255], |tb| tb.color);
+            cmds.push(AppCommand::SetTitleNeonPreset { clip_id, accent_color: accent });
+        }
+    });
+    ui.add_space(4.0);
+    {
         // Drop cap scale: 0 = off, >=1 enlarges first character.
         // Surface as a normal numeric drag clamped to a useful
         // range; the handler folds anything below 1.0 back to 0.0
