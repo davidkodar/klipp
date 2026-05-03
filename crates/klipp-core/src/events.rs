@@ -1293,6 +1293,10 @@ pub enum AppCommand {
     /// skipped on canvas hit-test and resist on-canvas drag, but
     /// remain editable from the Inspector.
     SetTitleObjectLocked { clip_id: ClipId, object_id: u32, locked: bool },
+    /// Set the per-object opacity (0..1). Multiplies into the
+    /// alpha of every pixel this object contributes during the
+    /// title's compose pass; independent from clip-level fades.
+    SetTitleObjectOpacity { clip_id: ClipId, object_id: u32, opacity: f32 },
     /// Rename the layer-list label for an object.
     RenameTitleObject { clip_id: ClipId, object_id: u32, name: String },
     /// Reorder objects in the stack. `new_order` is the full list

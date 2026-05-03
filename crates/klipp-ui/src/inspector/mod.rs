@@ -1313,6 +1313,30 @@ fn show_title_editor(
     });
     ui.add_space(8.0);
 
+    // Per-object opacity. Targets the same object as the other
+    // typography / styling commands (selected layer, falling back to
+    // the first object). Independent of clip-level opacity_keyframes
+    // — each layer can be individually faded.
+    {
+        let target_oid: Option<klipp_timeline::TitleObjectId> = state
+            .selected_title_object
+            .filter(|(c, _)| *c == clip_id)
+            .map(|(_, oid)| oid);
+        let target_obj = match target_oid {
+            Some(oid) => td.object(oid),
+            None => td.objects.first(),
+        };
+        if let Some(obj) = target_obj {
+            let object_id = obj.id.0;
+            let mut op = obj.opacity;
+            ui.label(egui::RichText::new("Layer Opacity").strong().size(11.0));
+            if ui.add(egui::Slider::new(&mut op, 0.0..=1.0).step_by(0.01)).changed() {
+                cmds.push(AppCommand::SetTitleObjectOpacity { clip_id, object_id, opacity: op });
+            }
+            ui.add_space(8.0);
+        }
+    }
+
     // Background
     ui.label(egui::RichText::new("Background").strong().size(11.0));
     let bg_kind: u8 = match &td.background { klipp_timeline::TitleBackground::None => 0, klipp_timeline::TitleBackground::Color { .. } => 1, klipp_timeline::TitleBackground::FullFrame { .. } => 2 };
@@ -1937,6 +1961,7 @@ fn show_title_editor(
             T::BounceIn { .. } => 19,
             T::Wave { .. } => 20,
             T::Shake { .. } => 21,
+            T::ColorCycle { .. } => 22,
         };
         let kind_label = |k: u8| -> &'static str {
             match k {
@@ -1962,6 +1987,7 @@ fn show_title_editor(
                 19 => "Bounce In",
                 20 => "Wave (continuous)",
                 21 => "Shake (continuous)",
+                22 => "Colour Cycle (continuous)",
                 _ => "Static (no animation)",
             }
         };
@@ -1983,6 +2009,7 @@ fn show_title_editor(
                 19 => (0.5, 0.0),                // BounceIn 0.5s
                 20 => (20.0, 1.0),               // Wave 20px @ 1Hz
                 21 => (10.0, 12.0),              // Shake 10px @ 12Hz
+                22 => (0.5, 0.0),                // ColorCycle 0.5 Hz hue rotation
                 _ => (0.0, 0.0),
             }
         };
@@ -2029,6 +2056,9 @@ fn show_title_editor(
                     ui.label(egui::RichText::new("Continuous Motion").size(10.0).color(theme.text_dim));
                     ui.selectable_value(&mut selected, 20, kind_label(20));
                     ui.selectable_value(&mut selected, 21, kind_label(21));
+                    ui.separator();
+                    ui.label(egui::RichText::new("Colour").size(10.0).color(theme.text_dim));
+                    ui.selectable_value(&mut selected, 22, kind_label(22));
                 });
         });
         if selected != current_kind {
@@ -2210,6 +2240,17 @@ fn show_title_editor(
                     if ui.add(egui::DragValue::new(&mut deg).range(-720.0..=720.0).speed(2.0).fixed_decimals(0).suffix("\u{00b0}")).changed() {
                         cmds.push(AppCommand::SetTitleAnimation {
                             clip_id, animation_kind: 18, speed: dur, param2: deg,
+                        });
+                    }
+                });
+            }
+            T::ColorCycle { rate_hz } => {
+                let mut v = *rate_hz;
+                ui.horizontal(|ui| {
+                    ui.label("Rate:");
+                    if ui.add(egui::DragValue::new(&mut v).range(0.05..=10.0).speed(0.05).fixed_decimals(2).suffix(" Hz")).changed() {
+                        cmds.push(AppCommand::SetTitleAnimation {
+                            clip_id, animation_kind: 22, speed: v, param2: 0.0,
                         });
                     }
                 });

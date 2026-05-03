@@ -213,8 +213,17 @@ pub struct TitleObject {
     /// without affecting Inspector property edits.
     #[serde(default)]
     pub locked: bool,
+    /// Per-object opacity 0..1. Multiplies into the alpha channel
+    /// of every pixel this object contributes during composition.
+    /// Default 1.0 (fully opaque). Independent from clip-level
+    /// `opacity_keyframes` — each layer in a multi-layer title can
+    /// be individually faded.
+    #[serde(default = "default_one_f32")]
+    pub opacity: f32,
     pub content: TitleObjectContent,
 }
+
+fn default_one_f32() -> f32 { 1.0 }
 
 fn default_true() -> bool { true }
 
@@ -445,6 +454,7 @@ impl TitleData {
             transform,
             visible: true,
             locked: false,
+            opacity: 1.0,
             content,
         });
         id
@@ -686,6 +696,12 @@ pub enum TitleAnimationType {
     /// max displacement; `rate_hz` controls how rapidly the jitter
     /// updates (higher = more frenetic).
     Shake { amplitude_px: f32, rate_hz: f32 },
+    /// Continuous hue rotation of the text fill colour. `rate_hz`
+    /// is full-revolution-per-second (1.0 = one complete spin
+    /// through the colour wheel each second). Saturation and value
+    /// are taken from the resting fill colour. Primary use cases
+    /// are music-video titles, party invites, kids' content.
+    ColorCycle { rate_hz: f32 },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]

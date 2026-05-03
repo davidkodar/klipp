@@ -1007,8 +1007,12 @@ impl TitleRenderer {
         gpu: Option<&mut dyn AlphaMaskProcessor>,
         time_secs: f32,
     ) -> Vec<u8> {
-        // Cache only when nothing is time-varying — same key as the
-        // static path.
+        // Time-varying inputs:
+        //   - char_animation on any object (per-glyph entrance)
+        //   - title-level ColorCycle (continuous hue rotation)
+        // Both bypass the static cache. Other animation_type variants
+        // are clip-level keyframes evaluated by the engine, not the
+        // renderer, so they don't change `title` and stay cacheable.
         let any_char_anim = title.objects.iter().any(|o| {
             if let TitleObjectContent::TextBox(tb) = &o.content {
                 tb.char_animation.is_some()
@@ -1016,7 +1020,12 @@ impl TitleRenderer {
                 false
             }
         });
-        if !any_char_anim {
+        let color_cycle_rate = match title.animation_type {
+            klipp_timeline::TitleAnimationType::ColorCycle { rate_hz } => Some(rate_hz),
+            _ => None,
+        };
+
+        if !any_char_anim && color_cycle_rate.is_none() {
             if let Some(buf) = self.cache_lookup(title, width, height) {
                 return buf;
             }
@@ -1024,8 +1033,32 @@ impl TitleRenderer {
             self.cache_store(title.clone(), width, height, buf.clone());
             return buf;
         }
-        // Animated → bypass cache, thread time through.
-        self.render_inner(title, width, height, gpu, Some(time_secs))
+
+        // ColorCycle: clone the title and rewrite the primary
+        // textbox's colour to a hue-shifted variant for this frame.
+        // Saturation and value are pulled from the resting colour so
+        // the cycle stays in the same brightness band the user
+        // chose; only hue varies. The clone is one allocation per
+        // frame for ColorCycle titles, an acceptable cost given the
+        // effect is decorative-by-nature.
+        let recoloured: Option<TitleData> = color_cycle_rate.map(|rate| {
+            let mut td = title.clone();
+            let resting = title.color();
+            let (_, sat, val) = rgba_u8_to_hsv(resting);
+            let hue = (time_secs * rate * 360.0).rem_euclid(360.0);
+            let new_color = hsv_to_rgba_u8(hue, sat, val, resting[3]);
+            // Apply to every TextBox object so multi-text titles
+            // cycle in unison.
+            for obj in &mut td.objects {
+                if let TitleObjectContent::TextBox(tb) = &mut obj.content {
+                    tb.color = new_color;
+                }
+            }
+            td
+        });
+        let title_to_render = recoloured.as_ref().unwrap_or(title);
+        let time_arg = if any_char_anim { Some(time_secs) } else { None };
+        self.render_inner(title_to_render, width, height, gpu, time_arg)
     }
 
     /// Object-model composition: walk every layer in the title (back
@@ -1089,10 +1122,31 @@ impl TitleRenderer {
                         gpu_for_first_text.take(),
                         time_secs,
                     );
-                    over_blend(&mut buf, &layer);
+                    if (obj.opacity - 1.0).abs() < 0.001 {
+                        over_blend(&mut buf, &layer);
+                    } else {
+                        // Per-object opacity: scale the layer's alpha
+                        // channel before composition. Branching on the
+                        // ~1.0 case keeps the common path identical to
+                        // the pre-opacity rendering hot loop.
+                        let mut faded = layer;
+                        scale_layer_alpha(&mut faded, obj.opacity);
+                        over_blend(&mut buf, &faded);
+                    }
                 }
                 TitleObjectContent::Shape(shape) => {
-                    paint_shape_layer(&mut buf, shape, &obj.transform, width, height);
+                    if (obj.opacity - 1.0).abs() < 0.001 {
+                        paint_shape_layer(&mut buf, shape, &obj.transform, width, height);
+                    } else {
+                        // Render the shape into a fresh transparent
+                        // layer, scale its alpha, then over-blend —
+                        // matches the per-object opacity behaviour
+                        // for TextBox layers.
+                        let mut layer = vec![0u8; (width as usize) * (height as usize) * 4];
+                        paint_shape_layer(&mut layer, shape, &obj.transform, width, height);
+                        scale_layer_alpha(&mut layer, obj.opacity);
+                        over_blend(&mut buf, &layer);
+                    }
                 }
             }
         }
@@ -1546,6 +1600,66 @@ impl TitleRenderer {
 ///
 /// Skips writes for fully-transparent source pixels — the common
 /// case for the empty regions around each rasterised TextBox.
+/// HSV → RGBA-u8. Hue in degrees [0, 360), sat / val in [0, 1].
+fn hsv_to_rgba_u8(h: f32, s: f32, v: f32, alpha: u8) -> [u8; 4] {
+    let h = h.rem_euclid(360.0);
+    let s = s.clamp(0.0, 1.0);
+    let v = v.clamp(0.0, 1.0);
+    let c = v * s;
+    let h_prime = h / 60.0;
+    let x = c * (1.0 - (h_prime.rem_euclid(2.0) - 1.0).abs());
+    let (r1, g1, b1) = match h_prime as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = v - c;
+    [
+        ((r1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((g1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        ((b1 + m) * 255.0).round().clamp(0.0, 255.0) as u8,
+        alpha,
+    ]
+}
+
+/// RGBA-u8 → HSV (returning hue degrees, sat 0..1, val 0..1).
+fn rgba_u8_to_hsv(rgba: [u8; 4]) -> (f32, f32, f32) {
+    let r = rgba[0] as f32 / 255.0;
+    let g = rgba[1] as f32 / 255.0;
+    let b = rgba[2] as f32 / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let delta = max - min;
+    let h = if delta < 1e-6 {
+        0.0
+    } else if (max - r).abs() < 1e-6 {
+        60.0 * (((g - b) / delta).rem_euclid(6.0))
+    } else if (max - g).abs() < 1e-6 {
+        60.0 * ((b - r) / delta + 2.0)
+    } else {
+        60.0 * ((r - g) / delta + 4.0)
+    };
+    let s = if max < 1e-6 { 0.0 } else { delta / max };
+    (h, s, max)
+}
+
+/// Multiply the alpha channel of every pixel in a layer by `factor`
+/// (clamped to 0..1). Used to apply per-object opacity to a fully-
+/// rendered layer before it gets `over_blend`-composited onto the
+/// running buffer.
+fn scale_layer_alpha(layer: &mut [u8], factor: f32) {
+    let f = factor.clamp(0.0, 1.0);
+    if f >= 0.9999 {
+        return;
+    }
+    for px in layer.chunks_exact_mut(4) {
+        px[3] = ((px[3] as f32) * f).round().clamp(0.0, 255.0) as u8;
+    }
+}
+
 fn over_blend(dst: &mut [u8], src: &[u8]) {
     debug_assert_eq!(dst.len(), src.len());
     debug_assert_eq!(dst.len() % 4, 0);
@@ -2702,6 +2816,66 @@ mod tests {
         let line2_first = positions.iter().find(|p| p.char_index == 6).unwrap(); // 'L' of Line2
         assert!(line2_first.y > line1_y + 5.0,
             "Line2 y ({}) should be below Line1 y ({})", line2_first.y, line1_y);
+    }
+
+    /// ColorCycle must change the rendered colour over time even
+    /// without char_animation present — pins the contract that
+    /// title-level hue rotation actually flows through render_with_time.
+    #[test]
+    fn color_cycle_changes_rendered_pixels_over_time() {
+        let mut renderer = TitleRenderer::new();
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 80.0;
+        tb.color = [255, 0, 0, 255];  // pure red resting hue
+        let mut td = klipp_timeline::TitleData::single_text(tb);
+        td.animation_type = klipp_timeline::TitleAnimationType::ColorCycle { rate_hz: 1.0 };
+
+        let frame_t0 = renderer.render_with_time(&td, 1280, 720, None, 0.0);
+        let frame_t_quarter = renderer.render_with_time(&td, 1280, 720, None, 0.25); // 90° hue shift
+
+        // Find first non-transparent pixel in each frame and compare
+        // its RGB. After 90° hue rotation from red the dominant
+        // channel must shift away from R toward G.
+        let first_visible_rgb = |buf: &[u8]| -> Option<[u8; 3]> {
+            buf.chunks_exact(4)
+                .find(|p| p[3] > 200)
+                .map(|p| [p[0], p[1], p[2]])
+        };
+        let c0 = first_visible_rgb(&frame_t0).expect("t=0 has glyph pixels");
+        let c1 = first_visible_rgb(&frame_t_quarter).expect("t=0.25 has glyph pixels");
+        assert_ne!(c0, c1, "ColorCycle must produce different fill colours at different times. c0={c0:?} c1={c1:?}");
+    }
+
+    /// Per-object opacity multiplies into the rendered alpha.
+    #[test]
+    fn per_object_opacity_reduces_alpha_proportionally() {
+        let mut renderer = TitleRenderer::new();
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 80.0;
+        let td_full = {
+            let td = klipp_timeline::TitleData::single_text(tb.clone());
+            td
+        };
+        let td_half = {
+            let mut td = klipp_timeline::TitleData::single_text(tb.clone());
+            if let Some(o) = td.objects.first_mut() { o.opacity = 0.5; }
+            td
+        };
+        let buf_full = renderer.render(&td_full, 1280, 720);
+        let buf_half = renderer.render(&td_half, 1280, 720);
+
+        // Sum the alpha channel — half-opacity object should produce
+        // approximately half the total alpha of the full-opacity one.
+        let alpha_sum = |buf: &[u8]| -> u64 {
+            buf.chunks_exact(4).map(|p| p[3] as u64).sum()
+        };
+        let a_full = alpha_sum(&buf_full);
+        let a_half = alpha_sum(&buf_half);
+        let ratio = (a_half as f32) / (a_full as f32);
+        assert!((ratio - 0.5).abs() < 0.05,
+            "Alpha sum ratio at 0.5 opacity should be ~0.5, got {ratio}. full={a_full} half={a_half}");
     }
 
     /// Underline / strikethrough must add visible pixels to the

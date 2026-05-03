@@ -2527,6 +2527,14 @@ fn apply_animation_type(
             let dy = ((seed >> 1) as f32 / u32::MAX as f32 - 0.5) * amplitude_px * 2.0;
             (text.to_string(), egui::pos2(base_pos.x + dx * 0.5, base_pos.y + dy * 0.5), 1.0, 1.0)
         }
+        TitleAnimationType::ColorCycle { .. } => {
+            // The card preview's text colour is taken from
+            // data.color() and isn't easily hue-shifted here without
+            // breaking the existing per-card colour pipeline. The
+            // hover preview shows the static colour; the timeline
+            // and export apply the full hue rotation.
+            (text.to_string(), base_pos, 1.0, 1.0)
+        }
     }
 }
 

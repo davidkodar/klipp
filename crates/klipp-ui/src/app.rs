@@ -13425,6 +13425,25 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleObjectOpacity { clip_id, object_id, opacity } => {
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                o.opacity = (*opacity).clamp(0.0, 1.0);
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Layer Opacity", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::RenameTitleObject { clip_id, object_id, name } => {
                 let target = klipp_timeline::TitleObjectId(*object_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
@@ -29431,6 +29450,7 @@ fn decode_title_animation(kind: u8, speed: f32, param2: f32) -> klipp_timeline::
         19 => T::BounceIn { duration_secs: speed },
         20 => T::Wave { amplitude_px: speed, rate_hz: param2 },
         21 => T::Shake { amplitude_px: speed, rate_hz: param2 },
+        22 => T::ColorCycle { rate_hz: speed },
         _ => T::Static,
     }
 }
@@ -29748,6 +29768,13 @@ fn apply_title_animation_keyframes(
                 t += dt;
             }
             clip.transform_pos_y_keyframes = kfs;
+        }
+        T::ColorCycle { .. } => {
+            // ColorCycle is rendered entirely inside the title
+            // renderer's render_with_time path — no clip-level
+            // keyframes to write. The clear-all at the top of this
+            // function already wiped any leftover keyframes from a
+            // previous variant.
         }
         T::Shake { amplitude_px, rate_hz } => {
             // Pseudo-random jitter via a deterministic LCG so the
