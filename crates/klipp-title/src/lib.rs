@@ -1008,13 +1008,13 @@ impl TitleRenderer {
         // ── Render effects back-to-front ──
 
         // 1. Outer glow
-        if let Some(glow) = &tb.glow {
+        if let Some(glow) = tb.glow.as_ref().filter(|g| g.enabled) {
             let blurred = do_blur(alpha_mask, mask_w, mask_h, glow.radius * scale, &mut gpu);
             draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &glow.color, glow.intensity);
         }
 
         // 2. Shadow (with blur support)
-        if let Some(shadow) = &tb.shadow {
+        if let Some(shadow) = tb.shadow.as_ref().filter(|s| s.enabled) {
             let sox = (shadow.offset_x * scale).round() as i32;
             let soy = (shadow.offset_y * scale).round() as i32;
 
@@ -1031,7 +1031,7 @@ impl TitleRenderer {
         // 3. Outline/stroke — multiple layers (widest first) then legacy single
         {
             let mut all_outlines: Vec<&klipp_timeline::TextOutline> = Vec::new();
-            for ol in &tb.outlines {
+            for ol in tb.outlines.iter().filter(|o| o.enabled) {
                 all_outlines.push(ol);
             }
             // Legacy single-outline support is gone — outline data
@@ -1072,14 +1072,14 @@ impl TitleRenderer {
         }
 
         // 4. 3D Text Extrusion (rendered before face text, after outlines)
-        if let Some(ref ext) = tb.extrusion {
+        if let Some(ext) = tb.extrusion.as_ref().filter(|e| e.enabled) {
             render_extrusion(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, ext, title);
         }
 
         // 5. Text fill (pattern > gradient > solid) — this is the face text
         {
             // If extrusion is active and has a non-transparent face_color, use that
-            let face_color = if let Some(ref ext) = tb.extrusion {
+            let face_color = if let Some(ext) = tb.extrusion.as_ref().filter(|e| e.enabled) {
                 if ext.face_color[3] > 0 {
                     ext.face_color
                 } else {
@@ -1089,9 +1089,9 @@ impl TitleRenderer {
                 tb.color
             };
 
-            if let Some(pattern) = &tb.pattern_fill {
+            if let Some(pattern) = tb.pattern_fill.as_ref().filter(|_| tb.pattern_fill_enabled) {
                 draw_pattern_fill(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, pattern, scale);
-            } else if let Some(gradient) = &tb.gradient {
+            } else if let Some(gradient) = tb.gradient.as_ref().filter(|g| g.enabled) {
                 let text_top = layout.text_top as i32;
                 let text_bot = layout.text_bottom as i32;
                 let text_height = (text_bot - text_top).max(1) as f32;
@@ -1126,7 +1126,7 @@ impl TitleRenderer {
         }
 
         // 6. Inner shadow (rendered inside the text shape)
-        if let Some(inner) = &tb.inner_shadow {
+        if let Some(inner) = tb.inner_shadow.as_ref().filter(|i| i.enabled) {
             let sox = (inner.offset_x * scale).round() as i32;
             let soy = (inner.offset_y * scale).round() as i32;
             let mut inverted = vec![0u8; mask_w * mask_h];
@@ -1807,6 +1807,9 @@ impl TitleRenderer {
         _height: u32,
     ) {
         let tb = title.primary_text_or_default();
+        if !tb.texture_fill_enabled {
+            return;
+        }
         let tex_path = match &tb.texture_fill_path {
             Some(p) if !p.is_empty() => p.clone(),
             _ => return,
@@ -2449,20 +2452,20 @@ fn render_extrusion(
 fn effect_padding(title: &TitleData, scale: f32) -> i32 {
     let tb = title.primary_text_or_default();
     let mut pad = 0i32;
-    for outline in &tb.outlines {
+    for outline in tb.outlines.iter().filter(|o| o.enabled) {
         pad = pad.max((outline.width * scale).ceil() as i32 + 1);
     }
-    if let Some(glow) = &tb.glow {
+    if let Some(glow) = tb.glow.as_ref().filter(|g| g.enabled) {
         pad = pad.max((glow.radius * scale * 2.0).ceil() as i32 + 1);
     }
-    if let Some(shadow) = &tb.shadow {
+    if let Some(shadow) = tb.shadow.as_ref().filter(|s| s.enabled) {
         let sx = (shadow.offset_x.abs() * scale).ceil() as i32;
         let sy = (shadow.offset_y.abs() * scale).ceil() as i32;
         let sb = (shadow.blur * scale * 2.0).ceil() as i32;
         pad = pad.max(sx + sb + 1);
         pad = pad.max(sy + sb + 1);
     }
-    if let Some(inner) = &tb.inner_shadow {
+    if let Some(inner) = tb.inner_shadow.as_ref().filter(|i| i.enabled) {
         let sx = (inner.offset_x.abs() * scale).ceil() as i32;
         let sy = (inner.offset_y.abs() * scale).ceil() as i32;
         let sb = (inner.blur * scale * 2.0).ceil() as i32;
@@ -2474,7 +2477,7 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
         pad = pad.max((tb.tracking * scale * 200.0).ceil() as i32); // generous for long text
     }
     // Extra padding for extrusion depth
-    if let Some(ext) = &tb.extrusion {
+    if let Some(ext) = tb.extrusion.as_ref().filter(|e| e.enabled) {
         let depth = ext.depth.clamp(1.0, 50.0);
         let ex = (depth * ext.angle.to_radians().cos().abs()).ceil() as i32 + 1;
         let ey = (depth * ext.angle.to_radians().sin().abs()).ceil() as i32 + 1;
@@ -3236,7 +3239,7 @@ mod tests {
                 offset_x: 4.0,
                 offset_y: 4.0,
                 blur: 0.0,
-            });
+             enabled: true });
     }
     td
 };
@@ -3263,7 +3266,7 @@ mod tests {
         if let Some(ol) = (Some(klipp_timeline::TextOutline {
                 color: [255, 0, 0, 255],
                 width: 4.0,
-            })) { tb.outlines.insert(0, ol); }
+             enabled: true })) { tb.outlines.insert(0, ol); }
     }
     td
 };
@@ -3291,7 +3294,7 @@ mod tests {
                 color: [0, 255, 0, 255],
                 radius: 10.0,
                 intensity: 0.8,
-            });
+             enabled: true });
     }
     td
 };
@@ -3312,7 +3315,7 @@ mod tests {
     tb.gradient = Some(klipp_timeline::TextGradient {
                 top_color: [255, 0, 0, 255],
                 bottom_color: [0, 0, 255, 255],
-            });
+             enabled: true });
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td
 };
@@ -3355,7 +3358,7 @@ mod tests {
                 face_color: [0, 0, 0, 0],
                 side_color: [100, 50, 50, 255],
                 lighting: 0.5,
-            });
+             enabled: true });
     }
     td
 };
@@ -3556,7 +3559,7 @@ mod tests {
         tb.outlines.push(klipp_timeline::TextOutline {
             color: [255, 0, 0, 255],
             width: 4.0,
-        });
+         enabled: true });
         let td = klipp_timeline::TitleData::single_text(tb);
 
         let count_red = |buf: &[u8]| -> usize {
@@ -3718,7 +3721,7 @@ mod tests {
             entrance: klipp_timeline::CharEntrance::BlurIn,
             wave_amplitude: 0.0,
             wave_speed: 1.0,
-        });
+         enabled: true });
         let td = klipp_timeline::TitleData::single_text(tb);
 
         // local_t at t=0.2 = 0.5 → mid-entrance, decent alpha.
@@ -3893,7 +3896,7 @@ mod tests {
             entrance: klipp_timeline::CharEntrance::FadeIn,
             wave_amplitude: 0.0,
             wave_speed: 1.0,
-        });
+         enabled: true });
         let td = klipp_timeline::TitleData::single_text(tb);
 
         let buf_t0 = renderer.render_with_time(&td, 1920, 1080, None, 0.0);
@@ -3924,7 +3927,7 @@ mod tests {
             entrance: klipp_timeline::CharEntrance::SlideUp,
             wave_amplitude: 0.0,
             wave_speed: 1.0,
-        });
+         enabled: true });
         let td = klipp_timeline::TitleData::single_text(tb);
 
         let frame_a = renderer.render_with_time(&td, 1280, 720, None, 0.05);

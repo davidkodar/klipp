@@ -1358,6 +1358,15 @@ pub enum AppCommand {
     SetTitleUnderline { clip_id: ClipId, underline: bool },
     /// Toggle text strikethrough rendering.
     SetTitleStrikethrough { clip_id: ClipId, strikethrough: bool },
+    /// Soft-disable for the Pattern Fill subcard. `pattern_fill` is an
+    /// `Option<TextPattern>` enum without a place to add a struct-level
+    /// `enabled` flag, so the toggle bit lives in `tb.pattern_fill_enabled`
+    /// alongside the data. Disabling preserves the chosen pattern.
+    SetTitlePatternEnabled { clip_id: ClipId, enabled: bool },
+    /// Soft-disable for the Texture Fill subcard. `texture_fill_path` is
+    /// `Option<String>`; the toggle bit is `tb.texture_fill_enabled`.
+    /// Disabling preserves the path so the user's selection survives.
+    SetTitleTextureEnabled { clip_id: ClipId, enabled: bool },
     /// Set the pre-layout case transform applied to the text body.
     /// `case_kind`: 0 = None, 1 = Uppercase, 2 = Lowercase, 3 = SmallCaps.
     SetTitleCaseTransform { clip_id: ClipId, case_kind: u8 },

@@ -75,7 +75,7 @@ fn centered(text: &str, size: f32, style: FontStyle, color: [u8; 4], shadow: boo
     tb.color = color;
     tb.alignment = TextAlignment::Center;
     tb.shadow = if shadow {
-        Some(TitleShadow { color: [0, 0, 0, 160], offset_x: 3.0, offset_y: 3.0, blur: 6.0 })
+        Some(TitleShadow { color: [0, 0, 0, 160], offset_x: 3.0, offset_y: 3.0, blur: 6.0 , enabled: true })
     } else {
         None
     };
@@ -179,19 +179,19 @@ const ORANGE: [u8; 4] = [255, 160, 40, 255];
 const PURPLE: [u8; 4] = [160, 80, 255, 255];
 
 fn shadow_default() -> Option<TitleShadow> {
-    Some(TitleShadow { color: [0, 0, 0, 160], offset_x: 3.0, offset_y: 3.0, blur: 6.0 })
+    Some(TitleShadow { color: [0, 0, 0, 160], offset_x: 3.0, offset_y: 3.0, blur: 6.0 , enabled: true })
 }
 
 fn shadow_soft() -> Option<TitleShadow> {
-    Some(TitleShadow { color: [0, 0, 0, 120], offset_x: 2.0, offset_y: 2.0, blur: 8.0 })
+    Some(TitleShadow { color: [0, 0, 0, 120], offset_x: 2.0, offset_y: 2.0, blur: 8.0 , enabled: true })
 }
 
 fn shadow_hard() -> Option<TitleShadow> {
-    Some(TitleShadow { color: [0, 0, 0, 200], offset_x: 4.0, offset_y: 4.0, blur: 2.0 })
+    Some(TitleShadow { color: [0, 0, 0, 200], offset_x: 4.0, offset_y: 4.0, blur: 2.0 , enabled: true })
 }
 
 fn shadow_glow(color: [u8; 4]) -> Option<TitleShadow> {
-    Some(TitleShadow { color, offset_x: 0.0, offset_y: 0.0, blur: 12.0 })
+    Some(TitleShadow { color, offset_x: 0.0, offset_y: 0.0, blur: 12.0 , enabled: true })
 }
 
 // ---------------------------------------------------------------------------
@@ -276,7 +276,7 @@ fn cin_typewriter() -> TitleData {
 fn cin_glitch() -> TitleData {
     // Real glitch: cyan/magenta channel offset + slice displacement +
     // distinctive red colour. The CRT/VHS look in one preset.
-    let td = positioned("GL1TCH", 72.0, FontStyle::Bold, RED, TextAlignment::Center, 0.5, 0.5, Some(TitleShadow { color: [0, 255, 255, 120], offset_x: 4.0, offset_y: -2.0, blur: 2.0 }));
+    let td = positioned("GL1TCH", 72.0, FontStyle::Bold, RED, TextAlignment::Center, 0.5, 0.5, Some(TitleShadow { color: [0, 255, 255, 120], offset_x: 4.0, offset_y: -2.0, blur: 2.0 , enabled: true }));
     let td = with_chromatic(td, 6.0);
     with_glitch(td, 0.35)
 }
@@ -582,8 +582,8 @@ fn sty_neon() -> TitleData {
     {
     let mut td = positioned("NEON", 72.0, FontStyle::Bold, CYAN, TextAlignment::Center, 0.5, 0.5, None);
     if let Some(tb) = td.primary_text_mut() {
-        tb.glow = Some(TextGlow { color: [0, 255, 200, 255], radius: 15.0, intensity: 0.8 });
-        tb.outlines.insert(0, TextOutline { color: [0, 255, 200, 255], width: 2.0 });
+        tb.glow = Some(TextGlow { color: [0, 255, 200, 255], radius: 15.0, intensity: 0.8 , enabled: true });
+        tb.outlines.insert(0, TextOutline { color: [0, 255, 200, 255], width: 2.0 , enabled: true });
     }
     td
 }
@@ -591,7 +591,7 @@ fn sty_neon() -> TitleData {
 fn sty_outline() -> TitleData {
     {
     let mut tb = klipp_timeline::TextBox::default();
-    tb.outlines.insert(0, TextOutline { color: [255, 255, 255, 255], width: 3.0 });
+    tb.outlines.insert(0, TextOutline { color: [255, 255, 255, 255], width: 3.0 , enabled: true });
     tb.color = [255, 255, 255, 80];
     let td = klipp_timeline::TitleData::single_text(tb);
     td
@@ -607,7 +607,7 @@ fn sty_gradient() -> TitleData {
     {
     let mut td = positioned("GRADIENT", 72.0, FontStyle::Bold, PURPLE, TextAlignment::Center, 0.5, 0.5, shadow_glow([160, 80, 255, 150]));
     if let Some(tb) = td.primary_text_mut() {
-        tb.gradient = Some(TextGradient { top_color: [255, 200, 50, 255], bottom_color: [255, 50, 50, 255] });
+        tb.gradient = Some(TextGradient { top_color: [255, 200, 50, 255], bottom_color: [255, 50, 50, 255] , enabled: true });
     }
     td
 }
@@ -649,7 +649,7 @@ fn tex_fill_shadow() -> TitleData {
         tb.font_size = 72.0;
         tb.font_style = FontStyle::Bold;
         tb.texture_fill_path = None;
-        tb.outlines.insert(0, TextOutline { color: [255, 255, 255, 180], width: 1.0 });
+        tb.outlines.insert(0, TextOutline { color: [255, 255, 255, 180], width: 1.0 , enabled: true });
     }
     td
 }
@@ -681,7 +681,7 @@ fn three_d_block() -> TitleData {
             face_color: [255, 255, 255, 255],
             side_color: [80, 80, 120, 255],
             lighting: 0.6,
-        });
+         enabled: true });
     }
     td
 }
@@ -695,8 +695,8 @@ fn three_d_gold_emboss() -> TitleData {
             face_color: [0, 0, 0, 0],
             side_color: [160, 120, 40, 255],
             lighting: 0.8,
-        });
-        tb.gradient = Some(TextGradient { top_color: [255, 220, 100, 255], bottom_color: [200, 150, 50, 255] });
+         enabled: true });
+        tb.gradient = Some(TextGradient { top_color: [255, 220, 100, 255], bottom_color: [200, 150, 50, 255] , enabled: true });
     }
     td
 }
@@ -710,7 +710,7 @@ fn three_d_deep_shadow() -> TitleData {
             face_color: [220, 50, 50, 255],
             side_color: [60, 20, 20, 255],
             lighting: 0.4,
-        });
+         enabled: true });
     }
     td
 }
@@ -724,8 +724,8 @@ fn three_d_neon_extrude() -> TitleData {
             face_color: [0, 255, 200, 255],
             side_color: [0, 80, 60, 255],
             lighting: 0.7,
-        });
-        tb.glow = Some(TextGlow { color: [0, 255, 200, 255], radius: 12.0, intensity: 0.6 });
+         enabled: true });
+        tb.glow = Some(TextGlow { color: [0, 255, 200, 255], radius: 12.0, intensity: 0.6 , enabled: true });
     }
     td
 }
@@ -739,8 +739,8 @@ fn three_d_retro_stack() -> TitleData {
             face_color: [255, 220, 50, 255],
             side_color: [150, 80, 30, 255],
             lighting: 0.5,
-        });
-        tb.outlines.insert(0, TextOutline { color: [40, 30, 20, 255], width: 2.0 });
+         enabled: true });
+        tb.outlines.insert(0, TextOutline { color: [40, 30, 20, 255], width: 2.0 , enabled: true });
     }
     td
 }
@@ -811,7 +811,7 @@ fn char_stagger_fade() -> TitleData {
             entrance: CharEntrance::FadeIn,
             wave_amplitude: 0.0,
             wave_speed: 0.0,
-        });
+         enabled: true });
     }
     td
 }
@@ -825,7 +825,7 @@ fn char_wave_bounce() -> TitleData {
             entrance: CharEntrance::None,
             wave_amplitude: 15.0,
             wave_speed: 2.0,
-        });
+         enabled: true });
     }
     td
 }
@@ -1128,8 +1128,8 @@ const TITLES: &[TitleTemplate] = &[
         tb.font_style = FontStyle::Bold;
         tb.color = [50, 255, 220, 255];
         tb.alignment = TextAlignment::Center;
-        tb.outlines.push(klipp_timeline::TextOutline { color: [10, 10, 14, 220], width: 2.0 });
-        tb.glow = Some(klipp_timeline::TextGlow { color: [50, 255, 220, 200], radius: 14.0, intensity: 1.5 });
+        tb.outlines.push(klipp_timeline::TextOutline { color: [10, 10, 14, 220], width: 2.0 , enabled: true });
+        tb.glow = Some(klipp_timeline::TextGlow { color: [50, 255, 220, 200], radius: 14.0, intensity: 1.5 , enabled: true });
         tb.chromatic_aberration_px = 4.0;
         tb.glitch_intensity = 0.15;
         let mut td = klipp_timeline::TitleData::single_text(tb);
@@ -1139,7 +1139,7 @@ const TITLES: &[TitleTemplate] = &[
     TitleTemplate { name: "Heartbeat Pulse", category: "Effects", preview_text: "\u{2764} LIVE", create_data: || {
         let mut t = centered("LIVE", 72.0, FontStyle::Bold, [255, 60, 60, 255], true);
         if let Some(tb) = t.primary_text_mut() {
-            tb.outlines.push(klipp_timeline::TextOutline { color: [40, 0, 0, 220], width: 2.5 });
+            tb.outlines.push(klipp_timeline::TextOutline { color: [40, 0, 0, 220], width: 2.5 , enabled: true });
         }
         with_anim(t, TitleAnimationType::Pulse { rate_hz: 1.2, min_opacity: 0.55 })
     }, animation: Some("Pulse(1.2\u{00a0}Hz)") },
@@ -1159,7 +1159,7 @@ const TITLES: &[TitleTemplate] = &[
         let mut t = centered("Best Picture", 84.0, FontStyle::Bold, [240, 200, 90, 255], true);
         if let Some(tb) = t.primary_text_mut() {
             tb.drop_cap_scale = 2.5;
-            tb.glow = Some(klipp_timeline::TextGlow { color: [240, 200, 90, 180], radius: 18.0, intensity: 1.2 });
+            tb.glow = Some(klipp_timeline::TextGlow { color: [240, 200, 90, 180], radius: 18.0, intensity: 1.2 , enabled: true });
             tb.alignment = TextAlignment::Left;
         }
         if let Some(o) = t.objects.first_mut() {
@@ -1173,10 +1173,10 @@ const TITLES: &[TitleTemplate] = &[
             32.0, FontStyle::Regular,
             [255, 255, 255, 255], TextAlignment::Center,
             0.5, 0.88,
-            Some(TitleShadow { color: [0, 0, 0, 200], offset_x: 1.5, offset_y: 1.5, blur: 3.0 }),
+            Some(TitleShadow { color: [0, 0, 0, 200], offset_x: 1.5, offset_y: 1.5, blur: 3.0 , enabled: true }),
         );
         if let Some(tb) = t.primary_text_mut() {
-            tb.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 220], width: 1.5 });
+            tb.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 220], width: 1.5 , enabled: true });
         }
         with_anim(t, TitleAnimationType::Typewriter { chars_per_sec: 60.0 })
     }, animation: Some("Typewriter(60 ch/s)") },
@@ -1215,7 +1215,7 @@ const TITLES: &[TitleTemplate] = &[
         tb.font_style = FontStyle::Bold;
         tb.color = [255, 70, 70, 255];
         tb.alignment = TextAlignment::Center;
-        tb.outlines.push(klipp_timeline::TextOutline { color: [40, 0, 0, 220], width: 4.0 });
+        tb.outlines.push(klipp_timeline::TextOutline { color: [40, 0, 0, 220], width: 4.0 , enabled: true });
         let mut td = klipp_timeline::TitleData::single_text(tb);
         td.animation_type = TitleAnimationType::Counter {
             from_value: 10.0,
@@ -1247,8 +1247,8 @@ const TITLES: &[TitleTemplate] = &[
         tb.font_style = FontStyle::Bold;
         tb.color = accent;
         tb.alignment = TextAlignment::Center;
-        tb.outlines.push(klipp_timeline::TextOutline { color: [10, 10, 14, 200], width: 3.0 });
-        tb.glow = Some(klipp_timeline::TextGlow { color: accent, radius: 22.0, intensity: 1.6 });
+        tb.outlines.push(klipp_timeline::TextOutline { color: [10, 10, 14, 200], width: 3.0 , enabled: true });
+        tb.glow = Some(klipp_timeline::TextGlow { color: accent, radius: 22.0, intensity: 1.6 , enabled: true });
         let mut td = klipp_timeline::TitleData::single_text(tb);
         td.animation_type = TitleAnimationType::Pulse { rate_hz: 0.5, min_opacity: 0.7 };
         td

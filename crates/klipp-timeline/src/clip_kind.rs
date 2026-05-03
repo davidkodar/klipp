@@ -268,6 +268,12 @@ pub struct TextBox {
     /// Pattern fill (overrides solid colour and gradient when set).
     #[serde(default)]
     pub pattern_fill: Option<TextPattern>,
+    /// Soft-disable for `pattern_fill`. When `false` and `pattern_fill`
+    /// is `Some(...)`, the renderer skips the pattern but the parameters
+    /// are preserved. `pattern_fill` is an enum without a place to add
+    /// a struct-level `enabled` flag, so the bit lives here on TextBox.
+    #[serde(default = "default_true")]
+    pub pattern_fill_enabled: bool,
     /// Extra pixels between characters (tracking).
     #[serde(default)]
     pub tracking: f32,
@@ -290,6 +296,11 @@ pub struct TextBox {
     /// Image file used as text fill.
     #[serde(default)]
     pub texture_fill_path: Option<String>,
+    /// Soft-disable for `texture_fill_path`. When `false` and the path
+    /// is `Some(...)`, the renderer skips the texture fill but keeps
+    /// the path so the user's selection isn't lost.
+    #[serde(default = "default_true")]
+    pub texture_fill_enabled: bool,
     /// Motion blur settings (None = disabled).
     #[serde(default)]
     pub motion_blur: Option<MotionBlur>,
@@ -414,6 +425,7 @@ impl Default for TextBox {
             gradient: None,
             inner_shadow: None,
             pattern_fill: None,
+            pattern_fill_enabled: true,
             tracking: 0.0,
             line_spacing: 1.0,
             write_on: 1.0,
@@ -421,6 +433,7 @@ impl Default for TextBox {
             text_path: None,
             char_animation: None,
             texture_fill_path: None,
+            texture_fill_enabled: true,
             motion_blur: None,
             style_runs: Vec::new(),
             ass_style_name: None,
@@ -826,6 +839,9 @@ pub struct MotionBlur {
     pub shutter_angle: f32,
     /// Number of samples (more = smoother but slower, 4-16 typical)
     pub samples: u8,
+    /// Soft-disable: see [`TitleShadow::enabled`].
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -840,6 +856,9 @@ pub struct TextExtrusion {
     pub side_color: [u8; 4],
     /// 0.0-1.0, simulated directional lighting
     pub lighting: f32,
+    /// Soft-disable: see [`TitleShadow::enabled`].
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -872,6 +891,9 @@ pub struct CharAnimation {
     pub wave_amplitude: f32,
     /// Wave speed in cycles per second
     pub wave_speed: f32,
+    /// Soft-disable: see [`TitleShadow::enabled`].
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
@@ -947,6 +969,11 @@ pub struct TitleShadow {
     pub offset_x: f32,
     pub offset_y: f32,
     pub blur: f32,
+    /// Soft-disable: when `false`, renderer skips this effect but the
+    /// parameters are preserved so the inspector's subcard toggle can
+    /// re-enable without losing tweaks.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -954,6 +981,9 @@ pub struct TextOutline {
     pub color: [u8; 4],
     /// Width in pixels, typically 1-8
     pub width: f32,
+    /// Soft-disable: see [`TitleShadow::enabled`].
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -963,12 +993,18 @@ pub struct TextGlow {
     pub radius: f32,
     /// Intensity 0.0-1.0, default 0.8
     pub intensity: f32,
+    /// Soft-disable: see [`TitleShadow::enabled`].
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TextGradient {
     pub top_color: [u8; 4],
     pub bottom_color: [u8; 4],
+    /// Soft-disable: see [`TitleShadow::enabled`].
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -977,6 +1013,9 @@ pub struct InnerShadow {
     pub offset_x: f32,
     pub offset_y: f32,
     pub blur: f32,
+    /// Soft-disable: see [`TitleShadow::enabled`].
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]

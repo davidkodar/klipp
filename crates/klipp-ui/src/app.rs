@@ -13280,12 +13280,12 @@ impl KlippApp {
                                 tb.outlines = vec![klipp_timeline::TextOutline {
                                     color: [10, 10, 14, 180],
                                     width: 2.0,
-                                }];
+                                 enabled: true }];
                                 tb.glow = Some(klipp_timeline::TextGlow {
                                     color: *accent_color,
                                     radius: 12.0,
                                     intensity: 1.4,
-                                });
+                                 enabled: true });
                             }
                         }
                     }
@@ -13468,18 +13468,19 @@ impl KlippApp {
             }
             AppCommand::SetTitlePosition { clip_id, x, y } => {
                 let old = self.snapshot_title(*clip_id);
-                let target_oid = self.title_text_target_id(*clip_id);
+                // Position edits target the currently selected
+                // object regardless of kind (TextBox or Shape) so
+                // shape layers can be repositioned from the
+                // inspector. Fall back to the first object when
+                // nothing is selected (legacy single-text titles).
+                let target_oid: Option<klipp_timeline::TitleObjectId> = self
+                    .state
+                    .selected_title_object
+                    .filter(|(c, _)| *c == *clip_id)
+                    .map(|(_, oid)| oid);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            // Position edits target the selected
-                            // object's transform when there's a
-                            // text-object selection; fall back to
-                            // the first object so legacy single-
-                            // text titles keep working. Resolved
-                            // via index to keep one borrow alive at
-                            // a time (the closure-chain version
-                            // confused the borrow checker).
                             let idx = match target_oid {
                                 Some(oid) => td.objects.iter()
                                     .position(|o| o.id == oid),
@@ -13886,11 +13887,13 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.gradient = if *enabled {
-                                Some(klipp_timeline::TextGradient { top_color: *top_color, bottom_color: *bottom_color })
-                            } else {
-                                None
-                            }; }
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                tb.gradient = Some(klipp_timeline::TextGradient {
+                                    top_color: *top_color,
+                                    bottom_color: *bottom_color,
+                                    enabled: *enabled,
+                                });
+                            }
                         }
                     }
                 }
@@ -13939,6 +13942,44 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitlePatternEnabled { clip_id, enabled } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                tb.pattern_fill_enabled = *enabled;
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Pattern Fill", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleTextureEnabled { clip_id, enabled } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                tb.texture_fill_enabled = *enabled;
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Texture Fill", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             _ => false,
         }
     }
@@ -13946,20 +13987,23 @@ impl KlippApp {
     fn handle_title_effects(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
             AppCommand::SetTitleShadow { clip_id, enabled, color, offset_x, offset_y, blur } => {
+                // Soft-disable: always write `Some(...)` with `enabled` from
+                // the command. Toggling off preserves the user's tweaks so
+                // the subcard re-enable round-trips cleanly. Renderer skips
+                // the effect when `enabled = false`.
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if *enabled {
-                                if let Some(tb) = target_textbox_mut(td, target_oid) { tb.shadow = Some(klipp_timeline::TitleShadow {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                tb.shadow = Some(klipp_timeline::TitleShadow {
                                     color: *color,
                                     offset_x: *offset_x,
                                     offset_y: *offset_y,
                                     blur: *blur,
-                                }); }
-                            } else {
-                                if let Some(tb) = target_textbox_mut(td, target_oid) { tb.shadow = None; }
+                                    enabled: *enabled,
+                                });
                             }
                         }
                     }
@@ -13972,23 +14016,24 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTitleOutline { clip_id, enabled, color, width } => {
+                // Soft-disable on the singular Outline subcard (= outlines[0]).
+                // Outline Layers stack (outlines[1..]) is preserved untouched
+                // — disabling the primary outline must not nuke the stack.
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                if *enabled {
-                                    let new_ol = klipp_timeline::TextOutline {
-                                        color: *color, width: *width,
-                                    };
-                                    if let Some(first) = tb.outlines.first_mut() {
-                                        *first = new_ol;
-                                    } else {
-                                        tb.outlines.push(new_ol);
-                                    }
+                                let new_ol = klipp_timeline::TextOutline {
+                                    color: *color,
+                                    width: *width,
+                                    enabled: *enabled,
+                                };
+                                if let Some(first) = tb.outlines.first_mut() {
+                                    *first = new_ol;
                                 } else {
-                                    tb.outlines.clear();
+                                    tb.outlines.push(new_ol);
                                 }
                             }
                         }
@@ -14002,16 +14047,20 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTitleGlow { clip_id, enabled, color, radius, intensity } => {
+                // Soft-disable: always Some(...) with enabled from cmd.
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.glow = if *enabled {
-                                Some(klipp_timeline::TextGlow { color: *color, radius: *radius, intensity: *intensity })
-                            } else {
-                                None
-                            }; }
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                tb.glow = Some(klipp_timeline::TextGlow {
+                                    color: *color,
+                                    radius: *radius,
+                                    intensity: *intensity,
+                                    enabled: *enabled,
+                                });
+                            }
                         }
                     }
                 }
@@ -14030,7 +14079,7 @@ impl KlippApp {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(tb) = target_textbox_mut(td, target_oid) {
                                 tb.outlines = outlines.iter().map(|(color, width)| {
-                                    klipp_timeline::TextOutline { color: *color, width: *width }
+                                    klipp_timeline::TextOutline { color: *color, width: *width , enabled: true }
                                 }).collect();
                             }
                         }
@@ -14049,13 +14098,15 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.inner_shadow = if *enabled {
-                                Some(klipp_timeline::InnerShadow {
-                                    color: *color, offset_x: *offset_x, offset_y: *offset_y, blur: *blur,
-                                })
-                            } else {
-                                None
-                            }; }
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                tb.inner_shadow = Some(klipp_timeline::InnerShadow {
+                                    color: *color,
+                                    offset_x: *offset_x,
+                                    offset_y: *offset_y,
+                                    blur: *blur,
+                                    enabled: *enabled,
+                                });
+                            }
                         }
                     }
                 }
@@ -14072,17 +14123,16 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.extrusion = if *enabled {
-                                Some(klipp_timeline::TextExtrusion {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                tb.extrusion = Some(klipp_timeline::TextExtrusion {
                                     depth: *depth,
                                     angle: *angle,
                                     face_color: *face_color,
                                     side_color: *side_color,
                                     lighting: *lighting,
-                                })
-                            } else {
-                                None
-                            }; }
+                                    enabled: *enabled,
+                                });
+                            }
                         }
                     }
                 }
@@ -14095,14 +14145,11 @@ impl KlippApp {
             }
             AppCommand::SetTitleMotionBlur { clip_id, enabled, shutter_angle, samples } => {
                 let old = self.snapshot_title(*clip_id);
-                let mb = if *enabled {
-                    Some(klipp_timeline::MotionBlur {
-                        shutter_angle: *shutter_angle,
-                        samples: *samples,
-                    })
-                } else {
-                    None
-                };
+                let mb = Some(klipp_timeline::MotionBlur {
+                    shutter_angle: *shutter_angle,
+                    samples: *samples,
+                    enabled: *enabled,
+                });
                 let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
@@ -14160,7 +14207,7 @@ impl KlippApp {
                         entrance: ent,
                         wave_amplitude: *wave_amplitude,
                         wave_speed: *wave_speed,
-                    })
+                     enabled: true })
                 } else {
                     None
                 };
@@ -16475,7 +16522,7 @@ impl KlippApp {
                                             (true, true) => klipp_timeline::FontStyle::BoldItalic,
                                         };
                                         let outline = if s.outline > 0.0 {
-                                            Some(klipp_timeline::TextOutline { color: [0, 0, 0, 255], width: s.outline })
+                                            Some(klipp_timeline::TextOutline { color: [0, 0, 0, 255], width: s.outline , enabled: true })
                                         } else { None };
                                         let shadow = if s.shadow > 0.0 {
                                             Some(klipp_timeline::TitleShadow {
@@ -16483,7 +16530,7 @@ impl KlippApp {
                                                 offset_x: s.shadow,
                                                 offset_y: s.shadow,
                                                 blur: s.shadow,
-                                            })
+                                             enabled: true })
                                         } else { None };
                                         (
                                             if s.font_name.is_empty() { String::new() } else { s.font_name.clone() },
@@ -16498,7 +16545,7 @@ impl KlippApp {
                                         String::new(),
                                         32.0,
                                         [255, 255, 255, 255],
-                                        Some(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0 }),
+                                        Some(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0 , enabled: true }),
                                         None,
                                         klipp_timeline::FontStyle::Regular,
                                     ),
@@ -16541,7 +16588,7 @@ impl KlippApp {
                                 tb.font_size = 32.0;
                                 tb.font_name = String::new();
                                 tb.alignment = klipp_timeline::TextAlignment::Center;
-                                tb.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0 });
+                                tb.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0 , enabled: true });
                                 let mut title_data = klipp_timeline::TitleData::single_text(tb);
                                 if let Some(o) = title_data.objects.first_mut() {
                                     o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
@@ -16783,7 +16830,7 @@ impl KlippApp {
                 tb.alignment = klipp_timeline::TextAlignment::Center;
                 tb.outlines.push(klipp_timeline::TextOutline {
                     color: [0, 0, 0, 200], width: 2.0,
-                });
+                 enabled: true });
                 let mut title_data = klipp_timeline::TitleData::single_text(tb);
                 if let Some(o) = title_data.objects.first_mut() {
                     o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };

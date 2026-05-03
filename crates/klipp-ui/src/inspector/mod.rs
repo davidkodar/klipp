@@ -415,6 +415,871 @@ fn font_style_to_u8(style: klipp_timeline::FontStyle) -> u8 {
 }
 
 /// Inspector controls for a Shape layer: fill / stroke / corner
+/// Render a collapsible group header with status indicator and return
+/// `true` when the body should be drawn. Open state is sticky per
+/// `(clip_id, title)` via egui ctx data — a follow-up promotes this
+/// to a persisted per-user setting so expansion preferences survive
+/// restarts.
+fn title_group_is_open(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: klipp_core::ClipId,
+    title: &str,
+    status: crate::widgets::inspector_group::GroupStatus,
+) -> bool {
+    use crate::widgets::inspector_group::inspector_group_header;
+    let key = egui::Id::new(("klipp_title_group_open", clip_id, title));
+    let mut is_open: bool = ui.ctx().data(|d| d.get_temp(key)).unwrap_or(false);
+    if inspector_group_header(ui, title, is_open, status, theme).clicked() {
+        is_open = !is_open;
+        ui.ctx().data_mut(|d| d.insert_temp(key, is_open));
+    }
+    is_open
+}
+
+/// Shared Position block: X/Y inputs + three sticky-active quick-preset
+/// buttons (Top / Center / Lower 3rd). Active highlight stays while X/Y
+/// are within ±0.005 of the canonical coords AND that preset was the
+/// most-recently-clicked one (stored in egui ctx data, scoped per
+/// clip_id).
+fn show_title_position_block(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: klipp_core::ClipId,
+    td: &klipp_timeline::TitleData,
+    state: &AppState,
+    cmds: &mut Vec<AppCommand>,
+) {
+    use crate::state::TitlePositionPreset;
+    use crate::widgets::inspector_group::quick_preset_button;
+
+    let target_oid = state
+        .selected_title_object
+        .filter(|(c, _)| *c == clip_id)
+        .map(|(_, oid)| oid);
+    let pos = target_oid
+        .and_then(|oid| td.object(oid))
+        .map(|o| o.transform.center)
+        .unwrap_or_else(|| td.position());
+
+    ui.label(
+        egui::RichText::new("POSITION")
+            .size(10.0)
+            .color(theme.text_dim),
+    );
+    ui.add_space(4.0);
+
+    let mut x = pos.x;
+    let mut y = pos.y;
+    let mut pos_changed = false;
+    ui.horizontal(|ui| {
+        let avail = ui.available_width();
+        let half = (avail - 8.0) * 0.5;
+        ui.allocate_ui_with_layout(
+            egui::vec2(half, 28.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.label(egui::RichText::new("X").size(11.0).color(theme.text_dim));
+                pos_changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut x)
+                            .speed(0.001)
+                            .range(0.0..=1.0)
+                            .fixed_decimals(2),
+                    )
+                    .changed();
+            },
+        );
+        ui.add_space(8.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(half, 28.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.label(egui::RichText::new("Y").size(11.0).color(theme.text_dim));
+                pos_changed |= ui
+                    .add(
+                        egui::DragValue::new(&mut y)
+                            .speed(0.001)
+                            .range(0.0..=1.0)
+                            .fixed_decimals(2),
+                    )
+                    .changed();
+            },
+        );
+    });
+    if pos_changed {
+        cmds.push(AppCommand::SetTitlePosition { clip_id, x, y });
+    }
+
+    ui.add_space(6.0);
+
+    let preset_key = egui::Id::new(("klipp_title_pos_preset_clicked", clip_id));
+    let last_clicked: Option<TitlePositionPreset> =
+        ui.ctx().data(|d| d.get_temp(preset_key));
+    let active_preset = last_clicked.filter(|p| p.matches(pos.x, pos.y));
+
+    ui.horizontal(|ui| {
+        let avail = ui.available_width();
+        let third = (avail - 12.0) / 3.0;
+        for preset in [
+            TitlePositionPreset::Center,
+            TitlePositionPreset::LowerThird,
+            TitlePositionPreset::Top,
+        ] {
+            let label = match preset {
+                TitlePositionPreset::Top => "Top",
+                TitlePositionPreset::Center => "Center",
+                TitlePositionPreset::LowerThird => "Lower 3rd",
+            };
+            let is_active = active_preset == Some(preset);
+            ui.allocate_ui_with_layout(
+                egui::vec2(third, 30.0),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    if quick_preset_button(ui, label, is_active, theme).clicked() {
+                        let (px, py) = preset.coords();
+                        cmds.push(AppCommand::SetTitlePosition { clip_id, x: px, y: py });
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp::<TitlePositionPreset>(preset_key, preset);
+                        });
+                    }
+                },
+            );
+            ui.add_space(6.0);
+        }
+    });
+}
+
+/// New TextBox pinned-core block per the redesign:
+/// editable textarea → font + size row → B/I/U/S + L/C/R row →
+/// color swatch + alpha slider + % row → Position block. Reads the
+/// selected layer's TextBox so multi-layer titles show the selected
+/// layer's properties; selection-aware on size + colour preserves the
+/// existing per-range editing feature.
+fn show_title_pinned_core_textbox(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: klipp_core::ClipId,
+    td: &klipp_timeline::TitleData,
+    state: &AppState,
+    cmds: &mut Vec<AppCommand>,
+    tb: &klipp_timeline::TextBox,
+) {
+    let effective_selection = state
+        .viewer_text_selection
+        .or(state.viewer_text_selection_locked);
+    let has_selection =
+        state.viewer_text_edit && effective_selection.is_some_and(|(s, e)| s < e);
+    let sel_range = effective_selection.unwrap_or((0, 0));
+
+    let (display_size, size_is_mixed) =
+        if has_selection && !tb.style_runs.is_empty() {
+            let mut sizes: Vec<f32> = Vec::new();
+            for run in &tb.style_runs {
+                if run.start < sel_range.1 && run.end > sel_range.0 {
+                    sizes.push(run.font_size.unwrap_or(tb.font_size));
+                }
+            }
+            if sizes.is_empty() {
+                (tb.font_size, false)
+            } else if sizes.iter().all(|s| (*s - sizes[0]).abs() < 0.5) {
+                (sizes[0], false)
+            } else {
+                (sizes[0], true)
+            }
+        } else if state.viewer_text_edit {
+            (state.viewer_text_cursor_font_size.unwrap_or(tb.font_size), false)
+        } else {
+            (tb.font_size, false)
+        };
+
+    let (display_color, color_is_mixed) =
+        if has_selection && !tb.style_runs.is_empty() {
+            let mut colors: Vec<[u8; 4]> = Vec::new();
+            for run in &tb.style_runs {
+                if run.start < sel_range.1 && run.end > sel_range.0 {
+                    colors.push(run.color.unwrap_or(tb.color));
+                }
+            }
+            if colors.is_empty() {
+                (tb.color, false)
+            } else if colors.iter().all(|c| *c == colors[0]) {
+                (colors[0], false)
+            } else {
+                (colors[0], true)
+            }
+        } else if state.viewer_text_edit {
+            (state.viewer_text_cursor_color.unwrap_or(tb.color), false)
+        } else {
+            (tb.color, false)
+        };
+
+    // 1. Editable textarea — primary edit path.
+    let mut text_buf = tb.text.clone();
+    let text_resp = ui.add(
+        egui::TextEdit::multiline(&mut text_buf)
+            .desired_width(f32::INFINITY)
+            .desired_rows(2)
+            .font(egui::FontId::proportional(13.0)),
+    );
+    if text_resp.changed() {
+        cmds.push(AppCommand::UpdateTitleData {
+            clip_id,
+            text: text_buf,
+            font_size: tb.font_size,
+            font_name: tb.font_name.clone(),
+            font_style: font_style_to_u8(tb.font_style),
+            color: tb.color,
+        });
+    }
+    ui.add_space(8.0);
+
+    // 2. Font ComboBox + size DragValue.
+    let display_name = if tb.font_name == "sans-serif" || tb.font_name.is_empty() {
+        "Noto Sans (Default)"
+    } else {
+        tb.font_name.as_str()
+    };
+    ui.horizontal(|ui| {
+        let total = ui.available_width();
+        let size_w = 70.0;
+        let combo_w = (total - size_w - 8.0).max(80.0);
+        egui::ComboBox::from_id_salt("title_pinned_font")
+            .selected_text(display_name)
+            .width(combo_w)
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(
+                        tb.font_name == "sans-serif" || tb.font_name.is_empty(),
+                        "Noto Sans (Default)",
+                    )
+                    .clicked()
+                {
+                    cmds.push(AppCommand::UpdateTitleData {
+                        clip_id,
+                        text: tb.text.clone(),
+                        font_size: tb.font_size,
+                        font_name: "sans-serif".to_string(),
+                        font_style: font_style_to_u8(tb.font_style),
+                        color: tb.color,
+                    });
+                }
+                ui.separator();
+                for family in &state.available_fonts {
+                    if ui.selectable_label(tb.font_name == *family, family).clicked() {
+                        cmds.push(AppCommand::UpdateTitleData {
+                            clip_id,
+                            text: tb.text.clone(),
+                            font_size: tb.font_size,
+                            font_name: family.clone(),
+                            font_style: font_style_to_u8(tb.font_style),
+                            color: tb.color,
+                        });
+                    }
+                }
+            });
+        ui.add_space(8.0);
+        let mut size = display_size;
+        let size_resp = ui.add(
+            egui::DragValue::new(&mut size)
+                .range(12.0..=300.0)
+                .speed(1.0)
+                .suffix(" pt"),
+        );
+        if size_resp.changed() {
+            if has_selection && sel_range.0 < sel_range.1 {
+                cmds.push(AppCommand::ApplyTitleStyle {
+                    clip_id,
+                    range_start: sel_range.0,
+                    range_end: sel_range.1,
+                    property: "font_size".into(),
+                    value: format!("{size}"),
+                });
+            } else {
+                cmds.push(AppCommand::UpdateTitleData {
+                    clip_id,
+                    text: tb.text.clone(),
+                    font_size: size,
+                    font_name: tb.font_name.clone(),
+                    font_style: font_style_to_u8(tb.font_style),
+                    color: tb.color,
+                });
+            }
+        }
+        if size_is_mixed {
+            ui.label(egui::RichText::new("Mixed").size(9.0).color(theme.accent));
+        }
+    });
+    ui.add_space(8.0);
+
+    // 3. B / I / U / S buttons (left) + L / C / R alignment (right).
+    let is_bold = matches!(
+        tb.font_style,
+        klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic
+    );
+    let is_italic = matches!(
+        tb.font_style,
+        klipp_timeline::FontStyle::Italic | klipp_timeline::FontStyle::BoldItalic
+    );
+    ui.horizontal(|ui| {
+        if ui
+            .selectable_label(is_bold, egui::RichText::new(" B ").strong().size(13.0))
+            .clicked()
+        {
+            let new_style = match (!is_bold, is_italic) {
+                (true, true) => klipp_timeline::FontStyle::BoldItalic,
+                (true, false) => klipp_timeline::FontStyle::Bold,
+                (false, true) => klipp_timeline::FontStyle::Italic,
+                (false, false) => klipp_timeline::FontStyle::Regular,
+            };
+            cmds.push(AppCommand::UpdateTitleData {
+                clip_id,
+                text: tb.text.clone(),
+                font_size: tb.font_size,
+                font_name: tb.font_name.clone(),
+                font_style: font_style_to_u8(new_style),
+                color: tb.color,
+            });
+        }
+        if ui
+            .selectable_label(is_italic, egui::RichText::new(" I ").italics().size(13.0))
+            .clicked()
+        {
+            let new_style = match (is_bold, !is_italic) {
+                (true, true) => klipp_timeline::FontStyle::BoldItalic,
+                (true, false) => klipp_timeline::FontStyle::Bold,
+                (false, true) => klipp_timeline::FontStyle::Italic,
+                (false, false) => klipp_timeline::FontStyle::Regular,
+            };
+            cmds.push(AppCommand::UpdateTitleData {
+                clip_id,
+                text: tb.text.clone(),
+                font_size: tb.font_size,
+                font_name: tb.font_name.clone(),
+                font_style: font_style_to_u8(new_style),
+                color: tb.color,
+            });
+        }
+        if ui
+            .selectable_label(tb.underline, egui::RichText::new(" U ").underline().size(13.0))
+            .clicked()
+        {
+            cmds.push(AppCommand::SetTitleUnderline { clip_id, underline: !tb.underline });
+        }
+        if ui
+            .selectable_label(
+                tb.strikethrough,
+                egui::RichText::new(" S ").strikethrough().size(13.0),
+            )
+            .clicked()
+        {
+            cmds.push(AppCommand::SetTitleStrikethrough {
+                clip_id,
+                strikethrough: !tb.strikethrough,
+            });
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let cur = match tb.alignment {
+                klipp_timeline::TextAlignment::Right => 2u8,
+                klipp_timeline::TextAlignment::Center => 1,
+                klipp_timeline::TextAlignment::Left => 0,
+            };
+            for (val, label) in [(2u8, " R "), (1, " C "), (0, " L ")] {
+                if ui
+                    .selectable_label(cur == val, egui::RichText::new(label).size(13.0))
+                    .clicked()
+                    && cur != val
+                {
+                    cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: val });
+                }
+            }
+        });
+    });
+    ui.add_space(8.0);
+
+    // 4. Color swatch + opacity slider + % display in one row.
+    let mut col = egui::Color32::from_rgba_premultiplied(
+        display_color[0],
+        display_color[1],
+        display_color[2],
+        display_color[3],
+    );
+    let mut color_changed = false;
+    let mut new_alpha_u8: Option<u8> = None;
+    ui.horizontal(|ui| {
+        if ui.color_edit_button_srgba(&mut col).changed() {
+            color_changed = true;
+        }
+        ui.add_space(6.0);
+        let mut opacity_pct = ((display_color[3] as f32 / 255.0) * 100.0).round();
+        let pct_label_w = 36.0;
+        let slider_w = (ui.available_width() - pct_label_w - 8.0).max(60.0);
+        ui.spacing_mut().slider_width = slider_w;
+        if ui
+            .add(
+                egui::Slider::new(&mut opacity_pct, 0.0..=100.0)
+                    .step_by(1.0)
+                    .show_value(false),
+            )
+            .changed()
+        {
+            new_alpha_u8 = Some((opacity_pct / 100.0 * 255.0).round() as u8);
+        }
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new(format!("{}%", opacity_pct as u32))
+                .size(11.0)
+                .color(theme.text_secondary),
+        );
+        if color_is_mixed {
+            ui.label(egui::RichText::new("Mixed").size(9.0).color(theme.accent));
+        }
+    });
+    if let Some(a) = new_alpha_u8 {
+        col = egui::Color32::from_rgba_premultiplied(col.r(), col.g(), col.b(), a);
+        color_changed = true;
+    }
+    if color_changed {
+        let new_rgba = [col.r(), col.g(), col.b(), col.a()];
+        if has_selection && sel_range.0 < sel_range.1 {
+            cmds.push(AppCommand::ApplyTitleStyle {
+                clip_id,
+                range_start: sel_range.0,
+                range_end: sel_range.1,
+                property: "color".into(),
+                value: serde_json::to_string(&new_rgba).unwrap_or_default(),
+            });
+        } else {
+            cmds.push(AppCommand::UpdateTitleData {
+                clip_id,
+                text: tb.text.clone(),
+                font_size: tb.font_size,
+                font_name: tb.font_name.clone(),
+                font_style: font_style_to_u8(tb.font_style),
+                color: new_rgba,
+            });
+        }
+    }
+    ui.add_space(10.0);
+
+    // 5. Position block.
+    show_title_position_block(ui, theme, clip_id, td, state, cmds);
+}
+
+/// Effects collapsible group with 7 subcards (Glow, Outline, Drop Shadow,
+/// Inner Shadow, Gradient Fill, Pattern Fill, Texture Fill) followed by
+/// the Outline Layers stack. Soft-disable on each subcard preserves
+/// params via the `enabled` field. Group expansion is sticky per
+/// `clip_id` via egui ctx data.
+fn show_title_effects_group(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: klipp_core::ClipId,
+    tb: &klipp_timeline::TextBox,
+    cmds: &mut Vec<AppCommand>,
+) {
+    use crate::widgets::inspector_group::{inspector_subgroup_card, GroupStatus};
+
+    let glow_enabled = tb.glow.as_ref().is_some_and(|g| g.enabled);
+    let outline_enabled = tb.outlines.first().is_some_and(|o| o.enabled);
+    let shadow_enabled = tb.shadow.as_ref().is_some_and(|s| s.enabled);
+    let inner_enabled = tb.inner_shadow.as_ref().is_some_and(|i| i.enabled);
+    let gradient_enabled = tb.gradient.as_ref().is_some_and(|g| g.enabled);
+    let pattern_enabled = tb.pattern_fill.is_some() && tb.pattern_fill_enabled;
+    let texture_enabled = tb.texture_fill_path.is_some() && tb.texture_fill_enabled;
+
+    let mut active_count: u32 = 0;
+    for on in [
+        glow_enabled, outline_enabled, shadow_enabled, inner_enabled,
+        gradient_enabled, pattern_enabled, texture_enabled,
+    ] {
+        if on { active_count += 1; }
+    }
+    if tb.outlines.len() > 1 { active_count += 1; }
+
+    let status = GroupStatus {
+        count: if active_count > 0 { Some(active_count) } else { None },
+        active: active_count > 0,
+    };
+    if !title_group_is_open(ui, theme, clip_id, "Effects", status) {
+        return;
+    }
+    ui.add_space(6.0);
+
+    // 1. Glow
+    {
+        let cur = tb.glow.unwrap_or(klipp_timeline::TextGlow {
+            color: [0, 200, 255, 255], radius: 10.0, intensity: 0.8, enabled: false,
+        });
+        let mut enabled = glow_enabled;
+        let summary = if enabled {
+            format!("{} px · {}%", cur.radius.round() as u32, (cur.intensity * 100.0).round() as u32)
+        } else { String::new() };
+        inspector_subgroup_card(ui, "Glow", &mut enabled,
+            (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
+            let mut radius = cur.radius;
+            let mut intensity = cur.intensity;
+            let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Color").size(11.0).color(theme.text_dim));
+                changed |= ui.color_edit_button_srgba(&mut col).changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Radius").size(11.0).color(theme.text_dim));
+                changed |= ui.add(egui::Slider::new(&mut radius, 1.0..=40.0).step_by(0.5).suffix(" px")).changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Intensity").size(11.0).color(theme.text_dim));
+                changed |= ui.add(egui::Slider::new(&mut intensity, 0.0..=1.0).step_by(0.05)).changed();
+            });
+            if changed {
+                cmds.push(AppCommand::SetTitleGlow {
+                    clip_id, enabled: true,
+                    color: [col.r(), col.g(), col.b(), col.a()],
+                    radius, intensity,
+                });
+            }
+        });
+        if enabled != glow_enabled {
+            cmds.push(AppCommand::SetTitleGlow {
+                clip_id, enabled,
+                color: cur.color, radius: cur.radius, intensity: cur.intensity,
+            });
+        }
+    }
+    ui.add_space(6.0);
+
+    // 2. Outline (singular = outlines[0])
+    {
+        let cur = tb.outlines.first().copied().unwrap_or(klipp_timeline::TextOutline {
+            color: [255, 255, 255, 255], width: 2.0, enabled: false,
+        });
+        let mut enabled = outline_enabled;
+        let summary = if enabled { format!("{} px", cur.width) } else { String::new() };
+        inspector_subgroup_card(ui, "Outline", &mut enabled,
+            (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
+            let mut width = cur.width;
+            let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Color").size(11.0).color(theme.text_dim));
+                changed |= ui.color_edit_button_srgba(&mut col).changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Width").size(11.0).color(theme.text_dim));
+                changed |= ui.add(egui::Slider::new(&mut width, 0.5..=12.0).step_by(0.5).suffix(" px")).changed();
+            });
+            if changed {
+                cmds.push(AppCommand::SetTitleOutline {
+                    clip_id, enabled: true,
+                    color: [col.r(), col.g(), col.b(), col.a()], width,
+                });
+            }
+        });
+        if enabled != outline_enabled {
+            cmds.push(AppCommand::SetTitleOutline {
+                clip_id, enabled, color: cur.color, width: cur.width,
+            });
+        }
+    }
+    ui.add_space(6.0);
+
+    // 3. Drop Shadow
+    {
+        let cur = tb.shadow.unwrap_or(klipp_timeline::TitleShadow {
+            color: [0, 0, 0, 180], offset_x: 3.0, offset_y: 3.0, blur: 0.0, enabled: false,
+        });
+        let mut enabled = shadow_enabled;
+        let summary = if enabled {
+            format!("{} px · {}%", cur.blur.round() as u32, (cur.color[3] as f32 / 255.0 * 100.0).round() as u32)
+        } else { String::new() };
+        inspector_subgroup_card(ui, "Drop Shadow", &mut enabled,
+            (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
+            let mut ox = cur.offset_x;
+            let mut oy = cur.offset_y;
+            let mut blur = cur.blur;
+            let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Color").size(11.0).color(theme.text_dim));
+                changed |= ui.color_edit_button_srgba(&mut col).changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Offset X").size(11.0).color(theme.text_dim));
+                changed |= ui.add(egui::Slider::new(&mut ox, -20.0..=20.0).step_by(0.5).suffix(" px")).changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Offset Y").size(11.0).color(theme.text_dim));
+                changed |= ui.add(egui::Slider::new(&mut oy, -20.0..=20.0).step_by(0.5).suffix(" px")).changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Blur").size(11.0).color(theme.text_dim));
+                changed |= ui.add(egui::Slider::new(&mut blur, 0.0..=30.0).step_by(0.5).suffix(" px")).changed();
+            });
+            if changed {
+                cmds.push(AppCommand::SetTitleShadow {
+                    clip_id, enabled: true,
+                    color: [col.r(), col.g(), col.b(), col.a()],
+                    offset_x: ox, offset_y: oy, blur,
+                });
+            }
+        });
+        if enabled != shadow_enabled {
+            cmds.push(AppCommand::SetTitleShadow {
+                clip_id, enabled,
+                color: cur.color, offset_x: cur.offset_x, offset_y: cur.offset_y, blur: cur.blur,
+            });
+        }
+    }
+    ui.add_space(6.0);
+
+    // 4. Inner Shadow
+    {
+        let cur = tb.inner_shadow.unwrap_or(klipp_timeline::InnerShadow {
+            color: [0, 0, 0, 180], offset_x: 2.0, offset_y: 2.0, blur: 3.0, enabled: false,
+        });
+        let mut enabled = inner_enabled;
+        let summary = if enabled {
+            format!("{} px · {}%", cur.blur.round() as u32, (cur.color[3] as f32 / 255.0 * 100.0).round() as u32)
+        } else { String::new() };
+        inspector_subgroup_card(ui, "Inner Shadow", &mut enabled,
+            (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
+            let mut ox = cur.offset_x;
+            let mut oy = cur.offset_y;
+            let mut blur = cur.blur;
+            let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Color").size(11.0).color(theme.text_dim));
+                changed |= ui.color_edit_button_srgba(&mut col).changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Offset X").size(11.0).color(theme.text_dim));
+                changed |= ui.add(egui::Slider::new(&mut ox, -20.0..=20.0).step_by(0.5).suffix(" px")).changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Offset Y").size(11.0).color(theme.text_dim));
+                changed |= ui.add(egui::Slider::new(&mut oy, -20.0..=20.0).step_by(0.5).suffix(" px")).changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Blur").size(11.0).color(theme.text_dim));
+                changed |= ui.add(egui::Slider::new(&mut blur, 0.0..=20.0).step_by(0.5).suffix(" px")).changed();
+            });
+            if changed {
+                cmds.push(AppCommand::SetTitleInnerShadow {
+                    clip_id, enabled: true,
+                    color: [col.r(), col.g(), col.b(), col.a()],
+                    offset_x: ox, offset_y: oy, blur,
+                });
+            }
+        });
+        if enabled != inner_enabled {
+            cmds.push(AppCommand::SetTitleInnerShadow {
+                clip_id, enabled,
+                color: cur.color, offset_x: cur.offset_x, offset_y: cur.offset_y, blur: cur.blur,
+            });
+        }
+    }
+    ui.add_space(6.0);
+
+    // 5. Gradient Fill
+    {
+        let cur = tb.gradient.as_ref().cloned().unwrap_or(klipp_timeline::TextGradient {
+            top_color: [255, 200, 50, 255], bottom_color: [255, 50, 50, 255], enabled: false,
+        });
+        let mut enabled = gradient_enabled;
+        let summary = if enabled { "Linear · 2 stops".to_string() } else { String::new() };
+        let cur_top = cur.top_color;
+        let cur_bot = cur.bottom_color;
+        inspector_subgroup_card(ui, "Gradient Fill", &mut enabled,
+            (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
+            let mut top_col = egui::Color32::from_rgba_premultiplied(cur_top[0], cur_top[1], cur_top[2], cur_top[3]);
+            let mut bot_col = egui::Color32::from_rgba_premultiplied(cur_bot[0], cur_bot[1], cur_bot[2], cur_bot[3]);
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Top").size(11.0).color(theme.text_dim));
+                changed |= ui.color_edit_button_srgba(&mut top_col).changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Bottom").size(11.0).color(theme.text_dim));
+                changed |= ui.color_edit_button_srgba(&mut bot_col).changed();
+            });
+            if changed {
+                cmds.push(AppCommand::SetTitleGradient {
+                    clip_id, enabled: true,
+                    top_color: [top_col.r(), top_col.g(), top_col.b(), top_col.a()],
+                    bottom_color: [bot_col.r(), bot_col.g(), bot_col.b(), bot_col.a()],
+                });
+            }
+        });
+        if enabled != gradient_enabled {
+            cmds.push(AppCommand::SetTitleGradient {
+                clip_id, enabled, top_color: cur_top, bottom_color: cur_bot,
+            });
+        }
+    }
+    ui.add_space(6.0);
+
+    // 6. Pattern Fill
+    {
+        let mut enabled = pattern_enabled;
+        let pat_idx: usize = match &tb.pattern_fill {
+            None => 0,
+            Some(klipp_timeline::TextPattern::HorizontalStripes { .. }) => 1,
+            Some(klipp_timeline::TextPattern::VerticalStripes { .. }) => 2,
+            Some(klipp_timeline::TextPattern::Checkerboard { .. }) => 3,
+            Some(klipp_timeline::TextPattern::DiagonalStripes { .. }) => 4,
+        };
+        let labels = ["None", "H-Stripes", "V-Stripes", "Checker", "Diagonal"];
+        let summary = if enabled { labels[pat_idx].to_string() } else { String::new() };
+        inspector_subgroup_card(ui, "Pattern Fill", &mut enabled,
+            (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
+            let mut new_idx = pat_idx;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Kind").size(11.0).color(theme.text_dim));
+                egui::ComboBox::from_id_salt("title_pattern_kind")
+                    .selected_text(labels[new_idx])
+                    .show_ui(ui, |ui| {
+                        for (i, label) in labels.iter().enumerate() {
+                            if ui.selectable_label(new_idx == i, *label).clicked() {
+                                new_idx = i;
+                            }
+                        }
+                    });
+            });
+            if new_idx != pat_idx {
+                cmds.push(AppCommand::SetTitlePattern {
+                    clip_id, pattern_kind: new_idx as u8,
+                    color_a: [255, 255, 255, 255], color_b: [0, 0, 0, 255], size: 10.0,
+                });
+            }
+            if let Some(pf) = &tb.pattern_fill {
+                let (mut ca, mut cb, mut size) = match pf {
+                    klipp_timeline::TextPattern::HorizontalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
+                    klipp_timeline::TextPattern::VerticalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
+                    klipp_timeline::TextPattern::Checkerboard { color_a, color_b, cell_size } => (*color_a, *color_b, *cell_size),
+                    klipp_timeline::TextPattern::DiagonalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
+                };
+                let mut col_a = egui::Color32::from_rgba_premultiplied(ca[0], ca[1], ca[2], ca[3]);
+                let mut col_b = egui::Color32::from_rgba_premultiplied(cb[0], cb[1], cb[2], cb[3]);
+                let mut changed = false;
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("A").size(11.0).color(theme.text_dim));
+                    changed |= ui.color_edit_button_srgba(&mut col_a).changed();
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("B").size(11.0).color(theme.text_dim));
+                    changed |= ui.color_edit_button_srgba(&mut col_b).changed();
+                });
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Size").size(11.0).color(theme.text_dim));
+                    changed |= ui.add(egui::Slider::new(&mut size, 2.0..=50.0).step_by(1.0).suffix(" px")).changed();
+                });
+                if changed {
+                    ca = [col_a.r(), col_a.g(), col_a.b(), col_a.a()];
+                    cb = [col_b.r(), col_b.g(), col_b.b(), col_b.a()];
+                    cmds.push(AppCommand::SetTitlePattern {
+                        clip_id, pattern_kind: pat_idx as u8,
+                        color_a: ca, color_b: cb, size,
+                    });
+                }
+            }
+        });
+        if enabled != pattern_enabled {
+            if enabled && tb.pattern_fill.is_none() {
+                cmds.push(AppCommand::SetTitlePattern {
+                    clip_id, pattern_kind: 1,
+                    color_a: [255, 255, 255, 255], color_b: [0, 0, 0, 255], size: 10.0,
+                });
+            }
+            cmds.push(AppCommand::SetTitlePatternEnabled { clip_id, enabled });
+        }
+    }
+    ui.add_space(6.0);
+
+    // 7. Texture Fill
+    {
+        let mut enabled = texture_enabled;
+        let cur_path = tb.texture_fill_path.clone();
+        let summary = if enabled {
+            cur_path.as_ref()
+                .and_then(|p| std::path::Path::new(p).file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("(no file)")
+                .to_string()
+        } else { String::new() };
+        inspector_subgroup_card(ui, "Texture Fill", &mut enabled,
+            (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("File").size(11.0).color(theme.text_dim));
+                let display_name = cur_path.as_ref()
+                    .and_then(|p| std::path::Path::new(p).file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("(none)");
+                ui.label(egui::RichText::new(display_name).monospace().size(11.0).color(theme.text_secondary));
+            });
+            if ui.button("Browse\u{2026}").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Images", &{
+                        let mut exts: Vec<&str> = klipp_core::media_extensions::IMAGE_EXTENSIONS.to_vec();
+                        exts.push("tga");
+                        exts
+                    })
+                    .pick_file()
+                {
+                    cmds.push(AppCommand::SetTitleTextureFill {
+                        clip_id, path: Some(path.to_string_lossy().to_string()),
+                    });
+                }
+            }
+        });
+        if enabled != texture_enabled {
+            cmds.push(AppCommand::SetTitleTextureEnabled { clip_id, enabled });
+        }
+    }
+    ui.add_space(10.0);
+
+    // 8. Outline Layers stack — outlines beyond outlines[0].
+    {
+        ui.label(egui::RichText::new("OUTLINE LAYERS").size(10.0).color(theme.text_dim));
+        ui.add_space(4.0);
+        let outlines = &tb.outlines;
+        let mut new_outlines = outlines.clone();
+        let mut outlines_changed = false;
+        for i in 1..outlines.len() {
+            let ol = outlines[i];
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
+                let mut col = egui::Color32::from_rgba_premultiplied(ol.color[0], ol.color[1], ol.color[2], ol.color[3]);
+                if ui.color_edit_button_srgba(&mut col).changed() {
+                    new_outlines[i].color = [col.r(), col.g(), col.b(), col.a()];
+                    outlines_changed = true;
+                }
+                let mut w_val = ol.width;
+                if ui.add(egui::DragValue::new(&mut w_val).range(0.5..=20.0).speed(0.5).suffix(" px")).changed() {
+                    new_outlines[i].width = w_val;
+                    outlines_changed = true;
+                }
+                if ui.small_button("\u{00D7}").clicked() {
+                    new_outlines.remove(i);
+                    outlines_changed = true;
+                }
+            });
+        }
+        if ui.small_button("+ Add Layer").clicked() {
+            new_outlines.push(klipp_timeline::TextOutline {
+                color: [0, 0, 0, 255], width: 4.0, enabled: true,
+            });
+            outlines_changed = true;
+        }
+        if outlines_changed {
+            let outline_tuples: Vec<([u8; 4], f32)> =
+                new_outlines.iter().map(|o| (o.color, o.width)).collect();
+            cmds.push(AppCommand::SetTitleOutlines { clip_id, outlines: outline_tuples });
+        }
+    }
+}
+
 /// radius. Phase-1 ships only the rectangle primitive, so the
 /// editor is small. Future shape kinds (ellipse, polygon, path)
 /// add more controls inside the same `match shape.kind` arm.
@@ -535,7 +1400,6 @@ fn show_title_layers_panel(
     state: &AppState,
     cmds: &mut Vec<AppCommand>,
 ) {
-    use klipp_timeline::TitleObjectContent;
     let selected_oid = state.selected_title_object
         .filter(|(c, _)| *c == clip_id)
         .map(|(_, oid)| oid);
@@ -545,280 +1409,18 @@ fn show_title_layers_panel(
     egui::Frame::none()
         .fill(theme.bg_panel)
         .stroke(egui::Stroke::new(1.0_f32, theme.border))
-        .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(4.0, 4.0))
+        .rounding(6.0)
+        .inner_margin(egui::Margin::symmetric(6.0, 6.0))
         .show(ui, |ui| {
             if total == 0 {
                 ui.label(
                     egui::RichText::new("No layers — add one below.")
-                        .size(10.0)
+                        .size(11.0)
                         .color(theme.text_dim),
                 );
             }
-            // We render reversed so the visual top of the list is
-            // the front of the stack (last element of `td.objects`).
             for (rev_idx, obj) in td.objects.iter().enumerate().rev() {
-                let is_selected = Some(obj.id) == selected_oid;
-                let row_h = 22.0;
-                let (rect, resp) = ui.allocate_exact_size(
-                    egui::vec2(ui.available_width(), row_h),
-                    egui::Sense::click(),
-                );
-                let hovered = resp.hovered();
-                if is_selected {
-                    ui.painter().rect_filled(rect, 3.0, theme.accent_subtle);
-                } else if hovered {
-                    ui.painter().rect_filled(rect, 3.0, theme.bg_raised);
-                }
-                if resp.clicked() {
-                    cmds.push(AppCommand::SelectTitleObject {
-                        clip_id,
-                        object_id: Some(obj.id.0),
-                    });
-                }
-
-                let mut x = rect.min.x + 6.0;
-                let icon_size = 14.0;
-                let icon_y = rect.center().y - icon_size * 0.5;
-
-                // Eye toggle.
-                let eye_rect = egui::Rect::from_min_size(
-                    egui::pos2(x, icon_y),
-                    egui::vec2(icon_size, icon_size),
-                );
-                let eye_resp = ui.interact(
-                    eye_rect,
-                    ui.id().with(("title_layer_eye", obj.id.0)),
-                    egui::Sense::click(),
-                );
-                let eye_icon = if obj.visible { Icon::Eye } else { Icon::EyeSlash };
-                let eye_tint = if obj.visible {
-                    theme.text_secondary
-                } else {
-                    theme.text_dim
-                };
-                ui.allocate_new_ui(
-                    egui::UiBuilder::new().max_rect(eye_rect),
-                    |ui| {
-                        ui.add(eye_icon.image(icon_size).tint(eye_tint));
-                    },
-                );
-                if eye_resp.clicked() {
-                    cmds.push(AppCommand::SetTitleObjectVisible {
-                        clip_id,
-                        object_id: obj.id.0,
-                        visible: !obj.visible,
-                    });
-                }
-                x += icon_size + 4.0;
-
-                // Lock toggle.
-                let lock_rect = egui::Rect::from_min_size(
-                    egui::pos2(x, icon_y),
-                    egui::vec2(icon_size, icon_size),
-                );
-                let lock_resp = ui.interact(
-                    lock_rect,
-                    ui.id().with(("title_layer_lock", obj.id.0)),
-                    egui::Sense::click(),
-                );
-                let lock_icon = if obj.locked { Icon::Lock } else { Icon::LockOpen };
-                let lock_tint = if obj.locked {
-                    theme.accent
-                } else {
-                    theme.text_dim
-                };
-                ui.allocate_new_ui(
-                    egui::UiBuilder::new().max_rect(lock_rect),
-                    |ui| {
-                        ui.add(lock_icon.image(icon_size).tint(lock_tint));
-                    },
-                );
-                if lock_resp.clicked() {
-                    cmds.push(AppCommand::SetTitleObjectLocked {
-                        clip_id,
-                        object_id: obj.id.0,
-                        locked: !obj.locked,
-                    });
-                }
-                x += icon_size + 6.0;
-
-                // Layer name + kind tag.
-                let kind_tag = match &obj.content {
-                    TitleObjectContent::TextBox(_) => "T",
-                    TitleObjectContent::Shape(_) => "S",
-                };
-                let display_name = if obj.name.is_empty() {
-                    match &obj.content {
-                        TitleObjectContent::TextBox(tb) => {
-                            let trimmed = tb.text.lines().next().unwrap_or("").trim();
-                            if trimmed.is_empty() {
-                                format!("Text {}", obj.id.0 + 1)
-                            } else if trimmed.chars().count() > 24 {
-                                format!("{}\u{2026}", trimmed.chars().take(22).collect::<String>())
-                            } else {
-                                trimmed.to_string()
-                            }
-                        }
-                        TitleObjectContent::Shape(_) => format!("Shape {}", obj.id.0 + 1),
-                    }
-                } else {
-                    obj.name.clone()
-                };
-                let label_color = if is_selected {
-                    theme.text_primary
-                } else if obj.visible {
-                    theme.text_secondary
-                } else {
-                    theme.text_dim
-                };
-                ui.painter().text(
-                    egui::pos2(x, rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    format!("[{kind_tag}] {display_name}"),
-                    egui::FontId::proportional(11.0),
-                    label_color,
-                );
-
-                // Trailing info: position in stack ("Front" / "Back" /
-                // "N of T") so the user can tell at a glance where in
-                // the order this layer sits.
-                let stack_label = if rev_idx + 1 == total {
-                    "Front".to_string()
-                } else if rev_idx == 0 {
-                    "Back".to_string()
-                } else {
-                    format!("{}/{}", rev_idx + 1, total)
-                };
-
-                // Trailing: stack position then delete button.
-                let icon_btn_size = 14.0;
-                let mut x_right = rect.max.x - 6.0;
-
-                // Delete button — rightmost.
-                let del_rect = egui::Rect::from_min_size(
-                    egui::pos2(x_right - icon_btn_size, rect.center().y - icon_btn_size * 0.5),
-                    egui::vec2(icon_btn_size, icon_btn_size),
-                );
-                let del_resp = ui.interact(
-                    del_rect,
-                    ui.id().with(("title_layer_del", obj.id.0)),
-                    egui::Sense::click(),
-                );
-                let del_tint = if del_resp.hovered() {
-                    egui::Color32::from_rgb(220, 70, 70)
-                } else {
-                    theme.text_dim
-                };
-                ui.allocate_new_ui(
-                    egui::UiBuilder::new().max_rect(del_rect),
-                    |ui| {
-                        ui.add(Icon::XCircle.image(icon_btn_size).tint(del_tint));
-                    },
-                );
-                if del_resp.clicked() {
-                    cmds.push(AppCommand::DeleteTitleObject {
-                        clip_id,
-                        object_id: obj.id.0,
-                    });
-                }
-                x_right -= icon_btn_size + 4.0;
-
-                // Reorder buttons: up = move toward front (later in
-                // the `objects` Vec → top of stack, top of UI list);
-                // down = move toward back. Disabled at the
-                // boundaries so the user gets a visible "can't go
-                // further" cue. The list itself iterates in reverse
-                // (front → top of UI), so up is "closer to end of
-                // Vec" and down is "closer to start of Vec".
-                let up_rect = egui::Rect::from_min_size(
-                    egui::pos2(x_right - icon_btn_size, rect.center().y - icon_btn_size * 0.5),
-                    egui::vec2(icon_btn_size, icon_btn_size),
-                );
-                let up_enabled = rev_idx + 1 < total;  // not already front
-                let up_resp = ui.interact(
-                    up_rect,
-                    ui.id().with(("title_layer_up", obj.id.0)),
-                    egui::Sense::click(),
-                );
-                let up_tint = if !up_enabled {
-                    theme.text_dim.gamma_multiply(0.4)
-                } else if up_resp.hovered() {
-                    theme.accent
-                } else {
-                    theme.text_secondary
-                };
-                ui.allocate_new_ui(
-                    egui::UiBuilder::new().max_rect(up_rect),
-                    |ui| {
-                        ui.add(Icon::CaretUp.image(icon_btn_size).tint(up_tint));
-                    },
-                );
-                if up_enabled && up_resp.clicked() {
-                    // Build a new id list where this object swaps
-                    // with the one currently on top of it (= one
-                    // step closer to the front of the stack).
-                    let mut order: Vec<u32> = td.objects.iter().map(|o| o.id.0).collect();
-                    let pos = order.iter().position(|&id| id == obj.id.0).unwrap_or(0);
-                    if pos + 1 < order.len() {
-                        order.swap(pos, pos + 1);
-                        cmds.push(AppCommand::ReorderTitleObjects {
-                            clip_id,
-                            new_order: order,
-                        });
-                    }
-                }
-                x_right -= icon_btn_size + 2.0;
-
-                let down_rect = egui::Rect::from_min_size(
-                    egui::pos2(x_right - icon_btn_size, rect.center().y - icon_btn_size * 0.5),
-                    egui::vec2(icon_btn_size, icon_btn_size),
-                );
-                let down_enabled = rev_idx > 0;  // not already back
-                let down_resp = ui.interact(
-                    down_rect,
-                    ui.id().with(("title_layer_down", obj.id.0)),
-                    egui::Sense::click(),
-                );
-                let down_tint = if !down_enabled {
-                    theme.text_dim.gamma_multiply(0.4)
-                } else if down_resp.hovered() {
-                    theme.accent
-                } else {
-                    theme.text_secondary
-                };
-                ui.allocate_new_ui(
-                    egui::UiBuilder::new().max_rect(down_rect),
-                    |ui| {
-                        ui.add(Icon::CaretDown.image(icon_btn_size).tint(down_tint));
-                    },
-                );
-                if down_enabled && down_resp.clicked() {
-                    let mut order: Vec<u32> = td.objects.iter().map(|o| o.id.0).collect();
-                    let pos = order.iter().position(|&id| id == obj.id.0).unwrap_or(0);
-                    if pos > 0 {
-                        order.swap(pos, pos - 1);
-                        cmds.push(AppCommand::ReorderTitleObjects {
-                            clip_id,
-                            new_order: order,
-                        });
-                    }
-                }
-                x_right -= 6.0;
-
-                let stack_galley = ui.painter().layout_no_wrap(
-                    stack_label,
-                    egui::FontId::monospace(9.5),
-                    theme.text_dim,
-                );
-                ui.painter().galley(
-                    egui::pos2(
-                        x_right - stack_galley.size().x,
-                        rect.center().y - stack_galley.size().y * 0.5,
-                    ),
-                    stack_galley,
-                    theme.text_dim,
-                );
+                show_title_layer_row(ui, theme, clip_id, td, obj, rev_idx, total, selected_oid, cmds);
             }
         });
 
@@ -850,6 +1452,247 @@ fn show_title_layers_panel(
             cmds.push(AppCommand::AddTitleObject { clip_id, kind: 1 });
         }
     });
+}
+
+/// Render one layer row inside the layers panel. Order:
+/// `[eye] [lock] [type-badge] {name}    {Front|Mid|Back|N/total} [^] [×]`.
+/// Single ^ steps one position toward Front; right-click on the row body
+/// opens a 4-way reorder context menu (Bring to Front, Bring Forward,
+/// Send Backward, Send to Back). Selection styling is an accent outline,
+/// not a fill, to leave the row's icon foregrounds legible.
+fn show_title_layer_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: klipp_core::ClipId,
+    td: &klipp_timeline::TitleData,
+    obj: &klipp_timeline::TitleObject,
+    rev_idx: usize,
+    total: usize,
+    selected_oid: Option<klipp_timeline::TitleObjectId>,
+    cmds: &mut Vec<AppCommand>,
+) {
+    use klipp_timeline::TitleObjectContent;
+
+    let is_selected = Some(obj.id) == selected_oid;
+    let row_h = 32.0;
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), row_h),
+        egui::Sense::click(),
+    );
+
+    if is_selected {
+        ui.painter().rect(
+            rect.shrink(1.0),
+            egui::Rounding::same(5.0),
+            theme.accent_subtle,
+            egui::Stroke::new(1.5_f32, theme.accent),
+        );
+    } else if resp.hovered() {
+        ui.painter()
+            .rect_filled(rect, egui::Rounding::same(5.0), theme.bg_hover);
+    }
+
+    if resp.clicked() {
+        cmds.push(AppCommand::SelectTitleObject {
+            clip_id,
+            object_id: Some(obj.id.0),
+        });
+    }
+
+    // Right-click context menu: 4-way z-order.
+    let snapshot_order: Vec<u32> = td.objects.iter().map(|o| o.id.0).collect();
+    let pos_in_vec = snapshot_order
+        .iter()
+        .position(|&id| id == obj.id.0)
+        .unwrap_or(0);
+    let stack_len = snapshot_order.len();
+    resp.context_menu(|ui| {
+        let can_forward = pos_in_vec + 1 < stack_len;
+        let can_backward = pos_in_vec > 0;
+        if ui.add_enabled(can_forward, egui::Button::new("Bring to Front")).clicked() {
+            let mut order = snapshot_order.clone();
+            let layer = order.remove(pos_in_vec);
+            order.push(layer);
+            cmds.push(AppCommand::ReorderTitleObjects { clip_id, new_order: order });
+            ui.close_menu();
+        }
+        if ui.add_enabled(can_forward, egui::Button::new("Bring Forward")).clicked() {
+            let mut order = snapshot_order.clone();
+            order.swap(pos_in_vec, pos_in_vec + 1);
+            cmds.push(AppCommand::ReorderTitleObjects { clip_id, new_order: order });
+            ui.close_menu();
+        }
+        if ui.add_enabled(can_backward, egui::Button::new("Send Backward")).clicked() {
+            let mut order = snapshot_order.clone();
+            order.swap(pos_in_vec, pos_in_vec - 1);
+            cmds.push(AppCommand::ReorderTitleObjects { clip_id, new_order: order });
+            ui.close_menu();
+        }
+        if ui.add_enabled(can_backward, egui::Button::new("Send to Back")).clicked() {
+            let mut order = snapshot_order.clone();
+            let layer = order.remove(pos_in_vec);
+            order.insert(0, layer);
+            cmds.push(AppCommand::ReorderTitleObjects { clip_id, new_order: order });
+            ui.close_menu();
+        }
+    });
+
+    // Layout cursor — left-side icons.
+    let mut x = rect.min.x + 8.0;
+    let icon_size = 16.0;
+    let icon_y = rect.center().y - icon_size * 0.5;
+
+    // Eye toggle.
+    let eye_rect = egui::Rect::from_min_size(egui::pos2(x, icon_y), egui::vec2(icon_size, icon_size));
+    let eye_resp = ui.interact(eye_rect, ui.id().with(("title_layer_eye", obj.id.0)), egui::Sense::click());
+    let eye_icon = if obj.visible { Icon::Eye } else { Icon::EyeSlash };
+    let eye_tint = if obj.visible { theme.text_secondary } else { theme.text_dim };
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(eye_rect), |ui| {
+        ui.add(eye_icon.image(icon_size).tint(eye_tint));
+    });
+    if eye_resp.clicked() {
+        cmds.push(AppCommand::SetTitleObjectVisible { clip_id, object_id: obj.id.0, visible: !obj.visible });
+    }
+    x += icon_size + 6.0;
+
+    // Lock toggle.
+    let lock_rect = egui::Rect::from_min_size(egui::pos2(x, icon_y), egui::vec2(icon_size, icon_size));
+    let lock_resp = ui.interact(lock_rect, ui.id().with(("title_layer_lock", obj.id.0)), egui::Sense::click());
+    let lock_icon = if obj.locked { Icon::Lock } else { Icon::LockOpen };
+    let lock_tint = if obj.locked { theme.accent } else { theme.text_dim };
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(lock_rect), |ui| {
+        ui.add(lock_icon.image(icon_size).tint(lock_tint));
+    });
+    if lock_resp.clicked() {
+        cmds.push(AppCommand::SetTitleObjectLocked { clip_id, object_id: obj.id.0, locked: !obj.locked });
+    }
+    x += icon_size + 8.0;
+
+    // Type badge — small filled square with kind letter.
+    let badge_size = 20.0;
+    let badge_rect = egui::Rect::from_min_size(
+        egui::pos2(x, rect.center().y - badge_size * 0.5),
+        egui::vec2(badge_size, badge_size),
+    );
+    let (badge_fill, badge_text_color, badge_letter) = match &obj.content {
+        TitleObjectContent::TextBox(_) => (theme.accent, theme.text_on_accent, "T"),
+        TitleObjectContent::Shape(_) => (theme.bg_raised, theme.text_primary, "S"),
+    };
+    ui.painter().rect_filled(badge_rect, egui::Rounding::same(4.0), badge_fill);
+    ui.painter().text(
+        badge_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        badge_letter,
+        egui::FontId::proportional(12.0),
+        badge_text_color,
+    );
+    x += badge_size + 8.0;
+
+    // Display name.
+    let display_name = if obj.name.is_empty() {
+        match &obj.content {
+            TitleObjectContent::TextBox(tb) => {
+                let trimmed = tb.text.lines().next().unwrap_or("").trim();
+                if trimmed.is_empty() {
+                    format!("Text {}", obj.id.0 + 1)
+                } else if trimmed.chars().count() > 24 {
+                    format!("{}\u{2026}", trimmed.chars().take(22).collect::<String>())
+                } else {
+                    trimmed.to_string()
+                }
+            }
+            TitleObjectContent::Shape(_) => format!("Shape {}", obj.id.0 + 1),
+        }
+    } else {
+        obj.name.clone()
+    };
+    let label_color = if !obj.visible {
+        theme.text_dim
+    } else if is_selected {
+        theme.text_primary
+    } else {
+        theme.text_secondary
+    };
+    ui.painter().text(
+        egui::pos2(x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        display_name,
+        egui::FontId::proportional(12.5),
+        label_color,
+    );
+
+    // Right-side: stack-position label, ^ chevron (toward Front), × delete.
+    let icon_btn_size = 16.0;
+    let mut x_right = rect.max.x - 8.0;
+
+    // Delete (×) — rightmost.
+    let del_rect = egui::Rect::from_min_size(
+        egui::pos2(x_right - icon_btn_size, rect.center().y - icon_btn_size * 0.5),
+        egui::vec2(icon_btn_size, icon_btn_size),
+    );
+    let del_resp = ui.interact(del_rect, ui.id().with(("title_layer_del", obj.id.0)), egui::Sense::click());
+    let del_tint = if del_resp.hovered() { theme.marker_error } else { theme.text_dim };
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(del_rect), |ui| {
+        ui.add(Icon::X.image(icon_btn_size).tint(del_tint));
+    });
+    if del_resp.clicked() {
+        cmds.push(AppCommand::DeleteTitleObject { clip_id, object_id: obj.id.0 });
+    }
+    x_right -= icon_btn_size + 6.0;
+
+    // ^ chevron — single-step toward Front.
+    let up_rect = egui::Rect::from_min_size(
+        egui::pos2(x_right - icon_btn_size, rect.center().y - icon_btn_size * 0.5),
+        egui::vec2(icon_btn_size, icon_btn_size),
+    );
+    let up_enabled = rev_idx + 1 < total;
+    let up_resp = ui.interact(up_rect, ui.id().with(("title_layer_up", obj.id.0)), egui::Sense::click());
+    let up_tint = if !up_enabled {
+        theme.text_dim.gamma_multiply(0.4)
+    } else if up_resp.hovered() {
+        theme.accent
+    } else {
+        theme.text_secondary
+    };
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(up_rect), |ui| {
+        ui.add(Icon::CaretUp.image(icon_btn_size).tint(up_tint));
+    });
+    if up_enabled && up_resp.clicked() {
+        let mut order: Vec<u32> = td.objects.iter().map(|o| o.id.0).collect();
+        if let Some(pos) = order.iter().position(|&id| id == obj.id.0) {
+            if pos + 1 < order.len() {
+                order.swap(pos, pos + 1);
+                cmds.push(AppCommand::ReorderTitleObjects { clip_id, new_order: order });
+            }
+        }
+    }
+    x_right -= icon_btn_size + 8.0;
+
+    // Stack-position label.
+    let stack_label = if total <= 3 {
+        if rev_idx + 1 == total {
+            "Front".to_string()
+        } else if rev_idx == 0 {
+            "Back".to_string()
+        } else {
+            "Mid".to_string()
+        }
+    } else {
+        format!("{}/{}", rev_idx + 1, total)
+    };
+    let stack_galley = ui.painter().layout_no_wrap(
+        stack_label,
+        egui::FontId::proportional(11.0),
+        theme.text_dim,
+    );
+    ui.painter().galley(
+        egui::pos2(
+            x_right - stack_galley.size().x,
+            rect.center().y - stack_galley.size().y * 0.5,
+        ),
+        stack_galley,
+        theme.text_dim,
+    );
 }
 
 fn show_title_editor(
@@ -951,186 +1794,49 @@ fn show_title_editor(
     ui.separator();
     ui.add_space(4.0);
 
-    // ── Shape-specific properties ──
-    // When the active selection is a Shape layer, the typography
-    // controls below don't apply — show shape-only properties
-    // instead and skip out before the text editor section.
-    if let Some((sel_clip, sel_oid)) = state.selected_title_object {
-        if sel_clip == clip_id {
-            if let Some(obj) = td.object(sel_oid) {
-                if let klipp_timeline::TitleObjectContent::Shape(shape) = &obj.content {
-                    show_title_shape_editor(ui, theme, clip_id, sel_oid, shape, cmds);
-                    return;
-                }
-            }
+    // ── Polymorphic pinned core ──
+    // Branch on the selected layer's kind. Shape layers get the existing
+    // shape editor + the shared Position block and bail before any
+    // text-only sections; TextBox layers fall through to the new pinned
+    // core (textarea / font+size / B/I/U/S + L/C/R / colour / position)
+    // and the legacy compat strip for selection-aware tools.
+    let target_oid = state
+        .selected_title_object
+        .filter(|(c, _)| *c == clip_id)
+        .map(|(_, oid)| oid);
+    let kind_ref = target_oid.and_then(|oid| td.object(oid)).map(|o| &o.content);
+    if let Some(klipp_timeline::TitleObjectContent::Shape(shape)) = kind_ref {
+        if let Some(oid) = target_oid {
+            show_title_shape_editor(ui, theme, clip_id, oid, shape, cmds);
+            ui.add_space(8.0);
+            show_title_position_block(ui, theme, clip_id, td, state, cmds);
         }
+        return;
     }
-
-    // Text preview (read-only) — editing happens in the viewer (double-click)
-    ui.label(egui::RichText::new("Text").strong().size(11.0));
-    let preview = if td.text().len() > 80 {
-        format!("{}...", &td.text()[..77])
-    } else {
-        td.text().clone()
+    let tb_target: Option<&klipp_timeline::TextBox> = match kind_ref {
+        Some(klipp_timeline::TitleObjectContent::TextBox(tb)) => Some(tb),
+        _ => td.primary_text(),
     };
-    ui.label(egui::RichText::new(&preview).size(11.0).color(theme.text_secondary));
-    if state.viewer_text_edit {
-        if let Some((s, e)) = state.viewer_text_selection.or(state.viewer_text_selection_locked) {
-            let selected_text = if e <= td.text().len() { &td.text()[s..e] } else { "" };
-            if !selected_text.is_empty() {
-                ui.label(egui::RichText::new(format!("Selected: \"{}\"", selected_text)).size(9.0).color(theme.accent));
-            }
-        }
-    } else {
-        ui.label(egui::RichText::new("Double-click in viewer to edit").size(9.0).color(theme.text_dim));
+    if let Some(tb) = tb_target {
+        show_title_pinned_core_textbox(ui, theme, clip_id, td, state, cmds, tb);
     }
     ui.add_space(8.0);
 
-    // Font family
-    ui.label(egui::RichText::new("Font").strong().size(11.0));
-    let current_font = &td.font_name();
-    let display_name = if current_font == "sans-serif" || current_font.is_empty() {
-        "Noto Sans (Default)"
-    } else { current_font };
-    egui::ComboBox::from_id_salt("new_insp_title_font")
-        .selected_text(display_name)
-        .width(ui.available_width() - 8.0)
-        .show_ui(ui, |ui| {
-            if ui.selectable_label(current_font == "sans-serif" || current_font.is_empty(), "Noto Sans (Default)").clicked() {
-                cmds.push(AppCommand::UpdateTitleData {
-                    clip_id, text: td.text().clone(), font_size: td.font_size(),
-                    font_name: "sans-serif".to_string(), font_style: font_style_to_u8(td.font_style()), color: td.color(),
-                });
-            }
-            ui.separator();
-            for family in &state.available_fonts {
-                if ui.selectable_label(current_font == family, family).clicked() {
-                    cmds.push(AppCommand::UpdateTitleData {
-                        clip_id, text: td.text().clone(), font_size: td.font_size(),
-                        font_name: family.clone(), font_style: font_style_to_u8(td.font_style()), color: td.color(),
-                    });
-                }
-            }
-        });
-    ui.add_space(4.0);
-
-    // Bold / Italic toggles
-    let is_bold = matches!(td.font_style(), klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic);
-    let is_italic = matches!(td.font_style(), klipp_timeline::FontStyle::Italic | klipp_timeline::FontStyle::BoldItalic);
-    ui.horizontal(|ui| {
-        let bold_text = if is_bold { egui::RichText::new(" B ").strong() } else { egui::RichText::new(" B ").color(theme.text_dim) };
-        let italic_text = if is_italic { egui::RichText::new(" I ").italics() } else { egui::RichText::new(" I ").color(theme.text_dim) };
-        if ui.selectable_label(is_bold, bold_text).clicked() {
-            let new_style = match (!is_bold, is_italic) {
-                (true, true) => klipp_timeline::FontStyle::BoldItalic, (true, false) => klipp_timeline::FontStyle::Bold,
-                (false, true) => klipp_timeline::FontStyle::Italic, (false, false) => klipp_timeline::FontStyle::Regular,
-            };
-            cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text().clone(), font_size: td.font_size(), font_name: td.font_name().clone(), font_style: font_style_to_u8(new_style), color: td.color() });
-        }
-        if ui.selectable_label(is_italic, italic_text).clicked() {
-            let new_style = match (is_bold, !is_italic) {
-                (true, true) => klipp_timeline::FontStyle::BoldItalic, (true, false) => klipp_timeline::FontStyle::Bold,
-                (false, true) => klipp_timeline::FontStyle::Italic, (false, false) => klipp_timeline::FontStyle::Regular,
-            };
-            cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text().clone(), font_size: td.font_size(), font_name: td.font_name().clone(), font_style: font_style_to_u8(new_style), color: td.color() });
-        }
-    });
-    ui.add_space(8.0);
-
-    // Font size — selection-aware
-    // Selection comes from the viewer's text edit mode (double-click to edit, select text).
-    // The locked selection persists when the user clicks inspector controls.
-    let effective_selection = state.viewer_text_selection
+    // ── Compat strip (text-only) ──
+    // Quick colour presets, per-character effects, and the style-runs
+    // indicator. These existing features don't have a final home in the
+    // new pinned-core layout; a follow-up rehomes them inside Typography
+    // or a Quick-Style sub-section. For now they sit below the pinned
+    // core so the workflow stays intact.
+    let effective_selection = state
+        .viewer_text_selection
         .or(state.viewer_text_selection_locked);
-    let has_selection = state.viewer_text_edit && effective_selection.is_some_and(|(s, e)| s < e);
+    let has_selection =
+        state.viewer_text_edit && effective_selection.is_some_and(|(s, e)| s < e);
     let sel_range = effective_selection.unwrap_or((0, 0));
 
-    // Determine effective font size for display
-    let (display_size, size_is_mixed) = if has_selection && !td.style_runs().is_empty() {
-        let mut sizes: Vec<f32> = Vec::new();
-        for run in &td.style_runs() {
-            if run.start < sel_range.1 && run.end > sel_range.0 {
-                sizes.push(run.font_size.unwrap_or(td.font_size()));
-            }
-        }
-        if sizes.is_empty() {
-            (td.font_size(), false)
-        } else if sizes.iter().all(|s| (*s - sizes[0]).abs() < 0.5) {
-            (sizes[0], false)
-        } else {
-            (sizes[0], true)
-        }
-    } else if state.viewer_text_edit {
-        // No selection — show font size at cursor position
-        (state.viewer_text_cursor_font_size.unwrap_or(td.font_size()), false)
-    } else {
-        (td.font_size(), false)
-    };
-
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Size").strong().size(11.0));
-        if size_is_mixed {
-            ui.label(egui::RichText::new("Mixed").size(9.0).color(theme.accent));
-        }
-    });
-    let mut font_size = display_size;
-    if ui.add(egui::Slider::new(&mut font_size, 12.0..=300.0).step_by(1.0).suffix(" pt")).changed() {
-        if has_selection && sel_range.0 < sel_range.1 {
-            // Apply to selection only
-            cmds.push(AppCommand::ApplyTitleStyle {
-                clip_id, range_start: sel_range.0, range_end: sel_range.1,
-                property: "font_size".into(), value: format!("{font_size}"),
-            });
-        } else {
-            cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text().clone(), font_size, font_name: td.font_name().clone(), font_style: font_style_to_u8(td.font_style()), color: td.color() });
-        }
-    }
-    ui.add_space(8.0);
-
-    // Text color — selection-aware
-    let (display_color, color_is_mixed) = if has_selection && !td.style_runs().is_empty() {
-        let mut colors: Vec<[u8; 4]> = Vec::new();
-        for run in &td.style_runs() {
-            if run.start < sel_range.1 && run.end > sel_range.0 {
-                colors.push(run.color.unwrap_or(td.color()));
-            }
-        }
-        if colors.is_empty() {
-            (td.color(), false)
-        } else if colors.iter().all(|c| *c == colors[0]) {
-            (colors[0], false)
-        } else {
-            (colors[0], true)
-        }
-    } else if state.viewer_text_edit {
-        // No selection — show color at cursor position
-        (state.viewer_text_cursor_color.unwrap_or(td.color()), false)
-    } else {
-        (td.color(), false)
-    };
-
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Color").strong().size(11.0));
-        if color_is_mixed {
-            ui.label(egui::RichText::new("Mixed").size(9.0).color(theme.accent));
-        }
-    });
-    let mut color = egui::Color32::from_rgba_premultiplied(display_color[0], display_color[1], display_color[2], display_color[3]);
-    if ui.color_edit_button_srgba(&mut color).changed() {
-        if has_selection && sel_range.0 < sel_range.1 {
-            let c = [color.r(), color.g(), color.b(), color.a()];
-            cmds.push(AppCommand::ApplyTitleStyle {
-                clip_id, range_start: sel_range.0, range_end: sel_range.1,
-                property: "color".into(), value: serde_json::to_string(&c).unwrap_or_default(),
-            });
-        } else {
-            cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text().clone(), font_size: td.font_size(), font_name: td.font_name().clone(), font_style: font_style_to_u8(td.font_style()), color: [color.r(), color.g(), color.b(), color.a()] });
-        }
-    }
-
-    // Quick color presets
-    ui.add_space(2.0);
-    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Quick").size(9.0).color(theme.text_dim));
         let preset_colors: &[(&str, [u8; 4])] = &[
             ("W", [255, 255, 255, 255]),
             ("R", [255, 60, 60, 255]),
@@ -1142,59 +1848,45 @@ fn show_title_editor(
         ];
         for (label, c) in preset_colors {
             let btn_color = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-            let resp = ui.add(egui::Button::new(
-                egui::RichText::new(*label).size(9.0).color(
-                    if c[0] as u16 + c[1] as u16 + c[2] as u16 > 400 { egui::Color32::BLACK } else { egui::Color32::WHITE }
-                )
-            ).fill(btn_color).min_size(egui::vec2(18.0, 16.0)));
+            let resp = ui.add(
+                egui::Button::new(egui::RichText::new(*label).size(9.0).color(
+                    if c[0] as u16 + c[1] as u16 + c[2] as u16 > 400 {
+                        egui::Color32::BLACK
+                    } else {
+                        egui::Color32::WHITE
+                    },
+                ))
+                .fill(btn_color)
+                .min_size(egui::vec2(18.0, 16.0)),
+            );
             if resp.clicked() {
                 if has_selection && sel_range.0 < sel_range.1 {
                     cmds.push(AppCommand::ApplyTitleStyle {
                         clip_id, range_start: sel_range.0, range_end: sel_range.1,
-                        property: "color".into(), value: serde_json::to_string(c).unwrap_or_default(),
+                        property: "color".into(),
+                        value: serde_json::to_string(c).unwrap_or_default(),
                     });
                 } else {
-                    cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text().clone(), font_size: td.font_size(), font_name: td.font_name().clone(), font_style: font_style_to_u8(td.font_style()), color: *c });
+                    cmds.push(AppCommand::UpdateTitleData {
+                        clip_id, text: td.text().clone(),
+                        font_size: td.font_size(), font_name: td.font_name().clone(),
+                        font_style: font_style_to_u8(td.font_style()), color: *c,
+                    });
                 }
             }
         }
     });
-
-    // Text opacity slider (controls alpha channel of text color)
-    {
-        let mut opacity_pct = ((display_color[3] as f32 / 255.0) * 100.0).round();
-        if ui.add(egui::Slider::new(&mut opacity_pct, 0.0..=100.0).text("Opacity").step_by(1.0).suffix("%")).changed() {
-            let new_alpha = (opacity_pct / 100.0 * 255.0).round() as u8;
-            if new_alpha != display_color[3] {
-                let c = [display_color[0], display_color[1], display_color[2], new_alpha];
-                if has_selection && sel_range.0 < sel_range.1 {
-                    cmds.push(AppCommand::ApplyTitleStyle {
-                        clip_id, range_start: sel_range.0, range_end: sel_range.1,
-                        property: "color".into(), value: serde_json::to_string(&c).unwrap_or_default(),
-                    });
-                } else {
-                    cmds.push(AppCommand::UpdateTitleData { clip_id, text: td.text().clone(), font_size: td.font_size(), font_name: td.font_name().clone(), font_style: font_style_to_u8(td.font_style()), color: c });
-                }
-            }
-        }
-    }
     ui.add_space(4.0);
 
-    // Per-character color effects (apply to selection or whole text)
     if has_selection && sel_range.1 > sel_range.0 {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Effects:").size(9.0).color(theme.text_dim));
-            // Rainbow — each character gets a different color
             if ui.small_button("Rainbow").clicked() {
                 let rainbow: &[[u8; 4]] = &[
-                    [255, 50, 50, 255],   // red
-                    [255, 150, 0, 255],   // orange
-                    [255, 230, 0, 255],   // yellow
-                    [50, 200, 50, 255],   // green
-                    [50, 150, 255, 255],  // blue
-                    [100, 50, 255, 255],  // indigo
-                    [200, 50, 200, 255],  // violet
+                    [255, 50, 50, 255], [255, 150, 0, 255], [255, 230, 0, 255],
+                    [50, 200, 50, 255], [50, 150, 255, 255], [100, 50, 255, 255],
+                    [200, 50, 200, 255],
                 ];
                 let sel_text = &td.text()[sel_range.0..sel_range.1.min(td.text().len())];
                 let mut byte_pos = sel_range.0;
@@ -1204,64 +1896,66 @@ fn show_title_editor(
                     let char_end = byte_pos + ch.len_utf8();
                     cmds.push(AppCommand::ApplyTitleStyle {
                         clip_id, range_start: byte_pos, range_end: char_end,
-                        property: "color".into(), value: serde_json::to_string(&c).unwrap_or_default(),
+                        property: "color".into(),
+                        value: serde_json::to_string(&c).unwrap_or_default(),
                     });
                     byte_pos = char_end;
                 }
             }
-            // Fire — red to yellow gradient per character
             if ui.small_button("Fire").clicked() {
                 let sel_text = &td.text()[sel_range.0..sel_range.1.min(td.text().len())];
                 let char_count = sel_text.chars().count().max(1);
                 let mut byte_pos = sel_range.0;
                 for (ci, ch) in sel_text.chars().enumerate() {
                     let t = ci as f32 / (char_count - 1).max(1) as f32;
-                    let r = 255u8;
-                    let g = (50.0 + t * 200.0) as u8;
-                    let b = (0.0 + t * 30.0) as u8;
-                    let c = [r, g, b, 255];
+                    let c = [255u8, (50.0 + t * 200.0) as u8, (0.0 + t * 30.0) as u8, 255];
                     let char_end = byte_pos + ch.len_utf8();
                     cmds.push(AppCommand::ApplyTitleStyle {
                         clip_id, range_start: byte_pos, range_end: char_end,
-                        property: "color".into(), value: serde_json::to_string(&c).unwrap_or_default(),
+                        property: "color".into(),
+                        value: serde_json::to_string(&c).unwrap_or_default(),
                     });
                     byte_pos = char_end;
                 }
             }
-            // Ocean — blue to cyan gradient
             if ui.small_button("Ocean").clicked() {
                 let sel_text = &td.text()[sel_range.0..sel_range.1.min(td.text().len())];
                 let char_count = sel_text.chars().count().max(1);
                 let mut byte_pos = sel_range.0;
                 for (ci, ch) in sel_text.chars().enumerate() {
                     let t = ci as f32 / (char_count - 1).max(1) as f32;
-                    let r = (20.0 + t * 30.0) as u8;
-                    let g = (80.0 + t * 140.0) as u8;
-                    let b = (200.0 + t * 55.0) as u8;
-                    let c = [r, g, b, 255];
+                    let c = [
+                        (20.0 + t * 30.0) as u8,
+                        (80.0 + t * 140.0) as u8,
+                        (200.0 + t * 55.0) as u8,
+                        255u8,
+                    ];
                     let char_end = byte_pos + ch.len_utf8();
                     cmds.push(AppCommand::ApplyTitleStyle {
                         clip_id, range_start: byte_pos, range_end: char_end,
-                        property: "color".into(), value: serde_json::to_string(&c).unwrap_or_default(),
+                        property: "color".into(),
+                        value: serde_json::to_string(&c).unwrap_or_default(),
                     });
                     byte_pos = char_end;
                 }
             }
-            // Sunset — purple to orange
             if ui.small_button("Sunset").clicked() {
                 let sel_text = &td.text()[sel_range.0..sel_range.1.min(td.text().len())];
                 let char_count = sel_text.chars().count().max(1);
                 let mut byte_pos = sel_range.0;
                 for (ci, ch) in sel_text.chars().enumerate() {
                     let t = ci as f32 / (char_count - 1).max(1) as f32;
-                    let r = (150.0 + t * 105.0) as u8;
-                    let g = (30.0 + t * 100.0) as u8;
-                    let b = (200.0 - t * 170.0) as u8;
-                    let c = [r, g, b, 255];
+                    let c = [
+                        (150.0 + t * 105.0) as u8,
+                        (30.0 + t * 100.0) as u8,
+                        (200.0 - t * 170.0) as u8,
+                        255u8,
+                    ];
                     let char_end = byte_pos + ch.len_utf8();
                     cmds.push(AppCommand::ApplyTitleStyle {
                         clip_id, range_start: byte_pos, range_end: char_end,
-                        property: "color".into(), value: serde_json::to_string(&c).unwrap_or_default(),
+                        property: "color".into(),
+                        value: serde_json::to_string(&c).unwrap_or_default(),
                     });
                     byte_pos = char_end;
                 }
@@ -1270,11 +1964,13 @@ fn show_title_editor(
     }
     ui.add_space(4.0);
 
-    // Show style runs indicator
     if !td.style_runs().is_empty() {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("{} style runs", td.style_runs().len())).size(9.0).color(theme.text_dim));
+            ui.label(
+                egui::RichText::new(format!("{} style runs", td.style_runs().len()))
+                    .size(9.0).color(theme.text_dim),
+            );
             if ui.small_button("Clear All").clicked() {
                 cmds.push(AppCommand::ClearTitleStyleRuns { clip_id });
             }
@@ -1282,450 +1978,21 @@ fn show_title_editor(
     }
     ui.add_space(8.0);
 
-    // Alignment
-    ui.label(egui::RichText::new("Alignment").strong().size(11.0));
-    ui.horizontal(|ui| {
-        let current = match td.alignment() { klipp_timeline::TextAlignment::Left => 0u8, klipp_timeline::TextAlignment::Center => 1, klipp_timeline::TextAlignment::Right => 2 };
-        for (val, label) in [(0, "Left"), (1, "Center"), (2, "Right")] {
-            if ui.selectable_label(current == val, label).clicked() && current != val {
-                cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: val });
-            }
-        }
-    });
-    ui.add_space(8.0);
-
-    // Position
-    ui.label(egui::RichText::new("Position").strong().size(11.0));
-    let _td_pos = td.position();
-    let mut pos_x = _td_pos.x;
-    let mut pos_y = _td_pos.y;
-    let mut pos_changed = false;
-    pos_changed |= ui.add(egui::Slider::new(&mut pos_x, 0.0..=1.0).text("X").step_by(0.01)).changed();
-    pos_changed |= ui.add(egui::Slider::new(&mut pos_y, 0.0..=1.0).text("Y").step_by(0.01)).changed();
-    if pos_changed {
-        cmds.push(AppCommand::SetTitlePosition { clip_id, x: pos_x, y: pos_y });
+    // ── Effects group ──
+    if let Some(tb) = tb_target {
+        show_title_effects_group(ui, theme, clip_id, tb, cmds);
+        ui.add_space(8.0);
     }
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        if ui.small_button("Center").clicked() { cmds.push(AppCommand::SetTitlePosition { clip_id, x: 0.5, y: 0.5 }); }
-        if ui.small_button("Lower Third").clicked() { cmds.push(AppCommand::SetTitlePosition { clip_id, x: 0.5, y: 0.85 }); }
-        if ui.small_button("Top").clicked() { cmds.push(AppCommand::SetTitlePosition { clip_id, x: 0.5, y: 0.15 }); }
-    });
-    ui.add_space(8.0);
 
-    // Per-object opacity. Targets the same object as the other
-    // typography / styling commands (selected layer, falling back to
-    // the first object). Independent of clip-level opacity_keyframes
-    // — each layer can be individually faded.
     {
-        let target_oid: Option<klipp_timeline::TitleObjectId> = state
-            .selected_title_object
-            .filter(|(c, _)| *c == clip_id)
-            .map(|(_, oid)| oid);
-        let target_obj = match target_oid {
-            Some(oid) => td.object(oid),
-            None => td.objects.first(),
+        let _grp_count = (td.tracking() != 0.0) as u32 + ((td.line_spacing() - 1.0).abs() > 1e-6) as u32 + (td.baseline_shift() != 0.0) as u32 + (td.case_transform() != klipp_timeline::TextCase::None) as u32 + (td.drop_cap_scale() >= 1.0) as u32 + td.primary_text().map_or(0u32, |tb| { (tb.columns != 1) as u32 + tb.vertical_layout as u32 + ((tb.text_direction == klipp_timeline::TextDirection::Rtl)) as u32 + tb.underline as u32 + tb.strikethrough as u32 });
+        let status = crate::widgets::inspector_group::GroupStatus {
+            count: if _grp_count > 0 { Some(_grp_count) } else { None },
+            active: td.tracking() != 0.0 || (td.line_spacing() - 1.0).abs() > 1e-6 || td.baseline_shift() != 0.0 || td.case_transform() != klipp_timeline::TextCase::None || td.drop_cap_scale() >= 1.0 || td.primary_text().is_some_and(|tb| tb.columns != 1 || tb.vertical_layout || tb.text_direction == klipp_timeline::TextDirection::Rtl || tb.underline || tb.strikethrough),
         };
-        if let Some(obj) = target_obj {
-            let object_id = obj.id.0;
-            let mut op = obj.opacity;
-            ui.label(egui::RichText::new("Layer Opacity").strong().size(11.0));
-            if ui.add(egui::Slider::new(&mut op, 0.0..=1.0).step_by(0.01)).changed() {
-                cmds.push(AppCommand::SetTitleObjectOpacity { clip_id, object_id, opacity: op });
-            }
-            ui.add_space(8.0);
-        }
-    }
-
-    // Background
-    ui.label(egui::RichText::new("Background").strong().size(11.0));
-    let bg_kind: u8 = match &td.background { klipp_timeline::TitleBackground::None => 0, klipp_timeline::TitleBackground::Color { .. } => 1, klipp_timeline::TitleBackground::FullFrame { .. } => 2 };
-    let bg_color = match &td.background { klipp_timeline::TitleBackground::Color { color, .. } => *color, klipp_timeline::TitleBackground::FullFrame { color } => *color, _ => [0, 0, 0, 180] };
-    ui.horizontal(|ui| {
-        for (val, label) in [(0, "None"), (1, "Box"), (2, "Full")] {
-            if ui.selectable_label(bg_kind == val, label).clicked() && bg_kind != val {
-                cmds.push(AppCommand::SetTitleBackground { clip_id, bg_kind: val, color: bg_color });
-            }
-        }
-    });
-    if bg_kind > 0 {
-        let mut bg_col = egui::Color32::from_rgba_premultiplied(bg_color[0], bg_color[1], bg_color[2], bg_color[3]);
-        if ui.color_edit_button_srgba(&mut bg_col).changed() {
-            cmds.push(AppCommand::SetTitleBackground { clip_id, bg_kind, color: [bg_col.r(), bg_col.g(), bg_col.b(), bg_col.a()] });
-        }
-        // Round-trip stable: convert alpha to percentage and back to ensure the slider
-        // doesn't report .changed() every frame due to float rounding.
-        let bg_opacity_raw = (bg_color[3] as f32 / 255.0) * 100.0;
-        let mut bg_opacity = bg_opacity_raw.round();
-        if ui.add(egui::Slider::new(&mut bg_opacity, 0.0..=100.0).text("Opacity").step_by(1.0).suffix("%")).changed() {
-            let a = (bg_opacity / 100.0 * 255.0).round() as u8;
-            if a != bg_color[3] {
-                cmds.push(AppCommand::SetTitleBackground { clip_id, bg_kind, color: [bg_color[0], bg_color[1], bg_color[2], a] });
-            }
-        }
-    }
-    ui.add_space(8.0);
-
-    // Shadow
-    ui.label(egui::RichText::new("Shadow").strong().size(11.0));
-    let has_shadow = td.shadow().is_some();
-    let shadow = td.shadow().unwrap_or(klipp_timeline::TitleShadow { color: [0, 0, 0, 180], offset_x: 3.0, offset_y: 3.0, blur: 0.0 });
-    let mut shadow_enabled = has_shadow;
-    if ui.checkbox(&mut shadow_enabled, "Enable Shadow").changed() {
-        cmds.push(AppCommand::SetTitleShadow { clip_id, enabled: shadow_enabled, color: shadow.color, offset_x: shadow.offset_x, offset_y: shadow.offset_y, blur: shadow.blur });
-    }
-    if has_shadow {
-        let mut ox = shadow.offset_x;
-        let mut oy = shadow.offset_y;
-        let mut sb = shadow.blur;
-        let mut s_changed = false;
-        s_changed |= ui.add(egui::Slider::new(&mut ox, -20.0..=20.0).text("Offset X").step_by(0.5)).changed();
-        s_changed |= ui.add(egui::Slider::new(&mut oy, -20.0..=20.0).text("Offset Y").step_by(0.5)).changed();
-        s_changed |= ui.add(egui::Slider::new(&mut sb, 0.0..=30.0).text("Blur").step_by(0.5)).changed();
-        let mut s_col = egui::Color32::from_rgba_premultiplied(shadow.color[0], shadow.color[1], shadow.color[2], shadow.color[3]);
-        s_changed |= ui.color_edit_button_srgba(&mut s_col).changed();
-        let mut s_opacity = ((shadow.color[3] as f32 / 255.0) * 100.0).round();
-        if ui.add(egui::Slider::new(&mut s_opacity, 0.0..=100.0).text("Opacity").step_by(1.0).suffix("%")).changed() {
-            s_col = egui::Color32::from_rgba_premultiplied(s_col.r(), s_col.g(), s_col.b(), (s_opacity / 100.0 * 255.0).round() as u8);
-            s_changed = true;
-        }
-        if s_changed {
-            cmds.push(AppCommand::SetTitleShadow { clip_id, enabled: true, color: [s_col.r(), s_col.g(), s_col.b(), s_col.a()], offset_x: ox, offset_y: oy, blur: sb });
-        }
-    }
-    ui.add_space(8.0);
-
-    // Outline
-    ui.separator();
-    ui.label(egui::RichText::new("Outline").strong().size(11.0));
-    let outlines = td.outlines();
-    let has_outline = !outlines.is_empty();
-    let outline = outlines.first().copied().unwrap_or(klipp_timeline::TextOutline { color: [255, 255, 255, 255], width: 2.0 });
-    let mut outline_enabled = has_outline;
-    if ui.checkbox(&mut outline_enabled, "Enable Outline").changed() {
-        cmds.push(AppCommand::SetTitleOutline { clip_id, enabled: outline_enabled, color: outline.color, width: outline.width });
-    }
-    if has_outline {
-        let mut ow = outline.width;
-        let mut o_changed = false;
-        o_changed |= ui.add(egui::Slider::new(&mut ow, 0.5..=12.0).text("Width").step_by(0.5).suffix(" px")).changed();
-        let mut o_col = egui::Color32::from_rgba_premultiplied(outline.color[0], outline.color[1], outline.color[2], outline.color[3]);
-        o_changed |= ui.color_edit_button_srgba(&mut o_col).changed();
-        let mut o_opacity = ((outline.color[3] as f32 / 255.0) * 100.0).round();
-        if ui.add(egui::Slider::new(&mut o_opacity, 0.0..=100.0).text("Opacity").step_by(1.0).suffix("%")).changed() {
-            o_col = egui::Color32::from_rgba_premultiplied(o_col.r(), o_col.g(), o_col.b(), (o_opacity / 100.0 * 255.0).round() as u8);
-            o_changed = true;
-        }
-        if o_changed {
-            cmds.push(AppCommand::SetTitleOutline {
-                clip_id, enabled: true,
-                color: [o_col.r(), o_col.g(), o_col.b(), o_col.a()],
-                width: ow,
-            });
-        }
-    }
-    ui.add_space(8.0);
-
-    // Glow
-    ui.separator();
-    ui.label(egui::RichText::new("Glow").strong().size(11.0));
-    let has_glow = td.glow().is_some();
-    let glow = td.glow().unwrap_or(klipp_timeline::TextGlow { color: [0, 200, 255, 255], radius: 10.0, intensity: 0.8 });
-    let mut glow_enabled = has_glow;
-    if ui.checkbox(&mut glow_enabled, "Enable Glow").changed() {
-        cmds.push(AppCommand::SetTitleGlow { clip_id, enabled: glow_enabled, color: glow.color, radius: glow.radius, intensity: glow.intensity });
-    }
-    if has_glow {
-        let mut gr = glow.radius;
-        let mut gi = glow.intensity;
-        let mut g_changed = false;
-        g_changed |= ui.add(egui::Slider::new(&mut gr, 1.0..=40.0).text("Radius").step_by(0.5).suffix(" px")).changed();
-        g_changed |= ui.add(egui::Slider::new(&mut gi, 0.0..=1.0).text("Intensity").step_by(0.05)).changed();
-        let mut g_col = egui::Color32::from_rgba_premultiplied(glow.color[0], glow.color[1], glow.color[2], glow.color[3]);
-        g_changed |= ui.color_edit_button_srgba(&mut g_col).changed();
-        let mut g_opacity = ((glow.color[3] as f32 / 255.0) * 100.0).round();
-        if ui.add(egui::Slider::new(&mut g_opacity, 0.0..=100.0).text("Opacity").step_by(1.0).suffix("%")).changed() {
-            g_col = egui::Color32::from_rgba_premultiplied(g_col.r(), g_col.g(), g_col.b(), (g_opacity / 100.0 * 255.0).round() as u8);
-            g_changed = true;
-        }
-        if g_changed {
-            cmds.push(AppCommand::SetTitleGlow {
-                clip_id, enabled: true,
-                color: [g_col.r(), g_col.g(), g_col.b(), g_col.a()],
-                radius: gr, intensity: gi,
-            });
-        }
-    }
-    ui.add_space(8.0);
-
-    // Gradient Fill
-    ui.separator();
-    ui.label(egui::RichText::new("Gradient Fill").strong().size(11.0));
-    let has_gradient = td.gradient().is_some();
-    let gradient = td.gradient().clone().unwrap_or(klipp_timeline::TextGradient { top_color: [255, 200, 50, 255], bottom_color: [255, 50, 50, 255] });
-    let mut gradient_enabled = has_gradient;
-    if ui.checkbox(&mut gradient_enabled, "Enable Gradient").changed() {
-        cmds.push(AppCommand::SetTitleGradient { clip_id, enabled: gradient_enabled, top_color: gradient.top_color, bottom_color: gradient.bottom_color });
-    }
-    if has_gradient {
-        let mut grad_changed = false;
-        let mut top_col = egui::Color32::from_rgba_premultiplied(gradient.top_color[0], gradient.top_color[1], gradient.top_color[2], gradient.top_color[3]);
-        let mut bot_col = egui::Color32::from_rgba_premultiplied(gradient.bottom_color[0], gradient.bottom_color[1], gradient.bottom_color[2], gradient.bottom_color[3]);
-        ui.horizontal(|ui| {
-            ui.label("Top:");
-            grad_changed |= ui.color_edit_button_srgba(&mut top_col).changed();
-        });
-        ui.horizontal(|ui| {
-            ui.label("Bottom:");
-            grad_changed |= ui.color_edit_button_srgba(&mut bot_col).changed();
-        });
-        if grad_changed {
-            cmds.push(AppCommand::SetTitleGradient {
-                clip_id, enabled: true,
-                top_color: [top_col.r(), top_col.g(), top_col.b(), top_col.a()],
-                bottom_color: [bot_col.r(), bot_col.g(), bot_col.b(), bot_col.a()],
-            });
-        }
-    }
-    ui.add_space(8.0);
-
-    // ── Multiple Outlines ──
-    ui.separator();
-    ui.label(egui::RichText::new("Outline Layers").strong().size(11.0));
-    {
-        let outlines = &td.outlines();
-        let mut new_outlines = outlines.clone();
-        let mut outlines_changed = false;
-
-        for (i, ol) in outlines.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!("#{}", i + 1));
-                let mut col = egui::Color32::from_rgba_premultiplied(ol.color[0], ol.color[1], ol.color[2], ol.color[3]);
-                if ui.color_edit_button_srgba(&mut col).changed() {
-                    new_outlines[i].color = [col.r(), col.g(), col.b(), col.a()];
-                    outlines_changed = true;
-                }
-                let mut w_val = ol.width;
-                if ui.add(egui::DragValue::new(&mut w_val).range(0.5..=20.0).speed(0.5).suffix(" px")).changed() {
-                    new_outlines[i].width = w_val;
-                    outlines_changed = true;
-                }
-                if ui.small_button("\u{00D7}").clicked() {
-                    new_outlines.remove(i);
-                    outlines_changed = true;
-                }
-            });
-        }
-        if ui.small_button("+ Add Outline Layer").clicked() {
-            new_outlines.push(klipp_timeline::TextOutline {
-                color: [0, 0, 0, 255],
-                width: 4.0,
-            });
-            outlines_changed = true;
-        }
-        if outlines_changed {
-            let outline_tuples: Vec<([u8; 4], f32)> = new_outlines.iter().map(|o| (o.color, o.width)).collect();
-            cmds.push(AppCommand::SetTitleOutlines { clip_id, outlines: outline_tuples });
-        }
-    }
-    ui.add_space(8.0);
-
-    // ── Inner Shadow ──
-    ui.separator();
-    ui.label(egui::RichText::new("Inner Shadow").strong().size(11.0));
-    let has_inner = td.inner_shadow().is_some();
-    let inner = td.inner_shadow().unwrap_or(klipp_timeline::InnerShadow { color: [0, 0, 0, 180], offset_x: 2.0, offset_y: 2.0, blur: 3.0 });
-    let mut inner_enabled = has_inner;
-    if ui.checkbox(&mut inner_enabled, "Enable").changed() {
-        cmds.push(AppCommand::SetTitleInnerShadow { clip_id, enabled: inner_enabled, color: inner.color, offset_x: inner.offset_x, offset_y: inner.offset_y, blur: inner.blur });
-    }
-    if has_inner {
-        let mut ix = inner.offset_x;
-        let mut iy = inner.offset_y;
-        let mut ib = inner.blur;
-        let mut i_changed = false;
-        let mut i_col = egui::Color32::from_rgba_premultiplied(inner.color[0], inner.color[1], inner.color[2], inner.color[3]);
-        i_changed |= ui.color_edit_button_srgba(&mut i_col).changed();
-        let mut i_opacity = ((inner.color[3] as f32 / 255.0) * 100.0).round();
-        if ui.add(egui::Slider::new(&mut i_opacity, 0.0..=100.0).text("Opacity").step_by(1.0).suffix("%")).changed() {
-            i_col = egui::Color32::from_rgba_premultiplied(i_col.r(), i_col.g(), i_col.b(), (i_opacity / 100.0 * 255.0).round() as u8);
-            i_changed = true;
-        }
-        i_changed |= ui.add(egui::Slider::new(&mut ix, -20.0..=20.0).text("Offset X").step_by(0.5)).changed();
-        i_changed |= ui.add(egui::Slider::new(&mut iy, -20.0..=20.0).text("Offset Y").step_by(0.5)).changed();
-        i_changed |= ui.add(egui::Slider::new(&mut ib, 0.0..=20.0).text("Blur").step_by(0.5)).changed();
-        if i_changed {
-            cmds.push(AppCommand::SetTitleInnerShadow {
-                clip_id, enabled: true,
-                color: [i_col.r(), i_col.g(), i_col.b(), i_col.a()],
-                offset_x: ix, offset_y: iy, blur: ib,
-            });
-        }
-    }
-    ui.add_space(8.0);
-
-    // ── Pattern Fill ──
-    ui.separator();
-    ui.label(egui::RichText::new("Pattern Fill").strong().size(11.0));
-    {
-        let pattern_idx: usize = match &td.pattern_fill() {
-            None => 0,
-            Some(klipp_timeline::TextPattern::HorizontalStripes { .. }) => 1,
-            Some(klipp_timeline::TextPattern::VerticalStripes { .. }) => 2,
-            Some(klipp_timeline::TextPattern::Checkerboard { .. }) => 3,
-            Some(klipp_timeline::TextPattern::DiagonalStripes { .. }) => 4,
-        };
-        let labels = ["None", "H-Stripes", "V-Stripes", "Checker", "Diagonal"];
-        let mut new_idx = pattern_idx;
-        egui::ComboBox::from_id_salt("title_pattern_type")
-            .selected_text(labels[pattern_idx])
-            .width(120.0)
-            .show_ui(ui, |ui| {
-                for (i, label) in labels.iter().enumerate() {
-                    if ui.selectable_label(pattern_idx == i, *label).clicked() {
-                        new_idx = i;
-                    }
-                }
-            });
-        if new_idx != pattern_idx {
-            cmds.push(AppCommand::SetTitlePattern {
-                clip_id,
-                pattern_kind: new_idx as u8,
-                color_a: [255, 255, 255, 255],
-                color_b: [0, 0, 0, 255],
-                size: 10.0,
-            });
-        }
-        // Show pattern params if active
-        if let Some(pf) = &td.pattern_fill() {
-            let (mut ca, mut cb, mut size) = match pf {
-                klipp_timeline::TextPattern::HorizontalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
-                klipp_timeline::TextPattern::VerticalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
-                klipp_timeline::TextPattern::Checkerboard { color_a, color_b, cell_size } => (*color_a, *color_b, *cell_size),
-                klipp_timeline::TextPattern::DiagonalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
-            };
-            let mut pf_changed = false;
-            let mut col_a = egui::Color32::from_rgba_premultiplied(ca[0], ca[1], ca[2], ca[3]);
-            let mut col_b = egui::Color32::from_rgba_premultiplied(cb[0], cb[1], cb[2], cb[3]);
-            ui.horizontal(|ui| {
-                ui.label("A:");
-                pf_changed |= ui.color_edit_button_srgba(&mut col_a).changed();
-                ui.label("B:");
-                pf_changed |= ui.color_edit_button_srgba(&mut col_b).changed();
-            });
-            pf_changed |= ui.add(egui::Slider::new(&mut size, 2.0..=50.0).text("Size").step_by(1.0).suffix(" px")).changed();
-            if pf_changed {
-                ca = [col_a.r(), col_a.g(), col_a.b(), col_a.a()];
-                cb = [col_b.r(), col_b.g(), col_b.b(), col_b.a()];
-                cmds.push(AppCommand::SetTitlePattern {
-                    clip_id,
-                    pattern_kind: pattern_idx as u8,
-                    color_a: ca,
-                    color_b: cb,
-                    size,
-                });
-            }
-        }
-    }
-    ui.add_space(8.0);
-
-    // ── Texture Fill ──
-    ui.separator();
-    ui.label(egui::RichText::new("Texture Fill").strong().size(11.0));
-    {
-        let has_texture = td.texture_fill_path().is_some();
-        let mut tex_enabled = has_texture;
-        if ui.checkbox(&mut tex_enabled, "Enable").changed()
-            && !tex_enabled {
-                cmds.push(AppCommand::SetTitleTextureFill { clip_id, path: None });
-            }
-        if has_texture {
-            if let Some(ref tex_path) = td.texture_fill_path() {
-                let display_name = std::path::Path::new(tex_path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(tex_path);
-                ui.horizontal(|ui| {
-                    ui.label("File:");
-                    ui.label(egui::RichText::new(display_name).monospace().size(10.0));
-                });
-            }
-        }
-        if ui.button("Browse...").clicked() {
-            if let Some(path) = rfd::FileDialog::new()
-                // Texture-fill picker accepts the standard image set PLUS
-                // Targa (.tga) which is uniquely supported here for legacy
-                // texture workflows. Built dynamically from the canonical
-                // klipp_core list so adding any future image format
-                // automatically appears here.
-                .add_filter("Images", &{
-                    let mut exts: Vec<&str> = klipp_core::media_extensions::IMAGE_EXTENSIONS.to_vec();
-                    exts.push("tga");
-                    exts
-                })
-                .pick_file()
-            {
-                cmds.push(AppCommand::SetTitleTextureFill {
-                    clip_id,
-                    path: Some(path.to_string_lossy().to_string()),
-                });
-            }
-        }
-    }
-    ui.add_space(8.0);
-
-    // ── 3D Extrusion ──
-    ui.separator();
-    ui.label(egui::RichText::new("3D Extrusion").strong().size(11.0));
-    let has_ext = td.extrusion().is_some();
-    let ext = td.extrusion().unwrap_or(klipp_timeline::TextExtrusion {
-        depth: 10.0,
-        angle: 135.0,
-        face_color: [0, 0, 0, 0],
-        side_color: [80, 60, 40, 255],
-        lighting: 0.5,
-    });
-    let mut ext_enabled = has_ext;
-    if ui.checkbox(&mut ext_enabled, "Enable").changed() {
-        cmds.push(AppCommand::SetTitleExtrusion {
-            clip_id, enabled: ext_enabled,
-            depth: ext.depth, angle: ext.angle,
-            face_color: ext.face_color, side_color: ext.side_color, lighting: ext.lighting,
-        });
-    }
-    if has_ext {
-        let mut depth = ext.depth;
-        let mut angle = ext.angle;
-        let mut lighting = ext.lighting;
-        let mut ext_changed = false;
-        ext_changed |= ui.add(egui::Slider::new(&mut depth, 1.0..=50.0).text("Depth").step_by(0.5).suffix(" px")).changed();
-        ext_changed |= ui.add(egui::Slider::new(&mut angle, 0.0..=360.0).text("Angle").step_by(1.0).suffix("\u{00b0}")).changed();
-        let mut face_col = egui::Color32::from_rgba_premultiplied(ext.face_color[0], ext.face_color[1], ext.face_color[2], ext.face_color[3]);
-        let mut side_col = egui::Color32::from_rgba_premultiplied(ext.side_color[0], ext.side_color[1], ext.side_color[2], ext.side_color[3]);
-        ui.horizontal(|ui| {
-            ui.label("Face:");
-            ext_changed |= ui.color_edit_button_srgba(&mut face_col).changed();
-        });
-        ui.horizontal(|ui| {
-            ui.label("Side:");
-            ext_changed |= ui.color_edit_button_srgba(&mut side_col).changed();
-        });
-        ext_changed |= ui.add(egui::Slider::new(&mut lighting, 0.0..=1.0).text("Lighting").step_by(0.05)).changed();
-        if ext_changed {
-            cmds.push(AppCommand::SetTitleExtrusion {
-                clip_id, enabled: true,
-                depth, angle,
-                face_color: [face_col.r(), face_col.g(), face_col.b(), face_col.a()],
-                side_color: [side_col.r(), side_col.g(), side_col.b(), side_col.a()],
-                lighting,
-            });
-        }
-    }
-    ui.add_space(8.0);
-
-    // ── Typography ──
-    ui.separator();
-    ui.label(egui::RichText::new("Typography").strong().size(11.0));
+        if title_group_is_open(ui, theme, clip_id, "Typography", status) {
+            ui.add_space(6.0);
+    // Typography
     let mut tracking = td.tracking();
     if ui.add(egui::DragValue::new(&mut tracking).range(-10.0..=50.0).speed(0.2).suffix(" px").prefix("Tracking: ").fixed_decimals(1)).changed() {
         cmds.push(AppCommand::SetTitleTracking { clip_id, tracking });
@@ -1748,33 +2015,6 @@ fn show_title_editor(
             .fixed_decimals(0),
     ).changed() {
         cmds.push(AppCommand::SetTitleBaselineShift { clip_id, shift_px: baseline });
-    }
-    {
-        // Chromatic aberration: 0 = off, sub-pixel = silent, max ~40px.
-        let mut ca = td.primary_text().map_or(0.0, |tb| tb.chromatic_aberration_px);
-        let resp = ui.add(
-            egui::DragValue::new(&mut ca)
-                .range(0.0..=40.0)
-                .speed(0.1)
-                .fixed_decimals(1)
-                .prefix("Chromatic aberration: ")
-                .suffix(" px"),
-        );
-        if resp.changed() {
-            cmds.push(AppCommand::SetTitleChromaticAberration { clip_id, offset_px: ca });
-        }
-    }
-    {
-        // Glitch intensity 0..1.
-        let mut g = td.primary_text().map_or(0.0, |tb| tb.glitch_intensity);
-        let resp = ui.add(
-            egui::Slider::new(&mut g, 0.0..=1.0)
-                .step_by(0.01)
-                .text("Glitch"),
-        );
-        if resp.changed() {
-            cmds.push(AppCommand::SetTitleGlitch { clip_id, intensity: g });
-        }
     }
     ui.horizontal(|ui| {
         // Neon preset — one-click style. Uses the resting fill colour
@@ -1882,136 +2122,83 @@ fn show_title_editor(
     }
     ui.add_space(8.0);
 
-    // ── Text Path ──
-    ui.separator();
-    ui.label(egui::RichText::new("Text Path").strong().size(11.0));
+            ui.add_space(8.0);
+        }
+    }
+    ui.add_space(2.0);
+
     {
-        let path_idx: usize = match &td.text_path() {
-            None => 0,
-            Some(klipp_timeline::TextPath::Arc { .. }) => 1,
-            Some(klipp_timeline::TextPath::Circle { .. }) => 2,
-            Some(klipp_timeline::TextPath::Wave { .. }) => 3,
+        let status = crate::widgets::inspector_group::GroupStatus {
+            count: None,
+            active: !matches!(td.background, klipp_timeline::TitleBackground::None) || td.objects.iter().any(|o| (o.opacity - 1.0).abs() > 1e-6),
         };
-        let path_labels = ["None", "Arc", "Circle", "Wave"];
-        let mut new_idx = path_idx;
-        egui::ComboBox::from_label("Type")
-            .selected_text(path_labels[path_idx])
-            .width(100.0)
-            .show_ui(ui, |ui| {
-                for (i, label) in path_labels.iter().enumerate() {
-                    if ui.selectable_label(path_idx == i, *label).clicked() {
-                        new_idx = i;
-                    }
-                }
-            });
-        if new_idx != path_idx {
-            let (pk, p1, p2, p3) = match new_idx {
-                1 => (1u8, 200.0f32, 0.0f32, 180.0f32),
-                2 => (2, 200.0, 0.0, 0.0),
-                3 => (3, 30.0, 2.0, 0.0),
-                _ => (0, 0.0, 0.0, 0.0),
-            };
-            cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: pk, p1, p2, p3 });
-        }
-        // Show path params if active
-        if let Some(path) = &td.text_path() {
-            let mut path_changed = false;
-            match path {
-                klipp_timeline::TextPath::Arc { radius, start_angle, sweep } => {
-                    let (mut r, mut sa, mut sw) = (*radius, *start_angle, *sweep);
-                    path_changed |= ui.add(egui::DragValue::new(&mut r).range(50.0..=800.0).speed(1.0).suffix(" px").prefix("Radius: ")).changed();
-                    path_changed |= ui.add(egui::DragValue::new(&mut sa).range(-360.0..=360.0).speed(1.0).suffix("\u{00b0}").prefix("Start: ")).changed();
-                    path_changed |= ui.add(egui::DragValue::new(&mut sw).range(-360.0..=360.0).speed(1.0).suffix("\u{00b0}").prefix("Sweep: ")).changed();
-                    if path_changed {
-                        cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: 1, p1: r, p2: sa, p3: sw });
-                    }
-                }
-                klipp_timeline::TextPath::Circle { radius } => {
-                    let mut r = *radius;
-                    path_changed |= ui.add(egui::DragValue::new(&mut r).range(50.0..=800.0).speed(1.0).suffix(" px").prefix("Radius: ")).changed();
-                    if path_changed {
-                        cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: 2, p1: r, p2: 0.0, p3: 0.0 });
-                    }
-                }
-                klipp_timeline::TextPath::Wave { amplitude, frequency, phase } => {
-                    let (mut a, mut f, mut p) = (*amplitude, *frequency, *phase);
-                    path_changed |= ui.add(egui::DragValue::new(&mut a).range(5.0..=200.0).speed(0.5).suffix(" px").prefix("Amplitude: ")).changed();
-                    path_changed |= ui.add(egui::DragValue::new(&mut f).range(0.1..=10.0).speed(0.05).prefix("Frequency: ").fixed_decimals(1)).changed();
-                    path_changed |= ui.add(egui::DragValue::new(&mut p).range(0.0..=360.0).speed(1.0).suffix("\u{00b0}").prefix("Phase: ")).changed();
-                    if path_changed {
-                        cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: 3, p1: a, p2: f, p3: p });
-                    }
-                }
-            }
-        }
-    }
-    ui.add_space(8.0);
-
-    // ── Character Animation ──
-    ui.separator();
-    ui.label(egui::RichText::new("Character Animation").strong().size(11.0));
+        if title_group_is_open(ui, theme, clip_id, "Background & Layer Opacity", status) {
+            ui.add_space(6.0);
+    // Per-object opacity. Targets the same object as the other
+    // typography / styling commands (selected layer, falling back to
+    // the first object). Independent of clip-level opacity_keyframes
+    // — each layer can be individually faded.
     {
-        let mut enabled = td.char_animation().is_some();
-        if ui.checkbox(&mut enabled, "Enable").changed() {
-            cmds.push(AppCommand::SetTitleCharAnimation {
-                clip_id,
-                enabled,
-                stagger: 0.05,
-                entrance: 1, // FadeIn
-                wave_amplitude: 0.0,
-                wave_speed: 1.0,
-            });
+        let target_oid: Option<klipp_timeline::TitleObjectId> = state
+            .selected_title_object
+            .filter(|(c, _)| *c == clip_id)
+            .map(|(_, oid)| oid);
+        let target_obj = match target_oid {
+            Some(oid) => td.object(oid),
+            None => td.objects.first(),
+        };
+        if let Some(obj) = target_obj {
+            let object_id = obj.id.0;
+            let mut op = obj.opacity;
+            ui.label(egui::RichText::new("Layer Opacity").strong().size(11.0));
+            if ui.add(egui::Slider::new(&mut op, 0.0..=1.0).step_by(0.01)).changed() {
+                cmds.push(AppCommand::SetTitleObjectOpacity { clip_id, object_id, opacity: op });
+            }
+            ui.add_space(8.0);
         }
-        if let Some(anim) = &td.char_animation() {
-            let mut stagger = anim.stagger;
-            let mut wave_amp = anim.wave_amplitude;
-            let mut wave_spd = anim.wave_speed;
-            let entrance_idx: usize = match anim.entrance {
-                klipp_timeline::CharEntrance::None => 0,
-                klipp_timeline::CharEntrance::FadeIn => 1,
-                klipp_timeline::CharEntrance::SlideUp => 2,
-                klipp_timeline::CharEntrance::SlideDown => 3,
-                klipp_timeline::CharEntrance::SlideLeft => 4,
-                klipp_timeline::CharEntrance::SlideRight => 5,
-                klipp_timeline::CharEntrance::ScaleUp => 6,
-                klipp_timeline::CharEntrance::ScaleDown => 7,
-                klipp_timeline::CharEntrance::Pop => 8,
-                klipp_timeline::CharEntrance::BlurIn => 9,
-            };
-            let entrance_labels = [
-                "None", "Fade In", "Slide Up", "Slide Down", "Slide Left", "Slide Right",
-                "Scale Up", "Scale Down", "Pop", "Blur In",
-            ];
-            let mut new_entrance_idx = entrance_idx;
-            egui::ComboBox::from_label("Entrance")
-                .selected_text(entrance_labels[entrance_idx])
-                .width(100.0)
-                .show_ui(ui, |ui| {
-                    for (i, label) in entrance_labels.iter().enumerate() {
-                        if ui.selectable_label(entrance_idx == i, *label).clicked() {
-                            new_entrance_idx = i;
-                        }
-                    }
-                });
-            let mut anim_changed = new_entrance_idx != entrance_idx;
-            anim_changed |= ui.add(egui::DragValue::new(&mut stagger).range(0.0..=0.5).speed(0.005).suffix(" s").prefix("Stagger: ").fixed_decimals(3)).changed();
-            anim_changed |= ui.add(egui::DragValue::new(&mut wave_amp).range(0.0..=100.0).speed(0.5).suffix(" px").prefix("Wave Amp: ").fixed_decimals(1)).changed();
-            anim_changed |= ui.add(egui::DragValue::new(&mut wave_spd).range(0.1..=10.0).speed(0.05).suffix(" Hz").prefix("Wave Speed: ").fixed_decimals(1)).changed();
-            if anim_changed {
-                cmds.push(AppCommand::SetTitleCharAnimation {
-                    clip_id,
-                    enabled: true,
-                    stagger,
-                    entrance: new_entrance_idx as u8,
-                    wave_amplitude: wave_amp,
-                    wave_speed: wave_spd,
-                });
+    }
+
+    // Background
+    let bg_kind: u8 = match &td.background { klipp_timeline::TitleBackground::None => 0, klipp_timeline::TitleBackground::Color { .. } => 1, klipp_timeline::TitleBackground::FullFrame { .. } => 2 };
+    let bg_color = match &td.background { klipp_timeline::TitleBackground::Color { color, .. } => *color, klipp_timeline::TitleBackground::FullFrame { color } => *color, _ => [0, 0, 0, 180] };
+    ui.horizontal(|ui| {
+        for (val, label) in [(0, "None"), (1, "Box"), (2, "Full")] {
+            if ui.selectable_label(bg_kind == val, label).clicked() && bg_kind != val {
+                cmds.push(AppCommand::SetTitleBackground { clip_id, bg_kind: val, color: bg_color });
+            }
+        }
+    });
+    if bg_kind > 0 {
+        let mut bg_col = egui::Color32::from_rgba_premultiplied(bg_color[0], bg_color[1], bg_color[2], bg_color[3]);
+        if ui.color_edit_button_srgba(&mut bg_col).changed() {
+            cmds.push(AppCommand::SetTitleBackground { clip_id, bg_kind, color: [bg_col.r(), bg_col.g(), bg_col.b(), bg_col.a()] });
+        }
+        // Round-trip stable: convert alpha to percentage and back to ensure the slider
+        // doesn't report .changed() every frame due to float rounding.
+        let bg_opacity_raw = (bg_color[3] as f32 / 255.0) * 100.0;
+        let mut bg_opacity = bg_opacity_raw.round();
+        if ui.add(egui::Slider::new(&mut bg_opacity, 0.0..=100.0).text("Opacity").step_by(1.0).suffix("%")).changed() {
+            let a = (bg_opacity / 100.0 * 255.0).round() as u8;
+            if a != bg_color[3] {
+                cmds.push(AppCommand::SetTitleBackground { clip_id, bg_kind, color: [bg_color[0], bg_color[1], bg_color[2], a] });
             }
         }
     }
     ui.add_space(8.0);
 
-    // ── Scroll & Animation ──
+            ui.add_space(8.0);
+        }
+    }
+    ui.add_space(2.0);
+
+    {
+        let status = crate::widgets::inspector_group::GroupStatus {
+            count: None,
+            active: !matches!(td.animation_type, klipp_timeline::TitleAnimationType::Static),
+        };
+        if title_group_is_open(ui, theme, clip_id, "Animation", status) {
+            ui.add_space(6.0);
+    // Animation
     // Renamed from "Title Animation" so the direction picker reads as
     // the canonical place to choose scroll direction — the browser
     // ships generic Credits Roll / News Ticker presets and users
@@ -2019,8 +2206,6 @@ fn show_title_editor(
     // template. Scroll/crawl variants auto-generate
     // transform_pos_x/y_keyframes; Typewriter overrides write_on
     // per-frame at render time; Static clears any existing keyframes.
-    ui.separator();
-    ui.label(egui::RichText::new("Scroll & Animation").strong().size(11.0));
     {
         use klipp_timeline::TitleAnimationType as T;
         // Single source of truth: every variant's display label, kind
@@ -2127,53 +2312,42 @@ fn show_title_editor(
                 .selected_text(kind_label(current_kind))
                 .show_ui(ui, |ui| {
                     ui.selectable_value(&mut selected, 0, kind_label(0));
-                    ui.separator();
                     ui.label(egui::RichText::new("Continuous").size(10.0).color(theme.text_dim));
                     ui.selectable_value(&mut selected, 1, kind_label(1));
                     ui.selectable_value(&mut selected, 2, kind_label(2));
                     ui.selectable_value(&mut selected, 3, kind_label(3));
                     ui.selectable_value(&mut selected, 4, kind_label(4));
                     ui.selectable_value(&mut selected, 5, kind_label(5));
-                    ui.separator();
                     ui.label(egui::RichText::new("Fade").size(10.0).color(theme.text_dim));
                     ui.selectable_value(&mut selected, 6, kind_label(6));
                     ui.selectable_value(&mut selected, 7, kind_label(7));
                     ui.selectable_value(&mut selected, 8, kind_label(8));
-                    ui.separator();
                     ui.label(egui::RichText::new("Flashing").size(10.0).color(theme.text_dim));
                     ui.selectable_value(&mut selected, 9, kind_label(9));
                     ui.selectable_value(&mut selected, 10, kind_label(10));
                     ui.selectable_value(&mut selected, 11, kind_label(11));
-                    ui.separator();
                     ui.label(egui::RichText::new("Zoom").size(10.0).color(theme.text_dim));
                     ui.selectable_value(&mut selected, 12, kind_label(12));
                     ui.selectable_value(&mut selected, 13, kind_label(13));
-                    ui.separator();
                     ui.label(egui::RichText::new("Slide In").size(10.0).color(theme.text_dim));
                     ui.selectable_value(&mut selected, 14, kind_label(14));
                     ui.selectable_value(&mut selected, 15, kind_label(15));
                     ui.selectable_value(&mut selected, 16, kind_label(16));
                     ui.selectable_value(&mut selected, 17, kind_label(17));
-                    ui.separator();
                     ui.label(egui::RichText::new("Pose Entrance").size(10.0).color(theme.text_dim));
                     ui.selectable_value(&mut selected, 18, kind_label(18));
                     ui.selectable_value(&mut selected, 19, kind_label(19));
-                    ui.separator();
                     ui.label(egui::RichText::new("Continuous Motion").size(10.0).color(theme.text_dim));
                     ui.selectable_value(&mut selected, 20, kind_label(20));
                     ui.selectable_value(&mut selected, 21, kind_label(21));
-                    ui.separator();
                     ui.label(egui::RichText::new("Colour").size(10.0).color(theme.text_dim));
                     ui.selectable_value(&mut selected, 22, kind_label(22));
-                    ui.separator();
                     ui.label(egui::RichText::new("Looping").size(10.0).color(theme.text_dim));
                     ui.selectable_value(&mut selected, 23, kind_label(23));
-                    ui.separator();
                     ui.label(egui::RichText::new("Reveal / Counter").size(10.0).color(theme.text_dim));
                     ui.selectable_value(&mut selected, 24, kind_label(24));
                     ui.selectable_value(&mut selected, 25, kind_label(25));
                     ui.selectable_value(&mut selected, 26, kind_label(26));
-                    ui.separator();
                     ui.label(egui::RichText::new("Two-Colour Blend").size(10.0).color(theme.text_dim));
                     ui.selectable_value(&mut selected, 27, kind_label(27));
                 });
@@ -2510,7 +2684,6 @@ fn show_title_editor(
     ui.add_space(8.0);
 
     // ── Motion Blur ──
-    ui.separator();
     ui.label(egui::RichText::new("Motion Blur").strong().size(11.0));
     {
         let mut enabled = td.motion_blur().is_some();
@@ -2634,6 +2807,246 @@ fn show_title_editor(
             cmds.push(AppCommand::RemoveVideoKeyframe { clip_id, param: klipp_core::VideoParam::Scale, time_secs: kf.time_secs });
         }
     }
+            ui.add_space(8.0);
+        }
+    }
+    ui.add_space(2.0);
+
+    {
+        let status = crate::widgets::inspector_group::GroupStatus {
+            count: None,
+            active: td.extrusion().is_some_and(|e| e.enabled) || td.primary_text().is_some_and(|tb| tb.chromatic_aberration_px != 0.0 || tb.glitch_intensity != 0.0 || tb.motion_blur.is_some_and(|m| m.enabled)) || td.objects.iter().any(|o| o.transform.rotation != 0.0),
+        };
+        if title_group_is_open(ui, theme, clip_id, "3D & Distortion", status) {
+            ui.add_space(6.0);
+    // 3D Extrusion (pseudo-depth)
+    let has_ext = td.extrusion().is_some();
+    let ext = td.extrusion().unwrap_or(klipp_timeline::TextExtrusion {
+        depth: 10.0,
+        angle: 135.0,
+        face_color: [0, 0, 0, 0],
+        side_color: [80, 60, 40, 255],
+        lighting: 0.5,
+     enabled: true });
+    let mut ext_enabled = has_ext;
+    if ui.checkbox(&mut ext_enabled, "Enable").changed() {
+        cmds.push(AppCommand::SetTitleExtrusion {
+            clip_id, enabled: ext_enabled,
+            depth: ext.depth, angle: ext.angle,
+            face_color: ext.face_color, side_color: ext.side_color, lighting: ext.lighting,
+        });
+    }
+    if has_ext {
+        let mut depth = ext.depth;
+        let mut angle = ext.angle;
+        let mut lighting = ext.lighting;
+        let mut ext_changed = false;
+        ext_changed |= ui.add(egui::Slider::new(&mut depth, 1.0..=50.0).text("Depth").step_by(0.5).suffix(" px")).changed();
+        ext_changed |= ui.add(egui::Slider::new(&mut angle, 0.0..=360.0).text("Angle").step_by(1.0).suffix("\u{00b0}")).changed();
+        let mut face_col = egui::Color32::from_rgba_premultiplied(ext.face_color[0], ext.face_color[1], ext.face_color[2], ext.face_color[3]);
+        let mut side_col = egui::Color32::from_rgba_premultiplied(ext.side_color[0], ext.side_color[1], ext.side_color[2], ext.side_color[3]);
+        ui.horizontal(|ui| {
+            ui.label("Face:");
+            ext_changed |= ui.color_edit_button_srgba(&mut face_col).changed();
+        });
+        ui.horizontal(|ui| {
+            ui.label("Side:");
+            ext_changed |= ui.color_edit_button_srgba(&mut side_col).changed();
+        });
+        ext_changed |= ui.add(egui::Slider::new(&mut lighting, 0.0..=1.0).text("Lighting").step_by(0.05)).changed();
+        if ext_changed {
+            cmds.push(AppCommand::SetTitleExtrusion {
+                clip_id, enabled: true,
+                depth, angle,
+                face_color: [face_col.r(), face_col.g(), face_col.b(), face_col.a()],
+                side_color: [side_col.r(), side_col.g(), side_col.b(), side_col.a()],
+                lighting,
+            });
+        }
+    }
+    ui.add_space(8.0);
+
+    {
+        // Chromatic aberration: 0 = off, sub-pixel = silent, max ~40px.
+        let mut ca = td.primary_text().map_or(0.0, |tb| tb.chromatic_aberration_px);
+        let resp = ui.add(
+            egui::DragValue::new(&mut ca)
+                .range(0.0..=40.0)
+                .speed(0.1)
+                .fixed_decimals(1)
+                .prefix("Chromatic aberration: ")
+                .suffix(" px"),
+        );
+        if resp.changed() {
+            cmds.push(AppCommand::SetTitleChromaticAberration { clip_id, offset_px: ca });
+        }
+    }
+    {
+        // Glitch intensity 0..1.
+        let mut g = td.primary_text().map_or(0.0, |tb| tb.glitch_intensity);
+        let resp = ui.add(
+            egui::Slider::new(&mut g, 0.0..=1.0)
+                .step_by(0.01)
+                .text("Glitch"),
+        );
+        if resp.changed() {
+            cmds.push(AppCommand::SetTitleGlitch { clip_id, intensity: g });
+        }
+    }
+            ui.add_space(8.0);
+        }
+    }
+    ui.add_space(2.0);
+
+    {
+        let status = crate::widgets::inspector_group::GroupStatus {
+            count: None,
+            active: td.text_path().is_some(),
+        };
+        if title_group_is_open(ui, theme, clip_id, "Text Path", status) {
+            ui.add_space(6.0);
+    // Text Path
+    {
+        let path_idx: usize = match &td.text_path() {
+            None => 0,
+            Some(klipp_timeline::TextPath::Arc { .. }) => 1,
+            Some(klipp_timeline::TextPath::Circle { .. }) => 2,
+            Some(klipp_timeline::TextPath::Wave { .. }) => 3,
+        };
+        let path_labels = ["None", "Arc", "Circle", "Wave"];
+        let mut new_idx = path_idx;
+        egui::ComboBox::from_label("Type")
+            .selected_text(path_labels[path_idx])
+            .width(100.0)
+            .show_ui(ui, |ui| {
+                for (i, label) in path_labels.iter().enumerate() {
+                    if ui.selectable_label(path_idx == i, *label).clicked() {
+                        new_idx = i;
+                    }
+                }
+            });
+        if new_idx != path_idx {
+            let (pk, p1, p2, p3) = match new_idx {
+                1 => (1u8, 200.0f32, 0.0f32, 180.0f32),
+                2 => (2, 200.0, 0.0, 0.0),
+                3 => (3, 30.0, 2.0, 0.0),
+                _ => (0, 0.0, 0.0, 0.0),
+            };
+            cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: pk, p1, p2, p3 });
+        }
+        // Show path params if active
+        if let Some(path) = &td.text_path() {
+            let mut path_changed = false;
+            match path {
+                klipp_timeline::TextPath::Arc { radius, start_angle, sweep } => {
+                    let (mut r, mut sa, mut sw) = (*radius, *start_angle, *sweep);
+                    path_changed |= ui.add(egui::DragValue::new(&mut r).range(50.0..=800.0).speed(1.0).suffix(" px").prefix("Radius: ")).changed();
+                    path_changed |= ui.add(egui::DragValue::new(&mut sa).range(-360.0..=360.0).speed(1.0).suffix("\u{00b0}").prefix("Start: ")).changed();
+                    path_changed |= ui.add(egui::DragValue::new(&mut sw).range(-360.0..=360.0).speed(1.0).suffix("\u{00b0}").prefix("Sweep: ")).changed();
+                    if path_changed {
+                        cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: 1, p1: r, p2: sa, p3: sw });
+                    }
+                }
+                klipp_timeline::TextPath::Circle { radius } => {
+                    let mut r = *radius;
+                    path_changed |= ui.add(egui::DragValue::new(&mut r).range(50.0..=800.0).speed(1.0).suffix(" px").prefix("Radius: ")).changed();
+                    if path_changed {
+                        cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: 2, p1: r, p2: 0.0, p3: 0.0 });
+                    }
+                }
+                klipp_timeline::TextPath::Wave { amplitude, frequency, phase } => {
+                    let (mut a, mut f, mut p) = (*amplitude, *frequency, *phase);
+                    path_changed |= ui.add(egui::DragValue::new(&mut a).range(5.0..=200.0).speed(0.5).suffix(" px").prefix("Amplitude: ")).changed();
+                    path_changed |= ui.add(egui::DragValue::new(&mut f).range(0.1..=10.0).speed(0.05).prefix("Frequency: ").fixed_decimals(1)).changed();
+                    path_changed |= ui.add(egui::DragValue::new(&mut p).range(0.0..=360.0).speed(1.0).suffix("\u{00b0}").prefix("Phase: ")).changed();
+                    if path_changed {
+                        cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: 3, p1: a, p2: f, p3: p });
+                    }
+                }
+            }
+        }
+    }
+    ui.add_space(8.0);
+
+            ui.add_space(8.0);
+        }
+    }
+    ui.add_space(2.0);
+
+    {
+        let status = crate::widgets::inspector_group::GroupStatus {
+            count: None,
+            active: td.char_animation().is_some_and(|c| c.enabled),
+        };
+        if title_group_is_open(ui, theme, clip_id, "Character Animation", status) {
+            ui.add_space(6.0);
+    // Character Animation
+    {
+        let mut enabled = td.char_animation().is_some();
+        if ui.checkbox(&mut enabled, "Enable").changed() {
+            cmds.push(AppCommand::SetTitleCharAnimation {
+                clip_id,
+                enabled,
+                stagger: 0.05,
+                entrance: 1, // FadeIn
+                wave_amplitude: 0.0,
+                wave_speed: 1.0,
+            });
+        }
+        if let Some(anim) = &td.char_animation() {
+            let mut stagger = anim.stagger;
+            let mut wave_amp = anim.wave_amplitude;
+            let mut wave_spd = anim.wave_speed;
+            let entrance_idx: usize = match anim.entrance {
+                klipp_timeline::CharEntrance::None => 0,
+                klipp_timeline::CharEntrance::FadeIn => 1,
+                klipp_timeline::CharEntrance::SlideUp => 2,
+                klipp_timeline::CharEntrance::SlideDown => 3,
+                klipp_timeline::CharEntrance::SlideLeft => 4,
+                klipp_timeline::CharEntrance::SlideRight => 5,
+                klipp_timeline::CharEntrance::ScaleUp => 6,
+                klipp_timeline::CharEntrance::ScaleDown => 7,
+                klipp_timeline::CharEntrance::Pop => 8,
+                klipp_timeline::CharEntrance::BlurIn => 9,
+            };
+            let entrance_labels = [
+                "None", "Fade In", "Slide Up", "Slide Down", "Slide Left", "Slide Right",
+                "Scale Up", "Scale Down", "Pop", "Blur In",
+            ];
+            let mut new_entrance_idx = entrance_idx;
+            egui::ComboBox::from_label("Entrance")
+                .selected_text(entrance_labels[entrance_idx])
+                .width(100.0)
+                .show_ui(ui, |ui| {
+                    for (i, label) in entrance_labels.iter().enumerate() {
+                        if ui.selectable_label(entrance_idx == i, *label).clicked() {
+                            new_entrance_idx = i;
+                        }
+                    }
+                });
+            let mut anim_changed = new_entrance_idx != entrance_idx;
+            anim_changed |= ui.add(egui::DragValue::new(&mut stagger).range(0.0..=0.5).speed(0.005).suffix(" s").prefix("Stagger: ").fixed_decimals(3)).changed();
+            anim_changed |= ui.add(egui::DragValue::new(&mut wave_amp).range(0.0..=100.0).speed(0.5).suffix(" px").prefix("Wave Amp: ").fixed_decimals(1)).changed();
+            anim_changed |= ui.add(egui::DragValue::new(&mut wave_spd).range(0.1..=10.0).speed(0.05).suffix(" Hz").prefix("Wave Speed: ").fixed_decimals(1)).changed();
+            if anim_changed {
+                cmds.push(AppCommand::SetTitleCharAnimation {
+                    clip_id,
+                    enabled: true,
+                    stagger,
+                    entrance: new_entrance_idx as u8,
+                    wave_amplitude: wave_amp,
+                    wave_speed: wave_spd,
+                });
+            }
+        }
+    }
+    ui.add_space(8.0);
+
+            ui.add_space(8.0);
+        }
+    }
+    ui.add_space(2.0);
+
 }
 
 /// Emit opacity keyframes for a fade-in effect.

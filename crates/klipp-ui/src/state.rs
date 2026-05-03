@@ -758,6 +758,39 @@ pub fn register_custom_model(
     );
 }
 
+/// Quick-preset for the Position block in the Title inspector.
+/// Coordinates are normalized 0..1 in the title's reference frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TitlePositionPreset {
+    Top,
+    Center,
+    LowerThird,
+}
+
+impl TitlePositionPreset {
+    /// Canonical (x, y) for this preset. `Top` sits a touch below
+    /// the upper edge; `Lower 3rd` sits at the standard NLE lower-
+    /// third line.
+    pub fn coords(self) -> (f32, f32) {
+        match self {
+            TitlePositionPreset::Top => (0.5, 0.10),
+            TitlePositionPreset::Center => (0.5, 0.5),
+            TitlePositionPreset::LowerThird => (0.5, 0.85),
+        }
+    }
+
+    /// Tolerance for considering a layer's current X/Y "still on"
+    /// the preset. 0.005 ≈ 10 px of slop on a 1920-wide frame.
+    pub const EPSILON: f32 = 0.005;
+
+    /// Returns this preset if `(x, y)` is within `EPSILON` of its
+    /// canonical coordinates.
+    pub fn matches(self, x: f32, y: f32) -> bool {
+        let (px, py) = self.coords();
+        (x - px).abs() < Self::EPSILON && (y - py).abs() < Self::EPSILON
+    }
+}
+
 pub struct AppState {
     pub playback: PlaybackState,
     pub playhead: Timecode,

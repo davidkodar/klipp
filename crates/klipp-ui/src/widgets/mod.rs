@@ -1,6 +1,7 @@
 pub mod color_slider;
 pub mod color_wheel;
 pub mod curves_editor;
+pub mod inspector_group;
 pub mod jog_wheel;
 pub mod keyframe_editor;
 pub mod resizer;

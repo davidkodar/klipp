@@ -623,6 +623,7 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     gradient: gr,
                     inner_shadow: is,
                     pattern_fill: pf,
+                    pattern_fill_enabled: true,
                     tracking: *tracking,
                     line_spacing: *line_spacing,
                     write_on: *write_on,
@@ -634,6 +635,7 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                             .to_string_lossy()
                             .to_string()
                     }),
+                    texture_fill_enabled: true,
                     motion_blur: mb,
                     style_runs: sr,
                     ass_style_name: None,
