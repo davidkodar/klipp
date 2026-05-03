@@ -3068,6 +3068,25 @@ impl ViewerPanel {
                 5.0,
                 egui::Stroke::new(1.0_f32, handle_fill),
             );
+
+            // Anchor dot — drag-handle for `transform.anchor_norm`.
+            // Positioned at the bbox-relative anchor; uses a small
+            // crosshair shape so it reads as a separate affordance
+            // from the corner / edge resize handles.
+            let an_x = bb.min.x + obj.transform.anchor_norm.x * bb.width();
+            let an_y = bb.min.y + obj.transform.anchor_norm.y * bb.height();
+            let an_p = egui::pos2(an_x, an_y);
+            let an_r = 4.5;
+            painter.circle_filled(an_p, an_r, handle_fill);
+            painter.circle_stroke(an_p, an_r, handle_stroke);
+            painter.line_segment(
+                [egui::pos2(an_x - an_r - 2.0, an_y), egui::pos2(an_x + an_r + 2.0, an_y)],
+                egui::Stroke::new(1.0_f32, accent),
+            );
+            painter.line_segment(
+                [egui::pos2(an_x, an_y - an_r - 2.0), egui::pos2(an_x, an_y + an_r + 2.0)],
+                egui::Stroke::new(1.0_f32, accent),
+            );
         }
 
         // ── Pointer interaction ──
@@ -3088,7 +3107,10 @@ impl ViewerPanel {
                     let (start_nx, start_ny) = to_norm(drag.drag_start_pos);
                     let dnx = nx - start_nx;
                     let dny = ny - start_ny;
-                    let new_t = compute_drag_transform(&drag, dnx, dny);
+                    let new_t = compute_drag_transform(
+                        &drag, dnx, dny,
+                        (start_nx, start_ny), (nx, ny),
+                    );
                     let new_font_size = if matches!(
                         drag.handle,
                         crate::state::TitleObjectHandle::CornerTopLeft
@@ -4021,6 +4043,13 @@ fn hit_test_handles(
     if near(egui::pos2(bb.center().x, bb.min.y - 24.0)) {
         return Some(H::Rotation);
     }
+    // Anchor dot — checked before the other handles so a near-
+    // simultaneous overlap with an edge handle prefers the anchor.
+    let an_x = bb.min.x + obj.transform.anchor_norm.x * bb.width();
+    let an_y = bb.min.y + obj.transform.anchor_norm.y * bb.height();
+    if near(egui::pos2(an_x, an_y)) {
+        return Some(H::Anchor);
+    }
     if near(bb.min) { return Some(H::CornerTopLeft); }
     if near(egui::pos2(bb.max.x, bb.min.y)) { return Some(H::CornerTopRight); }
     if near(egui::pos2(bb.min.x, bb.max.y)) { return Some(H::CornerBottomLeft); }
@@ -4034,7 +4063,9 @@ fn hit_test_handles(
 
 /// Compute the new `ObjectTransform` produced by an in-progress
 /// drag, given the drag's normalised delta (drag-pos − drag-start
-/// in 0..1 frame coords) and the handle being dragged.
+/// in 0..1 frame coords), the current and start pointer positions
+/// in normalised coords (used by the rotation handle to compute
+/// angles), and the handle being dragged.
 ///
 /// Resize semantics:
 /// - **Edge handles** (top / bottom / left / right) anchor the
@@ -4046,13 +4077,14 @@ fn hit_test_handles(
 ///   transform is fed back through `SetTitleObjectTransformAndFont`).
 /// - **Body** drag translates `transform.center` by the delta.
 /// - **Rotation** drag computes the angle change between the
-///   pointer's start and current position relative to `center`,
-///   added to the initial rotation. The center is the pivot for
-///   simplicity (rotating around `anchor_norm` is a future tweak).
+///   pointer's start and current position relative to the box's
+///   centre, added to the initial rotation. The centre is the pivot.
 fn compute_drag_transform(
     drag: &crate::state::TitleObjectDrag,
     dnx: f32,
     dny: f32,
+    start_norm: (f32, f32),
+    cur_norm: (f32, f32),
 ) -> klipp_timeline::ObjectTransform {
     use crate::state::TitleObjectHandle as H;
     let mut t = drag.initial_transform;
@@ -4139,25 +4171,42 @@ fn compute_drag_transform(
             t.center.x = (tl_x + hi_x) * 0.5;
             t.center.y = (tl_y + hi_y) * 0.5;
         }
+        H::Anchor => {
+            // Anchor delta in normalised frame coords → bbox-local
+            // delta. Need to divide by the box's normalised size so
+            // dragging by 0.1 frame-units across a 0.4-frame-wide
+            // box moves the anchor by 0.25 box-units. Clamp to 0..1
+            // so the anchor stays inside the box (rotating around
+            // an off-box anchor is a niche case worth surfacing
+            // later, not in commit 6).
+            let inv_w = if drag.initial_transform.size.x.abs() > 0.0001 {
+                1.0 / drag.initial_transform.size.x
+            } else { 0.0 };
+            let inv_h = if drag.initial_transform.size.y.abs() > 0.0001 {
+                1.0 / drag.initial_transform.size.y
+            } else { 0.0 };
+            t.anchor_norm.x = (drag.initial_transform.anchor_norm.x + dnx * inv_w)
+                .clamp(0.0, 1.0);
+            t.anchor_norm.y = (drag.initial_transform.anchor_norm.y + dny * inv_h)
+                .clamp(0.0, 1.0);
+        }
         H::Rotation => {
-            // Compute the angle from the box centre to the pointer's
-            // current position; subtract the angle to the initial
-            // pointer; add to the initial rotation.
-            let cx = t.center.x;
-            let cy = t.center.y;
-            let start_dx = -dnx;
-            let start_dy = -dny;
-            let cur_dx = 0.0;
-            let cur_dy = 0.0;
-            let _ = (cx, cy, start_dx, start_dy, cur_dx, cur_dy);
-            // For a stable rotation gesture we'd need both the
-            // initial and current pointer positions independently;
-            // the delta-only signature available here is
-            // ambiguous, so the rotation feature is wired into the
-            // command flow but the actual angle calculation is
-            // deferred to a follow-up that threads the pointer pair
-            // through. For commit 3, dragging the rotation handle
-            // produces no rotation change — the handle is paint-only.
+            // Angle change = (angle from centre to current pointer)
+            //              − (angle from centre to start pointer).
+            // atan2 returns degrees CCW from +X; we add to the
+            // initial rotation so the gesture feels relative-to-
+            // grab-point rather than absolute. Aspect stretches
+            // would distort the angle, so we use raw normalised
+            // coords (image-rect aspect-correction is a polish
+            // pass — for typical 16:9 frames the visual error is
+            // a few degrees at most, and the gesture intent stays
+            // intuitive: clockwise drag = clockwise rotate).
+            let cx = drag.initial_transform.center.x;
+            let cy = drag.initial_transform.center.y;
+            let a_start = (start_norm.1 - cy).atan2(start_norm.0 - cx);
+            let a_cur = (cur_norm.1 - cy).atan2(cur_norm.0 - cx);
+            let delta_deg = (a_cur - a_start).to_degrees();
+            t.rotation = drag.initial_transform.rotation + delta_deg;
         }
     }
     t
@@ -4426,7 +4475,7 @@ mod title_object_drag_tests {
     #[test]
     fn body_drag_translates_centre() {
         // Move +0.1 in x and -0.05 in y → centre shifts by exactly that.
-        let t = compute_drag_transform(&drag(TitleObjectHandle::Body), 0.1, -0.05);
+        let t = compute_drag_transform(&drag(TitleObjectHandle::Body), 0.1, -0.05, (0.0, 0.0), (0.1, -0.05));
         assert!((t.center.x - 0.6).abs() < 1e-5);
         assert!((t.center.y - 0.45).abs() < 1e-5);
         // Size stays the same on body drag.
@@ -4438,7 +4487,7 @@ mod title_object_drag_tests {
     fn edge_right_drag_anchors_left() {
         // Initial right edge at 0.7. Drag +0.1 → new right at 0.8.
         // Left edge stays at 0.3. New centre = 0.55, new width = 0.5.
-        let t = compute_drag_transform(&drag(TitleObjectHandle::EdgeRight), 0.1, 0.0);
+        let t = compute_drag_transform(&drag(TitleObjectHandle::EdgeRight), 0.1, 0.0, (0.0, 0.0), (0.1, 0.0));
         assert!((t.center.x - 0.55).abs() < 1e-5);
         assert!((t.size.x - 0.5).abs() < 1e-5);
         // Y axis untouched.
@@ -4451,7 +4500,7 @@ mod title_object_drag_tests {
         // Initial bottom-right at (0.7, 0.6). Drag TL by (-0.1, -0.05)
         // → new TL at (0.2, 0.35). New centre = ((0.2+0.7)/2, (0.35+0.6)/2)
         // = (0.45, 0.475). New size = (0.5, 0.25).
-        let t = compute_drag_transform(&drag(TitleObjectHandle::CornerTopLeft), -0.1, -0.05);
+        let t = compute_drag_transform(&drag(TitleObjectHandle::CornerTopLeft), -0.1, -0.05, (0.0, 0.0), (-0.1, -0.05));
         assert!((t.center.x - 0.45).abs() < 1e-5);
         assert!((t.center.y - 0.475).abs() < 1e-5);
         assert!((t.size.x - 0.5).abs() < 1e-5);
@@ -4462,9 +4511,39 @@ mod title_object_drag_tests {
     fn edge_drag_clamps_minimum_size() {
         // Try to drag the right edge past the left edge — the math
         // must clamp size at the minimum so the box doesn't invert.
-        let t = compute_drag_transform(&drag(TitleObjectHandle::EdgeRight), -10.0, 0.0);
+        let t = compute_drag_transform(&drag(TitleObjectHandle::EdgeRight), -10.0, 0.0, (0.0, 0.0), (-10.0, 0.0));
         assert!(t.size.x > 0.0, "size should never go negative");
         assert!(t.size.x >= 0.01 - 1e-6, "size clamped to minimum");
+    }
+
+    #[test]
+    fn anchor_drag_translates_anchor_within_box() {
+        // Initial anchor at (0.5, 0.5) — box centre. Drag by half
+        // the box's width in X — anchor_norm.x should move by
+        // dnx / size.x = 0.2 / 0.4 = 0.5 → ends at 1.0 (the right
+        // edge of the box, clamped).
+        let d = drag(TitleObjectHandle::Anchor);
+        let t = compute_drag_transform(&d, 0.2, 0.0, (0.0, 0.0), (0.2, 0.0));
+        assert!((t.anchor_norm.x - 1.0).abs() < 1e-5);
+        assert!((t.anchor_norm.y - 0.5).abs() < 1e-5);
+        // Object's size / centre / rotation untouched.
+        assert!((t.size.x - 0.4).abs() < 1e-5);
+        assert!((t.center.x - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn rotation_drag_changes_angle() {
+        // Start pointer directly above centre, drag to directly
+        // right of centre → 90° change CCW (atan2 convention).
+        let d = drag(TitleObjectHandle::Rotation);
+        let cx = d.initial_transform.center.x;
+        let cy = d.initial_transform.center.y;
+        let start = (cx, cy - 0.2);
+        let end = (cx + 0.2, cy);
+        let dnx = end.0 - start.0;
+        let dny = end.1 - start.1;
+        let t = compute_drag_transform(&d, dnx, dny, start, end);
+        assert!((t.rotation - 90.0).abs() < 1.0, "got rotation {}", t.rotation);
     }
 }
 

@@ -414,6 +414,113 @@ fn font_style_to_u8(style: klipp_timeline::FontStyle) -> u8 {
     }
 }
 
+/// Inspector controls for a Shape layer: fill / stroke / corner
+/// radius. Phase-1 ships only the rectangle primitive, so the
+/// editor is small. Future shape kinds (ellipse, polygon, path)
+/// add more controls inside the same `match shape.kind` arm.
+fn show_title_shape_editor(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: klipp_core::ClipId,
+    object_id: klipp_timeline::TitleObjectId,
+    shape: &klipp_timeline::Shape,
+    cmds: &mut Vec<AppCommand>,
+) {
+    ui.label(egui::RichText::new("Shape").strong().size(12.0));
+    ui.add_space(6.0);
+
+    // Fill (None / Color).
+    let mut fill_enabled = shape.fill.is_some();
+    let cur_fill = shape.fill.unwrap_or([60, 60, 70, 220]);
+    if ui.checkbox(&mut fill_enabled, "Fill").changed() {
+        cmds.push(AppCommand::SetTitleShapeFill {
+            clip_id,
+            object_id: object_id.0,
+            color: if fill_enabled { Some(cur_fill) } else { None },
+        });
+    }
+    if fill_enabled {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Colour").size(11.0).color(theme.text_secondary));
+            let mut c = egui::Color32::from_rgba_premultiplied(
+                cur_fill[0], cur_fill[1], cur_fill[2], cur_fill[3],
+            );
+            if ui.color_edit_button_srgba(&mut c).changed() {
+                cmds.push(AppCommand::SetTitleShapeFill {
+                    clip_id,
+                    object_id: object_id.0,
+                    color: Some([c.r(), c.g(), c.b(), c.a()]),
+                });
+            }
+        });
+    }
+
+    ui.add_space(8.0);
+
+    // Stroke (None / Color + width).
+    let mut stroke_enabled = shape.stroke.is_some();
+    let (cur_stroke_color, cur_stroke_width) = match shape.stroke {
+        Some(s) => (s.color, s.width),
+        None => ([255, 255, 255, 255], 2.0),
+    };
+    if ui.checkbox(&mut stroke_enabled, "Stroke").changed() {
+        cmds.push(AppCommand::SetTitleShapeStroke {
+            clip_id,
+            object_id: object_id.0,
+            color: if stroke_enabled { Some(cur_stroke_color) } else { None },
+            width: cur_stroke_width,
+        });
+    }
+    if stroke_enabled {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Colour").size(11.0).color(theme.text_secondary));
+            let mut c = egui::Color32::from_rgba_premultiplied(
+                cur_stroke_color[0], cur_stroke_color[1], cur_stroke_color[2], cur_stroke_color[3],
+            );
+            if ui.color_edit_button_srgba(&mut c).changed() {
+                cmds.push(AppCommand::SetTitleShapeStroke {
+                    clip_id,
+                    object_id: object_id.0,
+                    color: Some([c.r(), c.g(), c.b(), c.a()]),
+                    width: cur_stroke_width,
+                });
+            }
+        });
+        let mut w = cur_stroke_width;
+        if ui.add(egui::Slider::new(&mut w, 0.0..=20.0)
+            .text("Width").suffix(" px"))
+            .changed()
+        {
+            cmds.push(AppCommand::SetTitleShapeStroke {
+                clip_id,
+                object_id: object_id.0,
+                color: Some(cur_stroke_color),
+                width: w,
+            });
+        }
+    }
+
+    ui.add_space(8.0);
+
+    // Rectangle-specific: corner radius. Future shape kinds add
+    // their own per-kind controls in the matching arm.
+    match shape.kind {
+        klipp_timeline::ShapeKind::Rectangle { corner_radius } => {
+            let mut r = corner_radius;
+            if ui.add(egui::Slider::new(&mut r, 0.0..=200.0)
+                .text("Corner radius").suffix(" px @ 1080p"))
+                .changed()
+            {
+                cmds.push(AppCommand::SetTitleShapeCornerRadius {
+                    clip_id,
+                    object_id: object_id.0,
+                    radius: r,
+                });
+            }
+        }
+    }
+}
+
 /// Draw the Layers panel: a Photoshop-style stack of objects, with
 /// visibility / lock toggles, click-to-select, and a delete button.
 /// Plus an "Add Text" / "Add Shape" footer to spawn new objects.
@@ -585,10 +692,13 @@ fn show_title_layers_panel(
                 };
 
                 // Trailing: stack position then delete button.
-                let del_size = 16.0;
+                let icon_btn_size = 14.0;
+                let mut x_right = rect.max.x - 6.0;
+
+                // Delete button — rightmost.
                 let del_rect = egui::Rect::from_min_size(
-                    egui::pos2(rect.max.x - del_size - 6.0, rect.center().y - del_size * 0.5),
-                    egui::vec2(del_size, del_size),
+                    egui::pos2(x_right - icon_btn_size, rect.center().y - icon_btn_size * 0.5),
+                    egui::vec2(icon_btn_size, icon_btn_size),
                 );
                 let del_resp = ui.interact(
                     del_rect,
@@ -603,7 +713,7 @@ fn show_title_layers_panel(
                 ui.allocate_new_ui(
                     egui::UiBuilder::new().max_rect(del_rect),
                     |ui| {
-                        ui.add(Icon::XCircle.image(del_size).tint(del_tint));
+                        ui.add(Icon::XCircle.image(icon_btn_size).tint(del_tint));
                     },
                 );
                 if del_resp.clicked() {
@@ -612,6 +722,89 @@ fn show_title_layers_panel(
                         object_id: obj.id.0,
                     });
                 }
+                x_right -= icon_btn_size + 4.0;
+
+                // Reorder buttons: up = move toward front (later in
+                // the `objects` Vec → top of stack, top of UI list);
+                // down = move toward back. Disabled at the
+                // boundaries so the user gets a visible "can't go
+                // further" cue. The list itself iterates in reverse
+                // (front → top of UI), so up is "closer to end of
+                // Vec" and down is "closer to start of Vec".
+                let up_rect = egui::Rect::from_min_size(
+                    egui::pos2(x_right - icon_btn_size, rect.center().y - icon_btn_size * 0.5),
+                    egui::vec2(icon_btn_size, icon_btn_size),
+                );
+                let up_enabled = rev_idx + 1 < total;  // not already front
+                let up_resp = ui.interact(
+                    up_rect,
+                    ui.id().with(("title_layer_up", obj.id.0)),
+                    egui::Sense::click(),
+                );
+                let up_tint = if !up_enabled {
+                    theme.text_dim.gamma_multiply(0.4)
+                } else if up_resp.hovered() {
+                    theme.accent
+                } else {
+                    theme.text_secondary
+                };
+                ui.allocate_new_ui(
+                    egui::UiBuilder::new().max_rect(up_rect),
+                    |ui| {
+                        ui.add(Icon::CaretUp.image(icon_btn_size).tint(up_tint));
+                    },
+                );
+                if up_enabled && up_resp.clicked() {
+                    // Build a new id list where this object swaps
+                    // with the one currently on top of it (= one
+                    // step closer to the front of the stack).
+                    let mut order: Vec<u32> = td.objects.iter().map(|o| o.id.0).collect();
+                    let pos = order.iter().position(|&id| id == obj.id.0).unwrap_or(0);
+                    if pos + 1 < order.len() {
+                        order.swap(pos, pos + 1);
+                        cmds.push(AppCommand::ReorderTitleObjects {
+                            clip_id,
+                            new_order: order,
+                        });
+                    }
+                }
+                x_right -= icon_btn_size + 2.0;
+
+                let down_rect = egui::Rect::from_min_size(
+                    egui::pos2(x_right - icon_btn_size, rect.center().y - icon_btn_size * 0.5),
+                    egui::vec2(icon_btn_size, icon_btn_size),
+                );
+                let down_enabled = rev_idx > 0;  // not already back
+                let down_resp = ui.interact(
+                    down_rect,
+                    ui.id().with(("title_layer_down", obj.id.0)),
+                    egui::Sense::click(),
+                );
+                let down_tint = if !down_enabled {
+                    theme.text_dim.gamma_multiply(0.4)
+                } else if down_resp.hovered() {
+                    theme.accent
+                } else {
+                    theme.text_secondary
+                };
+                ui.allocate_new_ui(
+                    egui::UiBuilder::new().max_rect(down_rect),
+                    |ui| {
+                        ui.add(Icon::CaretDown.image(icon_btn_size).tint(down_tint));
+                    },
+                );
+                if down_enabled && down_resp.clicked() {
+                    let mut order: Vec<u32> = td.objects.iter().map(|o| o.id.0).collect();
+                    let pos = order.iter().position(|&id| id == obj.id.0).unwrap_or(0);
+                    if pos > 0 {
+                        order.swap(pos, pos - 1);
+                        cmds.push(AppCommand::ReorderTitleObjects {
+                            clip_id,
+                            new_order: order,
+                        });
+                    }
+                }
+                x_right -= 6.0;
 
                 let stack_galley = ui.painter().layout_no_wrap(
                     stack_label,
@@ -620,7 +813,7 @@ fn show_title_layers_panel(
                 );
                 ui.painter().galley(
                     egui::pos2(
-                        del_rect.min.x - stack_galley.size().x - 8.0,
+                        x_right - stack_galley.size().x,
                         rect.center().y - stack_galley.size().y * 0.5,
                     ),
                     stack_galley,
@@ -757,6 +950,21 @@ fn show_title_editor(
     show_title_layers_panel(ui, theme, clip_id, td, state, cmds);
     ui.separator();
     ui.add_space(4.0);
+
+    // ── Shape-specific properties ──
+    // When the active selection is a Shape layer, the typography
+    // controls below don't apply — show shape-only properties
+    // instead and skip out before the text editor section.
+    if let Some((sel_clip, sel_oid)) = state.selected_title_object {
+        if sel_clip == clip_id {
+            if let Some(obj) = td.object(sel_oid) {
+                if let klipp_timeline::TitleObjectContent::Shape(shape) = &obj.content {
+                    show_title_shape_editor(ui, theme, clip_id, sel_oid, shape, cmds);
+                    return;
+                }
+            }
+        }
+    }
 
     // Text preview (read-only) — editing happens in the viewer (double-click)
     ui.label(egui::RichText::new("Text").strong().size(11.0));

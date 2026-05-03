@@ -52,6 +52,9 @@ pub enum TitleObjectHandle {
     EdgeRight,
     /// Stalk above the top-centre — rotates around the anchor.
     Rotation,
+    /// Crosshair dot inside the box — moves the rotation/anchor
+    /// pivot without affecting the object's visible position.
+    Anchor,
 }
 
 #[derive(Debug, Clone)]

@@ -2675,6 +2675,32 @@ impl KlippApp {
             .cloned()
     }
 
+    /// Resolve which TextBox a title-style mutation should target.
+    /// Returns the selected object's id when it's a TextBox layer of
+    /// the named clip; falls back to `None` so the caller routes to
+    /// `target_textbox_mut(td, target_oid)` (the first TextBox in the stack).
+    /// Used by every per-property title command so Inspector edits
+    /// follow the on-canvas / Layers-panel selection.
+    fn title_text_target_id(
+        &self,
+        clip_id: klipp_core::ClipId,
+    ) -> Option<klipp_timeline::TitleObjectId> {
+        let (selected_clip, oid) = self.state.selected_title_object?;
+        if selected_clip != clip_id {
+            return None;
+        }
+        // Only return the id when the object is actually a TextBox —
+        // a Shape selection shouldn't divert text-style mutations.
+        let td = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
+            .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
+            .and_then(|c| c.title_data())?;
+        let obj = td.object(oid)?;
+        match &obj.content {
+            klipp_timeline::TitleObjectContent::TextBox(_) => Some(oid),
+            _ => None,
+        }
+    }
+
     /// Push a title edit undo entry if the data changed.
     fn push_title_undo(&mut self, clip_id: klipp_core::ClipId, description: &'static str, old: klipp_timeline::TitleData) {
         if let Some(new) = self.snapshot_title(clip_id) {
@@ -12961,6 +12987,7 @@ impl KlippApp {
         match cmd {
             AppCommand::UpdateTitleData { clip_id, text, font_size, font_name, font_style, color } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -12971,7 +12998,7 @@ impl KlippApp {
                                 3 => klipp_timeline::FontStyle::BoldItalic,
                                 _ => klipp_timeline::FontStyle::Regular,
                             };
-                            if let Some(tb) = td.primary_text_mut() {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
                                 tb.text = text.clone();
                                 tb.font_size = *font_size;
                                 tb.font_name = font_name.clone();
@@ -12996,10 +13023,11 @@ impl KlippApp {
             }
             AppCommand::SetTitleTracking { clip_id, tracking } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = td.primary_text_mut() { tb.tracking = *tracking; }
+                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.tracking = *tracking; }
                         }
                     }
                 }
@@ -13012,10 +13040,11 @@ impl KlippApp {
             }
             AppCommand::SetTitleLineSpacing { clip_id, line_spacing } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = td.primary_text_mut() { tb.line_spacing = *line_spacing; }
+                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.line_spacing = *line_spacing; }
                         }
                     }
                 }
@@ -13028,6 +13057,7 @@ impl KlippApp {
             }
             AppCommand::ApplyTitleStyle { clip_id, range_start, range_end, property, value } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -13087,6 +13117,7 @@ impl KlippApp {
             }
             AppCommand::ClearTitleStyleRuns { clip_id } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -13111,10 +13142,11 @@ impl KlippApp {
                 let old_td = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
                     .find_map(|t| t.clips.iter().find(|c| c.id == *clip_id))
                     .and_then(|c| c.title_data()).cloned();
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = td.primary_text_mut() { tb.alignment = match alignment {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.alignment = match alignment {
                                 0 => klipp_timeline::TextAlignment::Left,
                                 2 => klipp_timeline::TextAlignment::Right,
                                 _ => klipp_timeline::TextAlignment::Center,
@@ -13144,6 +13176,7 @@ impl KlippApp {
             }
             AppCommand::SetTitlePosition { clip_id, x, y } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -13282,6 +13315,7 @@ impl KlippApp {
             }
             AppCommand::ReorderTitleObjects { clip_id, new_order } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -13337,6 +13371,73 @@ impl KlippApp {
                 if let Some(old) = old {
                     self.push_title_undo(*clip_id, "Move Title Object", old);
                 }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleShapeFill { clip_id, object_id, color } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                if let klipp_timeline::TitleObjectContent::Shape(s) = &mut o.content {
+                                    s.fill = *color;
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Shape Fill", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleShapeStroke { clip_id, object_id, color, width } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                if let klipp_timeline::TitleObjectContent::Shape(s) = &mut o.content {
+                                    s.stroke = color.map(|c| klipp_timeline::ShapeStroke {
+                                        color: c, width: *width,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Shape Stroke", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleShapeCornerRadius { clip_id, object_id, radius } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                if let klipp_timeline::TitleObjectContent::Shape(s) = &mut o.content {
+                                    s.kind = klipp_timeline::ShapeKind::Rectangle {
+                                        corner_radius: *radius,
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Shape Corner Radius", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
@@ -13415,10 +13516,11 @@ impl KlippApp {
                     3 => Some(klipp_timeline::TextPath::Wave { amplitude: *p1, frequency: *p2, phase: *p3 }),
                     _ => None,
                 };
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = td.primary_text_mut() { tb.text_path = path.clone(); }
+                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.text_path = path.clone(); }
                         }
                     }
                 }
@@ -13437,6 +13539,7 @@ impl KlippApp {
         match cmd {
             AppCommand::SetTitleBackground { clip_id, bg_kind, color } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
@@ -13457,10 +13560,11 @@ impl KlippApp {
             }
             AppCommand::SetTitleGradient { clip_id, enabled, top_color, bottom_color } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = td.primary_text_mut() { tb.gradient = if *enabled {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.gradient = if *enabled {
                                 Some(klipp_timeline::TextGradient { top_color: *top_color, bottom_color: *bottom_color })
                             } else {
                                 None
@@ -13477,10 +13581,11 @@ impl KlippApp {
             }
             AppCommand::SetTitlePattern { clip_id, pattern_kind, color_a, color_b, size } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = td.primary_text_mut() { tb.pattern_fill = match pattern_kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.pattern_fill = match pattern_kind {
                                 1 => Some(klipp_timeline::TextPattern::HorizontalStripes { color_a: *color_a, color_b: *color_b, stripe_width: *size }),
                                 2 => Some(klipp_timeline::TextPattern::VerticalStripes { color_a: *color_a, color_b: *color_b, stripe_width: *size }),
                                 3 => Some(klipp_timeline::TextPattern::Checkerboard { color_a: *color_a, color_b: *color_b, cell_size: *size }),
@@ -13498,10 +13603,11 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTitleTextureFill { clip_id, path } => {
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = td.primary_text_mut() { tb.texture_fill_path = path.clone(); }
+                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.texture_fill_path = path.clone(); }
                         }
                     }
                 }
@@ -13519,18 +13625,19 @@ impl KlippApp {
         match cmd {
             AppCommand::SetTitleShadow { clip_id, enabled, color, offset_x, offset_y, blur } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if *enabled {
-                                if let Some(tb) = td.primary_text_mut() { tb.shadow = Some(klipp_timeline::TitleShadow {
+                                if let Some(tb) = target_textbox_mut(td, target_oid) { tb.shadow = Some(klipp_timeline::TitleShadow {
                                     color: *color,
                                     offset_x: *offset_x,
                                     offset_y: *offset_y,
                                     blur: *blur,
                                 }); }
                             } else {
-                                if let Some(tb) = td.primary_text_mut() { tb.shadow = None; }
+                                if let Some(tb) = target_textbox_mut(td, target_oid) { tb.shadow = None; }
                             }
                         }
                     }
@@ -13544,10 +13651,11 @@ impl KlippApp {
             }
             AppCommand::SetTitleOutline { clip_id, enabled, color, width } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = td.primary_text_mut() {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
                                 if *enabled {
                                     let new_ol = klipp_timeline::TextOutline {
                                         color: *color, width: *width,
@@ -13573,10 +13681,11 @@ impl KlippApp {
             }
             AppCommand::SetTitleGlow { clip_id, enabled, color, radius, intensity } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = td.primary_text_mut() { tb.glow = if *enabled {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.glow = if *enabled {
                                 Some(klipp_timeline::TextGlow { color: *color, radius: *radius, intensity: *intensity })
                             } else {
                                 None
@@ -13593,10 +13702,11 @@ impl KlippApp {
             }
             AppCommand::SetTitleOutlines { clip_id, outlines } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = td.primary_text_mut() {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
                                 tb.outlines = outlines.iter().map(|(color, width)| {
                                     klipp_timeline::TextOutline { color: *color, width: *width }
                                 }).collect();
@@ -13613,10 +13723,11 @@ impl KlippApp {
             }
             AppCommand::SetTitleInnerShadow { clip_id, enabled, color, offset_x, offset_y, blur } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = td.primary_text_mut() { tb.inner_shadow = if *enabled {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.inner_shadow = if *enabled {
                                 Some(klipp_timeline::InnerShadow {
                                     color: *color, offset_x: *offset_x, offset_y: *offset_y, blur: *blur,
                                 })
@@ -13635,10 +13746,11 @@ impl KlippApp {
             }
             AppCommand::SetTitleExtrusion { clip_id, enabled, depth, angle, face_color, side_color, lighting } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = td.primary_text_mut() { tb.extrusion = if *enabled {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.extrusion = if *enabled {
                                 Some(klipp_timeline::TextExtrusion {
                                     depth: *depth,
                                     angle: *angle,
@@ -13669,10 +13781,11 @@ impl KlippApp {
                 } else {
                     None
                 };
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = td.primary_text_mut() { tb.motion_blur = mb; }
+                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.motion_blur = mb; }
                         }
                     }
                 }
@@ -13691,10 +13804,11 @@ impl KlippApp {
         match cmd {
             AppCommand::SetTitleWriteOn { clip_id, write_on } => {
                 let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = td.primary_text_mut() { tb.write_on = *write_on; }
+                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.write_on = *write_on; }
                         }
                     }
                 }
@@ -13723,10 +13837,11 @@ impl KlippApp {
                 } else {
                     None
                 };
+                let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = td.primary_text_mut() { tb.char_animation = anim; }
+                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.char_animation = anim; }
                         }
                     }
                 }
@@ -28145,6 +28260,33 @@ fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId> {
 
 /// Animation format: `"type_duration"` or `"type1+type2_duration"` where duration is in seconds.
 /// Examples: `"fade_in_0.5"`, `"slide_left_1.0"`, `"fade_in+slide_left_0.8"`, `"fade_in_out_0.5"`
+/// Resolve a `&mut TextBox` to mutate inside a TitleData given an
+/// optional target object id. Falls back to the title's primary
+/// TextBox when `target` is `None` (the historical single-text
+/// behaviour). Used by every per-property title command so an
+/// Inspector edit follows the active per-object selection.
+fn target_textbox_mut<'a>(
+    td: &'a mut klipp_timeline::TitleData,
+    target: Option<klipp_timeline::TitleObjectId>,
+) -> Option<&'a mut klipp_timeline::TextBox> {
+    // Resolve which index in `td.objects` the request targets. Done
+    // up-front (immutable scan) so the subsequent mutable borrow is
+    // a single, simple iter that the borrow checker accepts without
+    // Polonius. Falls back to the index of the first TextBox object
+    // when no target is specified.
+    let idx = match target {
+        Some(oid) => td.objects.iter().position(|o| o.id == oid
+            && matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_))),
+        None => td.objects.iter().position(|o|
+            matches!(o.content, klipp_timeline::TitleObjectContent::TextBox(_))),
+    };
+    let idx = idx?;
+    match &mut td.objects[idx].content {
+        klipp_timeline::TitleObjectContent::TextBox(tb) => Some(tb),
+        _ => None,
+    }
+}
+
 fn apply_title_animation(
     clip: &mut klipp_timeline::Clip,
     anim_str: &str,

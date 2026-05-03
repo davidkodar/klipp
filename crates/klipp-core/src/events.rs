@@ -1300,6 +1300,13 @@ pub enum AppCommand {
     /// the list are left at the end in their existing relative order
     /// (defensive against partial-update races).
     ReorderTitleObjects { clip_id: ClipId, new_order: Vec<u32> },
+    /// Per-shape style mutations. Each command targets one Shape
+    /// object inside a Title clip, identified by its object id.
+    /// Used by the Inspector when a Shape layer is selected.
+    SetTitleShapeFill { clip_id: ClipId, object_id: u32, color: Option<[u8; 4]> },
+    SetTitleShapeStroke { clip_id: ClipId, object_id: u32, color: Option<[u8; 4]>, width: f32 },
+    SetTitleShapeCornerRadius { clip_id: ClipId, object_id: u32, radius: f32 },
+
     /// Inline text edit: replace the text of a specific TextBox
     /// object (identified by id) with a new value. Used by the
     /// in-bbox text editor; doesn't touch font / size / colour /
