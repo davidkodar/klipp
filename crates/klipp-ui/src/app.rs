@@ -13160,6 +13160,75 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SelectTitleObject { clip_id, object_id } => {
+                self.state.selected_title_object = object_id
+                    .map(|id| (*clip_id, klipp_timeline::TitleObjectId(id)));
+                true
+            }
+            AppCommand::SetTitleObjectTransform {
+                clip_id, object_id,
+                center_x, center_y, size_x, size_y,
+                rotation, anchor_x, anchor_y,
+            } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                o.transform = klipp_timeline::ObjectTransform {
+                                    center: klipp_timeline::TitlePosition { x: *center_x, y: *center_y },
+                                    size: klipp_timeline::TitlePosition { x: *size_x, y: *size_y },
+                                    rotation: *rotation,
+                                    anchor_norm: klipp_timeline::TitlePosition { x: *anchor_x, y: *anchor_y },
+                                };
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old {
+                    self.push_title_undo(*clip_id, "Move Title Object", old);
+                }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleObjectTransformAndFont {
+                clip_id, object_id,
+                center_x, center_y, size_x, size_y,
+                rotation, anchor_x, anchor_y,
+                font_size,
+            } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                o.transform = klipp_timeline::ObjectTransform {
+                                    center: klipp_timeline::TitlePosition { x: *center_x, y: *center_y },
+                                    size: klipp_timeline::TitlePosition { x: *size_x, y: *size_y },
+                                    rotation: *rotation,
+                                    anchor_norm: klipp_timeline::TitlePosition { x: *anchor_x, y: *anchor_y },
+                                };
+                                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut o.content {
+                                    tb.font_size = *font_size;
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old {
+                    self.push_title_undo(*clip_id, "Resize Title Object", old);
+                }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetTitleTextPath { clip_id, path_kind, p1, p2, p3 } => {
                 let old = self.snapshot_title(*clip_id);
                 let path = match path_kind {

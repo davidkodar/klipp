@@ -1259,6 +1259,39 @@ pub enum AppCommand {
     UpdateTitleData { clip_id: ClipId, text: String, font_size: f32, font_name: String, font_style: u8, color: [u8; 4] },
     SetTitleAlignment { clip_id: ClipId, alignment: u8 },  // 0=Left, 1=Center, 2=Right
     SetTitlePosition { clip_id: ClipId, x: f32, y: f32 },
+    /// Replace one Title-object's transform wholesale. Used by the
+    /// on-canvas editor (drag-to-move, drag handle-resize, drag
+    /// rotation handle). The transform fields are normalised
+    /// 0..1 frame-relative coords; rotation in degrees.
+    SetTitleObjectTransform {
+        clip_id: ClipId,
+        object_id: u32,
+        center_x: f32,
+        center_y: f32,
+        size_x: f32,
+        size_y: f32,
+        rotation: f32,
+        anchor_x: f32,
+        anchor_y: f32,
+    },
+    /// Select a Title-object on the on-canvas editor. `object_id`
+    /// = `None` deselects (reverts to clip-level transform handles).
+    SelectTitleObject { clip_id: ClipId, object_id: Option<u32> },
+    /// Same as SetTitleObjectTransform but also updates the primary
+    /// TextBox's font_size — used by the corner-handle drag where
+    /// the pro-NLE convention is "scale the font, not just the box".
+    SetTitleObjectTransformAndFont {
+        clip_id: ClipId,
+        object_id: u32,
+        center_x: f32,
+        center_y: f32,
+        size_x: f32,
+        size_y: f32,
+        rotation: f32,
+        anchor_x: f32,
+        anchor_y: f32,
+        font_size: f32,
+    },
     SetTitleBackground { clip_id: ClipId, bg_kind: u8, color: [u8; 4] },  // 0=None, 1=Color, 2=FullFrame
     SetTitleShadow { clip_id: ClipId, enabled: bool, color: [u8; 4], offset_x: f32, offset_y: f32, blur: f32 },
     /// Set text outline. `None` = disable.

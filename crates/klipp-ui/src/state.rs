@@ -33,6 +33,43 @@ pub struct ViewerTransformDrag {
     pub drag_start_pos: egui::Pos2,
 }
 
+/// Which part of a Title-object's bounding box is being dragged.
+/// Used by the on-canvas title object editor; mirrors the standard
+/// 8-handle bounding box from pro NLEs (corner = font scale,
+/// edge = box resize, plus a rotation handle and the box body for
+/// translation).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TitleObjectHandle {
+    /// Drag inside the box body — translates `transform.center`.
+    Body,
+    CornerTopLeft,
+    CornerTopRight,
+    CornerBottomLeft,
+    CornerBottomRight,
+    EdgeTop,
+    EdgeBottom,
+    EdgeLeft,
+    EdgeRight,
+    /// Stalk above the top-centre — rotates around the anchor.
+    Rotation,
+}
+
+#[derive(Debug, Clone)]
+pub struct TitleObjectDrag {
+    pub clip_id: klipp_core::ClipId,
+    pub object_id: klipp_timeline::TitleObjectId,
+    pub handle: TitleObjectHandle,
+    /// Object transform at the moment the drag started; the ongoing
+    /// drag mutates relative to this baseline so jitter / round-trip
+    /// drift doesn't accumulate.
+    pub initial_transform: klipp_timeline::ObjectTransform,
+    /// For corner / font-scale resizes, the TextBox font_size at
+    /// drag start. Stored separately so we can apply the scale to
+    /// the typography rather than the bounding box only.
+    pub initial_font_size: f32,
+    pub drag_start_pos: egui::Pos2,
+}
+
 /// Which part of a mask shape is being dragged in the viewer
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MaskHandle {
@@ -1726,6 +1763,16 @@ pub struct AppState {
     pub viewer_transform_drag: Option<ViewerTransformDrag>,
     /// Whether on-screen transform handles are shown when a clip is selected
     pub show_transform_controls: bool,
+    /// Currently selected object inside a Title clip. The first
+    /// component is the parent clip's id; the second is the object's
+    /// id within that clip's `TitleData.objects` list. `None` means
+    /// no per-object selection — viewer behaviour falls back to
+    /// clip-level transform handles. Set by clicking an object's
+    /// bounding box on the viewer; cleared on clip-deselect.
+    pub selected_title_object: Option<(ClipId, klipp_timeline::TitleObjectId)>,
+    /// Active drag of a Title-object bounding box / handle on the
+    /// viewer. `None` outside drag.
+    pub title_object_drag: Option<TitleObjectDrag>,
     /// Active drag on a viewer mask handle
     pub viewer_mask_drag: Option<ViewerMaskDrag>,
 
@@ -2937,6 +2984,8 @@ impl Default for AppState {
             proxy_toast_dismissed: false,
             viewer_transform_drag: None,
             show_transform_controls: true,
+            selected_title_object: None,
+            title_object_drag: None,
             viewer_mask_drag: None,
             show_curve_editor: false,
             show_audio_mixer: false,

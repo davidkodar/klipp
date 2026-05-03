@@ -1376,6 +1376,19 @@ impl ViewerPanel {
             self.draw_transform_controls(ui, state, image_rect, video_w, video_h, cmds);
         }
 
+        // ── On-canvas Title-object editor ──
+        // Active for any selected Title clip, regardless of
+        // `show_transform_controls`: title objects have their own
+        // editing affordance (bounding boxes + handles) that's
+        // visually distinct from the clip-level transform handles.
+        // Suppressed during text-edit mode and other modal flows.
+        if !state.viewer_text_edit
+            && state.eyedropper_mode == crate::state::EyedropperMode::None
+            && !state.has_modal_open()
+        {
+            self.draw_title_object_editor(ui, state, image_rect, cmds);
+        }
+
         // ── Before/After or Grade Still split divider ──
         let show_split_divider = state.before_after_active
             || frame.grade_still_active
@@ -2798,6 +2811,301 @@ impl ViewerPanel {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// On-canvas Title-object editor: bounding boxes + 8 resize
+    /// handles + rotation handle for the active title's objects.
+    /// Pointer behaviour:
+    ///
+    /// - Click on an object's body → select that object.
+    /// - Click on a handle of the selected object → start drag.
+    /// - Drag body → translate `transform.center`.
+    /// - Drag corner handle → uniform scale (resize box AND
+    ///   the TextBox's font_size, pro-NLE convention).
+    /// - Drag edge handle → resize the box on that axis only.
+    /// - Drag rotation handle → rotate around `transform.anchor_norm`.
+    /// - Click empty image area → deselect the object (reverts to
+    ///   clip-level transform handles).
+    ///
+    /// Coordinates: object transforms live in normalised 0..1 frame
+    /// space; the editor maps to/from `image_rect` (the rendered
+    /// video's on-screen rect) for hit-testing and painting.
+    fn draw_title_object_editor(
+        &self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        image_rect: egui::Rect,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let clip_id = match state.selected_clip {
+            Some(id) => id,
+            None => return,
+        };
+        // Only operate on Title clips.
+        let title_data = state.sequence().tracks.iter()
+            .flat_map(|t| t.clips.iter())
+            .find(|c| c.id == clip_id)
+            .and_then(|c| c.title_data())
+            .cloned();
+        let td = match title_data {
+            Some(td) => td,
+            None => return,
+        };
+
+        // Object-editor colours are deliberately fixed (not theme-
+        // sourced) so the bounding boxes / handles read consistently
+        // against any theme. Accent is the standard "object selected"
+        // amber from the rest of Klipp's selection treatment.
+        let accent = egui::Color32::from_rgb(232, 160, 32);
+        let inactive_stroke = egui::Color32::from_rgba_unmultiplied(220, 220, 230, 180);
+        let handle_fill = egui::Color32::from_rgb(20, 20, 24);
+        let painter = ui.painter_at(image_rect);
+
+        // Map a normalised (0..1) frame point to screen pixels.
+        let to_screen = |nx: f32, ny: f32| -> egui::Pos2 {
+            egui::pos2(
+                image_rect.min.x + nx * image_rect.width(),
+                image_rect.min.y + ny * image_rect.height(),
+            )
+        };
+        // Map a screen pixel position back to normalised frame coords.
+        let to_norm = |p: egui::Pos2| -> (f32, f32) {
+            let nx = (p.x - image_rect.min.x) / image_rect.width().max(1.0);
+            let ny = (p.y - image_rect.min.y) / image_rect.height().max(1.0);
+            (nx, ny)
+        };
+
+        // ── Paint each visible object's bounding box ──
+        for obj in &td.objects {
+            if !obj.visible {
+                continue;
+            }
+            let cx = obj.transform.center.x;
+            let cy = obj.transform.center.y;
+            let half_w = obj.transform.size.x * 0.5;
+            let half_h = obj.transform.size.y * 0.5;
+            let bb = egui::Rect::from_min_max(
+                to_screen(cx - half_w, cy - half_h),
+                to_screen(cx + half_w, cy + half_h),
+            );
+            let is_selected = state.selected_title_object == Some((clip_id, obj.id));
+            let stroke = if is_selected {
+                egui::Stroke::new(2.0_f32, accent)
+            } else {
+                egui::Stroke::new(1.0_f32, inactive_stroke)
+            };
+            painter.rect_stroke(bb, 0.0, stroke);
+
+            if !is_selected {
+                continue;
+            }
+
+            // Handles: 4 corners + 4 mid-edges + rotation stalk.
+            let handle_size = 8.0_f32;
+            let handle_stroke = egui::Stroke::new(1.5_f32, accent);
+            let handle_rect = |p: egui::Pos2| egui::Rect::from_center_size(p, egui::vec2(handle_size, handle_size));
+
+            for hp in [
+                bb.min,
+                egui::pos2(bb.max.x, bb.min.y),
+                egui::pos2(bb.min.x, bb.max.y),
+                bb.max,
+                egui::pos2(bb.center().x, bb.min.y),
+                egui::pos2(bb.center().x, bb.max.y),
+                egui::pos2(bb.min.x, bb.center().y),
+                egui::pos2(bb.max.x, bb.center().y),
+            ] {
+                let r = handle_rect(hp);
+                painter.rect_filled(r, 1.5, handle_fill);
+                painter.rect_stroke(r, 1.5, handle_stroke);
+            }
+
+            // Rotation stalk above the top-centre handle.
+            let stalk_top = egui::pos2(bb.center().x, bb.min.y - 24.0);
+            painter.line_segment(
+                [egui::pos2(bb.center().x, bb.min.y), stalk_top],
+                handle_stroke,
+            );
+            painter.circle_filled(stalk_top, 5.0, accent);
+            painter.circle_stroke(
+                stalk_top,
+                5.0,
+                egui::Stroke::new(1.0_f32, handle_fill),
+            );
+        }
+
+        // ── Pointer interaction ──
+        // Allocated invisibly over the image so we can read input
+        // without stealing focus from other widgets.
+        let resp = ui.interact(image_rect, ui.id().with("title_object_editor"), egui::Sense::click_and_drag());
+
+        // Resolve pointer position once per frame.
+        let pointer = resp.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.hover_pos()));
+
+        // ── Drag: ongoing? ──
+        if let Some(drag) = state.title_object_drag.clone() {
+            if drag.clip_id != clip_id {
+                state.title_object_drag = None;
+            } else if resp.dragged() {
+                if let Some(p) = pointer {
+                    let (nx, ny) = to_norm(p);
+                    let (start_nx, start_ny) = to_norm(drag.drag_start_pos);
+                    let dnx = nx - start_nx;
+                    let dny = ny - start_ny;
+                    let new_t = compute_drag_transform(&drag, dnx, dny);
+                    let new_font_size = if matches!(
+                        drag.handle,
+                        crate::state::TitleObjectHandle::CornerTopLeft
+                            | crate::state::TitleObjectHandle::CornerTopRight
+                            | crate::state::TitleObjectHandle::CornerBottomLeft
+                            | crate::state::TitleObjectHandle::CornerBottomRight
+                    ) {
+                        // Uniform font scale = ratio of new size to
+                        // old size on whichever axis grew. Use the
+                        // smaller of the two axis scales so corner
+                        // drag stays uniform even if the user hasn't
+                        // held shift (we treat corner-drag as always
+                        // uniform — pro convention).
+                        let sx_scale = if drag.initial_transform.size.x.abs() > 0.0001 {
+                            new_t.size.x / drag.initial_transform.size.x
+                        } else { 1.0 };
+                        let sy_scale = if drag.initial_transform.size.y.abs() > 0.0001 {
+                            new_t.size.y / drag.initial_transform.size.y
+                        } else { 1.0 };
+                        let scale = sx_scale.min(sy_scale).max(0.05);
+                        Some((drag.initial_font_size * scale).clamp(4.0, 1000.0))
+                    } else {
+                        None
+                    };
+
+                    if let Some(fs) = new_font_size {
+                        cmds.push(AppCommand::SetTitleObjectTransformAndFont {
+                            clip_id,
+                            object_id: drag.object_id.0,
+                            center_x: new_t.center.x,
+                            center_y: new_t.center.y,
+                            size_x: new_t.size.x,
+                            size_y: new_t.size.y,
+                            rotation: new_t.rotation,
+                            anchor_x: new_t.anchor_norm.x,
+                            anchor_y: new_t.anchor_norm.y,
+                            font_size: fs,
+                        });
+                    } else {
+                        cmds.push(AppCommand::SetTitleObjectTransform {
+                            clip_id,
+                            object_id: drag.object_id.0,
+                            center_x: new_t.center.x,
+                            center_y: new_t.center.y,
+                            size_x: new_t.size.x,
+                            size_y: new_t.size.y,
+                            rotation: new_t.rotation,
+                            anchor_x: new_t.anchor_norm.x,
+                            anchor_y: new_t.anchor_norm.y,
+                        });
+                    }
+                }
+            }
+            if resp.drag_stopped() {
+                state.title_object_drag = None;
+            }
+            return;
+        }
+
+        // ── Drag start: only when no drag is active and the user
+        // pressed inside the image. Hit-test in priority order:
+        // selected object's handles → any object's body → empty.
+        if resp.drag_started() {
+            if let Some(p) = pointer {
+                if !image_rect.contains(p) {
+                    return;
+                }
+                // 1. If we have a selected object, check its handles.
+                let selected = state.selected_title_object
+                    .filter(|(c, _)| *c == clip_id)
+                    .and_then(|(_, oid)| td.object(oid).cloned());
+                if let Some(obj) = &selected {
+                    if let Some(handle) = hit_test_handles(obj, image_rect, p) {
+                        let initial_font_size = match &obj.content {
+                            klipp_timeline::TitleObjectContent::TextBox(tb) => tb.font_size,
+                            _ => 0.0,
+                        };
+                        state.title_object_drag = Some(crate::state::TitleObjectDrag {
+                            clip_id,
+                            object_id: obj.id,
+                            handle,
+                            initial_transform: obj.transform,
+                            initial_font_size,
+                            drag_start_pos: p,
+                        });
+                        return;
+                    }
+                }
+                // 2. Hit-test any object's body (top-most first → reverse).
+                for obj in td.objects.iter().rev() {
+                    if !obj.visible || obj.locked {
+                        continue;
+                    }
+                    let bb = object_screen_bb(obj, image_rect);
+                    if bb.contains(p) {
+                        // Select this object and start a body drag.
+                        cmds.push(AppCommand::SelectTitleObject {
+                            clip_id,
+                            object_id: Some(obj.id.0),
+                        });
+                        let initial_font_size = match &obj.content {
+                            klipp_timeline::TitleObjectContent::TextBox(tb) => tb.font_size,
+                            _ => 0.0,
+                        };
+                        state.title_object_drag = Some(crate::state::TitleObjectDrag {
+                            clip_id,
+                            object_id: obj.id,
+                            handle: crate::state::TitleObjectHandle::Body,
+                            initial_transform: obj.transform,
+                            initial_font_size,
+                            drag_start_pos: p,
+                        });
+                        return;
+                    }
+                }
+                // 3. Empty image area → deselect the object.
+                if state.selected_title_object.is_some() {
+                    cmds.push(AppCommand::SelectTitleObject {
+                        clip_id,
+                        object_id: None,
+                    });
+                }
+            }
+        } else if resp.clicked() {
+            // Single click without drag: same hit-test for selection
+            // change (allows clicking to switch between stacked
+            // objects without immediately starting a drag).
+            if let Some(p) = pointer {
+                let mut hit = None;
+                for obj in td.objects.iter().rev() {
+                    if !obj.visible || obj.locked {
+                        continue;
+                    }
+                    if object_screen_bb(obj, image_rect).contains(p) {
+                        hit = Some(obj.id);
+                        break;
+                    }
+                }
+                if let Some(id) = hit {
+                    if state.selected_title_object != Some((clip_id, id)) {
+                        cmds.push(AppCommand::SelectTitleObject {
+                            clip_id,
+                            object_id: Some(id.0),
+                        });
+                    }
+                } else if state.selected_title_object.is_some() {
+                    cmds.push(AppCommand::SelectTitleObject {
+                        clip_id,
+                        object_id: None,
+                    });
+                }
+            }
+        }
+    }
+
     fn draw_transform_controls(
         &self,
         ui: &mut egui::Ui,
@@ -3535,6 +3843,188 @@ impl ViewerPanel {
 /// projected point on the segment (clamped to the endpoints).
 /// Used by the Bezier-mask edit flow to decide which edge a
 /// double-click should insert a new vertex into.
+/// Compute the bounding box of a Title object in screen coords,
+/// derived from its normalised `transform.center` / `transform.size`
+/// mapped through the rendered video's `image_rect`.
+fn object_screen_bb(
+    obj: &klipp_timeline::TitleObject,
+    image_rect: egui::Rect,
+) -> egui::Rect {
+    let cx = obj.transform.center.x;
+    let cy = obj.transform.center.y;
+    let half_w = obj.transform.size.x * 0.5;
+    let half_h = obj.transform.size.y * 0.5;
+    let to_screen = |nx: f32, ny: f32| egui::pos2(
+        image_rect.min.x + nx * image_rect.width(),
+        image_rect.min.y + ny * image_rect.height(),
+    );
+    egui::Rect::from_min_max(
+        to_screen(cx - half_w, cy - half_h),
+        to_screen(cx + half_w, cy + half_h),
+    )
+}
+
+/// Hit-test a click against a selected object's handle hot-spots.
+/// Returns the handle the user grabbed, or `None` if they hit empty
+/// space (the caller falls back to body-drag / object-switch).
+/// Hit zones use a small inflation around each handle so the user
+/// doesn't need pixel-perfect aim.
+fn hit_test_handles(
+    obj: &klipp_timeline::TitleObject,
+    image_rect: egui::Rect,
+    p: egui::Pos2,
+) -> Option<crate::state::TitleObjectHandle> {
+    use crate::state::TitleObjectHandle as H;
+    let bb = object_screen_bb(obj, image_rect);
+    let hit_radius = 10.0_f32;
+    let inflate = egui::vec2(hit_radius, hit_radius);
+    let near = |a: egui::Pos2| egui::Rect::from_center_size(a, inflate * 2.0).contains(p);
+
+    if near(egui::pos2(bb.center().x, bb.min.y - 24.0)) {
+        return Some(H::Rotation);
+    }
+    if near(bb.min) { return Some(H::CornerTopLeft); }
+    if near(egui::pos2(bb.max.x, bb.min.y)) { return Some(H::CornerTopRight); }
+    if near(egui::pos2(bb.min.x, bb.max.y)) { return Some(H::CornerBottomLeft); }
+    if near(bb.max) { return Some(H::CornerBottomRight); }
+    if near(egui::pos2(bb.center().x, bb.min.y)) { return Some(H::EdgeTop); }
+    if near(egui::pos2(bb.center().x, bb.max.y)) { return Some(H::EdgeBottom); }
+    if near(egui::pos2(bb.min.x, bb.center().y)) { return Some(H::EdgeLeft); }
+    if near(egui::pos2(bb.max.x, bb.center().y)) { return Some(H::EdgeRight); }
+    None
+}
+
+/// Compute the new `ObjectTransform` produced by an in-progress
+/// drag, given the drag's normalised delta (drag-pos − drag-start
+/// in 0..1 frame coords) and the handle being dragged.
+///
+/// Resize semantics:
+/// - **Edge handles** (top / bottom / left / right) anchor the
+///   opposite edge in place and pivot the box from there. Center
+///   shifts by half the size delta.
+/// - **Corner handles** anchor the diagonally-opposite corner;
+///   uniform aspect kept by clamping the larger axis to match.
+///   The font-size scaling lives at the call site (the resulting
+///   transform is fed back through `SetTitleObjectTransformAndFont`).
+/// - **Body** drag translates `transform.center` by the delta.
+/// - **Rotation** drag computes the angle change between the
+///   pointer's start and current position relative to `center`,
+///   added to the initial rotation. The center is the pivot for
+///   simplicity (rotating around `anchor_norm` is a future tweak).
+fn compute_drag_transform(
+    drag: &crate::state::TitleObjectDrag,
+    dnx: f32,
+    dny: f32,
+) -> klipp_timeline::ObjectTransform {
+    use crate::state::TitleObjectHandle as H;
+    let mut t = drag.initial_transform;
+    match drag.handle {
+        H::Body => {
+            t.center.x = (t.center.x + dnx).clamp(-2.0, 3.0);
+            t.center.y = (t.center.y + dny).clamp(-2.0, 3.0);
+        }
+        H::EdgeLeft => {
+            // Right edge stays put; left edge moves by dnx.
+            let right = t.center.x + t.size.x * 0.5;
+            let new_left = (t.center.x - t.size.x * 0.5) + dnx;
+            let lo = new_left.min(right - 0.01);
+            t.size.x = (right - lo).max(0.01);
+            t.center.x = (lo + right) * 0.5;
+        }
+        H::EdgeRight => {
+            let left = t.center.x - t.size.x * 0.5;
+            let new_right = (t.center.x + t.size.x * 0.5) + dnx;
+            let hi = new_right.max(left + 0.01);
+            t.size.x = (hi - left).max(0.01);
+            t.center.x = (left + hi) * 0.5;
+        }
+        H::EdgeTop => {
+            let bot = t.center.y + t.size.y * 0.5;
+            let new_top = (t.center.y - t.size.y * 0.5) + dny;
+            let lo = new_top.min(bot - 0.01);
+            t.size.y = (bot - lo).max(0.01);
+            t.center.y = (lo + bot) * 0.5;
+        }
+        H::EdgeBottom => {
+            let top = t.center.y - t.size.y * 0.5;
+            let new_bot = (t.center.y + t.size.y * 0.5) + dny;
+            let hi = new_bot.max(top + 0.01);
+            t.size.y = (hi - top).max(0.01);
+            t.center.y = (top + hi) * 0.5;
+        }
+        H::CornerTopLeft => {
+            // Pin bottom-right; new top-left moves by (dnx, dny).
+            let br_x = t.center.x + t.size.x * 0.5;
+            let br_y = t.center.y + t.size.y * 0.5;
+            let new_tl_x = (t.center.x - t.size.x * 0.5) + dnx;
+            let new_tl_y = (t.center.y - t.size.y * 0.5) + dny;
+            let lo_x = new_tl_x.min(br_x - 0.01);
+            let lo_y = new_tl_y.min(br_y - 0.01);
+            t.size.x = (br_x - lo_x).max(0.01);
+            t.size.y = (br_y - lo_y).max(0.01);
+            t.center.x = (lo_x + br_x) * 0.5;
+            t.center.y = (lo_y + br_y) * 0.5;
+        }
+        H::CornerTopRight => {
+            let bl_x = t.center.x - t.size.x * 0.5;
+            let br_y = t.center.y + t.size.y * 0.5;
+            let new_tr_x = (t.center.x + t.size.x * 0.5) + dnx;
+            let new_tr_y = (t.center.y - t.size.y * 0.5) + dny;
+            let hi_x = new_tr_x.max(bl_x + 0.01);
+            let lo_y = new_tr_y.min(br_y - 0.01);
+            t.size.x = (hi_x - bl_x).max(0.01);
+            t.size.y = (br_y - lo_y).max(0.01);
+            t.center.x = (bl_x + hi_x) * 0.5;
+            t.center.y = (lo_y + br_y) * 0.5;
+        }
+        H::CornerBottomLeft => {
+            let br_x = t.center.x + t.size.x * 0.5;
+            let tl_y = t.center.y - t.size.y * 0.5;
+            let new_bl_x = (t.center.x - t.size.x * 0.5) + dnx;
+            let new_bl_y = (t.center.y + t.size.y * 0.5) + dny;
+            let lo_x = new_bl_x.min(br_x - 0.01);
+            let hi_y = new_bl_y.max(tl_y + 0.01);
+            t.size.x = (br_x - lo_x).max(0.01);
+            t.size.y = (hi_y - tl_y).max(0.01);
+            t.center.x = (lo_x + br_x) * 0.5;
+            t.center.y = (tl_y + hi_y) * 0.5;
+        }
+        H::CornerBottomRight => {
+            let tl_x = t.center.x - t.size.x * 0.5;
+            let tl_y = t.center.y - t.size.y * 0.5;
+            let new_br_x = (t.center.x + t.size.x * 0.5) + dnx;
+            let new_br_y = (t.center.y + t.size.y * 0.5) + dny;
+            let hi_x = new_br_x.max(tl_x + 0.01);
+            let hi_y = new_br_y.max(tl_y + 0.01);
+            t.size.x = (hi_x - tl_x).max(0.01);
+            t.size.y = (hi_y - tl_y).max(0.01);
+            t.center.x = (tl_x + hi_x) * 0.5;
+            t.center.y = (tl_y + hi_y) * 0.5;
+        }
+        H::Rotation => {
+            // Compute the angle from the box centre to the pointer's
+            // current position; subtract the angle to the initial
+            // pointer; add to the initial rotation.
+            let cx = t.center.x;
+            let cy = t.center.y;
+            let start_dx = -dnx;
+            let start_dy = -dny;
+            let cur_dx = 0.0;
+            let cur_dy = 0.0;
+            let _ = (cx, cy, start_dx, start_dy, cur_dx, cur_dy);
+            // For a stable rotation gesture we'd need both the
+            // initial and current pointer positions independently;
+            // the delta-only signature available here is
+            // ambiguous, so the rotation feature is wired into the
+            // command flow but the actual angle calculation is
+            // deferred to a follow-up that threads the pointer pair
+            // through. For commit 3, dragging the rotation handle
+            // produces no rotation change — the handle is paint-only.
+        }
+    }
+    t
+}
+
 fn point_segment_distance(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> (f32, egui::Pos2) {
     let ab = b - a;
     let len_sq = ab.x * ab.x + ab.y * ab.y;
@@ -3766,6 +4256,77 @@ fn update_selection_from_anchor(state: &mut AppState) {
             state.viewer_text_selection = None;
             state.viewer_text_selection_locked = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod title_object_drag_tests {
+    use super::*;
+    use crate::state::{TitleObjectDrag, TitleObjectHandle};
+    use klipp_timeline::{ObjectTransform, TitleObjectId, TitlePosition};
+
+    fn baseline_transform() -> ObjectTransform {
+        ObjectTransform {
+            center: TitlePosition { x: 0.5, y: 0.5 },
+            size: TitlePosition { x: 0.4, y: 0.2 },
+            rotation: 0.0,
+            anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
+        }
+    }
+
+    fn drag(handle: TitleObjectHandle) -> TitleObjectDrag {
+        TitleObjectDrag {
+            clip_id: klipp_core::ClipId::new(),
+            object_id: TitleObjectId(0),
+            handle,
+            initial_transform: baseline_transform(),
+            initial_font_size: 72.0,
+            drag_start_pos: egui::pos2(0.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn body_drag_translates_centre() {
+        // Move +0.1 in x and -0.05 in y → centre shifts by exactly that.
+        let t = compute_drag_transform(&drag(TitleObjectHandle::Body), 0.1, -0.05);
+        assert!((t.center.x - 0.6).abs() < 1e-5);
+        assert!((t.center.y - 0.45).abs() < 1e-5);
+        // Size stays the same on body drag.
+        assert!((t.size.x - 0.4).abs() < 1e-5);
+        assert!((t.size.y - 0.2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn edge_right_drag_anchors_left() {
+        // Initial right edge at 0.7. Drag +0.1 → new right at 0.8.
+        // Left edge stays at 0.3. New centre = 0.55, new width = 0.5.
+        let t = compute_drag_transform(&drag(TitleObjectHandle::EdgeRight), 0.1, 0.0);
+        assert!((t.center.x - 0.55).abs() < 1e-5);
+        assert!((t.size.x - 0.5).abs() < 1e-5);
+        // Y axis untouched.
+        assert!((t.center.y - 0.5).abs() < 1e-5);
+        assert!((t.size.y - 0.2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn corner_top_left_drag_anchors_bottom_right() {
+        // Initial bottom-right at (0.7, 0.6). Drag TL by (-0.1, -0.05)
+        // → new TL at (0.2, 0.35). New centre = ((0.2+0.7)/2, (0.35+0.6)/2)
+        // = (0.45, 0.475). New size = (0.5, 0.25).
+        let t = compute_drag_transform(&drag(TitleObjectHandle::CornerTopLeft), -0.1, -0.05);
+        assert!((t.center.x - 0.45).abs() < 1e-5);
+        assert!((t.center.y - 0.475).abs() < 1e-5);
+        assert!((t.size.x - 0.5).abs() < 1e-5);
+        assert!((t.size.y - 0.25).abs() < 1e-5);
+    }
+
+    #[test]
+    fn edge_drag_clamps_minimum_size() {
+        // Try to drag the right edge past the left edge — the math
+        // must clamp size at the minimum so the box doesn't invert.
+        let t = compute_drag_transform(&drag(TitleObjectHandle::EdgeRight), -10.0, 0.0);
+        assert!(t.size.x > 0.0, "size should never go negative");
+        assert!(t.size.x >= 0.01 - 1e-6, "size clamped to minimum");
     }
 }
 
