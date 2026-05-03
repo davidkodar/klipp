@@ -533,6 +533,15 @@ impl KlippApp {
                     set.insert(name.clone());
                 }
             });
+            // Seed Title-inspector expanded groups (separate set, opt-in
+            // per group name; default empty = all collapsed on first run).
+            let title_key = egui::Id::new(crate::inspector::TITLE_EXPANDED_GROUPS_KEY);
+            cc.egui_ctx.data_mut(|d| {
+                let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(title_key);
+                for name in &app.prefs.title.inspector_expanded_groups {
+                    set.insert(name.clone());
+                }
+            });
         }
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
         app.state.file_browser_video_skim_enabled = app.prefs.file_browser.file_browser_video_skim;
@@ -22765,8 +22774,16 @@ impl eframe::App for KlippApp {
                     set.iter().cloned().collect()
                 });
                 self.prefs.general.collapsed_sections = sections;
+                // Mirror Title-inspector expanded groups back to prefs.
+                let title_key = egui::Id::new(crate::inspector::TITLE_EXPANDED_GROUPS_KEY);
+                let title_groups: std::collections::HashSet<String> = ctx.data_mut(|d| {
+                    let set: &std::collections::HashSet<String> = d.get_temp_mut_or_default(title_key);
+                    set.iter().cloned().collect()
+                });
+                self.prefs.title.inspector_expanded_groups = title_groups;
             } else {
                 self.prefs.general.collapsed_sections.clear();
+                self.prefs.title.inspector_expanded_groups.clear();
             }
             if let Err(e) = self.prefs.save() {
                 tracing::warn!("Failed to save preferences: {e}");

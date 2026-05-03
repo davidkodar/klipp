@@ -415,24 +415,48 @@ fn font_style_to_u8(style: klipp_timeline::FontStyle) -> u8 {
 }
 
 /// Inspector controls for a Shape layer: fill / stroke / corner
+/// egui ctx data key under which the user's set of expanded Title-
+/// inspector group names is stored. Same naming convention as
+/// `klipp_collapsed_sections` (the section_card persistence used by
+/// the Video / Audio / Info inspectors). The startup hook seeds this
+/// from `prefs.title.inspector_expanded_groups`; the debounced
+/// preference-save hook copies it back so the user's expansion
+/// choices survive restarts.
+pub const TITLE_EXPANDED_GROUPS_KEY: &str = "klipp_title_expanded_groups";
+
 /// Render a collapsible group header with status indicator and return
-/// `true` when the body should be drawn. Open state is sticky per
-/// `(clip_id, title)` via egui ctx data — a follow-up promotes this
-/// to a persisted per-user setting so expansion preferences survive
-/// restarts.
+/// `true` when the body should be drawn. Expansion state is per-user
+/// (not per-clip) and persisted in `prefs.title.inspector_expanded_groups`
+/// — toggling `Effects` open on one title sets it open on every title.
+/// Default is empty (every group collapsed) on a fresh install.
 fn title_group_is_open(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
-    clip_id: klipp_core::ClipId,
+    _clip_id: klipp_core::ClipId,
     title: &str,
     status: crate::widgets::inspector_group::GroupStatus,
 ) -> bool {
     use crate::widgets::inspector_group::inspector_group_header;
-    let key = egui::Id::new(("klipp_title_group_open", clip_id, title));
-    let mut is_open: bool = ui.ctx().data(|d| d.get_temp(key)).unwrap_or(false);
+    let key = egui::Id::new(TITLE_EXPANDED_GROUPS_KEY);
+    let is_open: bool = ui.ctx().data(|d| {
+        d.get_temp::<std::collections::HashSet<String>>(key)
+            .map(|set| set.contains(title))
+            .unwrap_or(false)
+    });
     if inspector_group_header(ui, title, is_open, status, theme).clicked() {
-        is_open = !is_open;
-        ui.ctx().data_mut(|d| d.insert_temp(key, is_open));
+        ui.ctx().data_mut(|d| {
+            let set: &mut std::collections::HashSet<String> =
+                d.get_temp_mut_or_default(key);
+            if is_open {
+                set.remove(title);
+            } else {
+                set.insert(title.to_string());
+            }
+        });
+        // Reflect the just-applied toggle in this frame so the body
+        // expansion matches the visual chevron immediately rather
+        // than one frame later.
+        return !is_open;
     }
     is_open
 }

@@ -1422,6 +1422,13 @@ pub struct TitlePrefs {
     /// Show title-safe area overlay in viewer.
     #[serde(default = "default_true")]
     pub safe_area_overlay: bool,
+    /// Title-inspector groups currently expanded by the user. Empty
+    /// (the default) means every group is collapsed on a fresh
+    /// install. Names match the group headers exactly: "Effects",
+    /// "Typography", "Background & Layer Opacity", "Animation",
+    /// "3D & Distortion", "Text Path", "Character Animation".
+    #[serde(default)]
+    pub inspector_expanded_groups: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1446,6 +1453,7 @@ impl Default for TitlePrefs {
             default_alignment: Default::default(),
             default_duration_secs: default_title_duration(),
             safe_area_overlay: true,
+            inspector_expanded_groups: std::collections::HashSet::new(),
         }
     }
 }
