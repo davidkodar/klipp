@@ -1363,6 +1363,14 @@ pub enum AppCommand {
     /// `enabled` flag, so the toggle bit lives in `tb.pattern_fill_enabled`
     /// alongside the data. Disabling preserves the chosen pattern.
     SetTitlePatternEnabled { clip_id: ClipId, enabled: bool },
+    /// Apply a named style preset to the selected TextBox layer. The
+    /// preset is *flattened* into the underlying fields (colour, glow,
+    /// outline, shadow, chromatic aberration, glitch, …) — there is no
+    /// "currently-applied preset" recorded on the data; the inspector
+    /// dropdown is a one-shot quick-style picker rather than a slot.
+    /// Preset ids are kept in a single registry inside the inspector
+    /// so the handler can match on them; see PRESET_REGISTRY.
+    ApplyTitlePreset { clip_id: ClipId, preset_id: u8 },
     /// Soft-disable for the Texture Fill subcard. `texture_fill_path` is
     /// `Option<String>`; the toggle bit is `tb.texture_fill_enabled`.
     /// Disabling preserves the path so the user's selection survives.

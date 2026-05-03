@@ -424,6 +424,21 @@ fn font_style_to_u8(style: klipp_timeline::FontStyle) -> u8 {
 /// choices survive restarts.
 pub const TITLE_EXPANDED_GROUPS_KEY: &str = "klipp_title_expanded_groups";
 
+/// Title-inspector preset registry — display name + numeric id sent
+/// in `AppCommand::ApplyTitlePreset`. Id `0` is the inert "None"
+/// sentinel so reopening the dropdown shows a stable label without
+/// re-dispatching the last applied preset. Adding a new preset
+/// requires extending this list AND the matching arm in
+/// `apply_title_preset` (`klipp-ui/src/app.rs`).
+const PRESET_REGISTRY: &[(u8, &str)] = &[
+    (0, "None"),
+    (1, "Neon"),
+    (2, "Classic"),
+    (3, "Bold Shadow"),
+    (4, "Outlined"),
+    (5, "VHS"),
+];
+
 /// Render a collapsible group header with status indicator and return
 /// `true` when the body should be drawn. Expansion state is per-user
 /// (not per-clip) and persisted in `prefs.title.inspector_expanded_groups`
@@ -1773,6 +1788,44 @@ fn show_title_editor(
         }
     }
 
+    // ── Preset dropdown ──
+    // Quick-style picker. Selecting a preset flattens its mutations
+    // into the active TextBox via ApplyTitlePreset; there's no
+    // "currently selected" preset on the data, so the combobox
+    // resets to "None" after each apply. Adding a new preset =
+    // extend PRESET_REGISTRY here AND the matching arm in
+    // apply_title_preset (app.rs).
+    {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("PRESET")
+                    .size(10.0)
+                    .color(theme.text_dim),
+            );
+            ui.add_space(8.0);
+            let combo_w = ui.available_width() - 8.0;
+            egui::ComboBox::from_id_salt("title_preset_dropdown")
+                .selected_text("None")
+                .width(combo_w)
+                .show_ui(ui, |ui| {
+                    for (id, label) in PRESET_REGISTRY {
+                        if *id == 0 {
+                            // "None" sentinel — keeps the closed combobox
+                            // showing a stable label without dispatching
+                            // anything when the user reopens it.
+                            let _ = ui.selectable_label(true, *label);
+                        } else if ui.selectable_label(false, *label).clicked() {
+                            cmds.push(AppCommand::ApplyTitlePreset {
+                                clip_id,
+                                preset_id: *id,
+                            });
+                        }
+                    }
+                });
+        });
+        ui.add_space(8.0);
+    }
+
     // ── Layers panel ──
     // Shows every object in the title (back → front), with
     // visibility / lock toggles, click-to-select, delete. This is
@@ -2008,14 +2061,6 @@ fn show_title_editor(
     ).changed() {
         cmds.push(AppCommand::SetTitleBaselineShift { clip_id, shift_px: baseline });
     }
-    ui.horizontal(|ui| {
-        // Neon preset — one-click style. Uses the resting fill colour
-        // as the accent so the user can pick any hue.
-        if ui.small_button("Apply Neon Preset").clicked() {
-            let accent = td.primary_text().map_or([0, 220, 255, 255], |tb| tb.color);
-            cmds.push(AppCommand::SetTitleNeonPreset { clip_id, accent_color: accent });
-        }
-    });
     ui.horizontal(|ui| {
         // Columns: 1..=8 with reset.
         let mut cols = td.primary_text().map_or(1u8, |tb| tb.columns) as i32;

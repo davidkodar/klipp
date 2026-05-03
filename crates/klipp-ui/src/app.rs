@@ -13989,6 +13989,32 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::ApplyTitlePreset { clip_id, preset_id } => {
+                // Flatten a named preset into the selected TextBox.
+                // Preset ids match the inspector's PRESET_REGISTRY:
+                //   1 = Neon, 2 = Classic, 3 = Bold Shadow,
+                //   4 = Outlined, 5 = VHS.
+                // Preset 0 ("None") is a no-op so the dropdown's
+                // default sentinel doesn't accidentally clobber the
+                // current style.
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                apply_title_preset(tb, *preset_id);
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Preset", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             _ => false,
         }
     }
@@ -28722,6 +28748,109 @@ fn target_textbox_mut<'a>(
     match &mut td.objects[idx].content {
         klipp_timeline::TitleObjectContent::TextBox(tb) => Some(tb),
         _ => None,
+    }
+}
+
+/// Flatten a Title-inspector style preset into the target TextBox.
+/// Each preset writes a deliberate combination of fill colour, glow,
+/// outline, shadow, and modern-FX fields. Presets coexist as
+/// applied-and-flattened settings — there's no "currently-selected
+/// preset" recorded on the data, so the inspector dropdown is a
+/// quick-style picker rather than a slot.
+fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8) {
+    use klipp_timeline::{InnerShadow, TextGlow, TextOutline, TitleShadow};
+    match preset_id {
+        // 0 = "None" sentinel — no-op so the dropdown's default
+        // doesn't accidentally clobber the current style.
+        0 => {}
+        // 1 = Neon. Bright fill (uses current colour as accent),
+        // thin dark outline for legibility, strong outer glow tinted
+        // to the accent.
+        1 => {
+            let accent = tb.color;
+            tb.outlines = vec![TextOutline {
+                color: [10, 10, 14, 180],
+                width: 2.0,
+                enabled: true,
+            }];
+            tb.glow = Some(TextGlow {
+                color: accent,
+                radius: 12.0,
+                intensity: 1.4,
+                enabled: true,
+            });
+            // Clear conflicting effects so the look is clean.
+            tb.shadow = None;
+            tb.inner_shadow = None;
+            tb.gradient = None;
+            tb.chromatic_aberration_px = 0.0;
+            tb.glitch_intensity = 0.0;
+        }
+        // 2 = Classic. White fill, no decorations.
+        2 => {
+            tb.color = [255, 255, 255, 255];
+            tb.outlines.clear();
+            tb.glow = None;
+            tb.shadow = None;
+            tb.inner_shadow = None;
+            tb.gradient = None;
+            tb.pattern_fill = None;
+            tb.pattern_fill_enabled = true;
+            tb.chromatic_aberration_px = 0.0;
+            tb.glitch_intensity = 0.0;
+        }
+        // 3 = Bold Shadow. White fill + soft drop shadow for contrast
+        // against any background. Common lower-third look.
+        3 => {
+            tb.color = [255, 255, 255, 255];
+            tb.outlines.clear();
+            tb.glow = None;
+            tb.shadow = Some(TitleShadow {
+                color: [0, 0, 0, 200],
+                offset_x: 4.0,
+                offset_y: 4.0,
+                blur: 6.0,
+                enabled: true,
+            });
+            tb.inner_shadow = None;
+            tb.gradient = None;
+            tb.chromatic_aberration_px = 0.0;
+            tb.glitch_intensity = 0.0;
+        }
+        // 4 = Outlined. White fill + thick black outline. Reads on
+        // any backdrop without a fill plate.
+        4 => {
+            tb.color = [255, 255, 255, 255];
+            tb.outlines = vec![TextOutline {
+                color: [0, 0, 0, 255],
+                width: 5.0,
+                enabled: true,
+            }];
+            tb.glow = None;
+            tb.shadow = None;
+            tb.inner_shadow = None;
+            tb.gradient = None;
+            tb.chromatic_aberration_px = 0.0;
+            tb.glitch_intensity = 0.0;
+        }
+        // 5 = VHS. Chromatic aberration + glitch slicing for the
+        // tape / synth-wave look. Keep the fill colour as-is so the
+        // user's chosen hue tints the channel split.
+        5 => {
+            tb.outlines.clear();
+            tb.glow = None;
+            tb.shadow = None;
+            tb.inner_shadow = Some(InnerShadow {
+                color: [0, 0, 0, 100],
+                offset_x: 0.0,
+                offset_y: 0.0,
+                blur: 2.0,
+                enabled: true,
+            });
+            tb.chromatic_aberration_px = 6.0;
+            tb.glitch_intensity = 0.35;
+        }
+        _ => {}
     }
 }
 
