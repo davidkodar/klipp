@@ -1368,19 +1368,24 @@ fn show_title_editor(
     }
     ui.add_space(8.0);
 
-    // ── Title Motion Animation ──
-    // Scroll/crawl auto-generate transform_pos_x/y_keyframes; Typewriter overrides
-    // write_on per-frame at render time. Static clears any existing keyframes.
+    // ── Scroll & Animation ──
+    // Renamed from "Title Animation" so the direction picker reads as
+    // the canonical place to choose scroll direction — the browser
+    // ships generic Credits Roll / News Ticker presets and users
+    // change direction here rather than picking a per-direction
+    // template. Scroll/crawl variants auto-generate
+    // transform_pos_x/y_keyframes; Typewriter overrides write_on
+    // per-frame at render time; Static clears any existing keyframes.
     ui.separator();
-    ui.label(egui::RichText::new("Title Animation").strong().size(11.0));
+    ui.label(egui::RichText::new("Scroll & Animation").strong().size(11.0));
     {
         use klipp_timeline::TitleAnimationType as T;
         let current_label = match &td.animation_type {
-            T::Static => "None",
-            T::ScrollUp { .. } => "Scroll Up",
-            T::ScrollDown { .. } => "Scroll Down",
-            T::CrawlLeft { .. } => "Crawl Left",
-            T::CrawlRight { .. } => "Crawl Right",
+            T::Static => "Static (no animation)",
+            T::ScrollUp { .. } => "Scroll \u{2191} (bottom \u{2192} top)",
+            T::ScrollDown { .. } => "Scroll \u{2193} (top \u{2192} bottom)",
+            T::CrawlLeft { .. } => "Crawl \u{2190} (right \u{2192} left)",
+            T::CrawlRight { .. } => "Crawl \u{2192} (left \u{2192} right)",
             T::Typewriter { .. } => "Typewriter",
         };
         let current_kind: u8 = match &td.animation_type {
@@ -1392,16 +1397,21 @@ fn show_title_editor(
             T::Typewriter { .. } => 5,
         };
         let mut selected = current_kind;
-        egui::ComboBox::from_id_salt("title_animation")
-            .selected_text(current_label)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut selected, 0, "None");
-                ui.selectable_value(&mut selected, 1, "Scroll Up");
-                ui.selectable_value(&mut selected, 2, "Scroll Down");
-                ui.selectable_value(&mut selected, 3, "Crawl Left");
-                ui.selectable_value(&mut selected, 4, "Crawl Right");
-                ui.selectable_value(&mut selected, 5, "Typewriter");
-            });
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Direction:").size(11.0).color(theme.text_secondary));
+            egui::ComboBox::from_id_salt("title_animation")
+                .selected_text(current_label)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut selected, 0, "Static (no animation)");
+                    ui.separator();
+                    ui.selectable_value(&mut selected, 1, "Scroll \u{2191} (bottom \u{2192} top)");
+                    ui.selectable_value(&mut selected, 2, "Scroll \u{2193} (top \u{2192} bottom)");
+                    ui.selectable_value(&mut selected, 3, "Crawl \u{2190} (right \u{2192} left)");
+                    ui.selectable_value(&mut selected, 4, "Crawl \u{2192} (left \u{2192} right)");
+                    ui.separator();
+                    ui.selectable_value(&mut selected, 5, "Typewriter");
+                });
+        });
         if selected != current_kind {
             // Switching kind defaults to speed = 0 ("Auto" / clip-bounded)
             // for scroll/crawl — the motion fills the entire clip

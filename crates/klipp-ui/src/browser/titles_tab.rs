@@ -814,7 +814,11 @@ const TITLES: &[TitleTemplate] = &[
 
     // ---- Broadcast (10) ----
     TitleTemplate { name: "Breaking News", category: "Broadcast", preview_text: "BREAKING NEWS", create_data: bc_breaking_news, animation: None },
-    TitleTemplate { name: "News Ticker", category: "Broadcast", preview_text: "Breaking: Story...", create_data: bc_news_ticker, animation: None },
+    // News ticker (Broadcast category): static lower-third placeholder.
+    // The Scrolling-category "News Ticker" entry below carries the
+    // CrawlLeft animation by default; users tweak direction in the
+    // Inspector instead of choosing a preset per direction.
+    TitleTemplate { name: "Lower-Third Ticker", category: "Broadcast", preview_text: "Breaking: Story...", create_data: bc_news_ticker, animation: None },
     TitleTemplate { name: "Weather Tag", category: "Broadcast", preview_text: "New York 72\u{00b0}F", create_data: bc_weather, animation: None },
     TitleTemplate { name: "Score Bug", category: "Broadcast", preview_text: "HOME 3-2 AWAY", create_data: bc_score_bug, animation: None },
     TitleTemplate { name: "Reporter Name", category: "Broadcast", preview_text: "REPORTER", create_data: bc_reporter, animation: None },
@@ -894,17 +898,21 @@ const TITLES: &[TitleTemplate] = &[
     TitleTemplate { name: "Zoom & Spin", category: "Motion", preview_text: "ZOOM", create_data: || centered("ZOOM", 96.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("zoom_in_0.5+spin_in_0.8") },
     TitleTemplate { name: "Bounce & Fade Out", category: "Motion", preview_text: "BYE!", create_data: || centered("BYE!", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("bounce_in_0.8+fade_out_1.0") },
     TitleTemplate { name: "Implode & Explode", category: "Motion", preview_text: "FLASH", create_data: || centered("FLASH", 96.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("implode_in_0.5+explode_out_0.5") },
-    // ---- Scrolling / Continuous (10) ----
-    TitleTemplate { name: "Credits Roll Up", category: "Scrolling", preview_text: "Credits...", create_data: || centered("Directed by\nJohn Doe\n\nProduced by\nJane Smith\n\nEditor\nAlex Johnson", 36.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("scroll_up_1.0") },
-    TitleTemplate { name: "Credits Roll Down", category: "Scrolling", preview_text: "Credits \u{2193}", create_data: || centered("IN MEMORIAM\n\nDedicated to...", 36.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("scroll_down_1.0") },
-    TitleTemplate { name: "News Ticker R\u{2192}L", category: "Scrolling", preview_text: "\u{2190} BREAKING NEWS", create_data: || { let mut t = lower_third_style("BREAKING: Major event reported \u{2014} More details at 11", 28.0, FontStyle::Regular, [255, 255, 255, 255], [0, 0, 0, 180], 0.15, 0.85); t.background = TitleBackground::Color { color: [180, 30, 30, 220], padding: 8.0 }; t }, animation: Some("ticker_left_1.0") },
-    TitleTemplate { name: "News Ticker L\u{2192}R", category: "Scrolling", preview_text: "TICKER \u{2192}", create_data: || { let mut t = lower_third_style("Stock market update: AAPL +2.3% MSFT +1.1% GOOG -0.5%", 24.0, FontStyle::Regular, [255, 220, 50, 255], [0, 0, 0, 180], 0.15, 0.85); t.background = TitleBackground::Color { color: [20, 20, 40, 220], padding: 8.0 }; t }, animation: Some("ticker_right_1.0") },
-    TitleTemplate { name: "Slow Crawl Up", category: "Scrolling", preview_text: "Slow crawl \u{2191}", create_data: || centered("The end.\n\nThank you for watching.", 48.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("scroll_up_1.0") },
+    // ---- Scrolling / Continuous ----
+    // Two generic scroll templates: "Credits Roll" (full-frame, scroll
+    // up by default) and "News Ticker" (lower-third bar, crawl left by
+    // default). Users change direction (Up / Down / Left / Right) and
+    // speed via the Inspector's "Scroll & Animation" section — one
+    // entry per visual style instead of one per direction. The four
+    // continuous-motion variants (Spin / Pulse / Breathe / Float) stay
+    // separate because they're conceptually different effects, not
+    // direction variants.
+    TitleTemplate { name: "Credits Roll", category: "Scrolling", preview_text: "Credits...", create_data: || centered("Directed by\nJohn Doe\n\nProduced by\nJane Smith\n\nEditor\nAlex Johnson", 36.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("scroll_up_1.0") },
+    TitleTemplate { name: "News Ticker", category: "Scrolling", preview_text: "\u{2190} BREAKING NEWS", create_data: || { let mut t = lower_third_style("BREAKING: Major event reported \u{2014} More details at 11", 28.0, FontStyle::Regular, [255, 255, 255, 255], [0, 0, 0, 180], 0.15, 0.85); t.background = TitleBackground::Color { color: [180, 30, 30, 220], padding: 8.0 }; t }, animation: Some("ticker_left_1.0") },
     TitleTemplate { name: "Continuous Spin", category: "Scrolling", preview_text: "\u{21bb} Spin", create_data: || centered("LOGO", 72.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("spinning_1.0") },
     TitleTemplate { name: "Pulsing Text", category: "Scrolling", preview_text: "\u{2764} Pulse", create_data: || { let mut t = centered("LIVE", 64.0, FontStyle::Regular, [255,255,255,255], true); t.color = [255, 60, 60, 255]; t }, animation: Some("pulsing_1.0") },
     TitleTemplate { name: "Breathing Text", category: "Scrolling", preview_text: "~ Breathe ~", create_data: || centered("breathe", 48.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("breathing_1.0") },
     TitleTemplate { name: "Floating Text", category: "Scrolling", preview_text: "\u{2601} Float", create_data: || centered("drifting...", 36.0, FontStyle::Regular, [255,255,255,255], true), animation: Some("floating_1.0") },
-    TitleTemplate { name: "Side Scroll + Fade", category: "Scrolling", preview_text: "\u{2190} Scroll", create_data: || { let mut t = centered("Latest headlines streaming across your screen", 28.0, FontStyle::Regular, [255,255,255,255], true); t.position = TitlePosition { x: 0.5, y: 0.9 }; t }, animation: Some("fade_in_0.5+ticker_left_1.0") },
     // ---- Rich Text (8) — pre-styled multi-color/size templates ----
     TitleTemplate { name: "Name & Title", category: "Rich Text", preview_text: "Name + Title", create_data: || {
         let text = "John Smith\nCreative Director"; // 28 bytes
