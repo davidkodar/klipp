@@ -44,14 +44,22 @@ impl Default for TitlesSourceFilter {
     }
 }
 
-struct TitleTemplate {
-    name: &'static str,
-    category: &'static str,
-    preview_text: &'static str,
-    create_data: fn() -> TitleData,
+pub(crate) struct TitleTemplate {
+    pub name: &'static str,
+    pub category: &'static str,
+    #[allow(dead_code)]
+    pub preview_text: &'static str,
+    pub create_data: fn() -> TitleData,
     /// Animation identifier applied when clip is created. None = static (no animation).
-    animation: Option<&'static str>,
+    pub animation: Option<&'static str>,
 }
+
+/// Test-only handle to the TITLES registry so cross-module tests can
+/// walk every template's create_data and verify the contract that
+/// every animated template actually animates after going through the
+/// clip-creation path. Production code uses the private `TITLES`.
+#[doc(hidden)]
+pub const TITLES_FOR_TESTS: &[TitleTemplate] = TITLES;
 
 // ---------------------------------------------------------------------------
 // Helper factories

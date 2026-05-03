@@ -12600,10 +12600,37 @@ impl KlippApp {
                     smoothed_trajectory: None,
                     track_points: Vec::new(),
                 };
-                // Apply baked-in title animation keyframes
-                if let Some(anim_str) = self.state.pending_title_animation.take() {
+                // Apply baked-in title animation keyframes. Two
+                // sources, in order of priority:
+                //   1. The library template's TitleAnimationType
+                //      stamped onto the TitleData by create_data
+                //      (modern path — most templates).
+                //   2. The legacy string token in
+                //      `pending_title_animation` (kept for older
+                //      templates and saved-project import). The legacy
+                //      parser silently ignores strings it doesn't
+                //      recognise, so the string is consumed unconditionally
+                //      whether or not it produces keyframes.
+                let pending = self.state.pending_title_animation.take();
+                let res = self.state.sequences[self.state.active_sequence_idx].resolution;
+                let modern_anim: Option<klipp_timeline::TitleAnimationType> = match &clip.kind {
+                    klipp_timeline::ClipKind::Title(td)
+                        if !matches!(td.animation_type, klipp_timeline::TitleAnimationType::Static) =>
+                    {
+                        Some(td.animation_type.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(anim) = modern_anim.as_ref() {
+                    apply_title_animation_keyframes(
+                        &mut clip,
+                        anim,
+                        res.height as f32,
+                        res.width as f32,
+                    );
+                    self.state.clear_title_overlay = true;
+                } else if let Some(anim_str) = pending {
                     let clip_dur = 5.0_f64;
-                    let res = self.state.sequences[self.state.active_sequence_idx].resolution;
                     apply_title_animation(
                         &mut clip,
                         &anim_str,
@@ -12611,7 +12638,6 @@ impl KlippApp {
                         res.width as f32,
                         res.height as f32,
                     );
-                    // Clear title overlay so it starts invisible for animated titles
                     self.state.clear_title_overlay = true;
                 }
                 if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
@@ -30845,6 +30871,86 @@ Dialogue: 0,0:00:09.00,0:00:11.00,Default,,0,0,0,,Text, with commas, inside
         assert!(clip.transform_pos_x_keyframes.is_empty());
         assert!(clip.transform_pos_y_keyframes.is_empty());
         assert!(clip.transform_scale_keyframes.is_empty());
+    }
+
+    /// End-to-end pin: every library template that ships an
+    /// `animation_type` other than `Static` must, after going through
+    /// `apply_title_animation_keyframes`, EITHER produce at least one
+    /// clip-level keyframe OR rely on a render-time override (the
+    /// content-rewrite variants Typewriter/TypewriterOut/Counter, the
+    /// per-frame colour overrides ColorCycle/ColorBlend, and OutlineDrawOn,
+    /// or a TextBox effect field like glitch/chromatic/char_animation).
+    /// Without this test, the "Best Picture" / Award Reveal regression
+    /// (animation_type=BounceIn on the TitleData but no scale_keyframes
+    /// on the clip → static playback) sneaks back in the next time a
+    /// template author forgets the keyframe wiring.
+    #[test]
+    fn library_templates_produce_keyframes_or_render_overrides() {
+        use klipp_timeline::TitleAnimationType as T;
+        use klipp_timeline::{ClipKind, TitleObjectContent};
+
+        for tpl in crate::browser::titles_tab::TITLES_FOR_TESTS {
+            let td = (tpl.create_data)();
+            let anim = td.animation_type.clone();
+
+            let render_time_only = matches!(
+                anim,
+                T::Static
+                    | T::Typewriter { .. }
+                    | T::TypewriterOut { .. }
+                    | T::Counter { .. }
+                    | T::ColorCycle { .. }
+                    | T::ColorBlend { .. }
+                    | T::OutlineDrawOn { .. }
+            );
+
+            let has_text_effect = td.objects.iter().any(|obj| {
+                if let TitleObjectContent::TextBox(tb) = &obj.content {
+                    tb.glitch_intensity > 0.0
+                        || tb.chromatic_aberration_px > 0.0
+                        || tb.char_animation.is_some()
+                } else {
+                    false
+                }
+            });
+
+            // Static templates with a text-effect (e.g. char_animation)
+            // are fine — those are the per-character entrance presets
+            // (Stagger Fade, Wave Bounce). Static + no text-effect is
+            // also fine — those are pure style presets that the user
+            // animates from the Inspector.
+            if matches!(anim, T::Static) {
+                continue;
+            }
+
+            if render_time_only || has_text_effect {
+                continue;
+            }
+
+            // Animation drives clip-level keyframes — simulate the
+            // clip-creation path by running apply_title_animation_keyframes
+            // on a minimal clip and assert at least one channel populates.
+            let ti = klipp_core::RationalTime::from_secs_f64(0.0, 24);
+            let to = klipp_core::RationalTime::from_secs_f64(5.0, 24);
+            let mut clip = klipp_timeline::Clip::gap(ti, to);
+            clip.timeline_in = ti;
+            clip.timeline_out = to;
+            clip.kind = ClipKind::Title(td);
+            apply_title_animation_keyframes(&mut clip, &anim, 1080.0, 1920.0);
+
+            let any_kf = !clip.opacity_keyframes.is_empty()
+                || !clip.transform_pos_x_keyframes.is_empty()
+                || !clip.transform_pos_y_keyframes.is_empty()
+                || !clip.transform_scale_keyframes.is_empty()
+                || !clip.transform_rotation_keyframes.is_empty();
+            assert!(
+                any_kf,
+                "Template '{}' (category '{}') has animation_type={:?} but \
+                 apply_title_animation_keyframes wrote nothing — it will \
+                 appear static in the timeline.",
+                tpl.name, tpl.category, anim,
+            );
+        }
     }
 }
 
