@@ -10833,6 +10833,66 @@ impl TimelinePanel {
                 }
             });
 
+            // ── Bezier tangent handle hit-test ──
+            // Only when the clip is selected (matches the painter gate
+            // in `paint_audio_curve_band` — tangents only render when
+            // `is_selected || is_multi_selected`). Hybrid rect mapping:
+            // X uses `full_clip_rect.width() / time_range_secs` to
+            // mirror the painter's `pixels_per_sec`; Y uses
+            // `sub_rect.height() / param_range` to mirror the painter's
+            // `value_scale`. Using `sub_rect` for X would drift when
+            // the clip extends offscreen.
+            let nearest_bezier_handle: Option<(usize, bool, f32)> =
+                if (c.is_selected || c.is_multi_selected)
+                    && state.dragging_bezier_handle.is_none()
+                    && pointer_in_sub
+                {
+                    let pixels_per_sec_h = if c.time_range_secs > 0.0 {
+                        full_clip_rect.width() / c.time_range_secs as f32
+                    } else {
+                        1.0
+                    };
+                    let value_scale_h = sub_rect.height() / param_range;
+                    pointer_pos.and_then(|pos| {
+                        let mut best: Option<(usize, bool, f32)> = None;
+                        for (ki, kf) in c.kfs.iter().enumerate() {
+                            if kf.interpolation != klipp_core::Interpolation::Bezier {
+                                continue;
+                            }
+                            if kf.time_secs < 0.0 || kf.time_secs > c.time_range_secs {
+                                continue;
+                            }
+                            let cx_h = time_to_x(kf.time_secs);
+                            let cy_h = value_to_y(kf.value);
+                            // Out (right) tangent.
+                            let tout_hx = cx_h + kf.tangent_out.0 as f32 * pixels_per_sec_h;
+                            let tout_hy = cy_h - kf.tangent_out.1 * value_scale_h;
+                            let dist_out = ((pos.x - tout_hx).powi(2)
+                                + (pos.y - tout_hy).powi(2))
+                                .sqrt();
+                            if dist_out < 8.0
+                                && best.is_none_or(|(_, _, d)| dist_out < d)
+                            {
+                                best = Some((ki, true, dist_out));
+                            }
+                            // In (left) tangent.
+                            let tin_hx = cx_h + kf.tangent_in.0 as f32 * pixels_per_sec_h;
+                            let tin_hy = cy_h - kf.tangent_in.1 * value_scale_h;
+                            let dist_in = ((pos.x - tin_hx).powi(2)
+                                + (pos.y - tin_hy).powi(2))
+                                .sqrt();
+                            if dist_in < 8.0
+                                && best.is_none_or(|(_, _, d)| dist_in < d)
+                            {
+                                best = Some((ki, false, dist_in));
+                            }
+                        }
+                        best
+                    })
+                } else {
+                    None
+                };
+
             // ── Paint the curve into the full clip's screen rect ──
             // Pass `full_clip_rect` (extends beyond the visible lane
             // when the clip is longer than the viewport) so kf X
@@ -10877,6 +10937,8 @@ impl TimelinePanel {
 
                 if is_dragging_this_kf || is_dragging_this_bezier {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                } else if nearest_bezier_handle.is_some() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                 } else if hovered_kf_idx.is_some() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                 } else if near_curve {
@@ -10898,8 +10960,13 @@ impl TimelinePanel {
 
                 // Click diamond → select it (drag dispatch happens
                 // separately below once the pointer crosses egui's
-                // decided-drag threshold).
-                if primary_clicked && state.dragging_audio_keyframe.is_none() {
+                // decided-drag threshold). Suppressed when a tangent
+                // handle is under the pointer so the tangent-drag
+                // path wins — matches the inline behaviour.
+                if primary_clicked
+                    && state.dragging_audio_keyframe.is_none()
+                    && nearest_bezier_handle.is_none()
+                {
                     if let Some(ki) = hovered_kf_idx {
                         state.selected_keyframe = Some(crate::state::SelectedKeyframe {
                             clip_id: c.clip_id,
@@ -10963,6 +11030,37 @@ impl TimelinePanel {
                     }
                 }
 
+                // ── Bezier tangent drag init ──
+                // First priority among lane drag-init paths: a click
+                // on a tangent dot must win over diamond / drag-on-
+                // curve / flat-line so the user can shape the curve
+                // without the click being intercepted. Mirrors the
+                // inline path's tangent-drag init.
+                if let Some((bh_ki, bh_is_out, _)) = nearest_bezier_handle {
+                    if pointer_down
+                        && state.dragging_bezier_handle.is_none()
+                        && state.dragging_audio_keyframe.is_none()
+                        && state.dragging_fade_handle.is_none()
+                    {
+                        let drag_key = format!(
+                            "kf:tangent:{}:{:?}:{}",
+                            c.clip_id.0, param, bh_ki
+                        );
+                        cmds.push(AppCommand::BeginKeyframeDrag {
+                            key: drag_key,
+                            clip_id: c.clip_id,
+                        });
+                        state.dragging_bezier_handle =
+                            Some(crate::state::BezierHandleDrag {
+                                clip_id: c.clip_id,
+                                param,
+                                keyframe_index: bh_ki,
+                                is_out: bh_is_out,
+                                in_automation_lane: true,
+                            });
+                    }
+                }
+
                 // Flat-line drag — when the clip has zero keyframes, dragging
                 // the bare line in the lane updates the clip's static value
                 // (volume / pan / gain depending on which param the lane
@@ -10971,6 +11069,7 @@ impl TimelinePanel {
                 if c.kfs.is_empty()
                     && near_curve
                     && pointer_down
+                    && nearest_bezier_handle.is_none()
                     && state.dragging_audio_keyframe.is_none()
                     && state.dragging_rubber_band.is_none()
                     && state.dragging_fade_handle.is_none()
@@ -11022,7 +11121,15 @@ impl TimelinePanel {
                         || state.dragging_bezier_handle.is_some()
                         || state.dragging_fade_handle.is_some();
                     let decided = ui.input(|i| i.pointer.is_decidedly_dragging());
-                    if pointer_down && !other_drags && !alt_held && decided {
+                    // Suppress the diamond-drag init when the press
+                    // landed on a tangent dot — the tangent path above
+                    // already grabbed it. Without this guard, a click
+                    // that hits a tangent within 8 px AND a diamond
+                    // within 12 px (close-clustered tangent + kf)
+                    // would init both drags.
+                    if pointer_down && !other_drags && !alt_held && decided
+                        && nearest_bezier_handle.is_none()
+                    {
                         let drag_key = format!(
                             "kf:audio:{}:{:?}:{}",
                             c.clip_id.0, param, ki
@@ -11068,6 +11175,7 @@ impl TimelinePanel {
                     && !near_any_diamond
                     && pointer_down
                     && hovered_kf_idx.is_none()
+                    && nearest_bezier_handle.is_none()
                     && state.dragging_audio_keyframe.is_none()
                     && state.dragging_bezier_handle.is_none()
                     && state.dragging_rubber_band.is_none()
