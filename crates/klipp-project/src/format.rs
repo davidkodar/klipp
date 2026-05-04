@@ -305,16 +305,47 @@ pub enum ClipKindJson {
         background: serde_json::Value,
         #[serde(default)]
         shadow: serde_json::Value,
+        /// Full drop-shadow stack. Optional so legacy projects with
+        /// only the `shadow` field continue to load — load.rs falls
+        /// back to synthesising a single-element vec from the legacy
+        /// field when this is empty/absent.
+        #[serde(default)]
+        shadows: serde_json::Value,
+        /// Soft-disable for the secondary shadow stack (`shadows[1..]`).
+        /// Defaults true so legacy projects render unchanged.
+        #[serde(default = "default_true")]
+        shadow_stack_enabled: bool,
         #[serde(default)]
         outline: serde_json::Value,
         #[serde(default)]
         outlines: serde_json::Value,
+        /// Soft-disable for the secondary outline stack
+        /// (`outlines[1..]`). Defaults to true so projects saved
+        /// before this field existed render the stack as before.
+        #[serde(default = "default_true")]
+        outline_stack_enabled: bool,
         #[serde(default)]
         glow: serde_json::Value,
+        /// Full glow stack (canonical). Optional so legacy projects
+        /// with only the singular `glow` continue to load.
+        #[serde(default)]
+        glows: serde_json::Value,
+        /// Soft-disable for the secondary glow stack.
+        #[serde(default = "default_true")]
+        glow_stack_enabled: bool,
         #[serde(default)]
         gradient: serde_json::Value,
         #[serde(default)]
         inner_shadow: serde_json::Value,
+        /// Full inner-shadow stack (canonical). Optional so legacy
+        /// projects with only the singular `inner_shadow` continue
+        /// to load — load.rs falls back to wrapping the legacy field
+        /// as a one-element vec.
+        #[serde(default)]
+        inner_shadows: serde_json::Value,
+        /// Soft-disable for the secondary inner-shadow stack.
+        #[serde(default = "default_true")]
+        inner_shadow_stack_enabled: bool,
         #[serde(default)]
         pattern_fill: serde_json::Value,
         #[serde(default)]

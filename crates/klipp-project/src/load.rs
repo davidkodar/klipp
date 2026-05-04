@@ -559,11 +559,18 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                 position_y,
                 background,
                 shadow,
+                shadows,
+                shadow_stack_enabled,
                 outline,
                 outlines,
+                outline_stack_enabled,
                 glow,
+                glows,
+                glow_stack_enabled,
                 gradient,
                 inner_shadow,
+                inner_shadows,
+                inner_shadow_stack_enabled,
                 pattern_fill,
                 tracking,
                 line_spacing,
@@ -589,12 +596,50 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                 };
                 let bg: TitleBackground = serde_json::from_value(background.clone())
                     .unwrap_or(TitleBackground::None);
-                let sh: Option<TitleShadow> = serde_json::from_value(shadow.clone()).ok().flatten();
+                // Drop-shadow stack migration: prefer the new
+                // `shadows` array; fall back to wrapping the legacy
+                // single `shadow` field as a one-element vec when
+                // `shadows` is absent or empty.
+                let shadow_vec: Vec<TitleShadow> = {
+                    let from_new: Vec<TitleShadow> =
+                        serde_json::from_value(shadows.clone()).unwrap_or_default();
+                    if !from_new.is_empty() {
+                        from_new
+                    } else {
+                        let legacy: Option<TitleShadow> =
+                            serde_json::from_value(shadow.clone()).ok().flatten();
+                        legacy.into_iter().collect()
+                    }
+                };
                 let ol: Option<klipp_timeline::TextOutline> = serde_json::from_value(outline.clone()).ok().flatten();
                 let ols: Vec<klipp_timeline::TextOutline> = serde_json::from_value(outlines.clone()).unwrap_or_default();
-                let gl: Option<klipp_timeline::TextGlow> = serde_json::from_value(glow.clone()).ok().flatten();
+                // Glow stack migration: prefer `glows` array; fall
+                // back to wrapping legacy `glow` as a one-element vec.
+                let glow_vec: Vec<klipp_timeline::TextGlow> = {
+                    let from_new: Vec<klipp_timeline::TextGlow> =
+                        serde_json::from_value(glows.clone()).unwrap_or_default();
+                    if !from_new.is_empty() {
+                        from_new
+                    } else {
+                        let legacy: Option<klipp_timeline::TextGlow> =
+                            serde_json::from_value(glow.clone()).ok().flatten();
+                        legacy.into_iter().collect()
+                    }
+                };
                 let gr: Option<klipp_timeline::TextGradient> = serde_json::from_value(gradient.clone()).ok().flatten();
-                let is: Option<klipp_timeline::InnerShadow> = serde_json::from_value(inner_shadow.clone()).ok().flatten();
+                // Inner shadow stack migration: prefer `inner_shadows`
+                // array; fall back to wrapping legacy `inner_shadow`.
+                let inner_shadow_vec: Vec<klipp_timeline::InnerShadow> = {
+                    let from_new: Vec<klipp_timeline::InnerShadow> =
+                        serde_json::from_value(inner_shadows.clone()).unwrap_or_default();
+                    if !from_new.is_empty() {
+                        from_new
+                    } else {
+                        let legacy: Option<klipp_timeline::InnerShadow> =
+                            serde_json::from_value(inner_shadow.clone()).ok().flatten();
+                        legacy.into_iter().collect()
+                    }
+                };
                 let pf: Option<klipp_timeline::TextPattern> = serde_json::from_value(pattern_fill.clone()).ok().flatten();
                 let ext: Option<klipp_timeline::TextExtrusion> = serde_json::from_value(extrusion.clone()).ok().flatten();
                 let tp: Option<klipp_timeline::TextPath> = serde_json::from_value(text_path.clone()).ok().flatten();
@@ -618,11 +663,15 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     font_style: fs,
                     color: *color,
                     alignment: align,
-                    shadow: sh,
+                    shadows: shadow_vec,
+                    shadow_stack_enabled: *shadow_stack_enabled,
                     outlines: outlines_vec,
-                    glow: gl,
+                    outline_stack_enabled: *outline_stack_enabled,
+                    glows: glow_vec,
+                    glow_stack_enabled: *glow_stack_enabled,
                     gradient: gr,
-                    inner_shadow: is,
+                    inner_shadows: inner_shadow_vec,
+                    inner_shadow_stack_enabled: *inner_shadow_stack_enabled,
                     pattern_fill: pf,
                     pattern_fill_enabled: true,
                     tracking: *tracking,

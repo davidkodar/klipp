@@ -1955,10 +1955,10 @@ fn show_title_effects_group(
 ) {
     use crate::widgets::inspector_group::{inspector_subgroup_card, GroupStatus};
 
-    let glow_enabled = tb.glow.as_ref().is_some_and(|g| g.enabled);
+    let glow_enabled = tb.glows.first().is_some_and(|g| g.enabled);
     let outline_enabled = tb.outlines.first().is_some_and(|o| o.enabled);
-    let shadow_enabled = tb.shadow.as_ref().is_some_and(|s| s.enabled);
-    let inner_enabled = tb.inner_shadow.as_ref().is_some_and(|i| i.enabled);
+    let shadow_enabled = tb.shadows.first().is_some_and(|s| s.enabled);
+    let inner_enabled = tb.inner_shadows.first().is_some_and(|i| i.enabled);
     let gradient_enabled = tb.gradient.as_ref().is_some_and(|g| g.enabled);
     let pattern_enabled = tb.pattern_fill.is_some() && tb.pattern_fill_enabled;
     // Two distinct concepts for Texture Fill:
@@ -1991,9 +1991,10 @@ fn show_title_effects_group(
     }
     ui.add_space(6.0);
 
-    // 1. Glow
+    // 1. Glow — primary at glows[0]. Stack rows for glows[1..] live
+    // in subcard #2 (Glow Layers).
     {
-        let cur = tb.glow.clone().unwrap_or(klipp_timeline::TextGlow {
+        let cur = tb.glows.first().cloned().unwrap_or(klipp_timeline::TextGlow {
             color: [0, 200, 255, 255],
             radius: 10.0,
             intensity: 0.8,
@@ -2002,22 +2003,19 @@ fn show_title_effects_group(
             intensity_keyframes: Vec::new(),
         });
         let mut enabled = glow_enabled;
-        // Display the animated radius/intensity value at the playhead
-        // when keyframes exist — matches what the renderer is showing
-        // right now. Falls back to the static value when unanimated.
         let display_radius = cur.evaluated_radius(clip_time_secs);
         let display_intensity = cur.evaluated_intensity(clip_time_secs);
         let summary = if enabled {
             format!("{} px · {}%", display_radius.round() as u32, (display_intensity * 100.0).round() as u32)
         } else { String::new() };
         let kfs_radius: &[klipp_core::Keyframe] = tb
-            .glow
-            .as_ref()
+            .glows
+            .first()
             .map(|g| g.radius_keyframes.as_slice())
             .unwrap_or(&[]);
         let kfs_intensity: &[klipp_core::Keyframe] = tb
-            .glow
-            .as_ref()
+            .glows
+            .first()
             .map(|g| g.intensity_keyframes.as_slice())
             .unwrap_or(&[]);
         inspector_subgroup_card(ui, "Glow", &mut enabled,
@@ -2065,7 +2063,94 @@ fn show_title_effects_group(
     }
     ui.add_space(6.0);
 
-    // 2. Outline (singular = outlines[0])
+    // 2. Glow Layers — secondary glow stack (`glows[1..]`).
+    // Mirrors Drop Shadow Layers; per-row color + radius + intensity
+    // DragValues + × remove + +Add Layer.
+    {
+        let mut enabled = tb.glow_stack_enabled;
+        let layer_count = tb.glows.len().saturating_sub(1);
+        let summary = if enabled && layer_count > 0 {
+            format!("{} layer{}", layer_count, if layer_count == 1 { "" } else { "s" })
+        } else {
+            String::new()
+        };
+        inspector_subgroup_card(ui, "Glow Layers", &mut enabled,
+            (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
+            let glows = &tb.glows;
+            let mut structural_change: Option<Vec<klipp_timeline::TextGlow>> = None;
+            for i in 1..glows.len() {
+                let g = glows[i].clone();
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
+                    let mut col = egui::Color32::from_rgba_premultiplied(g.color[0], g.color[1], g.color[2], g.color[3]);
+                    if ui.color_edit_button_srgba(&mut col).changed() {
+                        cmds.push(AppCommand::SetTitleGlowLayer {
+                            clip_id,
+                            index: i as u32,
+                            enabled: g.enabled,
+                            color: [col.r(), col.g(), col.b(), col.a()],
+                            radius: g.radius,
+                            intensity: g.intensity,
+                        });
+                    }
+                    let mut radius = g.radius;
+                    let r_radius = ui.add(egui::DragValue::new(&mut radius).speed(0.5).range(1.0..=80.0).suffix(" r"));
+                    let mut intensity = g.intensity;
+                    let r_intensity = ui.add(egui::DragValue::new(&mut intensity).speed(0.02).range(0.0..=2.0).suffix(" i"));
+                    if r_radius.changed() || r_intensity.changed() {
+                        cmds.push(AppCommand::SetTitleGlowLayer {
+                            clip_id,
+                            index: i as u32,
+                            enabled: g.enabled,
+                            color: g.color,
+                            radius,
+                            intensity,
+                        });
+                    }
+                    if ui.small_button("\u{00D7}").clicked() {
+                        let mut new_vec = glows.clone();
+                        new_vec.remove(i);
+                        structural_change = Some(new_vec);
+                    }
+                });
+            }
+            if ui.small_button("+ Add Layer").clicked() {
+                let mut new_vec = glows.clone();
+                if new_vec.is_empty() {
+                    new_vec.push(klipp_timeline::TextGlow {
+                        color: [0, 200, 255, 255],
+                        radius: 10.0,
+                        intensity: 0.8,
+                        enabled: false,
+                        radius_keyframes: Vec::new(),
+                        intensity_keyframes: Vec::new(),
+                    });
+                }
+                new_vec.push(klipp_timeline::TextGlow {
+                    color: [255, 255, 255, 255],
+                    radius: 20.0,
+                    intensity: 0.6,
+                    enabled: true,
+                    radius_keyframes: Vec::new(),
+                    intensity_keyframes: Vec::new(),
+                });
+                structural_change = Some(new_vec);
+            }
+            if let Some(new_glows) = structural_change {
+                let tuples: Vec<([u8; 4], f32, f32)> = new_glows
+                    .iter()
+                    .map(|g| (g.color, g.radius, g.intensity))
+                    .collect();
+                cmds.push(AppCommand::SetTitleGlows { clip_id, glows: tuples });
+            }
+        });
+        if enabled != tb.glow_stack_enabled {
+            cmds.push(AppCommand::SetTitleGlowStackEnabled { clip_id, enabled });
+        }
+    }
+    ui.add_space(6.0);
+
+    // 4. Outline (singular = outlines[0])
     {
         let cur = tb.outlines.first().cloned().unwrap_or(klipp_timeline::TextOutline {
             color: [255, 255, 255, 255],
@@ -2113,9 +2198,99 @@ fn show_title_effects_group(
     }
     ui.add_space(6.0);
 
-    // 3. Drop Shadow
+    // 5. Outline Layers — soft-disable card hosting the secondary
+    // outline stack (`outlines[1..]`). Primary outline (#2 above) is
+    // gated by its own toggle and unaffected by this card. Each row
+    // is keyframe-aware — width edits dispatch through the per-effect
+    // path when keyframes exist, the per-index SetTitleOutlineLayer
+    // path otherwise — so structural ops (add / remove) and value
+    // ops (color / width) preserve siblings' keyframes correctly.
     {
-        let cur = tb.shadow.clone().unwrap_or(klipp_timeline::TitleShadow {
+        let mut enabled = tb.outline_stack_enabled;
+        let layer_count = tb.outlines.len().saturating_sub(1);
+        let summary = if enabled && layer_count > 0 {
+            format!("{} layer{}", layer_count, if layer_count == 1 { "" } else { "s" })
+        } else {
+            String::new()
+        };
+        inspector_subgroup_card(ui, "Outline Layers", &mut enabled,
+            (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
+            let outlines = &tb.outlines;
+            let mut structural_change: Option<Vec<klipp_timeline::TextOutline>> = None;
+            for i in 1..outlines.len() {
+                let ol = outlines[i].clone();
+                let display_width = ol.evaluated_width(clip_time_secs);
+                let kfs_width: &[klipp_core::Keyframe] = ol.width_keyframes.as_slice();
+                let ks_width = title_object_keyframe_state(kfs_width, clip_time_secs);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
+                    let mut col = egui::Color32::from_rgba_premultiplied(ol.color[0], ol.color[1], ol.color[2], ol.color[3]);
+                    if ui.color_edit_button_srgba(&mut col).changed() {
+                        cmds.push(AppCommand::SetTitleOutlineLayer {
+                            clip_id,
+                            index: i as u32,
+                            enabled: ol.enabled,
+                            color: [col.r(), col.g(), col.b(), col.a()],
+                            width: ol.width,
+                        });
+                    }
+                    let mut w_val = display_width;
+                    let resp_width = crate::widgets::scrubby_param::scrubby_param_row(
+                        ui, "", &mut w_val, 0.5..=20.0, 4.0, 0.5, 1, " px",
+                        target_oid.map(|_| ks_width),
+                    );
+                    handle_outline_axis_response(
+                        cmds, clip_id, target_oid,
+                        i,
+                        w_val, &ol, kfs_width, clip_time_secs, &resp_width,
+                    );
+                    if ui.small_button("\u{00D7}").clicked() {
+                        let mut new_vec = outlines.clone();
+                        new_vec.remove(i);
+                        structural_change = Some(new_vec);
+                    }
+                });
+            }
+            if ui.small_button("+ Add Layer").clicked() {
+                let mut new_vec = outlines.clone();
+                // Seed a primary outline at index 0 if it's missing,
+                // so the new stacked layer doesn't shadow-promote into
+                // the primary slot. The seed is enabled=false so it
+                // doesn't render until the user touches the primary
+                // Outline subcard.
+                if new_vec.is_empty() {
+                    new_vec.push(klipp_timeline::TextOutline {
+                        color: [255, 255, 255, 255],
+                        width: 2.0,
+                        enabled: false,
+                        width_keyframes: Vec::new(),
+                    });
+                }
+                new_vec.push(klipp_timeline::TextOutline {
+                    color: [0, 0, 0, 255],
+                    width: 4.0,
+                    enabled: true,
+                    width_keyframes: Vec::new(),
+                });
+                structural_change = Some(new_vec);
+            }
+            if let Some(new_outlines) = structural_change {
+                let outline_tuples: Vec<([u8; 4], f32)> =
+                    new_outlines.iter().map(|o| (o.color, o.width)).collect();
+                cmds.push(AppCommand::SetTitleOutlines { clip_id, outlines: outline_tuples });
+            }
+        });
+        if enabled != tb.outline_stack_enabled {
+            cmds.push(AppCommand::SetTitleOutlineStackEnabled { clip_id, enabled });
+        }
+    }
+    ui.add_space(6.0);
+
+    // 6. Drop Shadow — primary at shadows[0]. Keyframe-aware sliders
+    // for offset/blur on the primary; colour is static. Stack rows
+    // for shadows[1..] live in subcard #5 (Drop Shadow Layers).
+    {
+        let cur = tb.shadows.first().cloned().unwrap_or(klipp_timeline::TitleShadow {
             color: [0, 0, 0, 180],
             offset_x: 3.0,
             offset_y: 3.0,
@@ -2135,18 +2310,18 @@ fn show_title_effects_group(
             format!("{} px · {}%", display_blur.round() as u32, (cur.color[3] as f32 / 255.0 * 100.0).round() as u32)
         } else { String::new() };
         let kfs_ox: &[klipp_core::Keyframe] = tb
-            .shadow
-            .as_ref()
+            .shadows
+            .first()
             .map(|s| s.offset_x_keyframes.as_slice())
             .unwrap_or(&[]);
         let kfs_oy: &[klipp_core::Keyframe] = tb
-            .shadow
-            .as_ref()
+            .shadows
+            .first()
             .map(|s| s.offset_y_keyframes.as_slice())
             .unwrap_or(&[]);
         let kfs_blur: &[klipp_core::Keyframe] = tb
-            .shadow
-            .as_ref()
+            .shadows
+            .first()
             .map(|s| s.blur_keyframes.as_slice())
             .unwrap_or(&[]);
         inspector_subgroup_card(ui, "Drop Shadow", &mut enabled,
@@ -2171,8 +2346,6 @@ fn show_title_effects_group(
                 ui, theme, "Blur", &mut blur, 0.0..=30.0,
                 &pill_blur, kfs_blur,
             );
-            // Color change always goes through the static SetTitleShadow
-            // path — colour isn't keyframable in this slice.
             if color_changed {
                 cmds.push(AppCommand::SetTitleShadow {
                     clip_id, enabled: true,
@@ -2205,9 +2378,113 @@ fn show_title_effects_group(
     }
     ui.add_space(6.0);
 
-    // 4. Inner Shadow
+    // 7. Drop Shadow Layers — secondary stack (`shadows[1..]`).
+    // Mirrors Outline Layers: card-level toggle hides the whole stack,
+    // each row has color + offset + blur + × remove, +Add Layer at
+    // the bottom. Keyframes per index are not yet wired into the row
+    // sliders — the row sliders dispatch SetTitleShadowLayer (static).
+    // The renderer + data model already support per-layer keyframes;
+    // adding them here is a follow-up.
     {
-        let cur = tb.inner_shadow.clone().unwrap_or(klipp_timeline::InnerShadow {
+        let mut enabled = tb.shadow_stack_enabled;
+        let layer_count = tb.shadows.len().saturating_sub(1);
+        let summary = if enabled && layer_count > 0 {
+            format!("{} layer{}", layer_count, if layer_count == 1 { "" } else { "s" })
+        } else {
+            String::new()
+        };
+        inspector_subgroup_card(ui, "Drop Shadow Layers", &mut enabled,
+            (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
+            let shadows = &tb.shadows;
+            let mut structural_change: Option<Vec<klipp_timeline::TitleShadow>> = None;
+            for i in 1..shadows.len() {
+                let sh = shadows[i].clone();
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
+                    let mut col = egui::Color32::from_rgba_premultiplied(sh.color[0], sh.color[1], sh.color[2], sh.color[3]);
+                    if ui.color_edit_button_srgba(&mut col).changed() {
+                        cmds.push(AppCommand::SetTitleShadowLayer {
+                            clip_id,
+                            index: i as u32,
+                            enabled: sh.enabled,
+                            color: [col.r(), col.g(), col.b(), col.a()],
+                            offset_x: sh.offset_x,
+                            offset_y: sh.offset_y,
+                            blur: sh.blur,
+                        });
+                    }
+                    let mut ox = sh.offset_x;
+                    let r_ox = ui.add(egui::DragValue::new(&mut ox).speed(0.5).suffix(" x"));
+                    let mut oy = sh.offset_y;
+                    let r_oy = ui.add(egui::DragValue::new(&mut oy).speed(0.5).suffix(" y"));
+                    let mut bl = sh.blur;
+                    let r_bl = ui.add(egui::DragValue::new(&mut bl).speed(0.5).range(0.0..=60.0).suffix(" blur"));
+                    if r_ox.changed() || r_oy.changed() || r_bl.changed() {
+                        cmds.push(AppCommand::SetTitleShadowLayer {
+                            clip_id,
+                            index: i as u32,
+                            enabled: sh.enabled,
+                            color: sh.color,
+                            offset_x: ox,
+                            offset_y: oy,
+                            blur: bl,
+                        });
+                    }
+                    if ui.small_button("\u{00D7}").clicked() {
+                        let mut new_vec = shadows.clone();
+                        new_vec.remove(i);
+                        structural_change = Some(new_vec);
+                    }
+                });
+            }
+            if ui.small_button("+ Add Layer").clicked() {
+                let mut new_vec = shadows.clone();
+                // Seed a primary shadow at index 0 if missing so the
+                // new stacked layer doesn't promote into the primary
+                // slot. The seed is enabled=false so it doesn't render
+                // until the user enables the primary Drop Shadow card.
+                if new_vec.is_empty() {
+                    new_vec.push(klipp_timeline::TitleShadow {
+                        color: [0, 0, 0, 180],
+                        offset_x: 3.0,
+                        offset_y: 3.0,
+                        blur: 0.0,
+                        enabled: false,
+                        offset_x_keyframes: Vec::new(),
+                        offset_y_keyframes: Vec::new(),
+                        blur_keyframes: Vec::new(),
+                    });
+                }
+                new_vec.push(klipp_timeline::TitleShadow {
+                    color: [0, 0, 0, 200],
+                    offset_x: 6.0,
+                    offset_y: 6.0,
+                    blur: 4.0,
+                    enabled: true,
+                    offset_x_keyframes: Vec::new(),
+                    offset_y_keyframes: Vec::new(),
+                    blur_keyframes: Vec::new(),
+                });
+                structural_change = Some(new_vec);
+            }
+            if let Some(new_shadows) = structural_change {
+                let tuples: Vec<([u8; 4], f32, f32, f32)> = new_shadows
+                    .iter()
+                    .map(|s| (s.color, s.offset_x, s.offset_y, s.blur))
+                    .collect();
+                cmds.push(AppCommand::SetTitleShadows { clip_id, shadows: tuples });
+            }
+        });
+        if enabled != tb.shadow_stack_enabled {
+            cmds.push(AppCommand::SetTitleShadowStackEnabled { clip_id, enabled });
+        }
+    }
+    ui.add_space(6.0);
+
+    // 8. Inner Shadow — primary at inner_shadows[0]. Stack rows for
+    // inner_shadows[1..] live in subcard #7 (Inner Shadow Layers).
+    {
+        let cur = tb.inner_shadows.first().cloned().unwrap_or(klipp_timeline::InnerShadow {
             color: [0, 0, 0, 180],
             offset_x: 2.0,
             offset_y: 2.0,
@@ -2226,18 +2503,18 @@ fn show_title_effects_group(
             format!("{} px · {}%", display_blur.round() as u32, (cur.color[3] as f32 / 255.0 * 100.0).round() as u32)
         } else { String::new() };
         let kfs_ox: &[klipp_core::Keyframe] = tb
-            .inner_shadow
-            .as_ref()
+            .inner_shadows
+            .first()
             .map(|s| s.offset_x_keyframes.as_slice())
             .unwrap_or(&[]);
         let kfs_oy: &[klipp_core::Keyframe] = tb
-            .inner_shadow
-            .as_ref()
+            .inner_shadows
+            .first()
             .map(|s| s.offset_y_keyframes.as_slice())
             .unwrap_or(&[]);
         let kfs_blur: &[klipp_core::Keyframe] = tb
-            .inner_shadow
-            .as_ref()
+            .inner_shadows
+            .first()
             .map(|s| s.blur_keyframes.as_slice())
             .unwrap_or(&[]);
         inspector_subgroup_card(ui, "Inner Shadow", &mut enabled,
@@ -2294,7 +2571,101 @@ fn show_title_effects_group(
     }
     ui.add_space(6.0);
 
-    // 5. Gradient Fill
+    // 9. Inner Shadow Layers — secondary stack (`inner_shadows[1..]`).
+    // Mirrors Drop Shadow Layers in shape and behaviour.
+    {
+        let mut enabled = tb.inner_shadow_stack_enabled;
+        let layer_count = tb.inner_shadows.len().saturating_sub(1);
+        let summary = if enabled && layer_count > 0 {
+            format!("{} layer{}", layer_count, if layer_count == 1 { "" } else { "s" })
+        } else {
+            String::new()
+        };
+        inspector_subgroup_card(ui, "Inner Shadow Layers", &mut enabled,
+            (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
+            let inners = &tb.inner_shadows;
+            let mut structural_change: Option<Vec<klipp_timeline::InnerShadow>> = None;
+            for i in 1..inners.len() {
+                let sh = inners[i].clone();
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
+                    let mut col = egui::Color32::from_rgba_premultiplied(sh.color[0], sh.color[1], sh.color[2], sh.color[3]);
+                    if ui.color_edit_button_srgba(&mut col).changed() {
+                        cmds.push(AppCommand::SetTitleInnerShadowLayer {
+                            clip_id,
+                            index: i as u32,
+                            enabled: sh.enabled,
+                            color: [col.r(), col.g(), col.b(), col.a()],
+                            offset_x: sh.offset_x,
+                            offset_y: sh.offset_y,
+                            blur: sh.blur,
+                        });
+                    }
+                    let mut ox = sh.offset_x;
+                    let r_ox = ui.add(egui::DragValue::new(&mut ox).speed(0.5).suffix(" x"));
+                    let mut oy = sh.offset_y;
+                    let r_oy = ui.add(egui::DragValue::new(&mut oy).speed(0.5).suffix(" y"));
+                    let mut bl = sh.blur;
+                    let r_bl = ui.add(egui::DragValue::new(&mut bl).speed(0.5).range(0.0..=60.0).suffix(" blur"));
+                    if r_ox.changed() || r_oy.changed() || r_bl.changed() {
+                        cmds.push(AppCommand::SetTitleInnerShadowLayer {
+                            clip_id,
+                            index: i as u32,
+                            enabled: sh.enabled,
+                            color: sh.color,
+                            offset_x: ox,
+                            offset_y: oy,
+                            blur: bl,
+                        });
+                    }
+                    if ui.small_button("\u{00D7}").clicked() {
+                        let mut new_vec = inners.clone();
+                        new_vec.remove(i);
+                        structural_change = Some(new_vec);
+                    }
+                });
+            }
+            if ui.small_button("+ Add Layer").clicked() {
+                let mut new_vec = inners.clone();
+                if new_vec.is_empty() {
+                    new_vec.push(klipp_timeline::InnerShadow {
+                        color: [0, 0, 0, 180],
+                        offset_x: 2.0,
+                        offset_y: 2.0,
+                        blur: 3.0,
+                        enabled: false,
+                        offset_x_keyframes: Vec::new(),
+                        offset_y_keyframes: Vec::new(),
+                        blur_keyframes: Vec::new(),
+                    });
+                }
+                new_vec.push(klipp_timeline::InnerShadow {
+                    color: [0, 0, 0, 200],
+                    offset_x: 4.0,
+                    offset_y: 4.0,
+                    blur: 6.0,
+                    enabled: true,
+                    offset_x_keyframes: Vec::new(),
+                    offset_y_keyframes: Vec::new(),
+                    blur_keyframes: Vec::new(),
+                });
+                structural_change = Some(new_vec);
+            }
+            if let Some(new_inners) = structural_change {
+                let tuples: Vec<([u8; 4], f32, f32, f32)> = new_inners
+                    .iter()
+                    .map(|s| (s.color, s.offset_x, s.offset_y, s.blur))
+                    .collect();
+                cmds.push(AppCommand::SetTitleInnerShadows { clip_id, shadows: tuples });
+            }
+        });
+        if enabled != tb.inner_shadow_stack_enabled {
+            cmds.push(AppCommand::SetTitleInnerShadowStackEnabled { clip_id, enabled });
+        }
+    }
+    ui.add_space(6.0);
+
+    // 10. Gradient Fill
     {
         let cur = tb.gradient.as_ref().cloned().unwrap_or(klipp_timeline::TextGradient {
             top_color: [255, 200, 50, 255], bottom_color: [255, 50, 50, 255], enabled: false,
@@ -2325,7 +2696,7 @@ fn show_title_effects_group(
     }
     ui.add_space(6.0);
 
-    // 6. Pattern Fill
+    // 11. Pattern Fill
     {
         let mut enabled = pattern_enabled;
         let pat_idx: usize = match &tb.pattern_fill {
@@ -2417,34 +2788,56 @@ fn show_title_effects_group(
     }
     ui.add_space(6.0);
 
-    // 7. Texture Fill
+    // 12. Texture Fill
     {
         let mut enabled = texture_toggle_on;
-        let cur_path: Option<String> = tb
+        // Read current state — fall back to defaults when no
+        // TextureFill exists yet so the inspector renders sensible
+        // values even before the user enables.
+        let cur_tf: klipp_timeline::TextureFill = tb
             .texture_fill
-            .as_ref()
-            .and_then(|t| t.file_path().map(|s| s.to_string()));
-        // Summary chip uses the strict "actually rendering"
-        // predicate — toggling on without a file shows just "(no
-        // file)" inside the body, not a misleading filename in the
-        // header.
-        let summary = if texture_active {
-            cur_path.as_ref()
-                .and_then(|p| std::path::Path::new(p).file_name())
+            .clone()
+            .unwrap_or_default();
+        let cur_preset: Option<klipp_timeline::TexturePresetId> = match &cur_tf.source {
+            klipp_timeline::TextureSource::Preset(id) => Some(*id),
+            _ => None,
+        };
+        let source_label = match &cur_tf.source {
+            klipp_timeline::TextureSource::None => "(none)".to_string(),
+            klipp_timeline::TextureSource::File(p) => std::path::Path::new(p)
+                .file_name()
                 .and_then(|n| n.to_str())
-                .unwrap_or("(no file)")
-                .to_string()
-        } else { String::new() };
+                .unwrap_or("(file)")
+                .to_string(),
+            klipp_timeline::TextureSource::Preset(id) => preset_display_name(*id).to_string(),
+        };
+        let summary = if texture_active { source_label.clone() } else { String::new() };
         inspector_subgroup_card(ui, "Texture Fill", &mut enabled,
             (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
+            // ── Source row: label + current source name (read-only).
+            let label_w: f32 = 70.0;
+            let row_h: f32 = 28.0;
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("File").size(11.0).color(theme.text_dim));
-                let display_name = cur_path.as_ref()
-                    .and_then(|p| std::path::Path::new(p).file_name())
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("(none)");
-                ui.label(egui::RichText::new(display_name).monospace().size(11.0).color(theme.text_secondary));
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let (label_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(label_w, row_h), egui::Sense::hover(),
+                );
+                ui.painter().text(
+                    egui::pos2(label_rect.min.x, label_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    "Source",
+                    egui::FontId::proportional(11.0),
+                    theme.text_dim,
+                );
+                ui.label(
+                    egui::RichText::new(&source_label)
+                        .size(11.0)
+                        .monospace()
+                        .color(theme.text_secondary),
+                );
             });
+
+            // ── Browse / Preset dropdown / Clear row.
             ui.horizontal(|ui| {
                 if ui.button("Browse\u{2026}").clicked() {
                     if let Some(path) = rfd::FileDialog::new()
@@ -2460,86 +2853,139 @@ fn show_title_effects_group(
                         });
                     }
                 }
-                // Clear is enabled only when a path is set — keeps
-                // the affordance meaningful and dispatches `None` so
-                // the handler clears `texture_fill_path`.
-                let has_path = cur_path.is_some();
-                if ui.add_enabled(has_path, egui::Button::new("Clear")).clicked() {
+                // Procedural-preset picker. Selecting any entry
+                // dispatches SetTitleTexturePreset, swapping the
+                // source while preserving every other param.
+                let preset_text = cur_preset
+                    .map(|p| preset_display_name(p))
+                    .unwrap_or("Preset\u{2026}");
+                egui::ComboBox::from_id_salt("title_texture_preset")
+                    .selected_text(preset_text)
+                    .show_ui(ui, |ui| {
+                        for (id, name) in [
+                            (0u8, "Paper Grain"),
+                            (1u8, "Scanlines"),
+                            (2u8, "Diagonal Hatch"),
+                            (3u8, "Gradient Sweep"),
+                        ] {
+                            let active = matches!(cur_preset, Some(p) if preset_id_to_u8(p) == id);
+                            if ui.selectable_label(active, name).clicked() {
+                                cmds.push(AppCommand::SetTitleTexturePreset {
+                                    clip_id, preset_id: id,
+                                });
+                            }
+                        }
+                    });
+                // Clear nukes the entire TextureFill — different
+                // from "no preset" since it also drops the params.
+                let has_source = !matches!(cur_tf.source, klipp_timeline::TextureSource::None);
+                if ui.add_enabled(has_source, egui::Button::new("Clear")).clicked() {
                     cmds.push(AppCommand::SetTitleTextureFill {
                         clip_id, path: None,
                     });
                 }
             });
+
+            // ── Tile mode dropdown — same label-column alignment.
+            let tile_mode_idx = match cur_tf.tile_mode {
+                klipp_timeline::TextureTileMode::Stretch => 0u8,
+                klipp_timeline::TextureTileMode::Tile => 1,
+                klipp_timeline::TextureTileMode::Fit => 2,
+                klipp_timeline::TextureTileMode::Cover => 3,
+            };
+            let mut new_tile = tile_mode_idx;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let (label_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(label_w, row_h), egui::Sense::hover(),
+                );
+                ui.painter().text(
+                    egui::pos2(label_rect.min.x, label_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    "Tile",
+                    egui::FontId::proportional(11.0),
+                    theme.text_dim,
+                );
+                let tile_labels = ["Stretch", "Tile", "Fit", "Cover"];
+                egui::ComboBox::from_id_salt("title_texture_tile_mode")
+                    .selected_text(tile_labels[tile_mode_idx as usize])
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for (i, label) in tile_labels.iter().enumerate() {
+                            if ui.selectable_label(new_tile == i as u8, *label).clicked() {
+                                new_tile = i as u8;
+                            }
+                        }
+                    });
+            });
+
+            // ── Scale / Offset X / Offset Y / Rotation / Opacity
+            //    rows via effect_param_row so they look identical
+            //    to every other inspector slider.
+            let mut scale = cur_tf.scale;
+            let mut offset_x = cur_tf.offset_x;
+            let mut offset_y = cur_tf.offset_y;
+            let mut rotation = cur_tf.rotation;
+            let mut opacity = cur_tf.opacity;
+
+            let pill_scale = format!("{:.2}\u{00d7}", scale);
+            let resp_scale = effect_param_row(
+                ui, theme, "Scale", &mut scale, 0.1..=5.0, &pill_scale, &[],
+            );
+            let pill_ox = format!("{} px", offset_x.round() as i32);
+            let resp_ox = effect_param_row(
+                ui, theme, "Offset X", &mut offset_x, -200.0..=200.0, &pill_ox, &[],
+            );
+            let pill_oy = format!("{} px", offset_y.round() as i32);
+            let resp_oy = effect_param_row(
+                ui, theme, "Offset Y", &mut offset_y, -200.0..=200.0, &pill_oy, &[],
+            );
+            let pill_rot = format!("{}\u{00b0}", rotation.round() as i32);
+            let resp_rot = effect_param_row(
+                ui, theme, "Rotation", &mut rotation, -180.0..=180.0, &pill_rot, &[],
+            );
+            let pill_op = format!("{}%", (opacity * 100.0).round() as i32);
+            let resp_op = effect_param_row(
+                ui, theme, "Opacity", &mut opacity, 0.0..=1.0, &pill_op, &[],
+            );
+
+            // ── Tint row via effect_color_row (label + swatch + hex).
+            let mut tint_col = egui::Color32::from_rgba_premultiplied(
+                cur_tf.tint[0], cur_tf.tint[1], cur_tf.tint[2], cur_tf.tint[3],
+            );
+            let tint_changed = effect_color_row(
+                ui, theme, "Tint", &mut tint_col, ("texture_tint", clip_id),
+            );
+
+            // Dispatch a single SetTitleTextureParams command if
+            // anything changed. The handler preserves the source,
+            // so this cleanly composes with the source-picker
+            // dispatches above.
+            let any_param_changed = new_tile != tile_mode_idx
+                || resp_scale.changed
+                || resp_ox.changed
+                || resp_oy.changed
+                || resp_rot.changed
+                || resp_op.changed
+                || tint_changed;
+            if any_param_changed {
+                cmds.push(AppCommand::SetTitleTextureParams {
+                    clip_id,
+                    tile_mode: new_tile,
+                    scale,
+                    offset_x,
+                    offset_y,
+                    rotation,
+                    opacity,
+                    tint: [tint_col.r(), tint_col.g(), tint_col.b(), tint_col.a()],
+                });
+            }
         });
         if enabled != texture_toggle_on {
             cmds.push(AppCommand::SetTitleTextureEnabled { clip_id, enabled });
         }
     }
     ui.add_space(10.0);
-
-    // 8. Outline Layers stack — outlines beyond outlines[0].
-    // Each row is keyframe-aware: width edits dispatch through the
-    // per-effect path when keyframes exist, and through the per-index
-    // SetTitleOutlineLayer command when they don't (preserves
-    // sibling layers' keyframes either way). Add/remove/reorder
-    // structural ops still go through SetTitleOutlines.
-    {
-        ui.label(egui::RichText::new("OUTLINE LAYERS").size(10.0).color(theme.text_dim));
-        ui.add_space(4.0);
-        let outlines = &tb.outlines;
-        let mut structural_change: Option<Vec<klipp_timeline::TextOutline>> = None;
-        for i in 1..outlines.len() {
-            let ol = outlines[i].clone();
-            let display_width = ol.evaluated_width(clip_time_secs);
-            let kfs_width: &[klipp_core::Keyframe] = ol.width_keyframes.as_slice();
-            let ks_width = title_object_keyframe_state(kfs_width, clip_time_secs);
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
-                let mut col = egui::Color32::from_rgba_premultiplied(ol.color[0], ol.color[1], ol.color[2], ol.color[3]);
-                if ui.color_edit_button_srgba(&mut col).changed() {
-                    // Color isn't keyframable — per-index static
-                    // edit preserves the row's width_keyframes.
-                    cmds.push(AppCommand::SetTitleOutlineLayer {
-                        clip_id,
-                        index: i as u32,
-                        enabled: ol.enabled,
-                        color: [col.r(), col.g(), col.b(), col.a()],
-                        width: ol.width,
-                    });
-                }
-                let mut w_val = display_width;
-                let resp_width = crate::widgets::scrubby_param::scrubby_param_row(
-                    ui, "", &mut w_val, 0.5..=20.0, 4.0, 0.5, 1, " px",
-                    target_oid.map(|_| ks_width),
-                );
-                handle_outline_axis_response(
-                    cmds, clip_id, target_oid,
-                    i,
-                    w_val, &ol, kfs_width, clip_time_secs, &resp_width,
-                );
-                if ui.small_button("\u{00D7}").clicked() {
-                    let mut new_vec = outlines.clone();
-                    new_vec.remove(i);
-                    structural_change = Some(new_vec);
-                }
-            });
-        }
-        if ui.small_button("+ Add Layer").clicked() {
-            let mut new_vec = outlines.clone();
-            new_vec.push(klipp_timeline::TextOutline {
-                color: [0, 0, 0, 255],
-                width: 4.0,
-                enabled: true,
-                width_keyframes: Vec::new(),
-            });
-            structural_change = Some(new_vec);
-        }
-        if let Some(new_outlines) = structural_change {
-            let outline_tuples: Vec<([u8; 4], f32)> =
-                new_outlines.iter().map(|o| (o.color, o.width)).collect();
-            cmds.push(AppCommand::SetTitleOutlines { clip_id, outlines: outline_tuples });
-        }
-    }
 }
 
 /// radius. Phase-1 ships only the rectangle primitive, so the
@@ -2909,6 +3355,24 @@ fn effect_color_row(
     });
 
     changed
+}
+
+fn preset_display_name(id: klipp_timeline::TexturePresetId) -> &'static str {
+    match id {
+        klipp_timeline::TexturePresetId::PaperGrain => "Paper Grain",
+        klipp_timeline::TexturePresetId::Scanlines => "Scanlines",
+        klipp_timeline::TexturePresetId::DiagonalHatch => "Diagonal Hatch",
+        klipp_timeline::TexturePresetId::GradientSweep => "Gradient Sweep",
+    }
+}
+
+fn preset_id_to_u8(id: klipp_timeline::TexturePresetId) -> u8 {
+    match id {
+        klipp_timeline::TexturePresetId::PaperGrain => 0,
+        klipp_timeline::TexturePresetId::Scanlines => 1,
+        klipp_timeline::TexturePresetId::DiagonalHatch => 2,
+        klipp_timeline::TexturePresetId::GradientSweep => 3,
+    }
 }
 
 /// Parse `#RRGGBB` (case-insensitive, leading `#` optional) into a

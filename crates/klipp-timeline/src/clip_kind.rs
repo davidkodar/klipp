@@ -383,18 +383,47 @@ pub struct TextBox {
     pub font_style: FontStyle,
     pub color: [u8; 4],
     pub alignment: TextAlignment,
+    /// Drop shadow layers, rendered front-to-back so the lowest index
+    /// is on top. The legacy single `shadow` field is migrated into
+    /// `shadows[0]` on project load. Per-element keyframes live inside
+    /// each TitleShadow.
     #[serde(default)]
-    pub shadow: Option<TitleShadow>,
+    pub shadows: Vec<TitleShadow>,
+    /// Soft-disable for the secondary shadow stack (`shadows[1..]`).
+    /// Primary shadow (index 0) is gated by its own `enabled` field.
+    /// When `false`, the renderer skips every layer at index >= 1 but
+    /// the data is preserved across re-enable.
+    #[serde(default = "default_true")]
+    pub shadow_stack_enabled: bool,
     /// Outline/stroke layers, rendered widest-first, back-to-front.
     #[serde(default)]
     pub outlines: Vec<TextOutline>,
+    /// Soft-disable for the secondary outline stack (`outlines[1..]`).
+    /// `outlines[0]` is the primary outline, gated by its own
+    /// `enabled` field. When `false`, the renderer skips every layer
+    /// at index >= 1 but the data is preserved across re-enable.
+    #[serde(default = "default_true")]
+    pub outline_stack_enabled: bool,
+    /// Glow stack. Mirrors `shadows` — legacy projects with only
+    /// `glow` are migrated into `glows[0]` on project load.
     #[serde(default)]
-    pub glow: Option<TextGlow>,
+    pub glows: Vec<TextGlow>,
+    /// Soft-disable for the secondary glow stack (`glows[1..]`).
+    #[serde(default = "default_true")]
+    pub glow_stack_enabled: bool,
     /// Gradient fill (overrides solid colour when set).
     #[serde(default)]
     pub gradient: Option<TextGradient>,
+    /// Inner shadow stack. Mirrors `shadows` — legacy projects with
+    /// only `inner_shadow` are migrated into `inner_shadows[0]` on
+    /// project load. Per-element keyframes live inside each entry.
     #[serde(default)]
-    pub inner_shadow: Option<InnerShadow>,
+    pub inner_shadows: Vec<InnerShadow>,
+    /// Soft-disable for the secondary inner-shadow stack
+    /// (`inner_shadows[1..]`). Primary (index 0) is gated by its own
+    /// `enabled` field.
+    #[serde(default = "default_true")]
+    pub inner_shadow_stack_enabled: bool,
     /// Pattern fill (overrides solid colour and gradient when set).
     #[serde(default)]
     pub pattern_fill: Option<TextPattern>,
@@ -527,12 +556,43 @@ impl TextBox {
     ) -> Option<&mut Vec<klipp_core::Keyframe>> {
         // Note: check `inner_shadow.` before `shadow.` — the latter
         // would otherwise prefix-match the former.
-        if param_key.starts_with("glow.") {
-            self.glow.as_mut().and_then(|g| g.keyframes_mut_for(param_key))
+        if let Some((idx, field)) = klipp_core::title_effect_keys::parse_glow_param_key(param_key) {
+            // Per-stack-element glow keyframes (`glow.{idx}.field`).
+            let layer = self.glows.get_mut(idx)?;
+            match field {
+                "radius" => Some(&mut layer.radius_keyframes),
+                "intensity" => Some(&mut layer.intensity_keyframes),
+                _ => None,
+            }
+        } else if param_key.starts_with("glow.") {
+            // Legacy unindexed glow keys → glows[0].
+            self.glows.get_mut(0).and_then(|g| g.keyframes_mut_for(param_key))
+        } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_inner_shadow_param_key(param_key) {
+            // Per-stack-element inner-shadow keyframes (`inner_shadow.{idx}.field`).
+            let layer = self.inner_shadows.get_mut(idx)?;
+            match field {
+                "offset_x" => Some(&mut layer.offset_x_keyframes),
+                "offset_y" => Some(&mut layer.offset_y_keyframes),
+                "blur" => Some(&mut layer.blur_keyframes),
+                _ => None,
+            }
         } else if param_key.starts_with("inner_shadow.") {
-            self.inner_shadow.as_mut().and_then(|s| s.keyframes_mut_for(param_key))
+            // Legacy unindexed inner_shadow keys → inner_shadows[0].
+            self.inner_shadows.get_mut(0).and_then(|s| s.keyframes_mut_for(param_key))
+        } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_shadow_param_key(param_key) {
+            // Per-stack-element shadow keyframes (`shadow.{idx}.field`).
+            // Out-of-range indices return None.
+            let layer = self.shadows.get_mut(idx)?;
+            match field {
+                "offset_x" => Some(&mut layer.offset_x_keyframes),
+                "offset_y" => Some(&mut layer.offset_y_keyframes),
+                "blur" => Some(&mut layer.blur_keyframes),
+                _ => None,
+            }
         } else if param_key.starts_with("shadow.") {
-            self.shadow.as_mut().and_then(|s| s.keyframes_mut_for(param_key))
+            // Legacy unindexed shadow keys (`shadow.offset_x` etc).
+            // Always route to shadows[0] so old projects keep working.
+            self.shadows.get_mut(0).and_then(|s| s.keyframes_mut_for(param_key))
         } else if param_key.starts_with("extrusion.") {
             self.extrusion.as_mut().and_then(|e| e.keyframes_mut_for(param_key))
         } else if param_key.starts_with("motion_blur.") {
@@ -554,12 +614,37 @@ impl TextBox {
     /// Read-only mirror of `effect_keyframes_mut_for`. Used by the
     /// inspector to build a `KeyframeState`.
     pub fn effect_keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
-        if param_key.starts_with("glow.") {
-            self.glow.as_ref().and_then(|g| g.keyframes_for(param_key))
+        if let Some((idx, field)) = klipp_core::title_effect_keys::parse_glow_param_key(param_key) {
+            let layer = self.glows.get(idx)?;
+            match field {
+                "radius" => Some(layer.radius_keyframes.as_slice()),
+                "intensity" => Some(layer.intensity_keyframes.as_slice()),
+                _ => None,
+            }
+        } else if param_key.starts_with("glow.") {
+            self.glows.first().and_then(|g| g.keyframes_for(param_key))
+        } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_inner_shadow_param_key(param_key) {
+            let layer = self.inner_shadows.get(idx)?;
+            match field {
+                "offset_x" => Some(layer.offset_x_keyframes.as_slice()),
+                "offset_y" => Some(layer.offset_y_keyframes.as_slice()),
+                "blur" => Some(layer.blur_keyframes.as_slice()),
+                _ => None,
+            }
         } else if param_key.starts_with("inner_shadow.") {
-            self.inner_shadow.as_ref().and_then(|s| s.keyframes_for(param_key))
+            // Legacy unindexed inner_shadow keys → inner_shadows[0].
+            self.inner_shadows.first().and_then(|s| s.keyframes_for(param_key))
+        } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_shadow_param_key(param_key) {
+            let layer = self.shadows.get(idx)?;
+            match field {
+                "offset_x" => Some(layer.offset_x_keyframes.as_slice()),
+                "offset_y" => Some(layer.offset_y_keyframes.as_slice()),
+                "blur" => Some(layer.blur_keyframes.as_slice()),
+                _ => None,
+            }
         } else if param_key.starts_with("shadow.") {
-            self.shadow.as_ref().and_then(|s| s.keyframes_for(param_key))
+            // Legacy unindexed keys → shadows[0].
+            self.shadows.first().and_then(|s| s.keyframes_for(param_key))
         } else if param_key.starts_with("extrusion.") {
             self.extrusion.as_ref().and_then(|e| e.keyframes_for(param_key))
         } else if param_key.starts_with("motion_blur.") {
@@ -609,11 +694,15 @@ impl Default for TextBox {
             font_style: FontStyle::Regular,
             color: [255, 255, 255, 255],
             alignment: TextAlignment::Center,
-            shadow: None,
+            shadows: Vec::new(),
+            shadow_stack_enabled: true,
             outlines: Vec::new(),
-            glow: None,
+            outline_stack_enabled: true,
+            glows: Vec::new(),
+            glow_stack_enabled: true,
             gradient: None,
-            inner_shadow: None,
+            inner_shadows: Vec::new(),
+            inner_shadow_stack_enabled: true,
             pattern_fill: None,
             pattern_fill_enabled: true,
             tracking: 0.0,
@@ -815,19 +904,28 @@ impl TitleData {
             .unwrap_or(TitlePosition { x: 0.5, y: 0.5 })
     }
     pub fn shadow(&self) -> Option<TitleShadow> {
-        self.primary_text().and_then(|tb| tb.shadow.clone())
+        self.primary_text().and_then(|tb| tb.shadows.first().cloned())
+    }
+    pub fn shadows(&self) -> Vec<TitleShadow> {
+        self.primary_text().map(|tb| tb.shadows.clone()).unwrap_or_default()
     }
     pub fn outlines(&self) -> Vec<TextOutline> {
         self.primary_text().map(|tb| tb.outlines.clone()).unwrap_or_default()
     }
     pub fn glow(&self) -> Option<TextGlow> {
-        self.primary_text().and_then(|tb| tb.glow.clone())
+        self.primary_text().and_then(|tb| tb.glows.first().cloned())
+    }
+    pub fn glows(&self) -> Vec<TextGlow> {
+        self.primary_text().map(|tb| tb.glows.clone()).unwrap_or_default()
     }
     pub fn gradient(&self) -> Option<TextGradient> {
         self.primary_text().and_then(|tb| tb.gradient.clone())
     }
     pub fn inner_shadow(&self) -> Option<InnerShadow> {
-        self.primary_text().and_then(|tb| tb.inner_shadow.clone())
+        self.primary_text().and_then(|tb| tb.inner_shadows.first().cloned())
+    }
+    pub fn inner_shadows(&self) -> Vec<InnerShadow> {
+        self.primary_text().map(|tb| tb.inner_shadows.clone()).unwrap_or_default()
     }
     pub fn pattern_fill(&self) -> Option<TextPattern> {
         self.primary_text().and_then(|tb| tb.pattern_fill)
@@ -2434,7 +2532,7 @@ mod tests {
         assert!(tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_BLUR).is_none());
         assert!(tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_OFFSET_X).is_none());
 
-        tb.shadow = Some(TitleShadow {
+        tb.shadows.push(TitleShadow {
             enabled: true,
             color: [0, 0, 0, 180],
             offset_x: 3.0,
@@ -2457,7 +2555,7 @@ mod tests {
             tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_BLUR).unwrap(),
             0.5, 12.0,
         );
-        let s = tb.shadow.as_ref().unwrap();
+        let s = tb.shadows.first().unwrap();
         assert_eq!(s.offset_x_keyframes.len(), 1);
         assert_eq!(s.offset_y_keyframes.len(), 1);
         assert_eq!(s.blur_keyframes.len(), 1);
@@ -2618,6 +2716,246 @@ mod tests {
         assert_eq!(tf.rotation, 0.0);
         assert_eq!(tf.opacity, 1.0);
         assert_eq!(tf.tint, [255, 255, 255, 255]);
+    }
+
+    /// Round-trip + legacy migration for the glow stack.
+    #[test]
+    fn glows_round_trip_and_legacy_default() {
+        let mut tb = TextBox::default();
+        tb.glows.push(TextGlow {
+            enabled: true,
+            color: [10, 200, 255, 255],
+            radius: 12.0,
+            radius_keyframes: Vec::new(),
+            intensity: 0.8,
+            intensity_keyframes: Vec::new(),
+        });
+        tb.glows.push(TextGlow {
+            enabled: false,
+            color: [255, 100, 0, 200],
+            radius: 24.0,
+            radius_keyframes: Vec::new(),
+            intensity: 0.4,
+            intensity_keyframes: Vec::new(),
+        });
+        tb.glow_stack_enabled = false;
+        let json = serde_json::to_string(&tb).expect("serialise");
+        let round: TextBox = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(tb.glows, round.glows);
+        assert!(!round.glow_stack_enabled);
+
+        let legacy_json = r#"{
+            "text": "Hi",
+            "font_size": 72.0,
+            "font_name": "sans-serif",
+            "color": [255, 255, 255, 255],
+            "alignment": "Center"
+        }"#;
+        let legacy: TextBox = serde_json::from_str(legacy_json).expect("legacy parse");
+        assert!(legacy.glows.is_empty());
+        assert!(legacy.glow_stack_enabled);
+    }
+
+    /// Indexed glow keyframe routing: `glow.{idx}.field` lands on
+    /// `glows[idx].*_keyframes`.
+    #[test]
+    fn glow_indexed_keyframe_routing() {
+        let mut tb = TextBox::default();
+        tb.glows.push(TextGlow {
+            enabled: true,
+            color: [0, 200, 255, 255],
+            radius: 8.0,
+            radius_keyframes: Vec::new(),
+            intensity: 0.6,
+            intensity_keyframes: Vec::new(),
+        });
+        tb.glows.push(TextGlow {
+            enabled: true,
+            color: [255, 100, 0, 200],
+            radius: 16.0,
+            radius_keyframes: Vec::new(),
+            intensity: 0.4,
+            intensity_keyframes: Vec::new(),
+        });
+        let key1 = klipp_core::title_effect_keys::glow_radius_key(1);
+        klipp_core::keyframe::upsert_keyframe(
+            tb.effect_keyframes_mut_for(&key1).unwrap(),
+            0.0, 30.0,
+        );
+        assert_eq!(tb.glows[1].radius_keyframes.len(), 1);
+        assert_eq!(tb.glows[0].radius_keyframes.len(), 0);
+        // Legacy `glow.radius` still routes to glows[0].
+        klipp_core::keyframe::upsert_keyframe(
+            tb.effect_keyframes_mut_for(klipp_core::title_effect_keys::GLOW_RADIUS).unwrap(),
+            0.0, 8.0,
+        );
+        assert_eq!(tb.glows[0].radius_keyframes.len(), 1);
+    }
+
+    /// Round-trip + legacy migration for the inner-shadow stack.
+    #[test]
+    fn inner_shadows_round_trip_and_legacy_default() {
+        let mut tb = TextBox::default();
+        tb.inner_shadows.push(InnerShadow {
+            enabled: true,
+            color: [10, 20, 30, 200],
+            offset_x: 2.0, offset_x_keyframes: Vec::new(),
+            offset_y: 3.0, offset_y_keyframes: Vec::new(),
+            blur: 4.0, blur_keyframes: Vec::new(),
+        });
+        tb.inner_shadows.push(InnerShadow {
+            enabled: false,
+            color: [50, 60, 70, 220],
+            offset_x: 5.0, offset_x_keyframes: Vec::new(),
+            offset_y: 6.0, offset_y_keyframes: Vec::new(),
+            blur: 8.0, blur_keyframes: Vec::new(),
+        });
+        tb.inner_shadow_stack_enabled = false;
+        let json = serde_json::to_string(&tb).expect("serialise");
+        let round: TextBox = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(tb.inner_shadows, round.inner_shadows);
+        assert!(!round.inner_shadow_stack_enabled);
+
+        // Legacy: TextBox JSON without inner_shadows / stack flag.
+        let legacy_json = r#"{
+            "text": "Hi",
+            "font_size": 72.0,
+            "font_name": "sans-serif",
+            "color": [255, 255, 255, 255],
+            "alignment": "Center"
+        }"#;
+        let legacy: TextBox = serde_json::from_str(legacy_json).expect("legacy parse");
+        assert!(legacy.inner_shadows.is_empty());
+        assert!(legacy.inner_shadow_stack_enabled);
+    }
+
+    /// Indexed inner-shadow keyframe routing: `inner_shadow.{idx}.field`
+    /// lands on `inner_shadows[idx].*_keyframes`.
+    #[test]
+    fn inner_shadow_indexed_keyframe_routing() {
+        let mut tb = TextBox::default();
+        tb.inner_shadows.push(InnerShadow {
+            enabled: true,
+            color: [0, 0, 0, 200],
+            offset_x: 1.0, offset_x_keyframes: Vec::new(),
+            offset_y: 1.0, offset_y_keyframes: Vec::new(),
+            blur: 2.0, blur_keyframes: Vec::new(),
+        });
+        tb.inner_shadows.push(InnerShadow {
+            enabled: true,
+            color: [255, 0, 0, 200],
+            offset_x: 4.0, offset_x_keyframes: Vec::new(),
+            offset_y: 4.0, offset_y_keyframes: Vec::new(),
+            blur: 6.0, blur_keyframes: Vec::new(),
+        });
+        let key1 = klipp_core::title_effect_keys::inner_shadow_blur_key(1);
+        klipp_core::keyframe::upsert_keyframe(
+            tb.effect_keyframes_mut_for(&key1).unwrap(),
+            0.0, 12.0,
+        );
+        assert_eq!(tb.inner_shadows[1].blur_keyframes.len(), 1);
+        // shadows[0] untouched.
+        assert_eq!(tb.inner_shadows[0].blur_keyframes.len(), 0);
+        // Out-of-range index returns None.
+        let key_oob = klipp_core::title_effect_keys::inner_shadow_blur_key(99);
+        assert!(tb.effect_keyframes_mut_for(&key_oob).is_none());
+    }
+
+    /// Round-trip a multi-element shadow stack on TextBox. Each layer
+    /// keeps its color / offsets / blur and per-element keyframe vecs
+    /// across serialise → deserialise.
+    #[test]
+    fn shadows_round_trip_through_serde() {
+        use klipp_core::{Interpolation, Keyframe};
+        let mut tb = TextBox::default();
+        tb.shadows.push(TitleShadow {
+            enabled: true,
+            color: [10, 20, 30, 200],
+            offset_x: 3.0,
+            offset_x_keyframes: vec![Keyframe {
+                time_secs: 0.0, value: 3.0,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            }],
+            offset_y: 4.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 6.0,
+            blur_keyframes: Vec::new(),
+        });
+        tb.shadows.push(TitleShadow {
+            enabled: false,
+            color: [50, 60, 70, 220],
+            offset_x: 9.0,
+            offset_x_keyframes: Vec::new(),
+            offset_y: 12.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 8.0,
+            blur_keyframes: Vec::new(),
+        });
+        let json = serde_json::to_string(&tb).expect("serialise");
+        let round: TextBox = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(tb.shadows, round.shadows);
+        assert!(round.shadow_stack_enabled, "default missing field is true");
+    }
+
+    /// Legacy JSON without `shadows` / `shadow_stack_enabled`: an
+    /// older TextBox payload (no array, only a singular `shadow`)
+    /// must deserialise into a TextBox with empty `shadows` and
+    /// `shadow_stack_enabled = true`. Project load.rs is responsible
+    /// for synthesising shadows[0] from the legacy `shadow` field at
+    /// the project layer; the timeline crate just needs to round-trip
+    /// the new fields with sane defaults.
+    #[test]
+    fn shadows_legacy_json_without_array_loads_with_defaults() {
+        let legacy_json = r#"{
+            "text": "Hi",
+            "font_size": 72.0,
+            "font_name": "sans-serif",
+            "color": [255, 255, 255, 255],
+            "alignment": "Center"
+        }"#;
+        let legacy: TextBox = serde_json::from_str(legacy_json).expect("legacy parse");
+        assert!(legacy.shadows.is_empty());
+        assert!(legacy.shadow_stack_enabled);
+    }
+
+    /// `shadow_stack_enabled = false` round-trips the explicit false.
+    #[test]
+    fn shadow_stack_enabled_round_trips_false() {
+        let mut tb = TextBox::default();
+        tb.shadow_stack_enabled = false;
+        let json = serde_json::to_string(&tb).expect("serialise");
+        let round: TextBox = serde_json::from_str(&json).expect("deserialise");
+        assert!(!round.shadow_stack_enabled);
+    }
+
+    /// Round-trip for the `outline_stack_enabled` soft-disable bit
+    /// on TextBox. Confirms the field serialises and deserialises
+    /// losslessly, and that a missing field on legacy JSON deserialises
+    /// to `true` so old projects keep their secondary outlines visible.
+    #[test]
+    fn outline_stack_enabled_round_trips_and_legacy_defaults_true() {
+        // Round-trip `false`.
+        let mut tb = TextBox::default();
+        tb.outline_stack_enabled = false;
+        let json = serde_json::to_string(&tb).expect("serialise");
+        let round: TextBox = serde_json::from_str(&json).expect("deserialise");
+        assert!(!round.outline_stack_enabled, "explicit false must survive round-trip");
+
+        // Legacy JSON: omit the field entirely. Must default to true.
+        let legacy_json = r#"{
+            "text": "Hi",
+            "font_size": 72.0,
+            "font_name": "sans-serif",
+            "color": [255, 255, 255, 255],
+            "alignment": "Center"
+        }"#;
+        let legacy: TextBox = serde_json::from_str(legacy_json)
+            .expect("legacy TextBox JSON without outline_stack_enabled must parse");
+        assert!(
+            legacy.outline_stack_enabled,
+            "missing field must default to true (preserve old project behaviour)"
+        );
     }
 
     /// `is_active()` returns true only when the toggle is on AND
@@ -2893,7 +3231,7 @@ mod tests {
             .effect_keyframes_mut_for(title_effect_keys::INNER_SHADOW_BLUR)
             .is_none());
 
-        tb.inner_shadow = Some(InnerShadow {
+        tb.inner_shadows.push(InnerShadow {
             enabled: true,
             color: [0, 0, 0, 180],
             offset_x: 2.0, offset_x_keyframes: Vec::new(),
@@ -2907,11 +3245,11 @@ mod tests {
         );
         // inner_shadow.* lands on the right vec.
         assert_eq!(
-            tb.inner_shadow.as_ref().unwrap().offset_x_keyframes.len(),
+            tb.inner_shadows.first().unwrap().offset_x_keyframes.len(),
             1,
         );
         // The (separate) shadow path is still empty — no bleed.
-        assert!(tb.shadow.is_none());
+        assert!(tb.shadows.is_empty());
         // shadow.* without a TitleShadow returns None and does NOT
         // accidentally hit the InnerShadow vec.
         assert!(tb

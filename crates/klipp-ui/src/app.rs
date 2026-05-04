@@ -13300,14 +13300,14 @@ impl KlippApp {
                                     enabled: true,
                                     width_keyframes: Vec::new(),
                                 }];
-                                tb.glow = Some(klipp_timeline::TextGlow {
+                                tb.glows = vec![klipp_timeline::TextGlow {
                                     color: *accent_color,
                                     radius: 12.0,
                                     intensity: 1.4,
                                     enabled: true,
                                     radius_keyframes: Vec::new(),
                                     intensity_keyframes: Vec::new(),
-                                });
+                                }];
                             }
                         }
                     }
@@ -14124,6 +14124,80 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleTexturePreset { clip_id, preset_id } => {
+                // Switch source to a procedural preset, preserving
+                // every other TextureFill param (scale, offset,
+                // rotation, opacity, tint, tile_mode, enabled).
+                let old = self.snapshot_title(*clip_id);
+                let preset = match *preset_id {
+                    0 => klipp_timeline::TexturePresetId::PaperGrain,
+                    1 => klipp_timeline::TexturePresetId::Scanlines,
+                    2 => klipp_timeline::TexturePresetId::DiagonalHatch,
+                    3 => klipp_timeline::TexturePresetId::GradientSweep,
+                    _ => return true,
+                };
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                if let Some(t) = tb.texture_fill.as_mut() {
+                                    t.source = klipp_timeline::TextureSource::Preset(preset);
+                                } else {
+                                    tb.texture_fill = Some(klipp_timeline::TextureFill {
+                                        source: klipp_timeline::TextureSource::Preset(preset),
+                                        ..klipp_timeline::TextureFill::default()
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Texture Preset", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleTextureParams {
+                clip_id, tile_mode, scale, offset_x, offset_y, rotation, opacity, tint,
+            } => {
+                // Update transform / blend params on the existing
+                // TextureFill. Source field is preserved. Seeds a
+                // default texture_fill if there isn't one yet so a
+                // standalone param edit doesn't drop on the floor.
+                let old = self.snapshot_title(*clip_id);
+                let mode = match *tile_mode {
+                    1 => klipp_timeline::TextureTileMode::Tile,
+                    2 => klipp_timeline::TextureTileMode::Fit,
+                    3 => klipp_timeline::TextureTileMode::Cover,
+                    _ => klipp_timeline::TextureTileMode::Stretch,
+                };
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                let tf = tb.texture_fill.get_or_insert_with(klipp_timeline::TextureFill::default);
+                                tf.tile_mode = mode;
+                                tf.scale = *scale;
+                                tf.offset_x = *offset_x;
+                                tf.offset_y = *offset_y;
+                                tf.rotation = *rotation;
+                                tf.opacity = *opacity;
+                                tf.tint = *tint;
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Texture Params", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::ApplyTitlePreset { clip_id, preset_id } => {
                 // Flatten a named preset into the selected TextBox.
                 // Preset ids match the inspector's PRESET_REGISTRY:
@@ -14169,14 +14243,19 @@ impl KlippApp {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                if let Some(s) = tb.shadow.as_mut() {
+                                // Primary shadow lives at shadows[0].
+                                // Preserve any keyframes by mutating in
+                                // place when the slot exists; otherwise
+                                // seed a fresh primary shadow without
+                                // touching shadows[1..].
+                                if let Some(s) = tb.shadows.first_mut() {
                                     s.color = *color;
                                     s.offset_x = *offset_x;
                                     s.offset_y = *offset_y;
                                     s.blur = *blur;
                                     s.enabled = *enabled;
                                 } else {
-                                    tb.shadow = Some(klipp_timeline::TitleShadow {
+                                    tb.shadows.insert(0, klipp_timeline::TitleShadow {
                                         color: *color,
                                         offset_x: *offset_x,
                                         offset_y: *offset_y,
@@ -14192,6 +14271,93 @@ impl KlippApp {
                     }
                 }
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Shadow", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleShadows { clip_id, shadows } => {
+                // Rebuild the shadow stack — preserve keyframes on
+                // surviving slots in place; new slots start with empty
+                // keyframe vecs. Mirrors SetTitleOutlines.
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                let new_len = shadows.len();
+                                tb.shadows.truncate(new_len);
+                                for (i, (color, off_x, off_y, blur)) in shadows.iter().enumerate() {
+                                    if let Some(existing) = tb.shadows.get_mut(i) {
+                                        existing.color = *color;
+                                        existing.offset_x = *off_x;
+                                        existing.offset_y = *off_y;
+                                        existing.blur = *blur;
+                                        existing.enabled = true;
+                                    } else {
+                                        tb.shadows.push(klipp_timeline::TitleShadow {
+                                            color: *color,
+                                            offset_x: *off_x,
+                                            offset_y: *off_y,
+                                            blur: *blur,
+                                            enabled: true,
+                                            offset_x_keyframes: Vec::new(),
+                                            offset_y_keyframes: Vec::new(),
+                                            blur_keyframes: Vec::new(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Shadow Stack", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleShadowLayer { clip_id, index, enabled, color, offset_x, offset_y, blur } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                if let Some(slot) = tb.shadows.get_mut(*index as usize) {
+                                    slot.enabled = *enabled;
+                                    slot.color = *color;
+                                    slot.offset_x = *offset_x;
+                                    slot.offset_y = *offset_y;
+                                    slot.blur = *blur;
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Shadow Layer", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleShadowStackEnabled { clip_id, enabled } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                tb.shadow_stack_enabled = *enabled;
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Shadow Stack", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
@@ -14244,13 +14410,13 @@ impl KlippApp {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                if let Some(g) = tb.glow.as_mut() {
+                                if let Some(g) = tb.glows.first_mut() {
                                     g.color = *color;
                                     g.radius = *radius;
                                     g.intensity = *intensity;
                                     g.enabled = *enabled;
                                 } else {
-                                    tb.glow = Some(klipp_timeline::TextGlow {
+                                    tb.glows.insert(0, klipp_timeline::TextGlow {
                                         color: *color,
                                         radius: *radius,
                                         intensity: *intensity,
@@ -14264,6 +14430,86 @@ impl KlippApp {
                     }
                 }
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Glow", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleGlows { clip_id, glows } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                let new_len = glows.len();
+                                tb.glows.truncate(new_len);
+                                for (i, (color, radius, intensity)) in glows.iter().enumerate() {
+                                    if let Some(existing) = tb.glows.get_mut(i) {
+                                        existing.color = *color;
+                                        existing.radius = *radius;
+                                        existing.intensity = *intensity;
+                                        existing.enabled = true;
+                                    } else {
+                                        tb.glows.push(klipp_timeline::TextGlow {
+                                            color: *color,
+                                            radius: *radius,
+                                            intensity: *intensity,
+                                            enabled: true,
+                                            radius_keyframes: Vec::new(),
+                                            intensity_keyframes: Vec::new(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Glow Stack", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleGlowLayer { clip_id, index, enabled, color, radius, intensity } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                if let Some(slot) = tb.glows.get_mut(*index as usize) {
+                                    slot.enabled = *enabled;
+                                    slot.color = *color;
+                                    slot.radius = *radius;
+                                    slot.intensity = *intensity;
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Glow Layer", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleGlowStackEnabled { clip_id, enabled } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                tb.glow_stack_enabled = *enabled;
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Glow Stack", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
@@ -14339,6 +14585,25 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleOutlineStackEnabled { clip_id, enabled } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                tb.outline_stack_enabled = *enabled;
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Outline Stack", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetTitleInnerShadow { clip_id, enabled, color, offset_x, offset_y, blur } => {
                 // Mutate fields in place when an inner shadow already
                 // exists so existing keyframes survive an Inspector
@@ -14349,14 +14614,14 @@ impl KlippApp {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                if let Some(s) = tb.inner_shadow.as_mut() {
+                                if let Some(s) = tb.inner_shadows.first_mut() {
                                     s.color = *color;
                                     s.offset_x = *offset_x;
                                     s.offset_y = *offset_y;
                                     s.blur = *blur;
                                     s.enabled = *enabled;
                                 } else {
-                                    tb.inner_shadow = Some(klipp_timeline::InnerShadow {
+                                    tb.inner_shadows.insert(0, klipp_timeline::InnerShadow {
                                         color: *color,
                                         offset_x: *offset_x,
                                         offset_y: *offset_y,
@@ -14372,6 +14637,90 @@ impl KlippApp {
                     }
                 }
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Inner Shadow", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleInnerShadows { clip_id, shadows } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                let new_len = shadows.len();
+                                tb.inner_shadows.truncate(new_len);
+                                for (i, (color, off_x, off_y, blur)) in shadows.iter().enumerate() {
+                                    if let Some(existing) = tb.inner_shadows.get_mut(i) {
+                                        existing.color = *color;
+                                        existing.offset_x = *off_x;
+                                        existing.offset_y = *off_y;
+                                        existing.blur = *blur;
+                                        existing.enabled = true;
+                                    } else {
+                                        tb.inner_shadows.push(klipp_timeline::InnerShadow {
+                                            color: *color,
+                                            offset_x: *off_x,
+                                            offset_y: *off_y,
+                                            blur: *blur,
+                                            enabled: true,
+                                            offset_x_keyframes: Vec::new(),
+                                            offset_y_keyframes: Vec::new(),
+                                            blur_keyframes: Vec::new(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Inner Shadow Stack", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleInnerShadowLayer { clip_id, index, enabled, color, offset_x, offset_y, blur } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                if let Some(slot) = tb.inner_shadows.get_mut(*index as usize) {
+                                    slot.enabled = *enabled;
+                                    slot.color = *color;
+                                    slot.offset_x = *offset_x;
+                                    slot.offset_y = *offset_y;
+                                    slot.blur = *blur;
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Inner Shadow Layer", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleInnerShadowStackEnabled { clip_id, enabled } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                tb.inner_shadow_stack_enabled = *enabled;
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Inner Shadow Stack", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
@@ -16972,7 +17321,7 @@ impl KlippApp {
                                 tb.color = color;
                                 tb.alignment = klipp_timeline::TextAlignment::Center;
                                 if let Some(o) = outline { tb.outlines.push(o); }
-                                tb.shadow = shadow;
+                                if let Some(s) = shadow { tb.shadows.push(s); }
                                 tb.ass_style_name = if entry.style_name.is_empty() { None } else { Some(entry.style_name.clone()) };
                                 let mut title_data = klipp_timeline::TitleData::single_text(tb);
                                 if let Some(o) = title_data.objects.first_mut() {
@@ -29106,7 +29455,19 @@ fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId> {
         | C::AddTitleObjectEffectKeyframe { clip_id, .. }
         | C::RemoveTitleObjectEffectKeyframe { clip_id, .. }
         | C::MoveTitleObjectEffectKeyframe { clip_id, .. }
-        | C::SetTitleObjectEffectKeyframeInterpolation { clip_id, .. } => Some(*clip_id),
+        | C::SetTitleObjectEffectKeyframeInterpolation { clip_id, .. }
+        | C::SetTitleTexturePreset { clip_id, .. }
+        | C::SetTitleTextureParams { clip_id, .. }
+        | C::SetTitleOutlineStackEnabled { clip_id, .. }
+        | C::SetTitleShadows { clip_id, .. }
+        | C::SetTitleShadowLayer { clip_id, .. }
+        | C::SetTitleShadowStackEnabled { clip_id, .. }
+        | C::SetTitleInnerShadows { clip_id, .. }
+        | C::SetTitleInnerShadowLayer { clip_id, .. }
+        | C::SetTitleInnerShadowStackEnabled { clip_id, .. }
+        | C::SetTitleGlows { clip_id, .. }
+        | C::SetTitleGlowLayer { clip_id, .. }
+        | C::SetTitleGlowStackEnabled { clip_id, .. } => Some(*clip_id),
         _ => None,
     }
 }
@@ -29163,17 +29524,17 @@ fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8) {
                 enabled: true,
                 width_keyframes: Vec::new(),
             }];
-            tb.glow = Some(TextGlow {
+            tb.glows = vec![TextGlow {
                 color: accent,
                 radius: 12.0,
                 intensity: 1.4,
                 enabled: true,
                 radius_keyframes: Vec::new(),
                 intensity_keyframes: Vec::new(),
-            });
+            }];
             // Clear conflicting effects so the look is clean.
-            tb.shadow = None;
-            tb.inner_shadow = None;
+            tb.shadows.clear();
+            tb.inner_shadows.clear();
             tb.gradient = None;
             tb.chromatic_aberration_px = 0.0;
             tb.glitch_intensity = 0.0;
@@ -29182,9 +29543,9 @@ fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8) {
         2 => {
             tb.color = [255, 255, 255, 255];
             tb.outlines.clear();
-            tb.glow = None;
-            tb.shadow = None;
-            tb.inner_shadow = None;
+            tb.glows.clear();
+            tb.shadows.clear();
+            tb.inner_shadows.clear();
             tb.gradient = None;
             tb.pattern_fill = None;
             tb.pattern_fill_enabled = true;
@@ -29196,8 +29557,8 @@ fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8) {
         3 => {
             tb.color = [255, 255, 255, 255];
             tb.outlines.clear();
-            tb.glow = None;
-            tb.shadow = Some(TitleShadow {
+            tb.glows.clear();
+            tb.shadows = vec![TitleShadow {
                 color: [0, 0, 0, 200],
                 offset_x: 4.0,
                 offset_y: 4.0,
@@ -29206,8 +29567,8 @@ fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8) {
                 offset_x_keyframes: Vec::new(),
                 offset_y_keyframes: Vec::new(),
                 blur_keyframes: Vec::new(),
-            });
-            tb.inner_shadow = None;
+            }];
+            tb.inner_shadows.clear();
             tb.gradient = None;
             tb.chromatic_aberration_px = 0.0;
             tb.glitch_intensity = 0.0;
@@ -29222,9 +29583,9 @@ fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8) {
                 enabled: true,
                 width_keyframes: Vec::new(),
             }];
-            tb.glow = None;
-            tb.shadow = None;
-            tb.inner_shadow = None;
+            tb.glows.clear();
+            tb.shadows.clear();
+            tb.inner_shadows.clear();
             tb.gradient = None;
             tb.chromatic_aberration_px = 0.0;
             tb.glitch_intensity = 0.0;
@@ -29234,9 +29595,9 @@ fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8) {
         // user's chosen hue tints the channel split.
         5 => {
             tb.outlines.clear();
-            tb.glow = None;
-            tb.shadow = None;
-            tb.inner_shadow = Some(InnerShadow {
+            tb.glows.clear();
+            tb.shadows.clear();
+            tb.inner_shadows = vec![InnerShadow {
                 color: [0, 0, 0, 100],
                 offset_x: 0.0,
                 offset_y: 0.0,
@@ -29245,7 +29606,7 @@ fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8) {
                 offset_x_keyframes: Vec::new(),
                 offset_y_keyframes: Vec::new(),
                 blur_keyframes: Vec::new(),
-            });
+            }];
             tb.chromatic_aberration_px = 6.0;
             tb.glitch_intensity = 0.35;
         }

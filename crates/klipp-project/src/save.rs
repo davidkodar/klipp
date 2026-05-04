@@ -345,16 +345,31 @@ fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
                 position_x: pos.x,
                 position_y: pos.y,
                 background: serde_json::to_value(&data.background).unwrap_or_default(),
-                shadow: serde_json::to_value(&tb.shadow).unwrap_or_default(),
+                // Legacy single-shadow JSON field — emit shadows[0]
+                // for back-compat with older Klipp readers; the full
+                // stack lives under `shadows`.
+                shadow: serde_json::to_value(tb.shadows.first()).unwrap_or_default(),
+                shadows: serde_json::to_value(&tb.shadows).unwrap_or_default(),
+                shadow_stack_enabled: tb.shadow_stack_enabled,
                 // Single-outline JSON field is legacy; the canonical
                 // list lives under `outlines`. Emit the first outline
                 // as `outline` for compat with older readers, and the
                 // full list under `outlines`.
                 outline: serde_json::to_value(tb.outlines.first()).unwrap_or_default(),
                 outlines: serde_json::to_value(&tb.outlines).unwrap_or_default(),
-                glow: serde_json::to_value(&tb.glow).unwrap_or_default(),
+                outline_stack_enabled: tb.outline_stack_enabled,
+                // Legacy single-glow field — emit glows[0] for
+                // back-compat. Full stack lives under `glows`.
+                glow: serde_json::to_value(tb.glows.first()).unwrap_or_default(),
+                glows: serde_json::to_value(&tb.glows).unwrap_or_default(),
+                glow_stack_enabled: tb.glow_stack_enabled,
                 gradient: serde_json::to_value(&tb.gradient).unwrap_or_default(),
-                inner_shadow: serde_json::to_value(&tb.inner_shadow).unwrap_or_default(),
+                // Legacy single-inner-shadow field — emit inner_shadows[0]
+                // for back-compat with older readers; the full stack
+                // lives under `inner_shadows`.
+                inner_shadow: serde_json::to_value(tb.inner_shadows.first()).unwrap_or_default(),
+                inner_shadows: serde_json::to_value(&tb.inner_shadows).unwrap_or_default(),
+                inner_shadow_stack_enabled: tb.inner_shadow_stack_enabled,
                 pattern_fill: serde_json::to_value(&tb.pattern_fill).unwrap_or_default(),
                 tracking: tb.tracking,
                 line_spacing: tb.line_spacing,

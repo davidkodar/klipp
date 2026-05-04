@@ -11,18 +11,94 @@
 //! one place.
 
 // ── TextGlow ──
+//
+// Glows stack on `TextBox.glows` (Vec<TextGlow>). Indexed param keys
+// are `glow.{idx}.{field}`; unindexed `glow.radius`/`glow.intensity`
+// are legacy aliases routed to `glows[0]`.
 pub const GLOW_RADIUS: &str = "glow.radius";
 pub const GLOW_INTENSITY: &str = "glow.intensity";
 
+pub fn glow_radius_key(idx: usize) -> String {
+    format!("glow.{idx}.radius")
+}
+pub fn glow_intensity_key(idx: usize) -> String {
+    format!("glow.{idx}.intensity")
+}
+
+/// Parse `glow.{index}.{field}` and return `(index, field)`. Returns
+/// `None` for legacy unindexed `glow.radius` (those route to glows[0]
+/// via the prefix branch).
+pub fn parse_glow_param_key(key: &str) -> Option<(usize, &str)> {
+    let rest = key.strip_prefix("glow.")?;
+    let (idx_str, field) = rest.split_once('.')?;
+    let idx = idx_str.parse::<usize>().ok()?;
+    Some((idx, field))
+}
+
 // ── TitleShadow ──
+//
+// Drop shadows stack on `TextBox.shadows` (Vec<TitleShadow>) with each
+// slot keyframable independently. The wire-format param_key is
+// `shadow.{idx}.{field}` where field ∈ {offset_x, offset_y, blur}.
+// The unindexed `shadow.offset_x` etc. constants are legacy aliases
+// kept for projects saved before the stack landed; the runtime routes
+// them to `shadows[0]` so old keyframes survive the migration.
 pub const SHADOW_OFFSET_X: &str = "shadow.offset_x";
 pub const SHADOW_OFFSET_Y: &str = "shadow.offset_y";
 pub const SHADOW_BLUR: &str = "shadow.blur";
 
+/// Build the param_key for `shadows[idx].offset_x_keyframes`.
+pub fn shadow_offset_x_key(idx: usize) -> String {
+    format!("shadow.{idx}.offset_x")
+}
+/// Build the param_key for `shadows[idx].offset_y_keyframes`.
+pub fn shadow_offset_y_key(idx: usize) -> String {
+    format!("shadow.{idx}.offset_y")
+}
+/// Build the param_key for `shadows[idx].blur_keyframes`.
+pub fn shadow_blur_key(idx: usize) -> String {
+    format!("shadow.{idx}.blur")
+}
+
+/// Parse `shadow.{index}.{field}` and return `(index, field)`. Used
+/// by the keyframe router to resolve indexed shadow keys. Returns
+/// `None` for legacy unindexed `shadow.offset_x` (those are routed
+/// to shadows[0] by the prefix branch directly).
+pub fn parse_shadow_param_key(key: &str) -> Option<(usize, &str)> {
+    let rest = key.strip_prefix("shadow.")?;
+    let (idx_str, field) = rest.split_once('.')?;
+    let idx = idx_str.parse::<usize>().ok()?;
+    Some((idx, field))
+}
+
 // ── InnerShadow ──
+//
+// Same indexed shape as drop shadows: `inner_shadow.{idx}.{field}`.
+// Unindexed `inner_shadow.offset_x` etc. are legacy aliases routed
+// to `inner_shadows[0]`.
 pub const INNER_SHADOW_OFFSET_X: &str = "inner_shadow.offset_x";
 pub const INNER_SHADOW_OFFSET_Y: &str = "inner_shadow.offset_y";
 pub const INNER_SHADOW_BLUR: &str = "inner_shadow.blur";
+
+pub fn inner_shadow_offset_x_key(idx: usize) -> String {
+    format!("inner_shadow.{idx}.offset_x")
+}
+pub fn inner_shadow_offset_y_key(idx: usize) -> String {
+    format!("inner_shadow.{idx}.offset_y")
+}
+pub fn inner_shadow_blur_key(idx: usize) -> String {
+    format!("inner_shadow.{idx}.blur")
+}
+
+/// Parse `inner_shadow.{index}.{field}` and return `(index, field)`.
+/// Returns `None` for legacy unindexed `inner_shadow.offset_x` (those
+/// hit the prefix branch directly and route to `inner_shadows[0]`).
+pub fn parse_inner_shadow_param_key(key: &str) -> Option<(usize, &str)> {
+    let rest = key.strip_prefix("inner_shadow.")?;
+    let (idx_str, field) = rest.split_once('.')?;
+    let idx = idx_str.parse::<usize>().ok()?;
+    Some((idx, field))
+}
 
 // ── TextExtrusion ──
 pub const EXTRUSION_DEPTH: &str = "extrusion.depth";

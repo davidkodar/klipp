@@ -1335,10 +1335,45 @@ pub enum AppCommand {
     },
     SetTitleBackground { clip_id: ClipId, bg_kind: u8, color: [u8; 4] },  // 0=None, 1=Color, 2=FullFrame
     SetTitleShadow { clip_id: ClipId, enabled: bool, color: [u8; 4], offset_x: f32, offset_y: f32, blur: f32 },
+    /// Replace the entire drop-shadow stack. Each tuple is
+    /// (color_rgba, offset_x, offset_y, blur). Existing per-index
+    /// keyframe vecs are preserved in place when the new vec is at
+    /// least as long; trimmed slots lose their keyframes.
+    SetTitleShadows { clip_id: ClipId, shadows: Vec<([u8; 4], f32, f32, f32)> },
+    /// Set the static fields on a single shadow layer at `index`,
+    /// preserving its keyframe vecs. Used by the per-row inspector
+    /// path so other layers' keyframes survive an inline edit.
+    SetTitleShadowLayer {
+        clip_id: ClipId,
+        index: u32,
+        enabled: bool,
+        color: [u8; 4],
+        offset_x: f32,
+        offset_y: f32,
+        blur: f32,
+    },
+    /// Soft-disable the secondary drop-shadow stack (`shadows[1..]`).
+    /// Primary shadow (index 0) is unaffected.
+    SetTitleShadowStackEnabled { clip_id: ClipId, enabled: bool },
     /// Set text outline. `None` = disable.
     SetTitleOutline { clip_id: ClipId, enabled: bool, color: [u8; 4], width: f32 },
     /// Set text glow. `enabled=false` = disable.
     SetTitleGlow { clip_id: ClipId, enabled: bool, color: [u8; 4], radius: f32, intensity: f32 },
+    /// Replace the entire glow stack. Each tuple is
+    /// (color_rgba, radius, intensity).
+    SetTitleGlows { clip_id: ClipId, glows: Vec<([u8; 4], f32, f32)> },
+    /// Set the static fields on a single glow layer at `index`,
+    /// preserving its keyframe vecs.
+    SetTitleGlowLayer {
+        clip_id: ClipId,
+        index: u32,
+        enabled: bool,
+        color: [u8; 4],
+        radius: f32,
+        intensity: f32,
+    },
+    /// Soft-disable for the secondary glow stack.
+    SetTitleGlowStackEnabled { clip_id: ClipId, enabled: bool },
     /// Set gradient fill. `enabled=false` = disable, uses solid color instead.
     SetTitleGradient { clip_id: ClipId, enabled: bool, top_color: [u8; 4], bottom_color: [u8; 4] },
     /// Set multiple outline layers (replaces single outline).
@@ -1357,8 +1392,28 @@ pub enum AppCommand {
         color: [u8; 4],
         width: f32,
     },
+    /// Soft-disable the secondary outline stack (`outlines[1..]`).
+    /// Primary outline (index 0) is unaffected. The renderer skips
+    /// stacked layers when `enabled=false` but the data is preserved.
+    SetTitleOutlineStackEnabled { clip_id: ClipId, enabled: bool },
     /// Set inner shadow. `enabled=false` = disable.
     SetTitleInnerShadow { clip_id: ClipId, enabled: bool, color: [u8; 4], offset_x: f32, offset_y: f32, blur: f32 },
+    /// Replace the entire inner-shadow stack. Each tuple is
+    /// (color_rgba, offset_x, offset_y, blur). Mirrors SetTitleShadows.
+    SetTitleInnerShadows { clip_id: ClipId, shadows: Vec<([u8; 4], f32, f32, f32)> },
+    /// Set the static fields on a single inner-shadow layer at `index`,
+    /// preserving its keyframe vecs.
+    SetTitleInnerShadowLayer {
+        clip_id: ClipId,
+        index: u32,
+        enabled: bool,
+        color: [u8; 4],
+        offset_x: f32,
+        offset_y: f32,
+        blur: f32,
+    },
+    /// Soft-disable for the secondary inner-shadow stack.
+    SetTitleInnerShadowStackEnabled { clip_id: ClipId, enabled: bool },
     /// Set pattern fill. pattern_kind: 0=None, 1=HStripes, 2=VStripes, 3=Checker, 4=Diagonal
     SetTitlePattern { clip_id: ClipId, pattern_kind: u8, color_a: [u8; 4], color_b: [u8; 4], size: f32 },
     /// Set per-character tracking (extra spacing in px).
@@ -1428,6 +1483,25 @@ pub enum AppCommand {
     SetTitleCharAnimation { clip_id: ClipId, enabled: bool, stagger: f32, entrance: u8, wave_amplitude: f32, wave_speed: f32 },
     /// Set image texture fill path. `path: None` = disable texture fill.
     SetTitleTextureFill { clip_id: ClipId, path: Option<String> },
+    /// Switch the texture source to one of the bundled procedural
+    /// presets. preset_id maps to TexturePresetId (0=PaperGrain,
+    /// 1=Scanlines, 2=DiagonalHatch, 3=GradientSweep). The other
+    /// TextureFill params (scale / offset / etc.) are preserved.
+    SetTitleTexturePreset { clip_id: ClipId, preset_id: u8 },
+    /// Set every transform / blend param on the texture fill in one
+    /// command. tile_mode is u8 (0=Stretch, 1=Tile, 2=Fit, 3=Cover).
+    /// Source field is preserved; this command never changes the
+    /// File path or Preset id.
+    SetTitleTextureParams {
+        clip_id: ClipId,
+        tile_mode: u8,
+        scale: f32,
+        offset_x: f32,
+        offset_y: f32,
+        rotation: f32,
+        opacity: f32,
+        tint: [u8; 4],
+    },
     /// Set motion blur. `enabled=false` = disable.
     SetTitleMotionBlur { clip_id: ClipId, enabled: bool, shutter_angle: f32, samples: u8 },
     /// Apply a style property to a character range (rich text style runs).

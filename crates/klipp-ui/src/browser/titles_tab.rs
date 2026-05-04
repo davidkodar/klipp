@@ -74,11 +74,9 @@ fn centered(text: &str, size: f32, style: FontStyle, color: [u8; 4], shadow: boo
     tb.font_style = style;
     tb.color = color;
     tb.alignment = TextAlignment::Center;
-    tb.shadow = if shadow {
-        Some(TitleShadow { color: [0, 0, 0, 160], offset_x: 3.0, offset_y: 3.0, blur: 6.0, enabled: true, offset_x_keyframes: Vec::new(), offset_y_keyframes: Vec::new(), blur_keyframes: Vec::new() })
-    } else {
-        None
-    };
+    if shadow {
+        tb.shadows.push(TitleShadow { color: [0, 0, 0, 160], offset_x: 3.0, offset_y: 3.0, blur: 6.0, enabled: true, offset_x_keyframes: Vec::new(), offset_y_keyframes: Vec::new(), blur_keyframes: Vec::new() });
+    }
     let mut td = klipp_timeline::TitleData::single_text(tb);
     if let Some(o) = td.objects.first_mut() {
         o.transform.center = TitlePosition { x: 0.5, y: 0.5 };
@@ -158,7 +156,7 @@ fn positioned(text: &str, size: f32, style: FontStyle, color: [u8; 4], align: Te
     tb.font_style = style;
     tb.color = color;
     tb.alignment = align;
-    tb.shadow = shadow;
+    if let Some(s) = shadow { tb.shadows.push(s); }
     let mut td = klipp_timeline::TitleData::single_text(tb);
     if let Some(o) = td.objects.first_mut() {
         o.transform.center = TitlePosition { x, y };
@@ -208,7 +206,7 @@ fn basic_subtitle() -> TitleData {
     tb.font_style = FontStyle::Regular;
     tb.color = WHITE;
     tb.alignment = TextAlignment::Center;
-    tb.shadow = None;
+    tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [0, 0, 0, 153], padding: 10.0 };
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.88 }; }
@@ -311,7 +309,7 @@ fn sm_subscribe_cta() -> TitleData {
     tb.font_style = FontStyle::Bold;
     tb.color = WHITE;
     tb.alignment = TextAlignment::Center;
-    tb.shadow = None;
+    tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [200, 20, 20, 230], padding: 16.0 };
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.8 }; }
@@ -327,7 +325,7 @@ fn sm_like_share() -> TitleData {
     tb.font_style = FontStyle::Bold;
     tb.color = WHITE;
     tb.alignment = TextAlignment::Center;
-    tb.shadow = None;
+    tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [40, 100, 200, 220], padding: 12.0 };
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.85 }; }
@@ -346,7 +344,7 @@ fn sm_comment() -> TitleData {
     tb.font_style = FontStyle::Regular;
     tb.color = WHITE;
     tb.alignment = TextAlignment::Left;
-    tb.shadow = None;
+    tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [50, 50, 60, 200], padding: 14.0 };
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.15, y: 0.75 }; }
@@ -420,7 +418,7 @@ fn bc_breaking_news() -> TitleData {
     tb.font_style = FontStyle::Bold;
     tb.color = WHITE;
     tb.alignment = TextAlignment::Center;
-    tb.shadow = None;
+    tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [200, 20, 20, 230], padding: 16.0 };
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.12 }; }
@@ -438,7 +436,7 @@ fn bc_score_bug() -> TitleData {
     tb.font_style = FontStyle::Bold;
     tb.color = WHITE;
     tb.alignment = TextAlignment::Center;
-    tb.shadow = None;
+    tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [0, 0, 0, 200], padding: 10.0 };
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.06 }; }
@@ -456,7 +454,7 @@ fn bc_live_badge() -> TitleData {
     tb.font_style = FontStyle::Bold;
     tb.color = WHITE;
     tb.alignment = TextAlignment::Center;
-    tb.shadow = None;
+    tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [220, 20, 20, 240], padding: 8.0 };
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.92, y: 0.06 }; }
@@ -472,7 +470,7 @@ fn bc_time_zone() -> TitleData {
     tb.font_style = FontStyle::Regular;
     tb.color = WHITE_DIM;
     tb.alignment = TextAlignment::Right;
-    tb.shadow = None;
+    tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [0, 0, 0, 150], padding: 6.0 };
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.94, y: 0.94 }; }
@@ -491,7 +489,7 @@ fn bc_alert() -> TitleData {
     tb.font_style = FontStyle::Bold;
     tb.color = WHITE;
     tb.alignment = TextAlignment::Center;
-    tb.shadow = None;
+    tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [180, 40, 0, 230], padding: 18.0 };
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.5 }; }
@@ -513,7 +511,7 @@ fn edu_key_point() -> TitleData {
     tb.font_style = FontStyle::Bold;
     tb.color = [255, 255, 100, 255];
     tb.alignment = TextAlignment::Center;
-    tb.shadow = None;
+    tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [0, 0, 0, 180], padding: 16.0 };
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.5 }; }
@@ -529,7 +527,7 @@ fn edu_definition() -> TitleData {
     tb.font_style = FontStyle::Regular;
     tb.color = WHITE;
     tb.alignment = TextAlignment::Left;
-    tb.shadow = None;
+    tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [20, 60, 80, 200], padding: 14.0 };
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.15, y: 0.5 }; }
@@ -549,7 +547,7 @@ fn edu_annotation() -> TitleData {
     tb.font_style = FontStyle::Italic;
     tb.color = [255, 255, 200, 255];
     tb.alignment = TextAlignment::Right;
-    tb.shadow = None;
+    tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [0, 0, 0, 140], padding: 8.0 };
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.92, y: 0.15 }; }
@@ -566,7 +564,7 @@ fn edu_quiz() -> TitleData {
     tb.font_style = FontStyle::Bold;
     tb.color = WHITE;
     tb.alignment = TextAlignment::Center;
-    tb.shadow = None;
+    tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td.background = TitleBackground::Color { color: [80, 40, 160, 210], padding: 16.0 };
     if let Some(o) = td.objects.first_mut() { o.transform.center = TitlePosition { x: 0.5, y: 0.35 }; }
@@ -582,7 +580,7 @@ fn sty_neon() -> TitleData {
     {
     let mut td = positioned("NEON", 72.0, FontStyle::Bold, CYAN, TextAlignment::Center, 0.5, 0.5, None);
     if let Some(tb) = td.primary_text_mut() {
-        tb.glow = Some(TextGlow { color: [0, 255, 200, 255], radius: 15.0, intensity: 0.8, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() });
+        tb.glows = vec![TextGlow { color: [0, 255, 200, 255], radius: 15.0, intensity: 0.8, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() }];
         tb.outlines.insert(0, TextOutline { color: [0, 255, 200, 255], width: 2.0, enabled: true, width_keyframes: Vec::new() });
     }
     td
@@ -745,7 +743,7 @@ fn three_d_neon_extrude() -> TitleData {
             angle_keyframes: Vec::new(),
             lighting_keyframes: Vec::new(),
         });
-        tb.glow = Some(TextGlow { color: [0, 255, 200, 255], radius: 12.0, intensity: 0.6, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() });
+        tb.glows = vec![TextGlow { color: [0, 255, 200, 255], radius: 12.0, intensity: 0.6, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() }];
     }
     td
 }
@@ -1162,7 +1160,7 @@ const TITLES: &[TitleTemplate] = &[
         tb.color = [50, 255, 220, 255];
         tb.alignment = TextAlignment::Center;
         tb.outlines.push(klipp_timeline::TextOutline { color: [10, 10, 14, 220], width: 2.0, enabled: true, width_keyframes: Vec::new() });
-        tb.glow = Some(klipp_timeline::TextGlow { color: [50, 255, 220, 200], radius: 14.0, intensity: 1.5, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() });
+        tb.glows = vec![klipp_timeline::TextGlow { color: [50, 255, 220, 200], radius: 14.0, intensity: 1.5, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() }];
         tb.chromatic_aberration_px = 4.0;
         tb.glitch_intensity = 0.15;
         let mut td = klipp_timeline::TitleData::single_text(tb);
@@ -1192,7 +1190,7 @@ const TITLES: &[TitleTemplate] = &[
         let mut t = centered("Best Picture", 84.0, FontStyle::Bold, [240, 200, 90, 255], true);
         if let Some(tb) = t.primary_text_mut() {
             tb.drop_cap_scale = 2.5;
-            tb.glow = Some(klipp_timeline::TextGlow { color: [240, 200, 90, 180], radius: 18.0, intensity: 1.2, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() });
+            tb.glows = vec![klipp_timeline::TextGlow { color: [240, 200, 90, 180], radius: 18.0, intensity: 1.2, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() }];
             tb.alignment = TextAlignment::Left;
         }
         if let Some(o) = t.objects.first_mut() {
@@ -1281,7 +1279,7 @@ const TITLES: &[TitleTemplate] = &[
         tb.color = accent;
         tb.alignment = TextAlignment::Center;
         tb.outlines.push(klipp_timeline::TextOutline { color: [10, 10, 14, 200], width: 3.0, enabled: true, width_keyframes: Vec::new() });
-        tb.glow = Some(klipp_timeline::TextGlow { color: accent, radius: 22.0, intensity: 1.6, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() });
+        tb.glows = vec![klipp_timeline::TextGlow { color: accent, radius: 22.0, intensity: 1.6, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() }];
         let mut td = klipp_timeline::TitleData::single_text(tb);
         td.animation_type = TitleAnimationType::Pulse { rate_hz: 0.5, min_opacity: 0.7 };
         td

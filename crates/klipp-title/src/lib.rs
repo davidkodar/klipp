@@ -1008,32 +1008,57 @@ impl TitleRenderer {
 
         // ── Render effects back-to-front ──
 
-        // 1. Outer glow — radius/intensity may animate via keyframes.
-        if let Some(glow) = tb.glow.as_ref().filter(|g| g.enabled) {
+        // 1. Outer glow stack — render largest-radius first so the
+        // tighter glows read on top. Secondary layers (index >= 1) are
+        // gated by `glow_stack_enabled`. radius/intensity may animate
+        // via per-element keyframes.
+        {
             let t = time_secs.map(|t| t as f64).unwrap_or(0.0);
-            let radius = glow.evaluated_radius(t);
-            let intensity = glow.evaluated_intensity(t);
-            let blurred = do_blur(alpha_mask, mask_w, mask_h, radius * scale, &mut gpu);
-            draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &glow.color, intensity);
+            let mut active_glows: Vec<(f32, f32, &klipp_timeline::TextGlow)> = tb
+                .glows
+                .iter()
+                .enumerate()
+                .filter(|(_, g)| g.enabled)
+                .filter(|(i, _)| *i == 0 || tb.glow_stack_enabled)
+                .map(|(_, g)| (g.evaluated_radius(t), g.evaluated_intensity(t), g))
+                .collect();
+            // Largest radius first (rendered behind smaller ones).
+            active_glows.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            for (radius, intensity, glow) in &active_glows {
+                let blurred = do_blur(alpha_mask, mask_w, mask_h, *radius * scale, &mut gpu);
+                draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &glow.color, *intensity);
+            }
         }
 
-        // 2. Shadow (with blur support) — offset_x / offset_y / blur
-        // may animate via keyframes.
-        if let Some(shadow) = tb.shadow.as_ref().filter(|s| s.enabled) {
+        // 2. Drop shadow stack — render back-to-front (highest index
+        // first) so the lowest index reads as nearest the text.
+        // shadows[0] is the primary; shadows[1..] are gated by
+        // `shadow_stack_enabled` so the user can hide the secondary
+        // layers without dropping data. Per-element keyframes evaluate
+        // through the same evaluator the legacy single-shadow used.
+        {
             let t = time_secs.map(|t| t as f64).unwrap_or(0.0);
-            let off_x = shadow.evaluated_offset_x(t);
-            let off_y = shadow.evaluated_offset_y(t);
-            let blur = shadow.evaluated_blur(t);
-            let sox = (off_x * scale).round() as i32;
-            let soy = (off_y * scale).round() as i32;
+            for (i, shadow) in tb.shadows.iter().enumerate().rev() {
+                if !shadow.enabled {
+                    continue;
+                }
+                if i >= 1 && !tb.shadow_stack_enabled {
+                    continue;
+                }
+                let off_x = shadow.evaluated_offset_x(t);
+                let off_y = shadow.evaluated_offset_y(t);
+                let blur = shadow.evaluated_blur(t);
+                let sox = (off_x * scale).round() as i32;
+                let soy = (off_y * scale).round() as i32;
 
-            if blur > 0.0 {
-                let offset_mask = offset_alpha(alpha_mask, mask_w, mask_h, sox, soy);
-                let blurred = do_blur(&offset_mask, mask_w, mask_h, blur * scale, &mut gpu);
-                draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &shadow.color, 1.0);
-            } else {
-                let offset_mask = offset_alpha(alpha_mask, mask_w, mask_h, sox, soy);
-                draw_mask_to_buf(&mut buf, &offset_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &shadow.color, 1.0);
+                if blur > 0.0 {
+                    let offset_mask = offset_alpha(alpha_mask, mask_w, mask_h, sox, soy);
+                    let blurred = do_blur(&offset_mask, mask_w, mask_h, blur * scale, &mut gpu);
+                    draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &shadow.color, 1.0);
+                } else {
+                    let offset_mask = offset_alpha(alpha_mask, mask_w, mask_h, sox, soy);
+                    draw_mask_to_buf(&mut buf, &offset_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &shadow.color, 1.0);
+                }
             }
         }
 
@@ -1043,7 +1068,14 @@ impl TitleRenderer {
         {
             let t_secs = time_secs.map(|t| t as f64).unwrap_or(0.0);
             let mut all_outlines: Vec<(f32, &klipp_timeline::TextOutline)> = Vec::new();
-            for ol in tb.outlines.iter().filter(|o| o.enabled) {
+            // Index 0 is the primary outline (always drawn when its
+            // own `enabled` is true). Index >= 1 is the secondary
+            // stack, gated by `outline_stack_enabled` so the user
+            // can hide the whole stack without dropping the data.
+            for (i, ol) in tb.outlines.iter().enumerate().filter(|(_, o)| o.enabled) {
+                if i >= 1 && !tb.outline_stack_enabled {
+                    continue;
+                }
                 all_outlines.push((ol.evaluated_width(t_secs), ol));
             }
             // Legacy single-outline support is gone — outline data
@@ -1138,30 +1170,39 @@ impl TitleRenderer {
             }
         }
 
-        // 6. Inner shadow (rendered inside the text shape) —
-        // offset_x / offset_y / blur may animate via keyframes.
-        if let Some(inner) = tb.inner_shadow.as_ref().filter(|i| i.enabled) {
+        // 6. Inner shadow stack — rendered front-to-back so the
+        // lowest index reads as nearest the surface. Secondary layers
+        // (index >= 1) are gated by `inner_shadow_stack_enabled`.
+        {
             let t = time_secs.map(|t| t as f64).unwrap_or(0.0);
-            let off_x = inner.evaluated_offset_x(t);
-            let off_y = inner.evaluated_offset_y(t);
-            let blur = inner.evaluated_blur(t);
-            let sox = (off_x * scale).round() as i32;
-            let soy = (off_y * scale).round() as i32;
-            let mut inverted = vec![0u8; mask_w * mask_h];
-            for i in 0..inverted.len() {
-                inverted[i] = 255u8.saturating_sub(alpha_mask[i]);
+            for (i, inner) in tb.inner_shadows.iter().enumerate().rev() {
+                if !inner.enabled {
+                    continue;
+                }
+                if i >= 1 && !tb.inner_shadow_stack_enabled {
+                    continue;
+                }
+                let off_x = inner.evaluated_offset_x(t);
+                let off_y = inner.evaluated_offset_y(t);
+                let blur = inner.evaluated_blur(t);
+                let sox = (off_x * scale).round() as i32;
+                let soy = (off_y * scale).round() as i32;
+                let mut inverted = vec![0u8; mask_w * mask_h];
+                for j in 0..inverted.len() {
+                    inverted[j] = 255u8.saturating_sub(alpha_mask[j]);
+                }
+                let offset_inv = offset_alpha(&inverted, mask_w, mask_h, sox, soy);
+                let shadow_mask = if blur > 0.0 {
+                    do_blur(&offset_inv, mask_w, mask_h, blur * scale, &mut gpu)
+                } else {
+                    offset_inv
+                };
+                let mut inner_mask = vec![0u8; mask_w * mask_h];
+                for j in 0..inner_mask.len() {
+                    inner_mask[j] = ((shadow_mask[j] as u16 * alpha_mask[j] as u16) / 255) as u8;
+                }
+                draw_mask_to_buf(&mut buf, &inner_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &inner.color, 1.0);
             }
-            let offset_inv = offset_alpha(&inverted, mask_w, mask_h, sox, soy);
-            let shadow_mask = if blur > 0.0 {
-                do_blur(&offset_inv, mask_w, mask_h, blur * scale, &mut gpu)
-            } else {
-                offset_inv
-            };
-            let mut inner_mask = vec![0u8; mask_w * mask_h];
-            for i in 0..inner_mask.len() {
-                inner_mask[i] = ((shadow_mask[i] as u16 * alpha_mask[i] as u16) / 255) as u8;
-            }
-            draw_mask_to_buf(&mut buf, &inner_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &inner.color, 1.0);
         }
 
         buf
@@ -1284,38 +1325,31 @@ impl TitleRenderer {
         // requirement as position keyframes.
         let any_glow_keyframes = title.objects.iter().any(|o| {
             if let TitleObjectContent::TextBox(tb) = &o.content {
-                tb.glow
-                    .as_ref()
-                    .map(|g| !g.radius_keyframes.is_empty() || !g.intensity_keyframes.is_empty())
-                    .unwrap_or(false)
+                tb.glows.iter().any(|g| {
+                    !g.radius_keyframes.is_empty() || !g.intensity_keyframes.is_empty()
+                })
             } else {
                 false
             }
         });
         let any_shadow_keyframes = title.objects.iter().any(|o| {
             if let TitleObjectContent::TextBox(tb) = &o.content {
-                tb.shadow
-                    .as_ref()
-                    .map(|s| {
-                        !s.offset_x_keyframes.is_empty()
-                            || !s.offset_y_keyframes.is_empty()
-                            || !s.blur_keyframes.is_empty()
-                    })
-                    .unwrap_or(false)
+                tb.shadows.iter().any(|s| {
+                    !s.offset_x_keyframes.is_empty()
+                        || !s.offset_y_keyframes.is_empty()
+                        || !s.blur_keyframes.is_empty()
+                })
             } else {
                 false
             }
         });
         let any_inner_shadow_keyframes = title.objects.iter().any(|o| {
             if let TitleObjectContent::TextBox(tb) = &o.content {
-                tb.inner_shadow
-                    .as_ref()
-                    .map(|s| {
-                        !s.offset_x_keyframes.is_empty()
-                            || !s.offset_y_keyframes.is_empty()
-                            || !s.blur_keyframes.is_empty()
-                    })
-                    .unwrap_or(false)
+                tb.inner_shadows.iter().any(|s| {
+                    !s.offset_x_keyframes.is_empty()
+                        || !s.offset_y_keyframes.is_empty()
+                        || !s.blur_keyframes.is_empty()
+                })
             } else {
                 false
             }
@@ -2813,7 +2847,12 @@ fn render_extrusion(
 fn effect_padding(title: &TitleData, scale: f32) -> i32 {
     let tb = title.primary_text_or_default();
     let mut pad = 0i32;
-    for outline in tb.outlines.iter().filter(|o| o.enabled) {
+    for (i, outline) in tb.outlines.iter().enumerate().filter(|(_, o)| o.enabled) {
+        // Mirror the renderer's stack gate so we don't reserve padding
+        // for layers that won't draw.
+        if i >= 1 && !tb.outline_stack_enabled {
+            continue;
+        }
         // Pad for the worst-case width across the clip — static value
         // OR any keyframe value, whichever is largest. A keyframed
         // outline that grows from 1px to 8px must reserve space for 8.
@@ -2824,11 +2863,13 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
             .fold(outline.width, f32::max);
         pad = pad.max((max_width * scale).ceil() as i32 + 1);
     }
-    if let Some(glow) = tb.glow.as_ref().filter(|g| g.enabled) {
-        // Pad for the worst-case radius across the clip — static value
-        // OR any keyframed value, whichever is largest. Animating
-        // 5px → 25px must never clip the t=2 frame because we computed
-        // padding off the t=0 value.
+    // Glow stack — pad for the worst-case radius across every layer
+    // that will draw. Each layer's worst case is the larger of its
+    // static radius or any keyframe value.
+    for (i, glow) in tb.glows.iter().enumerate().filter(|(_, g)| g.enabled) {
+        if i >= 1 && !tb.glow_stack_enabled {
+            continue;
+        }
         let max_radius = glow
             .radius_keyframes
             .iter()
@@ -2836,11 +2877,12 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
             .fold(glow.radius, f32::max);
         pad = pad.max((max_radius * scale * 2.0).ceil() as i32 + 1);
     }
-    if let Some(shadow) = tb.shadow.as_ref().filter(|s| s.enabled) {
-        // Pad for the worst-case shadow extent across the clip:
-        // max |offset| (positive or negative) + max blur. A keyframed
-        // shadow that moves -10..+10 must reserve 10px on each side
-        // even at t=0 when offset is 0, otherwise the +10 frame clips.
+    // Pad for the worst-case shadow extent across the entire stack —
+    // each layer that will draw needs its own offset+blur reservation.
+    for (i, shadow) in tb.shadows.iter().enumerate().filter(|(_, s)| s.enabled) {
+        if i >= 1 && !tb.shadow_stack_enabled {
+            continue;
+        }
         let max_ox = shadow
             .offset_x_keyframes
             .iter()
@@ -2862,10 +2904,13 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
         pad = pad.max(sx + sb + 1);
         pad = pad.max(sy + sb + 1);
     }
-    if let Some(inner) = tb.inner_shadow.as_ref().filter(|i| i.enabled) {
-        // Worst-case extent across the clip — same logic as the outer
-        // shadow padding. Inner shadow stays within the glyph mask, so
-        // this pad mostly matters when the user keyframes blur way up.
+    // Inner shadow stack — pad worst-case extent for every layer
+    // that will render. Inner shadow stays within the glyph mask, so
+    // this pad mostly matters when the user keyframes blur way up.
+    for (i, inner) in tb.inner_shadows.iter().enumerate().filter(|(_, s)| s.enabled) {
+        if i >= 1 && !tb.inner_shadow_stack_enabled {
+            continue;
+        }
         let max_ox = inner
             .offset_x_keyframes
             .iter()
@@ -3672,14 +3717,14 @@ mod tests {
     let mut tb = klipp_timeline::TextBox::default();
     tb.text = "S".to_string();
     tb.font_size = 100.0;
-    tb.shadow = None;
+    tb.shadows.clear();
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td
 };
         let with_shadow = {
     let mut td = no_shadow.clone();
     if let Some(tb) = td.primary_text_mut() {
-        tb.shadow = Some(klipp_timeline::TitleShadow {
+        tb.shadows.push(klipp_timeline::TitleShadow {
             color: [0, 0, 0, 200],
             offset_x: 4.0,
             offset_y: 4.0,
@@ -3741,7 +3786,7 @@ mod tests {
         let with_glow = {
     let mut td = no_glow.clone();
     if let Some(tb) = td.primary_text_mut() {
-        tb.glow = Some(klipp_timeline::TextGlow {
+        tb.glows.push(klipp_timeline::TextGlow {
             color: [0, 255, 0, 255],
             radius: 10.0,
             intensity: 0.8,
@@ -4678,7 +4723,7 @@ mod tests {
         let mut tb = klipp_timeline::TextBox::default();
         tb.text = "X".to_string();
         tb.font_size = 80.0;
-        tb.glow = Some(klipp_timeline::TextGlow {
+        tb.glows.push(klipp_timeline::TextGlow {
             enabled: true,
             color: [255, 200, 0, 255],
             radius: 4.0,
@@ -4738,7 +4783,7 @@ mod tests {
         let mut tb = klipp_timeline::TextBox::default();
         tb.text = "O".to_string();
         tb.font_size = 80.0;
-        tb.glow = Some(klipp_timeline::TextGlow {
+        tb.glows.push(klipp_timeline::TextGlow {
             enabled: true,
             color: [255, 100, 100, 255],
             radius: 12.0,
@@ -4857,7 +4902,7 @@ mod tests {
         let mut tb = klipp_timeline::TextBox::default();
         tb.text = "X".to_string();
         tb.font_size = 80.0;
-        tb.glow = Some(klipp_timeline::TextGlow {
+        tb.glows.push(klipp_timeline::TextGlow {
             enabled: true,
             color: [255, 200, 0, 255],
             radius: 4.0,
@@ -4915,7 +4960,7 @@ mod tests {
         let mut tb = klipp_timeline::TextBox::default();
         tb.text = "X".to_string();
         tb.font_size = 80.0;
-        tb.glow = Some(klipp_timeline::TextGlow {
+        tb.glows.push(klipp_timeline::TextGlow {
             enabled: true,
             color: [255, 200, 0, 255],
             radius: 12.0,
@@ -4949,7 +4994,7 @@ mod tests {
         let mut tb = klipp_timeline::TextBox::default();
         tb.text = "X".to_string();
         tb.font_size = 80.0;
-        tb.shadow = Some(klipp_timeline::TitleShadow {
+        tb.shadows.push(klipp_timeline::TitleShadow {
             enabled: true,
             color: [0, 0, 0, 220],
             offset_x: 6.0,
@@ -5002,7 +5047,7 @@ mod tests {
         tb.text = "X".to_string();
         tb.font_size = 100.0;
         tb.color = [255, 255, 255, 255];
-        tb.shadow = Some(klipp_timeline::TitleShadow {
+        tb.shadows.push(klipp_timeline::TitleShadow {
             enabled: true,
             color: [0, 0, 0, 255],
             offset_x: 0.0,
@@ -5066,7 +5111,7 @@ mod tests {
         tb.text = "O".to_string();
         tb.font_size = 100.0;
         tb.color = [255, 255, 255, 255];
-        tb.inner_shadow = Some(klipp_timeline::InnerShadow {
+        tb.inner_shadows.push(klipp_timeline::InnerShadow {
             enabled: true,
             color: [0, 0, 0, 255],
             offset_x: 4.0, offset_x_keyframes: Vec::new(),
@@ -5120,7 +5165,7 @@ mod tests {
         let mut tb = klipp_timeline::TextBox::default();
         tb.text = "X".to_string();
         tb.font_size = 80.0;
-        tb.shadow = Some(klipp_timeline::TitleShadow {
+        tb.shadows.push(klipp_timeline::TitleShadow {
             enabled: true,
             color: [0, 0, 0, 200],
             offset_x: 4.0,
@@ -5274,6 +5319,230 @@ mod tests {
         );
     }
 
+    /// `glow_stack_enabled = false` hides every secondary glow
+    /// (glows[1..]) without affecting the primary (glows[0]).
+    #[test]
+    fn glow_stack_soft_disable_hides_secondary_layers() {
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "G".to_string();
+        tb.font_size = 100.0;
+        tb.color = [255, 255, 255, 255];
+        // Primary glow (red, tight).
+        tb.glows.push(klipp_timeline::TextGlow {
+            enabled: true,
+            color: [255, 0, 0, 255],
+            radius: 4.0,
+            radius_keyframes: Vec::new(),
+            intensity: 0.8,
+            intensity_keyframes: Vec::new(),
+        });
+        // Secondary glow (green, much wider so it spreads further).
+        tb.glows.push(klipp_timeline::TextGlow {
+            enabled: true,
+            color: [0, 255, 0, 255],
+            radius: 30.0,
+            radius_keyframes: Vec::new(),
+            intensity: 1.0,
+            intensity_keyframes: Vec::new(),
+        });
+        let td_on = klipp_timeline::TitleData::single_text(tb.clone());
+        tb.glow_stack_enabled = false;
+        let td_off = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_on = renderer.render(&td_on, frame_w, frame_h);
+        let buf_off = renderer.render(&td_off, frame_w, frame_h);
+
+        // Glow falls off with the blur radius, so the green channel
+        // tapers — count any visible pixel where green clearly
+        // dominates over red and blue. White-text pixels are excluded
+        // by `p[0] < 200` so the centre of the text doesn't false-positive.
+        let green_dominant_count = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4)
+                .filter(|p| {
+                    let r = p[0] as i16;
+                    let g = p[1] as i16;
+                    let b = p[2] as i16;
+                    let a = p[3];
+                    a > 8 && g > r + 20 && g > b + 20 && r < 200
+                })
+                .count()
+        };
+        assert!(green_dominant_count(&buf_on) > 0, "stack enabled must render green secondary glow");
+        assert_eq!(green_dominant_count(&buf_off), 0, "stack disabled must hide green secondary glow");
+    }
+
+    /// `inner_shadow_stack_enabled = false` hides every secondary
+    /// inner shadow (inner_shadows[1..]) without affecting the
+    /// primary (inner_shadows[0]).
+    #[test]
+    fn inner_shadow_stack_soft_disable_hides_secondary_layers() {
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "O".to_string();
+        tb.font_size = 100.0;
+        tb.color = [255, 255, 255, 255];
+        // Primary inner shadow (red, small blur).
+        tb.inner_shadows.push(klipp_timeline::InnerShadow {
+            enabled: true,
+            color: [255, 0, 0, 220],
+            offset_x: 2.0, offset_x_keyframes: Vec::new(),
+            offset_y: 2.0, offset_y_keyframes: Vec::new(),
+            blur: 0.0, blur_keyframes: Vec::new(),
+        });
+        // Secondary inner shadow (green, much bigger).
+        tb.inner_shadows.push(klipp_timeline::InnerShadow {
+            enabled: true,
+            color: [0, 255, 0, 220],
+            offset_x: 10.0, offset_x_keyframes: Vec::new(),
+            offset_y: 10.0, offset_y_keyframes: Vec::new(),
+            blur: 0.0, blur_keyframes: Vec::new(),
+        });
+        let td_on = klipp_timeline::TitleData::single_text(tb.clone());
+        tb.inner_shadow_stack_enabled = false;
+        let td_off = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_on = renderer.render(&td_on, frame_w, frame_h);
+        let buf_off = renderer.render(&td_off, frame_w, frame_h);
+
+        let green_count = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4)
+                .filter(|p| p[3] > 0 && p[1] > 200 && p[0] < 80 && p[2] < 80)
+                .count()
+        };
+        assert!(green_count(&buf_on) > 0, "stack enabled must render green secondary inner shadow");
+        assert_eq!(green_count(&buf_off), 0, "stack disabled must hide green secondary inner shadow");
+    }
+
+    /// `shadow_stack_enabled = false` hides every secondary shadow
+    /// (shadows[1..]) without affecting the primary (shadows[0]).
+    /// Builds a two-shadow stack where layer 1 has a far-away, large
+    /// offset that wouldn't overlap shadows[0]; the soft-disable
+    /// flag must drop layer 1's contribution entirely.
+    #[test]
+    fn shadow_stack_soft_disable_hides_secondary_layers() {
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 80.0;
+        tb.color = [255, 255, 255, 255];
+        // Primary (red) at small offset.
+        tb.shadows.push(klipp_timeline::TitleShadow {
+            enabled: true,
+            color: [255, 0, 0, 220],
+            offset_x: 4.0,
+            offset_x_keyframes: Vec::new(),
+            offset_y: 4.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 0.0,
+            blur_keyframes: Vec::new(),
+        });
+        // Secondary (green) at larger offset so it draws in a
+        // different region than primary.
+        tb.shadows.push(klipp_timeline::TitleShadow {
+            enabled: true,
+            color: [0, 255, 0, 220],
+            offset_x: 30.0,
+            offset_x_keyframes: Vec::new(),
+            offset_y: 30.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 0.0,
+            blur_keyframes: Vec::new(),
+        });
+        let td_on = klipp_timeline::TitleData::single_text(tb.clone());
+        tb.shadow_stack_enabled = false;
+        let td_off = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_on = renderer.render(&td_on, frame_w, frame_h);
+        let buf_off = renderer.render(&td_off, frame_w, frame_h);
+
+        let red_count = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4)
+                .filter(|p| p[3] > 0 && p[0] > 200 && p[1] < 80 && p[2] < 80)
+                .count()
+        };
+        let green_count = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4)
+                .filter(|p| p[3] > 0 && p[1] > 200 && p[0] < 80 && p[2] < 80)
+                .count()
+        };
+        assert!(green_count(&buf_on) > 0, "stack enabled must render green secondary");
+        assert_eq!(green_count(&buf_off), 0, "stack disabled must hide green secondary");
+        let red_on = red_count(&buf_on);
+        let red_off = red_count(&buf_off);
+        let diff = (red_on as i64 - red_off as i64).abs();
+        assert!(
+            diff < (red_on.max(red_off) as i64 / 10).max(50),
+            "primary shadow coverage must be stable across stack toggle (on={red_on}, off={red_off})"
+        );
+    }
+
+    /// `outline_stack_enabled = false` hides every secondary layer
+    /// (outlines[1..]) without affecting the primary (outlines[0]).
+    /// Builds a two-layer stack and asserts the green contribution
+    /// disappears once the stack is disabled while blue is unchanged.
+    #[test]
+    fn outline_stack_soft_disable_hides_secondary_layers() {
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 80.0;
+        tb.color = [255, 255, 255, 255];
+        tb.outlines.push(klipp_timeline::TextOutline {
+            enabled: true,
+            color: [0, 100, 255, 255],
+            width: 4.0,
+            width_keyframes: Vec::new(),
+        });
+        tb.outlines.push(klipp_timeline::TextOutline {
+            enabled: true,
+            color: [0, 255, 0, 255],
+            width: 8.0,
+            width_keyframes: Vec::new(),
+        });
+        let td_on = klipp_timeline::TitleData::single_text(tb.clone());
+        tb.outline_stack_enabled = false;
+        let td_off = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_on = renderer.render_with_time(&td_on, frame_w, frame_h, None, 0.0);
+        let buf_off = renderer.render_with_time(&td_off, frame_w, frame_h, None, 0.0);
+
+        let blue_count = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4)
+                .filter(|p| p[3] > 0 && p[2] > 200 && p[1] < 150 && p[0] < 80)
+                .count()
+        };
+        let green_count = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4)
+                .filter(|p| p[3] > 0 && p[1] > 200 && p[0] < 80 && p[2] < 80)
+                .count()
+        };
+        // Stack disabled drops the green secondary outline entirely.
+        assert!(green_count(&buf_on) > 0, "stack enabled must render green secondary");
+        assert_eq!(green_count(&buf_off), 0, "stack disabled must hide green secondary");
+        // Primary blue outline is unaffected — index 0 isn't gated
+        // by outline_stack_enabled.
+        let blue_on = blue_count(&buf_on);
+        let blue_off = blue_count(&buf_off);
+        let diff = (blue_on as i64 - blue_off as i64).abs();
+        assert!(
+            diff < (blue_on.max(blue_off) as i64 / 10).max(50),
+            "primary outline coverage must be stable across stack toggle (on={blue_on}, off={blue_off})"
+        );
+    }
+
     /// Empty outline keyframe vecs must NOT change the rendered
     /// output — pin the no-overhead path for unanimated outlines.
     #[test]
@@ -5394,7 +5663,7 @@ mod tests {
         let mut tb = klipp_timeline::TextBox::default();
         tb.text = "X".to_string();
         tb.font_size = 80.0;
-        tb.inner_shadow = Some(klipp_timeline::InnerShadow {
+        tb.inner_shadows.push(klipp_timeline::InnerShadow {
             enabled: true,
             color: [0, 0, 0, 200],
             offset_x: 2.0, offset_x_keyframes: Vec::new(),
