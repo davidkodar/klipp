@@ -362,11 +362,30 @@ fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
                 extrusion: serde_json::to_value(&tb.extrusion).unwrap_or_default(),
                 text_path: serde_json::to_value(&tb.text_path).unwrap_or_default(),
                 char_animation: serde_json::to_value(&tb.char_animation).unwrap_or_default(),
-                texture_fill_path: tb.texture_fill_path.as_ref().map(|p| {
-                    crate::path_util::to_project_relative(project_dir, Path::new(p))
-                        .to_string_lossy()
-                        .to_string()
-                }),
+                // Legacy path field — written when the source is a
+                // File so older Klipp versions can still render the
+                // texture. Procedural-preset sources have no path
+                // representation, so this is None for those.
+                texture_fill_path: tb.texture_fill.as_ref()
+                    .and_then(|t| t.file_path())
+                    .map(|p| {
+                        crate::path_util::to_project_relative(project_dir, Path::new(p))
+                            .to_string_lossy()
+                            .to_string()
+                    }),
+                // New canonical field — full TextureFill struct.
+                // Project-relative path is rewritten in the same
+                // way before serialisation so the project stays
+                // portable.
+                texture_fill: tb.texture_fill.as_ref().map(|t| {
+                    let mut copy = t.clone();
+                    if let Some(p) = copy.file_path_mut() {
+                        *p = crate::path_util::to_project_relative(project_dir, Path::new(&p))
+                            .to_string_lossy()
+                            .to_string();
+                    }
+                    serde_json::to_value(&copy).unwrap_or_default()
+                }).unwrap_or_default(),
                 motion_blur: serde_json::to_value(&tb.motion_blur).unwrap_or_default(),
                 style_runs: serde_json::to_value(&tb.style_runs).unwrap_or_default(),
             }

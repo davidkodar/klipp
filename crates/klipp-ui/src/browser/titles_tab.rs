@@ -635,7 +635,7 @@ fn tex_fill_bold() -> TitleData {
         tb.text = String::from("TEXTURE");
         tb.font_size = 96.0;
         tb.font_style = FontStyle::Bold;
-        tb.texture_fill_path = None;
+        tb.texture_fill = None;
     }
     td
 }
@@ -648,7 +648,7 @@ fn tex_fill_shadow() -> TitleData {
         tb.text = String::from("IMAGE FILL");
         tb.font_size = 72.0;
         tb.font_style = FontStyle::Bold;
-        tb.texture_fill_path = None;
+        tb.texture_fill = None;
         tb.outlines.insert(0, TextOutline { color: [255, 255, 255, 180], width: 1.0, enabled: true, width_keyframes: Vec::new() });
     }
     td
@@ -662,7 +662,7 @@ fn tex_fill_glow() -> TitleData {
         tb.text = String::from("PHOTO TEXT");
         tb.font_size = 84.0;
         tb.font_style = FontStyle::Bold;
-        tb.texture_fill_path = None;
+        tb.texture_fill = None;
     }
     td
 }

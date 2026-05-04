@@ -329,8 +329,17 @@ pub enum ClipKindJson {
         text_path: serde_json::Value,
         #[serde(default)]
         char_animation: serde_json::Value,
+        /// Legacy texture path — kept for downgrade compatibility
+        /// and read by load.rs when no `texture_fill` struct is
+        /// present. New saves still populate this when the source
+        /// is a file so older Klipp versions can keep rendering.
         #[serde(default)]
         texture_fill_path: Option<String>,
+        /// Full TextureFill struct (source / tile_mode / scale /
+        /// offset / rotation / opacity / tint). Optional so legacy
+        /// projects that only have `texture_fill_path` still load.
+        #[serde(default)]
+        texture_fill: serde_json::Value,
         #[serde(default)]
         motion_blur: serde_json::Value,
         /// Per-character style runs for rich text.

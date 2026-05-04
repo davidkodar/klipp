@@ -572,6 +572,7 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                 text_path,
                 char_animation,
                 texture_fill_path,
+                texture_fill,
                 motion_blur,
                 style_runs,
             } => {
@@ -630,12 +631,32 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     extrusion: ext,
                     text_path: tp,
                     char_animation: ca,
-                    texture_fill_path: texture_fill_path.as_ref().map(|p| {
-                        crate::path_util::resolve_media_path(project_dir, Path::new(p))
-                            .to_string_lossy()
-                            .to_string()
-                    }),
-                    texture_fill_enabled: true,
+                    // Prefer the new TextureFill struct when present
+                    // (post-migration saves). Fall back to the legacy
+                    // bare path for old projects, synthesizing a
+                    // TextureFill with default transform/blend params.
+                    // The path inside the new struct is also resolved
+                    // through resolve_media_path so a project that
+                    // moved still finds its texture file.
+                    texture_fill: {
+                        let from_new: Option<klipp_timeline::TextureFill> =
+                            serde_json::from_value(texture_fill.clone()).ok().flatten();
+                        if let Some(mut tf) = from_new {
+                            if let Some(p) = tf.file_path_mut() {
+                                *p = crate::path_util::resolve_media_path(project_dir, Path::new(&p))
+                                    .to_string_lossy()
+                                    .to_string();
+                            }
+                            Some(tf)
+                        } else {
+                            texture_fill_path.as_ref().map(|p| {
+                                let resolved = crate::path_util::resolve_media_path(project_dir, Path::new(p))
+                                    .to_string_lossy()
+                                    .to_string();
+                                klipp_timeline::TextureFill::from_legacy_path(resolved, true)
+                            })
+                        }
+                    },
                     motion_blur: mb,
                     style_runs: sr,
                     ass_style_name: None,

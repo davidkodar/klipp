@@ -423,14 +423,12 @@ pub struct TextBox {
     /// Per-character entrance animation.
     #[serde(default)]
     pub char_animation: Option<CharAnimation>,
-    /// Image file used as text fill.
+    /// Texture fill — file path or procedural preset, plus the
+    /// transform / blend params (scale, offset, rotation, opacity,
+    /// tint, tile mode). `None` = no texture fill configured.
+    /// Soft-disable lives inside `TextureFill::enabled`.
     #[serde(default)]
-    pub texture_fill_path: Option<String>,
-    /// Soft-disable for `texture_fill_path`. When `false` and the path
-    /// is `Some(...)`, the renderer skips the texture fill but keeps
-    /// the path so the user's selection isn't lost.
-    #[serde(default = "default_true")]
-    pub texture_fill_enabled: bool,
+    pub texture_fill: Option<TextureFill>,
     /// Motion blur settings (None = disabled).
     #[serde(default)]
     pub motion_blur: Option<MotionBlur>,
@@ -624,8 +622,7 @@ impl Default for TextBox {
             extrusion: None,
             text_path: None,
             char_animation: None,
-            texture_fill_path: None,
-            texture_fill_enabled: true,
+            texture_fill: None,
             motion_blur: None,
             style_runs: Vec::new(),
             ass_style_name: None,
@@ -854,7 +851,9 @@ impl TitleData {
         self.primary_text().and_then(|tb| tb.char_animation.clone())
     }
     pub fn texture_fill_path(&self) -> Option<String> {
-        self.primary_text().and_then(|tb| tb.texture_fill_path.clone())
+        self.primary_text()
+            .and_then(|tb| tb.texture_fill.as_ref())
+            .and_then(|t| t.file_path().map(|s| s.to_string()))
     }
     pub fn motion_blur(&self) -> Option<MotionBlur> {
         self.primary_text().and_then(|tb| tb.motion_blur.clone())
@@ -1654,6 +1653,139 @@ pub enum TextPattern {
     DiagonalStripes { color_a: [u8; 4], color_b: [u8; 4], stripe_width: f32 },
 }
 
+/// Source of the texture fill — either a user-picked file or one of
+/// the bundled procedural presets. Presets are generated on the fly
+/// by the renderer so they don't need any image assets to ship.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub enum TextureSource {
+    #[default]
+    None,
+    File(String),
+    Preset(TexturePresetId),
+}
+
+/// Bundled procedural texture presets. The renderer generates each
+/// one algorithmically so adding a preset is just a renderer arm,
+/// no image asset / licence audit needed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum TexturePresetId {
+    /// Soft fibrous noise — paper-stock grain.
+    PaperGrain,
+    /// Horizontal CRT-style scanlines.
+    Scanlines,
+    /// Diagonal hatch lines.
+    DiagonalHatch,
+    /// Smooth vertical light → dark sweep.
+    GradientSweep,
+}
+
+/// How the texture maps into the glyph bounding box.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+pub enum TextureTileMode {
+    /// Scale to fill the bbox exactly. May distort aspect ratio.
+    #[default]
+    Stretch,
+    /// Repeat the texture at native (or `scale`d) size across the bbox.
+    Tile,
+    /// Scale to fit inside the bbox, preserving aspect — may show gaps.
+    Fit,
+    /// Scale to cover the bbox, preserving aspect — may crop.
+    Cover,
+}
+
+/// Texture fill on a TextBox — replaces the legacy
+/// `texture_fill_path` + `texture_fill_enabled` pair with a single
+/// struct that also carries tile mode, scale, offset, rotation,
+/// opacity, and tint. Soft-disable is the `enabled` field; the
+/// renderer skips the effect when `enabled` is false but the source
+/// + params are preserved for round-trip on re-enable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TextureFill {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub source: TextureSource,
+    #[serde(default)]
+    pub tile_mode: TextureTileMode,
+    /// Multiplier on the texture's native size. 1.0 = native.
+    #[serde(default = "default_one_f32")]
+    pub scale: f32,
+    /// Horizontal offset in texture-space pixels. 0 = no shift.
+    #[serde(default)]
+    pub offset_x: f32,
+    /// Vertical offset in texture-space pixels.
+    #[serde(default)]
+    pub offset_y: f32,
+    /// Rotation in degrees, applied to the UV space before sampling.
+    #[serde(default)]
+    pub rotation: f32,
+    /// 0..1 — multiplies the texture's alpha during composite.
+    #[serde(default = "default_one_f32")]
+    pub opacity: f32,
+    /// Multiplied with the sampled colour. White (255,255,255,255)
+    /// = no tint; mid-grey halves brightness; coloured tint
+    /// recolours the texture.
+    #[serde(default = "default_white_rgba")]
+    pub tint: [u8; 4],
+}
+
+fn default_white_rgba() -> [u8; 4] {
+    [255, 255, 255, 255]
+}
+
+impl Default for TextureFill {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            source: TextureSource::default(),
+            tile_mode: TextureTileMode::default(),
+            scale: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            rotation: 0.0,
+            opacity: 1.0,
+            tint: default_white_rgba(),
+        }
+    }
+}
+
+impl TextureFill {
+    /// Construct from a legacy file path. Used by the project-load
+    /// migration path when reading pre-TextureFill projects.
+    pub fn from_legacy_path(path: String, enabled: bool) -> Self {
+        Self {
+            enabled,
+            source: TextureSource::File(path),
+            ..Self::default()
+        }
+    }
+
+    /// True when the texture should actually contribute to the
+    /// rendered output — both the user toggle is on AND the source
+    /// resolves to something the renderer can sample.
+    pub fn is_active(&self) -> bool {
+        self.enabled && !matches!(self.source, TextureSource::None)
+    }
+
+    /// File path if the source is a user-picked file, else `None`.
+    /// Used by the project-save / consolidate paths that need to
+    /// rewrite paths when the project moves.
+    pub fn file_path(&self) -> Option<&str> {
+        match &self.source {
+            TextureSource::File(p) => Some(p.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Mutable file-path accessor. Returns `None` when the source
+    /// isn't `File`, so consolidate / relink can rewrite in place.
+    pub fn file_path_mut(&mut self) -> Option<&mut String> {
+        match &mut self.source {
+            TextureSource::File(p) => Some(p),
+            _ => None,
+        }
+    }
+}
+
 // ─── Style Run Manipulation Helpers ─────────────────────────────────────────
 
 /// Apply a style mutation to a byte range within style runs.
@@ -2427,6 +2559,84 @@ mod tests {
         assert!((e.evaluated_depth(0.5) - 15.0).abs() < 1e-5);
         assert_eq!(e.evaluated_angle(0.5), 135.0);
         assert_eq!(e.evaluated_lighting(0.5), 0.5);
+    }
+
+    /// Round-trip: a fully-populated `TextureFill` (file source +
+    /// every transform / blend param) serialises and deserialises
+    /// losslessly via the new top-level `texture_fill` field on
+    /// TextBox.
+    #[test]
+    fn texturefill_round_trips_through_serde() {
+        let mut tb = TextBox::default();
+        tb.texture_fill = Some(TextureFill {
+            enabled: true,
+            source: TextureSource::File("/tmp/paper.png".to_string()),
+            tile_mode: TextureTileMode::Tile,
+            scale: 1.5,
+            offset_x: 12.0,
+            offset_y: -8.0,
+            rotation: 30.0,
+            opacity: 0.75,
+            tint: [200, 180, 140, 255],
+        });
+        let json = serde_json::to_string(&tb).expect("serialise");
+        let round: TextBox = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(tb.texture_fill, round.texture_fill);
+    }
+
+    /// Round-trip with a procedural preset source — checks the
+    /// `Preset(TexturePresetId)` variant survives JSON.
+    #[test]
+    fn texturefill_preset_source_round_trips() {
+        let tf = TextureFill {
+            source: TextureSource::Preset(TexturePresetId::PaperGrain),
+            ..TextureFill::default()
+        };
+        let json = serde_json::to_string(&tf).expect("serialise");
+        let round: TextureFill = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(tf.source, round.source);
+    }
+
+    /// Backward-compat: a `TextureFill` JSON missing the optional
+    /// transform / blend fields fills them with sensible defaults
+    /// (`opacity=1`, `scale=1`, `tint=white`, `tile_mode=Stretch`).
+    #[test]
+    fn legacy_texturefill_without_optional_fields_uses_defaults() {
+        // Only the required `source` field — everything else takes
+        // its #[serde(default)].
+        let legacy_json = r#"{
+            "source": { "File": "/tmp/legacy.png" }
+        }"#;
+        let tf: TextureFill = serde_json::from_str(legacy_json)
+            .expect("legacy texturefill JSON without optionals must parse");
+        assert!(tf.enabled);
+        assert!(matches!(tf.source, TextureSource::File(_)));
+        assert!(matches!(tf.tile_mode, TextureTileMode::Stretch));
+        assert_eq!(tf.scale, 1.0);
+        assert_eq!(tf.offset_x, 0.0);
+        assert_eq!(tf.offset_y, 0.0);
+        assert_eq!(tf.rotation, 0.0);
+        assert_eq!(tf.opacity, 1.0);
+        assert_eq!(tf.tint, [255, 255, 255, 255]);
+    }
+
+    /// `is_active()` returns true only when the toggle is on AND
+    /// the source actually points somewhere.
+    #[test]
+    fn texturefill_is_active_predicate() {
+        let mut tf = TextureFill::default();
+        // Default: enabled=true but source=None → not active.
+        assert!(!tf.is_active());
+
+        tf.source = TextureSource::File("/tmp/a.png".to_string());
+        assert!(tf.is_active());
+
+        tf.enabled = false;
+        assert!(!tf.is_active());
+
+        tf.enabled = true;
+        tf.source = TextureSource::Preset(TexturePresetId::Scanlines);
+        assert!(tf.is_active());
     }
 
     /// Backward-compat for the TextExtrusion keyframe fields.

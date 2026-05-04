@@ -1970,8 +1970,8 @@ fn show_title_effects_group(
     //     predicate used by the active-count badge + summary chip
     //     so a toggle-on without a file isn't counted as a live
     //     effect.
-    let texture_toggle_on = tb.texture_fill_enabled;
-    let texture_active = tb.texture_fill_path.is_some() && tb.texture_fill_enabled;
+    let texture_toggle_on = tb.texture_fill.as_ref().is_some_and(|t| t.enabled);
+    let texture_active = tb.texture_fill.as_ref().is_some_and(|t| t.is_active());
 
     let mut active_count: u32 = 0;
     for on in [
@@ -2420,7 +2420,10 @@ fn show_title_effects_group(
     // 7. Texture Fill
     {
         let mut enabled = texture_toggle_on;
-        let cur_path = tb.texture_fill_path.clone();
+        let cur_path: Option<String> = tb
+            .texture_fill
+            .as_ref()
+            .and_then(|t| t.file_path().map(|s| s.to_string()));
         // Summary chip uses the strict "actually rendering"
         // predicate — toggling on without a file shows just "(no
         // file)" inside the body, not a misleading filename in the

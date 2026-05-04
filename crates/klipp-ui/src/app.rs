@@ -14044,7 +14044,30 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.texture_fill_path = path.clone(); }
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                match path.as_ref() {
+                                    Some(p) if !p.is_empty() => {
+                                        // Preserve existing transform /
+                                        // blend params when swapping the
+                                        // file path; only set fresh
+                                        // defaults when starting from
+                                        // scratch.
+                                        if let Some(t) = tb.texture_fill.as_mut() {
+                                            t.source = klipp_timeline::TextureSource::File(p.clone());
+                                        } else {
+                                            tb.texture_fill = Some(
+                                                klipp_timeline::TextureFill::from_legacy_path(p.clone(), true),
+                                            );
+                                        }
+                                    }
+                                    _ => {
+                                        // Clear: drop the texture fill
+                                        // entirely so the renderer no-ops
+                                        // and the inspector shows "(none)".
+                                        tb.texture_fill = None;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -14080,7 +14103,16 @@ impl KlippApp {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                tb.texture_fill_enabled = *enabled;
+                                // Toggle just flips the soft-disable.
+                                // When no TextureFill exists yet, seed
+                                // a default one so the toggle has
+                                // somewhere to write — first Browse /
+                                // Preset pick swaps in the real source.
+                                if let Some(t) = tb.texture_fill.as_mut() {
+                                    t.enabled = *enabled;
+                                } else if *enabled {
+                                    tb.texture_fill = Some(klipp_timeline::TextureFill::default());
+                                }
                             }
                         }
                     }

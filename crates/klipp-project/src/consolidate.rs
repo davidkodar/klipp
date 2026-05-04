@@ -452,8 +452,11 @@ fn remap_sequences(original: &[Sequence], plan: &CopyPlan) -> Vec<Sequence> {
                     if let Some(orig) = td.texture_fill_path() {
                         if let Some(new) = plan.texture_new_paths.get(&orig) {
                             if let Some(tb) = td.primary_text_mut() {
-                                tb.texture_fill_path =
-                                    Some(new.to_string_lossy().to_string());
+                                if let Some(t) = tb.texture_fill.as_mut() {
+                                    if let Some(p) = t.file_path_mut() {
+                                        *p = new.to_string_lossy().to_string();
+                                    }
+                                }
                             }
                         }
                     }

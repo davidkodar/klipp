@@ -1931,11 +1931,16 @@ impl TitleRenderer {
         _height: u32,
     ) {
         let tb = title.primary_text_or_default();
-        if !tb.texture_fill_enabled {
-            return;
-        }
-        let tex_path = match &tb.texture_fill_path {
-            Some(p) if !p.is_empty() => p.clone(),
+        // Phase 1 adapter: read the new TextureFill struct, return
+        // early when disabled or when the source isn't a file path.
+        // Procedural presets + UV transforms / opacity / tint will
+        // wire in during Phase 2.
+        let tf = match tb.texture_fill.as_ref() {
+            Some(t) if t.enabled => t,
+            _ => return,
+        };
+        let tex_path = match &tf.source {
+            klipp_timeline::TextureSource::File(p) if !p.is_empty() => p.clone(),
             _ => return,
         };
 

@@ -9,17 +9,18 @@
 use klipp_core::{ClipId, RationalTime};
 use klipp_media::MediaPool;
 use klipp_project::{load_project, save_project_with_color, ColorSettings};
-use klipp_timeline::{Clip, ClipKind, Sequence, TitleData, Track, TrackKind};
+use klipp_timeline::{
+    Clip, ClipKind, Sequence, TextBox, TextureFill, TitleData, Track, TrackKind,
+};
 
 fn make_title_clip_with_texture(texture_path: &str) -> Clip {
     let ti = RationalTime::from_frames(0, 24);
     let to = RationalTime::from_frames(48, 24);
+    let mut tb = TextBox::default();
+    tb.texture_fill = Some(TextureFill::from_legacy_path(texture_path.to_string(), true));
     Clip {
         id: ClipId::new(),
-        kind: ClipKind::Title(TitleData {
-            texture_fill_path: Some(texture_path.to_string()),
-            ..TitleData::default()
-        }),
+        kind: ClipKind::Title(TitleData::single_text(tb)),
         timeline_in: ti,
         timeline_out: to,
         source_in: RationalTime::from_frames(0, 24),
@@ -65,7 +66,7 @@ fn texture_fill_path_round_trips_through_save_load() {
         .expect("text track should exist");
     let clip = &text_track.clips[0];
     let loaded_path = match &clip.kind {
-        ClipKind::Title(td) => td.texture_fill_path.clone().expect("texture path should be set"),
+        ClipKind::Title(td) => td.texture_fill_path().expect("texture path should be set"),
         _ => panic!("expected title clip"),
     };
 
@@ -116,7 +117,7 @@ fn texture_fill_path_survives_project_directory_move() {
         .expect("text track should exist");
     let clip = &text_track.clips[0];
     let loaded_path = match &clip.kind {
-        ClipKind::Title(td) => td.texture_fill_path.clone().expect("texture path should be set"),
+        ClipKind::Title(td) => td.texture_fill_path().expect("texture path should be set"),
         _ => panic!("expected title clip"),
     };
 
