@@ -527,8 +527,12 @@ impl TextBox {
         &mut self,
         param_key: &str,
     ) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        // Note: check `inner_shadow.` before `shadow.` — the latter
+        // would otherwise prefix-match the former.
         if param_key.starts_with("glow.") {
             self.glow.as_mut().and_then(|g| g.keyframes_mut_for(param_key))
+        } else if param_key.starts_with("inner_shadow.") {
+            self.inner_shadow.as_mut().and_then(|s| s.keyframes_mut_for(param_key))
         } else if param_key.starts_with("shadow.") {
             self.shadow.as_mut().and_then(|s| s.keyframes_mut_for(param_key))
         } else {
@@ -541,6 +545,8 @@ impl TextBox {
     pub fn effect_keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
         if param_key.starts_with("glow.") {
             self.glow.as_ref().and_then(|g| g.keyframes_for(param_key))
+        } else if param_key.starts_with("inner_shadow.") {
+            self.inner_shadow.as_ref().and_then(|s| s.keyframes_for(param_key))
         } else if param_key.starts_with("shadow.") {
             self.shadow.as_ref().and_then(|s| s.keyframes_for(param_key))
         } else {
@@ -800,7 +806,7 @@ impl TitleData {
         self.primary_text().and_then(|tb| tb.gradient.clone())
     }
     pub fn inner_shadow(&self) -> Option<InnerShadow> {
-        self.primary_text().and_then(|tb| tb.inner_shadow)
+        self.primary_text().and_then(|tb| tb.inner_shadow.clone())
     }
     pub fn pattern_fill(&self) -> Option<TextPattern> {
         self.primary_text().and_then(|tb| tb.pattern_fill)
@@ -1314,15 +1320,91 @@ pub struct TextGradient {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InnerShadow {
-    pub color: [u8; 4],
-    pub offset_x: f32,
-    pub offset_y: f32,
-    pub blur: f32,
     /// Soft-disable: see [`TitleShadow::enabled`].
     #[serde(default = "default_true")]
     pub enabled: bool,
+    pub color: [u8; 4],
+    pub offset_x: f32,
+    /// Per-frame keyframes for `offset_x`; empty by default.
+    #[serde(default)]
+    pub offset_x_keyframes: Vec<klipp_core::Keyframe>,
+    pub offset_y: f32,
+    /// Per-frame keyframes for `offset_y`.
+    #[serde(default)]
+    pub offset_y_keyframes: Vec<klipp_core::Keyframe>,
+    pub blur: f32,
+    /// Per-frame keyframes for `blur`.
+    #[serde(default)]
+    pub blur_keyframes: Vec<klipp_core::Keyframe>,
+}
+
+impl InnerShadow {
+    /// Effective `offset_x` at `time_secs`. Static fallback when the
+    /// keyframe vec is empty.
+    pub fn evaluated_offset_x(&self, time_secs: f64) -> f32 {
+        if self.offset_x_keyframes.is_empty() {
+            self.offset_x
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.offset_x_keyframes,
+                time_secs,
+                self.offset_x,
+            )
+        }
+    }
+
+    /// Effective `offset_y` at `time_secs`. Static fallback when the
+    /// keyframe vec is empty.
+    pub fn evaluated_offset_y(&self, time_secs: f64) -> f32 {
+        if self.offset_y_keyframes.is_empty() {
+            self.offset_y
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.offset_y_keyframes,
+                time_secs,
+                self.offset_y,
+            )
+        }
+    }
+
+    /// Effective `blur` at `time_secs`. Static fallback when the
+    /// keyframe vec is empty.
+    pub fn evaluated_blur(&self, time_secs: f64) -> f32 {
+        if self.blur_keyframes.is_empty() {
+            self.blur
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.blur_keyframes,
+                time_secs,
+                self.blur,
+            )
+        }
+    }
+
+    /// Mutable accessor for the keyframe vec named by `param_key`.
+    pub fn keyframes_mut_for(
+        &mut self,
+        param_key: &str,
+    ) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        match param_key {
+            klipp_core::title_effect_keys::INNER_SHADOW_OFFSET_X => Some(&mut self.offset_x_keyframes),
+            klipp_core::title_effect_keys::INNER_SHADOW_OFFSET_Y => Some(&mut self.offset_y_keyframes),
+            klipp_core::title_effect_keys::INNER_SHADOW_BLUR => Some(&mut self.blur_keyframes),
+            _ => None,
+        }
+    }
+
+    /// Read-only mirror of `keyframes_mut_for`.
+    pub fn keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
+        match param_key {
+            klipp_core::title_effect_keys::INNER_SHADOW_OFFSET_X => Some(&self.offset_x_keyframes),
+            klipp_core::title_effect_keys::INNER_SHADOW_OFFSET_Y => Some(&self.offset_y_keyframes),
+            klipp_core::title_effect_keys::INNER_SHADOW_BLUR => Some(&self.blur_keyframes),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -2016,5 +2098,98 @@ mod tests {
         assert!(tb.effect_keyframes_mut_for(title_effect_keys::GLOW_RADIUS).is_none());
         // Unknown shadow key returns None.
         assert!(tb.effect_keyframes_mut_for("shadow.opacity").is_none());
+    }
+
+    /// Backward-compat for the InnerShadow keyframe fields.
+    #[test]
+    fn legacy_innershadow_without_keyframe_fields_loads_with_defaults() {
+        let legacy_json = r#"{
+            "enabled": true,
+            "color": [0, 0, 0, 180],
+            "offset_x": 2.0,
+            "offset_y": 3.0,
+            "blur": 4.0
+        }"#;
+        let s: InnerShadow = serde_json::from_str(legacy_json)
+            .expect("legacy save without keyframe fields must deserialise");
+        assert!(s.offset_x_keyframes.is_empty());
+        assert!(s.offset_y_keyframes.is_empty());
+        assert!(s.blur_keyframes.is_empty());
+        assert_eq!(s.offset_x, 2.0);
+        assert_eq!(s.blur, 4.0);
+    }
+
+    /// `InnerShadow::evaluated_*` short-circuit on empty kfs and
+    /// interpolate when populated.
+    #[test]
+    fn innershadow_evaluator_static_and_interpolated() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let mut s = InnerShadow {
+            enabled: true,
+            color: [0, 0, 0, 180],
+            offset_x: 2.0, offset_x_keyframes: Vec::new(),
+            offset_y: 3.0, offset_y_keyframes: Vec::new(),
+            blur: 4.0, blur_keyframes: Vec::new(),
+        };
+        // Empty: returns static.
+        assert_eq!(s.evaluated_offset_x(0.5), 2.0);
+        assert_eq!(s.evaluated_blur(99.0), 4.0);
+
+        // With kfs on blur only: blur ramps, offsets stay static.
+        s.blur_keyframes = vec![
+            Keyframe {
+                time_secs: 0.0, value: 0.0,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            },
+            Keyframe {
+                time_secs: 1.0, value: 10.0,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            },
+        ];
+        assert!((s.evaluated_blur(0.5) - 5.0).abs() < 1e-5);
+        assert_eq!(s.evaluated_offset_x(0.5), 2.0);
+    }
+
+    /// TextBox prefix router lands `inner_shadow.*` on InnerShadow's
+    /// vecs WITHOUT bleeding into TitleShadow's `shadow.*` arm. The
+    /// dispatcher must prefer the longer `inner_shadow.` prefix
+    /// because `shadow.` would otherwise match it.
+    #[test]
+    fn textbox_router_dispatches_inner_shadow_param_keys_distinctly() {
+        use klipp_core::title_effect_keys;
+
+        let mut tb = TextBox::default();
+        // No inner shadow yet: inner_shadow.* returns None.
+        assert!(tb
+            .effect_keyframes_mut_for(title_effect_keys::INNER_SHADOW_BLUR)
+            .is_none());
+
+        tb.inner_shadow = Some(InnerShadow {
+            enabled: true,
+            color: [0, 0, 0, 180],
+            offset_x: 2.0, offset_x_keyframes: Vec::new(),
+            offset_y: 3.0, offset_y_keyframes: Vec::new(),
+            blur: 4.0, blur_keyframes: Vec::new(),
+        });
+        klipp_core::keyframe::upsert_keyframe(
+            tb.effect_keyframes_mut_for(title_effect_keys::INNER_SHADOW_OFFSET_X)
+                .unwrap(),
+            0.0, 5.0,
+        );
+        // inner_shadow.* lands on the right vec.
+        assert_eq!(
+            tb.inner_shadow.as_ref().unwrap().offset_x_keyframes.len(),
+            1,
+        );
+        // The (separate) shadow path is still empty — no bleed.
+        assert!(tb.shadow.is_none());
+        // shadow.* without a TitleShadow returns None and does NOT
+        // accidentally hit the InnerShadow vec.
+        assert!(tb
+            .effect_keyframes_mut_for(title_effect_keys::SHADOW_BLUR)
+            .is_none());
     }
 }

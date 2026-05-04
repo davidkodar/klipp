@@ -18,3 +18,8 @@ pub const GLOW_INTENSITY: &str = "glow.intensity";
 pub const SHADOW_OFFSET_X: &str = "shadow.offset_x";
 pub const SHADOW_OFFSET_Y: &str = "shadow.offset_y";
 pub const SHADOW_BLUR: &str = "shadow.blur";
+
+// ── InnerShadow ──
+pub const INNER_SHADOW_OFFSET_X: &str = "inner_shadow.offset_x";
+pub const INNER_SHADOW_OFFSET_Y: &str = "inner_shadow.offset_y";
+pub const INNER_SHADOW_BLUR: &str = "inner_shadow.blur";

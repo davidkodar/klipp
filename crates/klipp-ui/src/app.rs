@@ -14255,19 +14255,33 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTitleInnerShadow { clip_id, enabled, color, offset_x, offset_y, blur } => {
+                // Mutate fields in place when an inner shadow already
+                // exists so existing keyframes survive an Inspector
+                // tweak — same pattern as SetTitleShadow.
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                tb.inner_shadow = Some(klipp_timeline::InnerShadow {
-                                    color: *color,
-                                    offset_x: *offset_x,
-                                    offset_y: *offset_y,
-                                    blur: *blur,
-                                    enabled: *enabled,
-                                });
+                                if let Some(s) = tb.inner_shadow.as_mut() {
+                                    s.color = *color;
+                                    s.offset_x = *offset_x;
+                                    s.offset_y = *offset_y;
+                                    s.blur = *blur;
+                                    s.enabled = *enabled;
+                                } else {
+                                    tb.inner_shadow = Some(klipp_timeline::InnerShadow {
+                                        color: *color,
+                                        offset_x: *offset_x,
+                                        offset_y: *offset_y,
+                                        blur: *blur,
+                                        enabled: *enabled,
+                                        offset_x_keyframes: Vec::new(),
+                                        offset_y_keyframes: Vec::new(),
+                                        blur_keyframes: Vec::new(),
+                                    });
+                                }
                             }
                         }
                     }
@@ -29096,6 +29110,9 @@ fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8) {
                 offset_y: 0.0,
                 blur: 2.0,
                 enabled: true,
+                offset_x_keyframes: Vec::new(),
+                offset_y_keyframes: Vec::new(),
+                blur_keyframes: Vec::new(),
             });
             tb.chromatic_aberration_px = 6.0;
             tb.glitch_intensity = 0.35;

@@ -1662,8 +1662,15 @@ fn show_title_effects_group(
 
     // 4. Inner Shadow
     {
-        let cur = tb.inner_shadow.unwrap_or(klipp_timeline::InnerShadow {
-            color: [0, 0, 0, 180], offset_x: 2.0, offset_y: 2.0, blur: 3.0, enabled: false,
+        let cur = tb.inner_shadow.clone().unwrap_or(klipp_timeline::InnerShadow {
+            color: [0, 0, 0, 180],
+            offset_x: 2.0,
+            offset_y: 2.0,
+            blur: 3.0,
+            enabled: false,
+            offset_x_keyframes: Vec::new(),
+            offset_y_keyframes: Vec::new(),
+            blur_keyframes: Vec::new(),
         });
         let mut enabled = inner_enabled;
         let summary = if enabled {
