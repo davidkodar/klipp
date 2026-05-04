@@ -14551,6 +14551,7 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTitleCharAnimation { clip_id, enabled, stagger, entrance, wave_amplitude, wave_speed } => {
+                let old = self.snapshot_title(*clip_id);
                 let ent = match entrance {
                     1 => klipp_timeline::CharEntrance::FadeIn,
                     2 => klipp_timeline::CharEntrance::SlideUp,
@@ -14594,6 +14595,7 @@ impl KlippApp {
                         }
                     }
                 }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Character Animation", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);

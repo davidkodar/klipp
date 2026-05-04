@@ -1229,9 +1229,15 @@ impl TitleRenderer {
         // Both bypass the static cache. Other animation_type variants
         // are clip-level keyframes evaluated by the engine, not the
         // renderer, so they don't change `title` and stay cacheable.
+        // Soft-disabled char_animation (`enabled: false`) keeps its
+        // struct + keyframes around but the renderer skips it (see
+        // `match (time_secs, tb.char_animation.as_ref().filter(|c| c.enabled))`
+        // in the rasterize path). Cache-bypass must respect that or
+        // muted char_anim with stale keyframes pointlessly busts the
+        // cache every frame.
         let any_char_anim = title.objects.iter().any(|o| {
             if let TitleObjectContent::TextBox(tb) = &o.content {
-                tb.char_animation.is_some()
+                tb.char_animation.as_ref().is_some_and(|c| c.enabled)
             } else {
                 false
             }
@@ -4538,6 +4544,65 @@ mod tests {
         assert!(
             s1 > s0,
             "t=1 alpha sum must exceed t=0 alpha sum (intensity 1.0 > 0.1) — s0={s0} s1={s1}"
+        );
+    }
+
+    /// Same orthogonality contract as `glow_keyframes_unaffected_by_clip_animation_type`,
+    /// but for CharAnimation — defensive coverage since I rewrote the
+    /// soft-disable + cache-bypass semantics on this effect during
+    /// audit follow-up. Verifies a CharAnimation wave_amplitude
+    /// keyframe drives glyph displacement regardless of
+    /// `animation_type = FadeIn`.
+    #[test]
+    fn char_anim_keyframes_unaffected_by_clip_animation_type() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 1280;
+        let frame_h: u32 = 720;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "ABCDE".to_string();
+        tb.font_size = 80.0;
+        tb.color = [255, 255, 255, 255];
+        // CharAnimation with wave_amplitude ramping 0 → 30 px,
+        // entrance None so the only animation is the wave.
+        tb.char_animation = Some(klipp_timeline::CharAnimation {
+            enabled: true,
+            entrance: klipp_timeline::CharEntrance::None,
+            stagger: 0.0, stagger_keyframes: Vec::new(),
+            wave_amplitude: 0.0,
+            wave_amplitude_keyframes: vec![
+                Keyframe {
+                    time_secs: 0.0, value: 0.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                },
+                Keyframe {
+                    time_secs: 2.0, value: 30.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                },
+            ],
+            // Fixed wave_speed so the wave actually visibly displaces.
+            wave_speed: 2.0, wave_speed_keyframes: Vec::new(),
+        });
+        let mut td = klipp_timeline::TitleData::single_text(tb);
+        // animation_type = FadeIn lives at the clip level, evaluated
+        // by the engine; the title renderer ignores it. Pinning that
+        // setting it here doesn't disturb char_anim keyframe behaviour.
+        td.animation_type = klipp_timeline::TitleAnimationType::FadeIn { duration_secs: 1.0 };
+
+        // At t=0 the wave amplitude is 0 → flat baseline; at t=2 the
+        // amplitude is 30 → glyphs displaced. Compare frame buffers —
+        // any difference proves the keyframe drove a render-time
+        // change, the orthogonality contract we care about.
+        let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
+        let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
+        assert_ne!(
+            &buf_t0[..],
+            &buf_t2[..],
+            "char_anim wave_amplitude keyframe must drive a render-time change at t=2 even with animation_type=FadeIn"
         );
     }
 
