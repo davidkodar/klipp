@@ -476,6 +476,129 @@ fn title_group_is_open(
     is_open
 }
 
+/// Build a `KeyframeState` describing how `clip_time_secs` relates to
+/// the keyframe vec. Mirrors `inspector::video_tab::keyframe_state` —
+/// duplicated here to avoid making the video_tab helper public, since
+/// the title path has its own playhead semantics that may diverge
+/// later (per-clip vs per-object keyframe targets).
+fn title_object_keyframe_state(
+    keyframes: &[klipp_core::Keyframe],
+    clip_time_secs: f64,
+) -> crate::widgets::scrubby_param::KeyframeState {
+    let kf_tolerance = 0.02;
+    crate::widgets::scrubby_param::KeyframeState {
+        has_keyframe_at_playhead: keyframes
+            .iter()
+            .any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance),
+        has_any_keyframes: !keyframes.is_empty(),
+        prev_keyframe_time: keyframes
+            .iter()
+            .rfind(|k| k.time_secs < clip_time_secs - kf_tolerance)
+            .map(|k| k.time_secs),
+        next_keyframe_time: keyframes
+            .iter()
+            .find(|k| k.time_secs > clip_time_secs + kf_tolerance)
+            .map(|k| k.time_secs),
+        current_interpolation: keyframes
+            .iter()
+            .find(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance)
+            .map(|k| k.interpolation),
+    }
+}
+
+/// Translate a `ScrubbyParamResponse` for one position axis into the
+/// corresponding AppCommand(s). Three affordances:
+/// - Diamond click: toggle a keyframe at the playhead.
+/// - Scrubby drag (when keyframes exist): upsert a keyframe at the
+///   playhead with the new value (handler dedups within ±20ms).
+/// - Scrubby drag (when no keyframes): SetTitleObjectTransform updates
+///   the static `center` fallback. Falls back to SetTitlePosition when
+///   no specific object is selected.
+/// - Right-click → set interpolation: dispatched per-axis when the
+///   keyframe at the playhead exists.
+fn handle_position_axis_response(
+    cmds: &mut Vec<AppCommand>,
+    clip_id: klipp_core::ClipId,
+    target_oid: Option<klipp_timeline::TitleObjectId>,
+    axis: klipp_core::TitlePositionAxis,
+    full_x: f32,
+    full_y: f32,
+    keyframes: &[klipp_core::Keyframe],
+    clip_time_secs: f64,
+    resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+) {
+    let Some(oid) = target_oid else {
+        return;
+    };
+    let object_id = oid.0;
+    let new_axis_value = match axis {
+        klipp_core::TitlePositionAxis::X => full_x,
+        klipp_core::TitlePositionAxis::Y => full_y,
+    };
+
+    if resp.keyframe_toggled {
+        if keyframes
+            .iter()
+            .any(|k| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::RemoveTitleObjectPositionKeyframe {
+                clip_id,
+                object_id,
+                axis,
+                time_secs: clip_time_secs,
+            });
+        } else {
+            cmds.push(AppCommand::AddTitleObjectPositionKeyframe {
+                clip_id,
+                object_id,
+                axis,
+                time_secs: clip_time_secs,
+                value: new_axis_value,
+            });
+        }
+        return;
+    }
+
+    if resp.changed {
+        if keyframes.is_empty() {
+            // No keyframes yet — edit the static center fallback.
+            // SetTitlePosition is clip-wide; the layer-specific path
+            // is intentionally minimal here so existing on-canvas
+            // drags + Inspector value typing keep working.
+            cmds.push(AppCommand::SetTitlePosition {
+                clip_id,
+                x: full_x,
+                y: full_y,
+            });
+        } else {
+            // Keyframes exist — drag becomes an upsert at the playhead.
+            cmds.push(AppCommand::AddTitleObjectPositionKeyframe {
+                clip_id,
+                object_id,
+                axis,
+                time_secs: clip_time_secs,
+                value: new_axis_value,
+            });
+        }
+    }
+
+    if let Some(interp) = resp.keyframe_set_interpolation {
+        if let Some((idx, _)) = keyframes
+            .iter()
+            .enumerate()
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::SetTitleObjectPositionKeyframeInterpolation {
+                clip_id,
+                object_id,
+                axis,
+                keyframe_index: idx,
+                interpolation: interp,
+            });
+        }
+    }
+}
+
 /// Shared Position block: X/Y inputs + three sticky-active quick-preset
 /// buttons (Top / Center / Lower 3rd). Active highlight stays while X/Y
 /// are within ±0.005 of the canonical coords AND that preset was the
@@ -488,18 +611,32 @@ fn show_title_position_block(
     td: &klipp_timeline::TitleData,
     state: &AppState,
     cmds: &mut Vec<AppCommand>,
+    clip_time_secs: f64,
 ) {
     use crate::state::TitlePositionPreset;
     use crate::widgets::inspector_group::quick_preset_button;
+    use crate::widgets::scrubby_param::scrubby_param_row;
 
     let target_oid = state
         .selected_title_object
         .filter(|(c, _)| *c == clip_id)
         .map(|(_, oid)| oid);
-    let pos = target_oid
-        .and_then(|oid| td.object(oid))
-        .map(|o| o.transform.center)
+    let target_obj = target_oid.and_then(|oid| td.object(oid));
+    // Pos comes from keyframe-evaluated center when keyframes exist —
+    // otherwise the static fallback. Same call the renderer uses, so
+    // the inspector value tracks the rendered value at the playhead.
+    let pos = target_obj
+        .map(|o| o.transform.evaluated_center(clip_time_secs))
         .unwrap_or_else(|| td.position());
+
+    let kfs_x: &[klipp_core::Keyframe] = target_obj
+        .map(|o| o.transform.center_x_keyframes.as_slice())
+        .unwrap_or(&[]);
+    let kfs_y: &[klipp_core::Keyframe] = target_obj
+        .map(|o| o.transform.center_y_keyframes.as_slice())
+        .unwrap_or(&[]);
+    let ks_x = title_object_keyframe_state(kfs_x, clip_time_secs);
+    let ks_y = title_object_keyframe_state(kfs_y, clip_time_secs);
 
     ui.label(
         egui::RichText::new("POSITION")
@@ -508,23 +645,31 @@ fn show_title_position_block(
     );
     ui.add_space(4.0);
 
-    // X / Y stacked scrubby rows. Position keyframes on a per-layer
-    // basis aren't wired yet (only clip-level transform_pos_*_keyframes
-    // exist today, which apply to the whole title clip rather than the
-    // selected TitleObject). When per-layer position keyframing lands
-    // we'll thread a `KeyframeState` into the calls below; until then
-    // the rows are scrubby for visual consistency without keyframe
-    // affordances.
+    // X / Y stacked scrubby rows with per-layer keyframe affordances.
+    // The diamond toggles a keyframe at the playhead; scrubby drag
+    // upserts when keyframes exist, otherwise it edits the static
+    // fallback through SetTitlePosition.
     let mut x = pos.x;
     let mut y = pos.y;
-    let mut pos_changed = false;
-    pos_changed |= crate::widgets::scrubby_param::scrubby_param_row(
-        ui, "X", &mut x, 0.0..=1.0, 0.5, 0.001, 2, "", None,
-    ).changed;
-    pos_changed |= crate::widgets::scrubby_param::scrubby_param_row(
-        ui, "Y", &mut y, 0.0..=1.0, 0.5, 0.001, 2, "", None,
-    ).changed;
-    if pos_changed {
+    let resp_x = scrubby_param_row(
+        ui, "X", &mut x, 0.0..=1.0, 0.5, 0.001, 2, "",
+        target_oid.map(|_| ks_x),
+    );
+    let resp_y = scrubby_param_row(
+        ui, "Y", &mut y, 0.0..=1.0, 0.5, 0.001, 2, "",
+        target_oid.map(|_| ks_y),
+    );
+    handle_position_axis_response(
+        cmds, clip_id, target_oid, klipp_core::TitlePositionAxis::X,
+        x, pos.y, kfs_x, clip_time_secs, &resp_x,
+    );
+    handle_position_axis_response(
+        cmds, clip_id, target_oid, klipp_core::TitlePositionAxis::Y,
+        pos.x, y, kfs_y, clip_time_secs, &resp_y,
+    );
+    // Static-fallback path: no per-layer object selected (legacy
+    // behaviour) — fall back to the clip-level SetTitlePosition.
+    if target_oid.is_none() && (resp_x.changed || resp_y.changed) {
         cmds.push(AppCommand::SetTitlePosition { clip_id, x, y });
     }
 
@@ -581,6 +726,7 @@ fn show_title_pinned_core_textbox(
     state: &AppState,
     cmds: &mut Vec<AppCommand>,
     tb: &klipp_timeline::TextBox,
+    clip_time_secs: f64,
 ) {
     let effective_selection = state
         .viewer_text_selection
@@ -880,7 +1026,7 @@ fn show_title_pinned_core_textbox(
     ui.add_space(10.0);
 
     // 5. Position block.
-    show_title_position_block(ui, theme, clip_id, td, state, cmds);
+    show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs);
 }
 
 /// Quick-style row: per-letter or selection-wide colour presets, the
@@ -1897,6 +2043,7 @@ fn show_title_editor(
         klipp_timeline::ClipKind::Title(td) => td,
         _ => return,
     };
+    let clip_time_secs = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
 
     // ── Project Asset banner ──
     // Only when the clip is linked. Shows the asset name + how
@@ -2037,7 +2184,7 @@ fn show_title_editor(
         if let Some(oid) = target_oid {
             show_title_shape_editor(ui, theme, clip_id, oid, shape, cmds);
             ui.add_space(8.0);
-            show_title_position_block(ui, theme, clip_id, td, state, cmds);
+            show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs);
         }
         return;
     }
@@ -2046,7 +2193,7 @@ fn show_title_editor(
         _ => td.primary_text(),
     };
     if let Some(tb) = tb_target {
-        show_title_pinned_core_textbox(ui, theme, clip_id, td, state, cmds, tb);
+        show_title_pinned_core_textbox(ui, theme, clip_id, td, state, cmds, tb, clip_time_secs);
     }
     ui.add_space(8.0);
 
