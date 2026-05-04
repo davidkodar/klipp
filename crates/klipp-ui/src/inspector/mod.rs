@@ -1907,8 +1907,11 @@ fn show_title_effects_group(
 
     // 2. Outline (singular = outlines[0])
     {
-        let cur = tb.outlines.first().copied().unwrap_or(klipp_timeline::TextOutline {
-            color: [255, 255, 255, 255], width: 2.0, enabled: false,
+        let cur = tb.outlines.first().cloned().unwrap_or(klipp_timeline::TextOutline {
+            color: [255, 255, 255, 255],
+            width: 2.0,
+            enabled: false,
+            width_keyframes: Vec::new(),
         });
         let mut enabled = outline_enabled;
         let summary = if enabled { format!("{} px", cur.width) } else { String::new() };
@@ -2291,7 +2294,7 @@ fn show_title_effects_group(
         let mut new_outlines = outlines.clone();
         let mut outlines_changed = false;
         for i in 1..outlines.len() {
-            let ol = outlines[i];
+            let ol = outlines[i].clone();
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
                 let mut col = egui::Color32::from_rgba_premultiplied(ol.color[0], ol.color[1], ol.color[2], ol.color[3]);
@@ -2312,7 +2315,10 @@ fn show_title_effects_group(
         }
         if ui.small_button("+ Add Layer").clicked() {
             new_outlines.push(klipp_timeline::TextOutline {
-                color: [0, 0, 0, 255], width: 4.0, enabled: true,
+                color: [0, 0, 0, 255],
+                width: 4.0,
+                enabled: true,
+                width_keyframes: Vec::new(),
             });
             outlines_changed = true;
         }

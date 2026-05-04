@@ -3458,6 +3458,7 @@ mod tests {
             color: [255, 0, 0, 255],
             width: 4.0,
             enabled: true,
+            width_keyframes: Vec::new(),
         });
     }
     td
@@ -3760,6 +3761,7 @@ mod tests {
             color: [255, 0, 0, 255],
             width: 4.0,
             enabled: true,
+            width_keyframes: Vec::new(),
         });
         let td = klipp_timeline::TitleData::single_text(tb);
 

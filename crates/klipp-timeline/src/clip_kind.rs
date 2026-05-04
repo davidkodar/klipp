@@ -541,6 +541,13 @@ impl TextBox {
             self.motion_blur.as_mut().and_then(|m| m.keyframes_mut_for(param_key))
         } else if param_key.starts_with("char_anim.") {
             self.char_animation.as_mut().and_then(|c| c.keyframes_mut_for(param_key))
+        } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_outline_param_key(param_key) {
+            // Per-stack-element outline keyframes. Each index is its
+            // own slot — out-of-range indices return None.
+            match field {
+                "width" => self.outlines.get_mut(idx).map(|o| &mut o.width_keyframes),
+                _ => None,
+            }
         } else {
             None
         }
@@ -561,6 +568,11 @@ impl TextBox {
             self.motion_blur.as_ref().and_then(|m| m.keyframes_for(param_key))
         } else if param_key.starts_with("char_anim.") {
             self.char_animation.as_ref().and_then(|c| c.keyframes_for(param_key))
+        } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_outline_param_key(param_key) {
+            match field {
+                "width" => self.outlines.get(idx).map(|o| o.width_keyframes.as_slice()),
+                _ => None,
+            }
         } else {
             None
         }
@@ -1427,14 +1439,37 @@ impl TitleShadow {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TextOutline {
-    pub color: [u8; 4],
-    /// Width in pixels, typically 1-8
-    pub width: f32,
     /// Soft-disable: see [`TitleShadow::enabled`].
     #[serde(default = "default_true")]
     pub enabled: bool,
+    pub color: [u8; 4],
+    /// Width in pixels, typically 1-8
+    pub width: f32,
+    /// Per-frame keyframes for `width`; empty by default.
+    /// Each `TextOutline` in a stack carries its own keyframe vec, so
+    /// stacked outlines animate independently. The wire-format
+    /// param_key is `outline.{index}.width` where `index` is the
+    /// position in `TextBox.outlines`.
+    #[serde(default)]
+    pub width_keyframes: Vec<klipp_core::Keyframe>,
+}
+
+impl TextOutline {
+    /// Effective `width` at `time_secs`. Static fallback when the
+    /// keyframe vec is empty.
+    pub fn evaluated_width(&self, time_secs: f64) -> f32 {
+        if self.width_keyframes.is_empty() {
+            self.width
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.width_keyframes,
+                time_secs,
+                self.width,
+            )
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2451,6 +2486,97 @@ mod tests {
 
         // Unknown extrusion key returns None.
         assert!(tb.effect_keyframes_mut_for("extrusion.skew").is_none());
+    }
+
+    /// `TextOutline::evaluated_width` short-circuits on empty kfs and
+    /// interpolates when populated. Each TextOutline in a stack carries
+    /// its own keyframe vec — independence between stack slots holds.
+    #[test]
+    fn textoutline_evaluator_static_and_interpolated() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let mut o = TextOutline {
+            enabled: true,
+            color: [0, 0, 0, 255],
+            width: 2.0,
+            width_keyframes: Vec::new(),
+        };
+        assert_eq!(o.evaluated_width(0.0), 2.0);
+
+        o.width_keyframes = vec![
+            Keyframe {
+                time_secs: 0.0, value: 1.0,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            },
+            Keyframe {
+                time_secs: 1.0, value: 9.0,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            },
+        ];
+        assert!((o.evaluated_width(0.5) - 5.0).abs() < 1e-5);
+    }
+
+    /// Backward-compat: pre-#5 TextOutline JSON without the keyframe
+    /// field deserialises with empty vec.
+    #[test]
+    fn legacy_textoutline_without_keyframe_field_loads_with_default() {
+        let legacy_json = r#"{
+            "enabled": true,
+            "color": [0, 0, 0, 255],
+            "width": 3.0
+        }"#;
+        let o: TextOutline = serde_json::from_str(legacy_json)
+            .expect("legacy save without width_keyframes must deserialise");
+        assert!(o.width_keyframes.is_empty());
+        assert_eq!(o.width, 3.0);
+    }
+
+    /// TextBox prefix router lands `outline.{idx}.width` on the
+    /// matching `outlines[idx].width_keyframes` slot. Out-of-range
+    /// indices return None. Stacked outlines are independent.
+    #[test]
+    fn textbox_router_dispatches_indexed_outline_param_keys() {
+        use klipp_core::title_effect_keys;
+
+        let mut tb = TextBox::default();
+        // Push two outline layers with width_keyframes empty.
+        tb.outlines.push(TextOutline {
+            enabled: true, color: [255, 0, 0, 255], width: 2.0,
+            width_keyframes: Vec::new(),
+        });
+        tb.outlines.push(TextOutline {
+            enabled: true, color: [0, 0, 255, 255], width: 4.0,
+            width_keyframes: Vec::new(),
+        });
+
+        // Index-0 keyframe lands on outlines[0] only.
+        let key0 = title_effect_keys::outline_width_key(0);
+        klipp_core::keyframe::upsert_keyframe(
+            tb.effect_keyframes_mut_for(&key0).unwrap(),
+            0.0, 8.0,
+        );
+        assert_eq!(tb.outlines[0].width_keyframes.len(), 1);
+        assert_eq!(tb.outlines[1].width_keyframes.len(), 0);
+
+        // Index-1 keyframe lands on outlines[1] only — independence.
+        let key1 = title_effect_keys::outline_width_key(1);
+        klipp_core::keyframe::upsert_keyframe(
+            tb.effect_keyframes_mut_for(&key1).unwrap(),
+            0.0, 12.0,
+        );
+        assert_eq!(tb.outlines[0].width_keyframes.len(), 1);
+        assert_eq!(tb.outlines[1].width_keyframes.len(), 1);
+        assert_eq!(tb.outlines[0].width_keyframes[0].value, 8.0);
+        assert_eq!(tb.outlines[1].width_keyframes[0].value, 12.0);
+
+        // Out-of-range index returns None.
+        let key99 = title_effect_keys::outline_width_key(99);
+        assert!(tb.effect_keyframes_mut_for(&key99).is_none());
+
+        // Unknown subfield returns None even with valid index.
+        assert!(tb.effect_keyframes_mut_for("outline.0.color").is_none());
     }
 
     /// `CharAnimation::evaluated_*` short-circuits on empty kfs and
