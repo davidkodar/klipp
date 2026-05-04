@@ -14294,20 +14294,35 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTitleExtrusion { clip_id, enabled, depth, angle, face_color, side_color, lighting } => {
+                // Mutate fields in place when an extrusion already
+                // exists so existing keyframes survive an Inspector
+                // tweak — same pattern as SetTitleShadow.
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                tb.extrusion = Some(klipp_timeline::TextExtrusion {
-                                    depth: *depth,
-                                    angle: *angle,
-                                    face_color: *face_color,
-                                    side_color: *side_color,
-                                    lighting: *lighting,
-                                    enabled: *enabled,
-                                });
+                                if let Some(e) = tb.extrusion.as_mut() {
+                                    e.depth = *depth;
+                                    e.angle = *angle;
+                                    e.face_color = *face_color;
+                                    e.side_color = *side_color;
+                                    e.lighting = *lighting;
+                                    e.enabled = *enabled;
+                                } else {
+                                    tb.extrusion = Some(klipp_timeline::TextExtrusion {
+                                        depth: *depth,
+                                        angle: *angle,
+                                        face_color: *face_color,
+                                        side_color: *side_color,
+                                        lighting: *lighting,
+                                        enabled: *enabled,
+                                        depth_keyframes: Vec::new(),
+                                        angle_keyframes: Vec::new(),
+                                        lighting_keyframes: Vec::new(),
+                                    });
+                                }
                             }
                         }
                     }

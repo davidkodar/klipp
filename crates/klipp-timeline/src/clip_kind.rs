@@ -535,6 +535,8 @@ impl TextBox {
             self.inner_shadow.as_mut().and_then(|s| s.keyframes_mut_for(param_key))
         } else if param_key.starts_with("shadow.") {
             self.shadow.as_mut().and_then(|s| s.keyframes_mut_for(param_key))
+        } else if param_key.starts_with("extrusion.") {
+            self.extrusion.as_mut().and_then(|e| e.keyframes_mut_for(param_key))
         } else {
             None
         }
@@ -549,6 +551,8 @@ impl TextBox {
             self.inner_shadow.as_ref().and_then(|s| s.keyframes_for(param_key))
         } else if param_key.starts_with("shadow.") {
             self.shadow.as_ref().and_then(|s| s.keyframes_for(param_key))
+        } else if param_key.starts_with("extrusion.") {
+            self.extrusion.as_ref().and_then(|e| e.keyframes_for(param_key))
         } else {
             None
         }
@@ -821,7 +825,7 @@ impl TitleData {
         self.primary_text().map_or(1.0, |tb| tb.write_on)
     }
     pub fn extrusion(&self) -> Option<TextExtrusion> {
-        self.primary_text().and_then(|tb| tb.extrusion)
+        self.primary_text().and_then(|tb| tb.extrusion.clone())
     }
     pub fn text_path(&self) -> Option<TextPath> {
         self.primary_text().and_then(|tb| tb.text_path.clone())
@@ -1014,21 +1018,95 @@ pub struct MotionBlur {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TextExtrusion {
-    /// Extrusion distance in pixels (1-50)
-    pub depth: f32,
-    /// Direction in degrees (default 135 = down-right shadow direction)
-    pub angle: f32,
+    /// Soft-disable: see [`TitleShadow::enabled`].
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     /// Front face color (if [0,0,0,0] uses title.color)
     pub face_color: [u8; 4],
     /// Extruded side color
     pub side_color: [u8; 4],
+    /// Extrusion distance in pixels (1-50)
+    pub depth: f32,
+    /// Per-frame keyframes for `depth`; empty by default.
+    #[serde(default)]
+    pub depth_keyframes: Vec<klipp_core::Keyframe>,
+    /// Direction in degrees (default 135 = down-right shadow direction)
+    pub angle: f32,
+    /// Per-frame keyframes for `angle`.
+    #[serde(default)]
+    pub angle_keyframes: Vec<klipp_core::Keyframe>,
     /// 0.0-1.0, simulated directional lighting
     pub lighting: f32,
-    /// Soft-disable: see [`TitleShadow::enabled`].
-    #[serde(default = "default_true")]
-    pub enabled: bool,
+    /// Per-frame keyframes for `lighting`.
+    #[serde(default)]
+    pub lighting_keyframes: Vec<klipp_core::Keyframe>,
+}
+
+impl TextExtrusion {
+    /// Effective `depth` at `time_secs`. Static fallback when the
+    /// keyframe vec is empty.
+    pub fn evaluated_depth(&self, time_secs: f64) -> f32 {
+        if self.depth_keyframes.is_empty() {
+            self.depth
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.depth_keyframes,
+                time_secs,
+                self.depth,
+            )
+        }
+    }
+
+    /// Effective `angle` at `time_secs`. Static fallback when empty.
+    pub fn evaluated_angle(&self, time_secs: f64) -> f32 {
+        if self.angle_keyframes.is_empty() {
+            self.angle
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.angle_keyframes,
+                time_secs,
+                self.angle,
+            )
+        }
+    }
+
+    /// Effective `lighting` at `time_secs`. Static fallback when empty.
+    pub fn evaluated_lighting(&self, time_secs: f64) -> f32 {
+        if self.lighting_keyframes.is_empty() {
+            self.lighting
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.lighting_keyframes,
+                time_secs,
+                self.lighting,
+            )
+        }
+    }
+
+    /// Mutable accessor for the keyframe vec named by `param_key`.
+    pub fn keyframes_mut_for(
+        &mut self,
+        param_key: &str,
+    ) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        match param_key {
+            klipp_core::title_effect_keys::EXTRUSION_DEPTH => Some(&mut self.depth_keyframes),
+            klipp_core::title_effect_keys::EXTRUSION_ANGLE => Some(&mut self.angle_keyframes),
+            klipp_core::title_effect_keys::EXTRUSION_LIGHTING => Some(&mut self.lighting_keyframes),
+            _ => None,
+        }
+    }
+
+    /// Read-only mirror of `keyframes_mut_for`.
+    pub fn keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
+        match param_key {
+            klipp_core::title_effect_keys::EXTRUSION_DEPTH => Some(&self.depth_keyframes),
+            klipp_core::title_effect_keys::EXTRUSION_ANGLE => Some(&self.angle_keyframes),
+            klipp_core::title_effect_keys::EXTRUSION_LIGHTING => Some(&self.lighting_keyframes),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2151,6 +2229,102 @@ mod tests {
         ];
         assert!((s.evaluated_blur(0.5) - 5.0).abs() < 1e-5);
         assert_eq!(s.evaluated_offset_x(0.5), 2.0);
+    }
+
+    /// `TextExtrusion::evaluated_*` short-circuit on empty kfs and
+    /// interpolate when populated. Independence between params holds.
+    #[test]
+    fn textextrusion_evaluator_static_and_interpolated() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let mut e = TextExtrusion {
+            enabled: true,
+            face_color: [255, 255, 255, 255],
+            side_color: [80, 80, 80, 255],
+            depth: 10.0, depth_keyframes: Vec::new(),
+            angle: 135.0, angle_keyframes: Vec::new(),
+            lighting: 0.5, lighting_keyframes: Vec::new(),
+        };
+        // Empty: returns static.
+        assert_eq!(e.evaluated_depth(0.5), 10.0);
+        assert_eq!(e.evaluated_angle(0.5), 135.0);
+        assert_eq!(e.evaluated_lighting(0.5), 0.5);
+
+        // Keyframe just `depth`: depth ramps, others stay static.
+        e.depth_keyframes = vec![
+            Keyframe {
+                time_secs: 0.0, value: 5.0,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            },
+            Keyframe {
+                time_secs: 1.0, value: 25.0,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            },
+        ];
+        assert!((e.evaluated_depth(0.5) - 15.0).abs() < 1e-5);
+        assert_eq!(e.evaluated_angle(0.5), 135.0);
+        assert_eq!(e.evaluated_lighting(0.5), 0.5);
+    }
+
+    /// Backward-compat for the TextExtrusion keyframe fields.
+    #[test]
+    fn legacy_textextrusion_without_keyframe_fields_loads_with_defaults() {
+        let legacy_json = r#"{
+            "enabled": true,
+            "face_color": [255, 255, 255, 255],
+            "side_color": [80, 80, 80, 255],
+            "depth": 12.0,
+            "angle": 135.0,
+            "lighting": 0.6
+        }"#;
+        let e: TextExtrusion = serde_json::from_str(legacy_json)
+            .expect("legacy save without keyframe fields must deserialise");
+        assert!(e.depth_keyframes.is_empty());
+        assert!(e.angle_keyframes.is_empty());
+        assert!(e.lighting_keyframes.is_empty());
+        assert_eq!(e.depth, 12.0);
+        assert_eq!(e.lighting, 0.6);
+    }
+
+    /// TextBox prefix router lands `extrusion.*` on TextExtrusion's
+    /// vecs and returns None for unknown extrusion subkeys.
+    #[test]
+    fn textbox_router_dispatches_extrusion_param_keys() {
+        use klipp_core::title_effect_keys;
+
+        let mut tb = TextBox::default();
+        // No extrusion yet: every extrusion.* key returns None.
+        assert!(tb.effect_keyframes_mut_for(title_effect_keys::EXTRUSION_DEPTH).is_none());
+
+        tb.extrusion = Some(TextExtrusion {
+            enabled: true,
+            face_color: [255, 255, 255, 255],
+            side_color: [80, 80, 80, 255],
+            depth: 10.0, depth_keyframes: Vec::new(),
+            angle: 135.0, angle_keyframes: Vec::new(),
+            lighting: 0.5, lighting_keyframes: Vec::new(),
+        });
+        klipp_core::keyframe::upsert_keyframe(
+            tb.effect_keyframes_mut_for(title_effect_keys::EXTRUSION_DEPTH).unwrap(),
+            0.0, 20.0,
+        );
+        klipp_core::keyframe::upsert_keyframe(
+            tb.effect_keyframes_mut_for(title_effect_keys::EXTRUSION_ANGLE).unwrap(),
+            0.0, 90.0,
+        );
+        klipp_core::keyframe::upsert_keyframe(
+            tb.effect_keyframes_mut_for(title_effect_keys::EXTRUSION_LIGHTING).unwrap(),
+            0.0, 0.8,
+        );
+        let e = tb.extrusion.as_ref().unwrap();
+        assert_eq!(e.depth_keyframes[0].value, 20.0);
+        assert_eq!(e.angle_keyframes[0].value, 90.0);
+        assert_eq!(e.lighting_keyframes[0].value, 0.8);
+
+        // Unknown extrusion key returns None.
+        assert!(tb.effect_keyframes_mut_for("extrusion.skew").is_none());
     }
 
     /// TextBox prefix router lands `inner_shadow.*` on InnerShadow's

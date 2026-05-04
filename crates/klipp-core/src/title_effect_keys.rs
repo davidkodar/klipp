@@ -23,3 +23,8 @@ pub const SHADOW_BLUR: &str = "shadow.blur";
 pub const INNER_SHADOW_OFFSET_X: &str = "inner_shadow.offset_x";
 pub const INNER_SHADOW_OFFSET_Y: &str = "inner_shadow.offset_y";
 pub const INNER_SHADOW_BLUR: &str = "inner_shadow.blur";
+
+// ── TextExtrusion ──
+pub const EXTRUSION_DEPTH: &str = "extrusion.depth";
+pub const EXTRUSION_ANGLE: &str = "extrusion.angle";
+pub const EXTRUSION_LIGHTING: &str = "extrusion.lighting";

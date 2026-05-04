@@ -3505,6 +3505,9 @@ mod tests {
             side_color: [100, 50, 50, 255],
             lighting: 0.5,
             enabled: true,
+            depth_keyframes: Vec::new(),
+            angle_keyframes: Vec::new(),
+            lighting_keyframes: Vec::new(),
         });
     }
     td

@@ -683,6 +683,9 @@ fn three_d_block() -> TitleData {
             side_color: [80, 80, 120, 255],
             lighting: 0.6,
             enabled: true,
+            depth_keyframes: Vec::new(),
+            angle_keyframes: Vec::new(),
+            lighting_keyframes: Vec::new(),
         });
     }
     td
@@ -699,6 +702,9 @@ fn three_d_gold_emboss() -> TitleData {
             side_color: [160, 120, 40, 255],
             lighting: 0.8,
             enabled: true,
+            depth_keyframes: Vec::new(),
+            angle_keyframes: Vec::new(),
+            lighting_keyframes: Vec::new(),
         });
         tb.gradient = Some(TextGradient { top_color: [255, 220, 100, 255], bottom_color: [200, 150, 50, 255], enabled: true });
     }
@@ -716,6 +722,9 @@ fn three_d_deep_shadow() -> TitleData {
             side_color: [60, 20, 20, 255],
             lighting: 0.4,
             enabled: true,
+            depth_keyframes: Vec::new(),
+            angle_keyframes: Vec::new(),
+            lighting_keyframes: Vec::new(),
         });
     }
     td
@@ -732,6 +741,9 @@ fn three_d_neon_extrude() -> TitleData {
             side_color: [0, 80, 60, 255],
             lighting: 0.7,
             enabled: true,
+            depth_keyframes: Vec::new(),
+            angle_keyframes: Vec::new(),
+            lighting_keyframes: Vec::new(),
         });
         tb.glow = Some(TextGlow { color: [0, 255, 200, 255], radius: 12.0, intensity: 0.6, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() });
     }
@@ -749,6 +761,9 @@ fn three_d_retro_stack() -> TitleData {
             side_color: [150, 80, 30, 255],
             lighting: 0.5,
             enabled: true,
+            depth_keyframes: Vec::new(),
+            angle_keyframes: Vec::new(),
+            lighting_keyframes: Vec::new(),
         });
         tb.outlines.insert(0, TextOutline { color: [40, 30, 20, 255], width: 2.0, enabled: true });
     }

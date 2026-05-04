@@ -3467,7 +3467,11 @@ fn show_title_editor(
         face_color: [0, 0, 0, 0],
         side_color: [80, 60, 40, 255],
         lighting: 0.5,
-     enabled: true });
+        enabled: true,
+        depth_keyframes: Vec::new(),
+        angle_keyframes: Vec::new(),
+        lighting_keyframes: Vec::new(),
+    });
     let mut ext_enabled = has_ext;
     if ui.checkbox(&mut ext_enabled, "Enable").changed() {
         cmds.push(AppCommand::SetTitleExtrusion {
