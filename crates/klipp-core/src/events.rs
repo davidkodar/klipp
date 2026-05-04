@@ -1766,6 +1766,10 @@ pub enum AppCommand {
     /// Set (or clear) a track's custom pixel height. `None` restores the
     /// kind's default height. Height is clamped to (32.0, 300.0).
     SetTrackCustomHeight { track_id: TrackId, height: Option<f32> },
+    /// Set the per-track automation-lane height. `None` resets to the
+    /// default lane height. Mirrors `SetTrackCustomHeight` for the
+    /// clip area.
+    SetTrackAutomationLaneHeight { track_id: TrackId, height: Option<f32> },
 
     // Clip grouping
     GroupClips { clip_ids: Vec<ClipId> },

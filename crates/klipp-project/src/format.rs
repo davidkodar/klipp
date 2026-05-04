@@ -151,6 +151,11 @@ pub struct TrackJson {
     /// Skipped when None so legacy projects round-trip unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automation_lane_visible: Option<String>,
+    /// User-overridden lane height in pixels. `None` falls back to
+    /// the default lane height. Skipped when None so legacy projects
+    /// round-trip unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automation_lane_height: Option<f32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -854,6 +859,7 @@ mod tests {
                 locked: false,
                 custom_height: None,
                 automation_lane_visible: Some(label.to_string()),
+                automation_lane_height: None,
             };
             let s = serde_json::to_string(&track).expect("serialise");
             let back: TrackJson = serde_json::from_str(&s).expect("deserialise");
@@ -894,9 +900,53 @@ mod tests {
             locked: false,
             custom_height: None,
             automation_lane_visible: None,
+            automation_lane_height: None,
         };
         let s = serde_json::to_string(&track).expect("serialise");
         assert!(!s.contains("automation_lane_visible"),
             "None lane must be skipped, got: {s}");
+        assert!(!s.contains("automation_lane_height"),
+            "None lane height must be skipped, got: {s}");
+    }
+
+    /// `Track.automation_lane_height` round-trips through TrackJson
+    /// when the user has overridden the default.
+    #[test]
+    fn automation_lane_height_round_trips_through_track_json() {
+        let track = TrackJson {
+            id: "t1".to_string(),
+            name: "A1".to_string(),
+            kind: "Audio".to_string(),
+            clips: vec![],
+            transitions: vec![],
+            opacity: 1.0,
+            volume: 1.0,
+            muted: false,
+            solo: false,
+            visible: true,
+            pan: 0.0,
+            locked: false,
+            custom_height: None,
+            automation_lane_visible: Some("Volume".to_string()),
+            automation_lane_height: Some(180.0),
+        };
+        let s = serde_json::to_string(&track).expect("serialise");
+        let back: TrackJson = serde_json::from_str(&s).expect("deserialise");
+        assert_eq!(back.automation_lane_height, Some(180.0));
+    }
+
+    /// Legacy projects without `automation_lane_height` parse with
+    /// the default-restoring None value (lane uses the default 120 px).
+    #[test]
+    fn track_json_without_automation_lane_height_loads_as_none() {
+        let legacy = r#"{
+            "id": "t1", "name": "A1", "kind": "Audio",
+            "clips": [], "opacity": 1.0, "volume": 1.0, "pan": 0.0,
+            "automation_lane_visible": "Volume"
+        }"#;
+        let track: TrackJson = serde_json::from_str(legacy)
+            .expect("legacy track JSON without automation_lane_height must parse");
+        assert!(track.automation_lane_height.is_none());
+        assert_eq!(track.automation_lane_visible.as_deref(), Some("Volume"));
     }
 }

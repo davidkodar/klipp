@@ -381,6 +381,11 @@ pub struct Track {
     /// serde; defaults to `None` for back-compat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automation_lane_visible: Option<klipp_core::AudioParam>,
+    /// User-overridden lane height in pixels. `None` falls back to the
+    /// `AUTOMATION_LANE_HEIGHT` default (120 px) so projects saved
+    /// before drag-resize landed still render at the original height.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automation_lane_height: Option<f32>,
 }
 
 fn default_opacity() -> f32 { 1.0 }
@@ -412,6 +417,7 @@ impl Track {
             source_file: None,
             record_armed: false,
             automation_lane_visible: None,
+            automation_lane_height: None,
         }
     }
 

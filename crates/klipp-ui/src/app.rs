@@ -15738,6 +15738,19 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTrackAutomationLaneHeight { track_id, height } => {
+                let seq = self.state.sequence_mut();
+                if let Some(track) = seq.tracks.iter_mut().find(|t| t.id == *track_id) {
+                    track.automation_lane_height = height.map(|h| {
+                        h.clamp(
+                            crate::panels::timeline::MIN_AUTOMATION_LANE_HEIGHT,
+                            crate::panels::timeline::MAX_AUTOMATION_LANE_HEIGHT,
+                        )
+                    });
+                }
+                self.state.dirty = true;
+                true
+            }
             AppCommand::GroupClips { clip_ids } => {
                 let gid = GroupId::new();
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {

@@ -357,6 +357,7 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     _ => None,
                 }
             });
+            track.automation_lane_height = t.automation_lane_height;
             track.transitions = t.transitions.iter().filter_map(|tr| {
                 let id = parse_uuid(&tr.id).ok().map(TransitionId)?;
                 let kind = klipp_core::spec_for_string_key(tr.kind.as_str())

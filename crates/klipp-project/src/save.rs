@@ -220,6 +220,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                     klipp_core::AudioParam::Pan => "Pan".to_string(),
                     klipp_core::AudioParam::Gain => "Gain".to_string(),
                 }),
+                automation_lane_height: t.automation_lane_height,
                 transitions: t.transitions.iter().map(|tr| {
                     TransitionJson {
                         id: tr.id.to_string(),
