@@ -13304,6 +13304,8 @@ impl KlippApp {
                                     radius: 12.0,
                                     intensity: 1.4,
                                     enabled: true,
+                                    radius_keyframes: Vec::new(),
+                                    intensity_keyframes: Vec::new(),
                                 });
                             }
                         }
@@ -14183,18 +14185,30 @@ impl KlippApp {
             }
             AppCommand::SetTitleGlow { clip_id, enabled, color, radius, intensity } => {
                 // Soft-disable: always Some(...) with enabled from cmd.
+                // Mutate static fields in place when a glow already
+                // exists so any existing radius/intensity keyframes
+                // survive the edit (toggle-mute semantics).
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                tb.glow = Some(klipp_timeline::TextGlow {
-                                    color: *color,
-                                    radius: *radius,
-                                    intensity: *intensity,
-                                    enabled: *enabled,
-                                });
+                                if let Some(g) = tb.glow.as_mut() {
+                                    g.color = *color;
+                                    g.radius = *radius;
+                                    g.intensity = *intensity;
+                                    g.enabled = *enabled;
+                                } else {
+                                    tb.glow = Some(klipp_timeline::TextGlow {
+                                        color: *color,
+                                        radius: *radius,
+                                        intensity: *intensity,
+                                        enabled: *enabled,
+                                        radius_keyframes: Vec::new(),
+                                        intensity_keyframes: Vec::new(),
+                                    });
+                                }
                             }
                         }
                     }
@@ -28883,6 +28897,8 @@ fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8) {
                 radius: 12.0,
                 intensity: 1.4,
                 enabled: true,
+                radius_keyframes: Vec::new(),
+                intensity_keyframes: Vec::new(),
             });
             // Clear conflicting effects so the look is clean.
             tb.shadow = None;

@@ -40,6 +40,70 @@ pub struct Keyframe {
     pub tangent_in: (f64, f32),
 }
 
+/// Insert (or replace within ±20ms) a keyframe at `time_secs` and
+/// keep the vec sorted by time. Centralises the dedup + sort logic so
+/// every per-effect/per-axis keyframe handler shares one
+/// implementation. Default interpolation is Linear; right-click menus
+/// can flip it later via `set_keyframe_interpolation`.
+pub fn upsert_keyframe(kfs: &mut Vec<Keyframe>, time_secs: f64, value: f32) {
+    kfs.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+    kfs.push(Keyframe {
+        time_secs,
+        value,
+        interpolation: Interpolation::Linear,
+        tangent_out: (0.0, 0.0),
+        tangent_in: (0.0, 0.0),
+    });
+    kfs.sort_by(|a, b| {
+        a.time_secs
+            .partial_cmp(&b.time_secs)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+}
+
+/// Remove every keyframe within ±20ms of `time_secs`. No-op when
+/// nothing matches; matches the NLE-standard "click diamond again to
+/// delete" affordance.
+pub fn remove_keyframe_at(kfs: &mut Vec<Keyframe>, time_secs: f64) {
+    kfs.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+}
+
+/// Move the keyframe at `index` to a new (time, value) and re-sort.
+/// Returns true if the index was valid.
+pub fn move_keyframe(
+    kfs: &mut [Keyframe],
+    index: usize,
+    new_time_secs: f64,
+    new_value: f32,
+) -> bool {
+    let Some(kf) = kfs.get_mut(index) else {
+        return false;
+    };
+    kf.time_secs = new_time_secs;
+    kf.value = new_value;
+    kfs.sort_by(|a, b| {
+        a.time_secs
+            .partial_cmp(&b.time_secs)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    true
+}
+
+/// Set the interpolation mode of the keyframe at `index`. Returns
+/// true if the index was valid.
+pub fn set_keyframe_interpolation(
+    kfs: &mut [Keyframe],
+    index: usize,
+    interpolation: Interpolation,
+) -> bool {
+    if let Some(kf) = kfs.get_mut(index) {
+        kf.interpolation = interpolation;
+        true
+    } else {
+        false
+    }
+}
+
 /// Evaluate a keyframe track at a given time (relative to clip source_in).
 /// Returns the interpolated value, or `default` if no keyframes exist.
 pub fn evaluate(keyframes: &[Keyframe], time_secs: f64, default: f32) -> f32 {

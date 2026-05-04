@@ -582,7 +582,7 @@ fn sty_neon() -> TitleData {
     {
     let mut td = positioned("NEON", 72.0, FontStyle::Bold, CYAN, TextAlignment::Center, 0.5, 0.5, None);
     if let Some(tb) = td.primary_text_mut() {
-        tb.glow = Some(TextGlow { color: [0, 255, 200, 255], radius: 15.0, intensity: 0.8, enabled: true });
+        tb.glow = Some(TextGlow { color: [0, 255, 200, 255], radius: 15.0, intensity: 0.8, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() });
         tb.outlines.insert(0, TextOutline { color: [0, 255, 200, 255], width: 2.0, enabled: true });
     }
     td
@@ -733,7 +733,7 @@ fn three_d_neon_extrude() -> TitleData {
             lighting: 0.7,
             enabled: true,
         });
-        tb.glow = Some(TextGlow { color: [0, 255, 200, 255], radius: 12.0, intensity: 0.6, enabled: true });
+        tb.glow = Some(TextGlow { color: [0, 255, 200, 255], radius: 12.0, intensity: 0.6, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() });
     }
     td
 }
@@ -1141,7 +1141,7 @@ const TITLES: &[TitleTemplate] = &[
         tb.color = [50, 255, 220, 255];
         tb.alignment = TextAlignment::Center;
         tb.outlines.push(klipp_timeline::TextOutline { color: [10, 10, 14, 220], width: 2.0, enabled: true });
-        tb.glow = Some(klipp_timeline::TextGlow { color: [50, 255, 220, 200], radius: 14.0, intensity: 1.5, enabled: true });
+        tb.glow = Some(klipp_timeline::TextGlow { color: [50, 255, 220, 200], radius: 14.0, intensity: 1.5, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() });
         tb.chromatic_aberration_px = 4.0;
         tb.glitch_intensity = 0.15;
         let mut td = klipp_timeline::TitleData::single_text(tb);
@@ -1171,7 +1171,7 @@ const TITLES: &[TitleTemplate] = &[
         let mut t = centered("Best Picture", 84.0, FontStyle::Bold, [240, 200, 90, 255], true);
         if let Some(tb) = t.primary_text_mut() {
             tb.drop_cap_scale = 2.5;
-            tb.glow = Some(klipp_timeline::TextGlow { color: [240, 200, 90, 180], radius: 18.0, intensity: 1.2, enabled: true });
+            tb.glow = Some(klipp_timeline::TextGlow { color: [240, 200, 90, 180], radius: 18.0, intensity: 1.2, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() });
             tb.alignment = TextAlignment::Left;
         }
         if let Some(o) = t.objects.first_mut() {
@@ -1260,7 +1260,7 @@ const TITLES: &[TitleTemplate] = &[
         tb.color = accent;
         tb.alignment = TextAlignment::Center;
         tb.outlines.push(klipp_timeline::TextOutline { color: [10, 10, 14, 200], width: 3.0, enabled: true });
-        tb.glow = Some(klipp_timeline::TextGlow { color: accent, radius: 22.0, intensity: 1.6, enabled: true });
+        tb.glow = Some(klipp_timeline::TextGlow { color: accent, radius: 22.0, intensity: 1.6, enabled: true, radius_keyframes: Vec::new(), intensity_keyframes: Vec::new() });
         let mut td = klipp_timeline::TitleData::single_text(tb);
         td.animation_type = TitleAnimationType::Pulse { rate_hz: 0.5, min_opacity: 0.7 };
         td

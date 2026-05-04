@@ -762,7 +762,7 @@ impl TitleData {
         self.primary_text().map(|tb| tb.outlines.clone()).unwrap_or_default()
     }
     pub fn glow(&self) -> Option<TextGlow> {
-        self.primary_text().and_then(|tb| tb.glow)
+        self.primary_text().and_then(|tb| tb.glow.clone())
     }
     pub fn gradient(&self) -> Option<TextGradient> {
         self.primary_text().and_then(|tb| tb.gradient.clone())
@@ -1118,16 +1118,82 @@ pub struct TextOutline {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TextGlow {
-    pub color: [u8; 4],
-    /// Blur radius in pixels, typically 5-30
-    pub radius: f32,
-    /// Intensity 0.0-1.0, default 0.8
-    pub intensity: f32,
     /// Soft-disable: see [`TitleShadow::enabled`].
     #[serde(default = "default_true")]
     pub enabled: bool,
+    pub color: [u8; 4],
+    /// Blur radius in pixels, typically 5-30.
+    pub radius: f32,
+    /// Per-frame keyframes for `radius`. When non-empty the renderer
+    /// samples this against clip-local time and overrides `radius`
+    /// for that frame; empty by default. Paired-adjacent layout makes
+    /// the static fallback and its animation track read together.
+    #[serde(default)]
+    pub radius_keyframes: Vec<klipp_core::Keyframe>,
+    /// Intensity 0.0-1.0, default 0.8.
+    pub intensity: f32,
+    /// Per-frame keyframes for `intensity`. Same precedence rule as
+    /// `radius_keyframes`.
+    #[serde(default)]
+    pub intensity_keyframes: Vec<klipp_core::Keyframe>,
+}
+
+impl TextGlow {
+    /// Effective `radius` at `time_secs`: keyframe-evaluated when
+    /// `radius_keyframes` is non-empty, else the static `radius`.
+    /// Empty vec short-circuits, so titles without keyframed glow pay
+    /// no per-frame sampling cost.
+    pub fn evaluated_radius(&self, time_secs: f64) -> f32 {
+        if self.radius_keyframes.is_empty() {
+            self.radius
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.radius_keyframes,
+                time_secs,
+                self.radius,
+            )
+        }
+    }
+
+    /// Effective `intensity` at `time_secs`. See `evaluated_radius`.
+    pub fn evaluated_intensity(&self, time_secs: f64) -> f32 {
+        if self.intensity_keyframes.is_empty() {
+            self.intensity
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.intensity_keyframes,
+                time_secs,
+                self.intensity,
+            )
+        }
+    }
+
+    /// Mutable accessor for the keyframe vec corresponding to
+    /// `param_key` (one of the constants in
+    /// [`klipp_core::title_effect_keys`]). Returns `None` for an
+    /// unknown key — handlers should debug_assert on that.
+    pub fn keyframes_mut_for(
+        &mut self,
+        param_key: &str,
+    ) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        match param_key {
+            klipp_core::title_effect_keys::GLOW_RADIUS => Some(&mut self.radius_keyframes),
+            klipp_core::title_effect_keys::GLOW_INTENSITY => Some(&mut self.intensity_keyframes),
+            _ => None,
+        }
+    }
+
+    /// Read-only accessor mirroring `keyframes_mut_for`. Used by the
+    /// inspector to build a `KeyframeState` for the diamond UI.
+    pub fn keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
+        match param_key {
+            klipp_core::title_effect_keys::GLOW_RADIUS => Some(&self.radius_keyframes),
+            klipp_core::title_effect_keys::GLOW_INTENSITY => Some(&self.intensity_keyframes),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1509,5 +1575,158 @@ mod tests {
         assert!(xform.center_y_keyframes.is_empty());
         assert_eq!(xform.center.x, 0.5);
         assert_eq!(xform.center.y, 0.5);
+    }
+
+    /// `evaluated_radius` and `evaluated_intensity` short-circuit to
+    /// the static value when the corresponding keyframe vec is empty,
+    /// pinning the no-overhead path.
+    #[test]
+    fn textglow_evaluator_empty_kfs_returns_static() {
+        let g = TextGlow {
+            enabled: true,
+            color: [255, 255, 255, 255],
+            radius: 10.0,
+            radius_keyframes: Vec::new(),
+            intensity: 0.8,
+            intensity_keyframes: Vec::new(),
+        };
+        // Any time should return the static fallback when no kfs.
+        assert_eq!(g.evaluated_radius(0.0), 10.0);
+        assert_eq!(g.evaluated_radius(99.0), 10.0);
+        assert_eq!(g.evaluated_intensity(0.0), 0.8);
+        assert_eq!(g.evaluated_intensity(99.0), 0.8);
+    }
+
+    /// With keyframes, the evaluator overrides the static value at
+    /// the requested time. Boundary behaviour matches `keyframe::evaluate`
+    /// (hold-before-first / hold-after-last / linear in between).
+    #[test]
+    fn textglow_evaluator_with_keyframes_returns_interpolated() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let g = TextGlow {
+            enabled: true,
+            color: [255, 255, 255, 255],
+            radius: 10.0,
+            // Static value should be ignored when keyframes are
+            // present — this radius_keyframes ramps 4 → 24 over 1s.
+            radius_keyframes: vec![
+                Keyframe {
+                    time_secs: 0.0,
+                    value: 4.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+                Keyframe {
+                    time_secs: 1.0,
+                    value: 24.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+            ],
+            intensity: 0.8,
+            intensity_keyframes: Vec::new(),
+        };
+        assert!((g.evaluated_radius(0.0) - 4.0).abs() < 1e-5);
+        assert!((g.evaluated_radius(0.5) - 14.0).abs() < 1e-5);
+        assert!((g.evaluated_radius(1.0) - 24.0).abs() < 1e-5);
+        // After last keyframe holds.
+        assert!((g.evaluated_radius(99.0) - 24.0).abs() < 1e-5);
+        // Intensity has no kfs — static fallback regardless of time.
+        assert_eq!(g.evaluated_intensity(0.5), 0.8);
+    }
+
+    /// Round-trip: a `TextGlow` with non-empty keyframes serialises
+    /// and deserialises losslessly. The reorder of declaration fields
+    /// (`enabled` first to match the user's locked layout) must not
+    /// disturb the on-disk JSON shape.
+    #[test]
+    fn textglow_keyframes_round_trip_through_serde() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let g = TextGlow {
+            enabled: true,
+            color: [10, 20, 30, 255],
+            radius: 12.0,
+            radius_keyframes: vec![Keyframe {
+                time_secs: 0.5,
+                value: 18.0,
+                interpolation: Interpolation::Bezier,
+                tangent_in: (-0.1, 0.0),
+                tangent_out: (0.1, 0.0),
+            }],
+            intensity: 0.9,
+            intensity_keyframes: vec![Keyframe {
+                time_secs: 0.0,
+                value: 0.5,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
+            }],
+        };
+        let json = serde_json::to_string(&g).expect("serialise");
+        let round: TextGlow = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(g, round, "round-trip must be lossless");
+    }
+
+    /// Backward-compat: a `TextGlow` JSON written before the keyframe
+    /// fields existed must deserialise with empty vecs via
+    /// `#[serde(default)]`. Every project file on disk pre-#5 stays
+    /// loadable.
+    #[test]
+    fn legacy_textglow_without_keyframe_fields_loads_with_defaults() {
+        let legacy_json = r#"{
+            "enabled": true,
+            "color": [10, 20, 30, 255],
+            "radius": 12.0,
+            "intensity": 0.9
+        }"#;
+        let g: TextGlow = serde_json::from_str(legacy_json)
+            .expect("legacy save without keyframe fields must deserialise");
+        assert!(g.radius_keyframes.is_empty());
+        assert!(g.intensity_keyframes.is_empty());
+        assert_eq!(g.radius, 12.0);
+        assert_eq!(g.intensity, 0.9);
+    }
+
+    /// The `keyframes_mut_for` / `keyframes_for` accessors route on
+    /// `param_key` strings from `klipp_core::title_effect_keys`. A
+    /// typo (or any unknown key) returns `None` — handlers
+    /// debug_assert on that.
+    #[test]
+    fn textglow_keyframes_router_dispatches_on_param_key() {
+        use klipp_core::title_effect_keys;
+
+        let mut g = TextGlow {
+            enabled: true,
+            color: [255, 255, 255, 255],
+            radius: 10.0,
+            radius_keyframes: Vec::new(),
+            intensity: 0.8,
+            intensity_keyframes: Vec::new(),
+        };
+        // Mutable router: insert a keyframe through the param-key path.
+        klipp_core::keyframe::upsert_keyframe(
+            g.keyframes_mut_for(title_effect_keys::GLOW_RADIUS).unwrap(),
+            0.0, 8.0,
+        );
+        klipp_core::keyframe::upsert_keyframe(
+            g.keyframes_mut_for(title_effect_keys::GLOW_INTENSITY).unwrap(),
+            1.0, 0.4,
+        );
+        assert_eq!(g.radius_keyframes.len(), 1);
+        assert_eq!(g.intensity_keyframes.len(), 1);
+
+        // Read-only router round-trips the same data.
+        assert_eq!(
+            g.keyframes_for(title_effect_keys::GLOW_RADIUS).unwrap().len(),
+            1,
+        );
+
+        // Unknown key returns None on both sides — typo guard.
+        assert!(g.keyframes_mut_for("glow.intencity").is_none());
+        assert!(g.keyframes_for("glow.intencity").is_none());
     }
 }

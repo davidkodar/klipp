@@ -3322,6 +3322,8 @@ mod tests {
             radius: 10.0,
             intensity: 0.8,
             enabled: true,
+            radius_keyframes: Vec::new(),
+            intensity_keyframes: Vec::new(),
         });
     }
     td

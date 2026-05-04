@@ -1254,8 +1254,13 @@ fn show_title_effects_group(
 
     // 1. Glow
     {
-        let cur = tb.glow.unwrap_or(klipp_timeline::TextGlow {
-            color: [0, 200, 255, 255], radius: 10.0, intensity: 0.8, enabled: false,
+        let cur = tb.glow.clone().unwrap_or(klipp_timeline::TextGlow {
+            color: [0, 200, 255, 255],
+            radius: 10.0,
+            intensity: 0.8,
+            enabled: false,
+            radius_keyframes: Vec::new(),
+            intensity_keyframes: Vec::new(),
         });
         let mut enabled = glow_enabled;
         let summary = if enabled {
