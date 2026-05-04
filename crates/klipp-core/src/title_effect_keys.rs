@@ -28,3 +28,6 @@ pub const INNER_SHADOW_BLUR: &str = "inner_shadow.blur";
 pub const EXTRUSION_DEPTH: &str = "extrusion.depth";
 pub const EXTRUSION_ANGLE: &str = "extrusion.angle";
 pub const EXTRUSION_LIGHTING: &str = "extrusion.lighting";
+
+// ── MotionBlur ──
+pub const MOTION_BLUR_SHUTTER_ANGLE: &str = "motion_blur.shutter_angle";

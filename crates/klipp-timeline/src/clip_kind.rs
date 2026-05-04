@@ -537,6 +537,8 @@ impl TextBox {
             self.shadow.as_mut().and_then(|s| s.keyframes_mut_for(param_key))
         } else if param_key.starts_with("extrusion.") {
             self.extrusion.as_mut().and_then(|e| e.keyframes_mut_for(param_key))
+        } else if param_key.starts_with("motion_blur.") {
+            self.motion_blur.as_mut().and_then(|m| m.keyframes_mut_for(param_key))
         } else {
             None
         }
@@ -553,6 +555,8 @@ impl TextBox {
             self.shadow.as_ref().and_then(|s| s.keyframes_for(param_key))
         } else if param_key.starts_with("extrusion.") {
             self.extrusion.as_ref().and_then(|e| e.keyframes_for(param_key))
+        } else if param_key.starts_with("motion_blur.") {
+            self.motion_blur.as_ref().and_then(|m| m.keyframes_for(param_key))
         } else {
             None
         }
@@ -837,7 +841,7 @@ impl TitleData {
         self.primary_text().and_then(|tb| tb.texture_fill_path.clone())
     }
     pub fn motion_blur(&self) -> Option<MotionBlur> {
-        self.primary_text().and_then(|tb| tb.motion_blur)
+        self.primary_text().and_then(|tb| tb.motion_blur.clone())
     }
     pub fn underline(&self) -> bool {
         self.primary_text().map_or(false, |tb| tb.underline)
@@ -1007,15 +1011,60 @@ pub enum TitleAnimationType {
     },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MotionBlur {
-    /// Shutter angle in degrees (0-360, default 180 = half-frame blur)
-    pub shutter_angle: f32,
-    /// Number of samples (more = smoother but slower, 4-16 typical)
-    pub samples: u8,
     /// Soft-disable: see [`TitleShadow::enabled`].
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Shutter angle in degrees (0-360, default 180 = half-frame blur)
+    pub shutter_angle: f32,
+    /// Per-frame keyframes for `shutter_angle`; empty by default.
+    /// `samples` is integer-valued and not keyframable — animating
+    /// sample count would visibly pop between frames rather than
+    /// interpolate, so it stays a static dial.
+    #[serde(default)]
+    pub shutter_angle_keyframes: Vec<klipp_core::Keyframe>,
+    /// Number of samples (more = smoother but slower, 4-16 typical)
+    pub samples: u8,
+}
+
+impl MotionBlur {
+    /// Effective `shutter_angle` at `time_secs`. Static fallback when
+    /// the keyframe vec is empty.
+    pub fn evaluated_shutter_angle(&self, time_secs: f64) -> f32 {
+        if self.shutter_angle_keyframes.is_empty() {
+            self.shutter_angle
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.shutter_angle_keyframes,
+                time_secs,
+                self.shutter_angle,
+            )
+        }
+    }
+
+    /// Mutable accessor for the keyframe vec named by `param_key`.
+    pub fn keyframes_mut_for(
+        &mut self,
+        param_key: &str,
+    ) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        match param_key {
+            klipp_core::title_effect_keys::MOTION_BLUR_SHUTTER_ANGLE => {
+                Some(&mut self.shutter_angle_keyframes)
+            }
+            _ => None,
+        }
+    }
+
+    /// Read-only mirror of `keyframes_mut_for`.
+    pub fn keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
+        match param_key {
+            klipp_core::title_effect_keys::MOTION_BLUR_SHUTTER_ANGLE => {
+                Some(&self.shutter_angle_keyframes)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2325,6 +2374,45 @@ mod tests {
 
         // Unknown extrusion key returns None.
         assert!(tb.effect_keyframes_mut_for("extrusion.skew").is_none());
+    }
+
+    /// `MotionBlur::evaluated_shutter_angle` short-circuits on empty
+    /// kfs and interpolates when populated. Backward-compat: legacy
+    /// JSON without the keyframe field deserialises with empty vec.
+    #[test]
+    fn motionblur_evaluator_and_legacy_load() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let mut mb = MotionBlur {
+            enabled: true,
+            shutter_angle: 180.0,
+            shutter_angle_keyframes: Vec::new(),
+            samples: 8,
+        };
+        assert_eq!(mb.evaluated_shutter_angle(0.0), 180.0);
+        mb.shutter_angle_keyframes = vec![
+            Keyframe {
+                time_secs: 0.0, value: 90.0,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            },
+            Keyframe {
+                time_secs: 1.0, value: 270.0,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            },
+        ];
+        assert!((mb.evaluated_shutter_angle(0.5) - 180.0).abs() < 1e-5);
+
+        let legacy_json = r#"{
+            "enabled": true,
+            "shutter_angle": 180.0,
+            "samples": 8
+        }"#;
+        let m: MotionBlur = serde_json::from_str(legacy_json)
+            .expect("legacy save without keyframe field must deserialise");
+        assert!(m.shutter_angle_keyframes.is_empty());
+        assert_eq!(m.shutter_angle, 180.0);
     }
 
     /// TextBox prefix router lands `inner_shadow.*` on InnerShadow's

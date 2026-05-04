@@ -4683,7 +4683,11 @@ impl PlaybackEngine {
 
                     if let Some(mb) = motion_blur {
                         let frame_dur = self.fps.frame_duration_secs();
-                        let half_shutter = (mb.shutter_angle as f64 / 360.0) * frame_dur;
+                        // shutter_angle may animate via keyframes —
+                        // evaluate against clip-local time. samples
+                        // stays static (integer, not keyframable).
+                        let shutter = mb.evaluated_shutter_angle(clip_relative_secs);
+                        let half_shutter = (shutter as f64 / 360.0) * frame_dur;
                         let n = mb.samples as usize;
                         let pixel_count = (res.width * res.height) as usize * 4;
                         let mut accum = vec![0u32; pixel_count];

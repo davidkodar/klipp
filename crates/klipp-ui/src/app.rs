@@ -14335,17 +14335,29 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTitleMotionBlur { clip_id, enabled, shutter_angle, samples } => {
+                // Mutate static fields in place when motion blur
+                // already exists so existing shutter_angle keyframes
+                // survive an Inspector tweak — same pattern as the
+                // other effects.
                 let old = self.snapshot_title(*clip_id);
-                let mb = Some(klipp_timeline::MotionBlur {
-                    shutter_angle: *shutter_angle,
-                    samples: *samples,
-                    enabled: *enabled,
-                });
                 let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.motion_blur = mb; }
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                if let Some(m) = tb.motion_blur.as_mut() {
+                                    m.shutter_angle = *shutter_angle;
+                                    m.samples = *samples;
+                                    m.enabled = *enabled;
+                                } else {
+                                    tb.motion_blur = Some(klipp_timeline::MotionBlur {
+                                        shutter_angle: *shutter_angle,
+                                        samples: *samples,
+                                        enabled: *enabled,
+                                        shutter_angle_keyframes: Vec::new(),
+                                    });
+                                }
+                            }
                         }
                     }
                 }

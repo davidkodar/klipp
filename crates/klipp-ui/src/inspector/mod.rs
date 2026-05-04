@@ -891,6 +891,89 @@ fn handle_inner_shadow_axis_response(
     }
 }
 
+/// Translate a `ScrubbyParamResponse` for the keyframable
+/// MotionBlur shutter_angle into the right AppCommand(s). MotionBlur
+/// has just one keyframable param, so this is the simplest of the
+/// per-effect helpers.
+fn handle_motion_blur_axis_response(
+    cmds: &mut Vec<AppCommand>,
+    clip_id: klipp_core::ClipId,
+    target_oid: Option<klipp_timeline::TitleObjectId>,
+    new_value: f32,
+    cur: &klipp_timeline::MotionBlur,
+    keyframes: &[klipp_core::Keyframe],
+    clip_time_secs: f64,
+    resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+) {
+    let param_key = klipp_core::title_effect_keys::MOTION_BLUR_SHUTTER_ANGLE;
+    let Some(oid) = target_oid else {
+        if resp.changed {
+            cmds.push(AppCommand::SetTitleMotionBlur {
+                clip_id, enabled: cur.enabled,
+                shutter_angle: new_value, samples: cur.samples,
+            });
+        }
+        return;
+    };
+    let object_id = oid.0;
+
+    if resp.keyframe_toggled {
+        if keyframes
+            .iter()
+            .any(|k| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                time_secs: clip_time_secs,
+            });
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                time_secs: clip_time_secs,
+                value: new_value,
+            });
+        }
+        return;
+    }
+
+    if resp.changed {
+        if keyframes.is_empty() {
+            cmds.push(AppCommand::SetTitleMotionBlur {
+                clip_id, enabled: cur.enabled,
+                shutter_angle: new_value, samples: cur.samples,
+            });
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                time_secs: clip_time_secs,
+                value: new_value,
+            });
+        }
+    }
+
+    if let Some(interp) = resp.keyframe_set_interpolation {
+        if let Some((idx, _)) = keyframes
+            .iter()
+            .enumerate()
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                keyframe_index: idx,
+                interpolation: interp,
+            });
+        }
+    }
+}
+
 /// Translate a `ScrubbyParamResponse` for one keyframable
 /// TextExtrusion param into the right AppCommand(s). Mirrors
 /// `handle_shadow_axis_response`; the only differences are the
@@ -3434,23 +3517,38 @@ fn show_title_editor(
                 samples: 8,
             });
         }
-        if let Some(mb) = &td.motion_blur() {
-            let mut shutter = mb.shutter_angle;
+        if let Some(mb) = td.motion_blur() {
+            // Display animated shutter_angle at the playhead.
+            let display_shutter = mb.evaluated_shutter_angle(clip_time_secs);
+            let kfs_shutter: &[klipp_core::Keyframe] = td
+                .primary_text()
+                .and_then(|tb| tb.motion_blur.as_ref())
+                .map(|m| m.shutter_angle_keyframes.as_slice())
+                .unwrap_or(&[]);
+            let ks_shutter = title_object_keyframe_state(kfs_shutter, clip_time_secs);
+
+            let mut shutter = display_shutter;
+            let resp_shutter = crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Shutter Angle", &mut shutter, 1.0..=360.0, 180.0, 1.0, 0, "\u{00b0}",
+                target_oid.map(|_| ks_shutter),
+            );
+            handle_motion_blur_axis_response(
+                cmds, clip_id, target_oid,
+                shutter, &mb, kfs_shutter, clip_time_secs, &resp_shutter,
+            );
+
+            // Samples is integer-valued — not keyframable; keeps the
+            // simple DragValue UI.
             let mut samples = mb.samples as i32;
-            let mut mb_changed = false;
-            ui.horizontal(|ui| {
-                ui.label("Shutter Angle:");
-                mb_changed |= ui.add(egui::DragValue::new(&mut shutter).range(1.0..=360.0).speed(1.0).suffix("\u{00b0}").fixed_decimals(0)).changed();
-            });
-            ui.horizontal(|ui| {
+            let samples_resp = ui.horizontal(|ui| {
                 ui.label("Samples:");
-                mb_changed |= ui.add(egui::DragValue::new(&mut samples).range(2..=32).speed(0.1)).changed();
+                ui.add(egui::DragValue::new(&mut samples).range(2..=32).speed(0.1)).changed()
             });
-            if mb_changed {
+            if samples_resp.inner {
                 cmds.push(AppCommand::SetTitleMotionBlur {
                     clip_id,
                     enabled: true,
-                    shutter_angle: shutter,
+                    shutter_angle: mb.shutter_angle,
                     samples: samples as u8,
                 });
             }
@@ -3554,7 +3652,7 @@ fn show_title_editor(
     {
         let status = crate::widgets::inspector_group::GroupStatus {
             count: None,
-            active: td.extrusion().is_some_and(|e| e.enabled) || td.primary_text().is_some_and(|tb| tb.chromatic_aberration_px != 0.0 || tb.glitch_intensity != 0.0 || tb.motion_blur.is_some_and(|m| m.enabled)) || td.objects.iter().any(|o| o.transform.rotation != 0.0),
+            active: td.extrusion().is_some_and(|e| e.enabled) || td.primary_text().is_some_and(|tb| tb.chromatic_aberration_px != 0.0 || tb.glitch_intensity != 0.0 || tb.motion_blur.as_ref().is_some_and(|m| m.enabled)) || td.objects.iter().any(|o| o.transform.rotation != 0.0),
         };
         if title_group_is_open(ui, theme, clip_id, "3D & Distortion", status) {
             ui.add_space(6.0);
