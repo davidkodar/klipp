@@ -883,6 +883,189 @@ fn show_title_pinned_core_textbox(
     show_title_position_block(ui, theme, clip_id, td, state, cmds);
 }
 
+/// Quick-style row: per-letter or selection-wide colour presets, the
+/// per-character effect chips (Rainbow / Fire / Ocean / Sunset) when
+/// there's a live selection, and the style-runs indicator. Renders as a
+/// labelled mini-section inside the Typography group so the controls
+/// finally have a permanent home.
+fn show_title_quick_style_subsection(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: klipp_core::ClipId,
+    td: &klipp_timeline::TitleData,
+    state: &AppState,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let effective_selection = state
+        .viewer_text_selection
+        .or(state.viewer_text_selection_locked);
+    let has_selection =
+        state.viewer_text_edit && effective_selection.is_some_and(|(s, e)| s < e);
+    let sel_range = effective_selection.unwrap_or((0, 0));
+
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new("Quick Style")
+            .size(10.0)
+            .color(theme.text_secondary)
+            .strong(),
+    );
+    ui.add_space(2.0);
+
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Quick").size(9.0).color(theme.text_dim));
+        let preset_colors: &[(&str, [u8; 4])] = &[
+            ("W", [255, 255, 255, 255]),
+            ("R", [255, 60, 60, 255]),
+            ("O", [255, 160, 0, 255]),
+            ("Y", [255, 220, 50, 255]),
+            ("G", [50, 200, 80, 255]),
+            ("B", [60, 140, 255, 255]),
+            ("P", [180, 80, 220, 255]),
+        ];
+        for (label, c) in preset_colors {
+            let btn_color = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+            let resp = ui.add(
+                egui::Button::new(egui::RichText::new(*label).size(9.0).color(
+                    if c[0] as u16 + c[1] as u16 + c[2] as u16 > 400 {
+                        egui::Color32::BLACK
+                    } else {
+                        egui::Color32::WHITE
+                    },
+                ))
+                .fill(btn_color)
+                .min_size(egui::vec2(18.0, 16.0)),
+            );
+            if resp.clicked() {
+                if has_selection && sel_range.0 < sel_range.1 {
+                    cmds.push(AppCommand::ApplyTitleStyle {
+                        clip_id,
+                        range_start: sel_range.0,
+                        range_end: sel_range.1,
+                        property: "color".into(),
+                        value: serde_json::to_string(c).unwrap_or_default(),
+                    });
+                } else {
+                    cmds.push(AppCommand::UpdateTitleData {
+                        clip_id,
+                        text: td.text().clone(),
+                        font_size: td.font_size(),
+                        font_name: td.font_name().clone(),
+                        font_style: font_style_to_u8(td.font_style()),
+                        color: *c,
+                    });
+                }
+            }
+        }
+    });
+
+    if has_selection && sel_range.1 > sel_range.0 {
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Effects:").size(9.0).color(theme.text_dim));
+            if ui.small_button("Rainbow").clicked() {
+                let rainbow: &[[u8; 4]] = &[
+                    [255, 50, 50, 255], [255, 150, 0, 255], [255, 230, 0, 255],
+                    [50, 200, 50, 255], [50, 150, 255, 255], [100, 50, 255, 255],
+                    [200, 50, 200, 255],
+                ];
+                let sel_text = &td.text()[sel_range.0..sel_range.1.min(td.text().len())];
+                let mut byte_pos = sel_range.0;
+                for (ci, ch) in sel_text.chars().enumerate() {
+                    let color_idx = ci % rainbow.len();
+                    let c = rainbow[color_idx];
+                    let char_end = byte_pos + ch.len_utf8();
+                    cmds.push(AppCommand::ApplyTitleStyle {
+                        clip_id,
+                        range_start: byte_pos,
+                        range_end: char_end,
+                        property: "color".into(),
+                        value: serde_json::to_string(&c).unwrap_or_default(),
+                    });
+                    byte_pos = char_end;
+                }
+            }
+            if ui.small_button("Fire").clicked() {
+                let sel_text = &td.text()[sel_range.0..sel_range.1.min(td.text().len())];
+                let char_count = sel_text.chars().count().max(1);
+                let mut byte_pos = sel_range.0;
+                for (ci, ch) in sel_text.chars().enumerate() {
+                    let t = ci as f32 / (char_count - 1).max(1) as f32;
+                    let c = [255u8, (50.0 + t * 200.0) as u8, (0.0 + t * 30.0) as u8, 255];
+                    let char_end = byte_pos + ch.len_utf8();
+                    cmds.push(AppCommand::ApplyTitleStyle {
+                        clip_id,
+                        range_start: byte_pos,
+                        range_end: char_end,
+                        property: "color".into(),
+                        value: serde_json::to_string(&c).unwrap_or_default(),
+                    });
+                    byte_pos = char_end;
+                }
+            }
+            if ui.small_button("Ocean").clicked() {
+                let sel_text = &td.text()[sel_range.0..sel_range.1.min(td.text().len())];
+                let char_count = sel_text.chars().count().max(1);
+                let mut byte_pos = sel_range.0;
+                for (ci, ch) in sel_text.chars().enumerate() {
+                    let t = ci as f32 / (char_count - 1).max(1) as f32;
+                    let c = [
+                        (20.0 + t * 30.0) as u8,
+                        (80.0 + t * 140.0) as u8,
+                        (200.0 + t * 55.0) as u8,
+                        255u8,
+                    ];
+                    let char_end = byte_pos + ch.len_utf8();
+                    cmds.push(AppCommand::ApplyTitleStyle {
+                        clip_id,
+                        range_start: byte_pos,
+                        range_end: char_end,
+                        property: "color".into(),
+                        value: serde_json::to_string(&c).unwrap_or_default(),
+                    });
+                    byte_pos = char_end;
+                }
+            }
+            if ui.small_button("Sunset").clicked() {
+                let sel_text = &td.text()[sel_range.0..sel_range.1.min(td.text().len())];
+                let char_count = sel_text.chars().count().max(1);
+                let mut byte_pos = sel_range.0;
+                for (ci, ch) in sel_text.chars().enumerate() {
+                    let t = ci as f32 / (char_count - 1).max(1) as f32;
+                    let c = [
+                        (150.0 + t * 105.0) as u8,
+                        (30.0 + t * 100.0) as u8,
+                        (200.0 - t * 170.0) as u8,
+                        255u8,
+                    ];
+                    let char_end = byte_pos + ch.len_utf8();
+                    cmds.push(AppCommand::ApplyTitleStyle {
+                        clip_id,
+                        range_start: byte_pos,
+                        range_end: char_end,
+                        property: "color".into(),
+                        value: serde_json::to_string(&c).unwrap_or_default(),
+                    });
+                    byte_pos = char_end;
+                }
+            }
+        });
+    }
+
+    if !td.style_runs().is_empty() {
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!("{} style runs", td.style_runs().len()))
+                    .size(9.0).color(theme.text_dim),
+            );
+            if ui.small_button("Clear All").clicked() {
+                cmds.push(AppCommand::ClearTitleStyleRuns { clip_id });
+            }
+        });
+    }
+}
+
 /// Effects collapsible group with 7 subcards (Glow, Outline, Drop Shadow,
 /// Inner Shadow, Gradient Fill, Pattern Fill, Texture Fill) followed by
 /// the Outline Layers stack. Soft-disable on each subcard preserves
@@ -1867,162 +2050,6 @@ fn show_title_editor(
     }
     ui.add_space(8.0);
 
-    // ── Compat strip (text-only) ──
-    // Quick colour presets, per-character effects, and the style-runs
-    // indicator. These existing features don't have a final home in the
-    // new pinned-core layout; a follow-up rehomes them inside Typography
-    // or a Quick-Style sub-section. For now they sit below the pinned
-    // core so the workflow stays intact.
-    let effective_selection = state
-        .viewer_text_selection
-        .or(state.viewer_text_selection_locked);
-    let has_selection =
-        state.viewer_text_edit && effective_selection.is_some_and(|(s, e)| s < e);
-    let sel_range = effective_selection.unwrap_or((0, 0));
-
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Quick").size(9.0).color(theme.text_dim));
-        let preset_colors: &[(&str, [u8; 4])] = &[
-            ("W", [255, 255, 255, 255]),
-            ("R", [255, 60, 60, 255]),
-            ("O", [255, 160, 0, 255]),
-            ("Y", [255, 220, 50, 255]),
-            ("G", [50, 200, 80, 255]),
-            ("B", [60, 140, 255, 255]),
-            ("P", [180, 80, 220, 255]),
-        ];
-        for (label, c) in preset_colors {
-            let btn_color = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
-            let resp = ui.add(
-                egui::Button::new(egui::RichText::new(*label).size(9.0).color(
-                    if c[0] as u16 + c[1] as u16 + c[2] as u16 > 400 {
-                        egui::Color32::BLACK
-                    } else {
-                        egui::Color32::WHITE
-                    },
-                ))
-                .fill(btn_color)
-                .min_size(egui::vec2(18.0, 16.0)),
-            );
-            if resp.clicked() {
-                if has_selection && sel_range.0 < sel_range.1 {
-                    cmds.push(AppCommand::ApplyTitleStyle {
-                        clip_id, range_start: sel_range.0, range_end: sel_range.1,
-                        property: "color".into(),
-                        value: serde_json::to_string(c).unwrap_or_default(),
-                    });
-                } else {
-                    cmds.push(AppCommand::UpdateTitleData {
-                        clip_id, text: td.text().clone(),
-                        font_size: td.font_size(), font_name: td.font_name().clone(),
-                        font_style: font_style_to_u8(td.font_style()), color: *c,
-                    });
-                }
-            }
-        }
-    });
-    ui.add_space(4.0);
-
-    if has_selection && sel_range.1 > sel_range.0 {
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Effects:").size(9.0).color(theme.text_dim));
-            if ui.small_button("Rainbow").clicked() {
-                let rainbow: &[[u8; 4]] = &[
-                    [255, 50, 50, 255], [255, 150, 0, 255], [255, 230, 0, 255],
-                    [50, 200, 50, 255], [50, 150, 255, 255], [100, 50, 255, 255],
-                    [200, 50, 200, 255],
-                ];
-                let sel_text = &td.text()[sel_range.0..sel_range.1.min(td.text().len())];
-                let mut byte_pos = sel_range.0;
-                for (ci, ch) in sel_text.chars().enumerate() {
-                    let color_idx = ci % rainbow.len();
-                    let c = rainbow[color_idx];
-                    let char_end = byte_pos + ch.len_utf8();
-                    cmds.push(AppCommand::ApplyTitleStyle {
-                        clip_id, range_start: byte_pos, range_end: char_end,
-                        property: "color".into(),
-                        value: serde_json::to_string(&c).unwrap_or_default(),
-                    });
-                    byte_pos = char_end;
-                }
-            }
-            if ui.small_button("Fire").clicked() {
-                let sel_text = &td.text()[sel_range.0..sel_range.1.min(td.text().len())];
-                let char_count = sel_text.chars().count().max(1);
-                let mut byte_pos = sel_range.0;
-                for (ci, ch) in sel_text.chars().enumerate() {
-                    let t = ci as f32 / (char_count - 1).max(1) as f32;
-                    let c = [255u8, (50.0 + t * 200.0) as u8, (0.0 + t * 30.0) as u8, 255];
-                    let char_end = byte_pos + ch.len_utf8();
-                    cmds.push(AppCommand::ApplyTitleStyle {
-                        clip_id, range_start: byte_pos, range_end: char_end,
-                        property: "color".into(),
-                        value: serde_json::to_string(&c).unwrap_or_default(),
-                    });
-                    byte_pos = char_end;
-                }
-            }
-            if ui.small_button("Ocean").clicked() {
-                let sel_text = &td.text()[sel_range.0..sel_range.1.min(td.text().len())];
-                let char_count = sel_text.chars().count().max(1);
-                let mut byte_pos = sel_range.0;
-                for (ci, ch) in sel_text.chars().enumerate() {
-                    let t = ci as f32 / (char_count - 1).max(1) as f32;
-                    let c = [
-                        (20.0 + t * 30.0) as u8,
-                        (80.0 + t * 140.0) as u8,
-                        (200.0 + t * 55.0) as u8,
-                        255u8,
-                    ];
-                    let char_end = byte_pos + ch.len_utf8();
-                    cmds.push(AppCommand::ApplyTitleStyle {
-                        clip_id, range_start: byte_pos, range_end: char_end,
-                        property: "color".into(),
-                        value: serde_json::to_string(&c).unwrap_or_default(),
-                    });
-                    byte_pos = char_end;
-                }
-            }
-            if ui.small_button("Sunset").clicked() {
-                let sel_text = &td.text()[sel_range.0..sel_range.1.min(td.text().len())];
-                let char_count = sel_text.chars().count().max(1);
-                let mut byte_pos = sel_range.0;
-                for (ci, ch) in sel_text.chars().enumerate() {
-                    let t = ci as f32 / (char_count - 1).max(1) as f32;
-                    let c = [
-                        (150.0 + t * 105.0) as u8,
-                        (30.0 + t * 100.0) as u8,
-                        (200.0 - t * 170.0) as u8,
-                        255u8,
-                    ];
-                    let char_end = byte_pos + ch.len_utf8();
-                    cmds.push(AppCommand::ApplyTitleStyle {
-                        clip_id, range_start: byte_pos, range_end: char_end,
-                        property: "color".into(),
-                        value: serde_json::to_string(&c).unwrap_or_default(),
-                    });
-                    byte_pos = char_end;
-                }
-            }
-        });
-    }
-    ui.add_space(4.0);
-
-    if !td.style_runs().is_empty() {
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(format!("{} style runs", td.style_runs().len()))
-                    .size(9.0).color(theme.text_dim),
-            );
-            if ui.small_button("Clear All").clicked() {
-                cmds.push(AppCommand::ClearTitleStyleRuns { clip_id });
-            }
-        });
-    }
-    ui.add_space(8.0);
-
     // ── Effects group ──
     if let Some(tb) = tb_target {
         show_title_effects_group(ui, theme, clip_id, tb, cmds);
@@ -2030,10 +2057,11 @@ fn show_title_editor(
     }
 
     {
-        let _grp_count = (td.tracking() != 0.0) as u32 + ((td.line_spacing() - 1.0).abs() > 1e-6) as u32 + (td.baseline_shift() != 0.0) as u32 + (td.case_transform() != klipp_timeline::TextCase::None) as u32 + (td.drop_cap_scale() >= 1.0) as u32 + td.primary_text().map_or(0u32, |tb| { (tb.columns != 1) as u32 + tb.vertical_layout as u32 + ((tb.text_direction == klipp_timeline::TextDirection::Rtl)) as u32 + tb.underline as u32 + tb.strikethrough as u32 });
+        let style_runs_n = td.style_runs().len() as u32;
+        let _grp_count = (td.tracking() != 0.0) as u32 + ((td.line_spacing() - 1.0).abs() > 1e-6) as u32 + (td.baseline_shift() != 0.0) as u32 + (td.case_transform() != klipp_timeline::TextCase::None) as u32 + (td.drop_cap_scale() >= 1.0) as u32 + td.primary_text().map_or(0u32, |tb| { (tb.columns != 1) as u32 + tb.vertical_layout as u32 + ((tb.text_direction == klipp_timeline::TextDirection::Rtl)) as u32 + tb.underline as u32 + tb.strikethrough as u32 }) + (style_runs_n > 0) as u32;
         let status = crate::widgets::inspector_group::GroupStatus {
             count: if _grp_count > 0 { Some(_grp_count) } else { None },
-            active: td.tracking() != 0.0 || (td.line_spacing() - 1.0).abs() > 1e-6 || td.baseline_shift() != 0.0 || td.case_transform() != klipp_timeline::TextCase::None || td.drop_cap_scale() >= 1.0 || td.primary_text().is_some_and(|tb| tb.columns != 1 || tb.vertical_layout || tb.text_direction == klipp_timeline::TextDirection::Rtl || tb.underline || tb.strikethrough),
+            active: td.tracking() != 0.0 || (td.line_spacing() - 1.0).abs() > 1e-6 || td.baseline_shift() != 0.0 || td.case_transform() != klipp_timeline::TextCase::None || td.drop_cap_scale() >= 1.0 || td.primary_text().is_some_and(|tb| tb.columns != 1 || tb.vertical_layout || tb.text_direction == klipp_timeline::TextDirection::Rtl || tb.underline || tb.strikethrough) || style_runs_n > 0,
         };
         if title_group_is_open(ui, theme, clip_id, "Typography", status) {
             ui.add_space(6.0);
@@ -2159,6 +2187,7 @@ fn show_title_editor(
     }
     ui.add_space(8.0);
 
+            show_title_quick_style_subsection(ui, theme, clip_id, td, state, cmds);
             ui.add_space(8.0);
         }
     }
