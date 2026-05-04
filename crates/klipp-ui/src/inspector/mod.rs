@@ -370,7 +370,16 @@ impl NewInspectorPanel {
                 InspectorTab::Title => {
                     if let Some((_, clip)) = clip_info {
                         if let klipp_timeline::ClipKind::Title(_) = &clip.kind {
-                            show_title_editor(ui, theme, clip, state, &mut cmds);
+                            // 12 px horizontal content rail — every row in
+                            // show_title_editor inherits the same horizontal
+                            // inset, so nothing touches the inspector edges.
+                            egui::Frame::none()
+                                .inner_margin(egui::Margin {
+                                    left: 12.0, right: 12.0, top: 0.0, bottom: 0.0,
+                                })
+                                .show(ui, |ui| {
+                                    show_title_editor(ui, theme, clip, state, &mut cmds);
+                                });
                         } else {
                             no_selection(ui, theme);
                         }
@@ -1447,14 +1456,25 @@ fn show_title_pinned_core_textbox(
             (tb.color, false)
         };
 
-    // 1. Editable textarea — primary edit path.
+    // 1. Editable textarea — primary edit path. Wrapped in a Frame
+    //    so the textarea reads as a pill matching the size / % / X / Y
+    //    inputs; .frame(false) on the TextEdit drops its default
+    //    border so the outer Frame is the only visual chrome.
     let mut text_buf = tb.text.clone();
-    let text_resp = ui.add(
-        egui::TextEdit::multiline(&mut text_buf)
-            .desired_width(f32::INFINITY)
-            .desired_rows(2)
-            .font(egui::FontId::proportional(13.0)),
-    );
+    let text_resp = egui::Frame::none()
+        .fill(theme.bg_raised)
+        .rounding(4.0)
+        .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+        .show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut text_buf)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(2)
+                    .frame(false)
+                    .font(egui::FontId::proportional(13.0)),
+            )
+        })
+        .inner;
     if text_resp.changed() {
         cmds.push(AppCommand::UpdateTitleData {
             clip_id,
@@ -1516,7 +1536,7 @@ fn show_title_pinned_core_textbox(
         let size_resp = egui::Frame::none()
             .fill(theme.bg_raised)
             .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
             .show(ui, |ui| {
                 ui.add(
                     egui::DragValue::new(&mut size)
@@ -1616,8 +1636,15 @@ fn show_title_pinned_core_textbox(
                 klipp_timeline::TextAlignment::Center => 1,
                 klipp_timeline::TextAlignment::Left => 0,
             };
-            for (val, label) in [(2u8, "R"), (1, "C"), (0, "L")] {
-                if pill_toggle_button(ui, theme, label, cur == val, |r| r.size(13.0)).clicked()
+            // Right-to-left layout: order in the slice is R, C, L
+            // because that's how they paint from the right edge
+            // inward.
+            for (val, icon) in [
+                (2u8, Icon::TextAlignRight),
+                (1u8, Icon::TextAlignCenter),
+                (0u8, Icon::TextAlignLeft),
+            ] {
+                if pill_toggle_icon_button(ui, theme, icon, cur == val).clicked()
                     && cur != val
                 {
                     cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: val });
@@ -1651,24 +1678,34 @@ fn show_title_pinned_core_textbox(
         }
         ui.add_space(6.0);
         let mut opacity_pct = ((display_color[3] as f32 / 255.0) * 100.0).round();
-        let pct_label_w = 36.0;
-        let slider_w = (ui.available_width() - pct_label_w - 8.0).max(60.0);
-        ui.spacing_mut().slider_width = slider_w;
-        if ui
-            .add(
-                egui::Slider::new(&mut opacity_pct, 0.0..=100.0)
-                    .step_by(1.0)
-                    .show_value(false),
-            )
-            .changed()
-        {
+        let pct_label_w = 44.0;
+        // Slider sits in a framed pill matching the % readout to its
+        // right, so the swatch / slider / % row reads as three
+        // equal-height components.
+        let slider_outer_w = (ui.available_width() - pct_label_w - 8.0).max(60.0);
+        let slider_changed = egui::Frame::none()
+            .fill(theme.bg_raised)
+            .rounding(4.0)
+            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+            .show(ui, |ui| {
+                ui.set_width(slider_outer_w - 16.0);
+                ui.spacing_mut().slider_width = slider_outer_w - 16.0;
+                ui.add(
+                    egui::Slider::new(&mut opacity_pct, 0.0..=100.0)
+                        .step_by(1.0)
+                        .show_value(false),
+                )
+                .changed()
+            })
+            .inner;
+        if slider_changed {
             new_alpha_u8 = Some((opacity_pct / 100.0 * 255.0).round() as u8);
         }
         ui.add_space(8.0);
         egui::Frame::none()
             .fill(theme.bg_raised)
             .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
             .show(ui, |ui| {
                 ui.label(
                     egui::RichText::new(format!("{}%", opacity_pct as u32))
@@ -2685,7 +2722,7 @@ fn compact_axis_input(
     egui::Frame::none()
         .fill(theme.bg_raised)
         .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+        .inner_margin(egui::Margin::symmetric(8.0, 6.0))
         .show(ui, |ui| {
             ui.set_width(col_w - 16.0);
             ui.horizontal(|ui| {
@@ -2754,9 +2791,39 @@ fn pill_toggle_button(
     let rich = style_label(egui::RichText::new(label).color(text_color));
     let btn = egui::Button::new(rich)
         .fill(fill)
-        .min_size(egui::vec2(28.0, 26.0))
+        .min_size(egui::vec2(28.0, 28.0))
         .rounding(4.0);
     ui.add(btn)
+}
+
+/// Icon-image variant of `pill_toggle_button`. Same 28×28 pill shape
+/// and accent-on-active fill, but the body is a tinted SVG icon
+/// instead of a text glyph. Used by the L / C / R alignment row so
+/// the controls match standard NLE / word-processor alignment glyphs
+/// rather than letter labels.
+fn pill_toggle_icon_button(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    icon: Icon,
+    active: bool,
+) -> egui::Response {
+    let fill = if active { theme.accent } else { theme.bg_raised };
+    let tint = if active { theme.text_on_accent } else { theme.text_secondary };
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(28.0, 28.0),
+        egui::Sense::click(),
+    );
+    let painter = ui.painter();
+    painter.rect_filled(rect, egui::Rounding::same(4.0), fill);
+    let icon_size = 14.0;
+    let icon_rect = egui::Rect::from_center_size(
+        rect.center(),
+        egui::vec2(icon_size, icon_size),
+    );
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(icon_rect), |ui| {
+        ui.add(icon.image(icon_size).tint(tint));
+    });
+    resp
 }
 
 /// Paint a dashed rectangle outline. egui's `Stroke` only supports

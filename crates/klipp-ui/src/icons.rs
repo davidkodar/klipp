@@ -112,6 +112,9 @@ define_icons! {
 
     // Inspector
     Diamond         => "diamond",
+    TextAlignLeft   => "text-align-left",
+    TextAlignCenter => "text-align-center",
+    TextAlignRight  => "text-align-right",
 
     // Browser (cont.)
     PushPin         => "push-pin",
