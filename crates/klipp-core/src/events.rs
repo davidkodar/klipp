@@ -1344,6 +1344,19 @@ pub enum AppCommand {
     /// Set multiple outline layers (replaces single outline).
     /// Each tuple is (color_rgba, width_px).
     SetTitleOutlines { clip_id: ClipId, outlines: Vec<([u8; 4], f32)> },
+    /// Set the static fields on a single outline layer at `index`,
+    /// preserving its `width_keyframes`. Used by the per-row keyframe-
+    /// aware scrubby in the Outline Layers stack — when no keyframes
+    /// exist on that index, drag edits the static `width` here; when
+    /// keyframes exist, the inspector dispatches the per-effect
+    /// AddTitleObjectEffectKeyframe path instead.
+    SetTitleOutlineLayer {
+        clip_id: ClipId,
+        index: u32,
+        enabled: bool,
+        color: [u8; 4],
+        width: f32,
+    },
     /// Set inner shadow. `enabled=false` = disable.
     SetTitleInnerShadow { clip_id: ClipId, enabled: bool, color: [u8; 4], offset_x: f32, offset_y: f32, blur: f32 },
     /// Set pattern fill. pattern_kind: 0=None, 1=HStripes, 2=VStripes, 3=Checker, 4=Diagonal

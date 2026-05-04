@@ -891,6 +891,102 @@ fn handle_inner_shadow_axis_response(
     }
 }
 
+/// Translate a `ScrubbyParamResponse` for the keyframable
+/// TextOutline.width on a given stack index. The wire param_key is
+/// built per-call from `klipp_core::title_effect_keys::outline_width_key(index)`,
+/// and the static-fallback path differs between index 0 (uses
+/// SetTitleOutline) and higher indices (uses SetTitleOutlineLayer).
+fn handle_outline_axis_response(
+    cmds: &mut Vec<AppCommand>,
+    clip_id: klipp_core::ClipId,
+    target_oid: Option<klipp_timeline::TitleObjectId>,
+    outline_index: usize,
+    new_value: f32,
+    cur: &klipp_timeline::TextOutline,
+    keyframes: &[klipp_core::Keyframe],
+    clip_time_secs: f64,
+    resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+) {
+    let param_key = klipp_core::title_effect_keys::outline_width_key(outline_index);
+    let push_static_fallback = |cmds: &mut Vec<AppCommand>, new_width: f32| {
+        // Index 0 routes through SetTitleOutline (the legacy
+        // single-outline command). Higher indices use the
+        // SetTitleOutlineLayer command which carries the index.
+        if outline_index == 0 {
+            cmds.push(AppCommand::SetTitleOutline {
+                clip_id, enabled: cur.enabled,
+                color: cur.color, width: new_width,
+            });
+        } else {
+            cmds.push(AppCommand::SetTitleOutlineLayer {
+                clip_id, index: outline_index as u32,
+                enabled: cur.enabled,
+                color: cur.color, width: new_width,
+            });
+        }
+    };
+    let Some(oid) = target_oid else {
+        if resp.changed {
+            push_static_fallback(cmds, new_value);
+        }
+        return;
+    };
+    let object_id = oid.0;
+
+    if resp.keyframe_toggled {
+        if keyframes
+            .iter()
+            .any(|k| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.clone(),
+                time_secs: clip_time_secs,
+            });
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.clone(),
+                time_secs: clip_time_secs,
+                value: new_value,
+            });
+        }
+        return;
+    }
+
+    if resp.changed {
+        if keyframes.is_empty() {
+            push_static_fallback(cmds, new_value);
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.clone(),
+                time_secs: clip_time_secs,
+                value: new_value,
+            });
+        }
+    }
+
+    if let Some(interp) = resp.keyframe_set_interpolation {
+        if let Some((idx, _)) = keyframes
+            .iter()
+            .enumerate()
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
+                clip_id,
+                object_id,
+                param_key,
+                keyframe_index: idx,
+                interpolation: interp,
+            });
+        }
+    }
+}
+
 /// Translate a `ScrubbyParamResponse` for one keyframable
 /// CharAnimation param into the right AppCommand(s). CharAnimation
 /// has three keyframable params (stagger, wave_amplitude, wave_speed)
@@ -1914,25 +2010,40 @@ fn show_title_effects_group(
             width_keyframes: Vec::new(),
         });
         let mut enabled = outline_enabled;
-        let summary = if enabled { format!("{} px", cur.width) } else { String::new() };
+        let display_width = cur.evaluated_width(clip_time_secs);
+        let summary = if enabled { format!("{} px", display_width.round() as u32) } else { String::new() };
+        let kfs_width: &[klipp_core::Keyframe] = tb
+            .outlines
+            .first()
+            .map(|o| o.width_keyframes.as_slice())
+            .unwrap_or(&[]);
+        let ks_width = title_object_keyframe_state(kfs_width, clip_time_secs);
         inspector_subgroup_card(ui, "Outline", &mut enabled,
             (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
-            let mut width = cur.width;
+            let mut width = display_width;
             let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
-            let mut changed = false;
+            let mut color_changed = false;
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Color").size(11.0).color(theme.text_dim));
-                changed |= ui.color_edit_button_srgba(&mut col).changed();
+                color_changed = ui.color_edit_button_srgba(&mut col).changed();
             });
-            changed |= crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Width", &mut width, 0.5..=12.0, 2.0, 0.5, 1, " px", None,
-            ).changed;
-            if changed {
+            let resp_width = crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Width", &mut width, 0.5..=12.0, 2.0, 0.5, 1, " px",
+                target_oid.map(|_| ks_width),
+            );
+            // Color always goes through the static SetTitleOutline —
+            // not keyframable in this slice.
+            if color_changed {
                 cmds.push(AppCommand::SetTitleOutline {
                     clip_id, enabled: true,
-                    color: [col.r(), col.g(), col.b(), col.a()], width,
+                    color: [col.r(), col.g(), col.b(), col.a()], width: cur.width,
                 });
             }
+            handle_outline_axis_response(
+                cmds, clip_id, target_oid,
+                0,
+                width, &cur, kfs_width, clip_time_secs, &resp_width,
+            );
         });
         if enabled != outline_enabled {
             cmds.push(AppCommand::SetTitleOutline {
@@ -2287,42 +2398,63 @@ fn show_title_effects_group(
     ui.add_space(10.0);
 
     // 8. Outline Layers stack — outlines beyond outlines[0].
+    // Each row is keyframe-aware: width edits dispatch through the
+    // per-effect path when keyframes exist, and through the per-index
+    // SetTitleOutlineLayer command when they don't (preserves
+    // sibling layers' keyframes either way). Add/remove/reorder
+    // structural ops still go through SetTitleOutlines.
     {
         ui.label(egui::RichText::new("OUTLINE LAYERS").size(10.0).color(theme.text_dim));
         ui.add_space(4.0);
         let outlines = &tb.outlines;
-        let mut new_outlines = outlines.clone();
-        let mut outlines_changed = false;
+        let mut structural_change: Option<Vec<klipp_timeline::TextOutline>> = None;
         for i in 1..outlines.len() {
             let ol = outlines[i].clone();
+            let display_width = ol.evaluated_width(clip_time_secs);
+            let kfs_width: &[klipp_core::Keyframe] = ol.width_keyframes.as_slice();
+            let ks_width = title_object_keyframe_state(kfs_width, clip_time_secs);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
                 let mut col = egui::Color32::from_rgba_premultiplied(ol.color[0], ol.color[1], ol.color[2], ol.color[3]);
                 if ui.color_edit_button_srgba(&mut col).changed() {
-                    new_outlines[i].color = [col.r(), col.g(), col.b(), col.a()];
-                    outlines_changed = true;
+                    // Color isn't keyframable — per-index static
+                    // edit preserves the row's width_keyframes.
+                    cmds.push(AppCommand::SetTitleOutlineLayer {
+                        clip_id,
+                        index: i as u32,
+                        enabled: ol.enabled,
+                        color: [col.r(), col.g(), col.b(), col.a()],
+                        width: ol.width,
+                    });
                 }
-                let mut w_val = ol.width;
-                if ui.add(egui::DragValue::new(&mut w_val).range(0.5..=20.0).speed(0.5).suffix(" px")).changed() {
-                    new_outlines[i].width = w_val;
-                    outlines_changed = true;
-                }
+                let mut w_val = display_width;
+                let resp_width = crate::widgets::scrubby_param::scrubby_param_row(
+                    ui, "", &mut w_val, 0.5..=20.0, 4.0, 0.5, 1, " px",
+                    target_oid.map(|_| ks_width),
+                );
+                handle_outline_axis_response(
+                    cmds, clip_id, target_oid,
+                    i,
+                    w_val, &ol, kfs_width, clip_time_secs, &resp_width,
+                );
                 if ui.small_button("\u{00D7}").clicked() {
-                    new_outlines.remove(i);
-                    outlines_changed = true;
+                    let mut new_vec = outlines.clone();
+                    new_vec.remove(i);
+                    structural_change = Some(new_vec);
                 }
             });
         }
         if ui.small_button("+ Add Layer").clicked() {
-            new_outlines.push(klipp_timeline::TextOutline {
+            let mut new_vec = outlines.clone();
+            new_vec.push(klipp_timeline::TextOutline {
                 color: [0, 0, 0, 255],
                 width: 4.0,
                 enabled: true,
                 width_keyframes: Vec::new(),
             });
-            outlines_changed = true;
+            structural_change = Some(new_vec);
         }
-        if outlines_changed {
+        if let Some(new_outlines) = structural_change {
             let outline_tuples: Vec<([u8; 4], f32)> =
                 new_outlines.iter().map(|o| (o.color, o.width)).collect();
             cmds.push(AppCommand::SetTitleOutlines { clip_id, outlines: outline_tuples });

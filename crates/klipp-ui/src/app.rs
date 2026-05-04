@@ -14245,14 +14245,62 @@ impl KlippApp {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                tb.outlines = outlines.iter().map(|(color, width)| {
-                                    klipp_timeline::TextOutline { color: *color, width: *width, enabled: true, width_keyframes: Vec::new() }
-                                }).collect();
+                                // Preserve per-index width_keyframes
+                                // when rebuilding the stack: existing
+                                // slots get their static fields
+                                // updated in place, slots that didn't
+                                // previously exist start with empty
+                                // keyframe vecs, removed slots lose
+                                // their keyframes (which is correct —
+                                // a removed outline can't animate).
+                                let new_len = outlines.len();
+                                tb.outlines.truncate(new_len);
+                                for (i, (color, width)) in outlines.iter().enumerate() {
+                                    if let Some(existing) = tb.outlines.get_mut(i) {
+                                        existing.color = *color;
+                                        existing.width = *width;
+                                        existing.enabled = true;
+                                        // width_keyframes preserved.
+                                    } else {
+                                        tb.outlines.push(klipp_timeline::TextOutline {
+                                            color: *color,
+                                            width: *width,
+                                            enabled: true,
+                                            width_keyframes: Vec::new(),
+                                        });
+                                    }
+                                }
                             }
                         }
                     }
                 }
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Title Outline Stack", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleOutlineLayer { clip_id, index, enabled, color, width } => {
+                // Per-index static edit — preserves width_keyframes
+                // on that index. Used by the keyframe-aware scrubby
+                // path in the inspector.
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                if let Some(slot) = tb.outlines.get_mut(*index as usize) {
+                                    slot.enabled = *enabled;
+                                    slot.color = *color;
+                                    slot.width = *width;
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Outline Layer", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
