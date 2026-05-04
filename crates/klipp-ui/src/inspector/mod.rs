@@ -996,6 +996,237 @@ fn handle_outline_axis_response(
     }
 }
 
+/// Indexed-stack variant of `handle_shadow_axis_response`.
+/// Dispatches with the per-index `shadow.{idx}.field` param_key and
+/// the per-index `SetTitleShadowLayer` static fallback so layers >= 1
+/// keyframe / edit independently of `shadows[0]`.
+#[allow(clippy::too_many_arguments)]
+fn handle_shadow_layer_axis_response(
+    cmds: &mut Vec<AppCommand>,
+    clip_id: klipp_core::ClipId,
+    target_oid: Option<klipp_timeline::TitleObjectId>,
+    layer_index: usize,
+    field: &'static str,
+    new_value: f32,
+    cur: &klipp_timeline::TitleShadow,
+    keyframes: &[klipp_core::Keyframe],
+    clip_time_secs: f64,
+    resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+) {
+    let param_key = match field {
+        "offset_x" => klipp_core::title_effect_keys::shadow_offset_x_key(layer_index),
+        "offset_y" => klipp_core::title_effect_keys::shadow_offset_y_key(layer_index),
+        "blur" => klipp_core::title_effect_keys::shadow_blur_key(layer_index),
+        _ => return,
+    };
+    let push_static_fallback = |cmds: &mut Vec<AppCommand>, new: f32| {
+        let (offset_x, offset_y, blur) = match field {
+            "offset_x" => (new, cur.offset_y, cur.blur),
+            "offset_y" => (cur.offset_x, new, cur.blur),
+            "blur" => (cur.offset_x, cur.offset_y, new),
+            _ => (cur.offset_x, cur.offset_y, cur.blur),
+        };
+        cmds.push(AppCommand::SetTitleShadowLayer {
+            clip_id,
+            index: layer_index as u32,
+            enabled: cur.enabled,
+            color: cur.color,
+            offset_x, offset_y, blur,
+        });
+    };
+    let Some(oid) = target_oid else {
+        if resp.changed { push_static_fallback(cmds, new_value); }
+        return;
+    };
+    let object_id = oid.0;
+    if resp.keyframe_toggled {
+        if keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 0.02) {
+            cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
+                clip_id, object_id, param_key: param_key.clone(),
+                time_secs: clip_time_secs,
+            });
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id, object_id, param_key: param_key.clone(),
+                time_secs: clip_time_secs, value: new_value,
+            });
+        }
+        return;
+    }
+    if resp.changed {
+        if keyframes.is_empty() {
+            push_static_fallback(cmds, new_value);
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id, object_id, param_key: param_key.clone(),
+                time_secs: clip_time_secs, value: new_value,
+            });
+        }
+    }
+    if let Some(interp) = resp.keyframe_set_interpolation {
+        if let Some((idx, _)) = keyframes.iter().enumerate()
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
+                clip_id, object_id, param_key,
+                keyframe_index: idx, interpolation: interp,
+            });
+        }
+    }
+}
+
+/// Indexed-stack variant for InnerShadow. Mirrors
+/// `handle_shadow_layer_axis_response` with the inner-shadow command +
+/// key prefix.
+#[allow(clippy::too_many_arguments)]
+fn handle_inner_shadow_layer_axis_response(
+    cmds: &mut Vec<AppCommand>,
+    clip_id: klipp_core::ClipId,
+    target_oid: Option<klipp_timeline::TitleObjectId>,
+    layer_index: usize,
+    field: &'static str,
+    new_value: f32,
+    cur: &klipp_timeline::InnerShadow,
+    keyframes: &[klipp_core::Keyframe],
+    clip_time_secs: f64,
+    resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+) {
+    let param_key = match field {
+        "offset_x" => klipp_core::title_effect_keys::inner_shadow_offset_x_key(layer_index),
+        "offset_y" => klipp_core::title_effect_keys::inner_shadow_offset_y_key(layer_index),
+        "blur" => klipp_core::title_effect_keys::inner_shadow_blur_key(layer_index),
+        _ => return,
+    };
+    let push_static_fallback = |cmds: &mut Vec<AppCommand>, new: f32| {
+        let (offset_x, offset_y, blur) = match field {
+            "offset_x" => (new, cur.offset_y, cur.blur),
+            "offset_y" => (cur.offset_x, new, cur.blur),
+            "blur" => (cur.offset_x, cur.offset_y, new),
+            _ => (cur.offset_x, cur.offset_y, cur.blur),
+        };
+        cmds.push(AppCommand::SetTitleInnerShadowLayer {
+            clip_id,
+            index: layer_index as u32,
+            enabled: cur.enabled,
+            color: cur.color,
+            offset_x, offset_y, blur,
+        });
+    };
+    let Some(oid) = target_oid else {
+        if resp.changed { push_static_fallback(cmds, new_value); }
+        return;
+    };
+    let object_id = oid.0;
+    if resp.keyframe_toggled {
+        if keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 0.02) {
+            cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
+                clip_id, object_id, param_key: param_key.clone(),
+                time_secs: clip_time_secs,
+            });
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id, object_id, param_key: param_key.clone(),
+                time_secs: clip_time_secs, value: new_value,
+            });
+        }
+        return;
+    }
+    if resp.changed {
+        if keyframes.is_empty() {
+            push_static_fallback(cmds, new_value);
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id, object_id, param_key: param_key.clone(),
+                time_secs: clip_time_secs, value: new_value,
+            });
+        }
+    }
+    if let Some(interp) = resp.keyframe_set_interpolation {
+        if let Some((idx, _)) = keyframes.iter().enumerate()
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
+                clip_id, object_id, param_key,
+                keyframe_index: idx, interpolation: interp,
+            });
+        }
+    }
+}
+
+/// Indexed-stack variant for Glow. `field` ∈ {"radius", "intensity"}.
+#[allow(clippy::too_many_arguments)]
+fn handle_glow_layer_axis_response(
+    cmds: &mut Vec<AppCommand>,
+    clip_id: klipp_core::ClipId,
+    target_oid: Option<klipp_timeline::TitleObjectId>,
+    layer_index: usize,
+    field: &'static str,
+    new_value: f32,
+    cur: &klipp_timeline::TextGlow,
+    keyframes: &[klipp_core::Keyframe],
+    clip_time_secs: f64,
+    resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+) {
+    let param_key = match field {
+        "radius" => klipp_core::title_effect_keys::glow_radius_key(layer_index),
+        "intensity" => klipp_core::title_effect_keys::glow_intensity_key(layer_index),
+        _ => return,
+    };
+    let push_static_fallback = |cmds: &mut Vec<AppCommand>, new: f32| {
+        let (radius, intensity) = match field {
+            "radius" => (new, cur.intensity),
+            "intensity" => (cur.radius, new),
+            _ => (cur.radius, cur.intensity),
+        };
+        cmds.push(AppCommand::SetTitleGlowLayer {
+            clip_id,
+            index: layer_index as u32,
+            enabled: cur.enabled,
+            color: cur.color,
+            radius, intensity,
+        });
+    };
+    let Some(oid) = target_oid else {
+        if resp.changed { push_static_fallback(cmds, new_value); }
+        return;
+    };
+    let object_id = oid.0;
+    if resp.keyframe_toggled {
+        if keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 0.02) {
+            cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
+                clip_id, object_id, param_key: param_key.clone(),
+                time_secs: clip_time_secs,
+            });
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id, object_id, param_key: param_key.clone(),
+                time_secs: clip_time_secs, value: new_value,
+            });
+        }
+        return;
+    }
+    if resp.changed {
+        if keyframes.is_empty() {
+            push_static_fallback(cmds, new_value);
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id, object_id, param_key: param_key.clone(),
+                time_secs: clip_time_secs, value: new_value,
+            });
+        }
+    }
+    if let Some(interp) = resp.keyframe_set_interpolation {
+        if let Some((idx, _)) = keyframes.iter().enumerate()
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
+                clip_id, object_id, param_key,
+                keyframe_index: idx, interpolation: interp,
+            });
+        }
+    }
+}
+
 /// Translate a `ScrubbyParamResponse` for one keyframable
 /// CharAnimation param into the right AppCommand(s). CharAnimation
 /// has three keyframable params (stagger, wave_amplitude, wave_speed)
@@ -2080,6 +2311,10 @@ fn show_title_effects_group(
             let mut structural_change: Option<Vec<klipp_timeline::TextGlow>> = None;
             for i in 1..glows.len() {
                 let g = glows[i].clone();
+                let display_radius = g.evaluated_radius(clip_time_secs);
+                let display_intensity = g.evaluated_intensity(clip_time_secs);
+                let kfs_r: &[klipp_core::Keyframe] = g.radius_keyframes.as_slice();
+                let kfs_i: &[klipp_core::Keyframe] = g.intensity_keyframes.as_slice();
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
                     let mut col = egui::Color32::from_rgba_premultiplied(g.color[0], g.color[1], g.color[2], g.color[3]);
@@ -2093,20 +2328,24 @@ fn show_title_effects_group(
                             intensity: g.intensity,
                         });
                     }
-                    let mut radius = g.radius;
-                    let r_radius = ui.add(egui::DragValue::new(&mut radius).speed(0.5).range(1.0..=80.0).suffix(" r"));
-                    let mut intensity = g.intensity;
-                    let r_intensity = ui.add(egui::DragValue::new(&mut intensity).speed(0.02).range(0.0..=2.0).suffix(" i"));
-                    if r_radius.changed() || r_intensity.changed() {
-                        cmds.push(AppCommand::SetTitleGlowLayer {
-                            clip_id,
-                            index: i as u32,
-                            enabled: g.enabled,
-                            color: g.color,
-                            radius,
-                            intensity,
-                        });
-                    }
+                    let mut radius = display_radius;
+                    let r_radius = crate::widgets::scrubby_param::scrubby_param_row(
+                        ui, "r", &mut radius, 1.0..=80.0, 10.0, 0.5, 1, " px",
+                        target_oid.map(|_| title_object_keyframe_state(kfs_r, clip_time_secs)),
+                    );
+                    handle_glow_layer_axis_response(
+                        cmds, clip_id, target_oid, i, "radius",
+                        radius, &g, kfs_r, clip_time_secs, &r_radius,
+                    );
+                    let mut intensity = display_intensity;
+                    let r_intensity = crate::widgets::scrubby_param::scrubby_param_row(
+                        ui, "i", &mut intensity, 0.0..=2.0, 1.0, 0.02, 2, "",
+                        target_oid.map(|_| title_object_keyframe_state(kfs_i, clip_time_secs)),
+                    );
+                    handle_glow_layer_axis_response(
+                        cmds, clip_id, target_oid, i, "intensity",
+                        intensity, &g, kfs_i, clip_time_secs, &r_intensity,
+                    );
                     if ui.small_button("\u{00D7}").clicked() {
                         let mut new_vec = glows.clone();
                         new_vec.remove(i);
@@ -2379,12 +2618,8 @@ fn show_title_effects_group(
     ui.add_space(6.0);
 
     // 7. Drop Shadow Layers — secondary stack (`shadows[1..]`).
-    // Mirrors Outline Layers: card-level toggle hides the whole stack,
-    // each row has color + offset + blur + × remove, +Add Layer at
-    // the bottom. Keyframes per index are not yet wired into the row
-    // sliders — the row sliders dispatch SetTitleShadowLayer (static).
-    // The renderer + data model already support per-layer keyframes;
-    // adding them here is a follow-up.
+    // Each row uses keyframe-aware scrubby sliders so per-index
+    // offset/blur keyframes work the same as the primary card.
     {
         let mut enabled = tb.shadow_stack_enabled;
         let layer_count = tb.shadows.len().saturating_sub(1);
@@ -2399,6 +2634,12 @@ fn show_title_effects_group(
             let mut structural_change: Option<Vec<klipp_timeline::TitleShadow>> = None;
             for i in 1..shadows.len() {
                 let sh = shadows[i].clone();
+                let display_ox = sh.evaluated_offset_x(clip_time_secs);
+                let display_oy = sh.evaluated_offset_y(clip_time_secs);
+                let display_bl = sh.evaluated_blur(clip_time_secs);
+                let kfs_ox: &[klipp_core::Keyframe] = sh.offset_x_keyframes.as_slice();
+                let kfs_oy: &[klipp_core::Keyframe] = sh.offset_y_keyframes.as_slice();
+                let kfs_bl: &[klipp_core::Keyframe] = sh.blur_keyframes.as_slice();
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
                     let mut col = egui::Color32::from_rgba_premultiplied(sh.color[0], sh.color[1], sh.color[2], sh.color[3]);
@@ -2413,23 +2654,33 @@ fn show_title_effects_group(
                             blur: sh.blur,
                         });
                     }
-                    let mut ox = sh.offset_x;
-                    let r_ox = ui.add(egui::DragValue::new(&mut ox).speed(0.5).suffix(" x"));
-                    let mut oy = sh.offset_y;
-                    let r_oy = ui.add(egui::DragValue::new(&mut oy).speed(0.5).suffix(" y"));
-                    let mut bl = sh.blur;
-                    let r_bl = ui.add(egui::DragValue::new(&mut bl).speed(0.5).range(0.0..=60.0).suffix(" blur"));
-                    if r_ox.changed() || r_oy.changed() || r_bl.changed() {
-                        cmds.push(AppCommand::SetTitleShadowLayer {
-                            clip_id,
-                            index: i as u32,
-                            enabled: sh.enabled,
-                            color: sh.color,
-                            offset_x: ox,
-                            offset_y: oy,
-                            blur: bl,
-                        });
-                    }
+                    let mut ox = display_ox;
+                    let r_ox = crate::widgets::scrubby_param::scrubby_param_row(
+                        ui, "x", &mut ox, -20.0..=20.0, 4.0, 0.5, 1, " px",
+                        target_oid.map(|_| title_object_keyframe_state(kfs_ox, clip_time_secs)),
+                    );
+                    handle_shadow_layer_axis_response(
+                        cmds, clip_id, target_oid, i, "offset_x",
+                        ox, &sh, kfs_ox, clip_time_secs, &r_ox,
+                    );
+                    let mut oy = display_oy;
+                    let r_oy = crate::widgets::scrubby_param::scrubby_param_row(
+                        ui, "y", &mut oy, -20.0..=20.0, 4.0, 0.5, 1, " px",
+                        target_oid.map(|_| title_object_keyframe_state(kfs_oy, clip_time_secs)),
+                    );
+                    handle_shadow_layer_axis_response(
+                        cmds, clip_id, target_oid, i, "offset_y",
+                        oy, &sh, kfs_oy, clip_time_secs, &r_oy,
+                    );
+                    let mut bl = display_bl;
+                    let r_bl = crate::widgets::scrubby_param::scrubby_param_row(
+                        ui, "blur", &mut bl, 0.0..=60.0, 4.0, 0.5, 1, " px",
+                        target_oid.map(|_| title_object_keyframe_state(kfs_bl, clip_time_secs)),
+                    );
+                    handle_shadow_layer_axis_response(
+                        cmds, clip_id, target_oid, i, "blur",
+                        bl, &sh, kfs_bl, clip_time_secs, &r_bl,
+                    );
                     if ui.small_button("\u{00D7}").clicked() {
                         let mut new_vec = shadows.clone();
                         new_vec.remove(i);
@@ -2587,6 +2838,12 @@ fn show_title_effects_group(
             let mut structural_change: Option<Vec<klipp_timeline::InnerShadow>> = None;
             for i in 1..inners.len() {
                 let sh = inners[i].clone();
+                let display_ox = sh.evaluated_offset_x(clip_time_secs);
+                let display_oy = sh.evaluated_offset_y(clip_time_secs);
+                let display_bl = sh.evaluated_blur(clip_time_secs);
+                let kfs_ox: &[klipp_core::Keyframe] = sh.offset_x_keyframes.as_slice();
+                let kfs_oy: &[klipp_core::Keyframe] = sh.offset_y_keyframes.as_slice();
+                let kfs_bl: &[klipp_core::Keyframe] = sh.blur_keyframes.as_slice();
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
                     let mut col = egui::Color32::from_rgba_premultiplied(sh.color[0], sh.color[1], sh.color[2], sh.color[3]);
@@ -2601,23 +2858,33 @@ fn show_title_effects_group(
                             blur: sh.blur,
                         });
                     }
-                    let mut ox = sh.offset_x;
-                    let r_ox = ui.add(egui::DragValue::new(&mut ox).speed(0.5).suffix(" x"));
-                    let mut oy = sh.offset_y;
-                    let r_oy = ui.add(egui::DragValue::new(&mut oy).speed(0.5).suffix(" y"));
-                    let mut bl = sh.blur;
-                    let r_bl = ui.add(egui::DragValue::new(&mut bl).speed(0.5).range(0.0..=60.0).suffix(" blur"));
-                    if r_ox.changed() || r_oy.changed() || r_bl.changed() {
-                        cmds.push(AppCommand::SetTitleInnerShadowLayer {
-                            clip_id,
-                            index: i as u32,
-                            enabled: sh.enabled,
-                            color: sh.color,
-                            offset_x: ox,
-                            offset_y: oy,
-                            blur: bl,
-                        });
-                    }
+                    let mut ox = display_ox;
+                    let r_ox = crate::widgets::scrubby_param::scrubby_param_row(
+                        ui, "x", &mut ox, -20.0..=20.0, 2.0, 0.5, 1, " px",
+                        target_oid.map(|_| title_object_keyframe_state(kfs_ox, clip_time_secs)),
+                    );
+                    handle_inner_shadow_layer_axis_response(
+                        cmds, clip_id, target_oid, i, "offset_x",
+                        ox, &sh, kfs_ox, clip_time_secs, &r_ox,
+                    );
+                    let mut oy = display_oy;
+                    let r_oy = crate::widgets::scrubby_param::scrubby_param_row(
+                        ui, "y", &mut oy, -20.0..=20.0, 2.0, 0.5, 1, " px",
+                        target_oid.map(|_| title_object_keyframe_state(kfs_oy, clip_time_secs)),
+                    );
+                    handle_inner_shadow_layer_axis_response(
+                        cmds, clip_id, target_oid, i, "offset_y",
+                        oy, &sh, kfs_oy, clip_time_secs, &r_oy,
+                    );
+                    let mut bl = display_bl;
+                    let r_bl = crate::widgets::scrubby_param::scrubby_param_row(
+                        ui, "blur", &mut bl, 0.0..=60.0, 3.0, 0.5, 1, " px",
+                        target_oid.map(|_| title_object_keyframe_state(kfs_bl, clip_time_secs)),
+                    );
+                    handle_inner_shadow_layer_axis_response(
+                        cmds, clip_id, target_oid, i, "blur",
+                        bl, &sh, kfs_bl, clip_time_secs, &r_bl,
+                    );
                     if ui.small_button("\u{00D7}").clicked() {
                         let mut new_vec = inners.clone();
                         new_vec.remove(i);

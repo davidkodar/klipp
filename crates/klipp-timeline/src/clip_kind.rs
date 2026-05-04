@@ -2718,6 +2718,59 @@ mod tests {
         assert_eq!(tf.tint, [255, 255, 255, 255]);
     }
 
+    /// Per-index shadow keyframes are independent across slots and
+    /// don't bleed when a sibling layer is touched. Pins the
+    /// indexed-routing contract that the inspector stack rows now
+    /// depend on for keyframe-aware editing.
+    #[test]
+    fn shadow_indexed_keyframe_routing_is_per_slot() {
+        let mut tb = TextBox::default();
+        tb.shadows.push(TitleShadow {
+            enabled: true, color: [0, 0, 0, 200],
+            offset_x: 1.0, offset_x_keyframes: Vec::new(),
+            offset_y: 1.0, offset_y_keyframes: Vec::new(),
+            blur: 1.0, blur_keyframes: Vec::new(),
+        });
+        tb.shadows.push(TitleShadow {
+            enabled: true, color: [255, 0, 0, 200],
+            offset_x: 5.0, offset_x_keyframes: Vec::new(),
+            offset_y: 5.0, offset_y_keyframes: Vec::new(),
+            blur: 5.0, blur_keyframes: Vec::new(),
+        });
+
+        // shadow.0.offset_x → shadows[0]. shadow.1.blur → shadows[1].
+        let key_0_ox = klipp_core::title_effect_keys::shadow_offset_x_key(0);
+        let key_1_bl = klipp_core::title_effect_keys::shadow_blur_key(1);
+        klipp_core::keyframe::upsert_keyframe(
+            tb.effect_keyframes_mut_for(&key_0_ox).unwrap(),
+            0.0, 7.0,
+        );
+        klipp_core::keyframe::upsert_keyframe(
+            tb.effect_keyframes_mut_for(&key_1_bl).unwrap(),
+            0.0, 12.0,
+        );
+        assert_eq!(tb.shadows[0].offset_x_keyframes.len(), 1);
+        assert_eq!(tb.shadows[0].offset_x_keyframes[0].value, 7.0);
+        assert_eq!(tb.shadows[1].blur_keyframes.len(), 1);
+        assert_eq!(tb.shadows[1].blur_keyframes[0].value, 12.0);
+        // Sibling slots remain untouched.
+        assert_eq!(tb.shadows[1].offset_x_keyframes.len(), 0);
+        assert_eq!(tb.shadows[0].blur_keyframes.len(), 0);
+
+        // Out-of-range index returns None.
+        let key_oob = klipp_core::title_effect_keys::shadow_offset_x_key(99);
+        assert!(tb.effect_keyframes_mut_for(&key_oob).is_none());
+
+        // Legacy unindexed key still routes to slot 0.
+        klipp_core::keyframe::upsert_keyframe(
+            tb.effect_keyframes_mut_for(klipp_core::title_effect_keys::SHADOW_OFFSET_Y).unwrap(),
+            0.0, 9.0,
+        );
+        assert_eq!(tb.shadows[0].offset_y_keyframes.len(), 1);
+        assert_eq!(tb.shadows[0].offset_y_keyframes[0].value, 9.0);
+        assert_eq!(tb.shadows[1].offset_y_keyframes.len(), 0);
+    }
+
     /// Round-trip + legacy migration for the glow stack.
     #[test]
     fn glows_round_trip_and_legacy_default() {
