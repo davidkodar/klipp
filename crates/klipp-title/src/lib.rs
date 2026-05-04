@@ -1134,17 +1134,22 @@ impl TitleRenderer {
             }
         }
 
-        // 6. Inner shadow (rendered inside the text shape)
+        // 6. Inner shadow (rendered inside the text shape) —
+        // offset_x / offset_y / blur may animate via keyframes.
         if let Some(inner) = tb.inner_shadow.as_ref().filter(|i| i.enabled) {
-            let sox = (inner.offset_x * scale).round() as i32;
-            let soy = (inner.offset_y * scale).round() as i32;
+            let t = time_secs.map(|t| t as f64).unwrap_or(0.0);
+            let off_x = inner.evaluated_offset_x(t);
+            let off_y = inner.evaluated_offset_y(t);
+            let blur = inner.evaluated_blur(t);
+            let sox = (off_x * scale).round() as i32;
+            let soy = (off_y * scale).round() as i32;
             let mut inverted = vec![0u8; mask_w * mask_h];
             for i in 0..inverted.len() {
                 inverted[i] = 255u8.saturating_sub(alpha_mask[i]);
             }
             let offset_inv = offset_alpha(&inverted, mask_w, mask_h, sox, soy);
-            let shadow_mask = if inner.blur > 0.0 {
-                do_blur(&offset_inv, mask_w, mask_h, inner.blur * scale, &mut gpu)
+            let shadow_mask = if blur > 0.0 {
+                do_blur(&offset_inv, mask_w, mask_h, blur * scale, &mut gpu)
             } else {
                 offset_inv
             };
@@ -1291,6 +1296,20 @@ impl TitleRenderer {
                 false
             }
         });
+        let any_inner_shadow_keyframes = title.objects.iter().any(|o| {
+            if let TitleObjectContent::TextBox(tb) = &o.content {
+                tb.inner_shadow
+                    .as_ref()
+                    .map(|s| {
+                        !s.offset_x_keyframes.is_empty()
+                            || !s.offset_y_keyframes.is_empty()
+                            || !s.blur_keyframes.is_empty()
+                    })
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        });
 
         let any_render_time_override = any_char_anim
             || color_cycle_rate.is_some()
@@ -1299,7 +1318,8 @@ impl TitleRenderer {
             || any_glitch_active
             || any_position_keyframes
             || any_glow_keyframes
-            || any_shadow_keyframes;
+            || any_shadow_keyframes
+            || any_inner_shadow_keyframes;
 
         if !any_render_time_override {
             if let Some(buf) = self.cache_lookup(title, width, height) {
@@ -1366,6 +1386,7 @@ impl TitleRenderer {
             || any_position_keyframes
             || any_glow_keyframes
             || any_shadow_keyframes
+            || any_inner_shadow_keyframes
         {
             Some(time_secs)
         } else {
@@ -2562,9 +2583,27 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
         pad = pad.max(sy + sb + 1);
     }
     if let Some(inner) = tb.inner_shadow.as_ref().filter(|i| i.enabled) {
-        let sx = (inner.offset_x.abs() * scale).ceil() as i32;
-        let sy = (inner.offset_y.abs() * scale).ceil() as i32;
-        let sb = (inner.blur * scale * 2.0).ceil() as i32;
+        // Worst-case extent across the clip — same logic as the outer
+        // shadow padding. Inner shadow stays within the glyph mask, so
+        // this pad mostly matters when the user keyframes blur way up.
+        let max_ox = inner
+            .offset_x_keyframes
+            .iter()
+            .map(|k| k.value.abs())
+            .fold(inner.offset_x.abs(), f32::max);
+        let max_oy = inner
+            .offset_y_keyframes
+            .iter()
+            .map(|k| k.value.abs())
+            .fold(inner.offset_y.abs(), f32::max);
+        let max_blur = inner
+            .blur_keyframes
+            .iter()
+            .map(|k| k.value)
+            .fold(inner.blur, f32::max);
+        let sx = (max_ox * scale).ceil() as i32;
+        let sy = (max_oy * scale).ceil() as i32;
+        let sb = (max_blur * scale * 2.0).ceil() as i32;
         pad = pad.max(sx + sb + 1);
         pad = pad.max(sy + sb + 1);
     }
@@ -4632,6 +4671,62 @@ mod tests {
         );
     }
 
+    /// Per-frame InnerShadow.blur keyframes drive the rendered
+    /// inner-shadow softness — wider falloff at higher blur.
+    #[test]
+    fn inner_shadow_blur_keyframes_change_rendered_softness() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "O".to_string();
+        tb.font_size = 100.0;
+        tb.color = [255, 255, 255, 255];
+        tb.inner_shadow = Some(klipp_timeline::InnerShadow {
+            enabled: true,
+            color: [0, 0, 0, 255],
+            offset_x: 4.0, offset_x_keyframes: Vec::new(),
+            offset_y: 4.0, offset_y_keyframes: Vec::new(),
+            blur: 0.0,
+            blur_keyframes: vec![
+                Keyframe {
+                    time_secs: 0.0, value: 0.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                },
+                Keyframe {
+                    time_secs: 2.0, value: 18.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                },
+            ],
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
+        let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
+
+        // Higher blur softens the dark inner-shadow falloff so more
+        // pixels in the glyph interior end up dark vs. white. Sum the
+        // dark-pixel count to detect the change.
+        let dark_pixel_count = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4)
+                .filter(|p| {
+                    p[3] > 0 && (p[0] as u16 + p[1] as u16 + p[2] as u16) < 250
+                })
+                .count()
+        };
+        let n0 = dark_pixel_count(&buf_t0);
+        let n2 = dark_pixel_count(&buf_t2);
+        assert!(
+            n0 != n2,
+            "inner-shadow blur keyframes must change the rendered output (n0={n0} n2={n2})"
+        );
+    }
+
     /// Empty shadow keyframe vecs must NOT change the rendered output.
     /// Pins the no-overhead path for unanimated shadows — same
     /// invariant as the glow case.
@@ -4663,6 +4758,35 @@ mod tests {
             &buf_no_time[..],
             &buf_with_time[..],
             "title with no shadow keyframes must render identically with or without time_secs"
+        );
+    }
+
+    /// Empty inner-shadow keyframe vecs must NOT change the rendered
+    /// output — pin the no-overhead path for unanimated inner shadows.
+    #[test]
+    fn empty_inner_shadow_keyframes_render_identical_to_pre_keyframe_path() {
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 80.0;
+        tb.inner_shadow = Some(klipp_timeline::InnerShadow {
+            enabled: true,
+            color: [0, 0, 0, 200],
+            offset_x: 2.0, offset_x_keyframes: Vec::new(),
+            offset_y: 2.0, offset_y_keyframes: Vec::new(),
+            blur: 4.0, blur_keyframes: Vec::new(),
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_no_time = renderer.render(&td, frame_w, frame_h);
+        let buf_with_time = renderer.render_with_time(&td, frame_w, frame_h, None, 1.5);
+        assert_eq!(
+            &buf_no_time[..],
+            &buf_with_time[..],
+            "title with no inner-shadow keyframes must render identically with or without time_secs"
         );
     }
 }
