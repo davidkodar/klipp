@@ -2442,20 +2442,31 @@ fn show_title_effects_group(
                     .unwrap_or("(none)");
                 ui.label(egui::RichText::new(display_name).monospace().size(11.0).color(theme.text_secondary));
             });
-            if ui.button("Browse\u{2026}").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Images", &{
-                        let mut exts: Vec<&str> = klipp_core::media_extensions::IMAGE_EXTENSIONS.to_vec();
-                        exts.push("tga");
-                        exts
-                    })
-                    .pick_file()
-                {
+            ui.horizontal(|ui| {
+                if ui.button("Browse\u{2026}").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Images", &{
+                            let mut exts: Vec<&str> = klipp_core::media_extensions::IMAGE_EXTENSIONS.to_vec();
+                            exts.push("tga");
+                            exts
+                        })
+                        .pick_file()
+                    {
+                        cmds.push(AppCommand::SetTitleTextureFill {
+                            clip_id, path: Some(path.to_string_lossy().to_string()),
+                        });
+                    }
+                }
+                // Clear is enabled only when a path is set — keeps
+                // the affordance meaningful and dispatches `None` so
+                // the handler clears `texture_fill_path`.
+                let has_path = cur_path.is_some();
+                if ui.add_enabled(has_path, egui::Button::new("Clear")).clicked() {
                     cmds.push(AppCommand::SetTitleTextureFill {
-                        clip_id, path: Some(path.to_string_lossy().to_string()),
+                        clip_id, path: None,
                     });
                 }
-            }
+            });
         });
         if enabled != texture_toggle_on {
             cmds.push(AppCommand::SetTitleTextureEnabled { clip_id, enabled });
