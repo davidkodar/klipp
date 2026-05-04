@@ -349,6 +349,14 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
             track.pan = t.pan;
             track.locked = t.locked;
             track.custom_height = t.custom_height;
+            track.automation_lane_visible = t.automation_lane_visible.as_deref().and_then(|s| {
+                match s {
+                    "Volume" => Some(klipp_core::AudioParam::Volume),
+                    "Pan" => Some(klipp_core::AudioParam::Pan),
+                    "Gain" => Some(klipp_core::AudioParam::Gain),
+                    _ => None,
+                }
+            });
             track.transitions = t.transitions.iter().filter_map(|tr| {
                 let id = parse_uuid(&tr.id).ok().map(TransitionId)?;
                 let kind = klipp_core::spec_for_string_key(tr.kind.as_str())

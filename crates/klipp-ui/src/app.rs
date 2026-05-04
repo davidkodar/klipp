@@ -18117,6 +18117,21 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::SetAudioAutomationLaneParam { track_idx, param } => {
+                if let Some(seq) = self.state.sequences.get_mut(self.state.active_sequence_idx) {
+                    if let Some(t) = seq.tracks.get_mut(*track_idx) {
+                        // Only writes when the lane is already open —
+                        // the picker UI is only reachable from inside
+                        // the lane, so a write while collapsed would
+                        // be a logic bug rather than a no-op fix.
+                        if t.automation_lane_visible.is_some() {
+                            t.automation_lane_visible = Some(*param);
+                            self.state.dirty = true;
+                        }
+                    }
+                }
+                true
+            }
             AppCommand::ToggleAudioAutomationLane { track_idx } => {
                 let active_param = match self.state.rubber_band_param {
                     crate::state::RubberBandParam::ClipParam(p) => p,

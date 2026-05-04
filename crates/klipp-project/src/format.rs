@@ -145,6 +145,12 @@ pub struct TrackJson {
     pub locked: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_height: Option<f32>,
+    /// Per-track automation lane state. `None` = collapsed, `Some(param)`
+    /// = lane open showing the named param's curve. Stored as the
+    /// stringified `AudioParam` variant ("Volume" / "Pan" / "Gain").
+    /// Skipped when None so legacy projects round-trip unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automation_lane_visible: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -824,5 +830,73 @@ mod tests {
         let serialised = serde_json::to_string(&clip).expect("serialise");
         assert!(!serialised.contains("audio_effect_keyframes"),
             "empty audio_effect_keyframes must be skipped, got: {serialised}");
+    }
+
+    /// `Track.automation_lane_visible` survives the on-disk JSON round
+    /// trip for every AudioParam variant. Without this the lane state
+    /// silently resets on project reload (the bug uncovered while
+    /// wiring the per-lane param picker).
+    #[test]
+    fn automation_lane_visible_round_trips_through_track_json() {
+        for label in ["Volume", "Pan", "Gain"] {
+            let track = TrackJson {
+                id: "t1".to_string(),
+                name: "A1".to_string(),
+                kind: "Audio".to_string(),
+                clips: vec![],
+                transitions: vec![],
+                opacity: 1.0,
+                volume: 1.0,
+                muted: false,
+                solo: false,
+                visible: true,
+                pan: 0.0,
+                locked: false,
+                custom_height: None,
+                automation_lane_visible: Some(label.to_string()),
+            };
+            let s = serde_json::to_string(&track).expect("serialise");
+            let back: TrackJson = serde_json::from_str(&s).expect("deserialise");
+            assert_eq!(back.automation_lane_visible.as_deref(), Some(label));
+        }
+    }
+
+    /// Legacy projects without the `automation_lane_visible` field
+    /// must still parse, with the lane defaulting to collapsed.
+    #[test]
+    fn track_json_without_automation_lane_field_loads_as_collapsed() {
+        let legacy = r#"{
+            "id": "t1", "name": "A1", "kind": "Audio",
+            "clips": [], "opacity": 1.0, "volume": 1.0, "pan": 0.0
+        }"#;
+        let track: TrackJson = serde_json::from_str(legacy)
+            .expect("legacy track JSON without automation_lane_visible must parse");
+        assert!(track.automation_lane_visible.is_none());
+    }
+
+    /// `None` lane state must be omitted from the on-disk JSON via
+    /// `skip_serializing_if` so legacy projects don't accumulate a
+    /// noisy null field on every save.
+    #[test]
+    fn collapsed_lane_state_is_omitted_from_serialised_track() {
+        let track = TrackJson {
+            id: "t1".to_string(),
+            name: "A1".to_string(),
+            kind: "Audio".to_string(),
+            clips: vec![],
+            transitions: vec![],
+            opacity: 1.0,
+            volume: 1.0,
+            muted: false,
+            solo: false,
+            visible: true,
+            pan: 0.0,
+            locked: false,
+            custom_height: None,
+            automation_lane_visible: None,
+        };
+        let s = serde_json::to_string(&track).expect("serialise");
+        assert!(!s.contains("automation_lane_visible"),
+            "None lane must be skipped, got: {s}");
     }
 }

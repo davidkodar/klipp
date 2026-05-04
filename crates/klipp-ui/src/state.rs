@@ -246,6 +246,16 @@ pub struct KeyframeContextMenu {
     pub screen_pos: egui::Pos2,
 }
 
+/// Per-track automation-lane param picker. Stored on AppState so the
+/// popup survives across frames (egui Areas need stable IDs and a
+/// multi-frame layout pass before their rect is known — an inline
+/// popup would close on the same right-click that opened it).
+#[derive(Debug, Clone)]
+pub struct AutomationLaneParamMenu {
+    pub track_idx: usize,
+    pub screen_pos: egui::Pos2,
+}
+
 /// A selected keyframe on the timeline rubber band.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectedKeyframe {
@@ -1754,6 +1764,11 @@ pub struct AppState {
     pub dragging_audio_effect_bezier_handle: Option<BezierEffectHandleDrag>,
     /// Keyframe interpolation right-click context menu
     pub keyframe_context_menu: Option<KeyframeContextMenu>,
+    /// Per-lane param picker. Right-clicking the empty automation lane
+    /// background opens a small popup that lets the user switch the
+    /// lane between Volume / Pan / Gain without having to collapse +
+    /// re-expand via the global pill picker.
+    pub automation_lane_param_menu: Option<AutomationLaneParamMenu>,
     /// Keyframe clipboard for copy/paste between clips/params
     pub keyframe_clipboard: Option<KeyframeClipboard>,
     /// Currently selected keyframe on timeline (click to select, right-click for menu)
@@ -3006,6 +3021,7 @@ impl Default for AppState {
             dragging_audio_effect_keyframe: None,
             dragging_audio_effect_bezier_handle: None,
             keyframe_context_menu: None,
+            automation_lane_param_menu: None,
             keyframe_clipboard: None,
             selected_keyframe: None,
             rubber_band_param: RubberBandParam::default(),

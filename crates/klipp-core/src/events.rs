@@ -1630,6 +1630,11 @@ pub enum AppCommand {
     /// style. Currently-collapsed → opens with the global rubber-band param;
     /// already-open → collapses. State persists with the project file.
     ToggleAudioAutomationLane { track_idx: usize },
+    /// Switch the param shown in a track's automation lane without
+    /// closing it. Used by the lane's right-click param picker so
+    /// users can flip between Volume / Pan / Gain without first
+    /// collapsing the lane and changing the global rubber-band pill.
+    SetAudioAutomationLaneParam { track_idx: usize, param: AudioParam },
     /// Begin capturing audio from the configured input device into a WAV file
     /// in the proxy cache. Does nothing if no track is armed.
     StartRecording,

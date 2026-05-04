@@ -1351,6 +1351,9 @@ impl TimelinePanel {
         // ── Keyframe interpolation context menu popup ───────────────────────
         self.show_keyframe_context_menu(ui, state, &mut cmds);
 
+        // ── Automation lane param picker popup ─────────────────────────────
+        self.show_automation_lane_param_menu(ui, state, &mut cmds);
+
         // --- Status bar --- (skip when embedded)
         if self.embedded { return cmds; }
         self.draw_status_bar(ui, state, &layout);
@@ -1976,6 +1979,88 @@ impl TimelinePanel {
                 }
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     state.keyframe_context_menu = None;
+                }
+            }
+        }
+    }
+
+    /// Per-lane param picker popup. Lets the user switch the lane
+    /// between Volume / Pan / Gain without collapsing the lane and
+    /// fiddling with the global pill picker. Stored on AppState so
+    /// the popup survives across frames — same close-on-primary-click
+    /// pattern as `show_keyframe_context_menu` (using `any_click()`
+    /// would close the popup on the same right-click that opened it).
+    fn show_automation_lane_param_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        if let Some(menu) = state.automation_lane_param_menu.clone() {
+            // Read the lane's current param so the active row gets
+            // the highlight. Returns None when the lane was closed
+            // out from under us — bail in that case.
+            let cur_param = state
+                .sequence()
+                .tracks
+                .get(menu.track_idx)
+                .and_then(|t| t.automation_lane_visible);
+            if cur_param.is_none() {
+                state.automation_lane_param_menu = None;
+                return;
+            }
+
+            let menu_id = egui::Id::new(("lane_param_menu", menu.track_idx));
+            let mut close_menu = false;
+            let menu_resp = egui::Area::new(menu_id)
+                .fixed_pos(menu.screen_pos)
+                .order(egui::Order::Foreground)
+                .interactable(true)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::menu(ui.style())
+                        .inner_margin(egui::Margin::same(4.0))
+                        .show(ui, |ui| {
+                            ui.set_min_width(120.0);
+                            for (param, label) in [
+                                (klipp_core::AudioParam::Volume, "Volume"),
+                                (klipp_core::AudioParam::Pan, "Pan"),
+                                (klipp_core::AudioParam::Gain, "Gain"),
+                            ] {
+                                let is_active = cur_param == Some(param);
+                                let display = if is_active {
+                                    format!("\u{2022} {}", label)
+                                } else {
+                                    format!("  {}", label)
+                                };
+                                if ui
+                                    .add(egui::Button::new(display).frame(false))
+                                    .clicked()
+                                {
+                                    if !is_active {
+                                        cmds.push(AppCommand::SetAudioAutomationLaneParam {
+                                            track_idx: menu.track_idx,
+                                            param,
+                                        });
+                                    }
+                                    close_menu = true;
+                                }
+                            }
+                        });
+                });
+
+            if close_menu {
+                state.automation_lane_param_menu = None;
+            } else {
+                let menu_rect = menu_resp.response.rect;
+                if ui.input(|i| i.pointer.primary_clicked()) {
+                    if let Some(click_pos) = ui.input(|i| i.pointer.interact_pos()) {
+                        if !menu_rect.contains(click_pos) {
+                            state.automation_lane_param_menu = None;
+                        }
+                    }
+                }
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    state.automation_lane_param_menu = None;
                 }
             }
         }
@@ -10984,8 +11069,11 @@ impl TimelinePanel {
                     }
                 }
 
-                // Right-click → keyframe context menu (or selected-kf
-                // fallback if no diamond is hovered).
+                // Right-click → keyframe context menu when a diamond
+                // (or selected kf) is the target. The empty-lane
+                // fallback (param picker) is dispatched once after
+                // the per-clip loop so clicks between clips also
+                // count.
                 if secondary_released {
                     let target = hovered_kf_idx.or_else(|| {
                         state
@@ -11247,6 +11335,25 @@ impl TimelinePanel {
                     }
                 }
 
+            }
+        }
+
+        // Empty-lane right-click → param picker. Runs OUTSIDE the
+        // per-clip loop so a click between clips (or on a track with
+        // no clips at all) still opens the picker. The keyframe
+        // context menu inside the per-clip loop already claimed the
+        // click whenever a kf was the target; if it didn't fire, the
+        // suppress flag is still false and we open the picker here.
+        if secondary_released && !self.suppress_clip_context_menu {
+            if let Some(p) = pointer_pos {
+                if lane_rect.contains(p) {
+                    state.automation_lane_param_menu =
+                        Some(crate::state::AutomationLaneParamMenu {
+                            track_idx,
+                            screen_pos: p,
+                        });
+                    self.suppress_clip_context_menu = true;
+                }
             }
         }
     }
