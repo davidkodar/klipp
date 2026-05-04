@@ -1017,14 +1017,19 @@ impl TitleRenderer {
             draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &glow.color, intensity);
         }
 
-        // 2. Shadow (with blur support)
+        // 2. Shadow (with blur support) — offset_x / offset_y / blur
+        // may animate via keyframes.
         if let Some(shadow) = tb.shadow.as_ref().filter(|s| s.enabled) {
-            let sox = (shadow.offset_x * scale).round() as i32;
-            let soy = (shadow.offset_y * scale).round() as i32;
+            let t = time_secs.map(|t| t as f64).unwrap_or(0.0);
+            let off_x = shadow.evaluated_offset_x(t);
+            let off_y = shadow.evaluated_offset_y(t);
+            let blur = shadow.evaluated_blur(t);
+            let sox = (off_x * scale).round() as i32;
+            let soy = (off_y * scale).round() as i32;
 
-            if shadow.blur > 0.0 {
+            if blur > 0.0 {
                 let offset_mask = offset_alpha(alpha_mask, mask_w, mask_h, sox, soy);
-                let blurred = do_blur(&offset_mask, mask_w, mask_h, shadow.blur * scale, &mut gpu);
+                let blurred = do_blur(&offset_mask, mask_w, mask_h, blur * scale, &mut gpu);
                 draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &shadow.color, 1.0);
             } else {
                 let offset_mask = offset_alpha(alpha_mask, mask_w, mask_h, sox, soy);
@@ -1272,6 +1277,20 @@ impl TitleRenderer {
                 false
             }
         });
+        let any_shadow_keyframes = title.objects.iter().any(|o| {
+            if let TitleObjectContent::TextBox(tb) = &o.content {
+                tb.shadow
+                    .as_ref()
+                    .map(|s| {
+                        !s.offset_x_keyframes.is_empty()
+                            || !s.offset_y_keyframes.is_empty()
+                            || !s.blur_keyframes.is_empty()
+                    })
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        });
 
         let any_render_time_override = any_char_anim
             || color_cycle_rate.is_some()
@@ -1279,7 +1298,8 @@ impl TitleRenderer {
             || outline_draw_on_dur.is_some()
             || any_glitch_active
             || any_position_keyframes
-            || any_glow_keyframes;
+            || any_glow_keyframes
+            || any_shadow_keyframes;
 
         if !any_render_time_override {
             if let Some(buf) = self.cache_lookup(title, width, height) {
@@ -1345,6 +1365,7 @@ impl TitleRenderer {
             || any_glitch_active
             || any_position_keyframes
             || any_glow_keyframes
+            || any_shadow_keyframes
         {
             Some(time_secs)
         } else {
@@ -2515,9 +2536,28 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
         pad = pad.max((max_radius * scale * 2.0).ceil() as i32 + 1);
     }
     if let Some(shadow) = tb.shadow.as_ref().filter(|s| s.enabled) {
-        let sx = (shadow.offset_x.abs() * scale).ceil() as i32;
-        let sy = (shadow.offset_y.abs() * scale).ceil() as i32;
-        let sb = (shadow.blur * scale * 2.0).ceil() as i32;
+        // Pad for the worst-case shadow extent across the clip:
+        // max |offset| (positive or negative) + max blur. A keyframed
+        // shadow that moves -10..+10 must reserve 10px on each side
+        // even at t=0 when offset is 0, otherwise the +10 frame clips.
+        let max_ox = shadow
+            .offset_x_keyframes
+            .iter()
+            .map(|k| k.value.abs())
+            .fold(shadow.offset_x.abs(), f32::max);
+        let max_oy = shadow
+            .offset_y_keyframes
+            .iter()
+            .map(|k| k.value.abs())
+            .fold(shadow.offset_y.abs(), f32::max);
+        let max_blur = shadow
+            .blur_keyframes
+            .iter()
+            .map(|k| k.value)
+            .fold(shadow.blur, f32::max);
+        let sx = (max_ox * scale).ceil() as i32;
+        let sy = (max_oy * scale).ceil() as i32;
+        let sb = (max_blur * scale * 2.0).ceil() as i32;
         pad = pad.max(sx + sb + 1);
         pad = pad.max(sy + sb + 1);
     }
@@ -4472,6 +4512,157 @@ mod tests {
             &buf_no_time[..],
             &buf_with_time[..],
             "title with no glow keyframes must render identically with or without time_secs"
+        );
+    }
+
+    /// Per-frame TitleShadow.blur keyframes drive the rendered shadow
+    /// softness: a shadow blur ramping 0 → 20 px should cover more
+    /// non-zero-alpha pixels (wider falloff) at t=2 than at t=0.
+    #[test]
+    fn shadow_blur_keyframes_change_rendered_shadow_softness() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 80.0;
+        tb.shadow = Some(klipp_timeline::TitleShadow {
+            enabled: true,
+            color: [0, 0, 0, 220],
+            offset_x: 6.0,
+            offset_x_keyframes: Vec::new(),
+            offset_y: 6.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 0.0,
+            blur_keyframes: vec![
+                Keyframe {
+                    time_secs: 0.0, value: 0.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                },
+                Keyframe {
+                    time_secs: 2.0, value: 20.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                },
+            ],
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
+        let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
+
+        let nonzero_alpha_count = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4).filter(|p| p[3] > 0).count()
+        };
+        let n0 = nonzero_alpha_count(&buf_t0);
+        let n2 = nonzero_alpha_count(&buf_t2);
+        assert!(
+            n2 > n0,
+            "blurred shadow at t=2 must cover more pixels than crisp shadow at t=0 (n0={n0}, n2={n2})"
+        );
+    }
+
+    /// Per-frame TitleShadow.offset_x keyframes shift the rendered
+    /// shadow horizontally: a shadow whose offset ramps -20 → +20
+    /// should put its dark mass on the LEFT of the glyph at t=0 and on
+    /// the RIGHT at t=2. Asserts via the dark-pixel centroid.
+    #[test]
+    fn shadow_offset_x_keyframes_shift_rendered_shadow_position() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 1280;
+        let frame_h: u32 = 720;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 100.0;
+        tb.color = [255, 255, 255, 255];
+        tb.shadow = Some(klipp_timeline::TitleShadow {
+            enabled: true,
+            color: [0, 0, 0, 255],
+            offset_x: 0.0,
+            offset_x_keyframes: vec![
+                Keyframe {
+                    time_secs: 0.0, value: -40.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                },
+                Keyframe {
+                    time_secs: 2.0, value: 40.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                },
+            ],
+            offset_y: 0.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 0.0,
+            blur_keyframes: Vec::new(),
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
+        let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
+
+        // Centroid of pixels where the shadow's dark colour dominates
+        // (R+G+B < ~150). The shadow mass shifts left at t=0 (-40px)
+        // and right at t=2 (+40px) relative to the white glyph.
+        let dark_centroid_x = |buf: &[u8]| -> f64 {
+            let mut sum = 0u64;
+            let mut n = 0u64;
+            for (i, p) in buf.chunks_exact(4).enumerate() {
+                if p[3] > 0 && (p[0] as u16 + p[1] as u16 + p[2] as u16) < 150 {
+                    let x = (i as u32) % frame_w;
+                    sum += x as u64;
+                    n += 1;
+                }
+            }
+            assert!(n > 0, "frame must contain visible shadow pixels");
+            sum as f64 / n as f64
+        };
+        let cx0 = dark_centroid_x(&buf_t0);
+        let cx2 = dark_centroid_x(&buf_t2);
+        assert!(
+            cx2 - cx0 > (frame_w as f64) * 0.02,
+            "shadow centroid must shift right between t=0 and t=2 (cx0={cx0}, cx2={cx2})"
+        );
+    }
+
+    /// Empty shadow keyframe vecs must NOT change the rendered output.
+    /// Pins the no-overhead path for unanimated shadows — same
+    /// invariant as the glow case.
+    #[test]
+    fn empty_shadow_keyframes_render_identical_to_pre_keyframe_path() {
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 80.0;
+        tb.shadow = Some(klipp_timeline::TitleShadow {
+            enabled: true,
+            color: [0, 0, 0, 200],
+            offset_x: 4.0,
+            offset_x_keyframes: Vec::new(),
+            offset_y: 4.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 6.0,
+            blur_keyframes: Vec::new(),
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_no_time = renderer.render(&td, frame_w, frame_h);
+        let buf_with_time = renderer.render_with_time(&td, frame_w, frame_h, None, 1.5);
+
+        assert_eq!(
+            &buf_no_time[..],
+            &buf_with_time[..],
+            "title with no shadow keyframes must render identically with or without time_secs"
         );
     }
 }
