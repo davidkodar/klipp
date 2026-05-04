@@ -58,8 +58,8 @@ pub(crate) struct TitleTemplate {
 /// walk every template's create_data and verify the contract that
 /// every animated template actually animates after going through the
 /// clip-creation path. Production code uses the private `TITLES`.
-#[doc(hidden)]
-pub const TITLES_FOR_TESTS: &[TitleTemplate] = TITLES;
+#[cfg(test)]
+pub(crate) const TITLES_FOR_TESTS: &[TitleTemplate] = TITLES;
 
 // ---------------------------------------------------------------------------
 // Helper factories
