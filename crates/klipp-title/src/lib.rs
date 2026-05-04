@@ -3235,11 +3235,12 @@ mod tests {
     let mut td = no_shadow.clone();
     if let Some(tb) = td.primary_text_mut() {
         tb.shadow = Some(klipp_timeline::TitleShadow {
-                color: [0, 0, 0, 200],
-                offset_x: 4.0,
-                offset_y: 4.0,
-                blur: 0.0,
-             enabled: true });
+            color: [0, 0, 0, 200],
+            offset_x: 4.0,
+            offset_y: 4.0,
+            blur: 0.0,
+            enabled: true,
+        });
     }
     td
 };
@@ -3263,10 +3264,11 @@ mod tests {
         let with_outline = {
     let mut td = no_outline.clone();
     if let Some(tb) = td.primary_text_mut() {
-        if let Some(ol) = (Some(klipp_timeline::TextOutline {
-                color: [255, 0, 0, 255],
-                width: 4.0,
-             enabled: true })) { tb.outlines.insert(0, ol); }
+        tb.outlines.insert(0, klipp_timeline::TextOutline {
+            color: [255, 0, 0, 255],
+            width: 4.0,
+            enabled: true,
+        });
     }
     td
 };
@@ -3291,10 +3293,11 @@ mod tests {
     let mut td = no_glow.clone();
     if let Some(tb) = td.primary_text_mut() {
         tb.glow = Some(klipp_timeline::TextGlow {
-                color: [0, 255, 0, 255],
-                radius: 10.0,
-                intensity: 0.8,
-             enabled: true });
+            color: [0, 255, 0, 255],
+            radius: 10.0,
+            intensity: 0.8,
+            enabled: true,
+        });
     }
     td
 };
@@ -3313,9 +3316,10 @@ mod tests {
     tb.text = "GRADIENT".to_string();
     tb.font_size = 100.0;
     tb.gradient = Some(klipp_timeline::TextGradient {
-                top_color: [255, 0, 0, 255],
-                bottom_color: [0, 0, 255, 255],
-             enabled: true });
+        top_color: [255, 0, 0, 255],
+        bottom_color: [0, 0, 255, 255],
+        enabled: true,
+    });
     let mut td = klipp_timeline::TitleData::single_text(tb);
     td
 };
@@ -3353,12 +3357,13 @@ mod tests {
     let mut td = no_ext.clone();
     if let Some(tb) = td.primary_text_mut() {
         tb.extrusion = Some(klipp_timeline::TextExtrusion {
-                depth: 10.0,
-                angle: 135.0,
-                face_color: [0, 0, 0, 0],
-                side_color: [100, 50, 50, 255],
-                lighting: 0.5,
-             enabled: true });
+            depth: 10.0,
+            angle: 135.0,
+            face_color: [0, 0, 0, 0],
+            side_color: [100, 50, 50, 255],
+            lighting: 0.5,
+            enabled: true,
+        });
     }
     td
 };
@@ -3559,7 +3564,8 @@ mod tests {
         tb.outlines.push(klipp_timeline::TextOutline {
             color: [255, 0, 0, 255],
             width: 4.0,
-         enabled: true });
+            enabled: true,
+        });
         let td = klipp_timeline::TitleData::single_text(tb);
 
         let count_red = |buf: &[u8]| -> usize {
@@ -3721,7 +3727,8 @@ mod tests {
             entrance: klipp_timeline::CharEntrance::BlurIn,
             wave_amplitude: 0.0,
             wave_speed: 1.0,
-         enabled: true });
+            enabled: true,
+        });
         let td = klipp_timeline::TitleData::single_text(tb);
 
         // local_t at t=0.2 = 0.5 → mid-entrance, decent alpha.
@@ -3896,7 +3903,8 @@ mod tests {
             entrance: klipp_timeline::CharEntrance::FadeIn,
             wave_amplitude: 0.0,
             wave_speed: 1.0,
-         enabled: true });
+            enabled: true,
+        });
         let td = klipp_timeline::TitleData::single_text(tb);
 
         let buf_t0 = renderer.render_with_time(&td, 1920, 1080, None, 0.0);
@@ -3927,7 +3935,8 @@ mod tests {
             entrance: klipp_timeline::CharEntrance::SlideUp,
             wave_amplitude: 0.0,
             wave_speed: 1.0,
-         enabled: true });
+            enabled: true,
+        });
         let td = klipp_timeline::TitleData::single_text(tb);
 
         let frame_a = renderer.render_with_time(&td, 1280, 720, None, 0.05);

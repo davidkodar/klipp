@@ -13289,12 +13289,14 @@ impl KlippApp {
                                 tb.outlines = vec![klipp_timeline::TextOutline {
                                     color: [10, 10, 14, 180],
                                     width: 2.0,
-                                 enabled: true }];
+                                    enabled: true,
+                                }];
                                 tb.glow = Some(klipp_timeline::TextGlow {
                                     color: *accent_color,
                                     radius: 12.0,
                                     intensity: 1.4,
-                                 enabled: true });
+                                    enabled: true,
+                                });
                             }
                         }
                     }
@@ -14114,7 +14116,7 @@ impl KlippApp {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(tb) = target_textbox_mut(td, target_oid) {
                                 tb.outlines = outlines.iter().map(|(color, width)| {
-                                    klipp_timeline::TextOutline { color: *color, width: *width , enabled: true }
+                                    klipp_timeline::TextOutline { color: *color, width: *width, enabled: true }
                                 }).collect();
                             }
                         }
@@ -16557,7 +16559,7 @@ impl KlippApp {
                                             (true, true) => klipp_timeline::FontStyle::BoldItalic,
                                         };
                                         let outline = if s.outline > 0.0 {
-                                            Some(klipp_timeline::TextOutline { color: [0, 0, 0, 255], width: s.outline , enabled: true })
+                                            Some(klipp_timeline::TextOutline { color: [0, 0, 0, 255], width: s.outline, enabled: true })
                                         } else { None };
                                         let shadow = if s.shadow > 0.0 {
                                             Some(klipp_timeline::TitleShadow {
@@ -16565,7 +16567,8 @@ impl KlippApp {
                                                 offset_x: s.shadow,
                                                 offset_y: s.shadow,
                                                 blur: s.shadow,
-                                             enabled: true })
+                                                enabled: true,
+                                            })
                                         } else { None };
                                         (
                                             if s.font_name.is_empty() { String::new() } else { s.font_name.clone() },
@@ -16580,7 +16583,7 @@ impl KlippApp {
                                         String::new(),
                                         32.0,
                                         [255, 255, 255, 255],
-                                        Some(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0 , enabled: true }),
+                                        Some(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0, enabled: true }),
                                         None,
                                         klipp_timeline::FontStyle::Regular,
                                     ),
@@ -16623,7 +16626,7 @@ impl KlippApp {
                                 tb.font_size = 32.0;
                                 tb.font_name = String::new();
                                 tb.alignment = klipp_timeline::TextAlignment::Center;
-                                tb.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0 , enabled: true });
+                                tb.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0, enabled: true });
                                 let mut title_data = klipp_timeline::TitleData::single_text(tb);
                                 if let Some(o) = title_data.objects.first_mut() {
                                     o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
