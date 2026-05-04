@@ -1284,7 +1284,6 @@ fn show_title_position_block(
 ) {
     use crate::state::TitlePositionPreset;
     use crate::widgets::inspector_group::quick_preset_button;
-    use crate::widgets::scrubby_param::scrubby_param_row;
 
     let target_oid = state
         .selected_title_object
@@ -1304,8 +1303,6 @@ fn show_title_position_block(
     let kfs_y: &[klipp_core::Keyframe] = target_obj
         .map(|o| o.transform.center_y_keyframes.as_slice())
         .unwrap_or(&[]);
-    let ks_x = title_object_keyframe_state(kfs_x, clip_time_secs);
-    let ks_y = title_object_keyframe_state(kfs_y, clip_time_secs);
 
     ui.label(
         egui::RichText::new("POSITION")
@@ -1314,20 +1311,24 @@ fn show_title_position_block(
     );
     ui.add_space(4.0);
 
-    // X / Y stacked scrubby rows with per-layer keyframe affordances.
-    // The diamond toggles a keyframe at the playhead; scrubby drag
-    // upserts when keyframes exist, otherwise it edits the static
-    // fallback through SetTitlePosition.
+    // X / Y compact 50/50 framed inputs. Default visual: just the
+    // axis letter on the left and the DragValue on the right —
+    // matching the reference. Diamond shows only when keyframes
+    // exist on that axis (option b), keeping the unanimated default
+    // state visually clean.
     let mut x = pos.x;
     let mut y = pos.y;
-    let resp_x = scrubby_param_row(
-        ui, "X", &mut x, 0.0..=1.0, 0.5, 0.001, 2, "",
-        target_oid.map(|_| ks_x),
-    );
-    let resp_y = scrubby_param_row(
-        ui, "Y", &mut y, 0.0..=1.0, 0.5, 0.001, 2, "",
-        target_oid.map(|_| ks_y),
-    );
+    let avail = ui.available_width();
+    let gap = 8.0;
+    let col_w = ((avail - gap) * 0.5).floor();
+    let (resp_x, resp_y) = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            let rx = compact_axis_input(ui, theme, "X", &mut x, col_w, kfs_x);
+            let ry = compact_axis_input(ui, theme, "Y", &mut y, col_w, kfs_y);
+            (rx, ry)
+        })
+        .inner;
     handle_position_axis_response(
         cmds, clip_id, target_oid, klipp_core::TitlePositionAxis::X,
         x, pos.y, kfs_x, clip_time_secs, &resp_x,
@@ -1512,12 +1513,19 @@ fn show_title_pinned_core_textbox(
             });
         ui.add_space(8.0);
         let mut size = display_size;
-        let size_resp = ui.add(
-            egui::DragValue::new(&mut size)
-                .range(12.0..=300.0)
-                .speed(1.0)
-                .suffix(" pt"),
-        );
+        let size_resp = egui::Frame::none()
+            .fill(theme.bg_raised)
+            .rounding(4.0)
+            .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+            .show(ui, |ui| {
+                ui.add(
+                    egui::DragValue::new(&mut size)
+                        .range(12.0..=300.0)
+                        .speed(1.0)
+                        .suffix(" pt"),
+                )
+            })
+            .inner;
         if size_resp.changed() {
             if has_selection && sel_range.0 < sel_range.1 {
                 cmds.push(AppCommand::ApplyTitleStyle {
@@ -1648,11 +1656,17 @@ fn show_title_pinned_core_textbox(
             new_alpha_u8 = Some((opacity_pct / 100.0 * 255.0).round() as u8);
         }
         ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new(format!("{}%", opacity_pct as u32))
-                .size(11.0)
-                .color(theme.text_secondary),
-        );
+        egui::Frame::none()
+            .fill(theme.bg_raised)
+            .rounding(4.0)
+            .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{}%", opacity_pct as u32))
+                        .size(11.0)
+                        .color(theme.text_secondary),
+                );
+            });
         if color_is_mixed {
             ui.label(egui::RichText::new("Mixed").size(9.0).color(theme.accent));
         }
@@ -2640,6 +2654,77 @@ fn show_title_layers_panel(
             }
         }
     });
+}
+
+/// Compact framed axis input used by the Position block. Shape:
+/// [ X        0.15 ◇ ]  with the diamond visible ONLY when keyframes
+/// exist on this axis (option b — keeps the unanimated default
+/// visually clean per the redesign reference). The returned
+/// ScrubbyParamResponse-shaped struct lets the existing
+/// `handle_position_axis_response` consume it without changes.
+fn compact_axis_input(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    label: &str,
+    value: &mut f32,
+    col_w: f32,
+    keyframes: &[klipp_core::Keyframe],
+) -> crate::widgets::scrubby_param::ScrubbyParamResponse {
+    let has_kfs = !keyframes.is_empty();
+    let mut changed = false;
+    let mut keyframe_toggled = false;
+    egui::Frame::none()
+        .fill(theme.bg_raised)
+        .rounding(4.0)
+        .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+        .show(ui, |ui| {
+            ui.set_width(col_w - 16.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(label)
+                        .size(11.0)
+                        .color(theme.text_dim),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Diamond only when this axis already has
+                    // keyframes; clicking removes the keyframe at the
+                    // playhead, mirroring the scrubby diamond.
+                    if has_kfs {
+                        let diamond = egui::Button::new(
+                            egui::RichText::new("\u{25C6}")
+                                .size(10.0)
+                                .color(theme.accent),
+                        )
+                        .frame(false)
+                        .min_size(egui::vec2(14.0, 14.0));
+                        if ui.add(diamond).clicked() {
+                            keyframe_toggled = true;
+                        }
+                    }
+                    let dv_resp = ui.add(
+                        egui::DragValue::new(value)
+                            .range(0.0..=1.0)
+                            .speed(0.001)
+                            .fixed_decimals(2),
+                    );
+                    if dv_resp.changed() {
+                        changed = true;
+                    }
+                });
+            });
+        });
+    crate::widgets::scrubby_param::ScrubbyParamResponse {
+        changed,
+        drag_started: false,
+        drag_stopped: false,
+        lost_focus: false,
+        reset_clicked: false,
+        keyframe_toggled,
+        keyframe_nav_prev: false,
+        keyframe_nav_next: false,
+        keyframe_set_interpolation: None,
+        keyframe_ease_preset: None,
+    }
 }
 
 /// Compact pill-style toggle button used by the BIUS + LCR rows in
