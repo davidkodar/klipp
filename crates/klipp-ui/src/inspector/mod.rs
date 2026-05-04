@@ -599,6 +599,110 @@ fn handle_position_axis_response(
     }
 }
 
+/// Translate a `ScrubbyParamResponse` for one keyframable TextGlow
+/// param into the right AppCommand(s). Same three affordances as the
+/// position axis handler but routed through the per-effect command
+/// family with a stringly-typed `param_key`:
+/// - Diamond click: toggle a keyframe at the playhead.
+/// - Scrubby drag (when keyframes exist): upsert at the playhead.
+/// - Scrubby drag (when no keyframes): SetTitleGlow updates the
+///   static fallback. Static-only when no object is selected.
+/// - Right-click → set interpolation: dispatched per-param.
+fn handle_glow_axis_response(
+    cmds: &mut Vec<AppCommand>,
+    clip_id: klipp_core::ClipId,
+    target_oid: Option<klipp_timeline::TitleObjectId>,
+    param_key: &'static str,
+    new_value: f32,
+    cur: &klipp_timeline::TextGlow,
+    keyframes: &[klipp_core::Keyframe],
+    clip_time_secs: f64,
+    resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+) {
+    let Some(oid) = target_oid else {
+        // No specific layer selected — fall back to the static
+        // SetTitleGlow path. Drag-only; the diamond does nothing
+        // because we have no object to attach a keyframe to.
+        if resp.changed {
+            let (radius, intensity) = match param_key {
+                klipp_core::title_effect_keys::GLOW_RADIUS => (new_value, cur.intensity),
+                klipp_core::title_effect_keys::GLOW_INTENSITY => (cur.radius, new_value),
+                _ => (cur.radius, cur.intensity),
+            };
+            cmds.push(AppCommand::SetTitleGlow {
+                clip_id, enabled: true,
+                color: cur.color, radius, intensity,
+            });
+        }
+        return;
+    };
+    let object_id = oid.0;
+
+    if resp.keyframe_toggled {
+        if keyframes
+            .iter()
+            .any(|k| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                time_secs: clip_time_secs,
+            });
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                time_secs: clip_time_secs,
+                value: new_value,
+            });
+        }
+        return;
+    }
+
+    if resp.changed {
+        if keyframes.is_empty() {
+            // No keyframes — drag edits the static fallback through
+            // the existing SetTitleGlow command, preserving the
+            // un-keyframed fields.
+            let (radius, intensity) = match param_key {
+                klipp_core::title_effect_keys::GLOW_RADIUS => (new_value, cur.intensity),
+                klipp_core::title_effect_keys::GLOW_INTENSITY => (cur.radius, new_value),
+                _ => (cur.radius, cur.intensity),
+            };
+            cmds.push(AppCommand::SetTitleGlow {
+                clip_id, enabled: true,
+                color: cur.color, radius, intensity,
+            });
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                time_secs: clip_time_secs,
+                value: new_value,
+            });
+        }
+    }
+
+    if let Some(interp) = resp.keyframe_set_interpolation {
+        if let Some((idx, _)) = keyframes
+            .iter()
+            .enumerate()
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                keyframe_index: idx,
+                interpolation: interp,
+            });
+        }
+    }
+}
+
 /// Shared Position block: X/Y inputs + three sticky-active quick-preset
 /// buttons (Top / Center / Lower 3rd). Active highlight stays while X/Y
 /// are within ±0.005 of the canonical coords AND that preset was the
@@ -1223,6 +1327,8 @@ fn show_title_effects_group(
     clip_id: klipp_core::ClipId,
     tb: &klipp_timeline::TextBox,
     cmds: &mut Vec<AppCommand>,
+    target_oid: Option<klipp_timeline::TitleObjectId>,
+    clip_time_secs: f64,
 ) {
     use crate::widgets::inspector_group::{inspector_subgroup_card, GroupStatus};
 
@@ -1263,32 +1369,63 @@ fn show_title_effects_group(
             intensity_keyframes: Vec::new(),
         });
         let mut enabled = glow_enabled;
+        // Display the animated radius/intensity value at the playhead
+        // when keyframes exist — matches what the renderer is showing
+        // right now. Falls back to the static value when unanimated.
+        let display_radius = cur.evaluated_radius(clip_time_secs);
+        let display_intensity = cur.evaluated_intensity(clip_time_secs);
         let summary = if enabled {
-            format!("{} px · {}%", cur.radius.round() as u32, (cur.intensity * 100.0).round() as u32)
+            format!("{} px · {}%", display_radius.round() as u32, (display_intensity * 100.0).round() as u32)
         } else { String::new() };
+        let kfs_radius: &[klipp_core::Keyframe] = tb
+            .glow
+            .as_ref()
+            .map(|g| g.radius_keyframes.as_slice())
+            .unwrap_or(&[]);
+        let kfs_intensity: &[klipp_core::Keyframe] = tb
+            .glow
+            .as_ref()
+            .map(|g| g.intensity_keyframes.as_slice())
+            .unwrap_or(&[]);
+        let ks_radius = title_object_keyframe_state(kfs_radius, clip_time_secs);
+        let ks_intensity = title_object_keyframe_state(kfs_intensity, clip_time_secs);
         inspector_subgroup_card(ui, "Glow", &mut enabled,
             (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
-            let mut radius = cur.radius;
-            let mut intensity = cur.intensity;
+            let mut radius = display_radius;
+            let mut intensity = display_intensity;
             let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
-            let mut changed = false;
+            let mut color_changed = false;
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Color").size(11.0).color(theme.text_dim));
-                changed |= ui.color_edit_button_srgba(&mut col).changed();
+                color_changed = ui.color_edit_button_srgba(&mut col).changed();
             });
-            changed |= crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Radius", &mut radius, 1.0..=40.0, 10.0, 0.5, 1, " px", None,
-            ).changed;
-            changed |= crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Intensity", &mut intensity, 0.0..=1.0, 0.8, 0.05, 2, "", None,
-            ).changed;
-            if changed {
+            let resp_radius = crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Radius", &mut radius, 1.0..=40.0, 10.0, 0.5, 1, " px",
+                target_oid.map(|_| ks_radius),
+            );
+            let resp_intensity = crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Intensity", &mut intensity, 0.0..=1.0, 0.8, 0.05, 2, "",
+                target_oid.map(|_| ks_intensity),
+            );
+            // Color change always goes through the static SetTitleGlow
+            // path — colour isn't keyframable in this slice.
+            if color_changed {
                 cmds.push(AppCommand::SetTitleGlow {
                     clip_id, enabled: true,
                     color: [col.r(), col.g(), col.b(), col.a()],
-                    radius, intensity,
+                    radius: cur.radius, intensity: cur.intensity,
                 });
             }
+            handle_glow_axis_response(
+                cmds, clip_id, target_oid,
+                klipp_core::title_effect_keys::GLOW_RADIUS,
+                radius, &cur, kfs_radius, clip_time_secs, &resp_radius,
+            );
+            handle_glow_axis_response(
+                cmds, clip_id, target_oid,
+                klipp_core::title_effect_keys::GLOW_INTENSITY,
+                intensity, &cur, kfs_intensity, clip_time_secs, &resp_intensity,
+            );
         });
         if enabled != glow_enabled {
             cmds.push(AppCommand::SetTitleGlow {
@@ -2204,7 +2341,7 @@ fn show_title_editor(
 
     // ── Effects group ──
     if let Some(tb) = tb_target {
-        show_title_effects_group(ui, theme, clip_id, tb, cmds);
+        show_title_effects_group(ui, theme, clip_id, tb, cmds, target_oid, clip_time_secs);
         ui.add_space(8.0);
     }
 
