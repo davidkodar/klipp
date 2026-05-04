@@ -1637,7 +1637,16 @@ fn show_title_pinned_core_textbox(
     let mut color_changed = false;
     let mut new_alpha_u8: Option<u8> = None;
     ui.horizontal(|ui| {
-        if ui.color_edit_button_srgba(&mut col).changed() {
+        // Larger swatch to match the reference (~44x28 px). egui's
+        // default color_edit_button is tiny; bumping interact_size
+        // in a scoped Ui sizes the swatch up without custom popup code.
+        let swatch_changed = ui
+            .scope(|ui| {
+                ui.spacing_mut().interact_size = egui::vec2(44.0, 28.0);
+                ui.color_edit_button_srgba(&mut col).changed()
+            })
+            .inner;
+        if swatch_changed {
             color_changed = true;
         }
         ui.add_space(6.0);
@@ -2809,7 +2818,10 @@ fn show_title_layer_row(
     use klipp_timeline::TitleObjectContent;
 
     let is_selected = Some(obj.id) == selected_oid;
-    let row_h = 32.0;
+    // 40 px row height matches the reference's roomier proportions —
+    // gives the eye / lock / T-badge / name + Front-label cluster
+    // breathing room without crowding the chevron + delete affordances.
+    let row_h = 40.0;
     let (rect, resp) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), row_h),
         egui::Sense::click(),
