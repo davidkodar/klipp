@@ -1544,7 +1544,10 @@ fn show_title_pinned_core_textbox(
     });
     ui.add_space(8.0);
 
-    // 3. B / I / U / S buttons (left) + L / C / R alignment (right).
+    // 3. B / I / U / S pill buttons (left) + L / C / R alignment
+    //    pill buttons (right). Both groups share a consistent
+    //    button height + inactive fill so the row reads as one
+    //    coordinated control strip.
     let is_bold = matches!(
         tb.font_style,
         klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic
@@ -1554,10 +1557,8 @@ fn show_title_pinned_core_textbox(
         klipp_timeline::FontStyle::Italic | klipp_timeline::FontStyle::BoldItalic
     );
     ui.horizontal(|ui| {
-        if ui
-            .selectable_label(is_bold, egui::RichText::new(" B ").strong().size(13.0))
-            .clicked()
-        {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if pill_toggle_button(ui, theme, "B", is_bold, |r| r.strong().size(13.0)).clicked() {
             let new_style = match (!is_bold, is_italic) {
                 (true, true) => klipp_timeline::FontStyle::BoldItalic,
                 (true, false) => klipp_timeline::FontStyle::Bold,
@@ -1573,10 +1574,7 @@ fn show_title_pinned_core_textbox(
                 color: tb.color,
             });
         }
-        if ui
-            .selectable_label(is_italic, egui::RichText::new(" I ").italics().size(13.0))
-            .clicked()
-        {
+        if pill_toggle_button(ui, theme, "I", is_italic, |r| r.italics().size(13.0)).clicked() {
             let new_style = match (is_bold, !is_italic) {
                 (true, true) => klipp_timeline::FontStyle::BoldItalic,
                 (true, false) => klipp_timeline::FontStyle::Bold,
@@ -1592,17 +1590,10 @@ fn show_title_pinned_core_textbox(
                 color: tb.color,
             });
         }
-        if ui
-            .selectable_label(tb.underline, egui::RichText::new(" U ").underline().size(13.0))
-            .clicked()
-        {
+        if pill_toggle_button(ui, theme, "U", tb.underline, |r| r.underline().size(13.0)).clicked() {
             cmds.push(AppCommand::SetTitleUnderline { clip_id, underline: !tb.underline });
         }
-        if ui
-            .selectable_label(
-                tb.strikethrough,
-                egui::RichText::new(" S ").strikethrough().size(13.0),
-            )
+        if pill_toggle_button(ui, theme, "S", tb.strikethrough, |r| r.strikethrough().size(13.0))
             .clicked()
         {
             cmds.push(AppCommand::SetTitleStrikethrough {
@@ -1611,15 +1602,14 @@ fn show_title_pinned_core_textbox(
             });
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
             let cur = match tb.alignment {
                 klipp_timeline::TextAlignment::Right => 2u8,
                 klipp_timeline::TextAlignment::Center => 1,
                 klipp_timeline::TextAlignment::Left => 0,
             };
-            for (val, label) in [(2u8, " R "), (1, " C "), (0, " L ")] {
-                if ui
-                    .selectable_label(cur == val, egui::RichText::new(label).size(13.0))
-                    .clicked()
+            for (val, label) in [(2u8, "R"), (1, "C"), (0, "L")] {
+                if pill_toggle_button(ui, theme, label, cur == val, |r| r.size(13.0)).clicked()
                     && cur != val
                 {
                     cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: val });
@@ -2607,33 +2597,111 @@ fn show_title_layers_panel(
         });
 
     // ── Add buttons ──
+    // Dashed-border ghost style sized 50/50 across the panel — reads
+    // as an "add a new thing" affordance rather than a regular action
+    // button. The dashed stroke is hand-rolled because egui's Stroke
+    // is solid only.
     ui.add_space(6.0);
+    let btn_h = 32.0;
+    let gap = 8.0;
+    let avail = ui.available_width();
+    let col_w = ((avail - gap) * 0.5).floor();
     ui.horizontal(|ui| {
-        if ui
-            .add(
-                egui::Button::new(
-                    egui::RichText::new("\u{002B} Text").size(11.0).color(theme.text_primary),
-                )
-                .fill(theme.bg_raised),
-            )
-            .on_hover_text("Add a new TextBox layer")
-            .clicked()
-        {
-            cmds.push(AppCommand::AddTitleObject { clip_id, kind: 0 });
-        }
-        if ui
-            .add(
-                egui::Button::new(
-                    egui::RichText::new("\u{002B} Shape").size(11.0).color(theme.text_primary),
-                )
-                .fill(theme.bg_raised),
-            )
-            .on_hover_text("Add a new Shape layer (rectangle)")
-            .clicked()
-        {
-            cmds.push(AppCommand::AddTitleObject { clip_id, kind: 1 });
+        ui.spacing_mut().item_spacing.x = gap;
+        for (kind, label, hover) in [
+            (0u8, "\u{002B} Text", "Add a new TextBox layer"),
+            (1u8, "\u{002B} Shape", "Add a new Shape layer (rectangle)"),
+        ] {
+            let (rect, resp) = ui.allocate_exact_size(
+                egui::vec2(col_w, btn_h),
+                egui::Sense::click(),
+            );
+            let resp = resp.on_hover_text(hover);
+            let stroke_color = if resp.hovered() {
+                theme.text_secondary
+            } else {
+                theme.border
+            };
+            let label_color = if resp.hovered() {
+                theme.text_primary
+            } else {
+                theme.text_secondary
+            };
+            paint_dashed_rect(ui, rect, stroke_color, 4.0, 4.0, 1.0, 4.0);
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(11.0),
+                label_color,
+            );
+            if resp.clicked() {
+                cmds.push(AppCommand::AddTitleObject { clip_id, kind });
+            }
         }
     });
+}
+
+/// Compact pill-style toggle button used by the BIUS + LCR rows in
+/// the pinned core. Active state shows the accent fill; inactive uses
+/// `bg_raised` so the buttons read as one coordinated control strip
+/// rather than four free-standing text labels (which `selectable_label`
+/// produces). The closure lets the caller layer style modifiers
+/// (`strong`, `italics`, `underline`, `strikethrough`) onto the label.
+fn pill_toggle_button(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    label: &str,
+    active: bool,
+    style_label: impl FnOnce(egui::RichText) -> egui::RichText,
+) -> egui::Response {
+    let fill = if active { theme.accent } else { theme.bg_raised };
+    let text_color = if active { theme.text_on_accent } else { theme.text_secondary };
+    let rich = style_label(egui::RichText::new(label).color(text_color));
+    let btn = egui::Button::new(rich)
+        .fill(fill)
+        .min_size(egui::vec2(28.0, 26.0))
+        .rounding(4.0);
+    ui.add(btn)
+}
+
+/// Paint a dashed rectangle outline. egui's `Stroke` only supports
+/// solid lines so we lay down four `Shape::dashed_line` edges by hand.
+/// `dash_len` / `gap_len` set the on/off pattern; `corner_radius` is
+/// matched by inset so visually the rectangle looks rounded — the
+/// dashes themselves stay axis-aligned.
+fn paint_dashed_rect(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    stroke_color: egui::Color32,
+    dash_len: f32,
+    gap_len: f32,
+    width: f32,
+    corner_radius: f32,
+) {
+    let stroke = egui::Stroke::new(width, stroke_color);
+    let inset = corner_radius.max(0.0);
+    let p_tl = egui::pos2(rect.min.x + inset, rect.min.y);
+    let p_tr = egui::pos2(rect.max.x - inset, rect.min.y);
+    let p_bl = egui::pos2(rect.min.x + inset, rect.max.y);
+    let p_br = egui::pos2(rect.max.x - inset, rect.max.y);
+    let p_lt = egui::pos2(rect.min.x, rect.min.y + inset);
+    let p_lb = egui::pos2(rect.min.x, rect.max.y - inset);
+    let p_rt = egui::pos2(rect.max.x, rect.min.y + inset);
+    let p_rb = egui::pos2(rect.max.x, rect.max.y - inset);
+    let painter = ui.painter();
+    for shape in egui::Shape::dashed_line(&[p_tl, p_tr], stroke, dash_len, gap_len) {
+        painter.add(shape);
+    }
+    for shape in egui::Shape::dashed_line(&[p_bl, p_br], stroke, dash_len, gap_len) {
+        painter.add(shape);
+    }
+    for shape in egui::Shape::dashed_line(&[p_lt, p_lb], stroke, dash_len, gap_len) {
+        painter.add(shape);
+    }
+    for shape in egui::Shape::dashed_line(&[p_rt, p_rb], stroke, dash_len, gap_len) {
+        painter.add(shape);
+    }
 }
 
 /// Render one layer row inside the layers panel. Order:
@@ -3009,7 +3077,11 @@ fn show_title_editor(
     // adds new TextBox / Shape layers here and switches between
     // them. Selection feeds `state.selected_title_object`, which
     // both the inspector and the on-canvas editor share.
-    ui.label(egui::RichText::new("Layers").strong().size(11.0));
+    ui.label(
+        egui::RichText::new("LAYERS")
+            .size(10.0)
+            .color(theme.text_dim),
+    );
     ui.add_space(4.0);
     show_title_layers_panel(ui, theme, clip_id, td, state, cmds);
     ui.separator();
