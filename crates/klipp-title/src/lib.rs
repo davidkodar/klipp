@@ -1931,20 +1931,34 @@ impl TitleRenderer {
         _height: u32,
     ) {
         let tb = title.primary_text_or_default();
-        // Phase 1 adapter: read the new TextureFill struct, return
-        // early when disabled or when the source isn't a file path.
-        // Procedural presets + UV transforms / opacity / tint will
-        // wire in during Phase 2.
         let tf = match tb.texture_fill.as_ref() {
-            Some(t) if t.enabled => t,
-            _ => return,
-        };
-        let tex_path = match &tf.source {
-            klipp_timeline::TextureSource::File(p) if !p.is_empty() => p.clone(),
+            Some(t) if t.enabled => t.clone(),
             _ => return,
         };
 
         if layout.glyph_count == 0 || layout.mask_w == 0 || layout.mask_h == 0 {
+            return;
+        }
+
+        // Resolve the texture source into an owned RGBA buffer plus
+        // dimensions. File paths go through the existing load cache;
+        // procedural presets generate at the standard 256×256 native
+        // size — every preset is cheap enough to regenerate per frame
+        // (~65 k pixels with constant-time math each).
+        let (tex_data, tex_w, tex_h): (Vec<u8>, u32, u32) = match &tf.source {
+            klipp_timeline::TextureSource::File(p) if !p.is_empty() => {
+                match self.load_texture_fill(p) {
+                    Some((d, w, h)) => (d.to_vec(), w, h),
+                    None => return,
+                }
+            }
+            klipp_timeline::TextureSource::Preset(id) => {
+                let (d, w, h) = generate_preset_texture(*id, 256, 256);
+                (d, w, h)
+            }
+            _ => return,
+        };
+        if tex_data.is_empty() || tex_w == 0 || tex_h == 0 {
             return;
         }
 
@@ -1954,16 +1968,28 @@ impl TitleRenderer {
         let text_w = (layout.text_right - layout.text_left).max(1.0);
         let text_h = (layout.text_bottom - layout.text_top).max(1.0);
 
-        let (tex_data, tex_w, tex_h) = match self.load_texture_fill(&tex_path) {
-            Some(t) => t,
-            None => return,
-        };
-
         let mask_w = layout.mask_w as usize;
         let mask_h = layout.mask_h as usize;
         let mask_x0 = layout.mask_x0 as usize;
         let mask_y0 = layout.mask_y0 as usize;
         let w = width as usize;
+
+        // Pre-compute the per-pixel UV transform constants so the
+        // hot loop only touches scalar math.
+        let scale_inv = if tf.scale.abs() < 1e-6 { 1.0 } else { 1.0 / tf.scale };
+        let rot_rad = tf.rotation.to_radians();
+        let cos_r = rot_rad.cos();
+        let sin_r = rot_rad.sin();
+        let off_u = tf.offset_x / tex_w as f32;
+        let off_v = tf.offset_y / tex_h as f32;
+        let opacity = tf.opacity.clamp(0.0, 1.0);
+        let tint_r = tf.tint[0] as f32 / 255.0;
+        let tint_g = tf.tint[1] as f32 / 255.0;
+        let tint_b = tf.tint[2] as f32 / 255.0;
+        // Aspect ratios used by Fit / Cover tile modes.
+        let aspect_text = text_w / text_h;
+        let aspect_tex = tex_w as f32 / tex_h as f32;
+        let tile_mode = tf.tile_mode;
 
         for my in 0..mask_h {
             for mx in 0..mask_w {
@@ -1978,28 +2004,229 @@ impl TitleRenderer {
                     continue;
                 }
 
-                // Map pixel position within the text bounding box to texture coordinates
-                let u = ((global_x as f32 - text_left) / text_w).clamp(0.0, 1.0);
-                let v = ((global_y as f32 - text_top) / text_h).clamp(0.0, 1.0);
+                // Base UV — pixel position normalised inside the
+                // text bbox.
+                let mut u = (global_x as f32 - text_left) / text_w;
+                let mut v = (global_y as f32 - text_top) / text_h;
 
-                let tx = ((u * (tex_w as f32 - 1.0)).round() as u32).min(tex_w - 1);
-                let ty = ((v * (tex_h as f32 - 1.0)).round() as u32).min(tex_h - 1);
+                // Tile-mode adjustment to UV (Fit / Cover apply
+                // before rotation/offset/scale so the texture stays
+                // in its native aspect when the user dials those
+                // modes).
+                let mut skip = false;
+                match tile_mode {
+                    klipp_timeline::TextureTileMode::Stretch => {
+                        // No adjustment — UV maps directly to bbox.
+                    }
+                    klipp_timeline::TextureTileMode::Tile => {
+                        // Adjustment happens in the rem_euclid step
+                        // below after offset/scale/rotation.
+                    }
+                    klipp_timeline::TextureTileMode::Fit => {
+                        // Preserve aspect, fit inside bbox — extra
+                        // space outside the texture footprint is
+                        // skipped (renders the underlying fill).
+                        if aspect_text > aspect_tex {
+                            let f = aspect_tex / aspect_text;
+                            u = (u - 0.5) / f + 0.5;
+                        } else if aspect_text < aspect_tex {
+                            let f = aspect_text / aspect_tex;
+                            v = (v - 0.5) / f + 0.5;
+                        }
+                        if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
+                            skip = true;
+                        }
+                    }
+                    klipp_timeline::TextureTileMode::Cover => {
+                        // Preserve aspect, cover bbox — overflow
+                        // is cropped via clamp at sample time.
+                        if aspect_text > aspect_tex {
+                            let f = aspect_text / aspect_tex;
+                            v = (v - 0.5) * f + 0.5;
+                        } else if aspect_text < aspect_tex {
+                            let f = aspect_tex / aspect_text;
+                            u = (u - 0.5) * f + 0.5;
+                        }
+                    }
+                }
+                if skip {
+                    continue;
+                }
+
+                // Rotation around (0.5, 0.5)
+                if tf.rotation != 0.0 {
+                    let cu = u - 0.5;
+                    let cv = v - 0.5;
+                    u = 0.5 + cu * cos_r - cv * sin_r;
+                    v = 0.5 + cu * sin_r + cv * cos_r;
+                }
+
+                // Offset (in texture-space pixels normalised by tex
+                // size) and scale.
+                u = (u - off_u) * scale_inv;
+                v = (v - off_v) * scale_inv;
+
+                // Sampling: tile wraps with rem_euclid so it works
+                // for any UV; other modes clamp.
+                let (tu, tv) = match tile_mode {
+                    klipp_timeline::TextureTileMode::Tile => (u.rem_euclid(1.0), v.rem_euclid(1.0)),
+                    _ => {
+                        if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
+                            // Outside texture for non-tile modes
+                            // (Stretch/Fit/Cover after transform):
+                            // skip pixel so the underlying fill
+                            // remains visible.
+                            continue;
+                        }
+                        (u.clamp(0.0, 1.0), v.clamp(0.0, 1.0))
+                    }
+                };
+
+                let tx = ((tu * (tex_w as f32 - 1.0)).round() as u32).min(tex_w - 1);
+                let ty = ((tv * (tex_h as f32 - 1.0)).round() as u32).min(tex_h - 1);
                 let tex_idx = ((ty * tex_w + tx) * 4) as usize;
                 if tex_idx + 3 >= tex_data.len() {
                     continue;
                 }
 
                 let buf_idx = (global_y * w + global_x) * 4;
-                let alpha = mask_alpha as f32 / 255.0;
+                let alpha_norm = mask_alpha as f32 / 255.0;
 
-                // Replace the fill color with the texture color, modulated by mask alpha
-                buf[buf_idx] = (tex_data[tex_idx] as f32 * alpha) as u8;
-                buf[buf_idx + 1] = (tex_data[tex_idx + 1] as f32 * alpha) as u8;
-                buf[buf_idx + 2] = (tex_data[tex_idx + 2] as f32 * alpha) as u8;
+                // Sample + tint multiply.
+                let tex_r = tex_data[tex_idx] as f32 * tint_r;
+                let tex_g = tex_data[tex_idx + 1] as f32 * tint_g;
+                let tex_b = tex_data[tex_idx + 2] as f32 * tint_b;
+
+                // The buffer at this point holds the previously-
+                // rendered fill (solid colour or gradient) in
+                // premultiplied alpha. Blend the texture in
+                // premultiplied space using opacity as the mix
+                // factor — at opacity=1 the texture fully replaces,
+                // at opacity=0 the underlying fill is preserved.
+                let prev_r = buf[buf_idx] as f32;
+                let prev_g = buf[buf_idx + 1] as f32;
+                let prev_b = buf[buf_idx + 2] as f32;
+                let tex_r_pm = tex_r * alpha_norm;
+                let tex_g_pm = tex_g * alpha_norm;
+                let tex_b_pm = tex_b * alpha_norm;
+                let inv_op = 1.0 - opacity;
+                buf[buf_idx] = (prev_r * inv_op + tex_r_pm * opacity).clamp(0.0, 255.0) as u8;
+                buf[buf_idx + 1] = (prev_g * inv_op + tex_g_pm * opacity).clamp(0.0, 255.0) as u8;
+                buf[buf_idx + 2] = (prev_b * inv_op + tex_b_pm * opacity).clamp(0.0, 255.0) as u8;
                 buf[buf_idx + 3] = mask_alpha;
             }
         }
     }
+}
+
+// ─── Procedural texture preset generators ───────────────────────
+//
+// Every preset is a pure function of (width, height) → RGBA Vec<u8>.
+// The patterns are simple algorithmic shapes (hash-noise, sin
+// modulation, modular stripes, linear gradient) so adding more
+// presets is just another function and a match arm — no image
+// assets to ship.
+
+/// Cheap deterministic 2-D hash returning a u8 in [0, 255]. Used by
+/// the paper-grain preset to produce a value-noise pattern without
+/// pulling in a noise crate.
+fn hash_2d(x: u32, y: u32) -> u8 {
+    let mut h = x.wrapping_mul(0x9E3779B9).wrapping_add(y.wrapping_mul(0x85EBCA6B));
+    h ^= h >> 13;
+    h = h.wrapping_mul(0xC2B2AE35);
+    h ^= h >> 16;
+    (h & 0xFF) as u8
+}
+
+/// Soft fibrous noise — three octaves of hash-noise stacked, biased
+/// toward warm off-white (paper-stock look).
+fn gen_paper_grain(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity((w as usize) * (h as usize) * 4);
+    for y in 0..h {
+        for x in 0..w {
+            let n1 = hash_2d(x, y) as f32 / 255.0;
+            let n2 = hash_2d(x / 4, y / 4) as f32 / 255.0;
+            let n3 = hash_2d(x / 16, y / 16) as f32 / 255.0;
+            let n = n1 * 0.4 + n2 * 0.4 + n3 * 0.2;
+            // 220 base + up to 35 of variation = warm cream.
+            let l = (220.0 + n * 35.0).clamp(0.0, 255.0) as u8;
+            // Slight per-channel offset for warmth.
+            out.push(l);
+            out.push(l.saturating_sub(4));
+            out.push(l.saturating_sub(10));
+            out.push(255);
+        }
+    }
+    out
+}
+
+/// Horizontal CRT-style scanlines. Smooth sin modulation across y so
+/// the pattern doesn't alias when scaled or rotated.
+fn gen_scanlines(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity((w as usize) * (h as usize) * 4);
+    for y in 0..h {
+        // 4-pixel period — ~6 scanlines visible at 256 height.
+        let phase = (y as f32 / 4.0 * std::f32::consts::PI * 2.0).sin();
+        let l = (170.0 + phase * 80.0).clamp(0.0, 255.0) as u8;
+        for _ in 0..w {
+            out.push(l);
+            out.push(l);
+            out.push(l);
+            out.push(255);
+        }
+    }
+    out
+}
+
+/// Diagonal hatch — every 8 pixels the (x+y) slot drops to a darker
+/// tone for ~2 pixels, producing thin diagonal lines.
+fn gen_diagonal_hatch(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity((w as usize) * (h as usize) * 4);
+    for y in 0..h {
+        for x in 0..w {
+            let d = (x as i32 + y as i32).rem_euclid(8);
+            let l: u8 = if d < 2 { 80 } else { 220 };
+            out.push(l);
+            out.push(l);
+            out.push(l);
+            out.push(255);
+        }
+    }
+    out
+}
+
+/// Smooth vertical light → dark gradient. Top row fully bright,
+/// bottom fully dark — gives text a metallic sheen feel when
+/// combined with a slight tint.
+fn gen_gradient_sweep(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity((w as usize) * (h as usize) * 4);
+    for y in 0..h {
+        let t = if h <= 1 { 0.0 } else { y as f32 / (h - 1) as f32 };
+        let l = (255.0 * (1.0 - t)).clamp(0.0, 255.0) as u8;
+        for _ in 0..w {
+            out.push(l);
+            out.push(l);
+            out.push(l);
+            out.push(255);
+        }
+    }
+    out
+}
+
+/// Dispatch by `TexturePresetId` → owned RGBA buffer + dimensions.
+fn generate_preset_texture(
+    id: klipp_timeline::TexturePresetId,
+    w: u32,
+    h: u32,
+) -> (Vec<u8>, u32, u32) {
+    use klipp_timeline::TexturePresetId as P;
+    let buf = match id {
+        P::PaperGrain => gen_paper_grain(w, h),
+        P::Scanlines => gen_scanlines(w, h),
+        P::DiagonalHatch => gen_diagonal_hatch(w, h),
+        P::GradientSweep => gen_gradient_sweep(w, h),
+    };
+    (buf, w, h)
 }
 
 // ─── 3D Text Extrusion ──────────────────────────────────────────────────────
@@ -5182,6 +5409,227 @@ mod tests {
             &buf_no_time[..],
             &buf_with_time[..],
             "title with no inner-shadow keyframes must render identically with or without time_secs"
+        );
+    }
+
+    // ─── Procedural texture preset generators ───────────────────
+
+    /// Each procedural preset produces a non-uniform 256×256 RGBA
+    /// buffer with the expected structural variation: paper grain
+    /// has per-pixel noise, scanlines vary by row, hatching by
+    /// (x+y) diagonal, gradient by row but constant per column.
+    #[test]
+    fn procedural_presets_produce_expected_variation() {
+        use klipp_timeline::TexturePresetId;
+
+        // Paper grain: variance across the buffer (noise).
+        let (paper, _, _) = generate_preset_texture(TexturePresetId::PaperGrain, 64, 64);
+        let paper_unique: std::collections::HashSet<u8> =
+            paper.chunks_exact(4).map(|p| p[0]).collect();
+        assert!(
+            paper_unique.len() > 8,
+            "paper grain should produce many distinct luminance values, got {}",
+            paper_unique.len()
+        );
+
+        // Scanlines: rows vary, columns within a row are uniform.
+        let (scan, _, _) = generate_preset_texture(TexturePresetId::Scanlines, 64, 64);
+        let row0_first = scan[0];
+        let row0_last = scan[(63 * 4)];
+        assert_eq!(row0_first, row0_last, "scanlines row should be uniform across x");
+        let row3_first = scan[(3 * 64 * 4)];
+        assert_ne!(
+            row0_first, row3_first,
+            "scanline rows {} and {} should differ",
+            0, 3
+        );
+
+        // Diagonal hatch: (0,0) is a hatch slot (x+y < 2), (4,0) is
+        // not (4 mod 8 = 4, > 2). Different luminance.
+        let (hatch, _, _) = generate_preset_texture(TexturePresetId::DiagonalHatch, 64, 64);
+        let v00 = hatch[0];
+        let v40 = hatch[4 * 4];
+        assert_ne!(v00, v40, "diagonal hatch should differ between hatch slot and gap");
+
+        // Gradient sweep: top is brighter than bottom, columns
+        // identical within a row.
+        let (grad, _, _) = generate_preset_texture(TexturePresetId::GradientSweep, 64, 64);
+        let top = grad[0];
+        let bottom = grad[(63 * 64 * 4)];
+        assert!(top > bottom, "gradient sweep top should be brighter than bottom: {top} vs {bottom}");
+    }
+
+    /// `texture_fill.opacity = 0.0` preserves the underlying solid
+    /// colour fill — the texture has no visible effect. This pins the
+    /// "blends with underlying colour" semantic from the locked spec.
+    #[test]
+    fn texture_fill_opacity_zero_preserves_underlying_fill() {
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb_no_tex = klipp_timeline::TextBox::default();
+        tb_no_tex.text = "X".to_string();
+        tb_no_tex.font_size = 100.0;
+        tb_no_tex.color = [255, 0, 0, 255];
+        let td_no_tex = klipp_timeline::TitleData::single_text(tb_no_tex);
+
+        let mut tb_zero_op = klipp_timeline::TextBox::default();
+        tb_zero_op.text = "X".to_string();
+        tb_zero_op.font_size = 100.0;
+        tb_zero_op.color = [255, 0, 0, 255];
+        tb_zero_op.texture_fill = Some(klipp_timeline::TextureFill {
+            enabled: true,
+            source: klipp_timeline::TextureSource::Preset(
+                klipp_timeline::TexturePresetId::Scanlines,
+            ),
+            opacity: 0.0,
+            ..klipp_timeline::TextureFill::default()
+        });
+        let td_zero_op = klipp_timeline::TitleData::single_text(tb_zero_op);
+
+        let buf_no = renderer.render(&td_no_tex, frame_w, frame_h);
+        let buf_zero = renderer.render(&td_zero_op, frame_w, frame_h);
+        assert_eq!(
+            &buf_no[..],
+            &buf_zero[..],
+            "texture_fill opacity=0 must render identical to no texture (underlying fill preserved)"
+        );
+    }
+
+    /// `texture_fill.opacity = 1.0` with a full-replacement source
+    /// fully overrides the underlying fill — at opacity=1 we should
+    /// see noticeable difference vs no-texture.
+    #[test]
+    fn texture_fill_opacity_one_overrides_underlying_fill() {
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb_no = klipp_timeline::TextBox::default();
+        tb_no.text = "X".to_string();
+        tb_no.font_size = 100.0;
+        tb_no.color = [255, 0, 0, 255];
+        let td_no = klipp_timeline::TitleData::single_text(tb_no);
+
+        let mut tb_full = klipp_timeline::TextBox::default();
+        tb_full.text = "X".to_string();
+        tb_full.font_size = 100.0;
+        tb_full.color = [255, 0, 0, 255];
+        tb_full.texture_fill = Some(klipp_timeline::TextureFill {
+            enabled: true,
+            source: klipp_timeline::TextureSource::Preset(
+                klipp_timeline::TexturePresetId::GradientSweep,
+            ),
+            opacity: 1.0,
+            ..klipp_timeline::TextureFill::default()
+        });
+        let td_full = klipp_timeline::TitleData::single_text(tb_full);
+
+        let buf_no = renderer.render(&td_no, frame_w, frame_h);
+        let buf_full = renderer.render(&td_full, frame_w, frame_h);
+        assert_ne!(
+            &buf_no[..],
+            &buf_full[..],
+            "texture_fill opacity=1 with a non-trivial preset must change the rendered output"
+        );
+    }
+
+    /// Tint multiply — a green tint on a grayscale gradient should
+    /// produce visible green output where the underlying glyph is
+    /// covered, vs. no tint (white) which produces gray output.
+    #[test]
+    fn texture_fill_tint_multiplies_sample_color() {
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let preset = klipp_timeline::TexturePresetId::GradientSweep;
+
+        let mut tb_white = klipp_timeline::TextBox::default();
+        tb_white.text = "X".to_string();
+        tb_white.font_size = 100.0;
+        tb_white.color = [255, 255, 255, 255];
+        tb_white.texture_fill = Some(klipp_timeline::TextureFill {
+            enabled: true,
+            source: klipp_timeline::TextureSource::Preset(preset),
+            opacity: 1.0,
+            tint: [255, 255, 255, 255],
+            ..klipp_timeline::TextureFill::default()
+        });
+        let td_white = klipp_timeline::TitleData::single_text(tb_white);
+
+        let mut tb_green = klipp_timeline::TextBox::default();
+        tb_green.text = "X".to_string();
+        tb_green.font_size = 100.0;
+        tb_green.color = [255, 255, 255, 255];
+        tb_green.texture_fill = Some(klipp_timeline::TextureFill {
+            enabled: true,
+            source: klipp_timeline::TextureSource::Preset(preset),
+            opacity: 1.0,
+            tint: [0, 255, 0, 255],
+            ..klipp_timeline::TextureFill::default()
+        });
+        let td_green = klipp_timeline::TitleData::single_text(tb_green);
+
+        let buf_white = renderer.render(&td_white, frame_w, frame_h);
+        let buf_green = renderer.render(&td_green, frame_w, frame_h);
+        // Green-tinted output must zero red + blue channels in
+        // glyph pixels (since gradient is grayscale × tint = green).
+        let count_pure_red = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4)
+                .filter(|p| p[3] > 0 && p[0] > 100 && p[1] < 50 && p[2] < 50)
+                .count()
+        };
+        let count_pure_green = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4)
+                .filter(|p| p[3] > 0 && p[1] > 100 && p[0] < 50 && p[2] < 50)
+                .count()
+        };
+        assert_eq!(
+            count_pure_red(&buf_white), 0,
+            "white-tinted gradient should not have pure-red pixels"
+        );
+        assert!(
+            count_pure_green(&buf_green) > 0,
+            "green-tinted gradient should have pure-green pixels"
+        );
+    }
+
+    /// Disabled texture fill is a no-op — toggling enabled=false on
+    /// an otherwise-active texture must produce identical output to
+    /// no texture at all.
+    #[test]
+    fn texture_fill_disabled_is_noop() {
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb_off = klipp_timeline::TextBox::default();
+        tb_off.text = "X".to_string();
+        tb_off.font_size = 100.0;
+        tb_off.color = [200, 50, 50, 255];
+        tb_off.texture_fill = Some(klipp_timeline::TextureFill {
+            enabled: false,
+            source: klipp_timeline::TextureSource::Preset(
+                klipp_timeline::TexturePresetId::PaperGrain,
+            ),
+            ..klipp_timeline::TextureFill::default()
+        });
+        let td_off = klipp_timeline::TitleData::single_text(tb_off);
+
+        let mut tb_none = klipp_timeline::TextBox::default();
+        tb_none.text = "X".to_string();
+        tb_none.font_size = 100.0;
+        tb_none.color = [200, 50, 50, 255];
+        let td_none = klipp_timeline::TitleData::single_text(tb_none);
+
+        let buf_off = renderer.render(&td_off, frame_w, frame_h);
+        let buf_none = renderer.render(&td_none, frame_w, frame_h);
+        assert_eq!(
+            &buf_off[..],
+            &buf_none[..],
+            "texture_fill enabled=false must render identical to no texture"
         );
     }
 }
