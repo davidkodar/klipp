@@ -1703,6 +1703,40 @@ pub enum AppCommand {
     SetVideoKeyframeInterpolation { clip_id: ClipId, param: VideoParam, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
     SetVideoKeyframeTangent { clip_id: ClipId, param: VideoParam, keyframe_index: usize, tangent_in: Option<(f64, f32)>, tangent_out: Option<(f64, f32)> },
 
+    // Per-effect title keyframes — animate any keyframable param on
+    // any TitleObject's effect (TextGlow radius/intensity today, more
+    // effects to follow). `param_key` matches a constant in
+    // `crate::title_effect_keys`; the handler debug_asserts on
+    // unknown keys.
+    AddTitleObjectEffectKeyframe {
+        clip_id: ClipId,
+        object_id: u32,
+        param_key: String,
+        time_secs: f64,
+        value: f32,
+    },
+    RemoveTitleObjectEffectKeyframe {
+        clip_id: ClipId,
+        object_id: u32,
+        param_key: String,
+        time_secs: f64,
+    },
+    MoveTitleObjectEffectKeyframe {
+        clip_id: ClipId,
+        object_id: u32,
+        param_key: String,
+        index: usize,
+        new_time_secs: f64,
+        new_value: f32,
+    },
+    SetTitleObjectEffectKeyframeInterpolation {
+        clip_id: ClipId,
+        object_id: u32,
+        param_key: String,
+        keyframe_index: usize,
+        interpolation: crate::keyframe::Interpolation,
+    },
+
     // Title-object position keyframes — per-layer animation independent
     // from the clip-level transform_pos_*_keyframes that move the whole
     // rendered title image.

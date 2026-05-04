@@ -4375,6 +4375,71 @@ mod tests {
         );
     }
 
+    /// Per-effect keyframes and clip-level `animation_type` are
+    /// orthogonal — they target different things (`animation_type`
+    /// generates clip-level keyframes for the engine to evaluate;
+    /// per-effect keyframes evaluate inside the title renderer). A
+    /// title with `animation_type = FadeIn` AND user-set
+    /// `glow.radius_keyframes` must still see its halo grow over time
+    /// in lockstep with the keyframes — neither system clobbers the
+    /// other. Pins the locked precedence rule from the audit.
+    #[test]
+    fn glow_keyframes_unaffected_by_clip_animation_type() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 80.0;
+        tb.glow = Some(klipp_timeline::TextGlow {
+            enabled: true,
+            color: [255, 200, 0, 255],
+            radius: 4.0,
+            radius_keyframes: vec![
+                Keyframe {
+                    time_secs: 0.0,
+                    value: 4.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+                Keyframe {
+                    time_secs: 2.0,
+                    value: 24.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+            ],
+            intensity: 1.0,
+            intensity_keyframes: Vec::new(),
+        });
+        let mut td = klipp_timeline::TitleData::single_text(tb);
+        // Set the clip-level animation_type to FadeIn — this is what
+        // the engine inspects to generate clip.opacity_keyframes; it
+        // does NOT alter the title raster directly. The test pins
+        // that the title renderer ignores it AND honours the glow
+        // keyframes with the exact same separation as the no-anim
+        // baseline (D2 test).
+        td.animation_type = klipp_timeline::TitleAnimationType::FadeIn { duration_secs: 1.0 };
+
+        let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
+        let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
+
+        let nonzero_alpha_count = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4).filter(|p| p[3] > 0).count()
+        };
+        let n0 = nonzero_alpha_count(&buf_t0);
+        let n2 = nonzero_alpha_count(&buf_t2);
+        assert!(
+            n2 as f32 > n0 as f32 * 1.5,
+            "glow keyframes must drive halo growth even when animation_type=FadeIn (n0={n0}, n2={n2})"
+        );
+    }
+
     /// Empty glow keyframe vecs must NOT change the rendered output —
     /// the static `radius` / `intensity` fallback path stays in
     /// effect. Pins the no-overhead path for unanimated glow.

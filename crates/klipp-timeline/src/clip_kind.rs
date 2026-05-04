@@ -517,6 +517,34 @@ pub struct TextBox {
     pub text_direction: TextDirection,
 }
 
+impl TextBox {
+    /// Mutable accessor for the effect-keyframe vec named by
+    /// `param_key`. Routes by prefix: `"glow.*"` lands on the
+    /// `TextGlow` keyframe vecs, returning `None` if no glow is
+    /// configured. Add a new arm for each effect type as it gains
+    /// keyframable params.
+    pub fn effect_keyframes_mut_for(
+        &mut self,
+        param_key: &str,
+    ) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        if param_key.starts_with("glow.") {
+            self.glow.as_mut().and_then(|g| g.keyframes_mut_for(param_key))
+        } else {
+            None
+        }
+    }
+
+    /// Read-only mirror of `effect_keyframes_mut_for`. Used by the
+    /// inspector to build a `KeyframeState`.
+    pub fn effect_keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
+        if param_key.starts_with("glow.") {
+            self.glow.as_ref().and_then(|g| g.keyframes_for(param_key))
+        } else {
+            None
+        }
+    }
+}
+
 fn default_one_u8() -> u8 { 1 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]

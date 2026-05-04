@@ -14314,6 +14314,112 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id, object_id, param_key, time_secs, value,
+            } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                let mut routed = false;
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut o.content {
+                                    if let Some(kfs) = tb.effect_keyframes_mut_for(param_key) {
+                                        klipp_core::keyframe::upsert_keyframe(kfs, *time_secs, *value);
+                                        routed = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                debug_assert!(
+                    routed,
+                    "AddTitleObjectEffectKeyframe: unknown param_key {param_key:?} or no glow on object — check title_effect_keys constants"
+                );
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Add Effect Keyframe", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::RemoveTitleObjectEffectKeyframe {
+                clip_id, object_id, param_key, time_secs,
+            } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut o.content {
+                                    if let Some(kfs) = tb.effect_keyframes_mut_for(param_key) {
+                                        klipp_core::keyframe::remove_keyframe_at(kfs, *time_secs);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Remove Effect Keyframe", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::MoveTitleObjectEffectKeyframe {
+                clip_id, object_id, param_key, index, new_time_secs, new_value,
+            } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut o.content {
+                                    if let Some(kfs) = tb.effect_keyframes_mut_for(param_key) {
+                                        klipp_core::keyframe::move_keyframe(kfs, *index, *new_time_secs, *new_value);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Move Effect Keyframe", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleObjectEffectKeyframeInterpolation {
+                clip_id, object_id, param_key, keyframe_index, interpolation,
+            } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut o.content {
+                                    if let Some(kfs) = tb.effect_keyframes_mut_for(param_key) {
+                                        klipp_core::keyframe::set_keyframe_interpolation(kfs, *keyframe_index, *interpolation);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Set Effect Keyframe Interpolation", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             _ => false,
         }
     }
@@ -28836,7 +28942,11 @@ fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId> {
         | C::AddTitleObjectPositionKeyframe { clip_id, .. }
         | C::RemoveTitleObjectPositionKeyframe { clip_id, .. }
         | C::MoveTitleObjectPositionKeyframe { clip_id, .. }
-        | C::SetTitleObjectPositionKeyframeInterpolation { clip_id, .. } => Some(*clip_id),
+        | C::SetTitleObjectPositionKeyframeInterpolation { clip_id, .. }
+        | C::AddTitleObjectEffectKeyframe { clip_id, .. }
+        | C::RemoveTitleObjectEffectKeyframe { clip_id, .. }
+        | C::MoveTitleObjectEffectKeyframe { clip_id, .. }
+        | C::SetTitleObjectEffectKeyframeInterpolation { clip_id, .. } => Some(*clip_id),
         _ => None,
     }
 }
