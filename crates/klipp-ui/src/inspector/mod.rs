@@ -1360,8 +1360,17 @@ fn show_title_position_block(
     let active_preset = last_clicked.filter(|p| p.matches(pos.x, pos.y));
 
     ui.horizontal(|ui| {
+        // Force a known item_spacing so the math is predictable —
+        // egui's default item_spacing.x stacks on top of any
+        // ui.add_space() and would push "Top" past the right edge.
+        // With item_spacing.x = 6 and no explicit add_space inside
+        // the loop, we get exactly two 6 px gaps between three
+        // equal-width thirds, and the row sits flush within the
+        // 12 px content rail.
+        ui.spacing_mut().item_spacing.x = 6.0;
         let avail = ui.available_width();
-        let third = (avail - 12.0) / 3.0;
+        let gap = 6.0;
+        let third = ((avail - gap * 2.0) / 3.0).floor();
         for preset in [
             TitlePositionPreset::Center,
             TitlePositionPreset::LowerThird,
@@ -1386,7 +1395,6 @@ fn show_title_position_block(
                     }
                 },
             );
-            ui.add_space(6.0);
         }
     });
 }
