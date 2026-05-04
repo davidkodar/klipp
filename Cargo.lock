@@ -2850,6 +2850,7 @@ dependencies = [
  "dirs",
  "fontdue",
  "image",
+ "klipp-core",
  "klipp-timeline",
  "serde",
  "serde_json",

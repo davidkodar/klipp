@@ -199,6 +199,35 @@ pub struct ObjectTransform {
     pub anchor_norm: TitlePosition,
 }
 
+impl ObjectTransform {
+    /// Returns the effective `center` at `time_secs` — for each axis,
+    /// the keyframe-evaluated value when the corresponding `*_keyframes`
+    /// vec is non-empty, otherwise the static `center` field. Empty
+    /// vecs short-circuit to the static value, so titles without
+    /// position keyframes pay no per-frame sampling cost.
+    pub fn evaluated_center(&self, time_secs: f64) -> TitlePosition {
+        let x = if self.center_x_keyframes.is_empty() {
+            self.center.x
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.center_x_keyframes,
+                time_secs,
+                self.center.x,
+            )
+        };
+        let y = if self.center_y_keyframes.is_empty() {
+            self.center.y
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.center_y_keyframes,
+                time_secs,
+                self.center.y,
+            )
+        };
+        TitlePosition { x, y }
+    }
+}
+
 fn default_anchor_norm() -> TitlePosition {
     TitlePosition { x: 0.5, y: 0.5 }
 }

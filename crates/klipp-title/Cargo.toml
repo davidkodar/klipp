@@ -11,3 +11,6 @@ tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 dirs = { workspace = true }
+
+[dev-dependencies]
+klipp-core = { path = "../klipp-core" }

@@ -1247,11 +1247,20 @@ impl TitleRenderer {
             }
         });
 
+        // Per-layer position keyframes: any layer with non-empty
+        // center_*_keyframes makes the frame time-dependent and must
+        // bypass the static cache.
+        let any_position_keyframes = title.objects.iter().any(|o| {
+            !o.transform.center_x_keyframes.is_empty()
+                || !o.transform.center_y_keyframes.is_empty()
+        });
+
         let any_render_time_override = any_char_anim
             || color_cycle_rate.is_some()
             || color_blend.is_some()
             || outline_draw_on_dur.is_some()
-            || any_glitch_active;
+            || any_glitch_active
+            || any_position_keyframes;
 
         if !any_render_time_override {
             if let Some(buf) = self.cache_lookup(title, width, height) {
@@ -1309,8 +1318,10 @@ impl TitleRenderer {
 
         // Pass time through whenever ANY render-time effect needs
         // it — char_animation drives per-glyph staggering, glitch
-        // seeds its stripe pattern from the clip clock.
-        let time_arg = if any_char_anim || any_glitch_active {
+        // seeds its stripe pattern from the clip clock, and per-layer
+        // position keyframes evaluate against this time inside
+        // `render_inner`.
+        let time_arg = if any_char_anim || any_glitch_active || any_position_keyframes {
             Some(time_secs)
         } else {
             None
@@ -1358,6 +1369,18 @@ impl TitleRenderer {
             if !obj.visible {
                 continue;
             }
+            // Per-layer position keyframes: when present, override the
+            // static `center` for this frame. Empty keyframe vecs
+            // short-circuit to the static value via `evaluated_center`,
+            // so titles without animation pay nothing extra here.
+            let effective_transform = match time_secs {
+                Some(t) => {
+                    let mut t_xform = obj.transform.clone();
+                    t_xform.center = obj.transform.evaluated_center(t as f64);
+                    t_xform
+                }
+                None => obj.transform.clone(),
+            };
             match &obj.content {
                 TitleObjectContent::TextBox(tb) => {
                     // Synthesise a one-object TitleData carrying just
@@ -1370,7 +1393,7 @@ impl TitleRenderer {
                     let mut single = TitleData::single_text(tb.clone());
                     single.background = TitleBackground::None;
                     if let Some(o) = single.objects.first_mut() {
-                        o.transform = obj.transform.clone();
+                        o.transform = effective_transform;
                     }
                     let layer = self.render_text_layer(
                         &single,
@@ -1393,14 +1416,14 @@ impl TitleRenderer {
                 }
                 TitleObjectContent::Shape(shape) => {
                     if (obj.opacity - 1.0).abs() < 0.001 {
-                        paint_shape_layer(&mut buf, shape, &obj.transform, width, height);
+                        paint_shape_layer(&mut buf, shape, &effective_transform, width, height);
                     } else {
                         // Render the shape into a fresh transparent
                         // layer, scale its alpha, then over-blend —
                         // matches the per-object opacity behaviour
                         // for TextBox layers.
                         let mut layer = vec![0u8; (width as usize) * (height as usize) * 4];
-                        paint_shape_layer(&mut layer, shape, &obj.transform, width, height);
+                        paint_shape_layer(&mut layer, shape, &effective_transform, width, height);
                         scale_layer_alpha(&mut layer, obj.opacity);
                         over_blend(&mut buf, &layer);
                     }
@@ -4099,5 +4122,104 @@ mod tests {
             let chars: Vec<char> = modified.chars().collect();
             assert_eq!(chars[ci], 'X', "Insert at char {} should place X there, got '{}' in '{}'", ci, chars[ci], modified);
         }
+    }
+
+    /// Per-layer position keyframes drive the rendered glyph location:
+    /// a textbox with center_x_keyframes [(0s, 0.1) → (2s, 0.9)] should
+    /// render its text on the LEFT half of the frame at t=0 and on the
+    /// RIGHT half at t=2. Asserts via the alpha-pixel centroid so the
+    /// test fails the moment the renderer ignores the keyframe vec.
+    #[test]
+    fn position_keyframes_move_rendered_text_horizontally() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 1280;
+        let frame_h: u32 = 720;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 100.0;
+        let mut td = klipp_timeline::TitleData::single_text(tb);
+        if let Some(o) = td.objects.first_mut() {
+            // Static fallback in the centre — must be ignored once the
+            // keyframes evaluate.
+            o.transform.center = TitlePosition { x: 0.5, y: 0.5 };
+            o.transform.center_x_keyframes = vec![
+                Keyframe {
+                    time_secs: 0.0,
+                    value: 0.1,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+                Keyframe {
+                    time_secs: 2.0,
+                    value: 0.9,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+            ];
+        }
+
+        let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
+        let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
+
+        let centroid_x = |buf: &[u8]| -> f64 {
+            let mut sum = 0u64;
+            let mut n = 0u64;
+            for (i, p) in buf.chunks_exact(4).enumerate() {
+                if p[3] > 0 {
+                    let x = (i as u32) % frame_w;
+                    sum += x as u64;
+                    n += 1;
+                }
+            }
+            assert!(n > 0, "frame must contain visible glyph pixels");
+            sum as f64 / n as f64
+        };
+        let cx_t0 = centroid_x(&buf_t0);
+        let cx_t2 = centroid_x(&buf_t2);
+        // At t=0 keyframe x=0.1 → centroid near 128px; at t=2 keyframe
+        // x=0.9 → centroid near 1152px. We assert a generous separation
+        // so antialiasing / glyph-box width don't make the test brittle.
+        assert!(
+            cx_t0 < (frame_w as f64) * 0.30,
+            "t=0 centroid should be on the left third, got {cx_t0}"
+        );
+        assert!(
+            cx_t2 > (frame_w as f64) * 0.70,
+            "t=2 centroid should be on the right third, got {cx_t2}"
+        );
+        assert!(
+            cx_t2 - cx_t0 > (frame_w as f64) * 0.4,
+            "t=0 and t=2 centroids must separate by >40% of frame width, got {} → {}",
+            cx_t0, cx_t2
+        );
+    }
+
+    /// Empty position-keyframe vecs must NOT change the rendered output
+    /// — the static `center.x/y` fallback path stays in effect, and a
+    /// title with no animation renders identically to before #2.
+    #[test]
+    fn empty_position_keyframes_render_identical_to_pre_keyframe_path() {
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 80.0;
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_no_time = renderer.render(&td, frame_w, frame_h);
+        let buf_with_time = renderer.render_with_time(&td, frame_w, frame_h, None, 1.5);
+
+        assert_eq!(
+            &buf_no_time[..],
+            &buf_with_time[..],
+            "title with no position keyframes must render identically with or without time_secs"
+        );
     }
 }
