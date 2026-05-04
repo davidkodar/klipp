@@ -1703,6 +1703,38 @@ pub enum AppCommand {
     SetVideoKeyframeInterpolation { clip_id: ClipId, param: VideoParam, keyframe_index: usize, interpolation: crate::keyframe::Interpolation },
     SetVideoKeyframeTangent { clip_id: ClipId, param: VideoParam, keyframe_index: usize, tangent_in: Option<(f64, f32)>, tangent_out: Option<(f64, f32)> },
 
+    // Title-object position keyframes — per-layer animation independent
+    // from the clip-level transform_pos_*_keyframes that move the whole
+    // rendered title image.
+    AddTitleObjectPositionKeyframe {
+        clip_id: ClipId,
+        object_id: u32,
+        axis: crate::keyframe::TitlePositionAxis,
+        time_secs: f64,
+        value: f32,
+    },
+    RemoveTitleObjectPositionKeyframe {
+        clip_id: ClipId,
+        object_id: u32,
+        axis: crate::keyframe::TitlePositionAxis,
+        time_secs: f64,
+    },
+    MoveTitleObjectPositionKeyframe {
+        clip_id: ClipId,
+        object_id: u32,
+        axis: crate::keyframe::TitlePositionAxis,
+        index: usize,
+        new_time_secs: f64,
+        new_value: f32,
+    },
+    SetTitleObjectPositionKeyframeInterpolation {
+        clip_id: ClipId,
+        object_id: u32,
+        axis: crate::keyframe::TitlePositionAxis,
+        keyframe_index: usize,
+        interpolation: crate::keyframe::Interpolation,
+    },
+
     // Keyframe clipboard operations
     CopyAudioKeyframes { clip_id: ClipId, param: AudioParam },
     CopyVideoKeyframes { clip_id: ClipId, param: VideoParam },

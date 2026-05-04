@@ -13880,6 +13880,90 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::AddTitleObjectPositionKeyframe {
+                clip_id, object_id, axis, time_secs, value,
+            } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                o.transform.upsert_position_keyframe(*axis, *time_secs, *value);
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Add Position Keyframe", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::RemoveTitleObjectPositionKeyframe {
+                clip_id, object_id, axis, time_secs,
+            } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                o.transform.remove_position_keyframe_at(*axis, *time_secs);
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Remove Position Keyframe", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::MoveTitleObjectPositionKeyframe {
+                clip_id, object_id, axis, index, new_time_secs, new_value,
+            } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                o.transform.move_position_keyframe(*axis, *index, *new_time_secs, *new_value);
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Move Position Keyframe", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleObjectPositionKeyframeInterpolation {
+                clip_id, object_id, axis, keyframe_index, interpolation,
+            } => {
+                let old = self.snapshot_title(*clip_id);
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                o.transform.set_position_keyframe_interpolation(*axis, *keyframe_index, *interpolation);
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Set Position Keyframe Interpolation", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             _ => false,
         }
     }
@@ -28734,7 +28818,11 @@ fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId> {
         | C::SetTitlePosition { clip_id, .. }
         | C::SetTitleBackground { clip_id, .. }
         | C::SetTitleShadow { clip_id, .. }
-        | C::SetTitleGradient { clip_id, .. } => Some(*clip_id),
+        | C::SetTitleGradient { clip_id, .. }
+        | C::AddTitleObjectPositionKeyframe { clip_id, .. }
+        | C::RemoveTitleObjectPositionKeyframe { clip_id, .. }
+        | C::MoveTitleObjectPositionKeyframe { clip_id, .. }
+        | C::SetTitleObjectPositionKeyframeInterpolation { clip_id, .. } => Some(*clip_id),
         _ => None,
     }
 }

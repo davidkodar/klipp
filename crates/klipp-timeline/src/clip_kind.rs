@@ -226,6 +226,96 @@ impl ObjectTransform {
         };
         TitlePosition { x, y }
     }
+
+    /// Mutable accessor for the `*_keyframes` vec of one axis. Routes
+    /// through the enum so handlers stay axis-agnostic.
+    pub fn position_keyframes_mut(
+        &mut self,
+        axis: klipp_core::TitlePositionAxis,
+    ) -> &mut Vec<klipp_core::Keyframe> {
+        match axis {
+            klipp_core::TitlePositionAxis::X => &mut self.center_x_keyframes,
+            klipp_core::TitlePositionAxis::Y => &mut self.center_y_keyframes,
+        }
+    }
+
+    /// Insert (or replace, within ±20ms) a keyframe at `time_secs`.
+    /// Keeps the vec sorted by `time_secs` so the renderer's
+    /// `evaluate(...)` walk stays correct.
+    pub fn upsert_position_keyframe(
+        &mut self,
+        axis: klipp_core::TitlePositionAxis,
+        time_secs: f64,
+        value: f32,
+    ) {
+        let kfs = self.position_keyframes_mut(axis);
+        kfs.retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+        kfs.push(klipp_core::Keyframe {
+            time_secs,
+            value,
+            interpolation: klipp_core::Interpolation::Linear,
+            tangent_out: (0.0, 0.0),
+            tangent_in: (0.0, 0.0),
+        });
+        kfs.sort_by(|a, b| {
+            a.time_secs
+                .partial_cmp(&b.time_secs)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+
+    /// Remove keyframe(s) within ±20ms of `time_secs`. No-op if none
+    /// match; matches the NLE-standard "click diamond again to delete"
+    /// affordance.
+    pub fn remove_position_keyframe_at(
+        &mut self,
+        axis: klipp_core::TitlePositionAxis,
+        time_secs: f64,
+    ) {
+        self.position_keyframes_mut(axis)
+            .retain(|k| (k.time_secs - time_secs).abs() >= 0.02);
+    }
+
+    /// Move the keyframe at `index` to a new (time, value). Re-sorts
+    /// after the move so the vec stays in time order. Returns true if
+    /// the index was valid.
+    pub fn move_position_keyframe(
+        &mut self,
+        axis: klipp_core::TitlePositionAxis,
+        index: usize,
+        new_time_secs: f64,
+        new_value: f32,
+    ) -> bool {
+        let kfs = self.position_keyframes_mut(axis);
+        let Some(kf) = kfs.get_mut(index) else {
+            return false;
+        };
+        kf.time_secs = new_time_secs;
+        kf.value = new_value;
+        kfs.sort_by(|a, b| {
+            a.time_secs
+                .partial_cmp(&b.time_secs)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        true
+    }
+
+    /// Set the interpolation mode of the keyframe at `index`. Returns
+    /// true if the index was valid.
+    pub fn set_position_keyframe_interpolation(
+        &mut self,
+        axis: klipp_core::TitlePositionAxis,
+        index: usize,
+        interpolation: klipp_core::Interpolation,
+    ) -> bool {
+        let kfs = self.position_keyframes_mut(axis);
+        if let Some(kf) = kfs.get_mut(index) {
+            kf.interpolation = interpolation;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 fn default_anchor_norm() -> TitlePosition {
@@ -1253,6 +1343,120 @@ mod tests {
         let json = serde_json::to_string(&td).expect("serialise");
         let round: TitleData = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(td, round, "round-trip must be lossless");
+    }
+
+    /// `upsert_position_keyframe` inserts in time order and replaces
+    /// any existing keyframe within the ±20ms dedup window. This is
+    /// the contract every `AddTitleObjectPositionKeyframe` handler
+    /// invocation relies on.
+    #[test]
+    fn upsert_position_keyframe_inserts_sorted_and_dedups() {
+        use klipp_core::{Interpolation, TitlePositionAxis};
+
+        let mut t = default_text_transform();
+        // Insert out of order: 1.0s, 0.0s, 0.5s. Vec must end up sorted.
+        t.upsert_position_keyframe(TitlePositionAxis::X, 1.0, 0.8);
+        t.upsert_position_keyframe(TitlePositionAxis::X, 0.0, 0.1);
+        t.upsert_position_keyframe(TitlePositionAxis::X, 0.5, 0.4);
+        let times: Vec<f64> = t.center_x_keyframes.iter().map(|k| k.time_secs).collect();
+        assert_eq!(times, vec![0.0, 0.5, 1.0], "vec must stay sorted by time");
+
+        // Y vec is independent of X.
+        assert!(t.center_y_keyframes.is_empty());
+
+        // Re-upsert at 0.5s with a new value: count stays at 3, value
+        // updates in place.
+        t.upsert_position_keyframe(TitlePositionAxis::X, 0.5, 0.42);
+        assert_eq!(t.center_x_keyframes.len(), 3);
+        let mid = t.center_x_keyframes.iter().find(|k| (k.time_secs - 0.5).abs() < 0.01).unwrap();
+        assert_eq!(mid.value, 0.42, "second upsert at same time must replace value");
+
+        // Within ±20ms is "same time" for the dedup — so 0.51s
+        // overwrites the 0.5s entry rather than adding a new one.
+        t.upsert_position_keyframe(TitlePositionAxis::X, 0.51, 0.5);
+        assert_eq!(t.center_x_keyframes.len(), 3, "±20ms dedup must not duplicate");
+
+        // Default interpolation is Linear.
+        for kf in &t.center_x_keyframes {
+            assert_eq!(kf.interpolation, Interpolation::Linear);
+        }
+    }
+
+    /// `remove_position_keyframe_at` removes the matching keyframe and
+    /// no-ops when no keyframe is within the dedup window.
+    #[test]
+    fn remove_position_keyframe_at_removes_matching_only() {
+        use klipp_core::TitlePositionAxis;
+
+        let mut t = default_text_transform();
+        t.upsert_position_keyframe(TitlePositionAxis::X, 0.0, 0.1);
+        t.upsert_position_keyframe(TitlePositionAxis::X, 1.0, 0.5);
+        t.upsert_position_keyframe(TitlePositionAxis::X, 2.0, 0.9);
+        assert_eq!(t.center_x_keyframes.len(), 3);
+
+        // Remove at 1.0s → middle gone.
+        t.remove_position_keyframe_at(TitlePositionAxis::X, 1.0);
+        let times: Vec<f64> = t.center_x_keyframes.iter().map(|k| k.time_secs).collect();
+        assert_eq!(times, vec![0.0, 2.0]);
+
+        // No-op when no keyframe is within ±20ms.
+        t.remove_position_keyframe_at(TitlePositionAxis::X, 5.0);
+        assert_eq!(t.center_x_keyframes.len(), 2, "remove far from any kf must no-op");
+
+        // Remove on the Y axis must not touch the X vec.
+        t.remove_position_keyframe_at(TitlePositionAxis::Y, 0.0);
+        assert_eq!(t.center_x_keyframes.len(), 2);
+    }
+
+    /// `move_position_keyframe` updates time + value at the index and
+    /// re-sorts so the vec remains in time order.
+    #[test]
+    fn move_position_keyframe_updates_and_re_sorts() {
+        use klipp_core::TitlePositionAxis;
+
+        let mut t = default_text_transform();
+        t.upsert_position_keyframe(TitlePositionAxis::X, 0.0, 0.1);
+        t.upsert_position_keyframe(TitlePositionAxis::X, 1.0, 0.5);
+        t.upsert_position_keyframe(TitlePositionAxis::X, 2.0, 0.9);
+
+        // Move index-0 keyframe to time=3.0 — must end up at the end of
+        // the vec after the re-sort.
+        let ok = t.move_position_keyframe(TitlePositionAxis::X, 0, 3.0, 0.7);
+        assert!(ok);
+        let times: Vec<f64> = t.center_x_keyframes.iter().map(|k| k.time_secs).collect();
+        assert_eq!(times, vec![1.0, 2.0, 3.0]);
+        let last = t.center_x_keyframes.last().unwrap();
+        assert_eq!(last.value, 0.7);
+
+        // Out-of-range index returns false, no mutation.
+        assert!(!t.move_position_keyframe(TitlePositionAxis::X, 99, 5.0, 0.0));
+        assert_eq!(t.center_x_keyframes.len(), 3);
+    }
+
+    /// `set_position_keyframe_interpolation` flips the interp mode at
+    /// the given index without disturbing time/value.
+    #[test]
+    fn set_position_keyframe_interpolation_updates_mode_only() {
+        use klipp_core::{Interpolation, TitlePositionAxis};
+
+        let mut t = default_text_transform();
+        t.upsert_position_keyframe(TitlePositionAxis::Y, 0.0, 0.1);
+        t.upsert_position_keyframe(TitlePositionAxis::Y, 1.0, 0.9);
+
+        let ok = t.set_position_keyframe_interpolation(
+            TitlePositionAxis::Y, 1, Interpolation::Bezier,
+        );
+        assert!(ok);
+        assert_eq!(t.center_y_keyframes[0].interpolation, Interpolation::Linear);
+        assert_eq!(t.center_y_keyframes[1].interpolation, Interpolation::Bezier);
+        // Time + value untouched.
+        assert_eq!(t.center_y_keyframes[1].time_secs, 1.0);
+        assert_eq!(t.center_y_keyframes[1].value, 0.9);
+
+        // Out-of-range returns false.
+        assert!(!t.set_position_keyframe_interpolation(
+            TitlePositionAxis::Y, 99, Interpolation::Step,
+        ));
     }
 
     /// Backward-compat: a `TitleData` JSON written before the keyframe
