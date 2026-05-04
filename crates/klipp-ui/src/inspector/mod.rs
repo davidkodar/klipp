@@ -2015,7 +2015,7 @@ fn show_title_effects_group(
             let mut radius = display_radius;
             let mut intensity = display_intensity;
             let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
-            let color_changed = effect_color_row(ui, theme, &mut col, ("glow", clip_id));
+            let color_changed = effect_color_row(ui, theme, "Color", &mut col, ("glow", clip_id));
             let pill_radius = format!("{} px", radius.round() as i32);
             let resp_radius = effect_param_row(
                 ui, theme, "Radius", &mut radius, 1.0..=40.0,
@@ -2075,7 +2075,7 @@ fn show_title_effects_group(
             (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
             let mut width = display_width;
             let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
-            let color_changed = effect_color_row(ui, theme, &mut col, ("outline", clip_id));
+            let color_changed = effect_color_row(ui, theme, "Color", &mut col, ("outline", clip_id));
             let pill_width = format!("{} px", width.round() as i32);
             let resp_width = effect_param_row(
                 ui, theme, "Width", &mut width, 0.5..=12.0,
@@ -2145,7 +2145,7 @@ fn show_title_effects_group(
             let mut oy = display_oy;
             let mut blur = display_blur;
             let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
-            let color_changed = effect_color_row(ui, theme, &mut col, ("drop_shadow", clip_id));
+            let color_changed = effect_color_row(ui, theme, "Color", &mut col, ("drop_shadow", clip_id));
             let pill_ox = format!("{} px", ox.round() as i32);
             let resp_ox = effect_param_row(
                 ui, theme, "Offset X", &mut ox, -20.0..=20.0,
@@ -2236,7 +2236,7 @@ fn show_title_effects_group(
             let mut oy = display_oy;
             let mut blur = display_blur;
             let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
-            let color_changed = effect_color_row(ui, theme, &mut col, ("inner_shadow", clip_id));
+            let color_changed = effect_color_row(ui, theme, "Color", &mut col, ("inner_shadow", clip_id));
             let pill_ox = format!("{} px", ox.round() as i32);
             let resp_ox = effect_param_row(
                 ui, theme, "Offset X", &mut ox, -20.0..=20.0,
@@ -2297,16 +2297,9 @@ fn show_title_effects_group(
             (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
             let mut top_col = egui::Color32::from_rgba_premultiplied(cur_top[0], cur_top[1], cur_top[2], cur_top[3]);
             let mut bot_col = egui::Color32::from_rgba_premultiplied(cur_bot[0], cur_bot[1], cur_bot[2], cur_bot[3]);
-            let mut changed = false;
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Top").size(11.0).color(theme.text_dim));
-                changed |= ui.color_edit_button_srgba(&mut top_col).changed();
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Bottom").size(11.0).color(theme.text_dim));
-                changed |= ui.color_edit_button_srgba(&mut bot_col).changed();
-            });
-            if changed {
+            let top_changed = effect_color_row(ui, theme, "Top", &mut top_col, ("gradient_top", clip_id));
+            let bot_changed = effect_color_row(ui, theme, "Bottom", &mut bot_col, ("gradient_bot", clip_id));
+            if top_changed || bot_changed {
                 cmds.push(AppCommand::SetTitleGradient {
                     clip_id, enabled: true,
                     top_color: [top_col.r(), top_col.g(), top_col.b(), top_col.a()],
@@ -2336,11 +2329,28 @@ fn show_title_effects_group(
         let summary = if enabled { labels[pat_idx].to_string() } else { String::new() };
         inspector_subgroup_card(ui, "Pattern Fill", &mut enabled,
             (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
+            // Kind row — laid out with the same 70 px label column +
+            // 8 px spacing as the rest of the inspector so the
+            // "Kind" / "A" / "B" / "Size" labels line up vertically.
             let mut new_idx = pat_idx;
+            let label_w: f32 = 70.0;
+            let row_h: f32 = 28.0;
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Kind").size(11.0).color(theme.text_dim));
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let (label_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(label_w, row_h),
+                    egui::Sense::hover(),
+                );
+                ui.painter().text(
+                    egui::pos2(label_rect.min.x, label_rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    "Kind",
+                    egui::FontId::proportional(11.0),
+                    theme.text_dim,
+                );
                 egui::ComboBox::from_id_salt("title_pattern_kind")
                     .selected_text(labels[new_idx])
+                    .width(ui.available_width())
                     .show_ui(ui, |ui| {
                         for (i, label) in labels.iter().enumerate() {
                             if ui.selectable_label(new_idx == i, *label).clicked() {
@@ -2356,28 +2366,28 @@ fn show_title_effects_group(
                 });
             }
             if let Some(pf) = &tb.pattern_fill {
-                let (mut ca, mut cb, mut size) = match pf {
+                let (ca0, cb0, mut size) = match pf {
                     klipp_timeline::TextPattern::HorizontalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
                     klipp_timeline::TextPattern::VerticalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
                     klipp_timeline::TextPattern::Checkerboard { color_a, color_b, cell_size } => (*color_a, *color_b, *cell_size),
                     klipp_timeline::TextPattern::DiagonalStripes { color_a, color_b, stripe_width } => (*color_a, *color_b, *stripe_width),
                 };
-                let mut col_a = egui::Color32::from_rgba_premultiplied(ca[0], ca[1], ca[2], ca[3]);
-                let mut col_b = egui::Color32::from_rgba_premultiplied(cb[0], cb[1], cb[2], cb[3]);
-                let mut changed = false;
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("A").size(11.0).color(theme.text_dim));
-                    changed |= ui.color_edit_button_srgba(&mut col_a).changed();
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("B").size(11.0).color(theme.text_dim));
-                    changed |= ui.color_edit_button_srgba(&mut col_b).changed();
-                });
-                changed |= crate::widgets::scrubby_param::scrubby_param_row(
-                    ui, "Size", &mut size, 2.0..=50.0, 10.0, 1.0, 0, " px", None,
-                ).changed;
-                if changed {
-                    ca = [col_a.r(), col_a.g(), col_a.b(), col_a.a()];
-                    cb = [col_b.r(), col_b.g(), col_b.b(), col_b.a()];
+                let mut col_a = egui::Color32::from_rgba_premultiplied(ca0[0], ca0[1], ca0[2], ca0[3]);
+                let mut col_b = egui::Color32::from_rgba_premultiplied(cb0[0], cb0[1], cb0[2], cb0[3]);
+                // A and B each get their own row with the new
+                // effect_color_row treatment (label + swatch + hex
+                // input) so they line up with every other Color row
+                // in the inspector.
+                let a_changed = effect_color_row(ui, theme, "A", &mut col_a, ("pattern_a", clip_id));
+                let b_changed = effect_color_row(ui, theme, "B", &mut col_b, ("pattern_b", clip_id));
+                let size_pill = format!("{} px", size.round() as i32);
+                let resp_size = effect_param_row(
+                    ui, theme, "Size", &mut size, 2.0..=50.0,
+                    &size_pill, &[],
+                );
+                if a_changed || b_changed || resp_size.changed {
+                    let ca = [col_a.r(), col_a.g(), col_a.b(), col_a.a()];
+                    let cb = [col_b.r(), col_b.g(), col_b.b(), col_b.a()];
                     cmds.push(AppCommand::SetTitlePattern {
                         clip_id, pattern_kind: pat_idx as u8,
                         color_a: ca, color_b: cb, size,
@@ -2780,6 +2790,7 @@ fn compact_axis_input(
 fn effect_color_row(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
+    label: &str,
     color: &mut egui::Color32,
     id_salt: impl std::hash::Hash,
 ) -> bool {
@@ -2801,7 +2812,7 @@ fn effect_color_row(
         ui.painter().text(
             egui::pos2(label_rect.min.x, label_rect.center().y),
             egui::Align2::LEFT_CENTER,
-            "Color",
+            label,
             egui::FontId::proportional(11.0),
             theme.text_dim,
         );
