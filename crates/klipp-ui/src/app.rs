@@ -2714,12 +2714,20 @@ impl KlippApp {
     fn push_title_undo(&mut self, clip_id: klipp_core::ClipId, description: &'static str, old: klipp_timeline::TitleData) {
         if let Some(new) = self.snapshot_title(clip_id) {
             if old != new {
+                if description == "Edit Title Text"
+                    && self.state.history.try_coalesce_title_text(clip_id, &old, &new)
+                {
+                    return;
+                }
                 self.state.history.push(crate::history::HistoryEntry {
                     sequence_idx: self.state.active_sequence_idx,
                     command: crate::history::EditCommand::EditTitle {
                         clip_id, description, old_data: old, new_data: new,
                     },
                 });
+                if description == "Edit Title Text" {
+                    self.state.history.note_title_text_edit(clip_id);
+                }
             }
         }
     }

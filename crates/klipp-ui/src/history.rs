@@ -1,6 +1,13 @@
 use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 use klipp_core::{AudioEffectInstance, BinId, ClipId, Keyframe, MediaId, RationalTime};
 use klipp_timeline::Clip;
+
+/// Window during which consecutive "Edit Title Text" pushes for the
+/// same clip collapse into a single undo entry. 150 ms matches the
+/// typical inter-keystroke interval of a typing burst — anything longer
+/// is treated as a deliberate pause and starts a new undo entry.
+const TITLE_TEXT_COALESCE_WINDOW: Duration = Duration::from_millis(150);
 
 /// Snapshot of a clip's audio chain (effects + per-effect kfs). Used by
 /// `EditCommand::EditAudioChain` so add/remove/edit/reorder operations
@@ -478,6 +485,12 @@ pub struct CommandHistory {
     /// "Before" state captured at drag start
     pending_old_entry: Option<HistoryEntry>,
 
+    /// (clip_id, instant) of the most recent "Edit Title Text" push, used
+    /// by `try_coalesce_title_text` to merge adjacent keystrokes into one
+    /// undo entry. Cleared whenever a non-text-edit push happens (so
+    /// intervening edits cleanly break the burst).
+    last_title_text_edit: Option<(ClipId, Instant)>,
+
     /// Number of ops pushed since the last project save. Incremented by push(),
     /// reset to 0 by reset_ops_since_save() when the project is saved. Used by
     /// the op-count autosave trigger.
@@ -492,6 +505,7 @@ impl CommandHistory {
             max_size: 1000,
             pending_coalesce_key: None,
             pending_old_entry: None,
+            last_title_text_edit: None,
             ops_since_save: 0,
         }
     }
@@ -507,12 +521,74 @@ impl CommandHistory {
     }
 
     pub fn push(&mut self, entry: HistoryEntry) {
+        // Any non-text-edit push terminates a typing burst — the next
+        // keystroke after this becomes a fresh undo entry.
+        let breaks_burst = !matches!(
+            &entry.command,
+            EditCommand::EditTitle { description, .. } if *description == "Edit Title Text"
+        );
+        if breaks_burst {
+            self.last_title_text_edit = None;
+        }
         self.undo_stack.push_back(entry);
         self.redo_stack.clear();
         if self.max_size > 0 && self.undo_stack.len() > self.max_size {
             self.undo_stack.pop_front();
         }
         self.ops_since_save = self.ops_since_save.saturating_add(1);
+    }
+
+    /// Title-text-edit coalescing: if `old → new` is a text-only delta
+    /// AND the most recent undo entry is an "Edit Title Text" entry for
+    /// `clip_id` pushed within `TITLE_TEXT_COALESCE_WINDOW`, mutate it
+    /// in place by replacing its `new_data` and refresh the burst
+    /// timestamp. Returns true on success, in which case the caller
+    /// must skip pushing a new entry.
+    ///
+    /// Gating on text-only ensures a font / size / colour change in the
+    /// middle of typing breaks the burst — only consecutive keystrokes
+    /// merge.
+    pub fn try_coalesce_title_text(
+        &mut self,
+        clip_id: ClipId,
+        old: &klipp_timeline::TitleData,
+        new: &klipp_timeline::TitleData,
+    ) -> bool {
+        if !title_diff_is_text_only(old, new) {
+            return false;
+        }
+        let now = Instant::now();
+        let within_window = self
+            .last_title_text_edit
+            .map(|(c, t)| c == clip_id && now.duration_since(t) < TITLE_TEXT_COALESCE_WINDOW)
+            .unwrap_or(false);
+        if !within_window {
+            return false;
+        }
+        let Some(entry) = self.undo_stack.back_mut() else {
+            return false;
+        };
+        let EditCommand::EditTitle {
+            clip_id: ec,
+            description,
+            new_data: nd,
+            ..
+        } = &mut entry.command
+        else {
+            return false;
+        };
+        if *ec != clip_id || *description != "Edit Title Text" {
+            return false;
+        }
+        *nd = new.clone();
+        self.last_title_text_edit = Some((clip_id, now));
+        true
+    }
+
+    /// Mark the moment of an "Edit Title Text" push so the next
+    /// keystroke within the coalesce window can merge into it.
+    pub fn note_title_text_edit(&mut self, clip_id: ClipId) {
+        self.last_title_text_edit = Some((clip_id, Instant::now()));
     }
 
     /// Call when the user starts dragging a parameter (mouse down on slider/DragValue).
@@ -615,6 +691,39 @@ impl CommandHistory {
 }
 
 /// Combines the old state from begin_drag with the new state from end_drag.
+/// Returns true iff the only difference between `old` and `new` is the
+/// `text` field (and the auto-derived `style_runs`) on one or more
+/// `TextBox` layers — i.e. the user is typing into the textarea and
+/// nothing else changed. Used by `try_coalesce_title_text` so a
+/// font / size / colour change in the middle of a typing burst breaks
+/// the burst cleanly.
+fn title_diff_is_text_only(
+    old: &klipp_timeline::TitleData,
+    new: &klipp_timeline::TitleData,
+) -> bool {
+    if old.objects.len() != new.objects.len() {
+        return false;
+    }
+    let mut clone = old.clone();
+    let mut had_text_change = false;
+    for (oc, nc) in clone.objects.iter_mut().zip(new.objects.iter()) {
+        if let (
+            klipp_timeline::TitleObjectContent::TextBox(otb),
+            klipp_timeline::TitleObjectContent::TextBox(ntb),
+        ) = (&mut oc.content, &nc.content)
+        {
+            if otb.text != ntb.text {
+                had_text_change = true;
+                otb.text = ntb.text.clone();
+                // style_runs auto-adjust on text-length change in the
+                // handler; don't let that look like an unrelated edit.
+                otb.style_runs = ntb.style_runs.clone();
+            }
+        }
+    }
+    had_text_change && clone == *new
+}
+
 /// For EditBuiltinEffect: takes old_effect from old_entry, new_effect from new_entry.
 /// For EditClipAudio: takes old_* from old_entry, new_* from new_entry.
 fn combine_old_new(old_entry: HistoryEntry, new_entry: HistoryEntry) -> HistoryEntry {
@@ -1646,5 +1755,181 @@ mod audio_effect_kf_ops_tests {
         let pasted = paste_kfs_with_scaling(&source, 0.0, 5.0);
         assert_eq!(pasted.len(), 1);
         assert!((pasted[0].time_secs - 0.5).abs() < 1e-9);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Title-text-edit coalescing tests
+// ═══════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod title_text_coalesce_tests {
+    use super::*;
+    use klipp_timeline::TitleData;
+
+    fn entry(clip_id: ClipId, old: TitleData, new: TitleData) -> HistoryEntry {
+        HistoryEntry {
+            sequence_idx: 0,
+            command: EditCommand::EditTitle {
+                clip_id,
+                description: "Edit Title Text",
+                old_data: old,
+                new_data: new,
+            },
+        }
+    }
+
+    fn td_with_text(s: &str) -> TitleData {
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = s.to_string();
+        TitleData::single_text(tb)
+    }
+
+    fn td_with_text_and_size(s: &str, size: f32) -> TitleData {
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = s.to_string();
+        tb.font_size = size;
+        TitleData::single_text(tb)
+    }
+
+    #[test]
+    fn keystroke_burst_collapses_to_single_entry() {
+        let mut h = CommandHistory::new();
+        let cid = ClipId::new();
+
+        let a = td_with_text("");
+        let b = td_with_text("h");
+        h.push(entry(cid, a.clone(), b.clone()));
+        h.note_title_text_edit(cid);
+        assert_eq!(h.undo_stack.len(), 1);
+
+        // Each subsequent keystroke within the window coalesces into the
+        // same undo entry — undo_stack.len() stays at 1, but new_data
+        // updates to reflect the latest state.
+        let c = td_with_text("hi");
+        assert!(h.try_coalesce_title_text(cid, &b, &c));
+        assert_eq!(h.undo_stack.len(), 1);
+
+        let d = td_with_text("hi!");
+        assert!(h.try_coalesce_title_text(cid, &c, &d));
+        assert_eq!(h.undo_stack.len(), 1);
+
+        // Undo restores the original "before-burst" state, not the
+        // intermediate "h" or "hi" snapshots.
+        if let EditCommand::EditTitle { old_data, new_data, .. } =
+            &h.undo_stack.back().unwrap().command
+        {
+            assert_eq!(old_data.text(), "");
+            assert_eq!(new_data.text(), "hi!");
+        } else {
+            panic!("expected EditTitle entry");
+        }
+    }
+
+    #[test]
+    fn font_size_change_breaks_burst() {
+        let mut h = CommandHistory::new();
+        let cid = ClipId::new();
+
+        let a = td_with_text_and_size("", 32.0);
+        let b = td_with_text_and_size("h", 32.0);
+        h.push(entry(cid, a, b.clone()));
+        h.note_title_text_edit(cid);
+
+        // A non-text-only delta (font size change) must not coalesce
+        // into the open burst.
+        let c = td_with_text_and_size("h", 48.0);
+        assert!(!h.try_coalesce_title_text(cid, &b, &c));
+    }
+
+    #[test]
+    fn intervening_non_text_push_breaks_burst() {
+        let mut h = CommandHistory::new();
+        let cid = ClipId::new();
+
+        let a = td_with_text("");
+        let b = td_with_text("h");
+        h.push(entry(cid, a, b.clone()));
+        h.note_title_text_edit(cid);
+
+        // A non-text-edit push (different description) must clear the
+        // burst marker so the next text edit pushes a fresh entry.
+        let other = HistoryEntry {
+            sequence_idx: 0,
+            command: EditCommand::EditTitle {
+                clip_id: cid,
+                description: "Set Font",
+                old_data: b.clone(),
+                new_data: b.clone(),
+            },
+        };
+        h.push(other);
+
+        let c = td_with_text("hi");
+        assert!(!h.try_coalesce_title_text(cid, &b, &c));
+    }
+
+    #[test]
+    fn idle_gap_breaks_burst() {
+        let mut h = CommandHistory::new();
+        let cid = ClipId::new();
+
+        let a = td_with_text("");
+        let b = td_with_text("h");
+        h.push(entry(cid, a, b.clone()));
+        // Pretend the burst marker is older than the coalesce window.
+        h.last_title_text_edit = Some((
+            cid,
+            Instant::now() - TITLE_TEXT_COALESCE_WINDOW - Duration::from_millis(50),
+        ));
+
+        let c = td_with_text("hi");
+        assert!(!h.try_coalesce_title_text(cid, &b, &c));
+    }
+
+    #[test]
+    fn different_clip_breaks_burst() {
+        let mut h = CommandHistory::new();
+        let cid_a = ClipId::new();
+        let cid_b = ClipId::new();
+
+        let s1 = td_with_text("");
+        let s2 = td_with_text("h");
+        h.push(entry(cid_a, s1, s2.clone()));
+        h.note_title_text_edit(cid_a);
+
+        // Same window, but a different clip — must not coalesce.
+        let s3 = td_with_text("hi");
+        assert!(!h.try_coalesce_title_text(cid_b, &s2, &s3));
+    }
+
+    #[test]
+    fn diff_is_text_only_predicate() {
+        let mut a = td_with_text_and_size("hello", 32.0);
+        let mut b = td_with_text_and_size("hello!", 32.0);
+        assert!(title_diff_is_text_only(&a, &b));
+
+        // Same text, different font size → not text-only.
+        b = td_with_text_and_size("hello", 48.0);
+        assert!(!title_diff_is_text_only(&a, &b));
+
+        // Same text, same everything → no text change, predicate fails.
+        b = td_with_text_and_size("hello", 32.0);
+        assert!(!title_diff_is_text_only(&a, &b));
+
+        // Different layer count → not text-only.
+        a = td_with_text("hello");
+        b = td_with_text("hello");
+        let mut tb_extra = klipp_timeline::TextBox::default();
+        tb_extra.text = "extra".into();
+        b.objects.push(klipp_timeline::TitleObject {
+            id: klipp_timeline::TitleObjectId(99),
+            name: String::new(),
+            transform: klipp_timeline::default_text_transform(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            content: klipp_timeline::TitleObjectContent::TextBox(tb_extra),
+        });
+        assert!(!title_diff_is_text_only(&a, &b));
     }
 }
