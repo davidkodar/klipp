@@ -891,6 +891,105 @@ fn handle_inner_shadow_axis_response(
     }
 }
 
+/// Translate a `ScrubbyParamResponse` for one keyframable
+/// TextExtrusion param into the right AppCommand(s). Mirrors
+/// `handle_shadow_axis_response`; the only differences are the
+/// param-key constants and the static-fallback command (`SetTitleExtrusion`,
+/// which carries face_color + side_color alongside the three numeric
+/// params).
+fn handle_extrusion_axis_response(
+    cmds: &mut Vec<AppCommand>,
+    clip_id: klipp_core::ClipId,
+    target_oid: Option<klipp_timeline::TitleObjectId>,
+    param_key: &'static str,
+    new_value: f32,
+    cur: &klipp_timeline::TextExtrusion,
+    keyframes: &[klipp_core::Keyframe],
+    clip_time_secs: f64,
+    resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+) {
+    let to_static_triple = |new: f32| -> (f32, f32, f32) {
+        match param_key {
+            klipp_core::title_effect_keys::EXTRUSION_DEPTH => (new, cur.angle, cur.lighting),
+            klipp_core::title_effect_keys::EXTRUSION_ANGLE => (cur.depth, new, cur.lighting),
+            klipp_core::title_effect_keys::EXTRUSION_LIGHTING => (cur.depth, cur.angle, new),
+            _ => (cur.depth, cur.angle, cur.lighting),
+        }
+    };
+    let Some(oid) = target_oid else {
+        if resp.changed {
+            let (depth, angle, lighting) = to_static_triple(new_value);
+            cmds.push(AppCommand::SetTitleExtrusion {
+                clip_id, enabled: true,
+                depth, angle,
+                face_color: cur.face_color, side_color: cur.side_color,
+                lighting,
+            });
+        }
+        return;
+    };
+    let object_id = oid.0;
+
+    if resp.keyframe_toggled {
+        if keyframes
+            .iter()
+            .any(|k| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                time_secs: clip_time_secs,
+            });
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                time_secs: clip_time_secs,
+                value: new_value,
+            });
+        }
+        return;
+    }
+
+    if resp.changed {
+        if keyframes.is_empty() {
+            let (depth, angle, lighting) = to_static_triple(new_value);
+            cmds.push(AppCommand::SetTitleExtrusion {
+                clip_id, enabled: true,
+                depth, angle,
+                face_color: cur.face_color, side_color: cur.side_color,
+                lighting,
+            });
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                time_secs: clip_time_secs,
+                value: new_value,
+            });
+        }
+    }
+
+    if let Some(interp) = resp.keyframe_set_interpolation {
+        if let Some((idx, _)) = keyframes
+            .iter()
+            .enumerate()
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                keyframe_index: idx,
+                interpolation: interp,
+            });
+        }
+    }
+}
+
 /// Shared Position block: X/Y inputs + three sticky-active quick-preset
 /// buttons (Top / Center / Lower 3rd). Active highlight stays while X/Y
 /// are within ±0.005 of the canonical coords AND that preset was the
@@ -3481,32 +3580,81 @@ fn show_title_editor(
         });
     }
     if has_ext {
-        let mut depth = ext.depth;
-        let mut angle = ext.angle;
-        let mut lighting = ext.lighting;
-        let mut ext_changed = false;
-        ext_changed |= ui.add(egui::Slider::new(&mut depth, 1.0..=50.0).text("Depth").step_by(0.5).suffix(" px")).changed();
-        ext_changed |= ui.add(egui::Slider::new(&mut angle, 0.0..=360.0).text("Angle").step_by(1.0).suffix("\u{00b0}")).changed();
+        // Display animated values at the playhead.
+        let display_depth = ext.evaluated_depth(clip_time_secs);
+        let display_angle = ext.evaluated_angle(clip_time_secs);
+        let display_lighting = ext.evaluated_lighting(clip_time_secs);
+        let kfs_depth: &[klipp_core::Keyframe] = td
+            .primary_text()
+            .and_then(|tb| tb.extrusion.as_ref())
+            .map(|e| e.depth_keyframes.as_slice())
+            .unwrap_or(&[]);
+        let kfs_angle: &[klipp_core::Keyframe] = td
+            .primary_text()
+            .and_then(|tb| tb.extrusion.as_ref())
+            .map(|e| e.angle_keyframes.as_slice())
+            .unwrap_or(&[]);
+        let kfs_lighting: &[klipp_core::Keyframe] = td
+            .primary_text()
+            .and_then(|tb| tb.extrusion.as_ref())
+            .map(|e| e.lighting_keyframes.as_slice())
+            .unwrap_or(&[]);
+        let ks_depth = title_object_keyframe_state(kfs_depth, clip_time_secs);
+        let ks_angle = title_object_keyframe_state(kfs_angle, clip_time_secs);
+        let ks_lighting = title_object_keyframe_state(kfs_lighting, clip_time_secs);
+
+        let mut depth = display_depth;
+        let mut angle = display_angle;
+        let mut lighting = display_lighting;
+        let resp_depth = crate::widgets::scrubby_param::scrubby_param_row(
+            ui, "Depth", &mut depth, 1.0..=50.0, 10.0, 0.5, 1, " px",
+            target_oid.map(|_| ks_depth),
+        );
+        let resp_angle = crate::widgets::scrubby_param::scrubby_param_row(
+            ui, "Angle", &mut angle, 0.0..=360.0, 135.0, 1.0, 0, "\u{00b0}",
+            target_oid.map(|_| ks_angle),
+        );
         let mut face_col = egui::Color32::from_rgba_premultiplied(ext.face_color[0], ext.face_color[1], ext.face_color[2], ext.face_color[3]);
         let mut side_col = egui::Color32::from_rgba_premultiplied(ext.side_color[0], ext.side_color[1], ext.side_color[2], ext.side_color[3]);
+        let mut color_changed = false;
         ui.horizontal(|ui| {
             ui.label("Face:");
-            ext_changed |= ui.color_edit_button_srgba(&mut face_col).changed();
+            color_changed |= ui.color_edit_button_srgba(&mut face_col).changed();
         });
         ui.horizontal(|ui| {
             ui.label("Side:");
-            ext_changed |= ui.color_edit_button_srgba(&mut side_col).changed();
+            color_changed |= ui.color_edit_button_srgba(&mut side_col).changed();
         });
-        ext_changed |= ui.add(egui::Slider::new(&mut lighting, 0.0..=1.0).text("Lighting").step_by(0.05)).changed();
-        if ext_changed {
+        let resp_lighting = crate::widgets::scrubby_param::scrubby_param_row(
+            ui, "Lighting", &mut lighting, 0.0..=1.0, 0.5, 0.05, 2, "",
+            target_oid.map(|_| ks_lighting),
+        );
+        // Color edit always goes through the static SetTitleExtrusion
+        // path — face_color / side_color aren't keyframable in this slice.
+        if color_changed {
             cmds.push(AppCommand::SetTitleExtrusion {
                 clip_id, enabled: true,
-                depth, angle,
+                depth: ext.depth, angle: ext.angle,
                 face_color: [face_col.r(), face_col.g(), face_col.b(), face_col.a()],
                 side_color: [side_col.r(), side_col.g(), side_col.b(), side_col.a()],
-                lighting,
+                lighting: ext.lighting,
             });
         }
+        handle_extrusion_axis_response(
+            cmds, clip_id, target_oid,
+            klipp_core::title_effect_keys::EXTRUSION_DEPTH,
+            depth, &ext, kfs_depth, clip_time_secs, &resp_depth,
+        );
+        handle_extrusion_axis_response(
+            cmds, clip_id, target_oid,
+            klipp_core::title_effect_keys::EXTRUSION_ANGLE,
+            angle, &ext, kfs_angle, clip_time_secs, &resp_angle,
+        );
+        handle_extrusion_axis_response(
+            cmds, clip_id, target_oid,
+            klipp_core::title_effect_keys::EXTRUSION_LIGHTING,
+            lighting, &ext, kfs_lighting, clip_time_secs, &resp_lighting,
+        );
     }
     ui.add_space(8.0);
 
