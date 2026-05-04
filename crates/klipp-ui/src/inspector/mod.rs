@@ -1961,12 +1961,22 @@ fn show_title_effects_group(
     let inner_enabled = tb.inner_shadow.as_ref().is_some_and(|i| i.enabled);
     let gradient_enabled = tb.gradient.as_ref().is_some_and(|g| g.enabled);
     let pattern_enabled = tb.pattern_fill.is_some() && tb.pattern_fill_enabled;
-    let texture_enabled = tb.texture_fill_path.is_some() && tb.texture_fill_enabled;
+    // Two distinct concepts for Texture Fill:
+    //   - `texture_toggle_on` drives the subcard toggle. Reflects
+    //     just the user-set flag so clicking the toggle round-trips
+    //     even when no file has been picked yet (the toggle would
+    //     otherwise snap back to off because the path is None).
+    //   - `texture_active` is the strict "actually rendering"
+    //     predicate used by the active-count badge + summary chip
+    //     so a toggle-on without a file isn't counted as a live
+    //     effect.
+    let texture_toggle_on = tb.texture_fill_enabled;
+    let texture_active = tb.texture_fill_path.is_some() && tb.texture_fill_enabled;
 
     let mut active_count: u32 = 0;
     for on in [
         glow_enabled, outline_enabled, shadow_enabled, inner_enabled,
-        gradient_enabled, pattern_enabled, texture_enabled,
+        gradient_enabled, pattern_enabled, texture_active,
     ] {
         if on { active_count += 1; }
     }
@@ -2409,9 +2419,13 @@ fn show_title_effects_group(
 
     // 7. Texture Fill
     {
-        let mut enabled = texture_enabled;
+        let mut enabled = texture_toggle_on;
         let cur_path = tb.texture_fill_path.clone();
-        let summary = if enabled {
+        // Summary chip uses the strict "actually rendering"
+        // predicate — toggling on without a file shows just "(no
+        // file)" inside the body, not a misleading filename in the
+        // header.
+        let summary = if texture_active {
             cur_path.as_ref()
                 .and_then(|p| std::path::Path::new(p).file_name())
                 .and_then(|n| n.to_str())
@@ -2443,7 +2457,7 @@ fn show_title_effects_group(
                 }
             }
         });
-        if enabled != texture_enabled {
+        if enabled != texture_toggle_on {
             cmds.push(AppCommand::SetTitleTextureEnabled { clip_id, enabled });
         }
     }
