@@ -2010,25 +2010,21 @@ fn show_title_effects_group(
             .as_ref()
             .map(|g| g.intensity_keyframes.as_slice())
             .unwrap_or(&[]);
-        let ks_radius = title_object_keyframe_state(kfs_radius, clip_time_secs);
-        let ks_intensity = title_object_keyframe_state(kfs_intensity, clip_time_secs);
         inspector_subgroup_card(ui, "Glow", &mut enabled,
             (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
             let mut radius = display_radius;
             let mut intensity = display_intensity;
             let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
-            let mut color_changed = false;
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Color").size(11.0).color(theme.text_dim));
-                color_changed = ui.color_edit_button_srgba(&mut col).changed();
-            });
-            let resp_radius = crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Radius", &mut radius, 1.0..=40.0, 10.0, 0.5, 1, " px",
-                target_oid.map(|_| ks_radius),
+            let color_changed = effect_color_row(ui, theme, &mut col, ("glow", clip_id));
+            let pill_radius = format!("{} px", radius.round() as i32);
+            let resp_radius = effect_param_row(
+                ui, theme, "Radius", &mut radius, 1.0..=40.0,
+                &pill_radius, kfs_radius,
             );
-            let resp_intensity = crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Intensity", &mut intensity, 0.0..=1.0, 0.8, 0.05, 2, "",
-                target_oid.map(|_| ks_intensity),
+            let pill_intensity = format!("{}%", (intensity * 100.0).round() as i32);
+            let resp_intensity = effect_param_row(
+                ui, theme, "Intensity", &mut intensity, 0.0..=1.0,
+                &pill_intensity, kfs_intensity,
             );
             // Color change always goes through the static SetTitleGlow
             // path — colour isn't keyframable in this slice.
@@ -2075,19 +2071,15 @@ fn show_title_effects_group(
             .first()
             .map(|o| o.width_keyframes.as_slice())
             .unwrap_or(&[]);
-        let ks_width = title_object_keyframe_state(kfs_width, clip_time_secs);
         inspector_subgroup_card(ui, "Outline", &mut enabled,
             (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
             let mut width = display_width;
             let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
-            let mut color_changed = false;
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Color").size(11.0).color(theme.text_dim));
-                color_changed = ui.color_edit_button_srgba(&mut col).changed();
-            });
-            let resp_width = crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Width", &mut width, 0.5..=12.0, 2.0, 0.5, 1, " px",
-                target_oid.map(|_| ks_width),
+            let color_changed = effect_color_row(ui, theme, &mut col, ("outline", clip_id));
+            let pill_width = format!("{} px", width.round() as i32);
+            let resp_width = effect_param_row(
+                ui, theme, "Width", &mut width, 0.5..=12.0,
+                &pill_width, kfs_width,
             );
             // Color always goes through the static SetTitleOutline —
             // not keyframable in this slice.
@@ -2147,31 +2139,27 @@ fn show_title_effects_group(
             .as_ref()
             .map(|s| s.blur_keyframes.as_slice())
             .unwrap_or(&[]);
-        let ks_ox = title_object_keyframe_state(kfs_ox, clip_time_secs);
-        let ks_oy = title_object_keyframe_state(kfs_oy, clip_time_secs);
-        let ks_blur = title_object_keyframe_state(kfs_blur, clip_time_secs);
         inspector_subgroup_card(ui, "Drop Shadow", &mut enabled,
             (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
             let mut ox = display_ox;
             let mut oy = display_oy;
             let mut blur = display_blur;
             let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
-            let mut color_changed = false;
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Color").size(11.0).color(theme.text_dim));
-                color_changed = ui.color_edit_button_srgba(&mut col).changed();
-            });
-            let resp_ox = crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Offset X", &mut ox, -20.0..=20.0, 3.0, 0.5, 1, " px",
-                target_oid.map(|_| ks_ox),
+            let color_changed = effect_color_row(ui, theme, &mut col, ("drop_shadow", clip_id));
+            let pill_ox = format!("{} px", ox.round() as i32);
+            let resp_ox = effect_param_row(
+                ui, theme, "Offset X", &mut ox, -20.0..=20.0,
+                &pill_ox, kfs_ox,
             );
-            let resp_oy = crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Offset Y", &mut oy, -20.0..=20.0, 3.0, 0.5, 1, " px",
-                target_oid.map(|_| ks_oy),
+            let pill_oy = format!("{} px", oy.round() as i32);
+            let resp_oy = effect_param_row(
+                ui, theme, "Offset Y", &mut oy, -20.0..=20.0,
+                &pill_oy, kfs_oy,
             );
-            let resp_blur = crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Blur", &mut blur, 0.0..=30.0, 0.0, 0.5, 1, " px",
-                target_oid.map(|_| ks_blur),
+            let pill_blur = format!("{} px", blur.round() as i32);
+            let resp_blur = effect_param_row(
+                ui, theme, "Blur", &mut blur, 0.0..=30.0,
+                &pill_blur, kfs_blur,
             );
             // Color change always goes through the static SetTitleShadow
             // path — colour isn't keyframable in this slice.
@@ -2242,31 +2230,27 @@ fn show_title_effects_group(
             .as_ref()
             .map(|s| s.blur_keyframes.as_slice())
             .unwrap_or(&[]);
-        let ks_ox = title_object_keyframe_state(kfs_ox, clip_time_secs);
-        let ks_oy = title_object_keyframe_state(kfs_oy, clip_time_secs);
-        let ks_blur = title_object_keyframe_state(kfs_blur, clip_time_secs);
         inspector_subgroup_card(ui, "Inner Shadow", &mut enabled,
             (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
             let mut ox = display_ox;
             let mut oy = display_oy;
             let mut blur = display_blur;
             let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
-            let mut color_changed = false;
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Color").size(11.0).color(theme.text_dim));
-                color_changed = ui.color_edit_button_srgba(&mut col).changed();
-            });
-            let resp_ox = crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Offset X", &mut ox, -20.0..=20.0, 2.0, 0.5, 1, " px",
-                target_oid.map(|_| ks_ox),
+            let color_changed = effect_color_row(ui, theme, &mut col, ("inner_shadow", clip_id));
+            let pill_ox = format!("{} px", ox.round() as i32);
+            let resp_ox = effect_param_row(
+                ui, theme, "Offset X", &mut ox, -20.0..=20.0,
+                &pill_ox, kfs_ox,
             );
-            let resp_oy = crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Offset Y", &mut oy, -20.0..=20.0, 2.0, 0.5, 1, " px",
-                target_oid.map(|_| ks_oy),
+            let pill_oy = format!("{} px", oy.round() as i32);
+            let resp_oy = effect_param_row(
+                ui, theme, "Offset Y", &mut oy, -20.0..=20.0,
+                &pill_oy, kfs_oy,
             );
-            let resp_blur = crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Blur", &mut blur, 0.0..=20.0, 3.0, 0.5, 1, " px",
-                target_oid.map(|_| ks_blur),
+            let pill_blur = format!("{} px", blur.round() as i32);
+            let resp_blur = effect_param_row(
+                ui, theme, "Blur", &mut blur, 0.0..=20.0,
+                &pill_blur, kfs_blur,
             );
             if color_changed {
                 cmds.push(AppCommand::SetTitleInnerShadow {
@@ -2767,6 +2751,249 @@ fn compact_axis_input(
                 });
             });
         });
+    crate::widgets::scrubby_param::ScrubbyParamResponse {
+        changed,
+        drag_started: false,
+        drag_stopped: false,
+        lost_focus: false,
+        reset_clicked: false,
+        keyframe_toggled,
+        keyframe_nav_prev: false,
+        keyframe_nav_next: false,
+        keyframe_set_interpolation: None,
+        keyframe_ease_preset: None,
+    }
+}
+
+/// Color row used inside effect subcards: `[ label  swatch  hex_input ]`.
+/// Two ways to change the colour:
+///   - click the swatch → standard egui colour picker; `*color` updates
+///     live as the user picks
+///   - type a `#RRGGBB` hex into the input, press Enter or click away;
+///     valid hex applies to `*color`, invalid silently reverts the
+///     buffer back to the current colour's hex
+///
+/// `id_salt` distinguishes the per-effect persistent buffer in
+/// `ui.ctx().data` so two color rows on the same screen don't share
+/// state. Returns true on any colour change so the caller can dispatch
+/// the right `SetTitle*` command.
+fn effect_color_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    color: &mut egui::Color32,
+    id_salt: impl std::hash::Hash,
+) -> bool {
+    let label_w = 70.0;
+    let swatch_w = 28.0;
+    let row_h = 28.0;
+    let mut changed = false;
+    let buf_id = ui.id().with(("effect_color_hex_buf", id_salt));
+    let current_hex = format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+
+        // Label column — same dim style + width as effect_param_row.
+        let (label_rect, _) = ui.allocate_exact_size(
+            egui::vec2(label_w, row_h),
+            egui::Sense::hover(),
+        );
+        ui.painter().text(
+            egui::pos2(label_rect.min.x, label_rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            "Color",
+            egui::FontId::proportional(11.0),
+            theme.text_dim,
+        );
+
+        // Swatch — opens egui's colour picker on click; live-applies.
+        let swatch_changed = ui
+            .scope(|ui| {
+                ui.spacing_mut().interact_size = egui::vec2(swatch_w, row_h);
+                ui.color_edit_button_srgba(color).changed()
+            })
+            .inner;
+        if swatch_changed {
+            changed = true;
+        }
+
+        // Hex input — buffer in ctx.data so user typing isn't clobbered
+        // every frame by the current-color sync.
+        let mut hex_buf: String = ui.ctx().data_mut(|d| {
+            d.get_temp::<String>(buf_id).unwrap_or_else(|| current_hex.clone())
+        });
+        let hex_resp = egui::Frame::none()
+            .fill(theme.bg_raised)
+            .rounding(4.0)
+            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width().max(40.0));
+                ui.add(
+                    egui::TextEdit::singleline(&mut hex_buf)
+                        .frame(false)
+                        .desired_width(f32::INFINITY)
+                        .font(egui::FontId::monospace(11.0)),
+                )
+            })
+            .inner;
+
+        // On focus loss (which Enter triggers): try to parse + apply.
+        // Silent revert to the current color's hex if invalid — the
+        // ctx.data sync below overwrites the user's typo with the
+        // canonical hex.
+        if hex_resp.lost_focus() {
+            if let Some(parsed) = parse_hex_color(&hex_buf) {
+                let new_rgb = [parsed.r(), parsed.g(), parsed.b()];
+                let cur_rgb = [color.r(), color.g(), color.b()];
+                if new_rgb != cur_rgb {
+                    *color = egui::Color32::from_rgba_premultiplied(
+                        parsed.r(),
+                        parsed.g(),
+                        parsed.b(),
+                        color.a(),
+                    );
+                    changed = true;
+                }
+            }
+        }
+
+        // Persistent buffer state: while focused, save what the user
+        // typed; otherwise sync to the canonical hex from `*color`
+        // (handles both picker-driven changes and the silent-revert
+        // case after a bad hex submit).
+        if hex_resp.has_focus() {
+            ui.ctx().data_mut(|d| d.insert_temp(buf_id, hex_buf));
+        } else {
+            let canon = format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b());
+            ui.ctx().data_mut(|d| d.insert_temp(buf_id, canon));
+        }
+    });
+
+    changed
+}
+
+/// Parse `#RRGGBB` (case-insensitive, leading `#` optional) into a
+/// `Color32` with full opacity. Returns `None` for any other shape —
+/// callers use `None` as "silently revert".
+fn parse_hex_color(s: &str) -> Option<egui::Color32> {
+    let s = s.trim().trim_start_matches('#');
+    if s.len() != 6 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
+    Some(egui::Color32::from_rgb(r, g, b))
+}
+
+/// Three-column row used inside effect subcards:
+/// `[ label_col  thin_slider  value_pill  diamond? ]`. Replaces the
+/// scrubby_param_row inside Glow / Drop Shadow / Inner Shadow / etc.
+/// — the scrubby drag-on-label affordance is loud, the slider already
+/// gives drag-to-edit, and the reference design wants a clean dim
+/// label. Diamond renders only when `keyframes` is non-empty (option b
+/// from the audit). Returns the same response shape as
+/// `scrubby_param_row` so the existing `handle_*_axis_response`
+/// helpers continue to work unchanged.
+fn effect_param_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    pill_text: &str,
+    keyframes: &[klipp_core::Keyframe],
+) -> crate::widgets::scrubby_param::ScrubbyParamResponse {
+    let label_w = 70.0;
+    let pill_w = 64.0;
+    let row_h = 28.0;
+    let mut changed = false;
+    let mut keyframe_toggled = false;
+    let has_kfs = !keyframes.is_empty();
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+
+        // Label column — dim, vertically centred, fixed width so
+        // every row in the subcard lines up.
+        let (label_rect, _) = ui.allocate_exact_size(
+            egui::vec2(label_w, row_h),
+            egui::Sense::hover(),
+        );
+        ui.painter().text(
+            egui::pos2(label_rect.min.x, label_rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(11.0),
+            theme.text_dim,
+        );
+
+        // Reserve room for value pill + optional diamond on the
+        // right; the slider fills whatever's left.
+        let diamond_w = if has_kfs { 14.0 + 6.0 } else { 0.0 };
+        let avail = ui.available_width();
+        let slider_w = (avail - pill_w - 8.0 - diamond_w).max(40.0);
+
+        // Slider — thin track + dot handle, no fill highlight.
+        // Visuals scoped so the override doesn't leak to other widgets.
+        let slider_resp = ui
+            .scope(|ui| {
+                ui.style_mut().spacing.slider_rail_height = 3.0;
+                let visuals = &mut ui.visuals_mut();
+                // Disable the "fill" segment left of the handle by
+                // matching its colour to the unfilled track.
+                visuals.selection.bg_fill = theme.border;
+                visuals.widgets.inactive.bg_fill = theme.border;
+                visuals.widgets.hovered.bg_fill = theme.border;
+                ui.spacing_mut().slider_width = slider_w;
+                ui.add(
+                    egui::Slider::new(value, range)
+                        .show_value(false),
+                )
+            })
+            .inner;
+        if slider_resp.changed() {
+            changed = true;
+        }
+
+        // Value pill — framed, right-aligned text.
+        egui::Frame::none()
+            .fill(theme.bg_raised)
+            .rounding(4.0)
+            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+            .show(ui, |ui| {
+                ui.set_width(pill_w - 16.0);
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new(pill_text)
+                                .size(11.0)
+                                .color(theme.text_secondary),
+                        );
+                    },
+                );
+            });
+
+        // Diamond — visible only when this param already has
+        // keyframes. First-keyframe-add path is via the right-click
+        // context menu (or future scrubby variants), keeping the
+        // unanimated default visually clean.
+        if has_kfs {
+            ui.add_space(2.0);
+            let diamond = egui::Button::new(
+                egui::RichText::new("\u{25C6}")
+                    .size(10.0)
+                    .color(theme.accent),
+            )
+            .frame(false)
+            .min_size(egui::vec2(14.0, 14.0));
+            if ui.add(diamond).clicked() {
+                keyframe_toggled = true;
+            }
+        }
+    });
+
     crate::widgets::scrubby_param::ScrubbyParamResponse {
         changed,
         drag_started: false,

@@ -229,12 +229,14 @@ pub fn inspector_subgroup_card<R>(
             },
         );
 
-        // Body — only when enabled.
+        // Body — only when enabled. Generous top padding so the
+        // first param row has breathing room under the header,
+        // matching the reference's interior rhythm.
         if *enabled {
             let body_frame = Frame::none().inner_margin(Margin {
                 left: 12.0,
                 right: 12.0,
-                top: 0.0,
+                top: 8.0,
                 bottom: 12.0,
             });
             let inner = body_frame.show(ui, |ui| add_body(ui));
