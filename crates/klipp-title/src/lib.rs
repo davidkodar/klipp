@@ -1081,8 +1081,9 @@ impl TitleRenderer {
         }
 
         // 4. 3D Text Extrusion (rendered before face text, after outlines)
+        // — depth / angle / lighting may animate via keyframes.
         if let Some(ext) = tb.extrusion.as_ref().filter(|e| e.enabled) {
-            render_extrusion(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, ext, title);
+            render_extrusion(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, ext, title, time_secs);
         }
 
         // 5. Text fill (pattern > gradient > solid) — this is the face text
@@ -1310,6 +1311,20 @@ impl TitleRenderer {
                 false
             }
         });
+        let any_extrusion_keyframes = title.objects.iter().any(|o| {
+            if let TitleObjectContent::TextBox(tb) = &o.content {
+                tb.extrusion
+                    .as_ref()
+                    .map(|e| {
+                        !e.depth_keyframes.is_empty()
+                            || !e.angle_keyframes.is_empty()
+                            || !e.lighting_keyframes.is_empty()
+                    })
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        });
 
         let any_render_time_override = any_char_anim
             || color_cycle_rate.is_some()
@@ -1319,7 +1334,8 @@ impl TitleRenderer {
             || any_position_keyframes
             || any_glow_keyframes
             || any_shadow_keyframes
-            || any_inner_shadow_keyframes;
+            || any_inner_shadow_keyframes
+            || any_extrusion_keyframes;
 
         if !any_render_time_override {
             if let Some(buf) = self.cache_lookup(title, width, height) {
@@ -1387,6 +1403,7 @@ impl TitleRenderer {
             || any_glow_keyframes
             || any_shadow_keyframes
             || any_inner_shadow_keyframes
+            || any_extrusion_keyframes
         {
             Some(time_secs)
         } else {
@@ -2492,10 +2509,15 @@ fn render_extrusion(
     buf_h: usize,
     ext: &klipp_timeline::TextExtrusion,
     title: &TitleData,
+    time_secs: Option<f32>,
 ) {
     let tb = title.primary_text_or_default();
-    let depth = ext.depth.clamp(1.0, 50.0) as i32;
-    let angle_rad = ext.angle.to_radians();
+    let t_secs = time_secs.map(|t| t as f64).unwrap_or(0.0);
+    let depth_eval = ext.evaluated_depth(t_secs);
+    let angle_eval = ext.evaluated_angle(t_secs);
+    let lighting_eval = ext.evaluated_lighting(t_secs);
+    let depth = depth_eval.clamp(1.0, 50.0) as i32;
+    let angle_rad = angle_eval.to_radians();
     let cos_a = angle_rad.cos();
     let sin_a = angle_rad.sin();
 
@@ -2509,7 +2531,7 @@ fn render_extrusion(
         let dy = (sin_a * i as f32).round() as i32;
 
         // Lighting: darken back layers, lighten front layers
-        let light_factor = 1.0 - ext.lighting * 0.5 * t; // back is darker
+        let light_factor = 1.0 - lighting_eval * 0.5 * t; // back is darker
         let side_r = (ext.side_color[0] as f32 * light_factor).clamp(0.0, 255.0) as u8;
         let side_g = (ext.side_color[1] as f32 * light_factor).clamp(0.0, 255.0) as u8;
         let side_b = (ext.side_color[2] as f32 * light_factor).clamp(0.0, 255.0) as u8;
@@ -2611,11 +2633,36 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
     if tb.tracking > 0.0 {
         pad = pad.max((tb.tracking * scale * 200.0).ceil() as i32); // generous for long text
     }
-    // Extra padding for extrusion depth
+    // Extra padding for extrusion depth — worst-case across the
+    // clip. The horizontal/vertical extent depends on both depth and
+    // angle, so we evaluate the diagonal length per (depth, angle)
+    // pair across the static value AND every keyframe pair, taking
+    // the largest. A purely-depth-keyframed effect uses static angle,
+    // a purely-angle-keyframed effect uses static depth, and the
+    // mixed case checks both vec products. Conservative — the actual
+    // clip never exceeds this pad.
     if let Some(ext) = tb.extrusion.as_ref().filter(|e| e.enabled) {
-        let depth = ext.depth.clamp(1.0, 50.0);
-        let ex = (depth * ext.angle.to_radians().cos().abs()).ceil() as i32 + 1;
-        let ey = (depth * ext.angle.to_radians().sin().abs()).ceil() as i32 + 1;
+        let max_depth = ext
+            .depth_keyframes
+            .iter()
+            .map(|k| k.value)
+            .fold(ext.depth, f32::max)
+            .clamp(1.0, 50.0);
+        // For angle, both extremes (min and max) can produce the
+        // largest cos.abs() / sin.abs(), so collect candidate angles
+        // from the static value and every keyframe.
+        let mut angles: Vec<f32> = ext.angle_keyframes.iter().map(|k| k.value).collect();
+        angles.push(ext.angle);
+        let max_cos_abs = angles
+            .iter()
+            .map(|a| a.to_radians().cos().abs())
+            .fold(0.0_f32, f32::max);
+        let max_sin_abs = angles
+            .iter()
+            .map(|a| a.to_radians().sin().abs())
+            .fold(0.0_f32, f32::max);
+        let ex = (max_depth * max_cos_abs).ceil() as i32 + 1;
+        let ey = (max_depth * max_sin_abs).ceil() as i32 + 1;
         pad = pad.max(ex);
         pad = pad.max(ey);
     }
@@ -4761,6 +4808,87 @@ mod tests {
             &buf_no_time[..],
             &buf_with_time[..],
             "title with no shadow keyframes must render identically with or without time_secs"
+        );
+    }
+
+    /// Per-frame TextExtrusion.depth keyframes drive the rendered
+    /// pseudo-3D depth: a depth ramp 4 → 30 px adds more visible side
+    /// pixels at t=2 than at t=0.
+    #[test]
+    fn extrusion_depth_keyframes_change_rendered_depth_extent() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 1280;
+        let frame_h: u32 = 720;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 100.0;
+        tb.color = [255, 255, 255, 255];
+        tb.extrusion = Some(klipp_timeline::TextExtrusion {
+            enabled: true,
+            face_color: [255, 255, 255, 255],
+            side_color: [80, 80, 120, 255],
+            depth: 4.0,
+            depth_keyframes: vec![
+                Keyframe {
+                    time_secs: 0.0, value: 4.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                },
+                Keyframe {
+                    time_secs: 2.0, value: 30.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                },
+            ],
+            angle: 135.0, angle_keyframes: Vec::new(),
+            lighting: 0.5, lighting_keyframes: Vec::new(),
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
+        let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
+
+        let nonzero_alpha_count = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4).filter(|p| p[3] > 0).count()
+        };
+        let n0 = nonzero_alpha_count(&buf_t0);
+        let n2 = nonzero_alpha_count(&buf_t2);
+        assert!(
+            n2 > n0,
+            "depth ramp 4→30 must produce a larger 3D footprint at t=2 (n0={n0}, n2={n2})"
+        );
+    }
+
+    /// Empty extrusion keyframe vecs must NOT change the rendered
+    /// output — pin the no-overhead path for unanimated extrusions.
+    #[test]
+    fn empty_extrusion_keyframes_render_identical_to_pre_keyframe_path() {
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 80.0;
+        tb.extrusion = Some(klipp_timeline::TextExtrusion {
+            enabled: true,
+            face_color: [255, 255, 255, 255],
+            side_color: [80, 80, 80, 255],
+            depth: 12.0, depth_keyframes: Vec::new(),
+            angle: 135.0, angle_keyframes: Vec::new(),
+            lighting: 0.5, lighting_keyframes: Vec::new(),
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_no_time = renderer.render(&td, frame_w, frame_h);
+        let buf_with_time = renderer.render_with_time(&td, frame_w, frame_h, None, 1.5);
+        assert_eq!(
+            &buf_no_time[..],
+            &buf_with_time[..],
+            "title with no extrusion keyframes must render identically with or without time_secs"
         );
     }
 
