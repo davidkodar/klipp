@@ -1,5 +1,14 @@
 use serde::{Deserialize, Serialize};
 
+/// Which spatial axis of a title-object position is being keyframed.
+/// Used by the per-layer position keyframe AppCommands so handlers
+/// can `match` exhaustively rather than reading magic numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TitlePositionAxis {
+    X,
+    Y,
+}
+
 /// Interpolation method between keyframes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Interpolation {
@@ -13,7 +22,7 @@ pub enum Interpolation {
 }
 
 /// A single keyframe: a value at a specific time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Keyframe {
     /// Time in seconds (relative to clip's source_in).
     pub time_secs: f64,

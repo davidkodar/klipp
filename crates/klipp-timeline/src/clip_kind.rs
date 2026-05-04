@@ -170,10 +170,21 @@ pub struct TitleObjectId(pub u32);
 /// title canvas. All in normalised (0.0..1.0) coordinates, so a title
 /// renders identically at 720p, 1080p, 4K, etc. The renderer maps
 /// these to absolute pixels at the target resolution.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ObjectTransform {
     /// Normalised centre of the object's bounding box.
     pub center: TitlePosition,
+    /// Per-axis position keyframes. When non-empty, the renderer
+    /// evaluates these against the clip's local time and overrides
+    /// `center.x` / `center.y` for that frame; otherwise the static
+    /// `center` value is used. Empty by default — every existing
+    /// project file deserialises unchanged via `#[serde(default)]`.
+    /// Soft-disable behaviour: a layer toggled off keeps these vecs
+    /// intact so re-enabling restores the animation.
+    #[serde(default)]
+    pub center_x_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default)]
+    pub center_y_keyframes: Vec<klipp_core::Keyframe>,
     /// Normalised width / height of the bounding box (1.0 = full
     /// frame extent). `width = 1.0, height = 0.2` is a full-frame-
     /// width × 20%-frame-height bar — a typical lower-third bar.
@@ -697,6 +708,8 @@ impl TitleData {
 pub fn default_text_transform() -> ObjectTransform {
     ObjectTransform {
         center: TitlePosition { x: 0.5, y: 0.5 },
+        center_x_keyframes: Vec::new(),
+        center_y_keyframes: Vec::new(),
         size: TitlePosition { x: 1.0, y: 1.0 },
         rotation: 0.0,
         anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
@@ -1161,5 +1174,107 @@ mod tests {
         assert!(ClipKind::Sequence { sequence_id: SequenceId::new() }.needs_decoder());
         assert!(!ClipKind::Title(TitleData::default()).needs_decoder());
         assert!(!ClipKind::Generator(GeneratorData::default()).needs_decoder());
+    }
+
+    /// Default `ObjectTransform` (and the renderer fallback path) ships
+    /// empty position-keyframe vecs — the renderer's "static center"
+    /// path stays in effect until the user explicitly animates.
+    #[test]
+    fn default_text_transform_has_no_position_keyframes() {
+        let t = default_text_transform();
+        assert!(t.center_x_keyframes.is_empty());
+        assert!(t.center_y_keyframes.is_empty());
+    }
+
+    /// Round-trip: a `TextBox` with non-empty position keyframes on its
+    /// transform serialises and deserialises to an equivalent value,
+    /// preserving every keyframe field (time, value, interpolation,
+    /// tangents).
+    #[test]
+    fn position_keyframes_round_trip_through_serde() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let tb = TextBox::default();
+        let mut td = TitleData::single_text(tb);
+        let obj = td.objects.first_mut().expect("default has one object");
+        obj.transform.center_x_keyframes = vec![
+            Keyframe {
+                time_secs: 0.0,
+                value: 0.1,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0),
+                tangent_out: (0.0, 0.0),
+            },
+            Keyframe {
+                time_secs: 1.5,
+                value: 0.5,
+                interpolation: Interpolation::Bezier,
+                tangent_in: (-0.25, -0.05),
+                tangent_out: (0.25, 0.05),
+            },
+        ];
+        obj.transform.center_y_keyframes = vec![Keyframe {
+            time_secs: 1.0,
+            value: 0.85,
+            interpolation: Interpolation::Step,
+            tangent_in: (0.0, 0.0),
+            tangent_out: (0.0, 0.0),
+        }];
+
+        let json = serde_json::to_string(&td).expect("serialise");
+        let round: TitleData = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(td, round, "round-trip must be lossless");
+    }
+
+    /// Backward-compat: a `TitleData` JSON written before the keyframe
+    /// fields existed must deserialise with empty vecs (via
+    /// `#[serde(default)]`) — every project file on disk pre-#2 stays
+    /// loadable.
+    #[test]
+    fn legacy_titledata_without_position_keyframes_loads_with_defaults() {
+        // Strip the keyframe fields from a fresh JSON dump to simulate
+        // a pre-#2 save file. Using regex-style replace would be
+        // brittle; instead we hand-roll a minimal JSON matching the
+        // pre-keyframe shape.
+        let legacy_json = r#"{
+            "objects": [
+                {
+                    "id": 1,
+                    "name": "",
+                    "transform": {
+                        "center": { "x": 0.5, "y": 0.5 },
+                        "size": { "x": 1.0, "y": 1.0 }
+                    },
+                    "visible": true,
+                    "locked": false,
+                    "opacity": 1.0,
+                    "content": {
+                        "TextBox": {
+                            "text": "Hello",
+                            "font_size": 32.0,
+                            "font_name": "sans-serif",
+                            "font_style": "Regular",
+                            "color": [255, 255, 255, 255],
+                            "alignment": "Center",
+                            "outlines": [],
+                            "tracking": 0.0,
+                            "line_spacing": 1.0,
+                            "write_on": 1.0,
+                            "style_runs": []
+                        }
+                    }
+                }
+            ],
+            "next_object_id": 2,
+            "background": "None"
+        }"#;
+        let td: TitleData = serde_json::from_str(legacy_json)
+            .expect("legacy save without keyframe fields must deserialise");
+        assert_eq!(td.objects.len(), 1);
+        let xform = &td.objects[0].transform;
+        assert!(xform.center_x_keyframes.is_empty());
+        assert!(xform.center_y_keyframes.is_empty());
+        assert_eq!(xform.center.x, 0.5);
+        assert_eq!(xform.center.y, 0.5);
     }
 }

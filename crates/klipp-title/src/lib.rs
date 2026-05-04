@@ -1370,7 +1370,7 @@ impl TitleRenderer {
                     let mut single = TitleData::single_text(tb.clone());
                     single.background = TitleBackground::None;
                     if let Some(o) = single.objects.first_mut() {
-                        o.transform = obj.transform;
+                        o.transform = obj.transform.clone();
                     }
                     let layer = self.render_text_layer(
                         &single,
@@ -3165,6 +3165,8 @@ mod tests {
             }),
             klipp_timeline::ObjectTransform {
                 center: TitlePosition { x: 0.5, y: 0.5 },
+                center_x_keyframes: Vec::new(),
+                center_y_keyframes: Vec::new(),
                 size: TitlePosition { x: 0.5, y: 0.5 },
                 rotation: 0.0,
                 anchor_norm: TitlePosition { x: 0.5, y: 0.5 },

@@ -3192,7 +3192,7 @@ impl ViewerPanel {
                             clip_id,
                             object_id: obj.id,
                             handle,
-                            initial_transform: obj.transform,
+                            initial_transform: obj.transform.clone(),
                             initial_font_size,
                             drag_start_pos: p,
                         });
@@ -3219,7 +3219,7 @@ impl ViewerPanel {
                             clip_id,
                             object_id: obj.id,
                             handle: crate::state::TitleObjectHandle::Body,
-                            initial_transform: obj.transform,
+                            initial_transform: obj.transform.clone(),
                             initial_font_size,
                             drag_start_pos: p,
                         });
@@ -4087,7 +4087,7 @@ fn compute_drag_transform(
     cur_norm: (f32, f32),
 ) -> klipp_timeline::ObjectTransform {
     use crate::state::TitleObjectHandle as H;
-    let mut t = drag.initial_transform;
+    let mut t = drag.initial_transform.clone();
     match drag.handle {
         H::Body => {
             t.center.x = (t.center.x + dnx).clamp(-2.0, 3.0);
@@ -4455,6 +4455,8 @@ mod title_object_drag_tests {
     fn baseline_transform() -> ObjectTransform {
         ObjectTransform {
             center: TitlePosition { x: 0.5, y: 0.5 },
+            center_x_keyframes: Vec::new(),
+            center_y_keyframes: Vec::new(),
             size: TitlePosition { x: 0.4, y: 0.2 },
             rotation: 0.0,
             anchor_norm: TitlePosition { x: 0.5, y: 0.5 },
