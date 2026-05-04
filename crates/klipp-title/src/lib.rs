@@ -942,6 +942,7 @@ impl TitleRenderer {
         width: u32,
         height: u32,
         gpu: Option<&mut dyn AlphaMaskProcessor>,
+        time_secs: Option<f32>,
     ) -> Vec<u8> {
         let tb = title.primary_text_or_default();
         let w = width as usize;
@@ -1007,10 +1008,13 @@ impl TitleRenderer {
 
         // ── Render effects back-to-front ──
 
-        // 1. Outer glow
+        // 1. Outer glow — radius/intensity may animate via keyframes.
         if let Some(glow) = tb.glow.as_ref().filter(|g| g.enabled) {
-            let blurred = do_blur(alpha_mask, mask_w, mask_h, glow.radius * scale, &mut gpu);
-            draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &glow.color, glow.intensity);
+            let t = time_secs.map(|t| t as f64).unwrap_or(0.0);
+            let radius = glow.evaluated_radius(t);
+            let intensity = glow.evaluated_intensity(t);
+            let blurred = do_blur(alpha_mask, mask_w, mask_h, radius * scale, &mut gpu);
+            draw_mask_to_buf(&mut buf, &blurred, mask_w, mask_h, mask_x0, mask_y0, w, h, &glow.color, intensity);
         }
 
         // 2. Shadow (with blur support)
@@ -1255,12 +1259,27 @@ impl TitleRenderer {
                 || !o.transform.center_y_keyframes.is_empty()
         });
 
+        // Per-effect keyframes: TextGlow's radius/intensity animate
+        // when their respective vecs are non-empty. Same cache-bypass
+        // requirement as position keyframes.
+        let any_glow_keyframes = title.objects.iter().any(|o| {
+            if let TitleObjectContent::TextBox(tb) = &o.content {
+                tb.glow
+                    .as_ref()
+                    .map(|g| !g.radius_keyframes.is_empty() || !g.intensity_keyframes.is_empty())
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        });
+
         let any_render_time_override = any_char_anim
             || color_cycle_rate.is_some()
             || color_blend.is_some()
             || outline_draw_on_dur.is_some()
             || any_glitch_active
-            || any_position_keyframes;
+            || any_position_keyframes
+            || any_glow_keyframes;
 
         if !any_render_time_override {
             if let Some(buf) = self.cache_lookup(title, width, height) {
@@ -1318,10 +1337,15 @@ impl TitleRenderer {
 
         // Pass time through whenever ANY render-time effect needs
         // it — char_animation drives per-glyph staggering, glitch
-        // seeds its stripe pattern from the clip clock, and per-layer
+        // seeds its stripe pattern from the clip clock, per-layer
         // position keyframes evaluate against this time inside
-        // `render_inner`.
-        let time_arg = if any_char_anim || any_glitch_active || any_position_keyframes {
+        // `render_inner`, and per-effect keyframes (e.g. TextGlow
+        // radius/intensity) sample inside `compose`.
+        let time_arg = if any_char_anim
+            || any_glitch_active
+            || any_position_keyframes
+            || any_glow_keyframes
+        {
             Some(time_secs)
         } else {
             None
@@ -1447,7 +1471,7 @@ impl TitleRenderer {
         time_secs: Option<f32>,
     ) -> Vec<u8> {
         let layout = self.render_layout_at_time(title, width, height, time_secs);
-        let mut buf = Self::compose(&layout, title, width, height, gpu);
+        let mut buf = Self::compose(&layout, title, width, height, gpu, time_secs);
         self.apply_texture_fill(&mut buf, &layout, title, width, height);
 
         // Post-pass effects: applied to the fully-composed layer
@@ -2479,7 +2503,16 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
         pad = pad.max((outline.width * scale).ceil() as i32 + 1);
     }
     if let Some(glow) = tb.glow.as_ref().filter(|g| g.enabled) {
-        pad = pad.max((glow.radius * scale * 2.0).ceil() as i32 + 1);
+        // Pad for the worst-case radius across the clip — static value
+        // OR any keyframed value, whichever is largest. Animating
+        // 5px → 25px must never clip the t=2 frame because we computed
+        // padding off the t=0 value.
+        let max_radius = glow
+            .radius_keyframes
+            .iter()
+            .map(|k| k.value)
+            .fold(glow.radius, f32::max);
+        pad = pad.max((max_radius * scale * 2.0).ceil() as i32 + 1);
     }
     if let Some(shadow) = tb.shadow.as_ref().filter(|s| s.enabled) {
         let sx = (shadow.offset_x.abs() * scale).ceil() as i32;
@@ -4222,6 +4255,155 @@ mod tests {
             &buf_no_time[..],
             &buf_with_time[..],
             "title with no position keyframes must render identically with or without time_secs"
+        );
+    }
+
+    /// Per-frame TextGlow.radius keyframes drive the rendered halo
+    /// width: a glow ramping 4 → 24 px should cover measurably more
+    /// non-zero-alpha pixels at t=2 than at t=0. Asserts via the
+    /// halo's pixel count outside the text body so the test catches
+    /// the renderer ignoring radius_keyframes.
+    #[test]
+    fn glow_radius_keyframes_change_rendered_halo_size() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 80.0;
+        tb.glow = Some(klipp_timeline::TextGlow {
+            enabled: true,
+            color: [255, 200, 0, 255],
+            radius: 4.0,
+            radius_keyframes: vec![
+                Keyframe {
+                    time_secs: 0.0,
+                    value: 4.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+                Keyframe {
+                    time_secs: 2.0,
+                    value: 24.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+            ],
+            intensity: 1.0,
+            intensity_keyframes: Vec::new(),
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
+        let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
+
+        let nonzero_alpha_count = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4).filter(|p| p[3] > 0).count()
+        };
+        let n0 = nonzero_alpha_count(&buf_t0);
+        let n2 = nonzero_alpha_count(&buf_t2);
+        assert!(
+            n2 > n0,
+            "t=2 with radius=24 must cover more pixels than t=0 with radius=4 (n0={n0}, n2={n2})"
+        );
+        // The 6× radius growth should produce a meaningfully larger
+        // halo footprint, not a marginal antialiasing difference.
+        assert!(
+            n2 as f32 > n0 as f32 * 1.5,
+            "t=2 halo should be at least 1.5× larger than t=0 (n0={n0}, n2={n2})"
+        );
+    }
+
+    /// Per-frame TextGlow.intensity keyframes drive the alpha sum of
+    /// the rendered halo: a glow ramping intensity 0.1 → 1.0 at fixed
+    /// radius should produce a visibly brighter halo (higher alpha
+    /// integral) at t=1 than at t=0.
+    #[test]
+    fn glow_intensity_keyframes_change_rendered_halo_alpha() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "O".to_string();
+        tb.font_size = 80.0;
+        tb.glow = Some(klipp_timeline::TextGlow {
+            enabled: true,
+            color: [255, 100, 100, 255],
+            radius: 12.0,
+            radius_keyframes: Vec::new(),
+            intensity: 1.0,
+            intensity_keyframes: vec![
+                Keyframe {
+                    time_secs: 0.0,
+                    value: 0.1,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+                Keyframe {
+                    time_secs: 1.0,
+                    value: 1.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+            ],
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
+        let buf_t1 = renderer.render_with_time(&td, frame_w, frame_h, None, 1.0);
+
+        // Sum of alpha values across the frame measures total
+        // light-emission energy. Higher intensity → higher sum.
+        let alpha_sum = |buf: &[u8]| -> u64 {
+            buf.chunks_exact(4).map(|p| p[3] as u64).sum()
+        };
+        let s0 = alpha_sum(&buf_t0);
+        let s1 = alpha_sum(&buf_t1);
+        assert!(
+            s1 > s0,
+            "t=1 alpha sum must exceed t=0 alpha sum (intensity 1.0 > 0.1) — s0={s0} s1={s1}"
+        );
+    }
+
+    /// Empty glow keyframe vecs must NOT change the rendered output —
+    /// the static `radius` / `intensity` fallback path stays in
+    /// effect. Pins the no-overhead path for unanimated glow.
+    #[test]
+    fn empty_glow_keyframes_render_identical_to_pre_keyframe_path() {
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 80.0;
+        tb.glow = Some(klipp_timeline::TextGlow {
+            enabled: true,
+            color: [255, 200, 0, 255],
+            radius: 12.0,
+            radius_keyframes: Vec::new(),
+            intensity: 0.8,
+            intensity_keyframes: Vec::new(),
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_no_time = renderer.render(&td, frame_w, frame_h);
+        let buf_with_time = renderer.render_with_time(&td, frame_w, frame_h, None, 1.5);
+
+        assert_eq!(
+            &buf_no_time[..],
+            &buf_with_time[..],
+            "title with no glow keyframes must render identically with or without time_secs"
         );
     }
 }
