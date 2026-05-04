@@ -1472,8 +1472,15 @@ fn show_title_effects_group(
 
     // 3. Drop Shadow
     {
-        let cur = tb.shadow.unwrap_or(klipp_timeline::TitleShadow {
-            color: [0, 0, 0, 180], offset_x: 3.0, offset_y: 3.0, blur: 0.0, enabled: false,
+        let cur = tb.shadow.clone().unwrap_or(klipp_timeline::TitleShadow {
+            color: [0, 0, 0, 180],
+            offset_x: 3.0,
+            offset_y: 3.0,
+            blur: 0.0,
+            enabled: false,
+            offset_x_keyframes: Vec::new(),
+            offset_y_keyframes: Vec::new(),
+            blur_keyframes: Vec::new(),
         });
         let mut enabled = shadow_enabled;
         let summary = if enabled {

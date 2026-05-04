@@ -14127,20 +14127,33 @@ impl KlippApp {
                 // Soft-disable: always write `Some(...)` with `enabled` from
                 // the command. Toggling off preserves the user's tweaks so
                 // the subcard re-enable round-trips cleanly. Renderer skips
-                // the effect when `enabled = false`.
+                // the effect when `enabled = false`. Mutate fields in place
+                // when a shadow already exists so existing offset/blur
+                // keyframes survive the edit.
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                tb.shadow = Some(klipp_timeline::TitleShadow {
-                                    color: *color,
-                                    offset_x: *offset_x,
-                                    offset_y: *offset_y,
-                                    blur: *blur,
-                                    enabled: *enabled,
-                                });
+                                if let Some(s) = tb.shadow.as_mut() {
+                                    s.color = *color;
+                                    s.offset_x = *offset_x;
+                                    s.offset_y = *offset_y;
+                                    s.blur = *blur;
+                                    s.enabled = *enabled;
+                                } else {
+                                    tb.shadow = Some(klipp_timeline::TitleShadow {
+                                        color: *color,
+                                        offset_x: *offset_x,
+                                        offset_y: *offset_y,
+                                        blur: *blur,
+                                        enabled: *enabled,
+                                        offset_x_keyframes: Vec::new(),
+                                        offset_y_keyframes: Vec::new(),
+                                        blur_keyframes: Vec::new(),
+                                    });
+                                }
                             }
                         }
                     }
@@ -16786,6 +16799,9 @@ impl KlippApp {
                                                 offset_y: s.shadow,
                                                 blur: s.shadow,
                                                 enabled: true,
+                                                offset_x_keyframes: Vec::new(),
+                                                offset_y_keyframes: Vec::new(),
+                                                blur_keyframes: Vec::new(),
                                             })
                                         } else { None };
                                         (
@@ -29042,6 +29058,9 @@ fn apply_title_preset(tb: &mut klipp_timeline::TextBox, preset_id: u8) {
                 offset_y: 4.0,
                 blur: 6.0,
                 enabled: true,
+                offset_x_keyframes: Vec::new(),
+                offset_y_keyframes: Vec::new(),
+                blur_keyframes: Vec::new(),
             });
             tb.inner_shadow = None;
             tb.gradient = None;

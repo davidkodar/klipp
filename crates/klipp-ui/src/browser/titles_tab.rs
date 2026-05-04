@@ -75,7 +75,7 @@ fn centered(text: &str, size: f32, style: FontStyle, color: [u8; 4], shadow: boo
     tb.color = color;
     tb.alignment = TextAlignment::Center;
     tb.shadow = if shadow {
-        Some(TitleShadow { color: [0, 0, 0, 160], offset_x: 3.0, offset_y: 3.0, blur: 6.0, enabled: true })
+        Some(TitleShadow { color: [0, 0, 0, 160], offset_x: 3.0, offset_y: 3.0, blur: 6.0, enabled: true, offset_x_keyframes: Vec::new(), offset_y_keyframes: Vec::new(), blur_keyframes: Vec::new() })
     } else {
         None
     };
@@ -179,19 +179,19 @@ const ORANGE: [u8; 4] = [255, 160, 40, 255];
 const PURPLE: [u8; 4] = [160, 80, 255, 255];
 
 fn shadow_default() -> Option<TitleShadow> {
-    Some(TitleShadow { color: [0, 0, 0, 160], offset_x: 3.0, offset_y: 3.0, blur: 6.0, enabled: true })
+    Some(TitleShadow { color: [0, 0, 0, 160], offset_x: 3.0, offset_y: 3.0, blur: 6.0, enabled: true, offset_x_keyframes: Vec::new(), offset_y_keyframes: Vec::new(), blur_keyframes: Vec::new() })
 }
 
 fn shadow_soft() -> Option<TitleShadow> {
-    Some(TitleShadow { color: [0, 0, 0, 120], offset_x: 2.0, offset_y: 2.0, blur: 8.0, enabled: true })
+    Some(TitleShadow { color: [0, 0, 0, 120], offset_x: 2.0, offset_y: 2.0, blur: 8.0, enabled: true, offset_x_keyframes: Vec::new(), offset_y_keyframes: Vec::new(), blur_keyframes: Vec::new() })
 }
 
 fn shadow_hard() -> Option<TitleShadow> {
-    Some(TitleShadow { color: [0, 0, 0, 200], offset_x: 4.0, offset_y: 4.0, blur: 2.0, enabled: true })
+    Some(TitleShadow { color: [0, 0, 0, 200], offset_x: 4.0, offset_y: 4.0, blur: 2.0, enabled: true, offset_x_keyframes: Vec::new(), offset_y_keyframes: Vec::new(), blur_keyframes: Vec::new() })
 }
 
 fn shadow_glow(color: [u8; 4]) -> Option<TitleShadow> {
-    Some(TitleShadow { color, offset_x: 0.0, offset_y: 0.0, blur: 12.0, enabled: true })
+    Some(TitleShadow { color, offset_x: 0.0, offset_y: 0.0, blur: 12.0, enabled: true, offset_x_keyframes: Vec::new(), offset_y_keyframes: Vec::new(), blur_keyframes: Vec::new() })
 }
 
 // ---------------------------------------------------------------------------
@@ -276,7 +276,7 @@ fn cin_typewriter() -> TitleData {
 fn cin_glitch() -> TitleData {
     // Real glitch: cyan/magenta channel offset + slice displacement +
     // distinctive red colour. The CRT/VHS look in one preset.
-    let td = positioned("GL1TCH", 72.0, FontStyle::Bold, RED, TextAlignment::Center, 0.5, 0.5, Some(TitleShadow { color: [0, 255, 255, 120], offset_x: 4.0, offset_y: -2.0, blur: 2.0, enabled: true }));
+    let td = positioned("GL1TCH", 72.0, FontStyle::Bold, RED, TextAlignment::Center, 0.5, 0.5, Some(TitleShadow { color: [0, 255, 255, 120], offset_x: 4.0, offset_y: -2.0, blur: 2.0, enabled: true, offset_x_keyframes: Vec::new(), offset_y_keyframes: Vec::new(), blur_keyframes: Vec::new() }));
     let td = with_chromatic(td, 6.0);
     with_glitch(td, 0.35)
 }
@@ -1185,7 +1185,7 @@ const TITLES: &[TitleTemplate] = &[
             32.0, FontStyle::Regular,
             [255, 255, 255, 255], TextAlignment::Center,
             0.5, 0.88,
-            Some(TitleShadow { color: [0, 0, 0, 200], offset_x: 1.5, offset_y: 1.5, blur: 3.0, enabled: true }),
+            Some(TitleShadow { color: [0, 0, 0, 200], offset_x: 1.5, offset_y: 1.5, blur: 3.0, enabled: true, offset_x_keyframes: Vec::new(), offset_y_keyframes: Vec::new(), blur_keyframes: Vec::new() }),
         );
         if let Some(tb) = t.primary_text_mut() {
             tb.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 220], width: 1.5, enabled: true });

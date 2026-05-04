@@ -529,6 +529,8 @@ impl TextBox {
     ) -> Option<&mut Vec<klipp_core::Keyframe>> {
         if param_key.starts_with("glow.") {
             self.glow.as_mut().and_then(|g| g.keyframes_mut_for(param_key))
+        } else if param_key.starts_with("shadow.") {
+            self.shadow.as_mut().and_then(|s| s.keyframes_mut_for(param_key))
         } else {
             None
         }
@@ -539,6 +541,8 @@ impl TextBox {
     pub fn effect_keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
         if param_key.starts_with("glow.") {
             self.glow.as_ref().and_then(|g| g.keyframes_for(param_key))
+        } else if param_key.starts_with("shadow.") {
+            self.shadow.as_ref().and_then(|s| s.keyframes_for(param_key))
         } else {
             None
         }
@@ -784,7 +788,7 @@ impl TitleData {
             .unwrap_or(TitlePosition { x: 0.5, y: 0.5 })
     }
     pub fn shadow(&self) -> Option<TitleShadow> {
-        self.primary_text().and_then(|tb| tb.shadow)
+        self.primary_text().and_then(|tb| tb.shadow.clone())
     }
     pub fn outlines(&self) -> Vec<TextOutline> {
         self.primary_text().map(|tb| tb.outlines.clone()).unwrap_or_default()
@@ -1123,17 +1127,94 @@ pub enum TitleBackground {
     },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TitleShadow {
-    pub color: [u8; 4],
-    pub offset_x: f32,
-    pub offset_y: f32,
-    pub blur: f32,
     /// Soft-disable: when `false`, renderer skips this effect but the
     /// parameters are preserved so the inspector's subcard toggle can
-    /// re-enable without losing tweaks.
+    /// re-enable without losing tweaks. Keyframe vecs are preserved
+    /// too, matching mute-not-delete semantics.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    pub color: [u8; 4],
+    pub offset_x: f32,
+    /// Per-frame keyframes for `offset_x`; empty by default.
+    #[serde(default)]
+    pub offset_x_keyframes: Vec<klipp_core::Keyframe>,
+    pub offset_y: f32,
+    /// Per-frame keyframes for `offset_y`.
+    #[serde(default)]
+    pub offset_y_keyframes: Vec<klipp_core::Keyframe>,
+    pub blur: f32,
+    /// Per-frame keyframes for `blur`.
+    #[serde(default)]
+    pub blur_keyframes: Vec<klipp_core::Keyframe>,
+}
+
+impl TitleShadow {
+    /// Effective `offset_x` at `time_secs`: keyframe-evaluated when
+    /// the corresponding vec is non-empty, else the static value.
+    pub fn evaluated_offset_x(&self, time_secs: f64) -> f32 {
+        if self.offset_x_keyframes.is_empty() {
+            self.offset_x
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.offset_x_keyframes,
+                time_secs,
+                self.offset_x,
+            )
+        }
+    }
+
+    /// Effective `offset_y` at `time_secs`. See `evaluated_offset_x`.
+    pub fn evaluated_offset_y(&self, time_secs: f64) -> f32 {
+        if self.offset_y_keyframes.is_empty() {
+            self.offset_y
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.offset_y_keyframes,
+                time_secs,
+                self.offset_y,
+            )
+        }
+    }
+
+    /// Effective `blur` at `time_secs`. See `evaluated_offset_x`.
+    pub fn evaluated_blur(&self, time_secs: f64) -> f32 {
+        if self.blur_keyframes.is_empty() {
+            self.blur
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.blur_keyframes,
+                time_secs,
+                self.blur,
+            )
+        }
+    }
+
+    /// Mutable accessor for the keyframe vec named by `param_key`
+    /// (one of the `klipp_core::title_effect_keys` constants). Returns
+    /// `None` for unknown keys.
+    pub fn keyframes_mut_for(
+        &mut self,
+        param_key: &str,
+    ) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        match param_key {
+            klipp_core::title_effect_keys::SHADOW_OFFSET_X => Some(&mut self.offset_x_keyframes),
+            klipp_core::title_effect_keys::SHADOW_OFFSET_Y => Some(&mut self.offset_y_keyframes),
+            klipp_core::title_effect_keys::SHADOW_BLUR => Some(&mut self.blur_keyframes),
+            _ => None,
+        }
+    }
+
+    /// Read-only mirror of `keyframes_mut_for`.
+    pub fn keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
+        match param_key {
+            klipp_core::title_effect_keys::SHADOW_OFFSET_X => Some(&self.offset_x_keyframes),
+            klipp_core::title_effect_keys::SHADOW_OFFSET_Y => Some(&self.offset_y_keyframes),
+            klipp_core::title_effect_keys::SHADOW_BLUR => Some(&self.blur_keyframes),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -1756,5 +1837,184 @@ mod tests {
         // Unknown key returns None on both sides — typo guard.
         assert!(g.keyframes_mut_for("glow.intencity").is_none());
         assert!(g.keyframes_for("glow.intencity").is_none());
+    }
+
+    /// `evaluated_offset_x`, `evaluated_offset_y`, `evaluated_blur`
+    /// short-circuit to the static value when their keyframe vec is
+    /// empty — pins the no-overhead path for unanimated shadows.
+    #[test]
+    fn titleshadow_evaluator_empty_kfs_returns_static() {
+        let s = TitleShadow {
+            enabled: true,
+            color: [0, 0, 0, 200],
+            offset_x: 3.0,
+            offset_x_keyframes: Vec::new(),
+            offset_y: 3.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 6.0,
+            blur_keyframes: Vec::new(),
+        };
+        assert_eq!(s.evaluated_offset_x(0.0), 3.0);
+        assert_eq!(s.evaluated_offset_y(99.0), 3.0);
+        assert_eq!(s.evaluated_blur(1.5), 6.0);
+    }
+
+    /// With keyframes, each evaluator overrides its static counterpart
+    /// at the requested time. Independence: keyframing one param
+    /// doesn't disturb the others' static-fallback behaviour.
+    #[test]
+    fn titleshadow_evaluator_with_keyframes_returns_interpolated() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let s = TitleShadow {
+            enabled: true,
+            color: [0, 0, 0, 200],
+            offset_x: 3.0,
+            offset_x_keyframes: vec![
+                Keyframe {
+                    time_secs: 0.0,
+                    value: -10.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+                Keyframe {
+                    time_secs: 1.0,
+                    value: 10.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+            ],
+            offset_y: 3.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 6.0,
+            blur_keyframes: vec![
+                Keyframe {
+                    time_secs: 0.0,
+                    value: 2.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+                Keyframe {
+                    time_secs: 1.0,
+                    value: 16.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0),
+                    tangent_out: (0.0, 0.0),
+                },
+            ],
+        };
+        // offset_x animates -10 → +10.
+        assert!((s.evaluated_offset_x(0.0) - (-10.0)).abs() < 1e-5);
+        assert!((s.evaluated_offset_x(0.5) - 0.0).abs() < 1e-5);
+        assert!((s.evaluated_offset_x(1.0) - 10.0).abs() < 1e-5);
+        // offset_y has no kfs — static fallback at every time.
+        assert_eq!(s.evaluated_offset_y(0.0), 3.0);
+        assert_eq!(s.evaluated_offset_y(0.5), 3.0);
+        // blur animates 2 → 16.
+        assert!((s.evaluated_blur(0.0) - 2.0).abs() < 1e-5);
+        assert!((s.evaluated_blur(0.5) - 9.0).abs() < 1e-5);
+    }
+
+    /// Round-trip: a `TitleShadow` with non-empty keyframes serialises
+    /// and deserialises losslessly.
+    #[test]
+    fn titleshadow_keyframes_round_trip_through_serde() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let s = TitleShadow {
+            enabled: true,
+            color: [10, 20, 30, 200],
+            offset_x: 3.0,
+            offset_x_keyframes: vec![Keyframe {
+                time_secs: 0.5, value: 5.0,
+                interpolation: Interpolation::Bezier,
+                tangent_in: (-0.1, 0.0), tangent_out: (0.1, 0.0),
+            }],
+            offset_y: 3.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 6.0,
+            blur_keyframes: vec![Keyframe {
+                time_secs: 0.0, value: 0.0,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            }],
+        };
+        let json = serde_json::to_string(&s).expect("serialise");
+        let round: TitleShadow = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(s, round);
+    }
+
+    /// Backward-compat: a pre-#5 `TitleShadow` JSON without the keyframe
+    /// fields must deserialise with empty vecs.
+    #[test]
+    fn legacy_titleshadow_without_keyframe_fields_loads_with_defaults() {
+        let legacy_json = r#"{
+            "enabled": true,
+            "color": [10, 20, 30, 200],
+            "offset_x": 3.0,
+            "offset_y": 4.0,
+            "blur": 6.0
+        }"#;
+        let s: TitleShadow = serde_json::from_str(legacy_json)
+            .expect("legacy save without keyframe fields must deserialise");
+        assert!(s.offset_x_keyframes.is_empty());
+        assert!(s.offset_y_keyframes.is_empty());
+        assert!(s.blur_keyframes.is_empty());
+        assert_eq!(s.offset_x, 3.0);
+        assert_eq!(s.offset_y, 4.0);
+        assert_eq!(s.blur, 6.0);
+    }
+
+    /// `TextBox::effect_keyframes_mut_for` routes the `shadow.*`
+    /// prefix to the right `TitleShadow` keyframe vec — and returns
+    /// `None` if no shadow is configured. Same prefix-router contract
+    /// as the glow path.
+    #[test]
+    fn textbox_router_dispatches_shadow_param_keys() {
+        use klipp_core::title_effect_keys;
+
+        let mut tb = TextBox::default();
+        // No shadow yet: router returns None for every shadow key.
+        assert!(tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_BLUR).is_none());
+        assert!(tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_OFFSET_X).is_none());
+
+        tb.shadow = Some(TitleShadow {
+            enabled: true,
+            color: [0, 0, 0, 180],
+            offset_x: 3.0,
+            offset_x_keyframes: Vec::new(),
+            offset_y: 3.0,
+            offset_y_keyframes: Vec::new(),
+            blur: 6.0,
+            blur_keyframes: Vec::new(),
+        });
+        // After enabling: each param key lands on its own vec.
+        klipp_core::keyframe::upsert_keyframe(
+            tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_OFFSET_X).unwrap(),
+            0.0, 5.0,
+        );
+        klipp_core::keyframe::upsert_keyframe(
+            tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_OFFSET_Y).unwrap(),
+            0.0, 7.0,
+        );
+        klipp_core::keyframe::upsert_keyframe(
+            tb.effect_keyframes_mut_for(title_effect_keys::SHADOW_BLUR).unwrap(),
+            0.5, 12.0,
+        );
+        let s = tb.shadow.as_ref().unwrap();
+        assert_eq!(s.offset_x_keyframes.len(), 1);
+        assert_eq!(s.offset_y_keyframes.len(), 1);
+        assert_eq!(s.blur_keyframes.len(), 1);
+        assert_eq!(s.offset_x_keyframes[0].value, 5.0);
+        assert_eq!(s.offset_y_keyframes[0].value, 7.0);
+        assert_eq!(s.blur_keyframes[0].value, 12.0);
+
+        // Glow keys must not accidentally match shadow.
+        assert!(tb.effect_keyframes_mut_for(title_effect_keys::GLOW_RADIUS).is_none());
+        // Unknown shadow key returns None.
+        assert!(tb.effect_keyframes_mut_for("shadow.opacity").is_none());
     }
 }

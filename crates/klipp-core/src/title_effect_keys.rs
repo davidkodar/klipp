@@ -13,3 +13,8 @@
 // ── TextGlow ──
 pub const GLOW_RADIUS: &str = "glow.radius";
 pub const GLOW_INTENSITY: &str = "glow.intensity";
+
+// ── TitleShadow ──
+pub const SHADOW_OFFSET_X: &str = "shadow.offset_x";
+pub const SHADOW_OFFSET_Y: &str = "shadow.offset_y";
+pub const SHADOW_BLUR: &str = "shadow.blur";

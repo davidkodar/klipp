@@ -3298,6 +3298,9 @@ mod tests {
             offset_y: 4.0,
             blur: 0.0,
             enabled: true,
+            offset_x_keyframes: Vec::new(),
+            offset_y_keyframes: Vec::new(),
+            blur_keyframes: Vec::new(),
         });
     }
     td
