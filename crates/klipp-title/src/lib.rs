@@ -1037,15 +1037,18 @@ impl TitleRenderer {
             }
         }
 
-        // 3. Outline/stroke — multiple layers (widest first) then legacy single
+        // 3. Outline/stroke — multiple layers (widest first) then legacy single.
+        // width may animate via per-stack-element keyframes, so we
+        // collect evaluated widths up front and sort on those.
         {
-            let mut all_outlines: Vec<&klipp_timeline::TextOutline> = Vec::new();
+            let t_secs = time_secs.map(|t| t as f64).unwrap_or(0.0);
+            let mut all_outlines: Vec<(f32, &klipp_timeline::TextOutline)> = Vec::new();
             for ol in tb.outlines.iter().filter(|o| o.enabled) {
-                all_outlines.push(ol);
+                all_outlines.push((ol.evaluated_width(t_secs), ol));
             }
             // Legacy single-outline support is gone — outline data
             // lives entirely in `tb.outlines` now.
-            all_outlines.sort_by(|a, b| b.width.partial_cmp(&a.width).unwrap_or(std::cmp::Ordering::Equal));
+            all_outlines.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
             // Stroke draw-on: clip the rendered outline horizontally
             // to a left-anchored fraction of the text bounds. When
@@ -1060,8 +1063,8 @@ impl TitleRenderer {
                 (layout.text_left + (layout.text_right - layout.text_left) * outline_progress).floor() as i32
             };
 
-            for outline in &all_outlines {
-                let dilated = do_dilate(alpha_mask, mask_w, mask_h, outline.width * scale, &mut gpu);
+            for (eff_width, outline) in &all_outlines {
+                let dilated = do_dilate(alpha_mask, mask_w, mask_h, *eff_width * scale, &mut gpu);
                 let mut outline_mask = vec![0u8; mask_w * mask_h];
                 for i in 0..outline_mask.len() {
                     outline_mask[i] = dilated[i].saturating_sub(alpha_mask[i]);
@@ -1325,6 +1328,13 @@ impl TitleRenderer {
                 false
             }
         });
+        let any_outline_keyframes = title.objects.iter().any(|o| {
+            if let TitleObjectContent::TextBox(tb) = &o.content {
+                tb.outlines.iter().any(|ol| !ol.width_keyframes.is_empty())
+            } else {
+                false
+            }
+        });
 
         let any_render_time_override = any_char_anim
             || color_cycle_rate.is_some()
@@ -1335,7 +1345,8 @@ impl TitleRenderer {
             || any_glow_keyframes
             || any_shadow_keyframes
             || any_inner_shadow_keyframes
-            || any_extrusion_keyframes;
+            || any_extrusion_keyframes
+            || any_outline_keyframes;
 
         if !any_render_time_override {
             if let Some(buf) = self.cache_lookup(title, width, height) {
@@ -1404,6 +1415,7 @@ impl TitleRenderer {
             || any_shadow_keyframes
             || any_inner_shadow_keyframes
             || any_extrusion_keyframes
+            || any_outline_keyframes
         {
             Some(time_secs)
         } else {
@@ -2564,7 +2576,15 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
     let tb = title.primary_text_or_default();
     let mut pad = 0i32;
     for outline in tb.outlines.iter().filter(|o| o.enabled) {
-        pad = pad.max((outline.width * scale).ceil() as i32 + 1);
+        // Pad for the worst-case width across the clip — static value
+        // OR any keyframe value, whichever is largest. A keyframed
+        // outline that grows from 1px to 8px must reserve space for 8.
+        let max_width = outline
+            .width_keyframes
+            .iter()
+            .map(|k| k.value)
+            .fold(outline.width, f32::max);
+        pad = pad.max((max_width * scale).ceil() as i32 + 1);
     }
     if let Some(glow) = tb.glow.as_ref().filter(|g| g.enabled) {
         // Pad for the worst-case radius across the clip — static value
@@ -4822,6 +4842,166 @@ mod tests {
             &buf_no_time[..],
             &buf_with_time[..],
             "title with no shadow keyframes must render identically with or without time_secs"
+        );
+    }
+
+    /// Per-frame TextOutline.width keyframes on outlines[0] drive the
+    /// rendered stroke thickness — a width ramp 1 → 8 px adds visible
+    /// outline pixels at t=2 vs t=0.
+    #[test]
+    fn outline_width_keyframes_change_rendered_stroke_thickness() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 80.0;
+        tb.color = [255, 255, 255, 255];
+        tb.outlines.push(klipp_timeline::TextOutline {
+            enabled: true,
+            color: [255, 0, 0, 255],
+            width: 1.0,
+            width_keyframes: vec![
+                Keyframe {
+                    time_secs: 0.0, value: 1.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                },
+                Keyframe {
+                    time_secs: 2.0, value: 8.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                },
+            ],
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
+        let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
+
+        // Count red-tinted pixels (outline color) — wider stroke at
+        // t=2 produces more red coverage.
+        let red_pixel_count = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4)
+                .filter(|p| p[3] > 0 && p[0] > 200 && p[1] < 80 && p[2] < 80)
+                .count()
+        };
+        let n0 = red_pixel_count(&buf_t0);
+        let n2 = red_pixel_count(&buf_t2);
+        assert!(
+            n2 > n0,
+            "outline width ramp 1→8 must thicken the stroke (n0={n0}, n2={n2})"
+        );
+    }
+
+    /// Per-stack-element keyframes are isolated: keyframing
+    /// outlines[1].width must NOT change outlines[0]'s rendered
+    /// thickness. Builds a two-layer stack with outline 0 static and
+    /// outline 1 keyframed, then asserts outline 0's contribution is
+    /// time-independent.
+    #[test]
+    fn outline_keyframes_per_stack_index_are_isolated() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 80.0;
+        tb.color = [255, 255, 255, 255];
+        // outlines[0]: blue, static 4 px.
+        tb.outlines.push(klipp_timeline::TextOutline {
+            enabled: true,
+            color: [0, 100, 255, 255],
+            width: 4.0,
+            width_keyframes: Vec::new(),
+        });
+        // outlines[1]: green, keyframed 1→10 px (rendered behind
+        // outlines[0] because the renderer draws widest-first).
+        tb.outlines.push(klipp_timeline::TextOutline {
+            enabled: true,
+            color: [0, 255, 0, 255],
+            width: 1.0,
+            width_keyframes: vec![
+                Keyframe {
+                    time_secs: 0.0, value: 1.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                },
+                Keyframe {
+                    time_secs: 2.0, value: 10.0,
+                    interpolation: Interpolation::Linear,
+                    tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+                },
+            ],
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_t0 = renderer.render_with_time(&td, frame_w, frame_h, None, 0.0);
+        let buf_t2 = renderer.render_with_time(&td, frame_w, frame_h, None, 2.0);
+
+        // Blue (outline 0) coverage should be constant — index 0 is
+        // not keyframed. Green (outline 1) coverage grows.
+        let blue_count = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4)
+                .filter(|p| p[3] > 0 && p[2] > 200 && p[1] < 150 && p[0] < 80)
+                .count()
+        };
+        let green_count = |buf: &[u8]| -> usize {
+            buf.chunks_exact(4)
+                .filter(|p| p[3] > 0 && p[1] > 200 && p[0] < 80 && p[2] < 80)
+                .count()
+        };
+        let blue_t0 = blue_count(&buf_t0);
+        let blue_t2 = blue_count(&buf_t2);
+        let green_t0 = green_count(&buf_t0);
+        let green_t2 = green_count(&buf_t2);
+
+        // Index-0 (blue) is static — its coverage should be roughly
+        // identical at both times. Allow tiny tolerance for rounding.
+        let blue_diff = (blue_t0 as i64 - blue_t2 as i64).abs();
+        assert!(
+            blue_diff < (blue_t0.max(blue_t2) as i64 / 10).max(50),
+            "outlines[0] (static) blue coverage must be stable across time (t0={blue_t0}, t2={blue_t2})"
+        );
+        // Index-1 (green) grows — keyframed thickness rendered
+        // behind blue but extending outside it.
+        assert!(
+            green_t2 > green_t0,
+            "outlines[1] (keyframed) green coverage must grow over time (t0={green_t0}, t2={green_t2})"
+        );
+    }
+
+    /// Empty outline keyframe vecs must NOT change the rendered
+    /// output — pin the no-overhead path for unanimated outlines.
+    #[test]
+    fn empty_outline_keyframes_render_identical_to_pre_keyframe_path() {
+        let mut renderer = TitleRenderer::new();
+        let frame_w: u32 = 640;
+        let frame_h: u32 = 480;
+
+        let mut tb = klipp_timeline::TextBox::default();
+        tb.text = "X".to_string();
+        tb.font_size = 80.0;
+        tb.outlines.push(klipp_timeline::TextOutline {
+            enabled: true,
+            color: [255, 0, 0, 255],
+            width: 3.0,
+            width_keyframes: Vec::new(),
+        });
+        let td = klipp_timeline::TitleData::single_text(tb);
+
+        let buf_no_time = renderer.render(&td, frame_w, frame_h);
+        let buf_with_time = renderer.render_with_time(&td, frame_w, frame_h, None, 1.5);
+        assert_eq!(
+            &buf_no_time[..],
+            &buf_with_time[..],
+            "title with no outline keyframes must render identically with or without time_secs"
         );
     }
 
