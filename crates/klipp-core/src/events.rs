@@ -541,6 +541,14 @@ pub enum AppCommand {
     ToggleLoopPlayback,
     SetLoopPlayback(bool),
 
+    /// Toggle audio playback during hover skim. Mirrors FCP X's
+    /// Shift+S audio-skim toggle. Flips both `state.audio_skimming_enabled`
+    /// (runtime) and `prefs.playback.skim_audio` (persisted), tears
+    /// down any active skim audio session if disabling, and emits a
+    /// status toast. Dispatched from the Shift+S keybinding and the
+    /// command palette ("Toggle Audio Skim").
+    ToggleAudioSkim,
+
     /// Sync the user's "play audio during playhead scrub" preference into the
     /// engine so mute/chirp decisions can honour it.
     SetScrubAudioEnabled(bool),

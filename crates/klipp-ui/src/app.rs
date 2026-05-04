@@ -18104,6 +18104,30 @@ impl KlippApp {
                 let _ = self.cmd_tx.send(AppCommand::SetLoopPlayback(self.state.loop_playback_enabled));
                 true
             }
+            AppCommand::ToggleAudioSkim => {
+                self.state.audio_skimming_enabled = !self.state.audio_skimming_enabled;
+                self.prefs.playback.skim_audio = self.state.audio_skimming_enabled;
+                self.prefs_dirty = true;
+                // Tear down any in-flight skim audio session when
+                // disabling so the user gets immediate silence; flushing
+                // the cpal consumer drops queued samples mid-buffer.
+                if !self.state.audio_skimming_enabled {
+                    if let Some(ref session) = self.state.skim_audio_session {
+                        session.stop();
+                    }
+                    klipp_engine::audio_output::flush_skim_consumer(&self.skim_consumer);
+                    klipp_engine::audio_output::set_skim_consumer(&self.skim_consumer, None);
+                    self.state.skim_audio_session = None;
+                    self.state.skim_speed_px_per_sec = 0.0;
+                }
+                let msg = if self.state.audio_skimming_enabled {
+                    "Audio Skimming On"
+                } else {
+                    "Audio Skimming Off (video only)"
+                };
+                self.state.toast.show(msg);
+                true
+            }
             AppCommand::SetLoopPlayback(enabled) => {
                 self.state.loop_playback_enabled = *enabled;
                 // Fall through to forward to engine
@@ -21247,7 +21271,8 @@ impl KlippApp {
         });
     }
 
-    fn shortcuts_magnetic_skim(&mut self, ctx: &egui::Context, _cmds: &mut Vec<AppCommand>) {
+    fn shortcuts_magnetic_skim(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
+        let kb = self.key_bindings.clone();
         ctx.input(|i| {
             // S (no modifiers) — Toggle skimming
             if !i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::S) {
@@ -21316,8 +21341,12 @@ impl KlippApp {
                 }
             }
 
-            // Shift+S (no ctrl) — Promote/Break storyline OR toggle audio skimming
-            if !i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::S) {
+            // Shift+S — Promote/Break storyline OR toggle audio skim.
+            // Routed through the keybindings registry (action
+            // `toggle_audio_skim`) so users can rebind via the prefs
+            // panel; the storyline path takes priority when a clip on
+            // a connected storyline is selected.
+            if kb.is_action_pressed("toggle_audio_skim", i) {
                 let mut handled_storyline = false;
                 if let Some(clip_id) = self.state.selected_clip {
                     let clip_track = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
@@ -21352,27 +21381,11 @@ impl KlippApp {
                         }
                     }
                 }
-                // If no storyline action applied, toggle audio skimming
+                // If no storyline action applied, toggle audio skim.
+                // Routed through the AppCommand so the palette entry
+                // and the keybinding share the cleanup path.
                 if !handled_storyline {
-                    self.state.audio_skimming_enabled = !self.state.audio_skimming_enabled;
-                    self.prefs.playback.skim_audio = self.state.audio_skimming_enabled;
-                    self.prefs_dirty = true;
-                    // End active session when disabling
-                    if !self.state.audio_skimming_enabled {
-                        if let Some(ref session) = self.state.skim_audio_session {
-                            session.stop();
-                        }
-                        klipp_engine::audio_output::flush_skim_consumer(&self.skim_consumer);
-                        klipp_engine::audio_output::set_skim_consumer(&self.skim_consumer, None);
-                        self.state.skim_audio_session = None;
-                        self.state.skim_speed_px_per_sec = 0.0;
-                    }
-                    let msg = if self.state.audio_skimming_enabled {
-                        "Audio Skimming On"
-                    } else {
-                        "Audio Skimming Off (video only)"
-                    };
-                    self.state.toast.show(msg);
+                    cmds.push(AppCommand::ToggleAudioSkim);
                 }
             }
 
@@ -21514,16 +21527,9 @@ impl KlippApp {
             if kb.is_action_pressed("match_frame_source_to_program", i) {
                 cmds.push(AppCommand::MatchFrameSourceToProgram);
             }
-            // Shift+S — Toggle audio scrubbing. Flips the preference and
-            // immediately notifies the engine so the next scrub respects it.
-            if kb.is_action_pressed("toggle_scrub_audio", i) {
-                self.prefs.playback.scrub_audio = !self.prefs.playback.scrub_audio;
-                self.prefs_dirty = true;
-                let enabled = self.prefs.playback.scrub_audio;
-                let _ = self.cmd_tx.send(AppCommand::SetScrubAudioEnabled(enabled));
-                let msg = if enabled { "Audio scrubbing on" } else { "Audio scrubbing off" };
-                self.state.toast.show(msg.to_string());
-            }
+            // (`toggle_scrub_audio` action removed — Shift+S now drives
+            // `toggle_audio_skim` in shortcuts_magnetic_skim. JKL
+            // transport audio still flips through the prefs panel.)
             // Cut clip
             if kb.is_action_pressed("cut_clip", i) {
                 if let Some(clip_id) = self.state.selected_clip {

@@ -285,6 +285,8 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::ToggleState(|s| s.snap_enabled = !s.snap_enabled), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Skimming"), shortcut: Cow::Borrowed("S"),
         action: PaletteAction::ToggleState(|s| s.skimming_enabled = !s.skimming_enabled), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Audio Skim"), shortcut: Cow::Borrowed("Shift+S"),
+        action: PaletteAction::Cmd(AppCommand::ToggleAudioSkim), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Color Panel"), shortcut: Cow::Borrowed("C"),
         action: PaletteAction::Cmd(AppCommand::ToggleColorPanel), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Scopes"), shortcut: Cow::Borrowed("V"),
@@ -556,6 +558,7 @@ mod tests {
         "Set Out Point",
         "Add Marker",
         "Toggle Snap",
+        "Toggle Audio Skim",
         "Frame Grab",
         "Export",
         "Import Media",
