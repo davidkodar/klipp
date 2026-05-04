@@ -14498,33 +14498,46 @@ impl KlippApp {
                 true
             }
             AppCommand::SetTitleCharAnimation { clip_id, enabled, stagger, entrance, wave_amplitude, wave_speed } => {
-                let anim = if *enabled {
-                    let ent = match entrance {
-                        1 => klipp_timeline::CharEntrance::FadeIn,
-                        2 => klipp_timeline::CharEntrance::SlideUp,
-                        3 => klipp_timeline::CharEntrance::SlideDown,
-                        4 => klipp_timeline::CharEntrance::SlideLeft,
-                        5 => klipp_timeline::CharEntrance::SlideRight,
-                        6 => klipp_timeline::CharEntrance::ScaleUp,
-                        7 => klipp_timeline::CharEntrance::ScaleDown,
-                        8 => klipp_timeline::CharEntrance::Pop,
-                        9 => klipp_timeline::CharEntrance::BlurIn,
-                        _ => klipp_timeline::CharEntrance::None,
-                    };
-                    Some(klipp_timeline::CharAnimation {
-                        stagger: *stagger,
-                        entrance: ent,
-                        wave_amplitude: *wave_amplitude,
-                        wave_speed: *wave_speed,
-                     enabled: true })
-                } else {
-                    None
+                let ent = match entrance {
+                    1 => klipp_timeline::CharEntrance::FadeIn,
+                    2 => klipp_timeline::CharEntrance::SlideUp,
+                    3 => klipp_timeline::CharEntrance::SlideDown,
+                    4 => klipp_timeline::CharEntrance::SlideLeft,
+                    5 => klipp_timeline::CharEntrance::SlideRight,
+                    6 => klipp_timeline::CharEntrance::ScaleUp,
+                    7 => klipp_timeline::CharEntrance::ScaleDown,
+                    8 => klipp_timeline::CharEntrance::Pop,
+                    9 => klipp_timeline::CharEntrance::BlurIn,
+                    _ => klipp_timeline::CharEntrance::None,
                 };
                 let target_oid = self.title_text_target_id(*clip_id);
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.char_animation = anim; }
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                // Soft-disable: preserve keyframes on
+                                // toggle off so re-enable round-trips
+                                // cleanly. Mutate fields in place when
+                                // a char_animation already exists.
+                                if let Some(c) = tb.char_animation.as_mut() {
+                                    c.stagger = *stagger;
+                                    c.entrance = ent;
+                                    c.wave_amplitude = *wave_amplitude;
+                                    c.wave_speed = *wave_speed;
+                                    c.enabled = *enabled;
+                                } else {
+                                    tb.char_animation = Some(klipp_timeline::CharAnimation {
+                                        stagger: *stagger,
+                                        entrance: ent,
+                                        wave_amplitude: *wave_amplitude,
+                                        wave_speed: *wave_speed,
+                                        enabled: *enabled,
+                                        stagger_keyframes: Vec::new(),
+                                        wave_amplitude_keyframes: Vec::new(),
+                                        wave_speed_keyframes: Vec::new(),
+                                    });
+                                }
+                            }
                         }
                     }
                 }

@@ -837,6 +837,9 @@ fn char_stagger_fade() -> TitleData {
             wave_amplitude: 0.0,
             wave_speed: 0.0,
             enabled: true,
+            stagger_keyframes: Vec::new(),
+            wave_amplitude_keyframes: Vec::new(),
+            wave_speed_keyframes: Vec::new(),
         });
     }
     td
@@ -852,6 +855,9 @@ fn char_wave_bounce() -> TitleData {
             wave_amplitude: 15.0,
             wave_speed: 2.0,
             enabled: true,
+            stagger_keyframes: Vec::new(),
+            wave_amplitude_keyframes: Vec::new(),
+            wave_speed_keyframes: Vec::new(),
         });
     }
     td

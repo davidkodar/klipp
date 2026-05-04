@@ -685,7 +685,7 @@ impl TitleRenderer {
         // rest of the pipeline (compose, outline, shadow, glow,
         // texture fill) consumes the resulting mask unmodified.
         let mut alpha_mask = vec![0u8; mask_w * mask_h];
-        match (time_secs, tb.char_animation.as_ref()) {
+        match (time_secs, tb.char_animation.as_ref().filter(|c| c.enabled)) {
             (Some(t), Some(ca)) => {
                 rasterize_to_mask_animated(
                     font, glyphs,
@@ -2837,10 +2837,13 @@ fn rasterize_to_mask_animated(
     time_secs: f32,
     base_font_px: f32,
 ) {
-    let stagger = char_anim.stagger.max(0.0);
+    // Per-frame keyframes: each param may animate via its own kf vec.
+    // Empty vecs short-circuit to the static field (no-overhead path).
+    let t_secs = time_secs as f64;
+    let stagger = char_anim.evaluated_stagger(t_secs).max(0.0);
     const ENTRANCE_DUR: f32 = 0.4;
-    let amp = char_anim.wave_amplitude;
-    let speed = char_anim.wave_speed;
+    let amp = char_anim.evaluated_wave_amplitude(t_secs);
+    let speed = char_anim.evaluated_wave_speed(t_secs);
 
     for (i, glyph) in glyphs.iter().enumerate() {
         if glyph.width == 0 || glyph.height == 0 {
@@ -3920,6 +3923,9 @@ mod tests {
             wave_amplitude: 0.0,
             wave_speed: 1.0,
             enabled: true,
+            stagger_keyframes: Vec::new(),
+            wave_amplitude_keyframes: Vec::new(),
+            wave_speed_keyframes: Vec::new(),
         });
         let td = klipp_timeline::TitleData::single_text(tb);
 
@@ -4096,6 +4102,9 @@ mod tests {
             wave_amplitude: 0.0,
             wave_speed: 1.0,
             enabled: true,
+            stagger_keyframes: Vec::new(),
+            wave_amplitude_keyframes: Vec::new(),
+            wave_speed_keyframes: Vec::new(),
         });
         let td = klipp_timeline::TitleData::single_text(tb);
 
@@ -4128,6 +4137,9 @@ mod tests {
             wave_amplitude: 0.0,
             wave_speed: 1.0,
             enabled: true,
+            stagger_keyframes: Vec::new(),
+            wave_amplitude_keyframes: Vec::new(),
+            wave_speed_keyframes: Vec::new(),
         });
         let td = klipp_timeline::TitleData::single_text(tb);
 

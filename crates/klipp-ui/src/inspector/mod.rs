@@ -891,6 +891,105 @@ fn handle_inner_shadow_axis_response(
     }
 }
 
+/// Translate a `ScrubbyParamResponse` for one keyframable
+/// CharAnimation param into the right AppCommand(s). CharAnimation
+/// has three keyframable params (stagger, wave_amplitude, wave_speed)
+/// plus a non-keyframable enum entrance, so the static-fallback path
+/// must rebuild the full SetTitleCharAnimation command — this helper
+/// takes the current entrance idx as input.
+#[allow(clippy::too_many_arguments)]
+fn handle_char_anim_axis_response(
+    cmds: &mut Vec<AppCommand>,
+    clip_id: klipp_core::ClipId,
+    target_oid: Option<klipp_timeline::TitleObjectId>,
+    param_key: &'static str,
+    new_value: f32,
+    cur: &klipp_timeline::CharAnimation,
+    keyframes: &[klipp_core::Keyframe],
+    clip_time_secs: f64,
+    resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+    entrance_idx: u8,
+) {
+    let to_static_triple = |new: f32| -> (f32, f32, f32) {
+        match param_key {
+            klipp_core::title_effect_keys::CHAR_ANIM_STAGGER => (new, cur.wave_amplitude, cur.wave_speed),
+            klipp_core::title_effect_keys::CHAR_ANIM_WAVE_AMPLITUDE => (cur.stagger, new, cur.wave_speed),
+            klipp_core::title_effect_keys::CHAR_ANIM_WAVE_SPEED => (cur.stagger, cur.wave_amplitude, new),
+            _ => (cur.stagger, cur.wave_amplitude, cur.wave_speed),
+        }
+    };
+    let Some(oid) = target_oid else {
+        if resp.changed {
+            let (stagger, wave_amplitude, wave_speed) = to_static_triple(new_value);
+            cmds.push(AppCommand::SetTitleCharAnimation {
+                clip_id, enabled: cur.enabled,
+                stagger, entrance: entrance_idx,
+                wave_amplitude, wave_speed,
+            });
+        }
+        return;
+    };
+    let object_id = oid.0;
+
+    if resp.keyframe_toggled {
+        if keyframes
+            .iter()
+            .any(|k| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                time_secs: clip_time_secs,
+            });
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                time_secs: clip_time_secs,
+                value: new_value,
+            });
+        }
+        return;
+    }
+
+    if resp.changed {
+        if keyframes.is_empty() {
+            let (stagger, wave_amplitude, wave_speed) = to_static_triple(new_value);
+            cmds.push(AppCommand::SetTitleCharAnimation {
+                clip_id, enabled: cur.enabled,
+                stagger, entrance: entrance_idx,
+                wave_amplitude, wave_speed,
+            });
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                time_secs: clip_time_secs,
+                value: new_value,
+            });
+        }
+    }
+
+    if let Some(interp) = resp.keyframe_set_interpolation {
+        if let Some((idx, _)) = keyframes
+            .iter()
+            .enumerate()
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                keyframe_index: idx,
+                interpolation: interp,
+            });
+        }
+    }
+}
+
 /// Translate a `ScrubbyParamResponse` for the keyframable
 /// MotionBlur shutter_angle into the right AppCommand(s). MotionBlur
 /// has just one keyframable param, so this is the simplest of the
@@ -3872,21 +3971,68 @@ fn show_title_editor(
             ui.add_space(6.0);
     // Character Animation
     {
-        let mut enabled = td.char_animation().is_some();
+        // Reflect soft-disable: the checkbox tracks `.enabled`, not
+        // mere presence — toggle off keeps the struct (and its
+        // keyframes) intact via the handler's mute semantics.
+        let cur_anim: Option<klipp_timeline::CharAnimation> = td.char_animation();
+        let mut enabled = cur_anim.as_ref().is_some_and(|c| c.enabled);
         if ui.checkbox(&mut enabled, "Enable").changed() {
+            // Preserve existing values when toggling — only flip
+            // `enabled`. When no char_animation exists yet, send
+            // sensible defaults.
+            let (stagger, entrance, wave_amplitude, wave_speed) = match &cur_anim {
+                Some(c) => (
+                    c.stagger,
+                    match c.entrance {
+                        klipp_timeline::CharEntrance::None => 0u8,
+                        klipp_timeline::CharEntrance::FadeIn => 1,
+                        klipp_timeline::CharEntrance::SlideUp => 2,
+                        klipp_timeline::CharEntrance::SlideDown => 3,
+                        klipp_timeline::CharEntrance::SlideLeft => 4,
+                        klipp_timeline::CharEntrance::SlideRight => 5,
+                        klipp_timeline::CharEntrance::ScaleUp => 6,
+                        klipp_timeline::CharEntrance::ScaleDown => 7,
+                        klipp_timeline::CharEntrance::Pop => 8,
+                        klipp_timeline::CharEntrance::BlurIn => 9,
+                    },
+                    c.wave_amplitude,
+                    c.wave_speed,
+                ),
+                None => (0.05, 1u8, 0.0, 1.0),
+            };
             cmds.push(AppCommand::SetTitleCharAnimation {
                 clip_id,
                 enabled,
-                stagger: 0.05,
-                entrance: 1, // FadeIn
-                wave_amplitude: 0.0,
-                wave_speed: 1.0,
+                stagger,
+                entrance,
+                wave_amplitude,
+                wave_speed,
             });
         }
-        if let Some(anim) = &td.char_animation() {
-            let mut stagger = anim.stagger;
-            let mut wave_amp = anim.wave_amplitude;
-            let mut wave_spd = anim.wave_speed;
+        if let Some(anim) = cur_anim.filter(|c| c.enabled) {
+            // Display animated values at the playhead.
+            let display_stagger = anim.evaluated_stagger(clip_time_secs);
+            let display_wave_amp = anim.evaluated_wave_amplitude(clip_time_secs);
+            let display_wave_spd = anim.evaluated_wave_speed(clip_time_secs);
+            let kfs_stagger: &[klipp_core::Keyframe] = td
+                .primary_text()
+                .and_then(|tb| tb.char_animation.as_ref())
+                .map(|c| c.stagger_keyframes.as_slice())
+                .unwrap_or(&[]);
+            let kfs_wave_amp: &[klipp_core::Keyframe] = td
+                .primary_text()
+                .and_then(|tb| tb.char_animation.as_ref())
+                .map(|c| c.wave_amplitude_keyframes.as_slice())
+                .unwrap_or(&[]);
+            let kfs_wave_spd: &[klipp_core::Keyframe] = td
+                .primary_text()
+                .and_then(|tb| tb.char_animation.as_ref())
+                .map(|c| c.wave_speed_keyframes.as_slice())
+                .unwrap_or(&[]);
+            let ks_stagger = title_object_keyframe_state(kfs_stagger, clip_time_secs);
+            let ks_wave_amp = title_object_keyframe_state(kfs_wave_amp, clip_time_secs);
+            let ks_wave_spd = title_object_keyframe_state(kfs_wave_spd, clip_time_secs);
+
             let entrance_idx: usize = match anim.entrance {
                 klipp_timeline::CharEntrance::None => 0,
                 klipp_timeline::CharEntrance::FadeIn => 1,
@@ -3914,20 +4060,53 @@ fn show_title_editor(
                         }
                     }
                 });
-            let mut anim_changed = new_entrance_idx != entrance_idx;
-            anim_changed |= ui.add(egui::DragValue::new(&mut stagger).range(0.0..=0.5).speed(0.005).suffix(" s").prefix("Stagger: ").fixed_decimals(3)).changed();
-            anim_changed |= ui.add(egui::DragValue::new(&mut wave_amp).range(0.0..=100.0).speed(0.5).suffix(" px").prefix("Wave Amp: ").fixed_decimals(1)).changed();
-            anim_changed |= ui.add(egui::DragValue::new(&mut wave_spd).range(0.1..=10.0).speed(0.05).suffix(" Hz").prefix("Wave Speed: ").fixed_decimals(1)).changed();
-            if anim_changed {
+            // Entrance is enum-valued — not keyframable, dispatched as
+            // a static SetTitleCharAnimation with the current numeric
+            // params.
+            if new_entrance_idx != entrance_idx {
                 cmds.push(AppCommand::SetTitleCharAnimation {
                     clip_id,
                     enabled: true,
-                    stagger,
+                    stagger: anim.stagger,
                     entrance: new_entrance_idx as u8,
-                    wave_amplitude: wave_amp,
-                    wave_speed: wave_spd,
+                    wave_amplitude: anim.wave_amplitude,
+                    wave_speed: anim.wave_speed,
                 });
             }
+
+            let mut stagger = display_stagger;
+            let mut wave_amp = display_wave_amp;
+            let mut wave_spd = display_wave_spd;
+            let resp_stagger = crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Stagger", &mut stagger, 0.0..=0.5, 0.05, 0.005, 3, " s",
+                target_oid.map(|_| ks_stagger),
+            );
+            let resp_wave_amp = crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Wave Amp", &mut wave_amp, 0.0..=100.0, 0.0, 0.5, 1, " px",
+                target_oid.map(|_| ks_wave_amp),
+            );
+            let resp_wave_spd = crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Wave Speed", &mut wave_spd, 0.1..=10.0, 1.0, 0.05, 1, " Hz",
+                target_oid.map(|_| ks_wave_spd),
+            );
+            handle_char_anim_axis_response(
+                cmds, clip_id, target_oid,
+                klipp_core::title_effect_keys::CHAR_ANIM_STAGGER,
+                stagger, &anim, kfs_stagger, clip_time_secs, &resp_stagger,
+                new_entrance_idx as u8,
+            );
+            handle_char_anim_axis_response(
+                cmds, clip_id, target_oid,
+                klipp_core::title_effect_keys::CHAR_ANIM_WAVE_AMPLITUDE,
+                wave_amp, &anim, kfs_wave_amp, clip_time_secs, &resp_wave_amp,
+                new_entrance_idx as u8,
+            );
+            handle_char_anim_axis_response(
+                cmds, clip_id, target_oid,
+                klipp_core::title_effect_keys::CHAR_ANIM_WAVE_SPEED,
+                wave_spd, &anim, kfs_wave_spd, clip_time_secs, &resp_wave_spd,
+                new_entrance_idx as u8,
+            );
         }
     }
     ui.add_space(8.0);

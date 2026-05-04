@@ -31,3 +31,8 @@ pub const EXTRUSION_LIGHTING: &str = "extrusion.lighting";
 
 // ── MotionBlur ──
 pub const MOTION_BLUR_SHUTTER_ANGLE: &str = "motion_blur.shutter_angle";
+
+// ── CharAnimation ──
+pub const CHAR_ANIM_STAGGER: &str = "char_anim.stagger";
+pub const CHAR_ANIM_WAVE_AMPLITUDE: &str = "char_anim.wave_amplitude";
+pub const CHAR_ANIM_WAVE_SPEED: &str = "char_anim.wave_speed";

@@ -539,6 +539,8 @@ impl TextBox {
             self.extrusion.as_mut().and_then(|e| e.keyframes_mut_for(param_key))
         } else if param_key.starts_with("motion_blur.") {
             self.motion_blur.as_mut().and_then(|m| m.keyframes_mut_for(param_key))
+        } else if param_key.starts_with("char_anim.") {
+            self.char_animation.as_mut().and_then(|c| c.keyframes_mut_for(param_key))
         } else {
             None
         }
@@ -557,6 +559,8 @@ impl TextBox {
             self.extrusion.as_ref().and_then(|e| e.keyframes_for(param_key))
         } else if param_key.starts_with("motion_blur.") {
             self.motion_blur.as_ref().and_then(|m| m.keyframes_for(param_key))
+        } else if param_key.starts_with("char_anim.") {
+            self.char_animation.as_ref().and_then(|c| c.keyframes_for(param_key))
         } else {
             None
         }
@@ -835,7 +839,7 @@ impl TitleData {
         self.primary_text().and_then(|tb| tb.text_path.clone())
     }
     pub fn char_animation(&self) -> Option<CharAnimation> {
-        self.primary_text().and_then(|tb| tb.char_animation)
+        self.primary_text().and_then(|tb| tb.char_animation.clone())
     }
     pub fn texture_fill_path(&self) -> Option<String> {
         self.primary_text().and_then(|tb| tb.texture_fill_path.clone())
@@ -1178,19 +1182,92 @@ pub enum TextPath {
     },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CharAnimation {
-    /// Seconds between each character's animation start
-    pub stagger: f32,
-    /// Type of per-character entrance
-    pub entrance: CharEntrance,
-    /// Vertical wave oscillation amplitude (0 = no wave)
-    pub wave_amplitude: f32,
-    /// Wave speed in cycles per second
-    pub wave_speed: f32,
     /// Soft-disable: see [`TitleShadow::enabled`].
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Type of per-character entrance — enum, not keyframable.
+    pub entrance: CharEntrance,
+    /// Seconds between each character's animation start
+    pub stagger: f32,
+    /// Per-frame keyframes for `stagger`; empty by default.
+    #[serde(default)]
+    pub stagger_keyframes: Vec<klipp_core::Keyframe>,
+    /// Vertical wave oscillation amplitude (0 = no wave)
+    pub wave_amplitude: f32,
+    /// Per-frame keyframes for `wave_amplitude`.
+    #[serde(default)]
+    pub wave_amplitude_keyframes: Vec<klipp_core::Keyframe>,
+    /// Wave speed in cycles per second
+    pub wave_speed: f32,
+    /// Per-frame keyframes for `wave_speed`.
+    #[serde(default)]
+    pub wave_speed_keyframes: Vec<klipp_core::Keyframe>,
+}
+
+impl CharAnimation {
+    /// Effective `stagger` at `time_secs`. Static fallback when empty.
+    pub fn evaluated_stagger(&self, time_secs: f64) -> f32 {
+        if self.stagger_keyframes.is_empty() {
+            self.stagger
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.stagger_keyframes,
+                time_secs,
+                self.stagger,
+            )
+        }
+    }
+
+    /// Effective `wave_amplitude` at `time_secs`. Static fallback when empty.
+    pub fn evaluated_wave_amplitude(&self, time_secs: f64) -> f32 {
+        if self.wave_amplitude_keyframes.is_empty() {
+            self.wave_amplitude
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.wave_amplitude_keyframes,
+                time_secs,
+                self.wave_amplitude,
+            )
+        }
+    }
+
+    /// Effective `wave_speed` at `time_secs`. Static fallback when empty.
+    pub fn evaluated_wave_speed(&self, time_secs: f64) -> f32 {
+        if self.wave_speed_keyframes.is_empty() {
+            self.wave_speed
+        } else {
+            klipp_core::keyframe::evaluate(
+                &self.wave_speed_keyframes,
+                time_secs,
+                self.wave_speed,
+            )
+        }
+    }
+
+    /// Mutable accessor for the keyframe vec named by `param_key`.
+    pub fn keyframes_mut_for(
+        &mut self,
+        param_key: &str,
+    ) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        match param_key {
+            klipp_core::title_effect_keys::CHAR_ANIM_STAGGER => Some(&mut self.stagger_keyframes),
+            klipp_core::title_effect_keys::CHAR_ANIM_WAVE_AMPLITUDE => Some(&mut self.wave_amplitude_keyframes),
+            klipp_core::title_effect_keys::CHAR_ANIM_WAVE_SPEED => Some(&mut self.wave_speed_keyframes),
+            _ => None,
+        }
+    }
+
+    /// Read-only mirror of `keyframes_mut_for`.
+    pub fn keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
+        match param_key {
+            klipp_core::title_effect_keys::CHAR_ANIM_STAGGER => Some(&self.stagger_keyframes),
+            klipp_core::title_effect_keys::CHAR_ANIM_WAVE_AMPLITUDE => Some(&self.wave_amplitude_keyframes),
+            klipp_core::title_effect_keys::CHAR_ANIM_WAVE_SPEED => Some(&self.wave_speed_keyframes),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
@@ -2374,6 +2451,57 @@ mod tests {
 
         // Unknown extrusion key returns None.
         assert!(tb.effect_keyframes_mut_for("extrusion.skew").is_none());
+    }
+
+    /// `CharAnimation::evaluated_*` short-circuits on empty kfs and
+    /// interpolates when populated. Backward-compat: legacy JSON
+    /// without keyframe fields deserialises with empty vecs.
+    #[test]
+    fn charanimation_evaluator_and_legacy_load() {
+        use klipp_core::{Interpolation, Keyframe};
+
+        let mut c = CharAnimation {
+            enabled: true,
+            entrance: CharEntrance::FadeIn,
+            stagger: 0.05, stagger_keyframes: Vec::new(),
+            wave_amplitude: 0.0, wave_amplitude_keyframes: Vec::new(),
+            wave_speed: 1.0, wave_speed_keyframes: Vec::new(),
+        };
+        // Empty: returns static.
+        assert_eq!(c.evaluated_stagger(0.5), 0.05);
+        assert_eq!(c.evaluated_wave_amplitude(99.0), 0.0);
+        assert_eq!(c.evaluated_wave_speed(0.0), 1.0);
+
+        // Keyframe stagger: ramps, others stay static.
+        c.stagger_keyframes = vec![
+            Keyframe {
+                time_secs: 0.0, value: 0.02,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            },
+            Keyframe {
+                time_secs: 1.0, value: 0.10,
+                interpolation: Interpolation::Linear,
+                tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0),
+            },
+        ];
+        assert!((c.evaluated_stagger(0.5) - 0.06).abs() < 1e-5);
+        assert_eq!(c.evaluated_wave_amplitude(0.5), 0.0);
+
+        // Backward-compat: pre-#5 JSON without the keyframe vecs.
+        let legacy_json = r#"{
+            "enabled": true,
+            "entrance": "FadeIn",
+            "stagger": 0.05,
+            "wave_amplitude": 0.0,
+            "wave_speed": 1.0
+        }"#;
+        let c2: CharAnimation = serde_json::from_str(legacy_json)
+            .expect("legacy save without keyframe fields must deserialise");
+        assert!(c2.stagger_keyframes.is_empty());
+        assert!(c2.wave_amplitude_keyframes.is_empty());
+        assert!(c2.wave_speed_keyframes.is_empty());
+        assert_eq!(c2.stagger, 0.05);
     }
 
     /// `MotionBlur::evaluated_shutter_angle` short-circuits on empty
