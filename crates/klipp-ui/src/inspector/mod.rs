@@ -797,6 +797,100 @@ fn handle_shadow_axis_response(
     }
 }
 
+/// Translate a `ScrubbyParamResponse` for one keyframable InnerShadow
+/// param into the right AppCommand(s). Mirrors
+/// `handle_shadow_axis_response` for the inner-shadow path; the only
+/// differences are the param-key constants and the static-fallback
+/// command (`SetTitleInnerShadow`).
+fn handle_inner_shadow_axis_response(
+    cmds: &mut Vec<AppCommand>,
+    clip_id: klipp_core::ClipId,
+    target_oid: Option<klipp_timeline::TitleObjectId>,
+    param_key: &'static str,
+    new_value: f32,
+    cur: &klipp_timeline::InnerShadow,
+    keyframes: &[klipp_core::Keyframe],
+    clip_time_secs: f64,
+    resp: &crate::widgets::scrubby_param::ScrubbyParamResponse,
+) {
+    let to_static_triple = |new: f32| -> (f32, f32, f32) {
+        match param_key {
+            klipp_core::title_effect_keys::INNER_SHADOW_OFFSET_X => (new, cur.offset_y, cur.blur),
+            klipp_core::title_effect_keys::INNER_SHADOW_OFFSET_Y => (cur.offset_x, new, cur.blur),
+            klipp_core::title_effect_keys::INNER_SHADOW_BLUR => (cur.offset_x, cur.offset_y, new),
+            _ => (cur.offset_x, cur.offset_y, cur.blur),
+        }
+    };
+    let Some(oid) = target_oid else {
+        if resp.changed {
+            let (offset_x, offset_y, blur) = to_static_triple(new_value);
+            cmds.push(AppCommand::SetTitleInnerShadow {
+                clip_id, enabled: true,
+                color: cur.color, offset_x, offset_y, blur,
+            });
+        }
+        return;
+    };
+    let object_id = oid.0;
+
+    if resp.keyframe_toggled {
+        if keyframes
+            .iter()
+            .any(|k| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::RemoveTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                time_secs: clip_time_secs,
+            });
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                time_secs: clip_time_secs,
+                value: new_value,
+            });
+        }
+        return;
+    }
+
+    if resp.changed {
+        if keyframes.is_empty() {
+            let (offset_x, offset_y, blur) = to_static_triple(new_value);
+            cmds.push(AppCommand::SetTitleInnerShadow {
+                clip_id, enabled: true,
+                color: cur.color, offset_x, offset_y, blur,
+            });
+        } else {
+            cmds.push(AppCommand::AddTitleObjectEffectKeyframe {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                time_secs: clip_time_secs,
+                value: new_value,
+            });
+        }
+    }
+
+    if let Some(interp) = resp.keyframe_set_interpolation {
+        if let Some((idx, _)) = keyframes
+            .iter()
+            .enumerate()
+            .find(|(_, k)| (k.time_secs - clip_time_secs).abs() < 0.02)
+        {
+            cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation {
+                clip_id,
+                object_id,
+                param_key: param_key.to_string(),
+                keyframe_index: idx,
+                interpolation: interp,
+            });
+        }
+    }
+}
+
 /// Shared Position block: X/Y inputs + three sticky-active quick-preset
 /// buttons (Top / Center / Lower 3rd). Active highlight stays while X/Y
 /// are within ±0.005 of the canonical coords AND that preset was the
@@ -1673,36 +1767,76 @@ fn show_title_effects_group(
             blur_keyframes: Vec::new(),
         });
         let mut enabled = inner_enabled;
+        // Display animated values at the playhead.
+        let display_ox = cur.evaluated_offset_x(clip_time_secs);
+        let display_oy = cur.evaluated_offset_y(clip_time_secs);
+        let display_blur = cur.evaluated_blur(clip_time_secs);
         let summary = if enabled {
-            format!("{} px · {}%", cur.blur.round() as u32, (cur.color[3] as f32 / 255.0 * 100.0).round() as u32)
+            format!("{} px · {}%", display_blur.round() as u32, (cur.color[3] as f32 / 255.0 * 100.0).round() as u32)
         } else { String::new() };
+        let kfs_ox: &[klipp_core::Keyframe] = tb
+            .inner_shadow
+            .as_ref()
+            .map(|s| s.offset_x_keyframes.as_slice())
+            .unwrap_or(&[]);
+        let kfs_oy: &[klipp_core::Keyframe] = tb
+            .inner_shadow
+            .as_ref()
+            .map(|s| s.offset_y_keyframes.as_slice())
+            .unwrap_or(&[]);
+        let kfs_blur: &[klipp_core::Keyframe] = tb
+            .inner_shadow
+            .as_ref()
+            .map(|s| s.blur_keyframes.as_slice())
+            .unwrap_or(&[]);
+        let ks_ox = title_object_keyframe_state(kfs_ox, clip_time_secs);
+        let ks_oy = title_object_keyframe_state(kfs_oy, clip_time_secs);
+        let ks_blur = title_object_keyframe_state(kfs_blur, clip_time_secs);
         inspector_subgroup_card(ui, "Inner Shadow", &mut enabled,
             (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
-            let mut ox = cur.offset_x;
-            let mut oy = cur.offset_y;
-            let mut blur = cur.blur;
+            let mut ox = display_ox;
+            let mut oy = display_oy;
+            let mut blur = display_blur;
             let mut col = egui::Color32::from_rgba_premultiplied(cur.color[0], cur.color[1], cur.color[2], cur.color[3]);
-            let mut changed = false;
+            let mut color_changed = false;
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Color").size(11.0).color(theme.text_dim));
-                changed |= ui.color_edit_button_srgba(&mut col).changed();
+                color_changed = ui.color_edit_button_srgba(&mut col).changed();
             });
-            changed |= crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Offset X", &mut ox, -20.0..=20.0, 2.0, 0.5, 1, " px", None,
-            ).changed;
-            changed |= crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Offset Y", &mut oy, -20.0..=20.0, 2.0, 0.5, 1, " px", None,
-            ).changed;
-            changed |= crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Blur", &mut blur, 0.0..=20.0, 3.0, 0.5, 1, " px", None,
-            ).changed;
-            if changed {
+            let resp_ox = crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Offset X", &mut ox, -20.0..=20.0, 2.0, 0.5, 1, " px",
+                target_oid.map(|_| ks_ox),
+            );
+            let resp_oy = crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Offset Y", &mut oy, -20.0..=20.0, 2.0, 0.5, 1, " px",
+                target_oid.map(|_| ks_oy),
+            );
+            let resp_blur = crate::widgets::scrubby_param::scrubby_param_row(
+                ui, "Blur", &mut blur, 0.0..=20.0, 3.0, 0.5, 1, " px",
+                target_oid.map(|_| ks_blur),
+            );
+            if color_changed {
                 cmds.push(AppCommand::SetTitleInnerShadow {
                     clip_id, enabled: true,
                     color: [col.r(), col.g(), col.b(), col.a()],
-                    offset_x: ox, offset_y: oy, blur,
+                    offset_x: cur.offset_x, offset_y: cur.offset_y, blur: cur.blur,
                 });
             }
+            handle_inner_shadow_axis_response(
+                cmds, clip_id, target_oid,
+                klipp_core::title_effect_keys::INNER_SHADOW_OFFSET_X,
+                ox, &cur, kfs_ox, clip_time_secs, &resp_ox,
+            );
+            handle_inner_shadow_axis_response(
+                cmds, clip_id, target_oid,
+                klipp_core::title_effect_keys::INNER_SHADOW_OFFSET_Y,
+                oy, &cur, kfs_oy, clip_time_secs, &resp_oy,
+            );
+            handle_inner_shadow_axis_response(
+                cmds, clip_id, target_oid,
+                klipp_core::title_effect_keys::INNER_SHADOW_BLUR,
+                blur, &cur, kfs_blur, clip_time_secs, &resp_blur,
+            );
         });
         if enabled != inner_enabled {
             cmds.push(AppCommand::SetTitleInnerShadow {
