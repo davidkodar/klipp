@@ -266,6 +266,34 @@ impl MediaItem {
         self.parent_media_id.is_some()
     }
 
+    /// Rotation (degrees) the decoder should apply when reading
+    /// `decode_path`. Returns `0` when `decode_path` is this item's
+    /// skim or proxy file — those are produced by ffmpeg with its
+    /// default `-autorotate 1`, which consumes the source's display-
+    /// matrix side-data and writes upright pixels with no rotation
+    /// metadata. Re-applying `source_rotation` on top would
+    /// double-rotate (the symptom: portrait phone clip plays sideways
+    /// in the source viewer).
+    ///
+    /// For the original file, returns `source_rotation` unchanged.
+    /// Used by every `VideoDecoder::open(path, rotation)` site that
+    /// might be handed a skim or proxy.
+    pub fn effective_rotation_for(&self, decode_path: &std::path::Path) -> i32 {
+        let is_optimised = self
+            .skim_file
+            .as_deref()
+            .is_some_and(|p| p == decode_path)
+            || self
+                .proxy_path
+                .as_deref()
+                .is_some_and(|p| p == decode_path);
+        if is_optimised {
+            0
+        } else {
+            self.source_rotation
+        }
+    }
+
     /// True when this item is a synthetic project asset (title /
     /// generator etc.) — its underlying data lives in a project-
     /// scoped store (e.g. `AppState::title_assets`) rather than on
@@ -605,5 +633,105 @@ mod subclip_tests {
         assert!(sub.is_subclip());
         // A real handler call with source_media_id == sub.id would hit the
         // "Cannot create a subclip from a subclip." branch.
+    }
+}
+
+#[cfg(test)]
+mod effective_rotation_tests {
+    //! Pin the path-aware rotation contract used by every
+    //! `VideoDecoder::open(path, rotation)` site in klipp-engine and the
+    //! source-viewer dispatch in klipp-ui. Skim/proxy paths must report 0
+    //! because ffmpeg autorotate consumes the source's display matrix
+    //! during transcode; reapplying source_rotation would double-rotate
+    //! (the symptom: portrait phone clips played sideways).
+    use super::*;
+    use klipp_core::{Fps, MediaId, RationalTime, Resolution};
+
+    fn item_with(source_rotation: i32, skim: Option<&str>, proxy: Option<&str>) -> MediaItem {
+        MediaItem {
+            id: MediaId::new(),
+            path: PathBuf::from("/tmp/orig.mp4"),
+            kind: MediaItemKind::File,
+            filename: "orig.mp4".into(),
+            duration: RationalTime { value: 240, rate: 24 },
+            fps: Fps::film_24(),
+            resolution: Resolution { width: 1920, height: 1080 },
+            video_codec: "h264".into(),
+            audio_codec: "aac".into(),
+            has_audio: true,
+            file_size_bytes: 1_000_000,
+            sample_rate: None,
+            audio_channels: None,
+            offline: false,
+            is_still: false,
+            proxy_path: proxy.map(PathBuf::from),
+            proxy_ready: proxy.is_some(),
+            default_source_in: None,
+            default_source_out: None,
+            rating: 0,
+            tags: Vec::new(),
+            user_notes: String::new(),
+            bin: None,
+            bin_id: None,
+            parent_media_id: None,
+            added_at: 0,
+            fingerprint: None,
+            file_modified_at: None,
+            media_created_at: None,
+            color_label: ColorLabel::default(),
+            colour_space: ColourSpace::default(),
+            log_format: klipp_core::LogFormat::default(),
+            source_rotation,
+            camera_make: None,
+            camera_model: None,
+            encoder: None,
+            bit_depth: None,
+            video_bitrate_kbps: None,
+            audio_bitrate_kbps: None,
+            color_primaries: None,
+            color_transfer: None,
+            pixel_format: None,
+            detected_log_format: klipp_core::LogFormat::default(),
+            skim_file: skim.map(PathBuf::from),
+            needs_reprobe: false,
+            waveform_data: None,
+            audio_cache: None,
+        }
+    }
+
+    #[test]
+    fn original_path_returns_source_rotation() {
+        let item = item_with(90, Some("/tmp/skim.mkv"), None);
+        assert_eq!(item.effective_rotation_for(&PathBuf::from("/tmp/orig.mp4")), 90);
+    }
+
+    #[test]
+    fn skim_path_returns_zero() {
+        // Skim is autorotated by ffmpeg during transcode. Re-applying
+        // source_rotation would double-rotate.
+        let item = item_with(90, Some("/tmp/skim.mkv"), None);
+        assert_eq!(item.effective_rotation_for(&PathBuf::from("/tmp/skim.mkv")), 0);
+    }
+
+    #[test]
+    fn proxy_path_returns_zero() {
+        // Proxies share the same autorotate behaviour during transcode.
+        let item = item_with(180, None, Some("/tmp/proxy.mov"));
+        assert_eq!(item.effective_rotation_for(&PathBuf::from("/tmp/proxy.mov")), 0);
+    }
+
+    #[test]
+    fn unrelated_path_returns_source_rotation() {
+        // A path that's neither original nor skim/proxy gets the cached
+        // value — defensive default rather than silent zero.
+        let item = item_with(270, Some("/tmp/skim.mkv"), None);
+        assert_eq!(item.effective_rotation_for(&PathBuf::from("/somewhere/else.mp4")), 270);
+    }
+
+    #[test]
+    fn no_rotation_metadata_returns_zero_either_way() {
+        let item = item_with(0, Some("/tmp/skim.mkv"), None);
+        assert_eq!(item.effective_rotation_for(&PathBuf::from("/tmp/orig.mp4")), 0);
+        assert_eq!(item.effective_rotation_for(&PathBuf::from("/tmp/skim.mkv")), 0);
     }
 }

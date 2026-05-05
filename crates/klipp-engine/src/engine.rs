@@ -2693,8 +2693,11 @@ impl PlaybackEngine {
             if let Some(path) = self.path_for_media(media_id) {
                 info!("handle_play: track {track_idx} clip {clip_idx} from {:?}, source={source_secs:.3}s", path);
 
+                // Path-aware rotation: skim/proxy is autorotated by ffmpeg
+                // during transcode, so source_rotation must be 0 there.
+                let effective_rot = self.effective_decode_rotation(media_id, &path, source_rotation);
                 // Open video decoder
-                match VideoDecoder::open(&path, source_rotation) {
+                match VideoDecoder::open(&path, effective_rot) {
                     Ok(dec) => {
                         if source_secs > 0.01 {
                             dec.seek(source_secs);
@@ -2747,7 +2750,10 @@ impl PlaybackEngine {
                 self.clip_source_start = clip_source_in;
                 self.clip_timeline_start = timeline_in;
                 self.clip_speed = clip_speed;
-                self.current_source_rotation = source_rotation;
+                // Path-aware: when path is the skim/proxy, ffmpeg autorotate
+                // already produced upright pixels, so source_rotation must
+                // be 0 to avoid double-rotation.
+                self.current_source_rotation = self.effective_decode_rotation(media_id, &path, source_rotation);
                 self.current_clip_index = clip_idx;
                 self.current_track_index = track_idx;
                 self.current_file = Some(path);
@@ -4552,7 +4558,11 @@ impl PlaybackEngine {
             self.clip_timeline_start = timeline_in;
             self.clip_speed = next_clip_speed;
             self.refresh_speed_keyframes();
-            self.current_source_rotation = source_rotation;
+            // Contiguous = same file, so the existing decoder's rotation
+            // (already path-aware from when it was opened) is still
+            // correct. Don't overwrite with the raw clip.source_rotation,
+            // which would re-introduce the skim double-rotation bug if
+            // the next clip happened to be reading the skim file.
             self.contiguous_audio.store(true, std::sync::atomic::Ordering::Relaxed);
             self.last_frame_time = std::time::Instant::now();
             let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
@@ -4657,7 +4667,13 @@ impl PlaybackEngine {
                 self.clip_timeline_start = timeline_in;
                 self.clip_speed = next_clip_speed;
                 self.refresh_speed_keyframes();
-                self.current_source_rotation = source_rotation;
+                // Path-aware rotation — see effective_rotation_for. Skim
+                // pixels are pre-rotated by ffmpeg autorotate during
+                // transcode, so applying clip.source_rotation again would
+                // double-rotate.
+                self.current_source_rotation = self.path_for_media(media_id)
+                    .map(|p| self.effective_decode_rotation(media_id, &p, source_rotation))
+                    .unwrap_or(source_rotation);
                 self.last_frame_time = std::time::Instant::now();
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                 self.update_overlay_decoders(self.playhead);
@@ -4693,7 +4709,13 @@ impl PlaybackEngine {
                 self.clip_timeline_start = timeline_in;
                 self.clip_speed = next_clip_speed;
                 self.refresh_speed_keyframes();
-                self.current_source_rotation = source_rotation;
+                // Path-aware rotation — see effective_rotation_for. Skim
+                // pixels are pre-rotated by ffmpeg autorotate during
+                // transcode, so applying clip.source_rotation again would
+                // double-rotate.
+                self.current_source_rotation = self.path_for_media(media_id)
+                    .map(|p| self.effective_decode_rotation(media_id, &p, source_rotation))
+                    .unwrap_or(source_rotation);
                 self.last_frame_time = std::time::Instant::now();
                 let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
                 self.update_overlay_decoders(self.playhead);
@@ -4715,7 +4737,8 @@ impl PlaybackEngine {
             self.audio_output = None;
 
             // Open new video decoder
-            match VideoDecoder::open(&path, source_rotation) {
+            let effective_rot = self.effective_decode_rotation(media_id, &path, source_rotation);
+            match VideoDecoder::open(&path, effective_rot) {
                 Ok(dec) => {
                     if source_in_secs > 0.01 {
                         dec.seek(source_in_secs);
@@ -4750,7 +4773,8 @@ impl PlaybackEngine {
             self.clip_timeline_start = timeline_in;
             self.clip_speed = next_clip_speed;
             self.refresh_speed_keyframes();
-            self.current_source_rotation = source_rotation;
+            // Path-aware rotation; see effective_rotation_for.
+            self.current_source_rotation = self.effective_decode_rotation(media_id, &path, source_rotation);
             self.last_frame_time = std::time::Instant::now();
             let _ = self.event_tx.send(AppEvent::PlayheadMoved(self.playhead));
 
@@ -4789,7 +4813,8 @@ impl PlaybackEngine {
                 return; // Already pre-rolling this clip
             }
             if let Some(path) = self.path_for_media(media_id) {
-                match VideoDecoder::open(&path, preroll_rotation) {
+                let effective_preroll_rot = self.effective_decode_rotation(media_id, &path, preroll_rotation);
+                match VideoDecoder::open(&path, effective_preroll_rot) {
                     Ok(dec) => {
                         if source_in_secs > 0.01 {
                             dec.seek(source_in_secs);
@@ -5079,7 +5104,6 @@ impl PlaybackEngine {
             if let Some(media_id) = clip.media_id() {
                 let source_secs = clip.source_in.to_secs_f64()
                     + (playhead - clip.timeline_in).to_secs_f64() * clip.speed;
-                let rotation = clip.source_rotation;
                 // Already have the right decoder open for this track+clip?
                 if self.overlay_clips.get(&track_idx) == Some(&clip_idx) && self.overlay_decoders.contains_key(&track_idx) {
                     continue;
@@ -5098,6 +5122,12 @@ impl PlaybackEngine {
                 }
 
                 if let Some(path) = self.path_for_media(media_id) {
+                    // Path-aware rotation: 0 when path is the skim/proxy
+                    // (already upright via ffmpeg autorotate during transcode),
+                    // clip.source_rotation when it's the original. Avoids the
+                    // double-rotation bug where iPhone portrait clips played
+                    // sideways once their skim file was generated.
+                    let rotation = self.effective_decode_rotation(media_id, &path, clip.source_rotation);
                     match VideoDecoder::open(&path, rotation) {
                         Ok(dec) => {
                             if source_secs > 0.01 {
@@ -5375,7 +5405,10 @@ impl PlaybackEngine {
                     if need_new {
                         if let Some(path) = self.path_for_media(media_id) {
                             self.v1_decoder = None;
-                            if let Ok(dec) = VideoDecoder::open(&path, rot) {
+                            // Path-aware rotation — see overlay path above for the rationale.
+                            // Skim/proxy is already upright; only rotate originals.
+                            let effective_rot = self.effective_decode_rotation(media_id, &path, rot);
+                            if let Ok(dec) = VideoDecoder::open(&path, effective_rot) {
                                 dec.seek(source_secs);
                                 dec.resume();
                                 self.v1_decoder = Some(dec);
@@ -5385,7 +5418,7 @@ impl PlaybackEngine {
                                 self.clip_timeline_start = timeline_in;
                                 self.clip_speed = spd;
                                 self.refresh_speed_keyframes();
-                                self.current_source_rotation = rot;
+                                self.current_source_rotation = effective_rot;
                             }
                         }
                     } else if let Some(dec) = &self.v1_decoder {
@@ -5513,7 +5546,8 @@ impl PlaybackEngine {
                 if let Some(path) = self.path_for_media(media_id) {
                     self.v1_decoder = None;
                     self.stop_all_audio();
-                    match VideoDecoder::open(&path, rot) {
+                    let effective_rot = self.effective_decode_rotation(media_id, &path, rot);
+                    match VideoDecoder::open(&path, effective_rot) {
                         Ok(dec) => {
                             dec.seek(source_secs);
                             dec.resume();
@@ -5524,7 +5558,7 @@ impl PlaybackEngine {
                             self.clip_timeline_start = timeline_in;
                             self.clip_speed = spd;
                             self.refresh_speed_keyframes();
-                            self.current_source_rotation = rot;
+                            self.current_source_rotation = effective_rot;
                         }
                         Err(e) => {
                             error!("[Loop] Failed to open decoder: {e}");
@@ -5724,7 +5758,8 @@ impl PlaybackEngine {
                 if let Some(path) = self.path_for_media(media_id) {
                     self.v1_decoder = None;
                     self.stop_all_audio();
-                    match VideoDecoder::open(&path, rot) {
+                    let effective_rot = self.effective_decode_rotation(media_id, &path, rot);
+                    match VideoDecoder::open(&path, effective_rot) {
                         Ok(dec) => {
                             dec.seek(source_secs);
                             dec.resume();
@@ -5735,7 +5770,7 @@ impl PlaybackEngine {
                             self.clip_timeline_start = timeline_in;
                             self.clip_speed = spd;
                             self.refresh_speed_keyframes();
-                            self.current_source_rotation = rot;
+                            self.current_source_rotation = effective_rot;
                         }
                         Err(e) => {
                             error!("Failed to open decoder for seek: {e}");
@@ -6599,7 +6634,8 @@ impl PlaybackEngine {
             // Open new decoder for the partner clip
             if let Some(media_id) = active.partner_clip.media_id() {
                 if let Some(path) = self.path_for_media(media_id) {
-                    match VideoDecoder::open(&path, active.partner_clip.source_rotation) {
+                    let partner_rot = self.effective_decode_rotation(media_id, &path, active.partner_clip.source_rotation);
+                    match VideoDecoder::open(&path, partner_rot) {
                         Ok(dec) => {
                             let source_secs = active.partner_clip.source_in.to_secs_f64()
                                 + (self.playhead - active.partner_clip.timeline_in).to_secs_f64().max(0.0) * active.partner_clip.speed;
@@ -8710,6 +8746,25 @@ impl PlaybackEngine {
 
     fn sequence_duration(&self) -> Timecode {
         self.sequence.read().unwrap_or_else(|e| e.into_inner()).total_duration()
+    }
+
+    /// Resolve the rotation the decoder should apply when reading
+    /// `decode_path` for `media_id`. Returns 0 when the path is the
+    /// item's skim/proxy (ffmpeg autorotate already produced upright
+    /// pixels during transcode); returns the item's `source_rotation`
+    /// otherwise. Falls back to `fallback` when the media is missing
+    /// from the pool — the same defensive shape `path_for_media` uses.
+    fn effective_decode_rotation(
+        &self,
+        media_id: MediaId,
+        decode_path: &std::path::Path,
+        fallback: i32,
+    ) -> i32 {
+        self.media_pool
+            .read()
+            .ok()
+            .and_then(|pool| pool.get(&media_id).map(|item| item.effective_rotation_for(decode_path)))
+            .unwrap_or(fallback)
     }
 
     fn path_for_media(&self, media_id: MediaId) -> Option<PathBuf> {

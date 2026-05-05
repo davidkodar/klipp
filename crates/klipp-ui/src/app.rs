@@ -4320,10 +4320,16 @@ impl KlippApp {
                                 .filter(|p| p.exists())
                                 .cloned()
                                 .unwrap_or_else(|| item.path.clone());
+                            // Skim/proxy transcodes are autorotated by ffmpeg
+                            // during encode, so re-applying item.source_rotation
+                            // here would double-rotate (portrait iPhone clips
+                            // ended up sideways in the source viewer). Use the
+                            // path-aware helper instead.
+                            let rotation = item.effective_rotation_for(&decode_path);
                             let _ = self.cmd_tx.send(AppCommand::SetSourceMedia {
                                 media_id: *media_id,
                                 path: decode_path,
-                                source_rotation: item.source_rotation,
+                                source_rotation: rotation,
                             });
                         }
                     }
