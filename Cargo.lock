@@ -2598,11 +2598,13 @@ name = "klipp-effects"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "image",
  "klipp-color",
  "klipp-core",
  "klipp-testing",
  "naga",
  "pollster 0.4.0",
+ "rayon",
  "serde",
  "tracing",
  "tracing-subscriber",
@@ -2826,6 +2828,7 @@ version = "0.1.0"
 dependencies = [
  "klipp-color",
  "klipp-core",
+ "klipp-effects",
  "klipp-engine",
  "png 0.18.1",
 ]

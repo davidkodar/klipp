@@ -3238,7 +3238,7 @@ fn layer_mixer_compose(
             let (tr, tg, tb) = (top[o], top[o + 1], top[o + 2]);
             let (br, bg, bb) = (out[o], out[o + 1], out[o + 2]);
             // Per-channel blended colour (before opacity mix).
-            // Formulas mirror `klipp_engine::composite::blend_chunk_linear`
+            // Formulas mirror `klipp_effects::composite::blend_chunk_linear`
             // — same linear-light semantics so a clip-level blend in the
             // timeline reads identical to a node-level blend in the mixer.
             let (mr, mg, mb) = match mode {

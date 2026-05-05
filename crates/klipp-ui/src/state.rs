@@ -1865,6 +1865,18 @@ pub struct AppState {
     pub pending_title_data: Option<klipp_timeline::TitleData>,
     /// Title clip that needs its overlay texture refreshed on the next frame.
     pub pending_title_preview_clip: Option<klipp_core::ClipId>,
+    /// Phase 4C — track-matte preview thumbnail wiring.
+    /// `matte_thumb_for` tags which consumer the cached `matte_thumb_handle`
+    /// belongs to; the inspector skips painting if the cached id has
+    /// drifted from the clip currently in view (e.g. user clicked a
+    /// different clip and the engine hasn't emitted a fresh preview yet).
+    pub matte_thumb_for: Option<klipp_core::ClipId>,
+    pub matte_thumb_handle: Option<egui::TextureHandle>,
+    /// `matte_preview_active_target` mirrors what the engine currently
+    /// thinks the preview target is (last value the inspector dispatched
+    /// via `SetInspectorMattePreviewTarget`). Used to debounce the
+    /// dispatch — without it we'd send a command on every paint.
+    pub matte_preview_active_target: Option<klipp_core::ClipId>,
     /// Set during scrub when no title clip is under the playhead — signals
     /// the next `upload_title_overlay` to clear the overlay so stale titles
     /// don't linger as the user drags past them.
@@ -3084,6 +3096,9 @@ impl Default for AppState {
             available_fonts: Vec::new(),
             pending_title_data: None,
             pending_title_preview_clip: None,
+            matte_thumb_for: None,
+            matte_thumb_handle: None,
+            matte_preview_active_target: None,
             pending_title_overlay_clear: false,
             clear_title_overlay: false,
             title_fade_duration: 0.5,

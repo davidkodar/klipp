@@ -240,6 +240,14 @@ pub struct ClipJson {
     pub transform_scale_keyframes: Option<Vec<klipp_core::Keyframe>>,
     #[serde(default)]
     pub transform_rotation_keyframes: Option<Vec<klipp_core::Keyframe>>,
+    /// Phase 4D — keyframable feather radius for the track-matte
+    /// binding. Optional + skip-if-empty so projects saved before
+    /// this landed deserialise unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte_feather_keyframes: Option<Vec<klipp_core::Keyframe>>,
+    /// Phase 4D — keyframable choke radius. Same back-compat shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte_choke_keyframes: Option<Vec<klipp_core::Keyframe>>,
     #[serde(default)]
     pub clip_markers: Option<Vec<ClipMarkerJson>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -268,12 +276,56 @@ pub struct ClipJson {
     pub multicam_cuts: Vec<(f64, u8)>,
     #[serde(default)]
     pub solo: Option<bool>,
+    /// Per-clip blend mode (Normal, Multiply, Screen, …). Older projects
+    /// without this field load as `Normal`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend_mode: Option<klipp_core::BlendMode>,
+    /// Track-matte binding (this clip's alpha is masked by another clip's
+    /// rendered RGBA). `None` = no matte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte_source: Option<MatteBindingJson>,
+    /// Phase 4B — stencil mode: this clip's pixels mask every clip on
+    /// a lower track at the same time. None = not a stencil.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte_stencil: Option<StencilSettingsJson>,
+    /// True when this clip is being used as a matte source by another clip
+    /// AND should be hidden from the visible composite. Default false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_as_matte: Option<bool>,
     #[serde(default)]
     pub grade_versions: Vec<GradeVersionJson>,
     #[serde(default)]
     pub active_grade_version: Option<usize>,
     #[serde(default)]
     pub track_points: Vec<klipp_core::TrackPoint>,
+}
+
+/// Wire-format mirror of [`klipp_timeline::MatteBinding`]. The clip-id is
+/// stored as a string for stable cross-platform serialisation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatteBindingJson {
+    pub source_clip_id: String,
+    #[serde(default)]
+    pub channel: klipp_nodes::params::MatteChannel,
+    #[serde(default)]
+    pub invert: bool,
+    #[serde(default)]
+    pub feather_px: f32,
+    #[serde(default)]
+    pub choke_px: f32,
+}
+
+/// Phase 4B wire-format mirror of [`klipp_timeline::StencilSettings`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StencilSettingsJson {
+    #[serde(default)]
+    pub channel: klipp_nodes::params::MatteChannel,
+    #[serde(default)]
+    pub invert: bool,
+    #[serde(default)]
+    pub feather_px: f32,
+    #[serde(default)]
+    pub choke_px: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -756,6 +808,7 @@ mod tests {
             opacity_keyframes: None,
             transform_pos_x_keyframes: None, transform_pos_y_keyframes: None,
             transform_scale_keyframes: None, transform_rotation_keyframes: None,
+            matte_feather_keyframes: None, matte_choke_keyframes: None,
             clip_markers: None,
             effect_keyframes: None,
             role: None,
@@ -768,6 +821,10 @@ mod tests {
             multicam_group: None, multicam_angle: None,
             multicam_cuts: vec![],
             solo: None,
+            blend_mode: None,
+            matte_source: None,
+            matte_stencil: None,
+            consumed_as_matte: None,
             grade_versions: vec![],
             active_grade_version: None,
             track_points: vec![],
@@ -818,6 +875,7 @@ mod tests {
             opacity_keyframes: None,
             transform_pos_x_keyframes: None, transform_pos_y_keyframes: None,
             transform_scale_keyframes: None, transform_rotation_keyframes: None,
+            matte_feather_keyframes: None, matte_choke_keyframes: None,
             clip_markers: None,
             effect_keyframes: None,
             role: None, param_modifiers: None,
@@ -828,6 +886,10 @@ mod tests {
             multicam_group: None, multicam_angle: None,
             multicam_cuts: vec![],
             solo: None,
+            blend_mode: None,
+            matte_source: None,
+            matte_stencil: None,
+            consumed_as_matte: None,
             grade_versions: vec![],
             active_grade_version: None,
             track_points: vec![],
@@ -948,5 +1010,114 @@ mod tests {
             .expect("legacy track JSON without automation_lane_height must parse");
         assert!(track.automation_lane_height.is_none());
         assert_eq!(track.automation_lane_visible.as_deref(), Some("Volume"));
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // Track-matte / blend-mode wire-format round trip (Phase 1.5)
+    // ════════════════════════════════════════════════════════════════
+
+    /// Build a minimal `ClipJson` with all fields defaulted; tests fill in
+    /// only what they're exercising.
+    fn empty_clip_json() -> ClipJson {
+        ClipJson {
+            id: "test-clip".to_string(),
+            media_id: None, kind: None,
+            timeline_in: 0, timeline_out: 24,
+            source_in: 0, source_out: 24, rate: 24,
+            node_graph: None, color_grade: None,
+            effects: vec![], builtin_effects: None,
+            linked_clip_id: None, linked_title_asset_id: None, group_id: None,
+            gain: None, volume: None, pan: None,
+            fade_in_secs: None, fade_out_secs: None,
+            fade_in_curve: None, fade_out_curve: None,
+            channel_config: None,
+            volume_keyframes: None, pan_keyframes: None, gain_keyframes: None,
+            opacity_keyframes: None,
+            transform_pos_x_keyframes: None, transform_pos_y_keyframes: None,
+            transform_scale_keyframes: None, transform_rotation_keyframes: None,
+            matte_feather_keyframes: None, matte_choke_keyframes: None,
+            clip_markers: None, effect_keyframes: None,
+            role: None, param_modifiers: None,
+            speed: None, speed_keyframes: None,
+            source_rotation: None, enabled: None,
+            audio_effects: None,
+            audio_effect_keyframes: std::collections::HashMap::new(),
+            multicam_group: None, multicam_angle: None,
+            multicam_cuts: vec![],
+            solo: None,
+            blend_mode: None,
+            matte_source: None,
+            matte_stencil: None,
+            consumed_as_matte: None,
+            grade_versions: vec![],
+            active_grade_version: None,
+            track_points: vec![],
+        }
+    }
+
+    /// Default values must NOT be serialised — keeps existing project files
+    /// from gaining noisy `"blend_mode":null,"matte_source":null` lines on
+    /// every save/load cycle.
+    #[test]
+    fn matte_and_blend_default_fields_are_omitted_from_json() {
+        let clip = empty_clip_json();
+        let s = serde_json::to_string(&clip).expect("serialise");
+        assert!(!s.contains("blend_mode"), "default blend_mode must be skipped: {s}");
+        assert!(!s.contains("matte_source"), "default matte_source must be skipped: {s}");
+        assert!(!s.contains("consumed_as_matte"), "default consumed_as_matte must be skipped: {s}");
+    }
+
+    /// Old `.klipp` files (saved before track-matte landed) must still
+    /// load — the new fields are all `Option` with `serde(default)`. This
+    /// test pins that invariant: serde must accept JSON missing every
+    /// new key.
+    #[test]
+    fn legacy_clip_without_new_fields_loads_with_defaults() {
+        let legacy = r#"{
+            "id": "11111111-1111-1111-1111-111111111111",
+            "media_id": null,
+            "timeline_in": 0, "timeline_out": 48,
+            "source_in": 0, "source_out": 48, "rate": 24,
+            "effects": [],
+            "audio_effect_keyframes": {},
+            "multicam_cuts": [],
+            "grade_versions": [],
+            "track_points": []
+        }"#;
+        let clip: ClipJson = serde_json::from_str(legacy)
+            .expect("legacy clip JSON must parse without the new track-matte fields");
+        assert!(clip.blend_mode.is_none(), "legacy clip should have no blend_mode (defaults to Normal)");
+        assert!(clip.matte_source.is_none(), "legacy clip should have no matte binding");
+        assert!(clip.consumed_as_matte.is_none(), "legacy clip should have no consumed_as_matte flag");
+    }
+
+    /// A populated binding survives the round trip with all five fields
+    /// intact. Mirrors the regression bar that landed for similar keyframe
+    /// fields earlier — silent loss of one field on save would be a near-
+    /// invisible bug at edit time, painful at deliver time.
+    #[test]
+    fn matte_binding_round_trips_through_clip_json() {
+        let mut clip = empty_clip_json();
+        clip.blend_mode = Some(klipp_core::BlendMode::Multiply);
+        clip.matte_source = Some(MatteBindingJson {
+            source_clip_id: "22222222-2222-2222-2222-222222222222".to_string(),
+            channel: klipp_nodes::params::MatteChannel::Alpha,
+            invert: true,
+            feather_px: 4.5,
+            choke_px: 1.25,
+        });
+        clip.consumed_as_matte = Some(true);
+
+        let s = serde_json::to_string(&clip).expect("serialise");
+        let back: ClipJson = serde_json::from_str(&s).expect("deserialise");
+
+        assert_eq!(back.blend_mode, Some(klipp_core::BlendMode::Multiply));
+        assert_eq!(back.consumed_as_matte, Some(true));
+        let m = back.matte_source.expect("matte_source preserved");
+        assert_eq!(m.source_clip_id, "22222222-2222-2222-2222-222222222222");
+        assert_eq!(m.channel, klipp_nodes::params::MatteChannel::Alpha);
+        assert!(m.invert);
+        assert!((m.feather_px - 4.5).abs() < f32::EPSILON);
+        assert!((m.choke_px - 1.25).abs() < f32::EPSILON);
     }
 }

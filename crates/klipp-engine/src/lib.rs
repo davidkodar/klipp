@@ -51,7 +51,6 @@ pub mod audio_decoder;
 pub mod audio_input;
 pub mod audio_output;
 pub mod audio_source;
-pub mod composite;
 pub mod engine;
 pub mod frame;
 pub mod ffmpeg_caps;
@@ -68,7 +67,11 @@ pub mod transition;
 pub mod types;
 pub mod video_decoder;
 
-pub use composite::{composite_layers, CompositeLayer};
+// Re-export composite types from klipp-effects so existing import
+// paths (`klipp_engine::composite_layers`) keep working after the
+// Phase 4G move. Down-stream crates can also import directly from
+// `klipp_effects::composite::*`.
+pub use klipp_effects::composite::{composite_layers, CompositeLayer};
 pub use engine::{detect_rotation_from_path, engine_stage_name, generate_filmstrip_incremental, generate_thumbnail, generate_thumbnail_at_size, generate_thumbnail_non_black, generate_thumbnail_at_size_non_black, is_frame_black, seq_write_holder_name, seq_write_holder_set, ui_stage, EngineStage, PlaybackEngine, PlaybackState, SeqWriteHolder, SequentialFrameDecoder, ENGINE_STAGE, ENGINE_TICK, SEQ_WRITE_HOLDER, UI_STAGE, UI_TICK};
 pub use frame::{CpuFrame, CpuFrameRef, Frame, FrameRef, GpuFrame, GpuFrameRef};
 pub use texture::{FrameBuffer, SharedFrameBuffer};

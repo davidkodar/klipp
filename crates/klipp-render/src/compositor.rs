@@ -80,6 +80,19 @@ impl FrameCompositor {
     /// Each clip's effects (color grade, OFX, builtins) are applied to its decoded
     /// frame BEFORE compositing, so every clip renders with its own effects.
     /// Returns `None` if there is nothing to render (all tracks empty/invisible).
+    ///
+    /// Phase 2 of track matte adds a two-pass structure (mirror of the
+    /// playback compositor in `klipp-engine/src/engine.rs`):
+    /// 1. **Pre-render** every visible clip on every track, caching the
+    ///    post-effects RGBA for clips that are referenced as matte
+    ///    sources by some other clip in this frame. The cache is empty
+    ///    in the no-matte common case so the existing perf profile is
+    ///    preserved.
+    /// 2. **Composite** bottom-up. Each clip with `matte_source`
+    ///    multiplies its alpha by the resolved single-channel mask
+    ///    before blending. Clips with `consumed_as_matte = true` skip
+    ///    the visible blend entirely (they exist only as matte input).
+    ///    Per-clip `blend_mode` is honoured via `blend_layer_with_mode`.
     pub fn composite_frame(
         &mut self,
         frame_num: u64,
@@ -90,49 +103,77 @@ impl FrameCompositor {
     ) -> Result<Option<Vec<u8>>, RenderError> {
         let w = snapshot.width;
         let h = snapshot.height;
-        let mut base: Option<Vec<u8>> = None;
 
-        // Process tracks bottom to top (index 0 = bottom, composited first).
-        // Each clip's effects run on its own decoded frame before compositing.
-        for (track_idx, track) in snapshot.video_tracks.iter().enumerate() {
-            if !track.visible {
-                continue;
-            }
-
-            // Find which clip is active at this frame
-            let clip = track
-                .clips
-                .iter()
-                .find(|c| frame_num >= c.timeline_start_frame && frame_num < c.timeline_end_frame);
-
-            let clip = match clip {
-                None => continue,
-                Some(c) => c,
-            };
-
-            // Adjustment layers transform the accumulated composite in-place
-            // instead of decoding a source frame and blending on top.
-            if matches!(clip.kind, ClipKindSnapshot::AdjustmentLayer) {
-                // Adjustment layer with nothing below is a no-op
-                if let Some(base_frame) = base.take() {
-                    let clip_frame = frame_num.saturating_sub(clip.timeline_start_frame);
-                    let ctx = FrameContext {
-                        export_frame,
-                        clip_frame,
-                        clip_time_secs: clip_frame as f64 / snapshot.fps,
-                        clip: Some(Arc::new(clip.clone())),
-                        fps: snapshot.fps,
-                        track_index: track_idx,
-                    };
-                    base = Some(pipelines[track_idx].process_frame(base_frame, w, h, &ctx));
+        // ── Phase 2 pre-pass scaffolding ────────────────────────────
+        // Identify which clip-ids are referenced as matte sources by
+        // some clip active in this frame. Empty in the dominant
+        // no-matte case → the cache below stays empty too.
+        let matte_source_ids: std::collections::HashSet<ClipId> = {
+            let mut s = std::collections::HashSet::new();
+            for track in snapshot.video_tracks.iter() {
+                if !track.visible { continue; }
+                if let Some(c) = track.clips.iter().find(|c| {
+                    frame_num >= c.timeline_start_frame && frame_num < c.timeline_end_frame
+                }) {
+                    if let Some(b) = c.matte_source.as_ref() {
+                        s.insert(b.source_clip_id);
+                    }
+                    // Phase 4B — stencil clips contribute their own
+                    // pixels as masks for lower tracks.
+                    if c.matte_stencil.is_some() {
+                        s.insert(c.id);
+                    }
                 }
+            }
+            s
+        };
+        let mut graded_layers: HashMap<ClipId, Vec<u8>> = HashMap::new();
+
+        // Phase 4B — stencil entries this frame, ordered by track index.
+        let mut stencil_clips: Vec<(usize, ClipId, klipp_timeline::StencilSettings)> = Vec::new();
+        for (track_idx, track) in snapshot.video_tracks.iter().enumerate() {
+            if !track.visible { continue; }
+            if let Some(c) = track.clips.iter().find(|c| {
+                frame_num >= c.timeline_start_frame && frame_num < c.timeline_end_frame
+            }) {
+                if let Some(s) = c.matte_stencil.as_ref() {
+                    stencil_clips.push((track_idx, c.id, s.clone()));
+                }
+            }
+        }
+
+        // Pre-render: walk every visible track, decode + apply effects,
+        // store the result for the composite pass. AdjustmentLayer
+        // entries carry no `frame` because they have no own pixels.
+        struct PreRenderedLayer {
+            track_idx: usize,
+            opacity: f32,
+            clip: ClipSnapshot,
+            // None for AdjustmentLayer or for Gap/exhausted-decoder
+            // clips that produced no decoded frame this tick.
+            frame: Option<Vec<u8>>,
+        }
+        let mut pre_rendered: Vec<PreRenderedLayer> = Vec::new();
+
+        for (track_idx, track) in snapshot.video_tracks.iter().enumerate() {
+            if !track.visible { continue; }
+            let Some(clip) = track.clips.iter().find(|c| {
+                frame_num >= c.timeline_start_frame && frame_num < c.timeline_end_frame
+            }) else { continue; };
+
+            // AdjustmentLayer carries no frame; just record the entry.
+            if matches!(clip.kind, ClipKindSnapshot::AdjustmentLayer) {
+                pre_rendered.push(PreRenderedLayer {
+                    track_idx,
+                    opacity: track.opacity,
+                    clip: clip.clone(),
+                    frame: None,
+                });
                 continue;
             }
 
-            // Regular clips: decode, apply per-clip effects, composite onto base
+            // Decode + transition + per-clip effects.
             let raw = self.decode_clip_frame(clip, decoders, frame_num, snapshot.fps, w, h)?;
-
-            // Check for active transition on this track (Gap 6)
             let decoded = if let Some(transitioned) =
                 self.apply_transition(raw.as_ref(), frame_num, snapshot.fps, clip, track, decoders, w, h)?
             {
@@ -140,11 +181,17 @@ impl FrameCompositor {
             } else {
                 match raw {
                     Some(f) => f,
-                    None => continue, // Gap clip or exhausted decoder
+                    None => {
+                        pre_rendered.push(PreRenderedLayer {
+                            track_idx,
+                            opacity: track.opacity,
+                            clip: clip.clone(),
+                            frame: None,
+                        });
+                        continue;
+                    }
                 }
             };
-
-            // Apply per-clip effects (color grade, OFX, builtins) before compositing
             let clip_frame = frame_num.saturating_sub(clip.timeline_start_frame);
             let ctx = FrameContext {
                 export_frame,
@@ -156,16 +203,84 @@ impl FrameCompositor {
             };
             let layer_frame = pipelines[track_idx].process_frame(decoded, w, h, &ctx);
 
-            // Composite onto base using alpha-over blending with track opacity
+            // Cache the post-effects buffer if some other clip in this
+            // frame references it as a matte source. Cheap clone gated
+            // by the lookup — most frames pay zero.
+            if matte_source_ids.contains(&clip.id) {
+                graded_layers.insert(clip.id, layer_frame.clone());
+            }
+
+            pre_rendered.push(PreRenderedLayer {
+                track_idx,
+                opacity: track.opacity,
+                clip: clip.clone(),
+                frame: Some(layer_frame),
+            });
+        }
+
+        // ── Composite pass ──────────────────────────────────────────
+        let mut base: Option<Vec<u8>> = None;
+        for entry in pre_rendered {
+            // AdjustmentLayer: in-place transform over the accumulated
+            // composite below. No-op when nothing has been blended yet.
+            if matches!(entry.clip.kind, ClipKindSnapshot::AdjustmentLayer) {
+                if let Some(base_frame) = base.take() {
+                    let clip_frame = frame_num.saturating_sub(entry.clip.timeline_start_frame);
+                    let ctx = FrameContext {
+                        export_frame,
+                        clip_frame,
+                        clip_time_secs: clip_frame as f64 / snapshot.fps,
+                        clip: Some(Arc::new(entry.clip.clone())),
+                        fps: snapshot.fps,
+                        track_index: entry.track_idx,
+                    };
+                    base = Some(pipelines[entry.track_idx].process_frame(base_frame, w, h, &ctx));
+                }
+                continue;
+            }
+
+            // `consumed_as_matte` clips contribute pixels only to the
+            // matte cache, never to the visible composite. Stencils
+            // are likewise hidden (Phase 4B).
+            if entry.clip.consumed_as_matte || entry.clip.matte_stencil.is_some() { continue; }
+
+            let Some(mut layer_frame) = entry.frame else { continue; };
+
+            // Phase 4B — apply every stencil ABOVE this clip.
+            for (st_track_idx, st_clip_id, st_settings) in &stencil_clips {
+                if *st_track_idx <= entry.track_idx { continue; }
+                if *st_clip_id == entry.clip.id { continue; }
+                let pseudo_binding = klipp_timeline::MatteBinding {
+                    source_clip_id: *st_clip_id,
+                    channel: st_settings.channel,
+                    invert: st_settings.invert,
+                    feather_px: st_settings.feather_px,
+                    choke_px: st_settings.choke_px,
+                };
+                apply_track_matte_srgb_u8(&mut layer_frame, &graded_layers, &pseudo_binding, w, h);
+            }
+
+            // Track-matte resolution: if this clip points at another
+            // clip as its matte source, multiply its alpha by the
+            // resolved single-channel mask before blending.
+            if let Some(binding) = entry.clip.matte_source.as_ref() {
+                apply_track_matte_srgb_u8(&mut layer_frame, &graded_layers, binding, w, h);
+            }
+
             base = Some(match base {
                 None => {
-                    if (track.opacity - 1.0).abs() < 0.001 {
+                    if (entry.opacity - 1.0).abs() < 0.001 {
                         layer_frame
                     } else {
-                        apply_opacity(layer_frame, track.opacity)
+                        apply_opacity(layer_frame, entry.opacity)
                     }
                 }
-                Some(b) => blend_over(b, &layer_frame, track.opacity),
+                Some(mut b) => {
+                    klipp_effects::composite::blend_layer(
+                        &mut b, &layer_frame, entry.opacity, entry.clip.blend_mode,
+                    );
+                    b
+                }
             });
         }
 
@@ -379,23 +494,53 @@ fn black_frame(width: u32, height: u32) -> Vec<u8> {
     vec![0u8; (width * height * 4) as usize]
 }
 
-/// Alpha-over blend: composite `src` over `dst` with additional opacity.
-fn blend_over(mut dst: Vec<u8>, src: &[u8], opacity: f32) -> Vec<u8> {
-    debug_assert_eq!(dst.len(), src.len());
-    for i in (0..dst.len()).step_by(4) {
-        let sa = (src[i + 3] as f32 / 255.0) * opacity;
-        let da = dst[i + 3] as f32 / 255.0;
-        let out_a = sa + da * (1.0 - sa);
-        if out_a > 0.0 {
-            dst[i] = ((src[i] as f32 * sa + dst[i] as f32 * da * (1.0 - sa)) / out_a) as u8;
-            dst[i + 1] =
-                ((src[i + 1] as f32 * sa + dst[i + 1] as f32 * da * (1.0 - sa)) / out_a) as u8;
-            dst[i + 2] =
-                ((src[i + 2] as f32 * sa + dst[i + 2] as f32 * da * (1.0 - sa)) / out_a) as u8;
-            dst[i + 3] = (out_a * 255.0) as u8;
-        }
+/// Blend `src` over `dst` with a per-clip blend mode + opacity. Falls
+/// Track-matte resolver for the export compositor's u8 sRGB path.
+/// Mirrors `klipp_engine::Engine::apply_track_matte_linear` in shape;
+/// pulls the source clip's already-graded RGBA from `graded_layers`,
+/// extracts the chosen channel, applies invert + feather, and
+/// multiplies the consumer's alpha by the resulting mask. Sets the
+/// consumer to fully transparent when the source isn't active in this
+/// frame — matches the playback path so the user sees the same
+/// "matte source missing" failure mode in both viewer and export.
+fn apply_track_matte_srgb_u8(
+    consumer_rgba: &mut [u8],
+    graded_layers: &HashMap<ClipId, Vec<u8>>,
+    binding: &klipp_timeline::MatteBinding,
+    width: u32,
+    height: u32,
+) {
+    let Some(source) = graded_layers.get(&binding.source_clip_id) else {
+        for chunk in consumer_rgba.chunks_exact_mut(4) { chunk[3] = 0; }
+        return;
+    };
+    if source.len() != consumer_rgba.len() {
+        for chunk in consumer_rgba.chunks_exact_mut(4) { chunk[3] = 0; }
+        return;
     }
-    dst
+    let channel = matte_channel_to_effects(binding.channel);
+    let mut mask = klipp_effects::track_matte::extract_mask_srgb_u8(source, channel, binding.invert);
+    klipp_effects::track_matte::apply_choke_mask(&mut mask, width, height, binding.choke_px);
+    klipp_effects::track_matte::feather_mask(&mut mask, width, height, binding.feather_px);
+    klipp_effects::track_matte::apply_mask_to_alpha_srgb_u8(consumer_rgba, &mask);
+}
+
+/// Bridge `klipp_nodes::params::MatteChannel` (wire format, shared with
+/// the ExternalMatte node) to the matching enum in
+/// `klipp_effects::track_matte`. Dual to the playback compositor's
+/// helper of the same name in `klipp-engine/src/engine.rs`.
+fn matte_channel_to_effects(
+    ch: klipp_nodes::params::MatteChannel,
+) -> klipp_effects::track_matte::MatteChannel {
+    use klipp_nodes::params::MatteChannel as N;
+    use klipp_effects::track_matte::MatteChannel as E;
+    match ch {
+        N::Alpha => E::Alpha,
+        N::Luminance => E::Luminance,
+        N::Red => E::Red,
+        N::Green => E::Green,
+        N::Blue => E::Blue,
+    }
 }
 
 /// Multiply all alpha values by opacity (pre-multiply style).
@@ -419,6 +564,14 @@ mod tests {
 
     fn solid_frame(r: u8, g: u8, b: u8, a: u8, w: u32, h: u32) -> Vec<u8> {
         vec![r, g, b, a].repeat((w * h) as usize)
+    }
+
+    /// Helper: u8 alpha-over Normal blend. Was a local `blend_over` fn
+    /// before Phase 4G consolidated the blend math into
+    /// `klipp_effects::composite`. Tests stay; just delegate now.
+    fn blend_over(mut dst: Vec<u8>, src: &[u8], opacity: f32) -> Vec<u8> {
+        klipp_effects::composite::blend_layer(&mut dst, src, opacity, klipp_core::BlendMode::Normal);
+        dst
     }
 
     #[test]
@@ -689,6 +842,10 @@ mod tests {
             transform_pos_y_keyframes: vec![],
             transform_scale_keyframes: vec![],
             transform_rotation_keyframes: vec![],
+            blend_mode: klipp_core::BlendMode::Normal,
+            matte_source: None,
+            matte_stencil: None,
+            consumed_as_matte: false,
         }
     }
 
@@ -941,6 +1098,10 @@ mod tests {
             transform_pos_y_keyframes: vec![],
             transform_scale_keyframes: vec![],
             transform_rotation_keyframes: vec![],
+            blend_mode: klipp_core::BlendMode::Normal,
+            matte_source: None,
+            matte_stencil: None,
+            consumed_as_matte: false,
         }
     }
 
@@ -1070,6 +1231,10 @@ mod tests {
             transform_pos_y_keyframes: Vec::new(),
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
+            blend_mode: klipp_core::BlendMode::Normal,
+            matte_source: None,
+            matte_stencil: None,
+            consumed_as_matte: false,
         }
     }
 
@@ -1156,5 +1321,315 @@ mod tests {
         assert!((comp.transition_progress(90, &trans, &track) - 0.0).abs() < 0.05);
         assert!((comp.transition_progress(100, &trans, &track) - 0.5).abs() < 0.05);
         assert!((comp.transition_progress(109, &trans, &track) - 0.95).abs() < 0.06);
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // Phase 2 — track matte resolution (export compositor)
+    //
+    // Each test stages two tracks (V1 = consumer, V2 = matte source),
+    // sets V1's `matte_source` to V2's clip-id with a chosen channel +
+    // invert, and checks the composite output. Since the composite is
+    // V1 over a transparent canvas (V2 either consumed-as-matte or
+    // explicitly verified to disappear), the only colour visible is
+    // V1 — gated by V2's mask.
+    // ════════════════════════════════════════════════════════════════
+
+    fn bind_matte(consumer: &mut ClipSnapshot, source_id: ClipId, channel: klipp_nodes::params::MatteChannel, invert: bool) {
+        consumer.matte_source = Some(klipp_timeline::MatteBinding {
+            source_clip_id: source_id,
+            channel,
+            invert,
+            feather_px: 0.0,
+            choke_px: 0.0,
+        });
+    }
+
+    /// Alpha matte with fully-opaque source = consumer fully visible.
+    /// Pin: matte resolution doesn't accidentally mask out an opaque source.
+    #[test]
+    fn track_matte_alpha_full_source_keeps_consumer_visible() {
+        let w = 4u32; let h = 4u32;
+        let mut consumer = generator_clip([255, 0, 0, 255], 0, 24, vec![]); // red
+        let source = generator_clip([0, 255, 0, 255], 0, 24, vec![]);       // green, alpha=255
+        bind_matte(&mut consumer, source.id, klipp_nodes::params::MatteChannel::Alpha, false);
+        let mut source_hidden = source.clone();
+        source_hidden.consumed_as_matte = true;
+
+        let snapshot = test_snapshot(w, h, vec![
+            track_with_clip(consumer.clone()),
+            track_with_clip(source_hidden.clone()),
+        ]);
+        let mut pipelines = vec![pipeline_for_clip(&consumer), pipeline_for_clip(&source_hidden)];
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap().expect("frame");
+        // Consumer red passes through with full alpha.
+        assert!(result[0] > 240, "R should be ≈255, got {}", result[0]);
+        assert!(result[1] < 15, "G should be ≈0 (source is hidden), got {}", result[1]);
+    }
+
+    /// Alpha matte with zero-alpha source = consumer becomes invisible.
+    #[test]
+    fn track_matte_alpha_zero_source_hides_consumer() {
+        let w = 4u32; let h = 4u32;
+        let mut consumer = generator_clip([255, 0, 0, 255], 0, 24, vec![]);
+        let source = generator_clip([0, 255, 0, 0], 0, 24, vec![]); // alpha=0
+        bind_matte(&mut consumer, source.id, klipp_nodes::params::MatteChannel::Alpha, false);
+        let mut source_hidden = source.clone();
+        source_hidden.consumed_as_matte = true;
+
+        let snapshot = test_snapshot(w, h, vec![
+            track_with_clip(consumer.clone()),
+            track_with_clip(source_hidden.clone()),
+        ]);
+        let mut pipelines = vec![pipeline_for_clip(&consumer), pipeline_for_clip(&source_hidden)];
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap().expect("frame");
+        // Consumer alpha multiplied by 0 → consumer disappears. Output
+        // is the transparent canvas (zero alpha, RGB zero).
+        assert!(result[3] < 15, "alpha should be ≈0, got {}", result[3]);
+    }
+
+    /// Luma matte: bright source = consumer visible, dark source = consumer hidden.
+    #[test]
+    fn track_matte_luma_white_source_keeps_consumer_visible() {
+        let w = 4u32; let h = 4u32;
+        let mut consumer = generator_clip([255, 0, 0, 255], 0, 24, vec![]);
+        let source = generator_clip([255, 255, 255, 255], 0, 24, vec![]); // pure white luma=1
+        bind_matte(&mut consumer, source.id, klipp_nodes::params::MatteChannel::Luminance, false);
+        let mut source_hidden = source.clone();
+        source_hidden.consumed_as_matte = true;
+
+        let snapshot = test_snapshot(w, h, vec![
+            track_with_clip(consumer.clone()),
+            track_with_clip(source_hidden.clone()),
+        ]);
+        let mut pipelines = vec![pipeline_for_clip(&consumer), pipeline_for_clip(&source_hidden)];
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap().expect("frame");
+        assert!(result[0] > 240, "consumer red should be ≈255 under white luma matte, got {}", result[0]);
+        assert!(result[3] > 240, "alpha should be ≈255, got {}", result[3]);
+    }
+
+    #[test]
+    fn track_matte_luma_black_source_hides_consumer() {
+        let w = 4u32; let h = 4u32;
+        let mut consumer = generator_clip([255, 0, 0, 255], 0, 24, vec![]);
+        let source = generator_clip([0, 0, 0, 255], 0, 24, vec![]); // pure black luma=0
+        bind_matte(&mut consumer, source.id, klipp_nodes::params::MatteChannel::Luminance, false);
+        let mut source_hidden = source.clone();
+        source_hidden.consumed_as_matte = true;
+
+        let snapshot = test_snapshot(w, h, vec![
+            track_with_clip(consumer.clone()),
+            track_with_clip(source_hidden.clone()),
+        ]);
+        let mut pipelines = vec![pipeline_for_clip(&consumer), pipeline_for_clip(&source_hidden)];
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap().expect("frame");
+        assert!(result[3] < 15, "consumer should disappear under black luma matte, got alpha {}", result[3]);
+    }
+
+    /// Invert flips the visibility: black-source-with-invert = visible.
+    #[test]
+    fn track_matte_invert_flips_visibility() {
+        let w = 4u32; let h = 4u32;
+        let mut consumer = generator_clip([255, 0, 0, 255], 0, 24, vec![]);
+        // Black source — without invert, consumer would disappear.
+        let source = generator_clip([0, 0, 0, 255], 0, 24, vec![]);
+        bind_matte(&mut consumer, source.id, klipp_nodes::params::MatteChannel::Luminance, true);
+        let mut source_hidden = source.clone();
+        source_hidden.consumed_as_matte = true;
+
+        let snapshot = test_snapshot(w, h, vec![
+            track_with_clip(consumer.clone()),
+            track_with_clip(source_hidden.clone()),
+        ]);
+        let mut pipelines = vec![pipeline_for_clip(&consumer), pipeline_for_clip(&source_hidden)];
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap().expect("frame");
+        // Inverted black luma → mask = 1 → consumer visible.
+        assert!(result[0] > 240, "inverted-black luma should keep consumer visible, R={}", result[0]);
+    }
+
+    /// `consumed_as_matte` clip must NOT appear in the visible
+    /// composite. Without the flag the source clip would also render
+    /// over the consumer (since it's on a higher track).
+    #[test]
+    fn track_matte_consumed_as_matte_hides_source_from_composite() {
+        let w = 4u32; let h = 4u32;
+        // Consumer = red; source = bright green with consumed_as_matte=true.
+        // If the flag were ignored, V2 (green) would blend over V1 (red)
+        // and the output would be green-ish.
+        let mut consumer = generator_clip([255, 0, 0, 255], 0, 24, vec![]);
+        let source = generator_clip([0, 255, 0, 255], 0, 24, vec![]);
+        bind_matte(&mut consumer, source.id, klipp_nodes::params::MatteChannel::Alpha, false);
+        let mut source_hidden = source.clone();
+        source_hidden.consumed_as_matte = true;
+
+        let snapshot = test_snapshot(w, h, vec![
+            track_with_clip(consumer.clone()),
+            track_with_clip(source_hidden.clone()),
+        ]);
+        let mut pipelines = vec![pipeline_for_clip(&consumer), pipeline_for_clip(&source_hidden)];
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap().expect("frame");
+        // Output is consumer (red) only — green source must not bleed in.
+        assert!(result[0] > 240, "expected red consumer, R={}", result[0]);
+        assert!(result[1] < 15, "green source must be hidden, G={}", result[1]);
+    }
+
+    /// Source clip not active in this frame → consumer's alpha is
+    /// zeroed (predictable failure). Pinned so a future cache-eviction
+    /// optimisation doesn't accidentally leave the consumer un-masked.
+    #[test]
+    fn track_matte_missing_source_makes_consumer_invisible() {
+        let w = 4u32; let h = 4u32;
+        let mut consumer = generator_clip([255, 0, 0, 255], 0, 24, vec![]);
+        // Bind to a fabricated clip-id that doesn't exist anywhere in
+        // the snapshot. Simulates "user deleted the matte source clip
+        // and the binding hasn't been cleaned up yet" or "matte
+        // source's clip is past its timeline_out at this frame".
+        bind_matte(&mut consumer, ClipId::new(), klipp_nodes::params::MatteChannel::Alpha, false);
+
+        let snapshot = test_snapshot(w, h, vec![
+            track_with_clip(consumer.clone()),
+        ]);
+        let mut pipelines = vec![pipeline_for_clip(&consumer)];
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap().expect("frame");
+        assert!(result[3] < 15, "consumer should disappear when matte source absent, alpha={}", result[3]);
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // Phase 4B — stencil mode (apply matte to all clips below)
+    //
+    // Stencil clips mask everything below them at the same time-range,
+    // and are themselves hidden from the visible composite. Tests
+    // here pin both halves of the contract.
+    // ════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn stencil_white_source_keeps_all_below_visible() {
+        let w = 4u32; let h = 4u32;
+        // V1: red. V2: white stencil (luma=1 → mask=1). Expect V1
+        // visible, V2 hidden.
+        let v1 = generator_clip([255, 0, 0, 255], 0, 24, vec![]);
+        let mut v2_stencil = generator_clip([255, 255, 255, 255], 0, 24, vec![]);
+        v2_stencil.matte_stencil = Some(klipp_timeline::StencilSettings {
+            channel: klipp_nodes::params::MatteChannel::Luminance,
+            invert: false,
+            feather_px: 0.0,
+            choke_px: 0.0,
+        });
+
+        let snapshot = test_snapshot(w, h, vec![
+            track_with_clip(v1.clone()),
+            track_with_clip(v2_stencil.clone()),
+        ]);
+        let mut pipelines = vec![pipeline_for_clip(&v1), pipeline_for_clip(&v2_stencil)];
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap().expect("frame");
+        // V1 (red) survives; V2 (white) doesn't blend in (would mute red).
+        assert!(result[0] > 240, "expected red V1 visible under white stencil, R={}", result[0]);
+        assert!(result[1] < 15, "stencil clip must not blend in, G={}", result[1]);
+    }
+
+    #[test]
+    fn stencil_black_source_hides_all_below() {
+        let w = 4u32; let h = 4u32;
+        let v1 = generator_clip([255, 0, 0, 255], 0, 24, vec![]);
+        let mut v2_stencil = generator_clip([0, 0, 0, 255], 0, 24, vec![]); // black luma=0
+        v2_stencil.matte_stencil = Some(klipp_timeline::StencilSettings {
+            channel: klipp_nodes::params::MatteChannel::Luminance,
+            invert: false,
+            feather_px: 0.0,
+            choke_px: 0.0,
+        });
+
+        let snapshot = test_snapshot(w, h, vec![
+            track_with_clip(v1.clone()),
+            track_with_clip(v2_stencil.clone()),
+        ]);
+        let mut pipelines = vec![pipeline_for_clip(&v1), pipeline_for_clip(&v2_stencil)];
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap().expect("frame");
+        // Black luma stencil → mask=0 → V1 alpha multiplied to 0.
+        assert!(result[3] < 15, "expected V1 hidden under black stencil, alpha={}", result[3]);
+    }
+
+    #[test]
+    fn stencil_does_not_affect_clip_above_it() {
+        let w = 4u32; let h = 4u32;
+        // V1: red. V2: BLACK stencil (would erase V1). V3: green
+        // (above the stencil, so should remain visible).
+        let v1 = generator_clip([255, 0, 0, 255], 0, 24, vec![]);
+        let mut v2_stencil = generator_clip([0, 0, 0, 255], 0, 24, vec![]);
+        v2_stencil.matte_stencil = Some(klipp_timeline::StencilSettings {
+            channel: klipp_nodes::params::MatteChannel::Luminance,
+            invert: false, feather_px: 0.0, choke_px: 0.0,
+        });
+        let v3 = generator_clip([0, 255, 0, 255], 0, 24, vec![]);
+
+        let snapshot = test_snapshot(w, h, vec![
+            track_with_clip(v1.clone()),
+            track_with_clip(v2_stencil.clone()),
+            track_with_clip(v3.clone()),
+        ]);
+        let mut pipelines = vec![
+            pipeline_for_clip(&v1),
+            pipeline_for_clip(&v2_stencil),
+            pipeline_for_clip(&v3),
+        ];
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap().expect("frame");
+        // V1 erased by stencil, V2 hidden, V3 (above) visible green.
+        assert!(result[1] > 240, "V3 should pass through unaffected by stencil below it, G={}", result[1]);
+    }
+
+    /// Per-clip blend_mode is honoured at the export site. White over
+    /// red with Multiply should produce red (white * red = red); under
+    /// the old hard-coded Normal it would produce white.
+    #[test]
+    fn clip_blend_mode_multiply_is_honoured_in_export() {
+        let w = 4u32; let h = 4u32;
+        // V1: solid red. V2: solid white at 100% opacity, blend_mode = Multiply.
+        let v1 = generator_clip([255, 0, 0, 255], 0, 24, vec![]);
+        let mut v2 = generator_clip([255, 255, 255, 255], 0, 24, vec![]);
+        v2.blend_mode = klipp_core::BlendMode::Multiply;
+
+        let snapshot = test_snapshot(w, h, vec![
+            track_with_clip(v1.clone()),
+            track_with_clip(v2.clone()),
+        ]);
+        let mut pipelines = vec![pipeline_for_clip(&v1), pipeline_for_clip(&v2)];
+        let mut compositor = FrameCompositor::new();
+        let mut decoders = HashMap::new();
+        let result = compositor.composite_frame(0, 0, &snapshot, &mut decoders, &mut pipelines)
+            .unwrap().expect("frame");
+        // Multiply: 1 * 1 = 1 (red), 0 * 1 = 0 (green), 0 * 1 = 0 (blue).
+        // Under Normal we'd get 255,255,255.
+        assert!(result[0] > 240, "Multiply: R should stay ≈255, got {}", result[0]);
+        assert!(result[1] < 15, "Multiply: G should stay ≈0, got {}", result[1]);
+        assert!(result[2] < 15, "Multiply: B should stay ≈0, got {}", result[2]);
     }
 }

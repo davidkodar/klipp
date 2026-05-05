@@ -440,6 +440,8 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     transform_pos_y_keyframes: c.transform_pos_y_keyframes.clone().unwrap_or_default(),
                     transform_scale_keyframes: c.transform_scale_keyframes.clone().unwrap_or_default(),
                     transform_rotation_keyframes: c.transform_rotation_keyframes.clone().unwrap_or_default(),
+                    matte_feather_keyframes: c.matte_feather_keyframes.clone().unwrap_or_default(),
+                    matte_choke_keyframes: c.matte_choke_keyframes.clone().unwrap_or_default(),
                     clip_markers: c.clip_markers.as_ref().map(|markers| {
                         markers.iter().map(|m| klipp_timeline::ClipMarker {
                             time_secs: m.time_secs,
@@ -466,6 +468,15 @@ fn load_sequence_from_json(seq_json: &SequenceJson, project_dir: &Path) -> Resul
                     source_rotation: c.source_rotation.unwrap_or(0),
                     enabled: c.enabled.unwrap_or(true),
                     solo: c.solo.unwrap_or(false),
+                    blend_mode: c.blend_mode.unwrap_or(klipp_core::BlendMode::Normal),
+                    matte_source: c.matte_source.as_ref().and_then(load_matte_binding),
+                    matte_stencil: c.matte_stencil.as_ref().map(|s| klipp_timeline::StencilSettings {
+                        channel: s.channel,
+                        invert: s.invert,
+                        feather_px: s.feather_px,
+                        choke_px: s.choke_px,
+                    }),
+                    consumed_as_matte: c.consumed_as_matte.unwrap_or(false),
                     grade_versions: c.grade_versions.iter().map(|gv| {
                         let mut g = gv.node_graph.clone();
                         migrate_graph(&mut g);
@@ -771,6 +782,24 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
 
 fn parse_uuid(s: &str) -> Result<Uuid, String> {
     Uuid::parse_str(s).map_err(|e| format!("Invalid UUID '{s}': {e}"))
+}
+
+/// Decode a wire-format `MatteBindingJson` into a runtime `MatteBinding`.
+/// Returns `None` if the source-clip UUID is malformed — the consumer clip
+/// then loads as if it had no matte (the alternative would be to drop the
+/// whole project load, which is far worse than silently losing one binding
+/// that the user can re-attach in the inspector). The orphan-clip-id case
+/// (well-formed UUID that doesn't match any clip) is allowed through here
+/// and cleaned up by the post-load pass that runs across the whole sequence.
+fn load_matte_binding(j: &crate::format::MatteBindingJson) -> Option<klipp_timeline::MatteBinding> {
+    let id = parse_uuid(&j.source_clip_id).ok()?;
+    Some(klipp_timeline::MatteBinding {
+        source_clip_id: ClipId(id),
+        channel: j.channel,
+        invert: j.invert,
+        feather_px: j.feather_px,
+        choke_px: j.choke_px,
+    })
 }
 
 /// Read every `<dir>/looks/*.json` and deserialize as a Look. Files

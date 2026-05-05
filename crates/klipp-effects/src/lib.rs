@@ -36,6 +36,7 @@ pub mod aces_rrt_wgsl;
 pub mod blur;
 mod chroma_key;
 pub mod color_wgsl;
+pub mod composite;
 mod crop;
 pub mod gpu;
 pub mod gpu_context;
@@ -48,9 +49,58 @@ pub mod rolling_shutter;
 pub mod scene_detect;
 pub mod stabilization;
 mod sharpen;
+pub mod track_matte;
 pub mod transform;
 
 use serde::{Deserialize, Serialize};
+
+/// Per-clip composite blend mode. Lives here (not in klipp-core)
+/// because the algebra in `composite::blend_*` is the primary
+/// consumer; klipp-core re-exports the type as `klipp_core::BlendMode`
+/// for back-compat with existing call-site paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BlendMode {
+    Normal,
+    Add,
+    Multiply,
+    Screen,
+    Overlay,
+    SoftLight,
+    HardLight,
+    Difference,
+    Exclusion,
+    ColorDodge,
+    ColorBurn,
+    Darken,
+    Lighten,
+}
+
+impl BlendMode {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            BlendMode::Normal => "Normal",
+            BlendMode::Add => "Add",
+            BlendMode::Multiply => "Multiply",
+            BlendMode::Screen => "Screen",
+            BlendMode::Overlay => "Overlay",
+            BlendMode::SoftLight => "Soft Light",
+            BlendMode::HardLight => "Hard Light",
+            BlendMode::Difference => "Difference",
+            BlendMode::Exclusion => "Exclusion",
+            BlendMode::ColorDodge => "Color Dodge",
+            BlendMode::ColorBurn => "Color Burn",
+            BlendMode::Darken => "Darken",
+            BlendMode::Lighten => "Lighten",
+        }
+    }
+
+    pub const ALL: [BlendMode; 13] = [
+        BlendMode::Normal, BlendMode::Add, BlendMode::Multiply, BlendMode::Screen,
+        BlendMode::Overlay, BlendMode::SoftLight, BlendMode::HardLight,
+        BlendMode::Difference, BlendMode::Exclusion, BlendMode::ColorDodge,
+        BlendMode::ColorBurn, BlendMode::Darken, BlendMode::Lighten,
+    ];
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]

@@ -100,6 +100,20 @@ pub struct ClipSnapshot {
     pub transform_scale_keyframes: Vec<Keyframe>,
     /// Transform rotation keyframes.
     pub transform_rotation_keyframes: Vec<Keyframe>,
+    /// Per-clip blend mode for the visible composite.
+    pub blend_mode: klipp_core::BlendMode,
+    /// Track-matte binding: when set, this clip's alpha is masked by the
+    /// rendered RGBA of `source_clip_id` at the same timeline time. Phase 2
+    /// (render path) reads this; Phase 1 (data model) only carries it.
+    pub matte_source: Option<klipp_timeline::MatteBinding>,
+    /// Phase 4B — when set, this clip's pixels mask every clip on a
+    /// lower track at the same time-range. Forwarded as-is from the
+    /// authoring `Clip`. Implicitly hides the source from the visible
+    /// composite.
+    pub matte_stencil: Option<klipp_timeline::StencilSettings>,
+    /// True when this clip is being used as a matte source by another clip
+    /// AND should be hidden from the visible composite. Default false.
+    pub consumed_as_matte: bool,
 }
 
 #[derive(Clone)]
@@ -517,6 +531,10 @@ fn flatten_multicam_video_clips(
             transform_pos_y_keyframes: angle_clip.transform_pos_y_keyframes.clone(),
             transform_scale_keyframes: angle_clip.transform_scale_keyframes.clone(),
             transform_rotation_keyframes: angle_clip.transform_rotation_keyframes.clone(),
+            blend_mode: angle_clip.blend_mode,
+            matte_source: angle_clip.matte_source.clone(),
+            matte_stencil: angle_clip.matte_stencil.clone(),
+            consumed_as_matte: angle_clip.consumed_as_matte,
         });
     }
 
@@ -762,6 +780,10 @@ fn snapshot_clip(
         transform_pos_y_keyframes: clip.transform_pos_y_keyframes.clone(),
         transform_scale_keyframes: clip.transform_scale_keyframes.clone(),
         transform_rotation_keyframes: clip.transform_rotation_keyframes.clone(),
+        blend_mode: clip.blend_mode,
+        matte_source: clip.matte_source.clone(),
+        matte_stencil: clip.matte_stencil.clone(),
+        consumed_as_matte: clip.consumed_as_matte,
     })
 }
 

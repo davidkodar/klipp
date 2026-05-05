@@ -267,6 +267,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         transform_pos_y_keyframes: if c.transform_pos_y_keyframes.is_empty() { None } else { Some(c.transform_pos_y_keyframes.clone()) },
                         transform_scale_keyframes: if c.transform_scale_keyframes.is_empty() { None } else { Some(c.transform_scale_keyframes.clone()) },
                         transform_rotation_keyframes: if c.transform_rotation_keyframes.is_empty() { None } else { Some(c.transform_rotation_keyframes.clone()) },
+                        matte_feather_keyframes: if c.matte_feather_keyframes.is_empty() { None } else { Some(c.matte_feather_keyframes.clone()) },
+                        matte_choke_keyframes: if c.matte_choke_keyframes.is_empty() { None } else { Some(c.matte_choke_keyframes.clone()) },
                         clip_markers: if c.clip_markers.is_empty() { None } else {
                             Some(c.clip_markers.iter().map(|m| crate::format::ClipMarkerJson {
                                 time_secs: m.time_secs,
@@ -291,6 +293,25 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         multicam_angle: if c.multicam_angle == 0 { None } else { Some(c.multicam_angle) },
                         multicam_cuts: c.multicam_cuts.clone(),
                         solo: if c.solo { Some(true) } else { None },
+                        blend_mode: if matches!(c.blend_mode, klipp_core::BlendMode::Normal) {
+                            None
+                        } else {
+                            Some(c.blend_mode)
+                        },
+                        matte_source: c.matte_source.as_ref().map(|m| crate::format::MatteBindingJson {
+                            source_clip_id: m.source_clip_id.0.to_string(),
+                            channel: m.channel,
+                            invert: m.invert,
+                            feather_px: m.feather_px,
+                            choke_px: m.choke_px,
+                        }),
+                        matte_stencil: c.matte_stencil.as_ref().map(|s| crate::format::StencilSettingsJson {
+                            channel: s.channel,
+                            invert: s.invert,
+                            feather_px: s.feather_px,
+                            choke_px: s.choke_px,
+                        }),
+                        consumed_as_matte: if c.consumed_as_matte { Some(true) } else { None },
                         grade_versions: c.grade_versions.iter().map(|gv| GradeVersionJson {
                             name: gv.name.clone(),
                             node_graph: gv.node_graph.clone(),

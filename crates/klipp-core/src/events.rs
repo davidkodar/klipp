@@ -21,6 +21,15 @@ pub enum VideoParam {
     PositionY,
     Scale,
     Rotation,
+    /// Phase 4D — track-matte feather radius (px). Routed via the
+    /// existing video-keyframe AppCommand machinery so the inspector
+    /// can use the same `ScrubbyParam`/`AddVideoKeyframe`/etc. surface
+    /// it uses for opacity. Stored on the consumer clip (one set of
+    /// keyframes per clip; the clip's `matte_source.feather_px` field
+    /// supplies the default when no keyframes are set).
+    MatteFeather,
+    /// Phase 4D — track-matte choke radius (px). Same routing as above.
+    MatteChoke,
 }
 
 /// HDR transfer characteristic for export. Writes matching color-space tags
@@ -584,6 +593,15 @@ pub enum AppCommand {
         new_b_timeline_in: Timecode,
     },
     SelectClip(Option<ClipId>),
+
+    /// Center the timeline view on the given clip's start. Used by the
+    /// matte-badge "jump to source" gesture (Phase 4A) and any future
+    /// reveal-in-timeline affordance. The handler resolves the clip's
+    /// timeline position to pixels via the current zoom and writes
+    /// `state.timeline_scroll_x` so the next paint draws with the
+    /// clip centred. Silent no-op if the clip-id isn't in the active
+    /// sequence.
+    CenterTimelineOnClip(ClipId),
 
     // Project
     NewProject,
@@ -1169,6 +1187,13 @@ pub enum AppCommand {
         is_ofx: bool,
     },
     SetMattePreview(bool),
+
+    /// Phase 4C — Inspector requests track-matte preview thumbnails for
+    /// the given consumer clip. `None` clears the request. Engine emits
+    /// `AppEvent::MatteMaskReady` per composited frame while a target
+    /// is set; the inspector renders the latest as a small grayscale
+    /// preview in the COMPOSITING section.
+    SetInspectorMattePreviewTarget(Option<ClipId>),
     SetClipLogFormat { clip_id: ClipId, log_format: crate::types::LogFormat },
     /// Auto white balance: analyze current frame and set temperature/tint on the clip's ColorBalance node.
     AutoWhiteBalance { clip_id: ClipId },
@@ -2162,6 +2187,78 @@ pub enum AppCommand {
     /// state after the drag and commit a single EditAudioChain entry
     /// covering the entire gesture.
     EndAudioChainDrag { drag_key: String, clip_id: ClipId },
+
+    // ── Track matte / blend mode ───────────────────────────────────
+    //
+    // Phase 1 of the track-matte feature: the data model + AppCommands
+    // ship now; the render path (Phase 2) and the inspector UX
+    // (Phase 3) read from these on top of an already-stable wire format.
+    //
+    // Channel is passed as a `u8` to keep `klipp-core` free of a
+    // dependency on `klipp-nodes` (where `MatteChannel` lives). The
+    // handler maps via the `matte_channel_from_u8` helper. Same
+    // pattern as `SetExternalMatteChannel`.
+
+    /// Set a clip's compositor blend mode (Normal, Multiply, Screen, …).
+    /// `mode` is the discriminant index into `BlendMode::ALL`.
+    SetClipBlendMode { clip_id: ClipId, mode: crate::types::BlendMode },
+
+    /// Bind another clip as this clip's track matte. The render path
+    /// resolves `source_clip_id`'s rendered RGBA at the same timeline
+    /// time, extracts `channel`, applies `invert`/`feather_px`/`choke_px`,
+    /// and multiplies the consumer clip's alpha by the resulting mask.
+    ///
+    /// The handler rejects:
+    /// * `source_clip_id == clip_id` (self-reference),
+    /// * cycles (A→B→A or longer chains),
+    /// * pointing at an `AdjustmentLayer` (no own pixels),
+    /// * pointing at a non-existent clip in the active sequence.
+    ///
+    /// `consumed_as_matte` on the source clip defaults to `true` (hide
+    /// from visible composite) — matches the dominant NLE expectation
+    /// and what the right-click "Use clip above as matte" gesture
+    /// produces. Clear it via `SetClipConsumedAsMatte` if a creative
+    /// effect requires the matte source to stay visible.
+    SetClipMatte {
+        clip_id: ClipId,
+        source_clip_id: ClipId,
+        /// 0=Alpha, 1=Luminance, 2=Red, 3=Green, 4=Blue. Mirrors the
+        /// `klipp_nodes::params::MatteChannel` discriminant order.
+        channel: u8,
+        invert: bool,
+        feather_px: f32,
+        choke_px: f32,
+    },
+
+    /// Remove a clip's track-matte binding. If the source clip's
+    /// `consumed_as_matte` was set only because of this binding, clear
+    /// that too so the source returns to the visible composite. The
+    /// handler walks the sequence to check for other consumers.
+    ClearClipMatte { clip_id: ClipId },
+
+    /// Toggle the "hide matte source from visible composite" flag on a
+    /// clip. Default behaviour when bound via `SetClipMatte` is `true`;
+    /// pros can flip this to keep the matte source visible for
+    /// debugging or unusual creative effects.
+    SetClipConsumedAsMatte { clip_id: ClipId, consumed: bool },
+
+    /// Phase 4B — Configure or update the clip's stencil mode. The
+    /// clip's pixels become a mask that multiplies the alpha of every
+    /// clip on a lower track at the same time-range. Channel/invert/
+    /// feather/choke mirror `SetClipMatte` semantics. Stencil clips
+    /// are implicitly hidden from the visible composite (AE convention).
+    SetClipStencil {
+        clip_id: ClipId,
+        /// 0=Alpha, 1=Luminance, 2=Red, 3=Green, 4=Blue.
+        channel: u8,
+        invert: bool,
+        feather_px: f32,
+        choke_px: f32,
+    },
+
+    /// Phase 4B — clear stencil mode on a clip; the clip returns to
+    /// visible composite participation.
+    ClearClipStencil { clip_id: ClipId },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2323,6 +2420,18 @@ pub enum AppEvent {
 
     // Thumbnails
     ThumbnailReady { media_id: MediaId, rgba: Vec<u8>, width: u32, height: u32 },
+
+    /// Phase 4C — track-matte preview thumbnail. Engine emits a tiny
+    /// grayscale RGBA snapshot of the resolved mask for whichever clip
+    /// the inspector currently has open. Emitted at most once per
+    /// composited frame; ~80×45 px, < 15 KB. Cleared when the consumer
+    /// no longer has an active matte source (event omitted entirely).
+    MatteMaskReady {
+        consumer_clip_id: ClipId,
+        rgba: Vec<u8>,
+        width: u32,
+        height: u32,
+    },
 
     // Audio conforming
     AudioConformStarted { media_id: MediaId },

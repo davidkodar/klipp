@@ -31,6 +31,8 @@ impl CurveParam {
             CurveParam::Video(VideoParam::PositionY) => "Position Y".into(),
             CurveParam::Video(VideoParam::Scale) => "Scale".into(),
             CurveParam::Video(VideoParam::Rotation) => "Rotation".into(),
+            CurveParam::Video(VideoParam::MatteFeather) => "Matte Feather".into(),
+            CurveParam::Video(VideoParam::MatteChoke) => "Matte Choke".into(),
             CurveParam::Speed => "Speed".into(),
             CurveParam::Effect(key) => {
                 if let Some((_idx, name)) = key.split_once(':') {
@@ -65,6 +67,8 @@ impl CurveParam {
             CurveParam::Video(VideoParam::PositionY) => (-1080.0, 1080.0, 0.0),
             CurveParam::Video(VideoParam::Scale) => (0.0, 4.0, 1.0),
             CurveParam::Video(VideoParam::Rotation) => (-360.0, 360.0, 0.0),
+            CurveParam::Video(VideoParam::MatteFeather) => (0.0, 50.0, 0.0),
+            CurveParam::Video(VideoParam::MatteChoke) => (0.0, 50.0, 0.0),
             CurveParam::Speed => (0.1, 4.0, 1.0),
             CurveParam::Effect(_) => (0.0, 1.0, 0.5),
             CurveParam::AudioEffect(key) => {
@@ -414,6 +418,8 @@ impl CurveEditorPanel {
                     CurveParam::Video(VideoParam::PositionY) => clip.transform_pos_y_keyframes.clone(),
                     CurveParam::Video(VideoParam::Scale) => clip.transform_scale_keyframes.clone(),
                     CurveParam::Video(VideoParam::Rotation) => clip.transform_rotation_keyframes.clone(),
+                    CurveParam::Video(VideoParam::MatteFeather) => clip.matte_feather_keyframes.clone(),
+                    CurveParam::Video(VideoParam::MatteChoke) => clip.matte_choke_keyframes.clone(),
                     CurveParam::Speed => clip.speed_keyframes.clone(),
                     CurveParam::Effect(key) => clip.effect_keyframes.get(key).cloned().unwrap_or_default(),
                     CurveParam::AudioEffect(key) => clip.audio_effect_keyframes.get(key).cloned().unwrap_or_default(),

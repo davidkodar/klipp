@@ -9,6 +9,18 @@ wgpu = { workspace = true }
 pollster = { workspace = true }
 tracing = { workspace = true }
 bytemuck = { workspace = true }
+# rayon brings the parallel chunked composite path moved here from
+# klipp-engine in Phase 4G. klipp-core can NOT be a regular dep
+# because klipp-core already depends on klipp-effects (via the
+# `BuiltinEffect` payloads on AppCommand) — we'd close a cycle.
+# Instead `BlendMode` is defined here and re-exported from klipp-core
+# for backward compatibility with existing call-site paths.
+rayon = { workspace = true }
+# `image` powers the u8 RGBA bilinear resize used by the legacy u8
+# composite path (`composite::scale_rgba`). Same crate version as
+# klipp-engine, png-only feature set since PNG is the only format
+# the resize fallback ever sees.
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

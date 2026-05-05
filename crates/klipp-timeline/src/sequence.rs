@@ -466,6 +466,8 @@ impl Track {
             transform_pos_y_keyframes: Vec::new(),
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
+            matte_feather_keyframes: Vec::new(),
+            matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
             effect_keyframes: std::collections::HashMap::new(),
             role: ClipRole::default(),
@@ -477,6 +479,10 @@ impl Track {
             source_rotation: 0,
             enabled: true,
             solo: false,
+            blend_mode: klipp_core::BlendMode::Normal,
+            matte_source: None,
+            matte_stencil: None,
+            consumed_as_matte: false,
             grade_versions: Vec::new(),
             active_grade_version: None,
             multicam_group: None,
@@ -627,6 +633,8 @@ impl Track {
         let (pos_y_a, pos_y_b) = split_kfs(&clip.transform_pos_y_keyframes);
         let (scale_a, scale_b) = split_kfs(&clip.transform_scale_keyframes);
         let (rot_a, rot_b) = split_kfs(&clip.transform_rotation_keyframes);
+        let (mfeath_a, mfeath_b) = split_kfs(&clip.matte_feather_keyframes);
+        let (mchoke_a, mchoke_b) = split_kfs(&clip.matte_choke_keyframes);
 
         // Split effect keyframes at the cut point
         let mut effect_kfs_a = std::collections::HashMap::new();
@@ -698,6 +706,8 @@ impl Track {
             transform_pos_y_keyframes: pos_y_a,
             transform_scale_keyframes: scale_a,
             transform_rotation_keyframes: rot_a,
+            matte_feather_keyframes: mfeath_a,
+            matte_choke_keyframes: mchoke_a,
             clip_markers: markers_a,
             effect_keyframes: effect_kfs_a,
             role: clip.role,
@@ -707,6 +717,10 @@ impl Track {
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
             solo: clip.solo,
+            blend_mode: clip.blend_mode,
+            matte_source: clip.matte_source.clone(),
+            matte_stencil: clip.matte_stencil.clone(),
+            consumed_as_matte: clip.consumed_as_matte,
             grade_versions: clip.grade_versions.clone(),
             active_grade_version: clip.active_grade_version,
             multicam_group: clip.multicam_group,
@@ -749,6 +763,8 @@ impl Track {
             transform_pos_y_keyframes: pos_y_b,
             transform_scale_keyframes: scale_b,
             transform_rotation_keyframes: rot_b,
+            matte_feather_keyframes: mfeath_b,
+            matte_choke_keyframes: mchoke_b,
             clip_markers: markers_b,
             effect_keyframes: effect_kfs_b,
             role: clip.role,
@@ -758,6 +774,10 @@ impl Track {
             source_rotation: clip.source_rotation,
             enabled: clip.enabled,
             solo: clip.solo,
+            blend_mode: clip.blend_mode,
+            matte_source: clip.matte_source.clone(),
+            matte_stencil: clip.matte_stencil.clone(),
+            consumed_as_matte: clip.consumed_as_matte,
             grade_versions: clip.grade_versions.clone(),
             active_grade_version: clip.active_grade_version,
             multicam_group: clip.multicam_group,
@@ -835,6 +855,92 @@ pub struct ClipMarker {
     pub color: MarkerColor,
 }
 
+/// Binds another timeline clip as the alpha/luma source ("track matte") for
+/// the clip that owns this binding. The render path resolves
+/// `source_clip_id`'s rendered RGBA at the same timeline time, extracts the
+/// chosen `channel`, applies `invert`/`feather_px`/`choke_px`, and multiplies
+/// the consumer clip's alpha by the resulting mask before compositing.
+///
+/// The matte source clip is rendered as a normal clip; whether it is also
+/// shown in the visible composite is controlled by the source clip's
+/// `consumed_as_matte` flag, not by this binding (so a single matte source
+/// can drive multiple consumers and one consumer can keep the source visible
+/// for debugging).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MatteBinding {
+    /// Which clip's rendered output drives this matte. Validated at bind
+    /// time: must not be self, must not introduce a cycle.
+    pub source_clip_id: ClipId,
+    /// Which channel of the source becomes the mask signal.
+    #[serde(default)]
+    pub channel: klipp_nodes::params::MatteChannel,
+    /// Invert the mask (mask = 1 - mask) after channel extraction.
+    #[serde(default)]
+    pub invert: bool,
+    /// Soften the mask edges by this radius in pixels. 0 = hard edge.
+    /// Applied as a Gaussian blur on the single-channel mask only.
+    #[serde(default)]
+    pub feather_px: f32,
+    /// Erode the mask by this radius in pixels (negative-feather). 0 = no
+    /// choke. Used by retouchers to tighten chromakey edges.
+    #[serde(default)]
+    pub choke_px: f32,
+}
+
+impl MatteBinding {
+    /// Build a default binding pointing at `source_clip_id`. Defaults match
+    /// the "easy path" UX: Luminance channel, not inverted, no feather/choke.
+    pub fn new(source_clip_id: ClipId) -> Self {
+        Self {
+            source_clip_id,
+            channel: klipp_nodes::params::MatteChannel::default(),
+            invert: false,
+            feather_px: 0.0,
+            choke_px: 0.0,
+        }
+    }
+}
+
+/// Phase 4B — stencil settings on a clip. When set, the owning clip's
+/// rendered RGBA acts as a mask that multiplies the alpha of EVERY
+/// clip on a lower track at the same timeline time. The stencil clip
+/// itself is implicitly hidden from the visible composite (AE
+/// convention — the stencil composite mode replaces the layer's own
+/// visibility with its mask role).
+///
+/// Distinct from `MatteBinding` (the consumer-side bind) so the two
+/// can coexist on the same clip with different settings: e.g. a clip
+/// could be both stencil-source for everything below AND have its
+/// own alpha masked by a separate clip above.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StencilSettings {
+    /// Which channel of the stencil clip's RGBA becomes the mask.
+    #[serde(default)]
+    pub channel: klipp_nodes::params::MatteChannel,
+    /// Invert the mask (mask = 1 - mask).
+    #[serde(default)]
+    pub invert: bool,
+    /// Soften the edges (Gaussian blur radius, px).
+    #[serde(default)]
+    pub feather_px: f32,
+    /// Erode the mask (px).
+    #[serde(default)]
+    pub choke_px: f32,
+}
+
+impl Default for StencilSettings {
+    fn default() -> Self {
+        Self {
+            channel: klipp_nodes::params::MatteChannel::default(),
+            invert: false,
+            feather_px: 0.0,
+            choke_px: 0.0,
+        }
+    }
+}
+
+fn default_blend_mode() -> klipp_core::BlendMode { klipp_core::BlendMode::Normal }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Clip {
     pub id: ClipId,
@@ -902,6 +1008,15 @@ pub struct Clip {
     pub transform_scale_keyframes: Vec<klipp_core::Keyframe>,
     #[serde(default)]
     pub transform_rotation_keyframes: Vec<klipp_core::Keyframe>,
+    /// Phase 4D — track-matte feather radius keyframes (px). Empty
+    /// for the common case (constant feather); evaluated against
+    /// `matte_source.feather_px` as the fallback.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matte_feather_keyframes: Vec<klipp_core::Keyframe>,
+    /// Phase 4D — track-matte choke radius keyframes (px). Same
+    /// fallback contract as `matte_feather_keyframes`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matte_choke_keyframes: Vec<klipp_core::Keyframe>,
     /// Per-clip markers at specific times within the clip.
     #[serde(default)]
     pub clip_markers: Vec<ClipMarker>,
@@ -932,6 +1047,30 @@ pub struct Clip {
     /// Solo: when true, only this clip's audio plays on its track (others muted).
     #[serde(default)]
     pub solo: bool,
+    /// Per-clip blend mode for the visible composite. Default `Normal` keeps
+    /// existing behaviour; the engine and export compositors are wired for
+    /// all 13 modes already, just hard-coded to Normal at the call sites.
+    #[serde(default = "default_blend_mode")]
+    pub blend_mode: klipp_core::BlendMode,
+    /// Track-matte binding: another clip's rendered RGBA drives this clip's
+    /// alpha mask. `None` = no matte (default). Render path multiplies this
+    /// clip's source alpha by the resolved mask before blending.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte_source: Option<MatteBinding>,
+    /// Phase 4B — stencil mode: this clip's pixels mask EVERY clip on a
+    /// lower track at the same timeline time. Implicit visibility-hide
+    /// (the stencil clip itself only contributes as mask, not as
+    /// visible pixels). `None` = not a stencil (default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte_stencil: Option<StencilSettings>,
+    /// True when this clip is being used as a matte source by another clip
+    /// AND the user wants it hidden from the visible composite (the
+    /// "Hide matte source" inspector toggle, default on). When false, the
+    /// clip renders both as a matte input and as a visible layer — useful
+    /// for matte debugging or rare creative effects. The render path still
+    /// renders the clip either way; this flag only gates the visible blend.
+    #[serde(default)]
+    pub consumed_as_matte: bool,
     /// Named grade versions. Each is a complete NodeGraph snapshot.
     /// The active grade is always `node_graph` — versions are stored copies.
     #[serde(default)]
@@ -1184,6 +1323,8 @@ impl Clip {
             transform_pos_y_keyframes: Vec::new(),
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
+            matte_feather_keyframes: Vec::new(),
+            matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
             effect_keyframes: std::collections::HashMap::new(),
             role: ClipRole::default(),
@@ -1193,6 +1334,10 @@ impl Clip {
             source_rotation: 0,
             enabled: true,
             solo: false,
+            blend_mode: klipp_core::BlendMode::Normal,
+            matte_source: None,
+            matte_stencil: None,
+            consumed_as_matte: false,
             grade_versions: Vec::new(),
             active_grade_version: None,
             multicam_group: None,
@@ -1245,6 +1390,8 @@ impl Clip {
             transform_pos_y_keyframes: Vec::new(),
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
+            matte_feather_keyframes: Vec::new(),
+            matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
             effect_keyframes: std::collections::HashMap::new(),
             role: ClipRole::default(),
@@ -1254,6 +1401,10 @@ impl Clip {
             source_rotation: 0,
             enabled: true,
             solo: false,
+            blend_mode: klipp_core::BlendMode::Normal,
+            matte_source: None,
+            matte_stencil: None,
+            consumed_as_matte: false,
             grade_versions: Vec::new(),
             active_grade_version: None,
             multicam_group: None,
@@ -1305,6 +1456,8 @@ impl Clip {
             transform_pos_y_keyframes: Vec::new(),
             transform_scale_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
+            matte_feather_keyframes: Vec::new(),
+            matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
             effect_keyframes: std::collections::HashMap::new(),
             role: ClipRole::default(),
@@ -1314,6 +1467,10 @@ impl Clip {
             source_rotation: 0,
             enabled: true,
             solo: false,
+            blend_mode: klipp_core::BlendMode::Normal,
+            matte_source: None,
+            matte_stencil: None,
+            consumed_as_matte: false,
             grade_versions: Vec::new(),
             active_grade_version: None,
             multicam_group: None,
@@ -1451,6 +1608,80 @@ mod tests {
         let mut t = Track::new("V1", TrackKind::Video);
         t.clips = clips;
         t
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    // Track-matte data model (Phase 1)
+    // ═════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn matte_binding_default_constructor_uses_safe_defaults() {
+        // The "easy path" UX produces a binding with these defaults; if
+        // they shift the right-click "Use clip above as matte" gesture
+        // changes meaning silently. Pin them.
+        let src = ClipId::new();
+        let b = MatteBinding::new(src);
+        assert_eq!(b.source_clip_id, src);
+        assert_eq!(b.channel, klipp_nodes::params::MatteChannel::Luminance);
+        assert!(!b.invert);
+        assert!((b.feather_px - 0.0).abs() < f32::EPSILON);
+        assert!((b.choke_px - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn matte_binding_round_trips_through_serde() {
+        let src = ClipId::new();
+        let b = MatteBinding {
+            source_clip_id: src,
+            channel: klipp_nodes::params::MatteChannel::Alpha,
+            invert: true,
+            feather_px: 4.5,
+            choke_px: 1.25,
+        };
+        let json = serde_json::to_string(&b).expect("serialise MatteBinding");
+        let back: MatteBinding = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(back, b);
+    }
+
+    #[test]
+    fn clip_default_blend_mode_is_normal_and_no_matte() {
+        let c = Clip::media(MediaId::new(), tc(0), tc(24), tc(0), tc(24));
+        assert_eq!(c.blend_mode, klipp_core::BlendMode::Normal);
+        assert!(c.matte_source.is_none());
+        assert!(!c.consumed_as_matte);
+    }
+
+    #[test]
+    fn blade_at_propagates_blend_and_matte_to_both_halves() {
+        // Splitting a clip should preserve its blend_mode + matte
+        // binding + consumed_as_matte on both halves — anything else
+        // would silently break compositing at every blade. Hit this
+        // before someone special-cases one of the new fields and not
+        // the others.
+        let mut c = make_clip(0, 24, 0, 24);
+        c.blend_mode = klipp_core::BlendMode::Multiply;
+        let src = ClipId::new();
+        c.matte_source = Some(MatteBinding {
+            source_clip_id: src,
+            channel: klipp_nodes::params::MatteChannel::Alpha,
+            invert: true,
+            feather_px: 3.0,
+            choke_px: 0.5,
+        });
+        c.consumed_as_matte = true;
+        let id = c.id;
+        let mut track = make_track(vec![c]);
+
+        let (a, b) = track.blade_at(id, tc(12)).expect("split");
+        for half in [&a, &b] {
+            assert_eq!(half.blend_mode, klipp_core::BlendMode::Multiply);
+            assert!(half.consumed_as_matte);
+            let binding = half.matte_source.as_ref().expect("binding survived split");
+            assert_eq!(binding.source_clip_id, src);
+            assert_eq!(binding.channel, klipp_nodes::params::MatteChannel::Alpha);
+            assert!(binding.invert);
+            assert!((binding.feather_px - 3.0).abs() < f32::EPSILON);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════

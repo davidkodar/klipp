@@ -204,7 +204,7 @@ fn normal_blend_half_alpha_red_over_black_is_half_red_linear() {
     // (0.5, 0, 0). The sRGB version gave ≈ 0.73 linear (visibly
     // brighter than physics), which manifested as dark edges and
     // gamma banding on every soft transition.
-    use klipp_engine::composite::blend_layer_linear;
+    use klipp_effects::composite::blend_layer_linear;
     let mut dst = vec![0.0_f32, 0.0, 0.0, 1.0];
     let src = vec![1.0_f32, 0.0, 0.0, 1.0];
     blend_layer_linear(&mut dst, &src, 0.5, klipp_core::BlendMode::Normal);
@@ -217,7 +217,7 @@ fn multiply_blend_self_is_square_linear() {
     // Multiply: 0.5 × 0.5 = 0.25 linear. The sRGB version gave
     // ~0.137 linear (much too dark), which is why every "Multiply"
     // composite in sRGB engines crushes shadows.
-    use klipp_engine::composite::blend_layer_linear;
+    use klipp_effects::composite::blend_layer_linear;
     let mut dst = vec![0.5_f32, 0.5, 0.5, 1.0];
     let src = vec![0.5_f32, 0.5, 0.5, 1.0];
     blend_layer_linear(&mut dst, &src, 1.0, klipp_core::BlendMode::Multiply);

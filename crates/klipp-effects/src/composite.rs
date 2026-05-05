@@ -1,4 +1,4 @@
-use klipp_core::BlendMode;
+use crate::BlendMode;
 use rayon::prelude::*;
 
 pub struct CompositeLayer {
@@ -173,7 +173,7 @@ fn burn_ch(base: f32, blend: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use klipp_core::BlendMode;
+    use crate::BlendMode;
 
     /// Make a single-pixel RGBA buffer.
     fn pixel(r: u8, g: u8, b: u8, a: u8) -> Vec<u8> {
@@ -689,7 +689,7 @@ mod tests {
     // Viewer per-clip effects regression tests
     //
     // These exercise the same math the viewer uses: apply effects per-clip
-    // via klipp_effects::apply_effects(), then composite via composite_layers().
+    // via crate::apply_effects(), then composite via composite_layers().
     // They don't require the full engine — just the public effect and composite APIs.
     // ═══════════════════════════════════════════════════════════════════
 
@@ -698,17 +698,17 @@ mod tests {
     }
 
     /// Test bridge: u8-in, u8-out wrapper around the post-refactor
-    /// linear-f32 `klipp_effects::apply_effects`. Keeps these viewer
+    /// linear-f32 `crate::apply_effects`. Keeps these viewer
     /// regression tests meaningful without rewriting each assertion.
     fn apply_effects_u8(
-        effects: &[klipp_effects::BuiltinEffect],
+        effects: &[crate::BuiltinEffect],
         rgba: Vec<u8>,
         w: u32,
         h: u32,
     ) -> Vec<u8> {
-        let linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&rgba);
-        let out = klipp_effects::apply_effects(effects, linear, w, h);
-        klipp_effects::linear_f32_rgba_to_srgb_u8(&out)
+        let linear = crate::srgb_u8_to_linear_f32_rgba(&rgba);
+        let out = crate::apply_effects(effects, linear, w, h);
+        crate::linear_f32_rgba_to_srgb_u8(&out)
     }
 
     /// Viewer flow: V1 graded + V2 graded → composite.
@@ -722,7 +722,7 @@ mod tests {
         // V1: solid red → grayscale via HSVAdjust(sat=0)
         let v1_raw = solid_frame(255, 0, 0, 255, w, h);
         let v1_graded = apply_effects_u8(
-            &[klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }],
+            &[crate::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }],
             v1_raw, w, h,
         );
         // V1 should now be grayscale: R≈G≈B
@@ -732,7 +732,7 @@ mod tests {
         // V2: solid blue → half brightness via HSVAdjust(value=0.5)
         let v2_raw = solid_frame(0, 0, 255, 255, w, h);
         let v2_graded = apply_effects_u8(
-            &[klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 1.0, value: 0.5 }],
+            &[crate::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 1.0, value: 0.5 }],
             v2_raw, w, h,
         );
         // V2 should be half-brightness blue: B≈128
@@ -759,7 +759,7 @@ mod tests {
         let h = 4u32;
 
         let v1_graded = apply_effects_u8(
-            &[klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }],
+            &[crate::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }],
             solid_frame(255, 0, 0, 255, w, h), w, h,
         );
         let v2_raw = solid_frame(0, 255, 0, 255, w, h); // green, no effects
@@ -786,12 +786,12 @@ mod tests {
 
         // V1: red → grayscale
         let v1 = apply_effects_u8(
-            &[klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }],
+            &[crate::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 0.0, value: 1.0 }],
             solid_frame(255, 0, 0, 255, w, h), w, h,
         );
         // V2: green → half brightness
         let v2 = apply_effects_u8(
-            &[klipp_effects::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 1.0, value: 0.5 }],
+            &[crate::BuiltinEffect::HSVAdjust { hue_shift: 0.0, saturation: 1.0, value: 0.5 }],
             solid_frame(0, 255, 0, 255, w, h), w, h,
         );
         // V3: blue → no effect (passthrough)
@@ -1087,7 +1087,7 @@ pub struct CompositeLayerLinear {
 #[cfg(test)]
 mod linear_compositor_tests {
     use super::*;
-    use klipp_core::BlendMode;
+    use crate::BlendMode;
 
     fn px(r: f32, g: f32, b: f32, a: f32) -> Vec<f32> {
         vec![r, g, b, a]

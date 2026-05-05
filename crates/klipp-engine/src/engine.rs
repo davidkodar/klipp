@@ -956,6 +956,13 @@ pub struct PlaybackEngine {
     pub compare_effect_is_ofx: bool,
     // Matte preview — when true, show B&W qualifier/mask matte instead of graded frame
     matte_preview: bool,
+    /// Phase 4C — Inspector's currently-displayed matte consumer.
+    /// While set, after each composited frame the engine emits an
+    /// `AppEvent::MatteMaskReady` with the resolved single-channel
+    /// mask downsampled to ~80×45 px so the inspector preview tile
+    /// stays in sync with what the user is grading. `None` = no
+    /// preview wanted (default).
+    inspector_matte_preview_target: Option<klipp_core::ClipId>,
     // Scope tap — which node's output to capture for scope display
     scope_tap_node: Option<klipp_nodes::NodeId>,
     /// V2 canvas "nodes visible right now" set — the executor
@@ -1389,6 +1396,7 @@ impl PlaybackEngine {
             compare_effect_index: 0,
             compare_effect_is_ofx: false,
             matte_preview: false,
+            inspector_matte_preview_target: None,
             scope_tap_node: None,
             visible_node_thumbs: std::collections::HashSet::new(),
             thumb_capture_suspended: false,
@@ -2283,6 +2291,11 @@ impl PlaybackEngine {
                     self.matte_preview_node = None;
                 }
                 debug!("Matte preview: {}", self.matte_preview);
+            }
+
+            AppCommand::SetInspectorMattePreviewTarget(target) => {
+                self.inspector_matte_preview_target = target;
+                debug!("Inspector matte preview target: {:?}", target);
             }
 
             AppCommand::SetScopeRenderMode { mode } => {
@@ -3931,11 +3944,32 @@ impl PlaybackEngine {
         // Every layer is already linear (post_process_rgba, apply_clip_
         // effects, and LinearFrame all speak linear now), so we blend
         // without any u8⇄linear seams in the hot loop.
+        //
+        // Phase 2 of track matte adds two structural wrinkles:
+        // 1. Per-clip `blend_mode` is now honoured (was hard-coded
+        //    Normal at every blend site).
+        // 2. Track-matte resolution: any clip with `matte_source` reads
+        //    its source's already-graded linear-f32 buffer from the
+        //    `graded_layers` cache, derives a single-channel mask, and
+        //    multiplies its own alpha by the mask before blending. The
+        //    cache is only populated for clips that are *referenced as
+        //    matte sources by someone else in this frame* — empty in
+        //    the no-matte common case so the existing fast path keeps
+        //    its memory profile.
         let t_composite_full = std::time::Instant::now();
         let t_composite = std::time::Instant::now();
         let v1_opacity = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             seq.tracks.get(self.current_track_index).map(|t| t.opacity).unwrap_or(1.0)
+        };
+
+        // Capture V1's currently-active clip alongside opacity. Needed so
+        // V1 can be both a matte source (other clip references V1's clip
+        // id) and a matte consumer (V1 itself has matte_source set).
+        let v1_clip: Option<klipp_timeline::Clip> = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            seq.tracks.get(self.current_track_index)
+                .and_then(|t| t.clip_at_timecode(self.playhead).map(|(_, c)| c.clone()))
         };
 
         // Gather overlay clip data while holding the sequence lock, then drop
@@ -3957,6 +3991,56 @@ impl PlaybackEngine {
             }).collect()
         };
 
+        // Phase 2 — track matte: build the set of clip-ids that are
+        // referenced as matte sources by SOME clip active in this
+        // frame. Empty in the dominant no-matte case; the cache below
+        // stays empty too and the rest of the path runs unchanged.
+        let matte_source_ids: std::collections::HashSet<klipp_core::ClipId> = {
+            let mut s = std::collections::HashSet::new();
+            for (_, _, c) in &overlay_clip_data {
+                if let Some(c) = c {
+                    if let Some(b) = c.matte_source.as_ref() {
+                        s.insert(b.source_clip_id);
+                    }
+                    // Phase 4B — stencil clips' own pixels also need
+                    // to be cached so lower clips can read them as
+                    // mask sources.
+                    if c.matte_stencil.is_some() {
+                        s.insert(c.id);
+                    }
+                }
+            }
+            if let Some(c) = &v1_clip {
+                if let Some(b) = c.matte_source.as_ref() {
+                    s.insert(b.source_clip_id);
+                }
+                if c.matte_stencil.is_some() {
+                    s.insert(c.id);
+                }
+            }
+            s
+        };
+
+        // Phase 4B — collect stencil clips with their track index so
+        // the composite loop can apply their masks to clips on lower
+        // tracks. Track index is taken from the iteration position;
+        // V1 sits "below" all overlays (track index = primary).
+        let mut stencil_clips: Vec<(usize, klipp_core::ClipId, klipp_timeline::StencilSettings, f64)> = Vec::new();
+        for (track_idx, _, c) in &overlay_clip_data {
+            if let Some(c) = c {
+                if let Some(s) = c.matte_stencil.as_ref() {
+                    let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
+                    stencil_clips.push((*track_idx, c.id, s.clone(), clip_time));
+                }
+            }
+        }
+        if let Some(c) = &v1_clip {
+            if let Some(s) = c.matte_stencil.as_ref() {
+                let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
+                stencil_clips.push((self.current_track_index, c.id, s.clone(), clip_time));
+            }
+        }
+
         // Reuse the pooled linear scratch buffer across frames.
         let pixel_count = (final_w * final_h) as usize;
         let needed_f = pixel_count * 4;
@@ -3975,97 +4059,267 @@ impl PlaybackEngine {
         let mut ov_resize_us: u128 = 0;
         let mut ov_blend_us: u128 = 0;
 
+        // Per-clip post-effects buffer cache for matte resolution.
+        // Keyed by clip-id, stores the graded linear-f32 RGBA at the
+        // sequence's final resolution. Populated lazily during the
+        // pre-render pass below — only for clips in `matte_source_ids`.
+        let mut graded_layers: std::collections::HashMap<klipp_core::ClipId, Vec<f32>> =
+            std::collections::HashMap::new();
+
+        // Cache V1 first (cheap clone only when V1 is itself a matte
+        // source for some overlay in this frame).
+        if let Some(c) = &v1_clip {
+            if matte_source_ids.contains(&c.id) {
+                graded_layers.insert(c.id, v1_graded_linear.clone());
+            }
+        }
+
+        // Pre-render pass: grade every overlay's frame to final
+        // resolution. Stores the graded buffer in two places:
+        // * `pre_rendered` — the per-layer entry the composite loop
+        //   consumes, in track order.
+        // * `graded_layers` — the matte-source cache, only for clips
+        //   referenced by a consumer.
+        struct PreRenderedLayer {
+            track_idx: usize,
+            effective: f32,
+            clip: Option<klipp_timeline::Clip>,
+            // None for AdjustmentLayer (no own pixels) and for clips
+            // whose overlay frame is missing this tick.
+            graded: Option<Vec<f32>>,
+        }
+        let mut pre_rendered: Vec<PreRenderedLayer> = Vec::with_capacity(overlay_clip_data.len());
+        for (track_idx, effective, clip) in &overlay_clip_data {
+            // AdjustmentLayer: no own pixels, no pre-render.
+            if matches!(clip.as_ref().map(|c| &c.kind), Some(klipp_timeline::ClipKind::AdjustmentLayer)) {
+                pre_rendered.push(PreRenderedLayer {
+                    track_idx: *track_idx,
+                    effective: *effective,
+                    clip: clip.clone(),
+                    graded: None,
+                });
+                continue;
+            }
+            let Some(ov_frame) = self.overlay_frames.get(track_idx) else {
+                pre_rendered.push(PreRenderedLayer {
+                    track_idx: *track_idx,
+                    effective: *effective,
+                    clip: clip.clone(),
+                    graded: None,
+                });
+                continue;
+            };
+            let (ov_w, ov_h) = (ov_frame.width, ov_frame.height);
+            let t_clone = std::time::Instant::now();
+            let mut ov_linear = ov_frame.data.clone();
+            ov_clone_us += t_clone.elapsed().as_micros();
+            if let Some(c) = clip {
+                let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
+                let t_grade = std::time::Instant::now();
+                ov_linear = self.apply_clip_effects(ov_linear, ov_w, ov_h, c, clip_time);
+                ov_grade_us += t_grade.elapsed().as_micros();
+            }
+            let src_linear = if ov_w == final_w && ov_h == final_h {
+                ov_linear
+            } else {
+                // P-4: linear-light bilinear resize, gamma-correct.
+                let t_resize = std::time::Instant::now();
+                let out = crate::grade_resample::upsample_linear_bilinear(
+                    &ov_linear, ov_w, ov_h, final_w, final_h,
+                );
+                ov_resize_us += t_resize.elapsed().as_micros();
+                out
+            };
+            // Cache for matte lookups before moving into pre_rendered.
+            // Conditional clone — only pay the bandwidth when someone
+            // else's matte_source actually points at this clip.
+            if let Some(c) = clip {
+                if matte_source_ids.contains(&c.id) {
+                    graded_layers.insert(c.id, src_linear.clone());
+                }
+            }
+            pre_rendered.push(PreRenderedLayer {
+                track_idx: *track_idx,
+                effective: *effective,
+                clip: clip.clone(),
+                graded: Some(src_linear),
+            });
+        }
+
         // Blend V1 (always the first layer) onto the zero canvas. V1
         // already comes back from post_process_rgba as linear f32.
+        // V1 honours its own clip.blend_mode (default Normal); against
+        // a zero canvas Normal is the only mode that produces an
+        // intuitive result, but a user override is respected for
+        // round-trip predictability with project files.
         let v1_blend_us: u128 = {
             let t_blend = std::time::Instant::now();
-            crate::composite::blend_layer_linear(
-                &mut accumulated_linear,
-                &v1_graded_linear,
-                v1_opacity,
-                klipp_core::BlendMode::Normal,
-            );
+            // Phase 2: V1 may itself be a matte consumer. Apply mask
+            // to a clone (so the cached `graded_layers` entry, if any,
+            // stays unmasked for downstream consumers). Cheap: only
+            // clones when V1 has matte_source set (uncommon).
+            let v1_blend_mode = v1_clip.as_ref().map(|c| c.blend_mode).unwrap_or(klipp_core::BlendMode::Normal);
+            let v1_matte = v1_clip.as_ref().and_then(|c| c.matte_source.as_ref());
+            if v1_matte.is_some() || stencil_clips.iter().any(|(t, id, _, _)| *t > self.current_track_index && Some(*id) != v1_clip.as_ref().map(|c| c.id)) {
+                let mut v1_masked = v1_graded_linear.clone();
+                // Phase 4B — apply every stencil ABOVE V1 (which is
+                // every stencil overlay in this frame).
+                if let Some(c) = &v1_clip {
+                    for (st_track_idx, st_clip_id, st_settings, _) in &stencil_clips {
+                        if *st_track_idx <= self.current_track_index { continue; }
+                        if *st_clip_id == c.id { continue; }
+                        let pseudo_binding = klipp_timeline::MatteBinding {
+                            source_clip_id: *st_clip_id,
+                            channel: st_settings.channel,
+                            invert: st_settings.invert,
+                            feather_px: st_settings.feather_px,
+                            choke_px: st_settings.choke_px,
+                        };
+                        Self::apply_track_matte_linear(
+                            &mut v1_masked, &graded_layers, &pseudo_binding, final_w, final_h,
+                        );
+                    }
+                }
+                if let Some(binding) = v1_matte {
+                    // Phase 4D — same kf evaluation as the overlay path.
+                    let v1_clip_time = v1_clip.as_ref()
+                        .map(|c| (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0))
+                        .unwrap_or(0.0);
+                    let effective = klipp_timeline::MatteBinding {
+                        source_clip_id: binding.source_clip_id,
+                        channel: binding.channel,
+                        invert: binding.invert,
+                        feather_px: v1_clip.as_ref()
+                            .map(|c| klipp_core::keyframe::evaluate(&c.matte_feather_keyframes, v1_clip_time, binding.feather_px))
+                            .unwrap_or(binding.feather_px),
+                        choke_px: v1_clip.as_ref()
+                            .map(|c| klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, v1_clip_time, binding.choke_px))
+                            .unwrap_or(binding.choke_px),
+                    };
+                    Self::apply_track_matte_linear(
+                        &mut v1_masked, &graded_layers, &effective, final_w, final_h,
+                    );
+                    if let Some(c) = &v1_clip {
+                        if self.inspector_matte_preview_target == Some(c.id) {
+                            Self::emit_matte_preview(
+                                &self.event_tx, c.id, &effective, &graded_layers,
+                                final_w, final_h,
+                            );
+                        }
+                    }
+                }
+                klipp_effects::composite::blend_layer_linear(
+                    &mut accumulated_linear, &v1_masked, v1_opacity, v1_blend_mode,
+                );
+            } else {
+                klipp_effects::composite::blend_layer_linear(
+                    &mut accumulated_linear, &v1_graded_linear, v1_opacity, v1_blend_mode,
+                );
+            }
             let el = t_blend.elapsed();
             tracing::trace!("PERF blend_layer pass: {:.3}ms res={final_w}x{final_h} layer=V1", el.as_secs_f64() * 1000.0);
             el.as_micros()
         };
 
-        // Each overlay clip's effects are applied before compositing so every
-        // clip renders with its own colour grade, OFX chain, and builtin effects.
-        // Adjustment layers transform the accumulated composite in-place instead
-        // of blending a new layer on top.
-        for (track_idx, effective, clip) in &overlay_clip_data {
-            if *effective <= 0.001 { continue; }
+        // Composite each overlay onto the accumulated buffer. The
+        // pre-render pass above means matte lookups always hit the
+        // cache (when the source is active in this frame), regardless
+        // of track stacking order — the AE convention "matte clip on
+        // the track DIRECTLY ABOVE" works out of the box.
+        for entry in pre_rendered {
+            if entry.effective <= 0.001 { continue; }
 
             // Adjustment layer: apply its effects directly to the
             // accumulated linear composite — no u8 bookends needed
-            // post-refactor.
-            if let Some(clip) = clip {
-                if matches!(clip.kind, klipp_timeline::ClipKind::AdjustmentLayer) {
-                    let clip_time = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
+            // post-refactor. Phase 2 explicitly does NOT support
+            // matte_source on adjustment layers; the binding (if set)
+            // is silently ignored. Tracked as a future enhancement.
+            if let Some(c) = &entry.clip {
+                if matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) {
+                    let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
                     let pass = std::mem::take(&mut accumulated_linear);
-                    accumulated_linear = self.apply_clip_effects(pass, final_w, final_h, clip, clip_time);
+                    accumulated_linear = self.apply_clip_effects(pass, final_w, final_h, c, clip_time);
                     continue;
+                }
+                // `consumed_as_matte` clips render but never appear in
+                // the visible composite — they exist purely to drive
+                // some other clip's mask via `graded_layers`. Stencil
+                // clips are likewise hidden (AE convention: stencil
+                // mode replaces the layer's own visibility with its
+                // mask role).
+                if c.consumed_as_matte || c.matte_stencil.is_some() { continue; }
+            }
+
+            let Some(mut graded) = entry.graded else { continue; };
+
+            // Phase 4B — apply every stencil that sits ABOVE this
+            // clip (higher track index). Each stencil multiplies the
+            // consumer's alpha by its mask; stacked stencils combine
+            // multiplicatively (intersection of visible regions).
+            if let Some(c) = &entry.clip {
+                let consumer_track = entry.track_idx;
+                for (st_track_idx, st_clip_id, st_settings, _st_time) in &stencil_clips {
+                    if *st_track_idx <= consumer_track { continue; }
+                    if *st_clip_id == c.id { continue; }
+                    let pseudo_binding = klipp_timeline::MatteBinding {
+                        source_clip_id: *st_clip_id,
+                        channel: st_settings.channel,
+                        invert: st_settings.invert,
+                        feather_px: st_settings.feather_px,
+                        choke_px: st_settings.choke_px,
+                    };
+                    Self::apply_track_matte_linear(
+                        &mut graded, &graded_layers, &pseudo_binding, final_w, final_h,
+                    );
                 }
             }
 
-            // Regular clip: grade its linear frame and blend onto
-            // accumulated linear. Dimensions-mismatch scaling is the
-            // one remaining u8 seam inside the compositor because
-            // `image::imageops::resize` is u8-only — pay the round-
-            // trip only when an overlay's source doesn't already
-            // match the sequence size.
-            if let Some(ov_frame) = self.overlay_frames.get(track_idx) {
-                let (ov_w, ov_h) = (ov_frame.width, ov_frame.height);
-                // `overlay_frames` now stores linear f32 RGBA directly —
-                // no u8↔linear round-trip on the hot path. Clone the
-                // pixel buffer once so downstream effects/blend can own
-                // it; the map keeps its authoritative copy for the
-                // next frame.
-                let t_clone = std::time::Instant::now();
-                let mut ov_linear = ov_frame.data.clone();
-                ov_clone_us += t_clone.elapsed().as_micros();
-                if let Some(clip) = clip {
-                    let clip_time = (self.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).max(0.0);
-                    let t_grade = std::time::Instant::now();
-                    ov_linear = self.apply_clip_effects(ov_linear, ov_w, ov_h, clip, clip_time);
-                    ov_grade_us += t_grade.elapsed().as_micros();
-                }
-                let src_linear = if ov_w == final_w && ov_h == final_h {
-                    ov_linear
-                } else {
-                    // P-4: linear-light bilinear resize. Replaces the
-                    // earlier linear → u8 → image::imageops::resize →
-                    // u8 → linear round-trip, which paid two whole-frame
-                    // float↔u8 conversions and processed in sRGB-encoded
-                    // u8 (gamma-incorrect filtering at the bilinear taps)
-                    // purely because `image::imageops::resize` is u8-only.
-                    // `upsample_linear_bilinear` is direction-agnostic
-                    // (its doc calls out arbitrary output dimensions) and
-                    // does the same Triangle-filter math the old path
-                    // used, just in linear f32 — so output is at-worst
-                    // bit-comparable and at-best gamma-correct.
-                    let t_resize = std::time::Instant::now();
-                    let out = crate::grade_resample::upsample_linear_bilinear(
-                        &ov_linear, ov_w, ov_h, final_w, final_h,
+            // Track-matte resolution: if this clip points at another
+            // clip as its matte source, multiply our own alpha by the
+            // resolved single-channel mask before blending.
+            if let Some(c) = &entry.clip {
+                if let Some(binding) = c.matte_source.as_ref() {
+                    // Phase 4D — evaluate feather/choke keyframes at
+                    // the consumer's clip-time. Empty kfs fall through
+                    // to the binding's static value, so the no-keyframe
+                    // case is byte-identical to Phase 2 behaviour.
+                    let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
+                    let effective = klipp_timeline::MatteBinding {
+                        source_clip_id: binding.source_clip_id,
+                        channel: binding.channel,
+                        invert: binding.invert,
+                        feather_px: klipp_core::keyframe::evaluate(&c.matte_feather_keyframes, clip_time, binding.feather_px),
+                        choke_px: klipp_core::keyframe::evaluate(&c.matte_choke_keyframes, clip_time, binding.choke_px),
+                    };
+                    Self::apply_track_matte_linear(
+                        &mut graded, &graded_layers, &effective, final_w, final_h,
                     );
-                    ov_resize_us += t_resize.elapsed().as_micros();
-                    out
-                };
-                let t_blend = std::time::Instant::now();
-                crate::composite::blend_layer_linear(
-                    &mut accumulated_linear,
-                    &src_linear,
-                    *effective,
-                    klipp_core::BlendMode::Normal,
-                );
-                let el = t_blend.elapsed();
-                ov_blend_us += el.as_micros();
-                tracing::trace!(
-                    "PERF blend_layer pass: {:.3}ms res={final_w}x{final_h} overlay_track={track_idx}",
-                    el.as_secs_f64() * 1000.0,
-                );
+                    // Phase 4C — emit a tiny grayscale preview of this
+                    // mask if the inspector is currently watching it.
+                    if self.inspector_matte_preview_target == Some(c.id) {
+                        Self::emit_matte_preview(
+                            &self.event_tx, c.id, &effective, &graded_layers,
+                            final_w, final_h,
+                        );
+                    }
+                }
             }
+
+            let blend_mode = entry.clip.as_ref().map(|c| c.blend_mode).unwrap_or(klipp_core::BlendMode::Normal);
+            let track_idx = entry.track_idx;
+            let t_blend = std::time::Instant::now();
+            klipp_effects::composite::blend_layer_linear(
+                &mut accumulated_linear,
+                &graded,
+                entry.effective,
+                blend_mode,
+            );
+            let el = t_blend.elapsed();
+            ov_blend_us += el.as_micros();
+            tracing::trace!(
+                "PERF blend_layer pass: {:.3}ms res={final_w}x{final_h} overlay_track={track_idx}",
+                el.as_secs_f64() * 1000.0,
+            );
         }
 
         // Run the transition (if any) on the linear-f32 composite
@@ -6563,6 +6817,108 @@ impl PlaybackEngine {
         }
     }
 
+    /// Phase 2 of track-matte: resolve the binding's matte from the
+    /// per-frame `graded_layers` cache and multiply the consumer's
+    /// alpha in-place. When the source clip isn't active in this frame
+    /// (i.e. not in the cache), the consumer's alpha is zeroed so it
+    /// disappears rather than rendering with no mask. Inspector
+    /// surfaces a "matte source missing at this frame" warning in
+    /// Phase 3 for the same case.
+    ///
+    /// Operates on linear-f32 RGBA at the sequence's final resolution
+    /// — the caller pre-resizes both buffers to that geometry, so
+    /// we can extract → feather → multiply without a second resample.
+    /// Phase 4C — re-derive the matte mask for `binding`, downsample
+    /// it to a small grayscale RGBA tile, and ship it to the UI as
+    /// `AppEvent::MatteMaskReady`. Called only when the inspector
+    /// COMPOSITING section is open for this consumer (gated by
+    /// `inspector_matte_preview_target`), so the per-frame cost is
+    /// confined to the active inspector view rather than every clip.
+    ///
+    /// The downsample target is fixed at ≈80×45 px (16:9-ish, matches
+    /// most clip aspect ratios). For non-16:9 sources we letterbox by
+    /// preserving the source aspect — the inspector renders the tile
+    /// inside a fixed-size container, so the underlying bitmap
+    /// dimensions can drift without breaking layout.
+    fn emit_matte_preview(
+        event_tx: &crossbeam_channel::Sender<klipp_core::AppEvent>,
+        consumer_clip_id: klipp_core::ClipId,
+        binding: &klipp_timeline::MatteBinding,
+        graded_layers: &std::collections::HashMap<klipp_core::ClipId, Vec<f32>>,
+        width: u32,
+        height: u32,
+    ) {
+        const PREVIEW_W: u32 = 96;
+        const PREVIEW_H: u32 = 54;
+
+        let Some(source) = graded_layers.get(&binding.source_clip_id) else {
+            return;
+        };
+        let channel = matte_channel_to_effects(binding.channel);
+        let mut mask = klipp_effects::track_matte::extract_mask_linear(source, channel, binding.invert);
+        klipp_effects::track_matte::apply_choke_mask(&mut mask, width, height, binding.choke_px);
+        klipp_effects::track_matte::feather_mask(&mut mask, width, height, binding.feather_px);
+        if mask.len() != (width as usize) * (height as usize) {
+            return;
+        }
+
+        // Nearest-neighbour downsample. The inspector tile is small
+        // enough that the visual difference vs a real low-pass
+        // resample is invisible — and we keep the cost trivial
+        // (~5000 reads per frame at 96×54).
+        let mut rgba = Vec::with_capacity((PREVIEW_W as usize) * (PREVIEW_H as usize) * 4);
+        for ty in 0..PREVIEW_H {
+            for tx in 0..PREVIEW_W {
+                let sx = (tx as u64 * width as u64 / PREVIEW_W as u64) as usize;
+                let sy = (ty as u64 * height as u64 / PREVIEW_H as u64) as usize;
+                let v = mask[sy * width as usize + sx];
+                let g = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                rgba.extend_from_slice(&[g, g, g, 255]);
+            }
+        }
+
+        let _ = event_tx.send(klipp_core::AppEvent::MatteMaskReady {
+            consumer_clip_id,
+            rgba,
+            width: PREVIEW_W,
+            height: PREVIEW_H,
+        });
+    }
+
+    fn apply_track_matte_linear(
+        consumer_linear: &mut [f32],
+        graded_layers: &std::collections::HashMap<klipp_core::ClipId, Vec<f32>>,
+        binding: &klipp_timeline::MatteBinding,
+        width: u32,
+        height: u32,
+    ) {
+        let Some(source) = graded_layers.get(&binding.source_clip_id) else {
+            // Source clip not active in this frame — make the consumer
+            // invisible. Predictable failure beats undefined visuals
+            // when a user rearranges the timeline mid-edit.
+            for chunk in consumer_linear.chunks_exact_mut(4) {
+                chunk[3] = 0.0;
+            }
+            return;
+        };
+        if source.len() != consumer_linear.len() {
+            // Geometry drift — same defensive choice as above.
+            for chunk in consumer_linear.chunks_exact_mut(4) {
+                chunk[3] = 0.0;
+            }
+            return;
+        }
+        let channel = matte_channel_to_effects(binding.channel);
+        let mut mask = klipp_effects::track_matte::extract_mask_linear(source, channel, binding.invert);
+        // Choke before feather so the soft edge of feather sits on top of
+        // the eroded boundary (chromakey clean-up convention: tighten,
+        // then soften). Both no-op at zero radius — common case stays
+        // free.
+        klipp_effects::track_matte::apply_choke_mask(&mut mask, width, height, binding.choke_px);
+        klipp_effects::track_matte::feather_mask(&mut mask, width, height, binding.feather_px);
+        klipp_effects::track_matte::apply_mask_to_alpha_linear(consumer_linear, &mask);
+    }
+
     /// Apply a clip's effects (node graph → builtin effects → OFX) to a decoded frame.
     /// Simplified path for overlay clips — does NOT run scopes, stabilization, comparison
     /// mode, or global LUT. V1 continues to use post_process_rgba_inner() for those.
@@ -7197,7 +7553,7 @@ impl PlaybackEngine {
             // Evaluating here means paused opacity drags update the visible composite.
             let has_overlays = !self.overlay_frames.is_empty();
             let out_u8 = if has_overlays {
-                use crate::composite::{composite_layers_linear, CompositeLayerLinear};
+                use klipp_effects::composite::{composite_layers_linear, CompositeLayerLinear};
                 let mut layers = vec![CompositeLayerLinear {
                     rgba: graded_linear,
                     width: w,
@@ -9533,6 +9889,25 @@ fn detect_rotation(format_ctx: &ffmpeg_next::format::context::Input, stream_inde
         }
     }
     0
+}
+
+/// Bridge `klipp_nodes::params::MatteChannel` (the wire-format enum,
+/// shared with the ExternalMatte node) to the matching enum in
+/// `klipp_effects::track_matte`. The duplication exists because the two
+/// crates can't depend on each other — keeping the conversion local
+/// avoids leaking either crate's type into the other's public surface.
+fn matte_channel_to_effects(
+    ch: klipp_nodes::params::MatteChannel,
+) -> klipp_effects::track_matte::MatteChannel {
+    use klipp_nodes::params::MatteChannel as N;
+    use klipp_effects::track_matte::MatteChannel as E;
+    match ch {
+        N::Alpha => E::Alpha,
+        N::Luminance => E::Luminance,
+        N::Red => E::Red,
+        N::Green => E::Green,
+        N::Blue => E::Blue,
+    }
 }
 
 /// Detect rotation from a file path using ffprobe (catches display matrix side data

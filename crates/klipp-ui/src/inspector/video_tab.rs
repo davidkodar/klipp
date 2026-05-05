@@ -176,6 +176,8 @@ fn show_bin_media_video(
         transform_pos_y_keyframes: Vec::new(),
         transform_scale_keyframes: Vec::new(),
         transform_rotation_keyframes: Vec::new(),
+        matte_feather_keyframes: Vec::new(),
+        matte_choke_keyframes: Vec::new(),
         clip_markers: Vec::new(),
         effect_keyframes: HashMap::new(),
         role: klipp_core::ClipRole::default(),
@@ -185,6 +187,10 @@ fn show_bin_media_video(
         source_rotation: 0,
         enabled: true,
         solo: false,
+        blend_mode: klipp_core::BlendMode::Normal,
+        matte_source: None,
+        matte_stencil: None,
+        consumed_as_matte: false,
         grade_versions: Vec::new(),
         active_grade_version: None,
         multicam_group: None,
@@ -1074,6 +1080,16 @@ fn show_clip_video(
     // ── COLOR ──
     show_color_section(ui, theme, state, clip, cmds);
 
+    ui.add_space(8.0);
+
+    // ── COMPOSITING (blend mode + track matte) ──
+    // Phase 3 of track matte: surfaces clip.blend_mode and clip.matte_source.
+    // Hidden behind a feature gate would also be reasonable, but Phase 1+2
+    // already shipped end-to-end behaviour so the section is safe to show
+    // unconditionally — defaults render exactly as before (Normal blend, no
+    // matte) for every existing project.
+    show_compositing_section(ui, theme, state, clip, cmds, clip_time_secs);
+
     // ── SPEED RAMP (timeline only) ──
     if is_timeline {
         ui.add_space(8.0);
@@ -1452,6 +1468,534 @@ fn show_color_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, c
             });
         ui.add_space(8.0);
     });
+}
+
+/// Compositing controls — per-clip blend mode + track-matte binding.
+/// Surfaces all four matte AppCommands (`SetClipBlendMode`,
+/// `SetClipMatte`, `ClearClipMatte`, `SetClipConsumedAsMatte`) shipped
+/// in Phase 1, plus a source picker that walks the active sequence
+/// for valid candidate clips. Cycle / self-reference / AdjustmentLayer
+/// rejections are still enforced inside the handler — the picker just
+/// avoids offering ineligible candidates so the common path doesn't
+/// trip a rejection toast.
+fn show_compositing_section(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    state: &AppState,
+    clip: &Clip,
+    cmds: &mut Vec<AppCommand>,
+    clip_time_secs: f64,
+) {
+    let clip_id = clip.id;
+    let pad = 14.0;
+    section_card(ui, "COMPOSITING", theme, |ui| {
+        ui.add_space(6.0);
+        egui::Frame::default()
+            .inner_margin(egui::Margin { left: pad, right: pad, top: 0.0, bottom: 0.0 })
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::NONE)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
+
+                // ── Blend Mode ──
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Blend Mode")
+                            .size(11.0)
+                            .color(theme.text_dim),
+                    );
+                    ui.add_space(8.0);
+                    let mut current = clip.blend_mode;
+                    let combo = egui::ComboBox::from_id_source(("video:blend_mode", clip_id))
+                        .selected_text(current.display_name())
+                        .width(160.0);
+                    combo.show_ui(ui, |ui| {
+                        for &mode in &klipp_core::BlendMode::ALL {
+                            if ui.selectable_value(&mut current, mode, mode.display_name()).clicked() {
+                                if mode != clip.blend_mode {
+                                    cmds.push(AppCommand::SetClipBlendMode { clip_id, mode });
+                                }
+                            }
+                        }
+                    });
+                });
+
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // ── Stencil mode (Phase 4B) ─────────────────────────
+                // Toggle on the source side: when set, this clip's
+                // pixels mask every clip on a lower track at the
+                // same time-range. Mutually informative with the
+                // consumer-side `Matte Source` below — the two are
+                // separate features, not exclusive.
+                ui.horizontal(|ui| {
+                    let mut stencil_on = clip.matte_stencil.is_some();
+                    if ui.checkbox(&mut stencil_on, "Stencil mode (mask all clips below)").changed() {
+                        if stencil_on {
+                            // Default settings inherit feather/choke
+                            // from the consumer-side binding when the
+                            // user has one — keeps both edges feeling
+                            // similar without an extra dialog.
+                            let (feather, choke) = clip.matte_source.as_ref()
+                                .map(|b| (b.feather_px, b.choke_px))
+                                .unwrap_or((0.0, 0.0));
+                            cmds.push(AppCommand::SetClipStencil {
+                                clip_id,
+                                channel: 1, // Luminance default
+                                invert: false,
+                                feather_px: feather,
+                                choke_px: choke,
+                            });
+                        } else {
+                            cmds.push(AppCommand::ClearClipStencil { clip_id });
+                        }
+                    }
+                });
+                if let Some(stencil) = clip.matte_stencil.clone() {
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        ui.label(
+                            egui::RichText::new("Channel")
+                                .size(11.0)
+                                .color(theme.text_dim),
+                        );
+                        ui.add_space(8.0);
+                        let mut current_ch = stencil.channel;
+                        for (ch, label) in [
+                            (klipp_nodes::params::MatteChannel::Alpha, "Alpha"),
+                            (klipp_nodes::params::MatteChannel::Luminance, "Luma"),
+                            (klipp_nodes::params::MatteChannel::Red, "R"),
+                            (klipp_nodes::params::MatteChannel::Green, "G"),
+                            (klipp_nodes::params::MatteChannel::Blue, "B"),
+                        ] {
+                            if ui.selectable_value(&mut current_ch, ch, label).clicked() && current_ch != stencil.channel {
+                                cmds.push(AppCommand::SetClipStencil {
+                                    clip_id,
+                                    channel: matte_channel_to_u8(current_ch),
+                                    invert: stencil.invert,
+                                    feather_px: stencil.feather_px,
+                                    choke_px: stencil.choke_px,
+                                });
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        let mut inv = stencil.invert;
+                        if ui.checkbox(&mut inv, "Invert").changed() {
+                            cmds.push(AppCommand::SetClipStencil {
+                                clip_id,
+                                channel: matte_channel_to_u8(stencil.channel),
+                                invert: inv,
+                                feather_px: stencil.feather_px,
+                                choke_px: stencil.choke_px,
+                            });
+                        }
+                    });
+                }
+
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // ── Matte source picker ──
+                // Build candidate list: every clip in the active sequence
+                // that isn't `clip_id` itself, isn't an AdjustmentLayer,
+                // and (defensively) isn't already in this clip's matte
+                // chain. The handler still cycle-rejects, but skipping
+                // ineligible options keeps the dropdown focused.
+                let active_idx = state.active_sequence_idx;
+                let candidates: Vec<(klipp_core::ClipId, String)> = state
+                    .sequences
+                    .get(active_idx)
+                    .map(|seq| {
+                        seq.tracks.iter().enumerate().flat_map(|(ti, track)| {
+                            let track_label = if track.name.is_empty() {
+                                format!("Track {}", ti + 1)
+                            } else {
+                                track.name.clone()
+                            };
+                            track.clips.iter().filter_map(move |c| {
+                                if c.id == clip_id { return None; }
+                                if matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) { return None; }
+                                let label = format!("{} · clip {}…",
+                                    track_label,
+                                    short_clip_id(&c.id));
+                                Some((c.id, label))
+                            }).collect::<Vec<_>>()
+                        }).collect()
+                    })
+                    .unwrap_or_default();
+
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Matte Source")
+                            .size(11.0)
+                            .color(theme.text_dim),
+                    );
+                    ui.add_space(8.0);
+                    let current_label = match clip.matte_source.as_ref() {
+                        None => "(none)".to_string(),
+                        Some(b) => candidates.iter()
+                            .find(|(id, _)| *id == b.source_clip_id)
+                            .map(|(_, l)| l.clone())
+                            .unwrap_or_else(|| "(missing — see banner)".to_string()),
+                    };
+                    egui::ComboBox::from_id_source(("video:matte_source", clip_id))
+                        .selected_text(current_label)
+                        .width(220.0)
+                        .show_ui(ui, |ui| {
+                            // "(none)" entry — clears any existing binding.
+                            let none_selected = clip.matte_source.is_none();
+                            if ui.selectable_label(none_selected, "(none)").clicked() {
+                                if !none_selected {
+                                    cmds.push(AppCommand::ClearClipMatte { clip_id });
+                                }
+                            }
+                            for (cand_id, label) in &candidates {
+                                let selected = clip.matte_source.as_ref()
+                                    .is_some_and(|b| b.source_clip_id == *cand_id);
+                                if ui.selectable_label(selected, label).clicked() {
+                                    if !selected {
+                                        // Inherit existing channel/invert/feather/choke
+                                        // when re-pointing at a different source, default
+                                        // to the easy-path Luma binding otherwise.
+                                        let (channel_u8, invert, feather_px, choke_px) = match clip.matte_source.as_ref() {
+                                            Some(b) => (
+                                                matte_channel_to_u8(b.channel),
+                                                b.invert,
+                                                b.feather_px,
+                                                b.choke_px,
+                                            ),
+                                            None => (1u8, false, 0.0, 0.0), // Luminance default
+                                        };
+                                        cmds.push(AppCommand::SetClipMatte {
+                                            clip_id,
+                                            source_clip_id: *cand_id,
+                                            channel: channel_u8,
+                                            invert,
+                                            feather_px,
+                                            choke_px,
+                                        });
+                                    }
+                                }
+                            }
+                        });
+                });
+
+                // Detail rows only meaningful when a binding exists.
+                if let Some(binding) = clip.matte_source.clone() {
+                    let source_id = binding.source_clip_id;
+                    let source_present = state.sequences.get(active_idx)
+                        .map(|seq| seq.tracks.iter().any(|t| t.clips.iter().any(|c| c.id == source_id)))
+                        .unwrap_or(false);
+                    if !source_present {
+                        ui.add_space(4.0);
+                        ui.colored_label(
+                            theme.marker_warning,
+                            egui::RichText::new("⚠ Matte source clip is no longer in the project — clip will render invisible.")
+                                .size(10.5),
+                        );
+                    }
+
+                    ui.add_space(4.0);
+
+                    // ── Channel ──
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Channel")
+                                .size(11.0)
+                                .color(theme.text_dim),
+                        );
+                        ui.add_space(8.0);
+                        let mut current_ch = binding.channel;
+                        for (ch, label) in [
+                            (klipp_nodes::params::MatteChannel::Alpha, "Alpha"),
+                            (klipp_nodes::params::MatteChannel::Luminance, "Luma"),
+                            (klipp_nodes::params::MatteChannel::Red, "R"),
+                            (klipp_nodes::params::MatteChannel::Green, "G"),
+                            (klipp_nodes::params::MatteChannel::Blue, "B"),
+                        ] {
+                            if ui.selectable_value(&mut current_ch, ch, label).clicked() && current_ch != binding.channel {
+                                cmds.push(AppCommand::SetClipMatte {
+                                    clip_id,
+                                    source_clip_id: binding.source_clip_id,
+                                    channel: matte_channel_to_u8(current_ch),
+                                    invert: binding.invert,
+                                    feather_px: binding.feather_px,
+                                    choke_px: binding.choke_px,
+                                });
+                            }
+                        }
+                    });
+
+                    // ── Invert ──
+                    ui.horizontal(|ui| {
+                        let mut inv = binding.invert;
+                        if ui.checkbox(&mut inv, "Invert").changed() {
+                            cmds.push(AppCommand::SetClipMatte {
+                                clip_id,
+                                source_clip_id: binding.source_clip_id,
+                                channel: matte_channel_to_u8(binding.channel),
+                                invert: inv,
+                                feather_px: binding.feather_px,
+                                choke_px: binding.choke_px,
+                            });
+                        }
+                    });
+
+                    // ── Feather ──
+                    // Phase 4D — feather/choke can be keyframed via the
+                    // existing video-keyframe AppCommands. The slider
+                    // edits the binding's static fallback (used when
+                    // there are no kfs); the diamond toggles a kf at
+                    // the current playhead. When kfs are present, the
+                    // render path evaluates them and overrides the
+                    // static value frame-by-frame. Mirrors the opacity/
+                    // transform UX users already know.
+                    let kf_tolerance_secs = 0.02_f64;
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Feather")
+                                .size(11.0)
+                                .color(theme.text_dim),
+                        );
+                        ui.add_space(8.0);
+                        let mut feather = klipp_core::keyframe::evaluate(
+                            &clip.matte_feather_keyframes, clip_time_secs, binding.feather_px,
+                        );
+                        if ui.add(egui::Slider::new(&mut feather, 0.0..=50.0)
+                            .suffix(" px")
+                            .clamp_to_range(true)).changed()
+                        {
+                            // If kfs exist near the playhead, rewrite
+                            // that kf; otherwise fold the static value.
+                            let near_kf = clip.matte_feather_keyframes.iter()
+                                .position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance_secs);
+                            if let Some(idx) = near_kf {
+                                cmds.push(AppCommand::MoveVideoKeyframe {
+                                    clip_id,
+                                    param: klipp_core::VideoParam::MatteFeather,
+                                    index: idx,
+                                    new_time_secs: clip.matte_feather_keyframes[idx].time_secs,
+                                    new_value: feather,
+                                });
+                            } else if !clip.matte_feather_keyframes.is_empty() {
+                                // KFs exist but none at playhead — adding
+                                // a new one preserves the curve shape and
+                                // is what the user expects from a slider tug.
+                                cmds.push(AppCommand::AddVideoKeyframe {
+                                    clip_id,
+                                    param: klipp_core::VideoParam::MatteFeather,
+                                    time_secs: clip_time_secs,
+                                    value: feather,
+                                });
+                            } else {
+                                // No kfs at all — edit the static.
+                                cmds.push(AppCommand::SetClipMatte {
+                                    clip_id,
+                                    source_clip_id: binding.source_clip_id,
+                                    channel: matte_channel_to_u8(binding.channel),
+                                    invert: binding.invert,
+                                    feather_px: feather,
+                                    choke_px: binding.choke_px,
+                                });
+                            }
+                        }
+                        // Keyframe diamond toggle.
+                        let has_kf_here = clip.matte_feather_keyframes.iter()
+                            .any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance_secs);
+                        let diamond_label = if has_kf_here { "◆" } else { "◇" };
+                        if ui.small_button(diamond_label).on_hover_text(
+                            if has_kf_here { "Remove keyframe at playhead" } else { "Add keyframe at playhead" }
+                        ).clicked() {
+                            if has_kf_here {
+                                cmds.push(AppCommand::RemoveVideoKeyframe {
+                                    clip_id, param: klipp_core::VideoParam::MatteFeather,
+                                    time_secs: clip_time_secs,
+                                });
+                            } else {
+                                cmds.push(AppCommand::AddVideoKeyframe {
+                                    clip_id, param: klipp_core::VideoParam::MatteFeather,
+                                    time_secs: clip_time_secs, value: feather,
+                                });
+                            }
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Choke")
+                                .size(11.0)
+                                .color(theme.text_dim),
+                        );
+                        ui.add_space(8.0);
+                        let mut choke = klipp_core::keyframe::evaluate(
+                            &clip.matte_choke_keyframes, clip_time_secs, binding.choke_px,
+                        );
+                        if ui.add(egui::Slider::new(&mut choke, 0.0..=50.0)
+                            .suffix(" px")
+                            .clamp_to_range(true)).changed()
+                        {
+                            let near_kf = clip.matte_choke_keyframes.iter()
+                                .position(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance_secs);
+                            if let Some(idx) = near_kf {
+                                cmds.push(AppCommand::MoveVideoKeyframe {
+                                    clip_id,
+                                    param: klipp_core::VideoParam::MatteChoke,
+                                    index: idx,
+                                    new_time_secs: clip.matte_choke_keyframes[idx].time_secs,
+                                    new_value: choke,
+                                });
+                            } else if !clip.matte_choke_keyframes.is_empty() {
+                                cmds.push(AppCommand::AddVideoKeyframe {
+                                    clip_id,
+                                    param: klipp_core::VideoParam::MatteChoke,
+                                    time_secs: clip_time_secs,
+                                    value: choke,
+                                });
+                            } else {
+                                cmds.push(AppCommand::SetClipMatte {
+                                    clip_id,
+                                    source_clip_id: binding.source_clip_id,
+                                    channel: matte_channel_to_u8(binding.channel),
+                                    invert: binding.invert,
+                                    feather_px: binding.feather_px,
+                                    choke_px: choke,
+                                });
+                            }
+                        }
+                        let has_kf_here = clip.matte_choke_keyframes.iter()
+                            .any(|k| (k.time_secs - clip_time_secs).abs() < kf_tolerance_secs);
+                        let diamond_label = if has_kf_here { "◆" } else { "◇" };
+                        if ui.small_button(diamond_label).on_hover_text(
+                            if has_kf_here { "Remove keyframe at playhead" } else { "Add keyframe at playhead" }
+                        ).clicked() {
+                            if has_kf_here {
+                                cmds.push(AppCommand::RemoveVideoKeyframe {
+                                    clip_id, param: klipp_core::VideoParam::MatteChoke,
+                                    time_secs: clip_time_secs,
+                                });
+                            } else {
+                                cmds.push(AppCommand::AddVideoKeyframe {
+                                    clip_id, param: klipp_core::VideoParam::MatteChoke,
+                                    time_secs: clip_time_secs, value: choke,
+                                });
+                            }
+                        }
+                    });
+
+                    // ── Hide source from composite ──
+                    let source_consumed = state.sequences.get(active_idx)
+                        .and_then(|seq| seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == source_id))
+                        .map(|c| c.consumed_as_matte)
+                        .unwrap_or(false);
+                    let mut hide_source = source_consumed;
+                    if ui.checkbox(&mut hide_source, "Hide matte source from composite").changed() {
+                        cmds.push(AppCommand::SetClipConsumedAsMatte {
+                            clip_id: source_id,
+                            consumed: hide_source,
+                        });
+                    }
+
+                    ui.add_space(8.0);
+
+                    // ── Live mask preview (Phase 4C) ──
+                    // Engine emits one ~96×54 grayscale snapshot per
+                    // composited frame as long as the inspector has
+                    // set this clip as the preview target. We dispatch
+                    // the target unconditionally on every render so
+                    // the engine knows we're still watching; the cost
+                    // is one cheap AppCommand per frame.
+                    cmds.push(AppCommand::SetInspectorMattePreviewTarget(Some(clip_id)));
+
+                    ui.label(
+                        egui::RichText::new("Mask preview")
+                            .size(11.0)
+                            .color(theme.text_dim),
+                    );
+                    let preview_w = 192.0_f32;
+                    let preview_h = 108.0_f32;
+                    let (preview_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(preview_w, preview_h),
+                        egui::Sense::hover(),
+                    );
+                    // Subtle frame so the preview reads as a "tile"
+                    // rather than free-floating pixels.
+                    ui.painter().rect_filled(preview_rect, 4.0, theme.bg_deep);
+                    ui.painter().rect_stroke(preview_rect, 4.0, egui::Stroke::new(0.5, theme.border));
+                    if state.matte_thumb_for == Some(clip_id) {
+                        if let Some(tex) = state.matte_thumb_handle.as_ref() {
+                            ui.painter().image(
+                                tex.id(),
+                                preview_rect.shrink(2.0),
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
+                        }
+                    } else {
+                        // First-frame placeholder: the engine hasn't
+                        // emitted a snapshot for this clip yet.
+                        ui.painter().text(
+                            preview_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "rendering…",
+                            egui::FontId::proportional(11.0),
+                            theme.text_dim,
+                        );
+                    }
+
+                    ui.add_space(4.0);
+
+                    // ── Clear ──
+                    if ui.add_sized(egui::vec2(120.0, 24.0),
+                        egui::Button::new(
+                            egui::RichText::new("Clear matte")
+                                .size(11.0)
+                                .color(theme.text_primary),
+                        )
+                        .fill(theme.bg_raised)
+                        .stroke(egui::Stroke::new(0.5_f32, theme.border))
+                        .rounding(6.0)).clicked()
+                    {
+                        cmds.push(AppCommand::ClearClipMatte { clip_id });
+                    }
+                } else {
+                    // No binding on this clip — make sure the engine
+                    // stops emitting preview events. Idempotent so
+                    // the per-frame dispatch is harmless.
+                    cmds.push(AppCommand::SetInspectorMattePreviewTarget(None));
+                }
+            });
+        ui.add_space(8.0);
+    });
+}
+
+/// Mirror of `matte_channel_from_u8` in `app.rs`. Round-trip helper so
+/// the inspector can rebuild the AppCommand payload from the runtime
+/// `MatteBinding` (which stores the enum) without a public conversion
+/// surface on `klipp-core`. Variant order matches the AppCommand wire
+/// contract documented on `SetClipMatte`.
+fn matte_channel_to_u8(ch: klipp_nodes::params::MatteChannel) -> u8 {
+    use klipp_nodes::params::MatteChannel as M;
+    match ch {
+        M::Alpha => 0,
+        M::Luminance => 1,
+        M::Red => 2,
+        M::Green => 3,
+        M::Blue => 4,
+    }
+}
+
+/// Format the first 6 hex characters of a clip-id as a short label.
+/// The full UUID is unreadable in a dropdown; the short form is enough
+/// to disambiguate at human scale (and the track label disambiguates
+/// the rest). Future work surfaces actual clip names where available.
+fn short_clip_id(id: &klipp_core::ClipId) -> String {
+    let s = id.0.to_string();
+    s.chars().take(6).collect()
 }
 
 fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &mut Vec<AppCommand>) {

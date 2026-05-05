@@ -1424,6 +1424,8 @@ impl TimelinePanel {
                                                 klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                                                 klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                                                 klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                                klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
+                                                klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                             },
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 clip.audio_effect_keyframes
@@ -1508,6 +1510,8 @@ impl TimelinePanel {
                                                 klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                                                 klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                                                 klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                                klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
+                                                klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                             },
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 clip.audio_effect_keyframes
@@ -1572,6 +1576,8 @@ impl TimelinePanel {
                                             klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                                             klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                                             klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                            klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
+                                            klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                         },
                                         crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                             clip.audio_effect_keyframes
@@ -1633,6 +1639,8 @@ impl TimelinePanel {
                                                 klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes.clone(),
                                                 klipp_core::VideoParam::Scale => clip.transform_scale_keyframes.clone(),
                                                 klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes.clone(),
+                                                klipp_core::VideoParam::MatteFeather => clip.matte_feather_keyframes.clone(),
+                                                klipp_core::VideoParam::MatteChoke => clip.matte_choke_keyframes.clone(),
                                             },
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 clip.audio_effect_keyframes
@@ -1766,6 +1774,8 @@ impl TimelinePanel {
                                             klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                                             klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                                             klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                            klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
+                                            klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                         },
                                         crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                             clip.audio_effect_keyframes
@@ -1878,6 +1888,8 @@ impl TimelinePanel {
                                                 klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                                                 klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                                                 klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                                klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
+                                                klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                             },
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 clip.audio_effect_keyframes
@@ -1900,6 +1912,8 @@ impl TimelinePanel {
                                                     klipp_core::VideoParam::PositionY => 0.0,
                                                     klipp_core::VideoParam::Scale => 1.0,
                                                     klipp_core::VideoParam::Rotation => 0.0,
+                                                    klipp_core::VideoParam::MatteFeather => clip.matte_source.as_ref().map(|b| b.feather_px).unwrap_or(0.0),
+                                                    klipp_core::VideoParam::MatteChoke => clip.matte_source.as_ref().map(|b| b.choke_px).unwrap_or(0.0),
                                                 },
                                                 crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                     clip.audio_effects.get(*effect_index)
@@ -1936,6 +1950,8 @@ impl TimelinePanel {
                                             klipp_core::VideoParam::PositionY => base_val + 0.05,
                                             klipp_core::VideoParam::Scale => (base_val * 1.2).max(base_val + 0.1),
                                             klipp_core::VideoParam::Rotation => base_val + 15.0,
+                                            klipp_core::VideoParam::MatteFeather => (base_val + 5.0).min(50.0),
+                                            klipp_core::VideoParam::MatteChoke => (base_val + 2.0).min(50.0),
                                         },
                                         crate::state::KeyframeParamKind::AudioEffect { param_name, .. } => match param_name.as_str() {
                                             // Reserved keys are 0..1 toggles; bumping
@@ -4543,6 +4559,7 @@ impl TimelinePanel {
         is_offline: bool,
         border_color: egui::Color32,
         border_width: f32,
+        cmds: &mut Vec<AppCommand>,
     ) {
         let tt = theme();
         // Border
@@ -4597,6 +4614,102 @@ impl TimelinePanel {
             crate::icons::Icon::Lock.image(9.0)
                 .tint(theme().overlay(120))
                 .paint_at(ui, icon_rect);
+        }
+
+        // ── Track-matte indicators (Phase 3) ──────────────────────
+        // Consumer side: top-left "M" pill so users see at a glance
+        // that this clip's alpha is being driven by another clip.
+        // The pill is small enough to coexist with FX (top-right) /
+        // Lock (top-right corner) without clutter.
+        if let Some(binding) = clip.matte_source.as_ref() {
+            if clip_rect.width() > 30.0 {
+                let source_id = binding.source_clip_id;
+                let m_font = egui::FontId::proportional(8.0);
+                let m_galley = painter.layout_no_wrap(
+                    "M".to_string(),
+                    m_font.clone(),
+                    egui::Color32::WHITE,
+                );
+                let pill_w = m_galley.size().x + 8.0;
+                let pill_h = m_galley.size().y + 2.0;
+                let pill_rect = egui::Rect::from_min_size(
+                    egui::pos2(clip_rect.left() + 4.0, clip_rect.top() + 4.0),
+                    egui::vec2(pill_w, pill_h),
+                );
+                // Phase 4A: clickable. Click selects + scrolls to the
+                // matte source. The interact rect is allocated AFTER
+                // the painter draws so it sits on top of the clip body
+                // (egui resolves clicks z-order-wise to the deepest
+                // sense rect at the cursor).
+                painter.rect_filled(
+                    pill_rect.expand(1.0),
+                    pill_h / 2.0 + 1.0,
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 160),
+                );
+                painter.rect_filled(
+                    pill_rect,
+                    pill_h / 2.0,
+                    egui::Color32::from_rgba_unmultiplied(40, 160, 180, 220),
+                );
+                painter.galley(
+                    egui::pos2(pill_rect.left() + 4.0, pill_rect.top() + 1.0),
+                    m_galley,
+                    egui::Color32::WHITE,
+                );
+                let id = ui.id().with(("matte_badge", clip.id, source_id));
+                let resp = ui.interact(pill_rect, id, egui::Sense::click())
+                    .on_hover_text("Jump to matte source clip");
+                if resp.clicked() {
+                    cmds.push(AppCommand::SelectClip(Some(source_id)));
+                    // Scroll-to-source via a side-channel flag — actual
+                    // scroll happens once during the next frame's
+                    // pre-paint (see `pending_center_clip` in state).
+                    cmds.push(AppCommand::CenterTimelineOnClip(source_id));
+                }
+            }
+        }
+
+        // Source side: this clip is being USED as a matte by some
+        // other clip AND the user opted to hide it from the visible
+        // composite (`consumed_as_matte`). Diagonal stripe overlay
+        // signals "hidden / not in output", a long-standing NLE
+        // convention for muted-or-bypassed content. Skipped on tiny
+        // clips where the stripes would just look like noise.
+        // Stencil clips share the same hidden-from-composite visual
+        // as `consumed_as_matte` (different reason, same outcome).
+        if (clip.consumed_as_matte || clip.matte_stencil.is_some()) && clip_rect.width() > 24.0 && clip_rect.height() > 12.0 {
+            let stripe_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 70);
+            let spacing = 8.0_f32;
+            let mut x = clip_rect.left() - clip_rect.height();
+            while x < clip_rect.right() {
+                let p1 = egui::pos2(x.max(clip_rect.left()), clip_rect.top());
+                let p2 = egui::pos2(
+                    (x + clip_rect.height()).min(clip_rect.right()),
+                    clip_rect.bottom(),
+                );
+                painter.line_segment([p1, p2], egui::Stroke::new(2.0, stripe_color));
+                x += spacing;
+            }
+            // Tiny "matte source" tag bottom-left.
+            if clip_rect.width() > 60.0 {
+                let tag_font = egui::FontId::proportional(8.0);
+                let tag_text = if clip.matte_stencil.is_some() { "STENCIL" } else { "MATTE SOURCE" };
+                let tag_galley = painter.layout_no_wrap(
+                    tag_text.to_string(),
+                    tag_font,
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200),
+                );
+                let tag_rect = egui::Rect::from_min_size(
+                    egui::pos2(clip_rect.left() + 4.0, clip_rect.bottom() - tag_galley.size().y - 4.0),
+                    tag_galley.size(),
+                );
+                painter.rect_filled(
+                    tag_rect.expand(2.0),
+                    2.0,
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 140),
+                );
+                painter.galley(tag_rect.min, tag_galley, egui::Color32::WHITE);
+            }
         }
 
         // Always-visible trim handle bars on both edges
@@ -7061,6 +7174,86 @@ impl TimelinePanel {
                 // reach it via the linked partner.)
                 if is_video_track {
                     ui.separator();
+
+                    // ── Track Matte (Phase 3) ───────────────────────────
+                    // Headline gesture: bind the clip on the track above
+                    // (or any other clip via the inspector picker) as
+                    // this clip's alpha/luma mask. Auto picks the
+                    // sensible channel based on the candidate's kind.
+                    let candidate_above = find_matte_candidate_above(
+                        state, track_idx, clip_id,
+                    );
+                    let already_has_matte = state.sequence().tracks.iter()
+                        .flat_map(|t| t.clips.iter())
+                        .find(|c| c.id == clip_id)
+                        .is_some_and(|c| c.matte_source.is_some());
+
+                    if let Some((cand_id, cand_kind)) = candidate_above {
+                        ui.menu_button("\u{2702} Use clip above as matte", |ui| {
+                            // Auto = sensible default, picks based on
+                            // the candidate's nature:
+                            //   - Title → Alpha (text typically lives
+                            //     on a transparent background).
+                            //   - Generator → Luma (shape / gradient
+                            //     generators are usually opaque-with-
+                            //     brightness; alpha would always be 1).
+                            //   - Media / other → Luma (most footage
+                            //     has no alpha; users can switch in
+                            //     the inspector).
+                            let auto_channel: u8 = match cand_kind {
+                                klipp_timeline::ClipKind::Title(_) => 0,  // Alpha
+                                _ => 1,                                  // Luminance
+                            };
+                            let auto_label = match cand_kind {
+                                klipp_timeline::ClipKind::Title(_) => "Auto (Alpha)",
+                                _ => "Auto (Luma)",
+                            };
+                            if ui.button(auto_label).clicked() {
+                                cmds.push(AppCommand::SetClipMatte {
+                                    clip_id,
+                                    source_clip_id: cand_id,
+                                    channel: auto_channel,
+                                    invert: false,
+                                    feather_px: 0.0,
+                                    choke_px: 0.0,
+                                });
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            if ui.button("Alpha").clicked() {
+                                cmds.push(AppCommand::SetClipMatte {
+                                    clip_id, source_clip_id: cand_id,
+                                    channel: 0, invert: false, feather_px: 0.0, choke_px: 0.0,
+                                });
+                                ui.close_menu();
+                            }
+                            if ui.button("Luma").clicked() {
+                                cmds.push(AppCommand::SetClipMatte {
+                                    clip_id, source_clip_id: cand_id,
+                                    channel: 1, invert: false, feather_px: 0.0, choke_px: 0.0,
+                                });
+                                ui.close_menu();
+                            }
+                            if ui.button("Inverted Luma").clicked() {
+                                cmds.push(AppCommand::SetClipMatte {
+                                    clip_id, source_clip_id: cand_id,
+                                    channel: 1, invert: true, feather_px: 0.0, choke_px: 0.0,
+                                });
+                                ui.close_menu();
+                            }
+                        });
+                    } else {
+                        let resp = ui.add_enabled(false, egui::Button::new("\u{2702} Use clip above as matte"));
+                        resp.on_hover_text("No clip on a higher track at this time-range. Stack a clip above first, or pick a source via the Inspector → Compositing section.");
+                    }
+                    if already_has_matte {
+                        if ui.button("Clear matte").clicked() {
+                            cmds.push(AppCommand::ClearClipMatte { clip_id });
+                            ui.close_menu();
+                        }
+                    }
+                    ui.separator();
+
                     let is_ref = state.color_match_reference_clip == Some(clip_id);
                     let ref_label = if is_ref {
                         "\u{25CF} Colour Reference (click to re-set)".to_string()
@@ -9976,7 +10169,7 @@ impl TimelinePanel {
                 self.draw_clip_markers(painter, clip_rect, clip);
                 // ── Speed ramp overlay ──
                 self.draw_speed_overlay(painter, clip_rect, clip);
-                self.draw_clip_badges(ui, painter, clip_rect, clip, state, track_kind, clip_is_title, is_offline, border_color, border_width);
+                self.draw_clip_badges(ui, painter, clip_rect, clip, state, track_kind, clip_is_title, is_offline, border_color, border_width, cmds);
             }
 
             // Mutating method.
@@ -10279,6 +10472,14 @@ impl TimelinePanel {
                 klipp_core::VideoParam::PositionY => (transform.1, clip.transform_pos_y_keyframes.clone()),
                 klipp_core::VideoParam::Scale => (transform.2, clip.transform_scale_keyframes.clone()),
                 klipp_core::VideoParam::Rotation => (transform.3, clip.transform_rotation_keyframes.clone()),
+                klipp_core::VideoParam::MatteFeather => (
+                    clip.matte_source.as_ref().map(|b| b.feather_px).unwrap_or(0.0),
+                    clip.matte_feather_keyframes.clone(),
+                ),
+                klipp_core::VideoParam::MatteChoke => (
+                    clip.matte_source.as_ref().map(|b| b.choke_px).unwrap_or(0.0),
+                    clip.matte_choke_keyframes.clone(),
+                ),
             };
             let any_kf = !clip.opacity_keyframes.is_empty()
                 || !clip.transform_pos_x_keyframes.is_empty()
@@ -10357,6 +10558,15 @@ impl TimelinePanel {
                         egui::Color32::from_rgba_unmultiplied(200, 150, 255, 250),
                         egui::Color32::from_rgba_unmultiplied(180, 130, 255, 200),
                     ),
+                    // Matte feather/choke share a teal palette matching
+                    // the COMPOSITING-section "M" badge so the user sees
+                    // a consistent visual identity.
+                    klipp_core::VideoParam::MatteFeather | klipp_core::VideoParam::MatteChoke => (
+                        egui::Color32::from_rgba_unmultiplied(40, 160, 180, 220),
+                        egui::Color32::from_rgba_unmultiplied(35, 140, 160, 140),
+                        egui::Color32::from_rgba_unmultiplied(50, 180, 200, 250),
+                        egui::Color32::from_rgba_unmultiplied(40, 160, 180, 200),
+                    ),
                 };
                 let vrb_shadow_color = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 150);
                 let vrb_diamond_fill = if is_selected || is_multi_selected { vrb_diamond_fill_sel } else { vrb_diamond_fill_norm };
@@ -10371,6 +10581,8 @@ impl TimelinePanel {
                     klipp_core::VideoParam::PositionY => "PosY",
                     klipp_core::VideoParam::Scale => "Scl",
                     klipp_core::VideoParam::Rotation => "Rot",
+                    klipp_core::VideoParam::MatteFeather => "MFth",
+                    klipp_core::VideoParam::MatteChoke => "MChk",
                 };
                 let vrb_pill_font = egui::FontId::proportional(9.0);
                 let vrb_pill_galley = ui.painter().layout_no_wrap(vrb_param_label.to_string(), vrb_pill_font.clone(), egui::Color32::WHITE);
@@ -10384,6 +10596,10 @@ impl TimelinePanel {
                         klipp_core::VideoParam::PositionX | klipp_core::VideoParam::PositionY => egui::Color32::from_rgba_unmultiplied(100, 220, 200, 100),
                         klipp_core::VideoParam::Scale => egui::Color32::from_rgba_unmultiplied(140, 160, 255, 100),
                         klipp_core::VideoParam::Rotation => egui::Color32::from_rgba_unmultiplied(180, 130, 255, 100),
+                        // Matte feather/choke share a teal tint matching the
+                        // "M" badge on consumer clips, so the rubber band
+                        // and the matte indicator agree visually.
+                        klipp_core::VideoParam::MatteFeather | klipp_core::VideoParam::MatteChoke => egui::Color32::from_rgba_unmultiplied(40, 160, 180, 100),
                     };
                     vrb_clip_painter.rect_filled(vrb_pill_rect, 4.0, vrb_pill_bg);
                     vrb_clip_painter.text(
@@ -10403,6 +10619,14 @@ impl TimelinePanel {
                                     klipp_core::VideoParam::PositionY => klipp_core::VideoParam::Scale,
                                     klipp_core::VideoParam::Scale => klipp_core::VideoParam::Rotation,
                                     klipp_core::VideoParam::Rotation => klipp_core::VideoParam::Opacity,
+                                    // Matte feather/choke aren't in the
+                                    // pill-cycle (they only matter when a
+                                    // matte_source is set, which is the
+                                    // exception not the norm). Cycling
+                                    // back to Opacity keeps the gesture
+                                    // intuitive.
+                                    klipp_core::VideoParam::MatteFeather
+                                    | klipp_core::VideoParam::MatteChoke => klipp_core::VideoParam::Opacity,
                                 };
                             }
                         }
@@ -10515,6 +10739,8 @@ impl TimelinePanel {
                                     klipp_core::VideoParam::PositionY => format!("Y:{:.0}", kf.value),
                                     klipp_core::VideoParam::Scale => format!("{:.2}x", kf.value),
                                     klipp_core::VideoParam::Rotation => format!("{:.1}\u{00B0}", kf.value),
+                                    klipp_core::VideoParam::MatteFeather => format!("Fth:{:.1}px", kf.value),
+                                    klipp_core::VideoParam::MatteChoke => format!("Chk:{:.1}px", kf.value),
                                 };
                                 vrb_clip_painter.text(
                                     egui::pos2(cx, cy - 14.0),
@@ -13608,6 +13834,14 @@ impl TimelinePanel {
                                 klipp_core::VideoParam::PositionY => (vrb_transform.1, &clip.transform_pos_y_keyframes),
                                 klipp_core::VideoParam::Scale => (vrb_transform.2, &clip.transform_scale_keyframes),
                                 klipp_core::VideoParam::Rotation => (vrb_transform.3, &clip.transform_rotation_keyframes),
+                                klipp_core::VideoParam::MatteFeather => (
+                                    clip.matte_source.as_ref().map(|b| b.feather_px).unwrap_or(0.0),
+                                    &clip.matte_feather_keyframes,
+                                ),
+                                klipp_core::VideoParam::MatteChoke => (
+                                    clip.matte_source.as_ref().map(|b| b.choke_px).unwrap_or(0.0),
+                                    &clip.matte_choke_keyframes,
+                                ),
                             };
 
                             // Compute auto-scale Y axis (same as rendering)
@@ -13842,6 +14076,8 @@ impl TimelinePanel {
                                     klipp_core::VideoParam::PositionY => &clip.transform_pos_y_keyframes,
                                     klipp_core::VideoParam::Scale => &clip.transform_scale_keyframes,
                                     klipp_core::VideoParam::Rotation => &clip.transform_rotation_keyframes,
+                                    klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
+                                    klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
                                 };
                                 for (ki, kf) in keyframes.iter().enumerate() {
                                     if ki != drag_kf.keyframe_index && (kf.time_secs - new_time).abs() < snap_thresh_secs {
@@ -13903,6 +14139,8 @@ impl TimelinePanel {
                                     klipp_core::VideoParam::PositionY => format!("Y:{:.0}", new_value),
                                     klipp_core::VideoParam::Scale => format!("{:.2}x", new_value),
                                     klipp_core::VideoParam::Rotation => format!("{:.1}°", new_value),
+                                    klipp_core::VideoParam::MatteFeather => format!("Fth:{:.1}px", new_value),
+                                    klipp_core::VideoParam::MatteChoke => format!("Chk:{:.1}px", new_value),
                                 };
                                 let time_text = format!("{:.2}s", new_time);
                                 let tooltip = format!("{} | {}", time_text, value_text);
@@ -14387,6 +14625,44 @@ impl TimelinePanel {
             }
         }
     }
+}
+
+/// Find the nearest clip ABOVE `current_track_idx` (higher track
+/// index) that overlaps the time-range of `current_clip_id` and is a
+/// valid matte source — i.e. video, not an `AdjustmentLayer`, not the
+/// clip itself. Returns the candidate clip-id and its kind so the
+/// caller can pick a sensible default channel.
+///
+/// Used by the right-click "Use clip above as matte" gesture (the AE
+/// convention). Walks tracks bottom-up starting from
+/// `current_track_idx + 1`; the first overlap wins. Skipping tracks
+/// rather than insisting on the directly-adjacent one means the
+/// gesture stays useful when the user has an empty intermediate
+/// track (e.g. V2 left empty as a "spacer").
+fn find_matte_candidate_above(
+    state: &AppState,
+    current_track_idx: usize,
+    current_clip_id: klipp_core::ClipId,
+) -> Option<(klipp_core::ClipId, klipp_timeline::ClipKind)> {
+    let seq = state.sequence();
+    let current_clip = seq.tracks.iter()
+        .flat_map(|t| t.clips.iter())
+        .find(|c| c.id == current_clip_id)?;
+    let lo = current_clip.timeline_in;
+    let hi = current_clip.timeline_out;
+    for (idx, track) in seq.tracks.iter().enumerate().skip(current_track_idx + 1) {
+        if !matches!(track.kind, klipp_timeline::TrackKind::Video) { continue; }
+        for c in &track.clips {
+            if c.id == current_clip_id { continue; }
+            if matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) { continue; }
+            // Time-range overlap: `c.in < hi && c.out > lo`.
+            if c.timeline_in < hi && c.timeline_out > lo {
+                let _ = idx; // silence unused-var when no further use
+                return Some((c.id, c.kind.clone()));
+            }
+        }
+    }
+    None
 }
 
 fn truncate_text(text: &str, max_width: f32, font_size: f32) -> String {
