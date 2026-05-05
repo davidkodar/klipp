@@ -19,6 +19,8 @@
 //! `(0.5, 0.5)` defaulting to the centre of the source clip.
 
 use klipp_core::keyframe::{Interpolation, Keyframe};
+use klipp_core::ClipId;
+use klipp_timeline::{ClipKind, Sequence};
 
 /// Inputs to [`plan_hyperzoom`]. Durations are clip-local seconds;
 /// focal point is normalised screen coords (`0.0..=1.0`).
@@ -89,6 +91,133 @@ pub fn plan_hyperzoom(input: HyperzoomInput) -> HyperzoomPlan {
         target_anchor: (fx, fy),
         target_scale_kfs,
     }
+}
+
+/// Walk every track strictly *below* `source_clip_id`'s track and
+/// return the clip-ids whose timeline range overlaps the ramp window
+/// `[source.timeline_out - ramp_secs, source.timeline_out]`. The
+/// returned clips are the "beneath the source during the ramp" set —
+/// candidates for an auto-applied `transform_link` so they fly into
+/// the focal point alongside the source.
+///
+/// Filters out:
+///
+/// * The source clip itself.
+/// * Clips on the source's own track or any track above it (overlay-
+///   above-source isn't "beneath" — those clips would land in the
+///   user's manual-parent decision instead).
+/// * `AdjustmentLayer` / `Gap` / nested `Sequence` clips — none have a
+///   meaningful own transform to inherit one onto.
+/// * Clips that already have a `transform_link` set — preserves the
+///   user's explicit parenting choice. Re-running auto-link is then
+///   idempotent.
+/// * Clips whose timeline range doesn't overlap the ramp window —
+///   they aren't on screen during the zoom, so linking them is a
+///   no-op visually but still pollutes the data.
+/// * Clips where binding `clip → source` would close a transform-link
+///   cycle (defence-in-depth via the same 64-depth walker the
+///   `SetClipTransformLink` handler uses; in normal hyperzoom usage
+///   the source has no link of its own so cycles can't happen, but a
+///   pathological project file shouldn't produce a runtime cycle).
+///
+/// Returns clip-ids in iteration order (track-major, then clip order
+/// within each track) so callers can render any UI list deterministically.
+pub fn collect_auto_link_targets(
+    seq: &Sequence,
+    source_clip_id: ClipId,
+    ramp_secs: f64,
+) -> Vec<ClipId> {
+    // Locate the source clip + its track index. Bail if the source
+    // is gone (stale dispatch).
+    let mut source_track_idx: Option<usize> = None;
+    let mut ramp_start_secs: f64 = 0.0;
+    let mut ramp_end_secs: f64 = 0.0;
+    for (ti, track) in seq.tracks.iter().enumerate() {
+        if let Some(c) = track.clips.iter().find(|c| c.id == source_clip_id) {
+            source_track_idx = Some(ti);
+            let end = c.timeline_out.to_secs_f64();
+            ramp_end_secs = end;
+            ramp_start_secs = (end - ramp_secs.max(0.0)).max(0.0);
+            break;
+        }
+    }
+    let Some(src_ti) = source_track_idx else {
+        return Vec::new();
+    };
+
+    let ramp_secs_safe = ramp_secs.max(0.0);
+    if ramp_secs_safe < 1e-9 {
+        // Zero-length ramp: no clip is "during" it. Don't pretend.
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for (ti, track) in seq.tracks.iter().enumerate() {
+        if ti >= src_ti {
+            // Same-track and above-track clips skipped. The source
+            // itself is on `src_ti` and its target was handled by the
+            // hyperzoom Apply.
+            continue;
+        }
+        for clip in &track.clips {
+            if clip.id == source_clip_id {
+                continue;
+            }
+            if matches!(
+                clip.kind,
+                ClipKind::AdjustmentLayer | ClipKind::Gap | ClipKind::Sequence { .. }
+            ) {
+                continue;
+            }
+            if clip.transform_link.is_some() {
+                continue;
+            }
+            // Half-open overlap: a clip ending exactly at ramp_start
+            // doesn't visually overlap the ramp (it's gone the frame
+            // the ramp begins), and a clip starting exactly at
+            // ramp_end is the next shot — handled by the hyperzoom
+            // target side.
+            let clip_in = clip.timeline_in.to_secs_f64();
+            let clip_out = clip.timeline_out.to_secs_f64();
+            let overlaps = clip_in < ramp_end_secs && clip_out > ramp_start_secs;
+            if !overlaps {
+                continue;
+            }
+            // Cycle-protection: would this binding close a
+            // transform-link loop?
+            if would_create_link_cycle(seq, clip.id, source_clip_id) {
+                continue;
+            }
+            out.push(clip.id);
+        }
+    }
+    out
+}
+
+/// Inline mirror of `app::transform_link_chain_creates_cycle` so the
+/// helper crate doesn't need to reach across module boundaries for
+/// the predicate. Same 64-link depth cap; same semantics. The two
+/// copies are pinned by `transform_link_handler_tests` (in `app.rs`)
+/// and the auto-link tests below.
+fn would_create_link_cycle(seq: &Sequence, consumer: ClipId, target: ClipId) -> bool {
+    if consumer == target {
+        return true;
+    }
+    let mut current = target;
+    for _ in 0..64 {
+        let next = seq
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .find(|c| c.id == current)
+            .and_then(|c| c.transform_link.as_ref().map(|tl| tl.target));
+        match next {
+            None => return false,
+            Some(n) if n == consumer => return true,
+            Some(n) => current = n,
+        }
+    }
+    true
 }
 
 fn keyframe(time_secs: f64, value: f32) -> Keyframe {
@@ -183,5 +312,176 @@ mod tests {
         let tgt = &plan.target_scale_kfs;
         assert!((src[1].time_secs - src[0].time_secs).abs() > 0.02);
         assert!((tgt[1].time_secs - tgt[0].time_secs).abs() > 0.02);
+    }
+
+    // ──────────────── Auto-link target collection ────────────────
+
+    use klipp_core::{MediaId, RationalTime};
+    use klipp_timeline::{Clip, Track, TrackKind, TransformLink};
+
+    fn tc(frames: i64) -> RationalTime { RationalTime::from_frames(frames, 24) }
+
+    fn media_clip(timeline_in_f: i64, timeline_out_f: i64) -> Clip {
+        // Source-time placeholders: irrelevant for auto-link, the
+        // helper keys off timeline_in/timeline_out only.
+        Clip::media(MediaId::new(), tc(timeline_in_f), tc(timeline_out_f), tc(0), tc(timeline_out_f - timeline_in_f))
+    }
+
+    fn track_with_clips(name: &str, clips: Vec<Clip>) -> Track {
+        let mut t = Track::new(name, TrackKind::Video);
+        t.clips = clips;
+        t
+    }
+
+    fn seq_with_tracks(tracks: Vec<Track>) -> Sequence {
+        let mut s = Sequence::new_default();
+        // `new_default` already supplies Video 1 + Audio 1; replace them
+        // wholesale so the test sequence has exactly the tracks the
+        // test wants in the order it wants.
+        s.tracks = tracks;
+        s
+    }
+
+    #[test]
+    fn auto_link_collects_overlapping_clip_on_lower_track() {
+        // V1: shot A spans [0..120 frames @ 24 fps] = 5 s.
+        // V2: source title spans [0..120] = 5 s.
+        // Ramp: 0.5 s = window [4.5 s .. 5.0 s]. Shot A overlaps.
+        let shot_a = media_clip(0, 120);
+        let title = media_clip(0, 120);
+        let title_id = title.id;
+        let shot_a_id = shot_a.id;
+        let seq = seq_with_tracks(vec![
+            track_with_clips("V1", vec![shot_a]),
+            track_with_clips("V2", vec![title]),
+        ]);
+        let targets = collect_auto_link_targets(&seq, title_id, 0.5);
+        assert_eq!(targets, vec![shot_a_id]);
+    }
+
+    #[test]
+    fn auto_link_skips_clips_above_source_track() {
+        // V1: source title (lower).
+        // V2: shot above the source (would render ON TOP — not "beneath").
+        let title = media_clip(0, 120);
+        let title_id = title.id;
+        let shot_above = media_clip(0, 120);
+        let seq = seq_with_tracks(vec![
+            track_with_clips("V1", vec![title]),
+            track_with_clips("V2", vec![shot_above]),
+        ]);
+        let targets = collect_auto_link_targets(&seq, title_id, 0.5);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn auto_link_skips_clip_already_linked() {
+        // Shot A on V1 has an existing transform_link (user manually
+        // parented it earlier). Auto-link must not overwrite —
+        // running it twice is then idempotent.
+        let mut shot_a = media_clip(0, 120);
+        shot_a.transform_link = Some(TransformLink::new(klipp_core::ClipId::new()));
+        let title = media_clip(0, 120);
+        let title_id = title.id;
+        let seq = seq_with_tracks(vec![
+            track_with_clips("V1", vec![shot_a]),
+            track_with_clips("V2", vec![title]),
+        ]);
+        let targets = collect_auto_link_targets(&seq, title_id, 0.5);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn auto_link_skips_non_overlapping_clip() {
+        // Shot A ends at frame 60 (2.5 s). Source title is at
+        // [60..120] (2.5..5 s). Ramp window = [4.5 s .. 5.0 s].
+        // Shot A doesn't overlap the ramp window.
+        let shot_a = media_clip(0, 60);
+        let title = media_clip(60, 120);
+        let title_id = title.id;
+        let seq = seq_with_tracks(vec![
+            track_with_clips("V1", vec![shot_a]),
+            track_with_clips("V2", vec![title]),
+        ]);
+        let targets = collect_auto_link_targets(&seq, title_id, 0.5);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn auto_link_includes_clip_that_starts_inside_ramp_window() {
+        // Shot A starts at frame 110 (≈ 4.58 s) — inside the ramp
+        // window of [4.5 .. 5.0]. Should be included even though it
+        // covers only part of the ramp.
+        let shot_a = media_clip(110, 130);
+        let title = media_clip(0, 120);
+        let title_id = title.id;
+        let shot_a_id = shot_a.id;
+        let seq = seq_with_tracks(vec![
+            track_with_clips("V1", vec![shot_a]),
+            track_with_clips("V2", vec![title]),
+        ]);
+        let targets = collect_auto_link_targets(&seq, title_id, 0.5);
+        assert_eq!(targets, vec![shot_a_id]);
+    }
+
+    #[test]
+    fn auto_link_skips_adjustment_layer_and_gap() {
+        // Both AdjustmentLayer and Gap clip kinds have no own
+        // transform — auto-linking either is a useless mutation.
+        let mut adj = media_clip(0, 120);
+        adj.kind = klipp_timeline::ClipKind::AdjustmentLayer;
+        let mut gap = media_clip(0, 120);
+        gap.kind = klipp_timeline::ClipKind::Gap;
+        let title = media_clip(0, 120);
+        let title_id = title.id;
+        let seq = seq_with_tracks(vec![
+            track_with_clips("V1", vec![adj]),
+            track_with_clips("V2", vec![gap]),
+            track_with_clips("V3", vec![title]),
+        ]);
+        let targets = collect_auto_link_targets(&seq, title_id, 0.5);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn auto_link_skips_self_target_cycle() {
+        // Edge case: source title already links → some clip on V1.
+        // Auto-link tries to bind that V1 clip → source title; this
+        // would close a cycle and must be rejected.
+        let shot_a = media_clip(0, 120);
+        let shot_a_id = shot_a.id;
+        let mut title = media_clip(0, 120);
+        title.transform_link = Some(TransformLink::new(shot_a_id));
+        let title_id = title.id;
+        let seq = seq_with_tracks(vec![
+            track_with_clips("V1", vec![shot_a]),
+            track_with_clips("V2", vec![title]),
+        ]);
+        let targets = collect_auto_link_targets(&seq, title_id, 0.5);
+        assert!(targets.is_empty(), "rejecting bind would close source ↔ shot_a cycle");
+    }
+
+    #[test]
+    fn auto_link_returns_empty_when_source_missing() {
+        // Stale dispatch (clip removed between dispatch and handler).
+        let title = media_clip(0, 120);
+        let seq = seq_with_tracks(vec![track_with_clips("V1", vec![title])]);
+        let targets = collect_auto_link_targets(&seq, klipp_core::ClipId::new(), 0.5);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn auto_link_returns_empty_for_zero_ramp() {
+        // Pathological ramp_secs (0 or negative). No clip is "during"
+        // a zero-length window; the helper bails cleanly.
+        let shot_a = media_clip(0, 120);
+        let title = media_clip(0, 120);
+        let title_id = title.id;
+        let seq = seq_with_tracks(vec![
+            track_with_clips("V1", vec![shot_a]),
+            track_with_clips("V2", vec![title]),
+        ]);
+        assert!(collect_auto_link_targets(&seq, title_id, 0.0).is_empty());
+        assert!(collect_auto_link_targets(&seq, title_id, -1.0).is_empty());
     }
 }

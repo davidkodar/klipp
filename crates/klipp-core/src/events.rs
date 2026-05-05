@@ -2296,6 +2296,39 @@ pub enum AppCommand {
         max_scale: f32,
     },
 
+    /// Auto-apply `transform_link` to every clip *beneath* the
+    /// hyperzoom source within the ramp window so they fly into the
+    /// focal point alongside the source. Closes the loop on the
+    /// canonical "title overlay above an underlying shot" workflow:
+    /// after `ApplyHyperzoom` writes keyframes on the title and target,
+    /// the user invokes this to link the underlying V1/V2 shots so
+    /// they swell with the title rather than sitting still.
+    ///
+    /// The handler walks every track strictly *below* the source's
+    /// track and links any clip overlapping
+    /// `[source.timeline_out - ramp_secs, source.timeline_out]` whose
+    /// kind is meaningfully linkable (not AdjustmentLayer / Gap /
+    /// nested Sequence) and that doesn't already have a link of its
+    /// own (preserves explicit user parenting choices). Cycle-rejected
+    /// at bind time so a pathological project file can't produce a
+    /// runtime loop.
+    ///
+    /// `mode = 0` (Absolute) is the canonical "fly with parent"
+    /// mode — the underlying shot's own keyframes get replaced by the
+    /// source's resolved transform during the ramp. `mode = 1`
+    /// (Additive) composes if the underlying shot already had its own
+    /// motion the user wants preserved.
+    AutoLinkClipsBeneathSource {
+        source_clip_id: ClipId,
+        ramp_secs: f64,
+        /// 0 = Absolute, 1 = Additive (matches `SetClipTransformLink`).
+        mode: u8,
+        inherit_scale: bool,
+        inherit_position: bool,
+        inherit_rotation: bool,
+        inherit_anchor: bool,
+    },
+
     /// Toggle the "hide matte source from visible composite" flag on a
     /// clip. Default behaviour when bound via `SetClipMatte` is `true`;
     /// pros can flip this to keep the matte source visible for

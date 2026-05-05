@@ -2385,37 +2385,83 @@ fn show_hyperzoom_section(
 
                 ui.add_space(8.0);
 
-                // ── Apply ──
-                let apply_label = "Apply hyperzoom";
-                if ui.add_sized(
-                    egui::vec2(150.0, 26.0),
-                    egui::Button::new(
-                        egui::RichText::new(apply_label)
-                            .size(11.0)
-                            .color(theme.text_on_accent),
+                // ── Apply + Link beneath ──
+                // Two-button row. "Apply hyperzoom" writes the
+                // keyframes on source + target. "Link clips beneath"
+                // is the optional follow-up that auto-applies
+                // transform_link to clips on lower tracks during the
+                // ramp window so the underlying shot flies into the
+                // focal point alongside the source.
+                ui.horizontal(|ui| {
+                    let apply_label = "Apply hyperzoom";
+                    if ui.add_sized(
+                        egui::vec2(150.0, 26.0),
+                        egui::Button::new(
+                            egui::RichText::new(apply_label)
+                                .size(11.0)
+                                .color(theme.text_on_accent),
+                        )
+                        .fill(theme.accent)
+                        .rounding(6.0),
                     )
-                    .fill(theme.accent)
-                    .rounding(6.0),
-                )
-                .on_hover_text(
-                    "Writes anchor + scale keyframes on this clip and the chosen target. \
-                     Re-applying replaces the previous ramp; tweak in the keyframe editor afterwards.",
-                )
-                .clicked()
-                {
-                    let target_clip_id = match target_choice {
-                        HyperzoomTargetChoice::Auto => None,
-                        HyperzoomTargetChoice::Explicit(id) => Some(id),
-                    };
-                    cmds.push(AppCommand::ApplyHyperzoom {
-                        source_clip_id: clip_id,
-                        target_clip_id,
-                        focal_x_norm: focal_x,
-                        focal_y_norm: focal_y,
-                        duration_secs,
-                        max_scale,
-                    });
-                }
+                    .on_hover_text(
+                        "Writes anchor + scale keyframes on this clip and the chosen target. \
+                         Re-applying replaces the previous ramp; tweak in the keyframe editor afterwards.",
+                    )
+                    .clicked()
+                    {
+                        let target_clip_id = match target_choice {
+                            HyperzoomTargetChoice::Auto => None,
+                            HyperzoomTargetChoice::Explicit(id) => Some(id),
+                        };
+                        cmds.push(AppCommand::ApplyHyperzoom {
+                            source_clip_id: clip_id,
+                            target_clip_id,
+                            focal_x_norm: focal_x,
+                            focal_y_norm: focal_y,
+                            duration_secs,
+                            max_scale,
+                        });
+                    }
+
+                    ui.add_space(6.0);
+
+                    if ui.add_sized(
+                        egui::vec2(150.0, 26.0),
+                        egui::Button::new(
+                            egui::RichText::new("Link clips beneath")
+                                .size(11.0)
+                                .color(theme.text_primary),
+                        )
+                        .fill(theme.bg_raised)
+                        .stroke(egui::Stroke::new(0.5_f32, theme.border))
+                        .rounding(6.0),
+                    )
+                    .on_hover_text(
+                        "Auto-set transform_link on every clip beneath this one within the \
+                         ramp window so they fly with the source. Skips clips that already \
+                         have a link of their own (your manual parenting choices survive).",
+                    )
+                    .clicked()
+                    {
+                        cmds.push(AppCommand::AutoLinkClipsBeneathSource {
+                            source_clip_id: clip_id,
+                            ramp_secs: duration_secs,
+                            // Canonical "fly with parent" defaults.
+                            // The user can refine each clip's link in
+                            // its own TRANSFORM LINK section afterwards
+                            // (mode, per-axis flags) — running
+                            // auto-link again is a no-op on already-
+                            // linked clips, so the manual tweaks
+                            // don't get clobbered.
+                            mode: 0, // Absolute
+                            inherit_scale: true,
+                            inherit_position: true,
+                            inherit_rotation: true,
+                            inherit_anchor: true,
+                        });
+                    }
+                });
             });
         ui.add_space(8.0);
     });

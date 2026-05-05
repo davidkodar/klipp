@@ -521,6 +521,23 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
             }),
             enabled: true,
         });
+        // Auto-link follow-up: ramp window matches the hyperzoom
+        // default (0.5 s); 'fly with parent' canonical mode (Absolute,
+        // all flags on). Inspector exposes per-clip refinement.
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Link clips beneath hyperzoom source"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Cmd(AppCommand::AutoLinkClipsBeneathSource {
+                source_clip_id: cid,
+                ramp_secs: 0.5,
+                mode: 0,
+                inherit_scale: true,
+                inherit_position: true,
+                inherit_rotation: true,
+                inherit_anchor: true,
+            }),
+            enabled: true,
+        });
         // Common blend modes only — the full 13-mode list would
         // dilute the palette. Users who want the full set go through
         // the Inspector COMPOSITING section.
@@ -562,6 +579,12 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         });
         e.push(PaletteEntry {
             label: Cow::Borrowed("Apply hyperzoom (auto, centre)"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Cmd(AppCommand::Undo),
+            enabled: false,
+        });
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Link clips beneath hyperzoom source"),
             shortcut: Cow::Borrowed(""),
             action: PaletteAction::Cmd(AppCommand::Undo),
             enabled: false,
@@ -695,6 +718,10 @@ mod tests {
         // what the palette exposes. Power users tweak in the
         // inspector before applying.
         "Apply hyperzoom",
+        // Auto-link follow-up — the "fly with parent" canonical
+        // helper. Pinned so the easy-path discovery surface stays
+        // visible across refactors.
+        "Link clips beneath",
     ];
 
     #[test]

@@ -6549,6 +6549,54 @@ impl KlippApp {
                     self.sync_sequence_to_engine();
                     return true;
                 }
+                AppCommand::AutoLinkClipsBeneathSource {
+                    source_clip_id, ramp_secs, mode,
+                    inherit_scale, inherit_position, inherit_rotation, inherit_anchor,
+                } => {
+                    let src_id = *source_clip_id;
+                    let seq_idx = self.state.active_sequence_idx;
+                    let link_mode = if *mode == 1 {
+                        klipp_timeline::LinkMode::Additive
+                    } else {
+                        klipp_timeline::LinkMode::Absolute
+                    };
+                    let targets = {
+                        let seq = &self.state.sequences[seq_idx];
+                        crate::hyperzoom::collect_auto_link_targets(seq, src_id, *ramp_secs)
+                    };
+                    if targets.is_empty() {
+                        // Likely benign — no qualifying clip beneath the
+                        // source within the ramp window. Logging at
+                        // debug rather than warn so it doesn't pollute
+                        // the panel during normal use.
+                        tracing::debug!(
+                            "AutoLinkClipsBeneathSource: no clips matched for source {src_id:?} \
+                             within {ramp_secs} s ramp window"
+                        );
+                        return true;
+                    }
+                    let inherit = (*inherit_scale, *inherit_position, *inherit_rotation, *inherit_anchor);
+                    let seq = &mut self.state.sequences[seq_idx];
+                    for cid in &targets {
+                        if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *cid) {
+                            clip.transform_link = Some(klipp_timeline::TransformLink {
+                                target: src_id,
+                                mode: link_mode,
+                                inherit_scale: inherit.0,
+                                inherit_position: inherit.1,
+                                inherit_rotation: inherit.2,
+                                inherit_anchor: inherit.3,
+                            });
+                        }
+                    }
+                    tracing::info!(
+                        "AutoLinkClipsBeneathSource: linked {} clip(s) beneath {src_id:?} → {src_id:?} ({:?})",
+                        targets.len(), link_mode,
+                    );
+                    self.state.dirty = true;
+                    self.sync_sequence_to_engine();
+                    return true;
+                }
                 AppCommand::ApplyHyperzoom {
                     source_clip_id, target_clip_id, focal_x_norm, focal_y_norm,
                     duration_secs, max_scale,
@@ -30976,7 +31024,7 @@ fn apply_hyperzoom_plan_to_clip(
 /// target` would create a cycle (consumer → … → target → consumer).
 /// Uses a 64-link depth cap so a corrupt pre-existing cycle is
 /// detected as "always rejecting any new bind" rather than spinning.
-fn transform_link_chain_creates_cycle(
+pub(crate) fn transform_link_chain_creates_cycle(
     seq: &klipp_timeline::Sequence,
     consumer: klipp_core::ClipId,
     target: klipp_core::ClipId,
