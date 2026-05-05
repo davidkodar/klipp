@@ -4954,7 +4954,12 @@ impl PlaybackEngine {
 
         // Process each active overlay track
         let active_overlays_count = active_overlays.len();
+        // Per-iteration timing breakdown logged when a single
+        // overlay's processing exceeds 1 ms — helps localise which
+        // clip + which sub-block owns the cost.
+        let mut per_iter_log: Vec<(usize, bool, bool, u128, &'static str)> = Vec::new();
         for (track_idx, clip_idx, clip) in active_overlays {
+            let t_iter = std::time::Instant::now();
             // Skip re-rendering synthetic clips when the same clip+frame is already cached.
             // This mirrors the `last_synth_frame_rendered` optimization on the V1 path and
             // prevents ~1000 re-renders/sec for static titles/generators.
@@ -4968,6 +4973,8 @@ impl PlaybackEngine {
                 // Same synthetic clip at same frame-key already rendered — skip.
                 // For frame-invariant titles, `frame_key` is constant 0
                 // so the cache hits forever after the first render.
+                let us = t_iter.elapsed().as_micros();
+                per_iter_log.push((track_idx, is_synthetic, true, us, "synthetic_cache_hit"));
                 continue;
             }
             // One-shot diagnostic: when a title clip ISN'T being
@@ -5013,6 +5020,8 @@ impl PlaybackEngine {
                     && self.overlay_frames.contains_key(&track_idx)
                 {
                     self.overlay_synth_frame.insert(track_idx, frame_key);
+                    let us = t_iter.elapsed().as_micros();
+                    per_iter_log.push((track_idx, true, true, us, "static_gen_hit"));
                     continue;
                 }
             }
@@ -5157,6 +5166,8 @@ impl PlaybackEngine {
                 self.overlay_frames.insert(track_idx, u8_frame.to_linear());
                 self.overlay_clips.insert(track_idx, clip_idx);
                 self.overlay_synth_frame.insert(track_idx, frame_key);
+                let us = t_iter.elapsed().as_micros();
+                per_iter_log.push((track_idx, true, false, us, "title_rendered"));
                 continue;
             }
 
@@ -5211,6 +5222,8 @@ impl PlaybackEngine {
                     + (playhead - clip.timeline_in).to_secs_f64() * clip.speed;
                 // Already have the right decoder open for this track+clip?
                 if self.overlay_clips.get(&track_idx) == Some(&clip_idx) && self.overlay_decoders.contains_key(&track_idx) {
+                    let us = t_iter.elapsed().as_micros();
+                    per_iter_log.push((track_idx, false, true, us, "media_decoder_open"));
                     continue;
                 }
                 // Close old decoder for this track if any
@@ -5274,8 +5287,19 @@ impl PlaybackEngine {
         // already-open check + any actual work).
         let total_us = t_total.elapsed().as_micros();
         if total_us > 2_000 {
+            let mut iter_summary = String::new();
+            for (track_idx, is_synthetic, hit, us, label) in &per_iter_log {
+                iter_summary.push_str(&format!(
+                    " [t{}{}{} {:.2}ms via {}]",
+                    track_idx,
+                    if *is_synthetic { " synth" } else { " media" },
+                    if *hit { " hit" } else { " miss" },
+                    *us as f64 / 1000.0,
+                    label,
+                ));
+            }
             tracing::debug!(
-                "PERF update_overlay_decoders: {:.2}ms (collect={:.2} loop={:.2}) overlays={active_overlays_count}",
+                "PERF update_overlay_decoders: {:.2}ms (collect={:.2} loop={:.2}) overlays={active_overlays_count}{iter_summary}",
                 total_us as f64 / 1000.0,
                 collect_us as f64 / 1000.0,
                 total_us.saturating_sub(collect_us) as f64 / 1000.0,
