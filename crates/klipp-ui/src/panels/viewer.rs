@@ -1513,6 +1513,14 @@ impl ViewerPanel {
             && !state.has_modal_open()
         {
             self.draw_title_object_editor(ui, state, image_rect, cmds);
+            // Hyperzoom focal-point handle. Reads/writes the same
+            // egui-memory scratch that the inspector's HYPERZOOM
+            // section spinboxes use, so dragging here updates the
+            // spinboxes live and editing the spinboxes moves the
+            // crosshair on next paint. Skipped on title-text-edit /
+            // eyedropper / modal flows for the same reasons as the
+            // title-object editor above.
+            self.draw_hyperzoom_focal_handle(ui, state, image_rect);
         }
 
         // ── Before/After or Grade Still split divider ──
@@ -3263,6 +3271,119 @@ impl ViewerPanel {
                     });
                 }
             }
+        }
+    }
+
+    /// Draggable focal-point gizmo on the viewer for the HYPERZOOM
+    /// inspector section. Visual language matches the title-object
+    /// anchor handle (filled circle + ring + cross) — that's the
+    /// established "this is a draggable pivot point" affordance, so
+    /// reusing it makes the focal-point handle read instantly. The
+    /// scratch state lives in egui memory keyed by clip-id (see
+    /// `crate::hyperzoom::hyperzoom_scratch_id`), shared with the
+    /// inspector spinboxes — drag here updates the spinboxes live;
+    /// type into the spinboxes and the crosshair jumps.
+    ///
+    /// Skipped when:
+    ///
+    /// * No clip is selected.
+    /// * Selected clip is on a kind that hyperzoom doesn't apply to
+    ///   (`AdjustmentLayer` / `Gap` / nested `Sequence`) — these are
+    ///   the same kinds the inspector's HYPERZOOM section refuses
+    ///   to render for.
+    /// * The image rect is degenerate (zero width or height).
+    fn draw_hyperzoom_focal_handle(
+        &self,
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        image_rect: egui::Rect,
+    ) {
+        let Some(clip_id) = state.selected_clip else { return; };
+        if image_rect.width() < 1.0 || image_rect.height() < 1.0 {
+            return;
+        }
+        // Source-of-truth check: the clip must still be in the active
+        // sequence and its kind must qualify for hyperzoom.
+        let qualifies = state
+            .sequence()
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .find(|c| c.id == clip_id)
+            .map(|c| {
+                !matches!(
+                    c.kind,
+                    klipp_timeline::ClipKind::AdjustmentLayer
+                        | klipp_timeline::ClipKind::Gap
+                        | klipp_timeline::ClipKind::Sequence { .. }
+                )
+            })
+            .unwrap_or(false);
+        if !qualifies {
+            return;
+        }
+
+        let scratch = crate::hyperzoom::read_hyperzoom_scratch(ui.ctx(), clip_id);
+        let fx = scratch.focal_x.clamp(0.0, 1.0);
+        let fy = scratch.focal_y.clamp(0.0, 1.0);
+
+        // Same accent + handle colours as the title-object editor so
+        // the two gizmos read as the same visual family.
+        let accent = egui::Color32::from_rgb(232, 160, 32);
+        let handle_fill = egui::Color32::from_rgb(20, 20, 24);
+        let handle_stroke = egui::Stroke::new(1.5_f32, accent);
+
+        let painter = ui.painter_at(image_rect);
+        let cx = image_rect.min.x + fx * image_rect.width();
+        let cy = image_rect.min.y + fy * image_rect.height();
+        let centre = egui::pos2(cx, cy);
+        let r = 5.5_f32;
+
+        // Filled disc + accent ring + cross arms. Slightly bigger
+        // than the title-object anchor (4.5 → 5.5) so the focal
+        // handle is the more prominent affordance when both are on
+        // screen — the focal point is "the thing the user is
+        // tuning" while the title anchor is a static reference.
+        painter.circle_filled(centre, r, handle_fill);
+        painter.circle_stroke(centre, r, handle_stroke);
+        let arm = r + 4.0;
+        painter.line_segment(
+            [egui::pos2(cx - arm, cy), egui::pos2(cx + arm, cy)],
+            egui::Stroke::new(1.0_f32, accent),
+        );
+        painter.line_segment(
+            [egui::pos2(cx, cy - arm), egui::pos2(cx, cy + arm)],
+            egui::Stroke::new(1.0_f32, accent),
+        );
+
+        // Hit test only the handle itself, not the whole image rect —
+        // dragging anywhere else on the canvas should still fall
+        // through to the title-object editor / transform controls.
+        let hit = egui::Rect::from_center_size(centre, egui::vec2(arm * 2.0, arm * 2.0));
+        let resp = ui.interact(
+            hit,
+            ui.id().with(("hyperzoom_focal_handle", clip_id)),
+            egui::Sense::click_and_drag(),
+        );
+        if resp.dragged() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let nx = ((p.x - image_rect.min.x) / image_rect.width()).clamp(0.0, 1.0);
+                let ny = ((p.y - image_rect.min.y) / image_rect.height()).clamp(0.0, 1.0);
+                crate::hyperzoom::update_hyperzoom_scratch(ui.ctx(), clip_id, |s| {
+                    s.focal_x = nx;
+                    s.focal_y = ny;
+                });
+            }
+        }
+
+        // Hover affordance: tiny tooltip that names the value the
+        // user is dragging — without it the floating crosshair on a
+        // black letterbox is a UFO.
+        if resp.hovered() || resp.dragged() {
+            resp.on_hover_text(format!(
+                "Hyperzoom focal point ({:.3}, {:.3})\nDrag to move; spinboxes in HYPERZOOM stay in sync.",
+                fx, fy,
+            ));
         }
     }
 

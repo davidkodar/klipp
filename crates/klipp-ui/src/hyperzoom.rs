@@ -22,6 +22,121 @@ use klipp_core::keyframe::{Interpolation, Keyframe};
 use klipp_core::ClipId;
 use klipp_timeline::{ClipKind, Sequence};
 
+/// Per-clip persistent state for the HYPERZOOM inspector section AND
+/// the on-canvas focal-point gizmo. Lives in egui's `Memory` keyed by
+/// clip-id (see [`hyperzoom_scratch_id`]) so the inspector spinboxes
+/// and the viewer crosshair stay in sync without round-tripping
+/// through `AppState`. Both `HyperzoomScratch` and
+/// `HyperzoomTargetChoice` are `Copy` so reading from `Memory` is a
+/// trivial value clone.
+#[derive(Debug, Clone, Copy)]
+pub struct HyperzoomScratch {
+    pub focal_x: f32,
+    pub focal_y: f32,
+    pub duration_secs: f64,
+    pub max_scale: f32,
+    pub target_choice: HyperzoomTargetChoice,
+    pub easing: HyperzoomEasing,
+    pub hold_secs: f64,
+}
+
+impl Default for HyperzoomScratch {
+    fn default() -> Self {
+        Self {
+            focal_x: 0.5,
+            focal_y: 0.5,
+            duration_secs: 0.5,
+            max_scale: 50.0,
+            target_choice: HyperzoomTargetChoice::Auto,
+            easing: HyperzoomEasing::Linear,
+            hold_secs: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HyperzoomTargetChoice {
+    /// "Use whatever clip follows this one on the same track." The
+    /// `ApplyHyperzoom` handler resolves this at apply time, so the
+    /// user can change track contents between configuring and
+    /// applying without the inspector going stale.
+    Auto,
+    /// Explicit pick — the handler will reject if the clip is gone
+    /// at apply time.
+    Explicit(ClipId),
+}
+
+/// Shared egui-`Id` for the per-clip `HyperzoomScratch` slot. Both
+/// the inspector and the viewer call this so they read/write the
+/// same memory cell — never compute the id ad hoc anywhere else, or
+/// the two surfaces will silently desync.
+pub fn hyperzoom_scratch_id(clip_id: ClipId) -> egui::Id {
+    egui::Id::new(("video:hyperzoom_state", clip_id))
+}
+
+/// Read this clip's scratch from egui memory. Returns the default
+/// (centre focal point, 0.5 s, 50×, auto target) when no value is
+/// stored — that's the same starting point the inspector spinboxes
+/// fall back to on first paint, so reading from either side yields
+/// the same picture before the user has touched anything.
+pub fn read_hyperzoom_scratch(ctx: &egui::Context, clip_id: ClipId) -> HyperzoomScratch {
+    ctx.data_mut(|d| d.get_temp(hyperzoom_scratch_id(clip_id)).unwrap_or_default())
+}
+
+/// Mutate this clip's scratch in place. Pass a closure so the read /
+/// modify / write happens under a single `data_mut` lock — avoids
+/// the racy two-call pattern (`read` + later `insert`) when multiple
+/// surfaces edit different fields in the same frame.
+pub fn update_hyperzoom_scratch(ctx: &egui::Context, clip_id: ClipId, edit: impl FnOnce(&mut HyperzoomScratch)) {
+    ctx.data_mut(|d| {
+        let id = hyperzoom_scratch_id(clip_id);
+        let mut s: HyperzoomScratch = d.get_temp(id).unwrap_or_default();
+        edit(&mut s);
+        d.insert_temp(id, s);
+    });
+}
+
+/// Easing curve emitted by [`plan_hyperzoom`] across the ramp window.
+///
+/// * [`Self::Linear`] — straight line between keyframes. Default. The
+///   pre-easing-feature behaviour; existing projects + re-applies
+///   stay byte-identical.
+/// * [`Self::Bezier`] — symmetric S-curve via Bezier tangents at
+///   `±duration/3`. Slow start, accelerate through the middle, slow
+///   finish. Reads as the cinematic "rocket" feel on both source
+///   ramp-in and target ramp-out.
+///
+/// The user picks the choice in the inspector's HYPERZOOM section.
+/// Always opt-in — Apply Hyperzoom never silently flips a project's
+/// existing ramps from Linear to Bezier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HyperzoomEasing {
+    #[default]
+    Linear,
+    Bezier,
+}
+
+impl HyperzoomEasing {
+    /// Wire-format tag used by [`klipp_core::AppCommand::ApplyHyperzoom`].
+    /// 0 = Linear, 1 = Bezier. Mirrors the LinkMode-on-AppCommand
+    /// pattern so we don't pull `klipp-ui` types into `klipp-core`.
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Self::Linear => 0,
+            Self::Bezier => 1,
+        }
+    }
+
+    /// Inverse of [`Self::as_u8`]; unknown values fall back to
+    /// `Linear` (the safe default — never silently turns on Bezier).
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Bezier,
+            _ => Self::Linear,
+        }
+    }
+}
+
 /// Inputs to [`plan_hyperzoom`]. Durations are clip-local seconds;
 /// focal point is normalised screen coords (`0.0..=1.0`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -32,6 +147,15 @@ pub struct HyperzoomInput {
     pub focal_y_norm: f32,
     pub duration_secs: f64,
     pub max_scale: f32,
+    /// Easing across the ramp. Defaults to `Linear` for back-compat;
+    /// flip to `Bezier` for an S-curve via the inspector.
+    pub easing: HyperzoomEasing,
+    /// Optional flat-at-peak segment straddling the cut. The source
+    /// holds its last `hold_secs` at peak; the target holds its
+    /// first `hold_secs` at peak — total perceived "frozen at peak"
+    /// duration is `2 * hold_secs`. Set to `0.0` for the original
+    /// two-keyframe ramp.
+    pub hold_secs: f64,
 }
 
 /// Output of [`plan_hyperzoom`]. Keyframe times are clip-local seconds
@@ -62,34 +186,140 @@ pub fn plan_hyperzoom(input: HyperzoomInput) -> HyperzoomPlan {
     let fy = input.focal_y_norm.clamp(0.0, 1.0);
     let max_scale = input.max_scale.max(1.01);
     let dur = input.duration_secs.max(0.05);
+    let hold = input.hold_secs.max(0.0);
+    let easing = input.easing;
 
-    // Source: scale 1.0 → max_scale across the last `dur` seconds.
-    // When the source clip is shorter than the requested duration we
-    // ramp from t=0 instead — the user gets less ramp but still gets
-    // two distinct keyframes that `upsert` won't collapse.
-    let src_ramp_start = (input.source_clip_dur_secs - dur).max(0.0);
-    let src_ramp_end = input
-        .source_clip_dur_secs
-        .max(src_ramp_start + 0.05);
-    let source_scale_kfs = vec![
-        keyframe(src_ramp_start, 1.0),
-        keyframe(src_ramp_end, max_scale),
-    ];
+    // Source side. Anatomy of the timeline (clip-local seconds):
+    //
+    //     ramp_start → … (ease) … → peak_kf_time → … (flat) … → clip_end
+    //
+    // * Without hold (`hold == 0`): peak_kf_time == clip_end, no flat
+    //   tail — the plan emits 2 keyframes (back-compat with the
+    //   pre-hold-feature output).
+    // * With hold (`hold > 0`): the last `hold` seconds of the source
+    //   sit at peak, so the cut into the target lands inside a held-
+    //   peak window rather than at the apex of the ramp.
+    let peak_src = (input.source_clip_dur_secs - hold).max(0.0);
+    let src_ramp_start = (peak_src - dur).max(0.0);
+    let peak_src = peak_src.max(src_ramp_start + 0.05);
+    let source_scale_kfs = build_ramp_keyframes(
+        (src_ramp_start, 1.0),
+        (peak_src, max_scale),
+        easing,
+        if hold > 0.0 {
+            // Tail-hold: extra flat-at-peak keyframe at clip_end.
+            // `>= peak_src + 0.05` so upsert's 20 ms dedup window
+            // doesn't fold the two peak keyframes into one.
+            Some(input.source_clip_dur_secs.max(peak_src + 0.05))
+        } else {
+            None
+        },
+    );
 
-    // Target: scale max_scale → 1.0 across the first `dur` seconds.
-    // Cap at the target's duration so a keyframe never lands past the
-    // clip's end.
-    let tgt_ramp_end = dur.min(input.target_clip_dur_secs).max(0.05);
-    let target_scale_kfs = vec![
-        keyframe(0.0, max_scale),
-        keyframe(tgt_ramp_end, 1.0),
-    ];
+    // Target side, mirror anatomy:
+    //
+    //     0 → … (flat) … → ramp_start → … (ease) … → ramp_end
+    //
+    // The hold occupies the head of the target so the held-peak
+    // window straddles the cut visually.
+    let tgt_ramp_start = hold;
+    let tgt_ramp_end = (tgt_ramp_start + dur).min(input.target_clip_dur_secs.max(tgt_ramp_start + dur));
+    let tgt_ramp_end = tgt_ramp_end.max(tgt_ramp_start + 0.05);
+    let target_scale_kfs = build_ramp_keyframes_target(
+        if hold > 0.0 { Some(0.0) } else { None },
+        (tgt_ramp_start, max_scale),
+        (tgt_ramp_end, 1.0),
+        easing,
+    );
 
     HyperzoomPlan {
         source_anchor: (fx, fy),
         source_scale_kfs,
         target_anchor: (fx, fy),
         target_scale_kfs,
+    }
+}
+
+/// Build the source-side keyframe sequence:
+///
+/// * `ramp_start` → `peak`: easing-shaped ramp.
+/// * Optional `tail_hold_at` keyframe pinned at the peak value to
+///   extend a flat segment after the ramp completes.
+///
+/// Bezier easing emits an S-curve via symmetric `±dur/3` horizontal
+/// tangents on the ramp endpoints. The tail-hold keyframe (when
+/// present) is always Linear with zero tangents so the held segment
+/// is dead flat — a Bezier flat segment would be redundant and could
+/// produce visual jitter at sub-millisecond integration steps.
+fn build_ramp_keyframes(
+    ramp_start: (f64, f32),
+    peak: (f64, f32),
+    easing: HyperzoomEasing,
+    tail_hold_at: Option<f64>,
+) -> Vec<Keyframe> {
+    let segment_dur = (peak.0 - ramp_start.0).max(1e-6);
+    let mut out = Vec::with_capacity(3);
+    out.push(ramp_endpoint_keyframe(ramp_start.0, ramp_start.1, easing, segment_dur, RampEndpoint::Start));
+    out.push(ramp_endpoint_keyframe(peak.0, peak.1, easing, segment_dur, RampEndpoint::End));
+    if let Some(t) = tail_hold_at {
+        out.push(keyframe(t, peak.1));
+    }
+    out
+}
+
+/// Mirror of [`build_ramp_keyframes`] for the target side, where the
+/// optional flat segment is at the *head* (frame 0 → ramp_start) and
+/// the easing applies to the descending ramp segment.
+fn build_ramp_keyframes_target(
+    head_hold_at: Option<f64>,
+    ramp_start: (f64, f32),
+    ramp_end: (f64, f32),
+    easing: HyperzoomEasing,
+) -> Vec<Keyframe> {
+    let segment_dur = (ramp_end.0 - ramp_start.0).max(1e-6);
+    let mut out = Vec::with_capacity(3);
+    if let Some(t) = head_hold_at {
+        out.push(keyframe(t, ramp_start.1));
+    }
+    out.push(ramp_endpoint_keyframe(ramp_start.0, ramp_start.1, easing, segment_dur, RampEndpoint::Start));
+    out.push(ramp_endpoint_keyframe(ramp_end.0, ramp_end.1, easing, segment_dur, RampEndpoint::End));
+    out
+}
+
+#[derive(Copy, Clone)]
+enum RampEndpoint {
+    Start,
+    End,
+}
+
+/// Emit a keyframe at `(time_secs, value)` whose interpolation +
+/// tangents match `easing`. Bezier endpoints get symmetric horizontal
+/// tangents at `±segment_dur/3` — the standard "smooth" Bezier shape;
+/// 1/3 of the segment is the convention shared by After Effects,
+/// Resolve, and most NLE keyframe editors.
+fn ramp_endpoint_keyframe(
+    time_secs: f64,
+    value: f32,
+    easing: HyperzoomEasing,
+    segment_dur: f64,
+    which: RampEndpoint,
+) -> Keyframe {
+    match easing {
+        HyperzoomEasing::Linear => keyframe(time_secs, value),
+        HyperzoomEasing::Bezier => {
+            let third = segment_dur / 3.0;
+            let (tangent_in, tangent_out) = match which {
+                RampEndpoint::Start => ((0.0, 0.0), (third, 0.0)),
+                RampEndpoint::End => ((-third, 0.0), (0.0, 0.0)),
+            };
+            Keyframe {
+                time_secs,
+                value,
+                interpolation: Interpolation::Bezier,
+                tangent_in,
+                tangent_out,
+            }
+        }
     }
 }
 
@@ -235,6 +465,9 @@ mod tests {
     use super::*;
 
     fn input(focal_x: f32, focal_y: f32, dur: f64, max: f32, src: f64, tgt: f64) -> HyperzoomInput {
+        // Default constructor used by the original two-keyframe tests:
+        // Linear easing, no hold — matches the pre-easing-feature
+        // output exactly so those tests stay green.
         HyperzoomInput {
             source_clip_dur_secs: src,
             target_clip_dur_secs: tgt,
@@ -242,6 +475,8 @@ mod tests {
             focal_y_norm: focal_y,
             duration_secs: dur,
             max_scale: max,
+            easing: HyperzoomEasing::Linear,
+            hold_secs: 0.0,
         }
     }
 
@@ -299,6 +534,149 @@ mod tests {
         let plan = plan_hyperzoom(input(0.5, 0.5, 0.5, 50.0, 0.2, 3.0));
         let first_src = &plan.source_scale_kfs[0];
         assert!(first_src.time_secs >= 0.0);
+    }
+
+    // ──────────── Easing + hold-at-peak (opt-in extras) ────────────
+
+    fn input_with(
+        focal_x: f32, focal_y: f32, dur: f64, max: f32, src: f64, tgt: f64,
+        easing: HyperzoomEasing, hold: f64,
+    ) -> HyperzoomInput {
+        HyperzoomInput {
+            source_clip_dur_secs: src,
+            target_clip_dur_secs: tgt,
+            focal_x_norm: focal_x,
+            focal_y_norm: focal_y,
+            duration_secs: dur,
+            max_scale: max,
+            easing,
+            hold_secs: hold,
+        }
+    }
+
+    #[test]
+    fn linear_default_emits_linear_interpolation() {
+        // Pin: pre-easing-feature behaviour stays Linear. A regression
+        // where Apply Hyperzoom silently flipped to Bezier on existing
+        // projects would be a back-compat break.
+        let plan = plan_hyperzoom(input(0.5, 0.5, 0.5, 50.0, 3.0, 3.0));
+        for kf in &plan.source_scale_kfs {
+            assert!(matches!(kf.interpolation, Interpolation::Linear));
+            assert_eq!(kf.tangent_in, (0.0, 0.0));
+            assert_eq!(kf.tangent_out, (0.0, 0.0));
+        }
+        for kf in &plan.target_scale_kfs {
+            assert!(matches!(kf.interpolation, Interpolation::Linear));
+            assert_eq!(kf.tangent_in, (0.0, 0.0));
+            assert_eq!(kf.tangent_out, (0.0, 0.0));
+        }
+    }
+
+    #[test]
+    fn bezier_easing_emits_symmetric_horizontal_tangents() {
+        // Bezier S-curve: ramp endpoints have horizontal handles
+        // (zero value-delta) extending ±dur/3 into the segment.
+        let plan = plan_hyperzoom(input_with(0.5, 0.5, 0.6, 50.0, 3.0, 3.0, HyperzoomEasing::Bezier, 0.0));
+        let third = 0.6 / 3.0;
+        // Source: 2 keyframes (no hold). First = ramp-start, second = peak.
+        assert_eq!(plan.source_scale_kfs.len(), 2);
+        let s0 = &plan.source_scale_kfs[0];
+        let s1 = &plan.source_scale_kfs[1];
+        assert!(matches!(s0.interpolation, Interpolation::Bezier));
+        assert!(matches!(s1.interpolation, Interpolation::Bezier));
+        assert_eq!(s0.tangent_in, (0.0, 0.0));
+        assert!((s0.tangent_out.0 - third).abs() < 1e-9);
+        assert!(s0.tangent_out.1.abs() < 1e-6);
+        assert!((s1.tangent_in.0 + third).abs() < 1e-9, "End-of-ramp pulls tangent left");
+        assert!(s1.tangent_in.1.abs() < 1e-6);
+        assert_eq!(s1.tangent_out, (0.0, 0.0));
+    }
+
+    #[test]
+    fn bezier_target_endpoints_mirror_source_shape() {
+        // Same handle math, applied to the descending ramp on the
+        // target side. The ramp is `max → 1.0` but the tangent
+        // shape (horizontal handles ±third) is identical — the
+        // descending segment becomes ease-out / settle-into-1.0
+        // automatically because of the value direction.
+        let plan = plan_hyperzoom(input_with(0.5, 0.5, 0.6, 50.0, 3.0, 3.0, HyperzoomEasing::Bezier, 0.0));
+        let third = 0.6 / 3.0;
+        assert_eq!(plan.target_scale_kfs.len(), 2);
+        let t0 = &plan.target_scale_kfs[0];
+        let t1 = &plan.target_scale_kfs[1];
+        assert!(matches!(t0.interpolation, Interpolation::Bezier));
+        assert!(matches!(t1.interpolation, Interpolation::Bezier));
+        assert!((t0.tangent_out.0 - third).abs() < 1e-9);
+        assert!((t1.tangent_in.0 + third).abs() < 1e-9);
+    }
+
+    #[test]
+    fn hold_secs_zero_keeps_two_keyframe_back_compat_shape() {
+        // Pin: hold = 0 must produce the same 2-keyframe output as
+        // the pre-hold-feature `input()` constructor. Otherwise the
+        // existing `plan_source_ramps_from_one_to_max_at_clip_end`
+        // and friends would silently change shape under us.
+        let baseline = plan_hyperzoom(input(0.5, 0.5, 0.5, 50.0, 3.0, 3.0));
+        let with_hold_zero = plan_hyperzoom(input_with(0.5, 0.5, 0.5, 50.0, 3.0, 3.0, HyperzoomEasing::Linear, 0.0));
+        assert_eq!(baseline.source_scale_kfs.len(), with_hold_zero.source_scale_kfs.len());
+        assert_eq!(baseline.target_scale_kfs.len(), with_hold_zero.target_scale_kfs.len());
+        for (a, b) in baseline.source_scale_kfs.iter().zip(&with_hold_zero.source_scale_kfs) {
+            assert!((a.time_secs - b.time_secs).abs() < 1e-9);
+            assert!((a.value - b.value).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn hold_inserts_third_keyframe_on_each_side() {
+        // 3 s clip, 0.5 s ramp, 0.2 s hold. Expected:
+        //   source kfs: (clip_dur - hold - dur, 1.0), (clip_dur - hold, max), (clip_dur, max)
+        //              = (2.3, 1.0), (2.8, 50.0), (3.0, 50.0)
+        //   target kfs: (0.0, max), (hold, max), (hold + dur, 1.0)
+        //              = (0.0, 50.0), (0.2, 50.0), (0.7, 1.0)
+        let plan = plan_hyperzoom(input_with(0.5, 0.5, 0.5, 50.0, 3.0, 3.0, HyperzoomEasing::Linear, 0.2));
+        let s = &plan.source_scale_kfs;
+        let t = &plan.target_scale_kfs;
+        assert_eq!(s.len(), 3);
+        assert_eq!(t.len(), 3);
+        assert!((s[0].time_secs - 2.3).abs() < 1e-6);
+        assert!((s[0].value - 1.0).abs() < 1e-6);
+        assert!((s[1].time_secs - 2.8).abs() < 1e-6);
+        assert!((s[1].value - 50.0).abs() < 1e-6);
+        assert!((s[2].time_secs - 3.0).abs() < 1e-6);
+        assert!((s[2].value - 50.0).abs() < 1e-6);
+        assert!((t[0].time_secs - 0.0).abs() < 1e-6);
+        assert!((t[0].value - 50.0).abs() < 1e-6);
+        assert!((t[1].time_secs - 0.2).abs() < 1e-6);
+        assert!((t[1].value - 50.0).abs() < 1e-6);
+        assert!((t[2].time_secs - 0.7).abs() < 1e-6);
+        assert!((t[2].value - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hold_segment_is_linear_even_under_bezier_easing() {
+        // The flat held segment must stay flat — we deliberately keep
+        // the hold keyframe Linear with zero tangents so a Bezier
+        // S-curve doesn't introduce sub-pixel jitter through the held
+        // window. Only the ramp endpoints carry the easing shape.
+        let plan = plan_hyperzoom(input_with(0.5, 0.5, 0.5, 50.0, 3.0, 3.0, HyperzoomEasing::Bezier, 0.2));
+        let s_tail = plan.source_scale_kfs.last().unwrap();
+        let t_head = plan.target_scale_kfs.first().unwrap();
+        assert!(matches!(s_tail.interpolation, Interpolation::Linear));
+        assert!(matches!(t_head.interpolation, Interpolation::Linear));
+        assert_eq!(s_tail.tangent_in, (0.0, 0.0));
+        assert_eq!(s_tail.tangent_out, (0.0, 0.0));
+        assert_eq!(t_head.tangent_in, (0.0, 0.0));
+        assert_eq!(t_head.tangent_out, (0.0, 0.0));
+    }
+
+    #[test]
+    fn hold_clamps_negative_to_zero() {
+        // Defensive: negative hold inputs (stale UI state, mis-typed
+        // value) clamp to 0 — never produce a 3-keyframe shape with
+        // a backward-running tail.
+        let plan = plan_hyperzoom(input_with(0.5, 0.5, 0.5, 50.0, 3.0, 3.0, HyperzoomEasing::Linear, -0.5));
+        assert_eq!(plan.source_scale_kfs.len(), 2);
+        assert_eq!(plan.target_scale_kfs.len(), 2);
     }
 
     #[test]

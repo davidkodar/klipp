@@ -2232,28 +2232,20 @@ fn show_hyperzoom_section(
     }
 
     // egui-id-keyed scratch state for the spinboxes — survives
-    // across frames as long as this section keeps rendering.
-    // Defaults track the recommended starting point: focal centre,
-    // half-second ramp, 50× peak.
-    let state_id = egui::Id::new(("video:hyperzoom_state", clip_id));
-    let (mut focal_x, mut focal_y, mut duration_secs, mut max_scale, mut target_choice) = ui
-        .ctx()
-        .data_mut(|d| {
-            let stored: HyperzoomScratch = d.get_temp(state_id).unwrap_or(HyperzoomScratch {
-                focal_x: 0.5,
-                focal_y: 0.5,
-                duration_secs: 0.5,
-                max_scale: 50.0,
-                target_choice: HyperzoomTargetChoice::Auto,
-            });
-            (
-                stored.focal_x,
-                stored.focal_y,
-                stored.duration_secs,
-                stored.max_scale,
-                stored.target_choice,
-            )
-        });
+    // across frames as long as this section keeps rendering. The
+    // viewer's focal-point crosshair reads/writes the same cell so
+    // dragging on the canvas updates the spinboxes live and vice-
+    // versa. Defaults: focal centre, half-second ramp, 50× peak.
+    let stored = crate::hyperzoom::read_hyperzoom_scratch(ui.ctx(), clip_id);
+    let (mut focal_x, mut focal_y, mut duration_secs, mut max_scale, mut target_choice, mut easing, mut hold_secs) = (
+        stored.focal_x,
+        stored.focal_y,
+        stored.duration_secs,
+        stored.max_scale,
+        stored.target_choice,
+        stored.easing,
+        stored.hold_secs,
+    );
 
     section_card(ui, "HYPERZOOM", theme, |ui| {
         ui.add_space(6.0);
@@ -2383,6 +2375,60 @@ fn show_hyperzoom_section(
                     );
                 });
 
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // ── Easing ──
+                // Linear is the back-compat default. Bezier emits a
+                // symmetric S-curve via `±duration/3` horizontal
+                // tangents — visually a slow-start/fast-middle/slow-
+                // end ramp on each side of the cut.
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Easing").size(11.0).color(theme.text_dim));
+                    ui.add_space(8.0);
+                    let label = match easing {
+                        crate::hyperzoom::HyperzoomEasing::Linear => "Linear",
+                        crate::hyperzoom::HyperzoomEasing::Bezier => "Bezier (ease-in/out)",
+                    };
+                    egui::ComboBox::from_id_salt(("video:hyperzoom_easing", clip_id))
+                        .selected_text(label)
+                        .width(220.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut easing,
+                                crate::hyperzoom::HyperzoomEasing::Linear,
+                                "Linear",
+                            ).on_hover_text("Constant velocity. Mechanical feel; matches what Apply Hyperzoom emitted before the easing option existed.");
+                            ui.selectable_value(
+                                &mut easing,
+                                crate::hyperzoom::HyperzoomEasing::Bezier,
+                                "Bezier (ease-in/out)",
+                            ).on_hover_text("S-curve: slow start, fast middle, slow finish. Reads as the cinematic 'rocket' feel.");
+                        });
+                });
+
+                // ── Hold at peak ──
+                // Adds a flat-at-peak segment straddling the cut.
+                // Source's last `hold_secs` and target's first
+                // `hold_secs` both sit at peak — perceived freeze is
+                // 2× this value. 0 (default) reproduces the original
+                // two-keyframe ramp.
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Hold at peak").size(11.0).color(theme.text_dim));
+                    ui.add_space(8.0);
+                    ui.add(
+                        egui::DragValue::new(&mut hold_secs)
+                            .range(0.0_f64..=1.0)
+                            .speed(0.01)
+                            .suffix(" s")
+                            .fixed_decimals(2),
+                    ).on_hover_text(
+                        "Frames to hold at peak across the cut. Source's tail and target's head both \
+                         sit at peak for this long; total perceived freeze is twice this value.",
+                    );
+                });
+
                 ui.add_space(8.0);
 
                 // ── Apply + Link beneath ──
@@ -2421,6 +2467,8 @@ fn show_hyperzoom_section(
                             focal_y_norm: focal_y,
                             duration_secs,
                             max_scale,
+                            easing: easing.as_u8(),
+                            hold_secs,
                         });
                     }
 
@@ -2466,42 +2514,23 @@ fn show_hyperzoom_section(
         ui.add_space(8.0);
     });
 
-    // Persist edited spinbox values across frames.
-    ui.ctx().data_mut(|d| {
-        d.insert_temp(state_id, HyperzoomScratch {
-            focal_x,
-            focal_y,
-            duration_secs,
-            max_scale,
-            target_choice,
-        });
+    // Persist edited spinbox values across frames. Goes through the
+    // shared helper so the viewer crosshair sees the same cell.
+    crate::hyperzoom::update_hyperzoom_scratch(ui.ctx(), clip_id, |s| {
+        s.focal_x = focal_x;
+        s.focal_y = focal_y;
+        s.duration_secs = duration_secs;
+        s.max_scale = max_scale;
+        s.target_choice = target_choice;
+        s.easing = easing;
+        s.hold_secs = hold_secs;
     });
 }
 
-/// Per-clip persistent state for the HYPERZOOM section's spinboxes.
-/// Lives in egui's per-frame `Memory` keyed by clip-id so each clip
-/// remembers its own values without polluting `AppState`. Clones the
-/// `HyperzoomTargetChoice` enum directly — both variants are `Copy`.
-#[derive(Debug, Clone, Copy)]
-struct HyperzoomScratch {
-    focal_x: f32,
-    focal_y: f32,
-    duration_secs: f64,
-    max_scale: f32,
-    target_choice: HyperzoomTargetChoice,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HyperzoomTargetChoice {
-    /// "Use whatever clip follows this one on the same track." The
-    /// handler resolves this at apply time, so the user can change
-    /// track contents between configuring and applying without the
-    /// inspector going stale.
-    Auto,
-    /// Explicit pick — the handler will reject if the clip is gone
-    /// at apply time.
-    Explicit(klipp_core::ClipId),
-}
+// HyperzoomScratch + HyperzoomTargetChoice live in `crate::hyperzoom`
+// so the viewer's focal-point gizmo can read/write the same state
+// the inspector spinboxes use. Re-import for in-file shorthand.
+use crate::hyperzoom::HyperzoomTargetChoice;
 
 /// Local cycle predicate for the inspector's candidate filter. Mirrors
 /// `transform_link_chain_creates_cycle` in `app.rs` (which the

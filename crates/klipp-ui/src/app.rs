@@ -6599,7 +6599,7 @@ impl KlippApp {
                 }
                 AppCommand::ApplyHyperzoom {
                     source_clip_id, target_clip_id, focal_x_norm, focal_y_norm,
-                    duration_secs, max_scale,
+                    duration_secs, max_scale, easing, hold_secs,
                 } => {
                     let src_id = *source_clip_id;
                     let seq_idx = self.state.active_sequence_idx;
@@ -6652,6 +6652,8 @@ impl KlippApp {
                         focal_y_norm: *focal_y_norm,
                         duration_secs: *duration_secs,
                         max_scale: *max_scale,
+                        easing: crate::hyperzoom::HyperzoomEasing::from_u8(*easing),
+                        hold_secs: *hold_secs,
                     });
 
                     let seq = &mut self.state.sequences[seq_idx];

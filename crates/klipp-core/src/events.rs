@@ -2294,6 +2294,17 @@ pub enum AppCommand {
         focal_y_norm: f32,
         duration_secs: f64,
         max_scale: f32,
+        /// Easing curve for the ramp keyframes. Wire-format tag:
+        /// 0 = Linear (back-compat default), 1 = Bezier S-curve.
+        /// Unknown values fall back to Linear in the planner so a
+        /// stale dispatch can never produce a curve shape the UI
+        /// didn't ask for.
+        easing: u8,
+        /// Optional flat-at-peak segment straddling the cut. Source
+        /// holds peak in its last `hold_secs`; target holds peak in
+        /// its first `hold_secs`. `0.0` (default) reproduces the
+        /// original two-keyframe behaviour exactly.
+        hold_secs: f64,
     },
 
     /// Auto-apply `transform_link` to every clip *beneath* the

@@ -518,6 +518,11 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
                 focal_y_norm: 0.5,
                 duration_secs: 0.5,
                 max_scale: 50.0,
+                // Palette easy-path keeps Linear easing + no hold so
+                // the back-compat path is reachable without typing
+                // into the inspector.
+                easing: 0,
+                hold_secs: 0.0,
             }),
             enabled: true,
         });
