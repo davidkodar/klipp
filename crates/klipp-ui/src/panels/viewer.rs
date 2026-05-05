@@ -24,6 +24,61 @@ fn opaque_for_outline(c: egui::Color32) -> egui::Color32 {
     egui::Color32::from_rgb(r, g, b)
 }
 
+/// Map a normalised `(0..1, 0..1)` clip-space point to the image
+/// rect's pixel coordinates. The viewer paints frame content into
+/// `image_rect`; gizmos that store positions in clip-space (focal
+/// points, anchors, hit-targets) call this to project to screen.
+///
+/// Callers that want a clamped-into-frame result clamp the input
+/// before passing in — this helper preserves `(nx, ny)` outside
+/// `[0, 1]` so gizmos that legitimately overflow the frame (a title
+/// object dragged past the canvas) still draw at the right offset.
+pub(crate) fn viewer_norm_to_screen(image_rect: egui::Rect, nx: f32, ny: f32) -> egui::Pos2 {
+    egui::pos2(
+        image_rect.min.x + nx * image_rect.width(),
+        image_rect.min.y + ny * image_rect.height(),
+    )
+}
+
+/// Inverse of [`viewer_norm_to_screen`]. Returns the clip-space
+/// `(nx, ny)` for a screen-space pointer position. Result is **not**
+/// clamped — callers that want `[0, 1]` (e.g. focal-point storage)
+/// `.clamp(0.0, 1.0)` after reading. The drag handler for the
+/// title-object editor needs unclamped results so drag-deltas stay
+/// accurate when the cursor leaves the canvas.
+///
+/// Width / height each clamp to `>= 1.0` to avoid divide-by-zero on
+/// a degenerate image rect (briefly possible during layout settle).
+pub(crate) fn viewer_screen_to_norm(image_rect: egui::Rect, p: egui::Pos2) -> (f32, f32) {
+    let w = image_rect.width().max(1.0);
+    let h = image_rect.height().max(1.0);
+    (
+        (p.x - image_rect.min.x) / w,
+        (p.y - image_rect.min.y) / h,
+    )
+}
+
+/// Map a frame-pixel position (e.g. a glyph bounding-box from
+/// `klipp_title::compute_char_positions`, which returns coords in
+/// frame pixels at the title's render resolution) to the viewer
+/// image-rect's screen pixels. Composes [`viewer_norm_to_screen`]
+/// with the frame_w/h normalisation; pulls a degenerate-frame guard
+/// (`>= 1.0`) so a zero-sized frame doesn't divide-by-zero.
+///
+/// First consumer is the visual letter picker (commit 2 of
+/// HZ-NEXT-LETTER-PICKER). Lives in this prep commit so the geom
+/// helper trio lands as a unit.
+#[allow(dead_code)]
+pub(crate) fn viewer_frame_px_to_screen(
+    image_rect: egui::Rect,
+    frame_w: f32, frame_h: f32,
+    px: f32, py: f32,
+) -> egui::Pos2 {
+    let fw = frame_w.max(1.0);
+    let fh = frame_h.max(1.0);
+    viewer_norm_to_screen(image_rect, px / fw, py / fh)
+}
+
 /// Per-frame state computed once at the top of `show_program_viewer`.
 /// Passed by reference to extracted helper functions. All fields are `Copy`.
 #[derive(Debug, Clone, Copy)]
@@ -2993,19 +3048,12 @@ impl ViewerPanel {
         let handle_fill = egui::Color32::from_rgb(20, 20, 24);
         let painter = ui.painter_at(image_rect);
 
-        // Map a normalised (0..1) frame point to screen pixels.
-        let to_screen = |nx: f32, ny: f32| -> egui::Pos2 {
-            egui::pos2(
-                image_rect.min.x + nx * image_rect.width(),
-                image_rect.min.y + ny * image_rect.height(),
-            )
-        };
-        // Map a screen pixel position back to normalised frame coords.
-        let to_norm = |p: egui::Pos2| -> (f32, f32) {
-            let nx = (p.x - image_rect.min.x) / image_rect.width().max(1.0);
-            let ny = (p.y - image_rect.min.y) / image_rect.height().max(1.0);
-            (nx, ny)
-        };
+        // Local closures bridging to the file-level viewer-geom
+        // helpers — keeps the rest of `draw_title_object_editor`'s
+        // body byte-identical (avoids touching every `to_screen` /
+        // `to_norm` site for a no-behaviour-change refactor).
+        let to_screen = |nx: f32, ny: f32| viewer_norm_to_screen(image_rect, nx, ny);
+        let to_norm = |p: egui::Pos2| viewer_screen_to_norm(image_rect, p);
 
         // ── Paint each visible object's bounding box ──
         // Skip the object that's currently in inline-edit mode —
@@ -3334,9 +3382,9 @@ impl ViewerPanel {
         let handle_stroke = egui::Stroke::new(1.5_f32, accent);
 
         let painter = ui.painter_at(image_rect);
-        let cx = image_rect.min.x + fx * image_rect.width();
-        let cy = image_rect.min.y + fy * image_rect.height();
-        let centre = egui::pos2(cx, cy);
+        let centre = viewer_norm_to_screen(image_rect, fx, fy);
+        let cx = centre.x;
+        let cy = centre.y;
         let r = 5.5_f32;
 
         // Filled disc + accent ring + cross arms. Slightly bigger
@@ -3367,11 +3415,10 @@ impl ViewerPanel {
         );
         if resp.dragged() {
             if let Some(p) = resp.interact_pointer_pos() {
-                let nx = ((p.x - image_rect.min.x) / image_rect.width()).clamp(0.0, 1.0);
-                let ny = ((p.y - image_rect.min.y) / image_rect.height()).clamp(0.0, 1.0);
+                let (nx, ny) = viewer_screen_to_norm(image_rect, p);
                 crate::hyperzoom::update_hyperzoom_scratch(ui.ctx(), clip_id, |s| {
-                    s.focal_x = nx;
-                    s.focal_y = ny;
+                    s.focal_x = nx.clamp(0.0, 1.0);
+                    s.focal_y = ny.clamp(0.0, 1.0);
                 });
             }
         }
@@ -4563,6 +4610,113 @@ fn update_selection_from_anchor(state: &mut AppState) {
         } else {
             state.viewer_text_selection = None;
             state.viewer_text_selection_locked = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod viewer_geom_tests {
+    //! Pin the three viewer-geom helpers so a future refactor (e.g.
+    //! moving them into a sibling `viewer_geom.rs`, or unifying
+    //! with title-edit cursor placement) can't silently change the
+    //! coordinate-conversion semantics that the focal-point gizmo,
+    //! title-object editor, and (incoming) letter picker all share.
+    use super::*;
+    use egui::{pos2, Rect};
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
+        Rect::from_min_size(pos2(x, y), egui::vec2(w, h))
+    }
+
+    #[test]
+    fn norm_to_screen_centre_lands_on_image_centre() {
+        let r = rect(100.0, 200.0, 800.0, 600.0);
+        let p = viewer_norm_to_screen(r, 0.5, 0.5);
+        assert!((p.x - 500.0).abs() < 1e-6);
+        assert!((p.y - 500.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn norm_to_screen_corners() {
+        let r = rect(100.0, 200.0, 800.0, 600.0);
+        let tl = viewer_norm_to_screen(r, 0.0, 0.0);
+        let br = viewer_norm_to_screen(r, 1.0, 1.0);
+        assert!((tl.x - 100.0).abs() < 1e-6);
+        assert!((tl.y - 200.0).abs() < 1e-6);
+        assert!((br.x - 900.0).abs() < 1e-6);
+        assert!((br.y - 800.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn norm_to_screen_preserves_overflow() {
+        // Title-object editor case: an object dragged past the
+        // canvas edge has nx > 1.0 and the gizmo paints offscreen.
+        // Helper must NOT clamp — the caller decides.
+        let r = rect(0.0, 0.0, 100.0, 100.0);
+        let p = viewer_norm_to_screen(r, 1.5, -0.25);
+        assert!((p.x - 150.0).abs() < 1e-6);
+        assert!((p.y - -25.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn screen_to_norm_centre_round_trips() {
+        let r = rect(100.0, 200.0, 800.0, 600.0);
+        let (nx, ny) = viewer_screen_to_norm(r, pos2(500.0, 500.0));
+        assert!((nx - 0.5).abs() < 1e-6);
+        assert!((ny - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn screen_to_norm_returns_unclamped_for_drag_accuracy() {
+        // Pointer dragged past the canvas — focal-point caller will
+        // clamp to [0,1] before storing; title-object drag handler
+        // needs the unclamped delta. Helper preserves both.
+        let r = rect(0.0, 0.0, 100.0, 100.0);
+        let (nx, ny) = viewer_screen_to_norm(r, pos2(150.0, -25.0));
+        assert!((nx - 1.5).abs() < 1e-6);
+        assert!((ny - -0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn screen_to_norm_handles_degenerate_image_rect() {
+        // During layout settle the image rect can briefly be
+        // zero-sized. The width/height >= 1.0 guard prevents NaN
+        // from a divide-by-zero.
+        let r = Rect::from_min_size(pos2(0.0, 0.0), egui::vec2(0.0, 0.0));
+        let (nx, ny) = viewer_screen_to_norm(r, pos2(50.0, 50.0));
+        assert!(nx.is_finite());
+        assert!(ny.is_finite());
+    }
+
+    #[test]
+    fn frame_px_to_screen_maps_glyph_centroid() {
+        // Glyph centroid at frame-pixel (960, 540) on a 1920×1080
+        // title source, viewed in a 800×450 image rect at (100,200)
+        // — should land at the rect centre.
+        let r = rect(100.0, 200.0, 800.0, 450.0);
+        let p = viewer_frame_px_to_screen(r, 1920.0, 1080.0, 960.0, 540.0);
+        assert!((p.x - 500.0).abs() < 1e-6);
+        assert!((p.y - 425.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn frame_px_to_screen_handles_zero_frame_size() {
+        // Defensive: a degenerate frame size shouldn't NaN.
+        let r = rect(0.0, 0.0, 100.0, 100.0);
+        let p = viewer_frame_px_to_screen(r, 0.0, 0.0, 50.0, 50.0);
+        assert!(p.x.is_finite());
+        assert!(p.y.is_finite());
+    }
+
+    #[test]
+    fn round_trip_norm_through_screen_preserves_value() {
+        // Focal-point gizmo writes (norm) → reads pointer (screen) →
+        // writes back (norm). Should be lossless within float epsilon.
+        let r = rect(100.0, 200.0, 800.0, 600.0);
+        for (nx, ny) in [(0.0, 0.0), (0.25, 0.75), (0.5, 0.5), (0.999, 0.001)] {
+            let p = viewer_norm_to_screen(r, nx, ny);
+            let (nx2, ny2) = viewer_screen_to_norm(r, p);
+            assert!((nx - nx2).abs() < 1e-5, "x: {nx} vs {nx2}");
+            assert!((ny - ny2).abs() < 1e-5, "y: {ny} vs {ny2}");
         }
     }
 }
