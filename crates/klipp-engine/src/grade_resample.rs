@@ -45,6 +45,14 @@ pub fn resize_linear(
     if src_w == dst_w && src_h == dst_h {
         return src.to_vec();
     }
+    // Exact 2:1 downsample (4K → 1080p, the common overlay case) →
+    // dispatch to the specialised path. It uses chunks_exact(8) +
+    // straight-line ADD/MUL (4 adds, 1 mul, 4 channels) with no
+    // ratio arithmetic, no per-pixel bounds checks. Substantially
+    // faster than the generic box helper when the ratio fits.
+    if src_w == dst_w * 2 && src_h == dst_h * 2 {
+        return downsample_linear_2x(src, src_w, src_h);
+    }
     if dst_w <= src_w && dst_h <= src_h {
         downsample_linear_box(src, src_w, src_h, dst_w, dst_h)
     } else {

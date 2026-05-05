@@ -989,6 +989,10 @@ pub struct PlaybackEngine {
     /// pre-seek frame until the user pressed an arrow key — that path
     /// pops from the now-filled queue immediately.
     pending_paused_refresh: bool,
+    /// Set of overlay track indexes whose source-vs-final dimension
+    /// log line has already fired this session. Keeps the diagnostic
+    /// log to one line per overlay rather than spamming per-frame.
+    overlay_dim_logged: std::collections::HashSet<usize>,
 
     // ── Source Viewer playback (separate from timeline) ───────────
     /// Persistent decoder for whatever media the user has loaded into
@@ -1401,6 +1405,7 @@ impl PlaybackEngine {
             visible_node_thumbs: std::collections::HashSet::new(),
             thumb_capture_suspended: false,
             pending_paused_refresh: false,
+            overlay_dim_logged: std::collections::HashSet::new(),
             source_decoder: None,
             source_path: None,
             source_state: PlaybackState::Idle,
@@ -4122,11 +4127,27 @@ impl PlaybackEngine {
             // Resize FIRST so the grade chain runs at final resolution
             // rather than source. For a 4K overlay → 1080p sequence,
             // that's 4× less work for every effect / colour-grade
-            // node. Direction-aware: `resize_linear` picks the box
-            // downsample for shrinks and bilinear upsample for grows.
+            // node. Direction-aware: `resize_linear` picks the
+            // specialised 2:1 fast path when the ratio fits, the
+            // generic box for other shrinks, and bilinear for grows.
             let (work_w, work_h) = if ov_w == final_w && ov_h == final_h {
                 (ov_w, ov_h)
             } else {
+                // One-shot log so we can confirm dimensions vs final
+                // and verify the right resize primitive is dispatched.
+                if !self.overlay_dim_logged.contains(track_idx) {
+                    let path = if ov_w == final_w * 2 && ov_h == final_h * 2 {
+                        "downsample_linear_2x"
+                    } else if ov_w >= final_w && ov_h >= final_h {
+                        "downsample_linear_box"
+                    } else {
+                        "upsample_linear_bilinear"
+                    };
+                    tracing::debug!(
+                        "overlay track={track_idx} src={ov_w}x{ov_h} → final={final_w}x{final_h} via {path}"
+                    );
+                    self.overlay_dim_logged.insert(*track_idx);
+                }
                 let t_resize = std::time::Instant::now();
                 ov_linear = crate::grade_resample::resize_linear(&ov_linear, ov_w, ov_h, final_w, final_h);
                 ov_resize_us += t_resize.elapsed().as_micros();
