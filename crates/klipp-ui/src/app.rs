@@ -33395,7 +33395,12 @@ mod matte_candidate_finder_tests {
         let lo = current_clip.timeline_in;
         let hi = current_clip.timeline_out;
         for (_, track) in seq.tracks.iter().enumerate().skip(current_track_idx + 1) {
-            if !matches!(track.kind, TrackKind::Video) { continue; }
+            if !matches!(
+                track.kind,
+                TrackKind::Video | TrackKind::Text | TrackKind::Subtitle
+            ) {
+                continue;
+            }
             for c in &track.clips {
                 if c.id == current_clip_id { continue; }
                 if matches!(c.kind, ClipKind::AdjustmentLayer) { continue; }

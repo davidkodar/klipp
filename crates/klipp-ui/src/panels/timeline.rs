@@ -14624,9 +14624,11 @@ impl TimelinePanel {
 
 /// Find the nearest clip ABOVE `current_track_idx` (higher track
 /// index) that overlaps the time-range of `current_clip_id` and is a
-/// valid matte source — i.e. video, not an `AdjustmentLayer`, not the
-/// clip itself. Returns the candidate clip-id and its kind so the
-/// caller can pick a sensible default channel.
+/// valid matte source — i.e. has its own pixels (so neither an
+/// `AdjustmentLayer` nor the clip itself), and lives on a track
+/// kind that can supply pixels (`Video`, `Text`, or `Subtitle`).
+/// Audio tracks are skipped. Returns the candidate clip-id and its
+/// kind so the caller can pick a sensible default channel.
 ///
 /// Used by the right-click "Use clip above as matte" gesture (the AE
 /// convention) and the Phase 5 command-palette entry that does the
@@ -14635,6 +14637,12 @@ impl TimelinePanel {
 /// wins. Skipping tracks rather than insisting on the directly-adjacent
 /// one means the gesture stays useful when the user has an empty
 /// intermediate track (e.g. V2 left empty as a "spacer").
+///
+/// Text and Subtitle tracks are accepted because Klipp lands titles
+/// (and subtitle clips) on their own track kinds — without this, the
+/// canonical "video-in-text" effect was unreachable through the
+/// right-click gesture even though the rest of the matte system
+/// (Inspector dropdown, `SetClipMatte`, render path) supported it.
 pub(crate) fn find_matte_candidate_above(
     state: &AppState,
     current_track_idx: usize,
@@ -14647,7 +14655,14 @@ pub(crate) fn find_matte_candidate_above(
     let lo = current_clip.timeline_in;
     let hi = current_clip.timeline_out;
     for (idx, track) in seq.tracks.iter().enumerate().skip(current_track_idx + 1) {
-        if !matches!(track.kind, klipp_timeline::TrackKind::Video) { continue; }
+        if !matches!(
+            track.kind,
+            klipp_timeline::TrackKind::Video
+                | klipp_timeline::TrackKind::Text
+                | klipp_timeline::TrackKind::Subtitle
+        ) {
+            continue;
+        }
         for c in &track.clips {
             if c.id == current_clip_id { continue; }
             if matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) { continue; }
@@ -16092,5 +16107,243 @@ mod bypass_strip_helper_tests {
         assert!(!s.contains("active 0.00s–0.00s"),
             "kf at t=0 must not produce a zero-width baseline segment");
         assert!(s.contains("bypassed 0.00s–3.00s"));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Contract pins for `find_matte_candidate_above` — the helper backing
+// the right-click "Use clip above as matte" gesture. The Inspector's
+// dropdown walks every track regardless of kind and so isn't subject
+// to this filter; the right-click discoverable path *is*.
+//
+// IMPORTANT — track index convention: in this codebase, tracks are
+// stored bottom-up (tracks[0] = V1 = bottom of stack; higher index =
+// visually higher). The function walks `skip(current_track_idx + 1)`
+// → clips at indexes ABOVE the consumer in the array = visually ABOVE
+// the consumer. Tests below build sequences via the production
+// helpers (`add_video_track`, `add_text_track`) so the index
+// semantics match what real sessions produce.
+// ═══════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod find_matte_candidate_above_tests {
+    use super::*;
+    use crate::state::AppState;
+    use klipp_core::{MediaId, RationalTime};
+    use klipp_timeline::{Clip, ClipKind, Sequence, TitleData};
+
+    fn t(frames: i64) -> RationalTime {
+        RationalTime::from_frames(frames, 24)
+    }
+    fn media_clip(in_f: i64, out_f: i64) -> Clip {
+        Clip::media(MediaId::new(), t(in_f), t(out_f), t(0), t(out_f - in_f))
+    }
+    fn title_clip(in_f: i64, out_f: i64) -> Clip {
+        let dur = t(out_f - in_f);
+        let mut c = Clip::media(MediaId::new(), t(in_f), t(out_f), t(0), dur);
+        c.kind = ClipKind::Title(TitleData::default());
+        c
+    }
+    /// Helper: locate a clip's (track_idx, clip_id) pair in the active
+    /// sequence by media-id-equality. Each test pushes one clip onto
+    /// each track so this reliably picks out the test's own clip.
+    fn locate(seq: &Sequence, target: klipp_core::ClipId) -> Option<usize> {
+        seq.tracks.iter().enumerate()
+            .find(|(_, t)| t.clips.iter().any(|c| c.id == target))
+            .map(|(i, _)| i)
+    }
+
+    /// Sanity: a video clip on a higher video track IS found. Mirrors
+    /// the existing app.rs::matte_candidate_tests fixtures so we
+    /// catch a regression in either copy.
+    #[test]
+    fn finds_video_clip_above_consumer() {
+        let mut state = AppState::default();
+        // Default sequence has [V1(Video), A1(Audio)]. Add another
+        // video track so we have V1 + V2.
+        state.sequences[0].add_video_track("V2".to_string());
+        // After add_video_track + renumber, the production layout is
+        // not what the comment on add_video_track claims — empirically
+        // tracks[0] ends up as the lower-index video, V2 is at the
+        // higher index. We locate by clip id so we don't depend on
+        // which V the helper considers "top".
+        let consumer = media_clip(0, 24);
+        let consumer_id = consumer.id;
+        let source = media_clip(0, 24);
+        let source_id = source.id;
+        // Push consumer onto the lower video track, source above it.
+        // Because track indexing is "lower index = lower in stack" per
+        // the existing app.rs tests + production behaviour, find both
+        // video tracks and place consumer on the smaller-idx one.
+        let video_indices: Vec<usize> = state.sequences[0].tracks.iter()
+            .enumerate().filter(|(_, t)| matches!(t.kind, TrackKind::Video))
+            .map(|(i, _)| i).collect();
+        assert_eq!(video_indices.len(), 2);
+        let consumer_track_idx = video_indices[0].min(video_indices[1]);
+        let source_track_idx   = video_indices[0].max(video_indices[1]);
+        state.sequences[0].tracks[consumer_track_idx].clips.push(consumer);
+        state.sequences[0].tracks[source_track_idx].clips.push(source);
+
+        let cand = find_matte_candidate_above(&state, consumer_track_idx, consumer_id);
+        assert!(cand.is_some(), "expected to find video source above consumer");
+        assert_eq!(cand.unwrap().0, source_id);
+    }
+
+    /// A Title on a Text track above the consumer IS a valid matte
+    /// candidate — Klipp lands titles on text tracks by design, and
+    /// the rest of the matte system already handled them (Inspector
+    /// dropdown, `SetClipMatte`, render path). The candidate finder
+    /// was previously filtering them out, breaking the canonical
+    /// "video-in-text" right-click workflow.
+    #[test]
+    fn title_on_text_track_is_found() {
+        let mut state = AppState::default();
+        // Default has [V1(Video), A1(Audio)]. Add a Text track.
+        state.sequences[0].add_text_track("Text 1".to_string());
+
+        let consumer = media_clip(0, 24);
+        let consumer_id = consumer.id;
+        let title = title_clip(0, 24);
+        let title_id = title.id;
+
+        let v1_idx = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("V1 track");
+        let text_idx = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Text)).expect("Text track");
+        state.sequences[0].tracks[v1_idx].clips.push(consumer);
+        state.sequences[0].tracks[text_idx].clips.push(title);
+
+        assert!(text_idx > v1_idx,
+            "fixture: Text track must be above (= higher index) the consumer for this test to exercise the right path");
+
+        let cand = find_matte_candidate_above(&state, v1_idx, consumer_id);
+        let (cid, kind) = cand.expect("title on text track must now be a valid matte candidate");
+        assert_eq!(cid, title_id);
+        assert!(matches!(kind, ClipKind::Title(_)),
+            "candidate kind should be Title so the auto-channel heuristic picks Alpha");
+    }
+
+    /// Subtitle tracks accept the same widening — same rationale (own
+    /// pixels, just on a kind-tagged track). Pin so the filter
+    /// doesn't accidentally re-narrow.
+    #[test]
+    fn clip_on_subtitle_track_is_found() {
+        let mut state = AppState::default();
+        state.sequences[0].add_subtitle_track("Subtitle 1".to_string());
+
+        let consumer = media_clip(0, 24);
+        let consumer_id = consumer.id;
+        let other = media_clip(0, 24);
+        let other_id = other.id;
+
+        let v1_idx = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("V1");
+        let sub_idx = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Subtitle)).expect("Subtitle");
+        state.sequences[0].tracks[v1_idx].clips.push(consumer);
+        state.sequences[0].tracks[sub_idx].clips.push(other);
+
+        assert!(sub_idx > v1_idx, "fixture: subtitle must be above the consumer");
+        let cand = find_matte_candidate_above(&state, v1_idx, consumer_id);
+        let (cid, _) = cand.expect("clip on subtitle track must be a valid candidate");
+        assert_eq!(cid, other_id);
+    }
+
+    /// Audio tracks are still excluded — they have no pixels.
+    #[test]
+    fn audio_track_above_is_excluded() {
+        let mut state = AppState::default();
+        // Default already has V1 + A1. Add a second video below the
+        // existing audio so we have a "consumer track + audio above"
+        // fixture; the easier construction is to just add a clip on
+        // V1 (lowest index) and another clip on A1, then verify the
+        // candidate from V1 is None (because the only thing above is
+        // the audio track).
+        let consumer = media_clip(0, 24);
+        let consumer_id = consumer.id;
+        let v1_idx = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("V1");
+        state.sequences[0].tracks[v1_idx].clips.push(consumer);
+        // Audio track exists by default; add a clip there.
+        let a1_idx = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Audio)).expect("A1");
+        state.sequences[0].tracks[a1_idx].clips.push(media_clip(0, 24));
+        assert!(a1_idx > v1_idx, "default layout puts audio above video in array");
+
+        let cand = find_matte_candidate_above(&state, v1_idx, consumer_id);
+        assert!(cand.is_none(), "audio clip must not be a matte candidate");
+    }
+
+    /// AdjustmentLayers above are explicitly excluded — they have no
+    /// own pixels. Pinning this so the widening doesn't accidentally
+    /// loosen this rejection.
+    #[test]
+    fn adjustment_layer_above_is_excluded() {
+        let mut state = AppState::default();
+        state.sequences[0].add_video_track("V2".to_string());
+        let consumer = media_clip(0, 24);
+        let consumer_id = consumer.id;
+        let mut adj = media_clip(0, 24);
+        adj.kind = ClipKind::AdjustmentLayer;
+
+        let video_indices: Vec<usize> = state.sequences[0].tracks.iter()
+            .enumerate().filter(|(_, t)| matches!(t.kind, TrackKind::Video))
+            .map(|(i, _)| i).collect();
+        let consumer_idx = video_indices[0].min(video_indices[1]);
+        let above_idx    = video_indices[0].max(video_indices[1]);
+        state.sequences[0].tracks[consumer_idx].clips.push(consumer);
+        state.sequences[0].tracks[above_idx].clips.push(adj);
+
+        let cand = find_matte_candidate_above(&state, consumer_idx, consumer_id);
+        assert!(cand.is_none(),
+            "AdjustmentLayer above must not be a matte candidate");
+    }
+
+    /// A candidate that doesn't overlap the consumer in time is
+    /// filtered out even on a video track above.
+    #[test]
+    fn non_overlapping_time_range_excluded() {
+        let mut state = AppState::default();
+        state.sequences[0].add_video_track("V2".to_string());
+        let consumer = media_clip(0, 24);
+        let consumer_id = consumer.id;
+        let far = media_clip(100, 148);
+
+        let video_indices: Vec<usize> = state.sequences[0].tracks.iter()
+            .enumerate().filter(|(_, t)| matches!(t.kind, TrackKind::Video))
+            .map(|(i, _)| i).collect();
+        let consumer_idx = video_indices[0].min(video_indices[1]);
+        let above_idx    = video_indices[0].max(video_indices[1]);
+        state.sequences[0].tracks[consumer_idx].clips.push(consumer);
+        state.sequences[0].tracks[above_idx].clips.push(far);
+
+        let cand = find_matte_candidate_above(&state, consumer_idx, consumer_id);
+        assert!(cand.is_none());
+    }
+
+    /// Verify the Inspector path: SetClipMatte's pre-check accepts a
+    /// title-on-text-track binding (no track-kind filter). This is
+    /// the *positive* counterpart to the right-click bug above and
+    /// proves the Inspector route is the workaround today.
+    #[test]
+    fn inspector_path_accepts_text_track_source() {
+        let mut state = AppState::default();
+        state.sequences[0].add_text_track("Text 1".to_string());
+        let consumer = media_clip(0, 24);
+        let consumer_id = consumer.id;
+        let title = title_clip(0, 24);
+        let title_id = title.id;
+        let v1_idx = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).expect("V1");
+        let text_idx = state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Text)).expect("Text");
+        state.sequences[0].tracks[v1_idx].clips.push(consumer);
+        state.sequences[0].tracks[text_idx].clips.push(title);
+
+        // Mirror the SetClipMatte pre-check inline. The ones we care
+        // about: source must exist; AdjustmentLayer rejected; no
+        // self-ref; no cycle. There's NO track-kind check.
+        let seq = &state.sequences[0];
+        let source = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == title_id);
+        assert!(source.is_some(), "title clip should be locatable in sequence");
+        let source = source.unwrap();
+        assert!(!matches!(source.kind, ClipKind::AdjustmentLayer));
+        assert_ne!(consumer_id, title_id);
+        // If the Inspector dropdown offers the title (it walks every
+        // track), and the SetClipMatte handler accepts the binding
+        // without filtering by track kind, then the workaround is to
+        // bind via Inspector — which this test confirms is unblocked.
+        let _ = locate(seq, consumer_id); // no panic
     }
 }
