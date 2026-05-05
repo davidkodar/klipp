@@ -492,6 +492,17 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
             action: PaletteAction::Cmd(AppCommand::ToggleClipStencil { clip_id: cid }),
             enabled: true,
         });
+        // Transform link is a target-bound binding, so palette entries
+        // for "Set transform link → <picked>" need a target-picker UI
+        // we don't have in the palette today. The clear / unbind path
+        // is parameterless on the focused clip and useful as a quick
+        // rescue when a wired-up parent gets in the way.
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Clear transform link"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Cmd(AppCommand::ClearClipTransformLink { clip_id: cid }),
+            enabled: true,
+        });
         // Common blend modes only — the full 13-mode list would
         // dilute the palette. Users who want the full set go through
         // the Inspector COMPOSITING section.
@@ -521,6 +532,12 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         });
         e.push(PaletteEntry {
             label: Cow::Borrowed("Toggle stencil mode"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Cmd(AppCommand::Undo),
+            enabled: false,
+        });
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Clear transform link"),
             shortcut: Cow::Borrowed(""),
             action: PaletteAction::Cmd(AppCommand::Undo),
             enabled: false,
@@ -644,6 +661,11 @@ mod tests {
         // anchors test against the no-clip default state.
         "Use clip above as matte",
         "Toggle stencil mode",
+        // transform_link discovery anchor — the parameterless clear
+        // path is what's reachable from the palette today (set-link
+        // wants a target picker we don't have here yet). Pinned to
+        // keep the entry from disappearing into a refactor.
+        "Clear transform link",
     ];
 
     #[test]

@@ -1091,6 +1091,15 @@ fn show_clip_video(
     // matte) for every existing project.
     show_compositing_section(ui, theme, state, clip, cmds, clip_time_secs);
 
+    ui.add_space(8.0);
+
+    // ── TRANSFORM LINK ──
+    // Layer 1 of the hyperzoom delivery: bind this clip's transform to
+    // another clip's resolved transform with per-axis flags + a
+    // composition rule. Hyperzoom (and any future "follow the action"
+    // preset) writes through here; a savvy user can also bind directly.
+    show_transform_link_section(ui, theme, state, clip, cmds);
+
     // ── SPEED RAMP (timeline only) ──
     if is_timeline {
         ui.add_space(8.0);
@@ -1972,6 +1981,264 @@ fn show_compositing_section(
             });
         ui.add_space(8.0);
     });
+}
+
+fn show_transform_link_section(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    state: &AppState,
+    clip: &Clip,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let clip_id = clip.id;
+    let pad = 14.0;
+    // AdjustmentLayer clips are rejected by the AppCommand handler as
+    // both link origin and target — there's nothing meaningful to bind
+    // for a layer that has no own pixels. Hide the section entirely
+    // rather than show a disabled control whose error message would
+    // only fire on click.
+    if matches!(clip.kind, klipp_timeline::ClipKind::AdjustmentLayer) {
+        return;
+    }
+    section_card(ui, "TRANSFORM LINK", theme, |ui| {
+        ui.add_space(6.0);
+        egui::Frame::default()
+            .inner_margin(egui::Margin { left: pad, right: pad, top: 0.0, bottom: 0.0 })
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::NONE)
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
+
+                // Build candidate list: every clip in the active sequence
+                // that isn't this clip, isn't an AdjustmentLayer, and
+                // isn't already on a chain that would loop back here.
+                // The handler enforces all three rules; filtering the
+                // dropdown lines up the UI choices with what the handler
+                // will accept so the user doesn't pick a path that
+                // silently no-ops.
+                let active_idx = state.active_sequence_idx;
+                let candidates: Vec<(klipp_core::ClipId, String)> = state
+                    .sequences
+                    .get(active_idx)
+                    .map(|seq| {
+                        seq.tracks.iter().enumerate().flat_map(|(ti, track)| {
+                            let track_label = if track.name.is_empty() {
+                                format!("Track {}", ti + 1)
+                            } else {
+                                track.name.clone()
+                            };
+                            track.clips.iter().filter_map(move |c| {
+                                if c.id == clip_id { return None; }
+                                if matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) { return None; }
+                                if transform_link_chain_creates_cycle_local(seq, clip_id, c.id) { return None; }
+                                let label = format!("{} · clip {}…",
+                                    track_label,
+                                    short_clip_id(&c.id));
+                                Some((c.id, label))
+                            }).collect::<Vec<_>>()
+                        }).collect()
+                    })
+                    .unwrap_or_default();
+
+                // ── Target picker ──
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Target")
+                            .size(11.0)
+                            .color(theme.text_dim),
+                    );
+                    ui.add_space(8.0);
+                    let current_label = match clip.transform_link.as_ref() {
+                        None => "(none)".to_string(),
+                        Some(tl) => candidates.iter()
+                            .find(|(id, _)| *id == tl.target)
+                            .map(|(_, l)| l.clone())
+                            .unwrap_or_else(|| "(missing — see banner)".to_string()),
+                    };
+                    egui::ComboBox::from_id_salt(("video:transform_link_target", clip_id))
+                        .selected_text(current_label)
+                        .width(220.0)
+                        .show_ui(ui, |ui| {
+                            let none_selected = clip.transform_link.is_none();
+                            if ui.selectable_label(none_selected, "(none)").clicked() {
+                                if !none_selected {
+                                    cmds.push(AppCommand::ClearClipTransformLink { clip_id });
+                                }
+                            }
+                            for (cand_id, label) in &candidates {
+                                let selected = clip.transform_link.as_ref()
+                                    .is_some_and(|tl| tl.target == *cand_id);
+                                if ui.selectable_label(selected, label).clicked() {
+                                    if !selected {
+                                        // Re-pointing at a new target: keep the
+                                        // existing mode + flag set so the user
+                                        // doesn't lose their per-axis tuning.
+                                        // Fresh bind: easy-path defaults (all
+                                        // flags on, Absolute) — same as
+                                        // `TransformLink::new`.
+                                        let (mode, isc, ipo, iro, ian) = match clip.transform_link.as_ref() {
+                                            Some(tl) => (
+                                                link_mode_to_u8(tl.mode),
+                                                tl.inherit_scale,
+                                                tl.inherit_position,
+                                                tl.inherit_rotation,
+                                                tl.inherit_anchor,
+                                            ),
+                                            None => (0u8, true, true, true, true),
+                                        };
+                                        cmds.push(AppCommand::SetClipTransformLink {
+                                            clip_id,
+                                            target: *cand_id,
+                                            mode,
+                                            inherit_scale: isc,
+                                            inherit_position: ipo,
+                                            inherit_rotation: iro,
+                                            inherit_anchor: ian,
+                                        });
+                                    }
+                                }
+                            }
+                        });
+                });
+
+                // Detail rows only meaningful when a binding exists.
+                if let Some(link) = clip.transform_link.clone() {
+                    let target_id = link.target;
+                    let target_present = state.sequences.get(active_idx)
+                        .map(|seq| seq.tracks.iter().any(|t| t.clips.iter().any(|c| c.id == target_id)))
+                        .unwrap_or(false);
+                    if !target_present {
+                        ui.add_space(4.0);
+                        ui.colored_label(
+                            theme.marker_warning,
+                            egui::RichText::new("⚠ Target clip is no longer in the project — this clip falls back to its own transform.")
+                                .size(10.5),
+                        );
+                    }
+
+                    ui.add_space(4.0);
+
+                    // ── Mode (Absolute / Additive) ──
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Mode")
+                                .size(11.0)
+                                .color(theme.text_dim),
+                        );
+                        ui.add_space(8.0);
+                        let mut mode = link.mode;
+                        for (m, label, hover) in [
+                            (klipp_timeline::LinkMode::Absolute, "Absolute",
+                                "Replace this clip's transform with the target's (per-axis flags decide which axes inherit)."),
+                            (klipp_timeline::LinkMode::Additive, "Additive",
+                                "Compose: positions add, scales multiply, rotations add. Anchor still inherits absolutely."),
+                        ] {
+                            let resp = ui.selectable_value(&mut mode, m, label);
+                            if resp.on_hover_text(hover).clicked() && mode != link.mode {
+                                cmds.push(AppCommand::SetClipTransformLink {
+                                    clip_id,
+                                    target: link.target,
+                                    mode: link_mode_to_u8(mode),
+                                    inherit_scale: link.inherit_scale,
+                                    inherit_position: link.inherit_position,
+                                    inherit_rotation: link.inherit_rotation,
+                                    inherit_anchor: link.inherit_anchor,
+                                });
+                            }
+                        }
+                    });
+
+                    // ── Per-axis inherit flags ──
+                    // 2×2 grid feels tighter than a single column and
+                    // makes the four axes legible at a glance.
+                    let mut inherit_scale = link.inherit_scale;
+                    let mut inherit_position = link.inherit_position;
+                    let mut inherit_rotation = link.inherit_rotation;
+                    let mut inherit_anchor = link.inherit_anchor;
+                    let mut changed = false;
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut inherit_position, "Position").changed() { changed = true; }
+                        ui.add_space(12.0);
+                        if ui.checkbox(&mut inherit_scale, "Scale").changed() { changed = true; }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut inherit_rotation, "Rotation").changed() { changed = true; }
+                        ui.add_space(12.0);
+                        if ui.checkbox(&mut inherit_anchor, "Anchor").changed() { changed = true; }
+                    });
+                    if changed {
+                        cmds.push(AppCommand::SetClipTransformLink {
+                            clip_id,
+                            target: link.target,
+                            mode: link_mode_to_u8(link.mode),
+                            inherit_scale,
+                            inherit_position,
+                            inherit_rotation,
+                            inherit_anchor,
+                        });
+                    }
+
+                    ui.add_space(4.0);
+
+                    // ── Clear ──
+                    if ui.add_sized(egui::vec2(140.0, 24.0),
+                        egui::Button::new(
+                            egui::RichText::new("Clear transform link")
+                                .size(11.0)
+                                .color(theme.text_primary),
+                        )
+                        .fill(theme.bg_raised)
+                        .stroke(egui::Stroke::new(0.5_f32, theme.border))
+                        .rounding(6.0)).clicked()
+                    {
+                        cmds.push(AppCommand::ClearClipTransformLink { clip_id });
+                    }
+                }
+            });
+        ui.add_space(8.0);
+    });
+}
+
+/// Local cycle predicate for the inspector's candidate filter. Mirrors
+/// `transform_link_chain_creates_cycle` in `app.rs` (which the
+/// `SetClipTransformLink` handler uses for hard validation). Lives here
+/// so the inspector module doesn't need to reach into a sibling file's
+/// private free functions; both walkers share the same 64-link depth
+/// cap so they reject the same set of bindings.
+fn transform_link_chain_creates_cycle_local(
+    seq: &klipp_timeline::Sequence,
+    consumer: klipp_core::ClipId,
+    target: klipp_core::ClipId,
+) -> bool {
+    if consumer == target {
+        return true;
+    }
+    let mut current = target;
+    for _ in 0..64 {
+        let next = seq
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips.iter())
+            .find(|c| c.id == current)
+            .and_then(|c| c.transform_link.as_ref().map(|tl| tl.target));
+        match next {
+            None => return false,
+            Some(n) if n == consumer => return true,
+            Some(n) => current = n,
+        }
+    }
+    true
+}
+
+/// Mirror of the `LinkMode` discriminant order documented on the
+/// `SetClipTransformLink` AppCommand — keep the inspector and the
+/// AppCommand wire format in sync without exposing a public conversion
+/// surface in `klipp-core`.
+fn link_mode_to_u8(mode: klipp_timeline::LinkMode) -> u8 {
+    match mode {
+        klipp_timeline::LinkMode::Absolute => 0,
+        klipp_timeline::LinkMode::Additive => 1,
+    }
 }
 
 /// Mirror of `matte_channel_from_u8` in `app.rs`. Round-trip helper so
