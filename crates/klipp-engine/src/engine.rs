@@ -4887,6 +4887,8 @@ impl PlaybackEngine {
     /// Check if Video 2 has a clip at the given playhead position.
     /// Opens/closes the V2 decoder as needed.
     fn update_overlay_decoders(&mut self, playhead: Timecode) {
+        let t_total = std::time::Instant::now();
+        let t_collect = std::time::Instant::now();
         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
         // Collect overlay info for all overlay tracks (not just the first one).
         let overlay_tracks = seq.overlay_video_tracks(self.current_track_index);
@@ -4899,6 +4901,7 @@ impl PlaybackEngine {
         let active_track_indices: std::collections::HashSet<usize> = active_overlays.iter().map(|(ti, _, _)| *ti).collect();
         let res = seq.resolution;
         drop(seq);
+        let collect_us = t_collect.elapsed().as_micros();
 
         // Close decoders/frames for tracks that no longer have an active clip
         let stale: Vec<usize> = self.overlay_clips.keys()
@@ -4950,6 +4953,7 @@ impl PlaybackEngine {
         let default_frame = playhead.value;
 
         // Process each active overlay track
+        let active_overlays_count = active_overlays.len();
         for (track_idx, clip_idx, clip) in active_overlays {
             // Skip re-rendering synthetic clips when the same clip+frame is already cached.
             // This mirrors the `last_synth_frame_rendered` optimization on the V1 path and
@@ -5262,6 +5266,20 @@ impl PlaybackEngine {
             } else {
                 break;
             }
+        }
+        // Per-stage timing: localise where the per-tick `ov_open`
+        // cost goes. `collect_us` is the seq-read + clip.clone()
+        // gather. `total - collect` is the active-overlays
+        // processing loop (synthetic-skip cache check + V2-decoder
+        // already-open check + any actual work).
+        let total_us = t_total.elapsed().as_micros();
+        if total_us > 2_000 {
+            tracing::debug!(
+                "PERF update_overlay_decoders: {:.2}ms (collect={:.2} loop={:.2}) overlays={active_overlays_count}",
+                total_us as f64 / 1000.0,
+                collect_us as f64 / 1000.0,
+                total_us.saturating_sub(collect_us) as f64 / 1000.0,
+            );
         }
     }
 
