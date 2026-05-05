@@ -14634,12 +14634,13 @@ impl TimelinePanel {
 /// caller can pick a sensible default channel.
 ///
 /// Used by the right-click "Use clip above as matte" gesture (the AE
-/// convention). Walks tracks bottom-up starting from
-/// `current_track_idx + 1`; the first overlap wins. Skipping tracks
-/// rather than insisting on the directly-adjacent one means the
-/// gesture stays useful when the user has an empty intermediate
-/// track (e.g. V2 left empty as a "spacer").
-fn find_matte_candidate_above(
+/// convention) and the Phase 5 command-palette entry that does the
+/// same bind without needing the timeline context. Walks tracks
+/// bottom-up starting from `current_track_idx + 1`; the first overlap
+/// wins. Skipping tracks rather than insisting on the directly-adjacent
+/// one means the gesture stays useful when the user has an empty
+/// intermediate track (e.g. V2 left empty as a "spacer").
+pub(crate) fn find_matte_candidate_above(
     state: &AppState,
     current_track_idx: usize,
     current_clip_id: klipp_core::ClipId,

@@ -6528,6 +6528,51 @@ impl KlippApp {
                     self.sync_sequence_to_engine();
                     return true;
                 }
+                AppCommand::UseClipAboveAsMatte { clip_id, channel } => {
+                    let cid = *clip_id;
+                    let chan = *channel;
+                    // Resolve the consumer's track index.
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let track_idx = seq.tracks.iter().position(|t| t.clips.iter().any(|c| c.id == cid));
+                    let Some(track_idx) = track_idx else {
+                        return true;
+                    };
+                    if let Some((source_id, _kind)) = crate::panels::timeline::find_matte_candidate_above(&self.state, track_idx, cid) {
+                        // Re-dispatch as SetClipMatte so the cycle /
+                        // self-ref / AdjustmentLayer guards in that
+                        // handler are the single source of truth.
+                        let _ = self.cmd_tx.send(AppCommand::SetClipMatte {
+                            clip_id: cid,
+                            source_clip_id: source_id,
+                            channel: chan,
+                            invert: false,
+                            feather_px: 0.0,
+                            choke_px: 0.0,
+                        });
+                    } else {
+                        self.state.toast.show("No clip above to use as matte. Stack a clip on a higher track first.");
+                    }
+                    return true;
+                }
+                AppCommand::ToggleClipStencil { clip_id } => {
+                    let cid = *clip_id;
+                    let currently_on = self.state.sequences[self.state.active_sequence_idx]
+                        .tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid)
+                        .map(|c| c.matte_stencil.is_some()).unwrap_or(false);
+                    let next_cmd = if currently_on {
+                        AppCommand::ClearClipStencil { clip_id: cid }
+                    } else {
+                        AppCommand::SetClipStencil {
+                            clip_id: cid,
+                            channel: 1, // Luminance default
+                            invert: false,
+                            feather_px: 0.0,
+                            choke_px: 0.0,
+                        }
+                    };
+                    let _ = self.cmd_tx.send(next_cmd);
+                    return true;
+                }
 
                 // Grade versions — handled by handle_color_commands
                 // Select All clips on timeline
@@ -23068,6 +23113,39 @@ impl KlippApp {
         self.state.deferred_texture_drops[slot].push(h);
     }
 
+    /// Phase 5 — fire any one-shot first-time tips whose unlock
+    /// condition is satisfied by the active sequence and that haven't
+    /// already been dismissed. Each tip records its key in
+    /// `prefs.general.dismissed_tips` after firing so it never fires
+    /// again across sessions. Cheap per-frame check: short-circuit on
+    /// the first un-dismissed, satisfied tip; usually exits at the
+    /// initial `contains` lookup.
+    ///
+    /// Track-matte intro: fires the first time the active sequence
+    /// has two video clips that overlap in time on different tracks
+    /// — the moment the right-click "Use clip above as matte" gesture
+    /// becomes meaningful. Dismissed forever once shown.
+    fn maybe_fire_first_time_tips(&mut self) {
+        const TRACK_MATTE_TIP_KEY: &str = "track_matte_intro";
+        if self.prefs.general.dismissed_tips.contains(TRACK_MATTE_TIP_KEY) {
+            return;
+        }
+        let unlocked = sequence_has_video_track_overlap(
+            &self.state.sequences[self.state.active_sequence_idx],
+        );
+        if !unlocked {
+            return;
+        }
+        self.state.toast.show(
+            "Tip: right-click any clip → \"Use clip above as matte\" to mask one clip with another",
+        );
+        self.prefs.general.dismissed_tips.insert(TRACK_MATTE_TIP_KEY.to_string());
+        // Best-effort save — losing the dismissed flag on a write
+        // failure means the tip might fire one more time next session,
+        // which is harmless. We don't propagate the error to the user.
+        let _ = self.prefs.save();
+    }
+
     /// Extend the current deferred-drop bucket from an iterator of
     /// handles. Use for `HashMap::drain` / `Vec::drain` sites where
     /// many textures retire at once (clip switch, thumbnail cache
@@ -24609,6 +24687,11 @@ impl eframe::App for KlippApp {
 
         // 11c. Toast notifications + drag-drop cleanup
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::TOAST_AND_GHOST);
+        // Phase 5 — fire any one-shot first-time tips that the
+        // current sequence state has just unlocked. Cheap per-frame
+        // check; the dismissal set is consulted up front so each tip
+        // ever fires at most once, persisted to prefs.
+        self.maybe_fire_first_time_tips();
         self.state.toast.render(ctx, &self.theme);
         self.state.toast.cleanup();
 
@@ -30600,6 +30683,42 @@ fn matte_channel_from_u8(b: u8) -> klipp_nodes::params::MatteChannel {
     }
 }
 
+/// Phase 5 — does the sequence have at least two clips on different
+/// video tracks that overlap in time? Used to gate the first-time
+/// "right-click → Use clip above as matte" tip — that gesture only
+/// becomes meaningful once the user has two stacked clips with a
+/// shared time-range. Free fn so tests can pin behaviour without
+/// standing up an `App`.
+///
+/// Linear in the total clip count across video tracks, with an early
+/// exit on the first overlap. Empty sequences and single-track ones
+/// trivially return false.
+fn sequence_has_video_track_overlap(seq: &klipp_timeline::Sequence) -> bool {
+    let video_tracks: Vec<&klipp_timeline::Track> = seq
+        .tracks
+        .iter()
+        .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video))
+        .collect();
+    if video_tracks.len() < 2 {
+        return false;
+    }
+    for (i, ti) in video_tracks.iter().enumerate() {
+        for tj in video_tracks.iter().skip(i + 1) {
+            for ci in &ti.clips {
+                for cj in &tj.clips {
+                    // Strict open-interval overlap: clips that just
+                    // touch at a frame boundary (cj.in == ci.out)
+                    // don't trigger — they share no actual frame.
+                    if ci.timeline_in < cj.timeline_out && cj.timeline_in < ci.timeline_out {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Walk the matte chain starting from `source` (i.e. the clip the user is
 /// trying to bind as the matte for `consumer`). If we ever hit `consumer`,
 /// the bind would create a cycle. Returns `true` to mean "reject this".
@@ -33130,6 +33249,97 @@ mod track_matte_handler_tests {
         // Asking "would bind consumer=b, source=<dangling>" — the chain
         // from a-not-in-seq trivially terminates.
         assert!(!matte_chain_creates_cycle(&seq, bid, ClipId::new()));
+    }
+}
+
+#[cfg(test)]
+mod first_time_tip_tests {
+    //! Phase 5.2 — `sequence_has_video_track_overlap` is the unlock
+    //! condition for the track-matte intro tip. Tests pin the corners
+    //! a regression would erode silently: empty sequence, single
+    //! track, two tracks but no overlap, edge-touch (open interval),
+    //! genuine overlap.
+    use klipp_core::{MediaId, RationalTime};
+    use klipp_timeline::{Clip, Sequence, Track, TrackKind};
+
+    fn tc(frames: i64) -> RationalTime { RationalTime::from_frames(frames, 24) }
+
+    fn make_clip(in_f: i64, out_f: i64) -> Clip {
+        Clip::media(MediaId::new(), tc(in_f), tc(out_f), tc(0), tc(out_f - in_f))
+    }
+
+    fn video_track(name: &str, clips: Vec<Clip>) -> Track {
+        let mut t = Track::new(name, TrackKind::Video);
+        t.clips = clips;
+        t
+    }
+
+    fn audio_track(name: &str, clips: Vec<Clip>) -> Track {
+        let mut t = Track::new(name, TrackKind::Audio);
+        t.clips = clips;
+        t
+    }
+
+    fn seq_with_tracks(tracks: Vec<Track>) -> Sequence {
+        let mut s = Sequence::new_default();
+        s.tracks = tracks;
+        s
+    }
+
+    #[test]
+    fn no_overlap_when_sequence_is_empty() {
+        let seq = seq_with_tracks(vec![]);
+        assert!(!super::sequence_has_video_track_overlap(&seq));
+    }
+
+    #[test]
+    fn no_overlap_when_only_one_video_track() {
+        let seq = seq_with_tracks(vec![
+            video_track("V1", vec![make_clip(0, 24), make_clip(24, 48)]),
+        ]);
+        assert!(!super::sequence_has_video_track_overlap(&seq));
+    }
+
+    #[test]
+    fn no_overlap_when_audio_track_is_the_second_track() {
+        // Audio track must NOT count — track-matte is a video feature.
+        let seq = seq_with_tracks(vec![
+            video_track("V1", vec![make_clip(0, 24)]),
+            audio_track("A1", vec![make_clip(0, 24)]),
+        ]);
+        assert!(!super::sequence_has_video_track_overlap(&seq));
+    }
+
+    #[test]
+    fn no_overlap_when_clips_just_touch_at_the_edge() {
+        // Open-interval semantics: clip ending at frame 24 doesn't
+        // overlap with a clip starting at frame 24.
+        let seq = seq_with_tracks(vec![
+            video_track("V1", vec![make_clip(0, 24)]),
+            video_track("V2", vec![make_clip(24, 48)]),
+        ]);
+        assert!(!super::sequence_has_video_track_overlap(&seq));
+    }
+
+    #[test]
+    fn overlap_when_two_video_clips_share_time_range() {
+        let seq = seq_with_tracks(vec![
+            video_track("V1", vec![make_clip(0, 48)]),
+            video_track("V2", vec![make_clip(12, 36)]), // sits inside V1
+        ]);
+        assert!(super::sequence_has_video_track_overlap(&seq));
+    }
+
+    #[test]
+    fn overlap_detected_across_non_adjacent_tracks() {
+        // V1 + V3 overlap; V2 is empty in between. The function must
+        // still find it (the gesture works across any track gap).
+        let seq = seq_with_tracks(vec![
+            video_track("V1", vec![make_clip(0, 48)]),
+            video_track("V2", vec![]),
+            video_track("V3", vec![make_clip(20, 30)]),
+        ]);
+        assert!(super::sequence_has_video_track_overlap(&seq));
     }
 }
 

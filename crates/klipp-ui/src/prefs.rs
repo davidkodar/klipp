@@ -132,6 +132,13 @@ pub struct GeneralPrefs {
     /// What to show when Klipp starts.
     #[serde(default)]
     pub startup_behavior: StartupBehavior,
+    /// Phase 5 — string keys of one-shot tips that have already been
+    /// shown and dismissed (e.g. `"track_matte_intro"`). Persisted so
+    /// the same tip never re-fires across sessions. Use a string set
+    /// rather than per-tip bool fields so future tips don't churn the
+    /// schema.
+    #[serde(default)]
+    pub dismissed_tips: std::collections::HashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -760,6 +767,7 @@ impl Default for GeneralPrefs {
             remember_inspector_layout: true,
             collapsed_sections: Vec::new(),
             startup_behavior: StartupBehavior::default(),
+            dismissed_tips: std::collections::HashSet::new(),
         }
     }
 }

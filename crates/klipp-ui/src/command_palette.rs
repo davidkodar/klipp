@@ -456,6 +456,77 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         enabled: true,
     });
 
+    // ── Compositing (track matte / stencil / blend mode) ───
+    // Discoverability layer for the track-matte feature. Each entry
+    // gates on `selected_clip` being set; greyed when nothing is
+    // selected so users see "this is here, just need a clip" rather
+    // than the entry vanishing.
+    if let Some(cid) = state.selected_clip {
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Use clip above as matte (Auto)"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Cmd(AppCommand::UseClipAboveAsMatte { clip_id: cid, channel: 1 }),
+            enabled: true,
+        });
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Use clip above as matte (Alpha)"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Cmd(AppCommand::UseClipAboveAsMatte { clip_id: cid, channel: 0 }),
+            enabled: true,
+        });
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Use clip above as matte (Luma)"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Cmd(AppCommand::UseClipAboveAsMatte { clip_id: cid, channel: 1 }),
+            enabled: true,
+        });
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Clear track matte"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Cmd(AppCommand::ClearClipMatte { clip_id: cid }),
+            enabled: true,
+        });
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Toggle stencil mode"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Cmd(AppCommand::ToggleClipStencil { clip_id: cid }),
+            enabled: true,
+        });
+        // Common blend modes only — the full 13-mode list would
+        // dilute the palette. Users who want the full set go through
+        // the Inspector COMPOSITING section.
+        for &(label, mode) in &[
+            ("Set blend mode → Normal", klipp_core::BlendMode::Normal),
+            ("Set blend mode → Multiply", klipp_core::BlendMode::Multiply),
+            ("Set blend mode → Screen", klipp_core::BlendMode::Screen),
+            ("Set blend mode → Overlay", klipp_core::BlendMode::Overlay),
+            ("Set blend mode → Add", klipp_core::BlendMode::Add),
+            ("Set blend mode → Difference", klipp_core::BlendMode::Difference),
+        ] {
+            e.push(PaletteEntry {
+                label: Cow::Borrowed(label),
+                shortcut: Cow::Borrowed(""),
+                action: PaletteAction::Cmd(AppCommand::SetClipBlendMode { clip_id: cid, mode }),
+                enabled: true,
+            });
+        }
+    } else {
+        // Greyed placeholders so users still find the feature when
+        // nothing is selected.
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Use clip above as matte (Auto)"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Cmd(AppCommand::Undo),
+            enabled: false,
+        });
+        e.push(PaletteEntry {
+            label: Cow::Borrowed("Toggle stencil mode"),
+            shortcut: Cow::Borrowed(""),
+            action: PaletteAction::Cmd(AppCommand::Undo),
+            enabled: false,
+        });
+    }
+
     e
 }
 
@@ -567,6 +638,12 @@ mod tests {
         "AI: Remove Background",
         "AI: Run Inference",
         "Toggle AI Tools Panel",
+        // Phase 5 — track-matte discoverability anchors. The greyed
+        // "Use clip above as matte" entry is always rendered (even
+        // with no selection) so the substring is reachable in the
+        // anchors test against the no-clip default state.
+        "Use clip above as matte",
+        "Toggle stencil mode",
     ];
 
     #[test]

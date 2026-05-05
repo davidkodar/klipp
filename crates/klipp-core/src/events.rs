@@ -2259,6 +2259,21 @@ pub enum AppCommand {
     /// Phase 4B — clear stencil mode on a clip; the clip returns to
     /// visible composite participation.
     ClearClipStencil { clip_id: ClipId },
+
+    /// Phase 5 — single-shot dispatch for the "Use clip above as matte"
+    /// gesture so the command palette can offer it without
+    /// re-implementing the candidate-finder. Handler walks the active
+    /// sequence for the nearest higher-track clip overlapping `clip_id`,
+    /// then runs the same `SetClipMatte` flow as the right-click menu.
+    /// Toasts when no candidate exists rather than silently no-oping.
+    /// `channel` is the same wire format as `SetClipMatte`.
+    UseClipAboveAsMatte { clip_id: ClipId, channel: u8 },
+
+    /// Phase 5 — toggle stencil mode on a clip. Flips between
+    /// `SetClipStencil` (luma channel default) and `ClearClipStencil`
+    /// based on current state. Lets the command palette expose a single
+    /// idempotent entry instead of two.
+    ToggleClipStencil { clip_id: ClipId },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
