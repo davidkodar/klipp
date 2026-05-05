@@ -366,6 +366,17 @@ fn resolve_focal_ref_to_clip_space(
             //   screen_px  = anchor_px + scaled + (position_x, position_y)
             //
             // Then normalise by frame to land in clip-space [0, 1].
+            //
+            // TODO(HZ-NEXT-GLYPH-LOCK followup): rotation (the `_ro`
+            // slot below) is intentionally dropped here. The
+            // canonical hyperzoom workflow has the title sitting flat
+            // (no rotation on the matte source), so the simplification
+            // is invisible in practice. Restoring rotation requires
+            // applying a 2D rotation matrix to (dx, dy) BEFORE the
+            // scale step — straightforward but adds a sin/cos per
+            // resolved frame for what is, today, no observable
+            // benefit. Revisit when a real "kinetic typography fly-in
+            // through a rotated letter" use case shows up.
             let (px, py, sx, _sy, _ro, ax, ay) = title_xform;
             let fw = frame_w.max(1) as f32;
             let fh = frame_h.max(1) as f32;

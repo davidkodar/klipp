@@ -2318,6 +2318,21 @@ pub enum AppCommand {
         /// "off" even when `add_radial_blur` is `true` — guards
         /// against an inspector race producing a zero-blur insertion.
         radial_blur_amount: f32,
+        /// Glyph-anchored focal-point override (HZ-NEXT-GLYPH-LOCK).
+        /// When `Some`, the handler writes the reference into the
+        /// source clip's `BuiltinEffect::Transform.focal_ref`; the
+        /// engine resolves it each frame to clip-space via the
+        /// referenced title's glyph layout. `focal_x_norm` /
+        /// `focal_y_norm` continue to be written into `anchor_x` /
+        /// `anchor_y` as the static fallback (used when the live
+        /// resolution can't reach the glyph — title clip removed,
+        /// kind changed, char_index past end of text).
+        ///
+        /// `None` (default) reproduces today's static-anchor
+        /// behaviour byte-identically — pinned by
+        /// `focal_ref_none_yields_static_anchor` in the engine
+        /// resolver tests.
+        focal_ref: Option<crate::FocalRef>,
     },
 
     /// Auto-apply `transform_link` to every clip *beneath* the

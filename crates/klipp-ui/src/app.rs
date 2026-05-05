@@ -6600,7 +6600,7 @@ impl KlippApp {
                 AppCommand::ApplyHyperzoom {
                     source_clip_id, target_clip_id, focal_x_norm, focal_y_norm,
                     duration_secs, max_scale, easing, hold_secs,
-                    add_radial_blur, radial_blur_amount,
+                    add_radial_blur, radial_blur_amount, focal_ref,
                 } => {
                     let src_id = *source_clip_id;
                     let seq_idx = self.state.active_sequence_idx;
@@ -6665,6 +6665,20 @@ impl KlippApp {
                     if let Some(rb) = plan.radial_blur.as_ref() {
                         apply_hyperzoom_radial_blur_to_clip(seq, src_id, rb.center, rb.peak_amount, &rb.source_amount_kfs);
                         apply_hyperzoom_radial_blur_to_clip(seq, tgt_id, rb.center, rb.peak_amount, &rb.target_amount_kfs);
+                    }
+
+                    // Glyph-anchored focal-point override. Written
+                    // ONLY on the source clip — the target's anchor
+                    // is the cut-frame zoom-out point, not a value
+                    // worth live-tracking (audit decision per
+                    // HZ-NEXT-GLYPH-LOCK question (f); revisit only
+                    // if a real "track the same letter on both sides
+                    // of the cut" use case shows up). focal_ref=None
+                    // (the back-compat path) skips this entirely and
+                    // anchor_x/y from apply_hyperzoom_plan_to_clip
+                    // remain the only authority on focal position.
+                    if let Some(fr) = focal_ref {
+                        apply_focal_ref_to_clip_transform(seq, src_id, *fr);
                     }
 
                     self.state.dirty = true;
@@ -31188,6 +31202,50 @@ fn apply_hyperzoom_radial_blur_to_clip(
     clip.effect_keyframes.insert(key, amount_kfs.to_vec());
 }
 
+/// Write a `FocalRef` onto the clip's `BuiltinEffect::Transform`.
+/// Companion to [`apply_hyperzoom_plan_to_clip`] for
+/// HZ-NEXT-GLYPH-LOCK: when the user has picked a glyph in the
+/// inspector preview, the bridge dispatches `ApplyHyperzoom` with
+/// `focal_ref = Some(...)` and this helper writes the override
+/// onto the source clip's Transform. The static `anchor_x` /
+/// `anchor_y` (already written by `apply_hyperzoom_plan_to_clip`)
+/// stay as the resolution-failure fallback.
+///
+/// If no Transform builtin exists yet (shouldn't happen — the
+/// hyperzoom apply always inserts one — but defence-in-depth),
+/// the helper inserts one with sane defaults so the focal_ref
+/// still has a host.
+fn apply_focal_ref_to_clip_transform(
+    seq: &mut klipp_timeline::Sequence,
+    clip_id: klipp_core::ClipId,
+    focal_ref: klipp_core::FocalRef,
+) {
+    let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) else {
+        tracing::debug!("apply_focal_ref_to_clip_transform: clip {clip_id:?} no longer in sequence");
+        return;
+    };
+
+    let mut found = false;
+    for fx in clip.builtin_effects.iter_mut() {
+        if let klipp_effects::BuiltinEffect::Transform { focal_ref: existing, .. } = fx {
+            *existing = Some(focal_ref);
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        clip.builtin_effects.push(klipp_effects::BuiltinEffect::Transform {
+            position_x: 0.0, position_y: 0.0,
+            scale_x: 1.0, scale_y: 1.0,
+            rotation: 0.0,
+            anchor_x: 0.5, anchor_y: 0.5,
+            rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+            focal_ref: Some(focal_ref),
+        });
+        clip.builtin_effects_enabled.push(true);
+    }
+}
+
 /// Mirror of `matte_chain_creates_cycle` for the `transform_link`
 /// chain: returns true iff binding `consumer.transform_link.target =
 /// target` would create a cycle (consumer → … → target → consumer).
@@ -33958,6 +34016,125 @@ mod hyperzoom_handler_tests {
         assert!((amt - 22.0).abs() < 1e-6, "amount rewritten to peak");
         assert_eq!(samples, 24, "user-configured samples preserved");
         assert_eq!(mode, 1, "user-configured mode (spin) preserved");
+    }
+
+    // ─────────── Glyph-anchored focal-point bridge ───────────
+
+    use super::apply_focal_ref_to_clip_transform;
+
+    #[test]
+    fn focal_ref_bridge_writes_into_existing_transform() {
+        // Pre-existing Transform with a baseline rotation the user
+        // wants preserved. The bridge writes focal_ref but must NOT
+        // touch other Transform fields — same in-place-update
+        // contract as the matte / radial-blur helpers.
+        let mut c = fresh_clip();
+        c.builtin_effects.push(BuiltinEffect::Transform {
+            position_x: 0.0, position_y: 0.0,
+            scale_x: 1.0, scale_y: 1.0,
+            rotation: 30.0,  // baseline rotation
+            anchor_x: 0.5, anchor_y: 0.5,
+            rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+            focal_ref: None,
+        });
+        c.builtin_effects_enabled.push(true);
+        let cid = c.id;
+        let title_uuid = ClipId::new().0;
+        let mut seq = seq_with_clips(vec![c]);
+
+        let fr = klipp_core::FocalRef::Glyph {
+            title_clip_id: title_uuid,
+            char_index: 5,
+            fallback_xy: (0.4, 0.6),
+        };
+        apply_focal_ref_to_clip_transform(&mut seq, cid, fr);
+
+        let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
+        let (rotation, fr_out) = clip.builtin_effects.iter().find_map(|e| match e {
+            BuiltinEffect::Transform { rotation, focal_ref, .. } => Some((*rotation, focal_ref.clone())),
+            _ => None,
+        }).unwrap();
+        assert!((rotation - 30.0).abs() < 1e-6, "baseline rotation preserved");
+        assert!(matches!(
+            fr_out,
+            Some(klipp_core::FocalRef::Glyph { char_index: 5, .. })
+        ), "focal_ref written");
+    }
+
+    #[test]
+    fn focal_ref_bridge_inserts_transform_when_absent() {
+        // Defence-in-depth: if the source clip has no Transform
+        // builtin yet, the bridge inserts one with sane defaults +
+        // the focal_ref. (The hyperzoom apply path always inserts
+        // one before this site fires, but the helper shouldn't
+        // panic if called out of order.)
+        let c = fresh_clip();
+        let cid = c.id;
+        let mut seq = seq_with_clips(vec![c]);
+        let fr = klipp_core::FocalRef::Glyph {
+            title_clip_id: ClipId::new().0,
+            char_index: 0,
+            fallback_xy: (0.5, 0.5),
+        };
+        apply_focal_ref_to_clip_transform(&mut seq, cid, fr);
+        let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
+        let has_focal_ref = clip.builtin_effects.iter().any(|e| matches!(
+            e,
+            BuiltinEffect::Transform { focal_ref: Some(_), .. }
+        ));
+        assert!(has_focal_ref, "Transform inserted with focal_ref attached");
+    }
+
+    #[test]
+    fn focal_ref_bridge_overwrites_existing_focal_ref() {
+        // Re-applying hyperzoom with a different glyph pick should
+        // replace the focal_ref, not stack two of them. (Belt-and-
+        // suspenders — only one Transform per clip in practice, so
+        // there's nothing to "stack" against, but the contract is
+        // worth pinning.)
+        let mut c = fresh_clip();
+        let old_uuid = ClipId::new().0;
+        c.builtin_effects.push(BuiltinEffect::Transform {
+            position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0,
+            rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
+            rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
+            focal_ref: Some(klipp_core::FocalRef::Glyph {
+                title_clip_id: old_uuid,
+                char_index: 1,
+                fallback_xy: (0.0, 0.0),
+            }),
+        });
+        c.builtin_effects_enabled.push(true);
+        let cid = c.id;
+        let mut seq = seq_with_clips(vec![c]);
+        let new_uuid = ClipId::new().0;
+        apply_focal_ref_to_clip_transform(&mut seq, cid, klipp_core::FocalRef::Glyph {
+            title_clip_id: new_uuid, char_index: 9, fallback_xy: (0.7, 0.3),
+        });
+        let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == cid).unwrap();
+        let fr = clip.builtin_effects.iter().find_map(|e| match e {
+            BuiltinEffect::Transform { focal_ref, .. } => focal_ref.clone(),
+            _ => None,
+        }).unwrap();
+        match fr {
+            klipp_core::FocalRef::Glyph { title_clip_id, char_index, .. } => {
+                assert_eq!(title_clip_id, new_uuid, "focal_ref replaced not stacked");
+                assert_eq!(char_index, 9);
+            }
+        }
+    }
+
+    #[test]
+    fn focal_ref_bridge_no_ops_on_missing_clip() {
+        // Stale dispatch (clip removed between dispatch and handler).
+        let c = fresh_clip();
+        let mut seq = seq_with_clips(vec![c.clone()]);
+        let other_id = ClipId::new();
+        apply_focal_ref_to_clip_transform(&mut seq, other_id, klipp_core::FocalRef::Glyph {
+            title_clip_id: ClipId::new().0, char_index: 0, fallback_xy: (0.5, 0.5),
+        });
+        let same = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|x| x.id == c.id).unwrap();
+        assert!(same.builtin_effects.iter().all(|e| !matches!(e, BuiltinEffect::Transform { .. })));
     }
 }
 

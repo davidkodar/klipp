@@ -129,9 +129,15 @@ pub enum FocalRef {
     /// used by the resolver when the live lookup fails (clip
     /// removed, kind changed, char_index past end of glyphs).
     Glyph {
-        /// Raw uuid of the title clip — wrapped in `klipp_core::ClipId`
-        /// at every boundary. See type-level note for the cycle
-        /// rationale.
+        /// Raw uuid of the title clip the focal point follows.
+        ///
+        /// Stored as `uuid::Uuid` — not `klipp_core::ClipId` — for
+        /// the same reason `BlendMode` lives in this crate: klipp-core
+        /// already depends on klipp-effects via `BuiltinEffect`
+        /// payloads on AppCommand, so a back-edge from klipp-effects
+        /// to klipp-core would close a dep cycle. Callers wrap this
+        /// raw uuid into `ClipId(uuid)` at the boundary (klipp-core /
+        /// klipp-engine / klipp-ui all do).
         title_clip_id: uuid::Uuid,
         char_index: u32,
         fallback_xy: (f32, f32),

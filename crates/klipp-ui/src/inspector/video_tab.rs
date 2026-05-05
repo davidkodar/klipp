@@ -2370,8 +2370,28 @@ fn show_hyperzoom_section(
                     // needed here (App pre-rendered it); the picker
                     // only needs glyph positions, which the cache
                     // helper computes from `title_clip` directly.
-                    if title_clip.title_data().is_some() {
+                    if let Some(td_for_caveat) = title_clip.title_data() {
                         ui.add_space(6.0);
+
+                        // Animated-text caveat (audit handoff
+                        // implementation note (i)). The picker
+                        // computes glyph positions from the title's
+                        // STATIC layout — typewriter / scroll-in /
+                        // char-animation effects evolve glyphs over
+                        // clip-time and the cut-frame position
+                        // won't match the snap. Tell the user up
+                        // front instead of letting them debug it.
+                        let has_animated_text = title_data_has_animated_chars(td_for_caveat);
+                        if has_animated_text {
+                            ui.label(
+                                egui::RichText::new("Focal locks to final glyph position. Animated text effects ignored.")
+                                    .size(10.0)
+                                    .italics()
+                                    .color(theme.text_dim),
+                            );
+                            ui.add_space(2.0);
+                        }
+
                         // Preview slot: ~210×118 px, 16:9-ish so an
                         // FHD title fits without distortion.
                         let preview_w = 210.0_f32;
@@ -2470,6 +2490,28 @@ fn show_hyperzoom_section(
                         let mut snapped_index: Option<usize> = ui.ctx().data_mut(|d|
                             d.get_temp(snap_id).unwrap_or(None)
                         );
+
+                        // Stale-pick indicator: the user picked a
+                        // glyph at index N, but the title has since
+                        // been edited and N is past the end of the
+                        // current glyph layout. Fallback to static
+                        // anchor_x/y kicks in at render time; here
+                        // we tell the user about it so a "why isn't
+                        // my pick following the letter anymore?"
+                        // mystery becomes a one-line answer.
+                        // Polarity-aware soft chrome (per
+                        // feedback_popup_bg_polarity memory) — uses
+                        // theme.marker_warning's tint at low alpha
+                        // rather than a hardcoded amber.
+                        let snap_is_stale = snapped_index
+                            .is_some_and(|idx| idx >= positions.len());
+                        if snap_is_stale {
+                            ui.label(
+                                egui::RichText::new("⚠ Picked letter no longer in title — using static fallback. Re-pick to relock.")
+                                    .size(10.0)
+                                    .color(theme.marker_warning),
+                            );
+                        }
 
                         // Click-to-commit: if a click landed on a
                         // glyph, snap focal_x/y to its centroid +
@@ -2681,6 +2723,27 @@ fn show_hyperzoom_section(
                             HyperzoomTargetChoice::Auto => None,
                             HyperzoomTargetChoice::Explicit(id) => Some(id),
                         };
+                        // Build the glyph-anchored override if (and
+                        // only if) the picker has a snapped glyph
+                        // AND there's still a resolvable title clip
+                        // for it. The picker_target lookup is the
+                        // same one the preview slot used; reading it
+                        // again at dispatch time avoids a stale
+                        // snapped_index pointing at a clip that's
+                        // been removed since the user picked.
+                        let snap_id = egui::Id::new(("hyperzoom_picker_snapped", clip_id));
+                        let snapped: Option<usize> = ui.ctx().data_mut(|d|
+                            d.get_temp(snap_id).unwrap_or(None)
+                        );
+                        let focal_ref = snapped.and_then(|char_idx| {
+                            crate::inspector::letter_picker::picker_target_for_clip(
+                                state.sequence(), clip_id, state.playhead,
+                            ).map(|title_clip| klipp_core::FocalRef::Glyph {
+                                title_clip_id: title_clip.id.0,
+                                char_index: char_idx as u32,
+                                fallback_xy: (focal_x, focal_y),
+                            })
+                        });
                         cmds.push(AppCommand::ApplyHyperzoom {
                             source_clip_id: clip_id,
                             target_clip_id,
@@ -2692,6 +2755,7 @@ fn show_hyperzoom_section(
                             hold_secs,
                             add_radial_blur,
                             radial_blur_amount,
+                            focal_ref,
                         });
                     }
 
@@ -2822,6 +2886,29 @@ fn matte_channel_to_u8(ch: klipp_nodes::params::MatteChannel) -> u8 {
 fn short_clip_id(id: &klipp_core::ClipId) -> String {
     let s = id.0.to_string();
     s.chars().take(6).collect()
+}
+
+/// Does this title data have an animation that moves glyphs over
+/// clip-time? Used by the HYPERZOOM picker preview to surface a
+/// caveat — the picker computes glyph positions from the static
+/// layout (audit-deferred from HZ-NEXT-LETTER-PICKER), so a
+/// scrolling / typewritering title's glyph centroid won't match
+/// what's on screen at the cut frame.
+///
+/// FadeIn / FadeOut deliberately do NOT count: opacity changes
+/// don't move glyphs, so the picker's static-layout assumption
+/// holds. Only positional animations and typewriter-style
+/// reveals are caveat-worthy.
+fn title_data_has_animated_chars(td: &klipp_timeline::TitleData) -> bool {
+    use klipp_timeline::TitleAnimationType as Anim;
+    let title_level_animated = matches!(
+        td.animation_type,
+        Anim::ScrollUp { .. } | Anim::ScrollDown { .. }
+        | Anim::CrawlLeft { .. } | Anim::CrawlRight { .. }
+        | Anim::Typewriter { .. }
+    );
+    let char_level_animated = td.char_animation().is_some();
+    title_level_animated || char_level_animated
 }
 
 fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &mut Vec<AppCommand>) {

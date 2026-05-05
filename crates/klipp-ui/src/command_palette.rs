@@ -520,12 +520,14 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
                 max_scale: 50.0,
                 // Palette easy-path keeps every polish layer at its
                 // back-compat default (Linear easing, no hold, no
-                // radial blur) so it's reachable without typing into
-                // the inspector. Power users tweak there.
+                // radial blur, no glyph lock) so it's reachable
+                // without typing into the inspector. Power users
+                // tweak there.
                 easing: 0,
                 hold_secs: 0.0,
                 add_radial_blur: false,
                 radial_blur_amount: 0.0,
+                focal_ref: None,
             }),
             enabled: true,
         });
