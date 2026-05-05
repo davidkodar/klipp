@@ -4121,59 +4121,75 @@ impl PlaybackEngine {
                 continue;
             };
             let (ov_w, ov_h) = (ov_frame.width, ov_frame.height);
-            let t_clone = std::time::Instant::now();
-            let mut ov_linear = ov_frame.data.clone();
-            ov_clone_us += t_clone.elapsed().as_micros();
-            // Resize FIRST so the grade chain runs at final resolution
-            // rather than source. For a 4K overlay → 1080p sequence,
-            // that's 4× less work for every effect / colour-grade
-            // node. Direction-aware: `resize_linear` picks the
-            // specialised 2:1 fast path when the ratio fits, the
-            // generic box for other shrinks, and bilinear for grows.
-            let (work_w, work_h) = if ov_w == final_w && ov_h == final_h {
-                (ov_w, ov_h)
+            let needs_resize = ov_w != final_w || ov_h != final_h;
+            // Buffer acquisition: when a resize is needed, hand the
+            // source buffer directly into `resize_linear` and let it
+            // allocate the destination — skipping the per-frame
+            // `ov_frame.data.clone()` (an 8 MB f32 memcpy at 1080p,
+            // ~3 ms) that the previous version paid even though the
+            // resize was about to throw the cloned buffer away. When
+            // no resize, we still need an owned buffer so the grade
+            // chain can mutate; the clone stays.
+            let (work_w, work_h, mut ov_linear) = if !needs_resize {
+                let t_clone = std::time::Instant::now();
+                let cloned = ov_frame.data.clone();
+                ov_clone_us += t_clone.elapsed().as_micros();
+                (ov_w, ov_h, cloned)
             } else {
-                // One-shot log so we can confirm dimensions vs final
-                // and verify the right resize primitive is dispatched.
-                if !self.overlay_dim_logged.contains(track_idx) {
-                    let path = if ov_w == final_w * 2 && ov_h == final_h * 2 {
-                        "downsample_linear_2x"
-                    } else if ov_w >= final_w && ov_h >= final_h {
-                        "downsample_linear_box"
-                    } else {
-                        "upsample_linear_bilinear"
-                    };
-                    tracing::debug!(
-                        "overlay track={track_idx} src={ov_w}x{ov_h} → final={final_w}x{final_h} via {path}"
-                    );
-                    self.overlay_dim_logged.insert(*track_idx);
-                }
                 let t_resize = std::time::Instant::now();
-                ov_linear = crate::grade_resample::resize_linear(&ov_linear, ov_w, ov_h, final_w, final_h);
+                let resized = crate::grade_resample::resize_linear(&ov_frame.data, ov_w, ov_h, final_w, final_h);
                 ov_resize_us += t_resize.elapsed().as_micros();
-                (final_w, final_h)
+                (final_w, final_h, resized)
             };
+            // ov_frame's borrow ends here — `self` is unborrowed for
+            // the diagnostic log + grade call below.
+            // One-shot log so we can confirm dimensions vs final
+            // and verify the right resize primitive is dispatched.
+            if needs_resize && !self.overlay_dim_logged.contains(track_idx) {
+                let path = if ov_w == final_w * 2 && ov_h == final_h * 2 {
+                    "downsample_linear_2x"
+                } else if ov_w >= final_w && ov_h >= final_h {
+                    "downsample_linear_box"
+                } else {
+                    "upsample_linear_bilinear"
+                };
+                tracing::debug!(
+                    "overlay track={track_idx} src={ov_w}x{ov_h} → final={final_w}x{final_h} via {path}"
+                );
+                self.overlay_dim_logged.insert(*track_idx);
+            }
             if let Some(c) = clip {
                 let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
                 let t_grade = std::time::Instant::now();
                 ov_linear = self.apply_clip_effects(ov_linear, work_w, work_h, c, clip_time);
                 ov_grade_us += t_grade.elapsed().as_micros();
             }
-            let src_linear = ov_linear;
-            // Cache for matte lookups before moving into pre_rendered.
-            // Conditional clone — only pay the bandwidth when someone
-            // else's matte_source actually points at this clip.
-            if let Some(c) = clip {
-                if matte_source_ids.contains(&c.id) {
-                    graded_layers.insert(c.id, src_linear.clone());
+            // Decide where the buffer goes: matte sources marked
+            // `consumed_as_matte` (or `matte_stencil`) are skipped
+            // by the composite loop entirely, so no need to keep a
+            // copy in `pre_rendered`. Move the buffer straight into
+            // `graded_layers` instead — saves an 8 MB clone per
+            // matte-source clip per frame.
+            let is_consumed = clip.as_ref()
+                .is_some_and(|c| c.consumed_as_matte || c.matte_stencil.is_some());
+            let is_matte_source = clip.as_ref()
+                .is_some_and(|c| matte_source_ids.contains(&c.id));
+            if is_consumed {
+                if is_matte_source {
+                    graded_layers.insert(clip.as_ref().unwrap().id, ov_linear);
                 }
+                // Otherwise drop ov_linear; the clip won't render.
+            } else {
+                if is_matte_source {
+                    graded_layers.insert(clip.as_ref().unwrap().id, ov_linear.clone());
+                }
+                pre_rendered.push(PreRenderedLayer {
+                    track_idx: *track_idx,
+                    effective: *effective,
+                    clip: clip.clone(),
+                    graded: Some(ov_linear),
+                });
             }
-            pre_rendered.push(PreRenderedLayer {
-                track_idx: *track_idx,
-                effective: *effective,
-                clip: clip.clone(),
-                graded: Some(src_linear),
-            });
         }
 
         // Blend V1 (always the first layer) onto the zero canvas. V1
@@ -7494,29 +7510,40 @@ impl PlaybackEngine {
                 continue;
             };
             let (ov_w, ov_h) = (ov_frame.width, ov_frame.height);
-            let mut ov_linear = ov_frame.data.clone();
-            // Resize-before-grade — same fix as the inline block in
-            // update_playback. Keeps paused-state composite consistent
-            // with the playing-state cost profile.
-            let (work_w, work_h) = if ov_w == final_w && ov_h == final_h {
-                (ov_w, ov_h)
+            let needs_resize = ov_w != final_w || ov_h != final_h;
+            // Same buffer-hygiene fix as the inline block in
+            // update_playback: skip the per-frame
+            // `ov_frame.data.clone()` when a resize is going to
+            // allocate a fresh buffer anyway, and move-instead-of-
+            // clone matte sources into `graded_layers` when their
+            // clip is `consumed_as_matte` (the composite loop skips
+            // them so `pre_rendered` doesn't need its own copy).
+            let (work_w, work_h, mut ov_linear) = if !needs_resize {
+                (ov_w, ov_h, ov_frame.data.clone())
             } else {
-                ov_linear = crate::grade_resample::resize_linear(&ov_linear, ov_w, ov_h, final_w, final_h);
-                (final_w, final_h)
+                let resized = crate::grade_resample::resize_linear(&ov_frame.data, ov_w, ov_h, final_w, final_h);
+                (final_w, final_h, resized)
             };
             if let Some(c) = clip {
                 let clip_time = (self.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0);
                 ov_linear = self.apply_clip_effects(ov_linear, work_w, work_h, c, clip_time);
             }
-            let src_linear = ov_linear;
-            if let Some(c) = clip {
-                if matte_source_ids.contains(&c.id) {
-                    graded_layers.insert(c.id, src_linear.clone());
+            let is_consumed = clip.as_ref()
+                .is_some_and(|c| c.consumed_as_matte || c.matte_stencil.is_some());
+            let is_matte_source = clip.as_ref()
+                .is_some_and(|c| matte_source_ids.contains(&c.id));
+            if is_consumed {
+                if is_matte_source {
+                    graded_layers.insert(clip.as_ref().unwrap().id, ov_linear);
                 }
+            } else {
+                if is_matte_source {
+                    graded_layers.insert(clip.as_ref().unwrap().id, ov_linear.clone());
+                }
+                pre_rendered.push(PreRenderedLayer {
+                    track_idx: *track_idx, effective: *effective, clip: clip.clone(), graded: Some(ov_linear),
+                });
             }
-            pre_rendered.push(PreRenderedLayer {
-                track_idx: *track_idx, effective: *effective, clip: clip.clone(), graded: Some(src_linear),
-            });
         }
 
         // Blend V1 (with stencils + matte if applicable) onto the zero canvas.
