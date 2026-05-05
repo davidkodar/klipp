@@ -4921,34 +4921,96 @@ impl PlaybackEngine {
         // Count live media decoders (for cap enforcement later)
         let mut media_decoder_count = self.overlay_decoders.len();
 
-        // Cache key for synthetic-clip skip. Defaults to the frame
-        // number so animated content is re-rendered each tick, but
-        // a frame-invariant title (no animation_type, no per-object
-        // position keyframes, no clip-level transform keyframes /
-        // modifiers) gets a constant 0 — meaning the synthetic-skip
-        // cache hits forever after the first render of that clip.
-        // Without this, a static "Best Picture" title burned ~5–10 ms
-        // every tick re-rasterising identical pixels.
+        // Cache key for synthetic-clip skip. Computed as a hash of
+        // the values that actually drive the rasterised title's
+        // appearance — animation type + evaluated keyframe values at
+        // the current playhead — so a clip with non-empty keyframe
+        // vecs that all hold the same value (e.g. user added a
+        // scale keyframe at 1.0 then never moved it) still hits the
+        // cache, instead of being treated as "animated" by the prior
+        // empty-vec detector.
+        //
+        // Static and frame-invariant input → constant key → cache
+        // hits forever. Genuinely animated input → key changes per
+        // tick → re-render fires.
+        //
+        // Logged as 0 fast path when nothing's animated at all so
+        // the perf line stays readable.
         let synth_frame_key_for = |clip: &klipp_timeline::Clip, default_frame: i64| -> i64 {
             use klipp_core::ParamId;
-            let title_static = match clip.title_data() {
-                None => false,
-                Some(td) => matches!(td.animation_type, klipp_timeline::TitleAnimationType::Static)
-                    && td.objects.iter().all(|obj|
-                        obj.transform.center_x_keyframes.is_empty()
-                            && obj.transform.center_y_keyframes.is_empty()),
-            };
-            let no_clip_anim = clip.transform_pos_x_keyframes.is_empty()
-                && clip.transform_pos_y_keyframes.is_empty()
-                && clip.transform_scale_keyframes.is_empty()
-                && clip.transform_rotation_keyframes.is_empty()
-                && clip.opacity_keyframes.is_empty()
-                && !clip.param_modifiers.contains_key(&ParamId::PositionX)
-                && !clip.param_modifiers.contains_key(&ParamId::PositionY)
-                && !clip.param_modifiers.contains_key(&ParamId::Scale)
-                && !clip.param_modifiers.contains_key(&ParamId::Rotation)
-                && !clip.param_modifiers.contains_key(&ParamId::Opacity);
-            if title_static && no_clip_anim { 0 } else { default_frame }
+            use std::hash::{Hash, Hasher};
+
+            let clip_relative_secs = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
+
+            // Animated `animation_type` (typewriter, scroll, fade,
+            // zoom-in, …) — per-frame render. Static animation_type
+            // falls through to the keyframe-evaluation path.
+            if let Some(td) = clip.title_data() {
+                if !matches!(td.animation_type, klipp_timeline::TitleAnimationType::Static) {
+                    return default_frame;
+                }
+            }
+
+            // Modifiers: any modifier on a param that affects the
+            // rasterised title means we have to re-render each
+            // tick. Cheap to detect; we skip the keyframe hash path
+            // when this fires.
+            if clip.param_modifiers.contains_key(&ParamId::PositionX)
+                || clip.param_modifiers.contains_key(&ParamId::PositionY)
+                || clip.param_modifiers.contains_key(&ParamId::Scale)
+                || clip.param_modifiers.contains_key(&ParamId::Rotation)
+            {
+                return default_frame;
+            }
+
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            let mut any_kf = false;
+
+            // Per-object center keyframes (title objects)
+            if let Some(td) = clip.title_data() {
+                for obj in &td.objects {
+                    if !obj.transform.center_x_keyframes.is_empty()
+                        || !obj.transform.center_y_keyframes.is_empty()
+                    {
+                        any_kf = true;
+                        let v = obj.transform.evaluated_center(clip_relative_secs);
+                        v.x.to_bits().hash(&mut hasher);
+                        v.y.to_bits().hash(&mut hasher);
+                    }
+                }
+            }
+
+            // Clip-level transform keyframes
+            if !clip.transform_pos_x_keyframes.is_empty() {
+                any_kf = true;
+                let v = klipp_core::keyframe::evaluate(&clip.transform_pos_x_keyframes, clip_relative_secs, 0.0);
+                v.to_bits().hash(&mut hasher);
+            }
+            if !clip.transform_pos_y_keyframes.is_empty() {
+                any_kf = true;
+                let v = klipp_core::keyframe::evaluate(&clip.transform_pos_y_keyframes, clip_relative_secs, 0.0);
+                v.to_bits().hash(&mut hasher);
+            }
+            if !clip.transform_scale_keyframes.is_empty() {
+                any_kf = true;
+                let v = klipp_core::keyframe::evaluate(&clip.transform_scale_keyframes, clip_relative_secs, 1.0);
+                v.to_bits().hash(&mut hasher);
+            }
+            if !clip.transform_rotation_keyframes.is_empty() {
+                any_kf = true;
+                let v = klipp_core::keyframe::evaluate(&clip.transform_rotation_keyframes, clip_relative_secs, 0.0);
+                v.to_bits().hash(&mut hasher);
+            }
+
+            // Note: opacity_keyframes are applied at composite time,
+            // not in the title raster — they don't affect the
+            // cached overlay frame.
+
+            if any_kf {
+                hasher.finish() as i64
+            } else {
+                0
+            }
         };
         let default_frame = playhead.value;
 
@@ -4977,11 +5039,13 @@ impl PlaybackEngine {
                 per_iter_log.push((track_idx, is_synthetic, true, us, "synthetic_cache_hit"));
                 continue;
             }
-            // Diagnostic: log every title-cache miss with the
-            // condition that broke it, plus the clip-level
-            // animation-suspect fields so we can pin which one
-            // disqualified the static-title detector.
-            if is_synthetic && clip.title_data().is_some() {
+            // One-shot diagnostic on the first cache miss per track.
+            // Once the cache is healthy, no further misses log; if a
+            // future change breaks the cache, the line fires again
+            // and points at the broken condition.
+            if is_synthetic && clip.title_data().is_some()
+                && !self.title_cache_diag_logged.contains(&track_idx)
+            {
                 let reason = if self.overlay_clips.get(&track_idx) != Some(&clip_idx) {
                     format!("clip changed (cached_idx={:?} new_idx={clip_idx})", self.overlay_clips.get(&track_idx))
                 } else if self.overlay_synth_frame.get(&track_idx) != Some(&frame_key) {
@@ -4992,27 +5056,11 @@ impl PlaybackEngine {
                 } else {
                     "unknown".to_string()
                 };
-                let td = clip.title_data().unwrap();
-                let obj_kf_count: usize = td.objects.iter().map(|o|
-                    o.transform.center_x_keyframes.len() + o.transform.center_y_keyframes.len()
-                ).sum();
                 tracing::debug!(
-                    "title cache miss track={track_idx} reason: {reason} \
-                     anim={:?} obj_kf={obj_kf_count} \
-                     pos_x_kf={} pos_y_kf={} scale_kf={} rot_kf={} op_kf={} \
-                     mods=[posx={} posy={} scale={} rot={} op={}]",
-                    td.animation_type,
-                    clip.transform_pos_x_keyframes.len(),
-                    clip.transform_pos_y_keyframes.len(),
-                    clip.transform_scale_keyframes.len(),
-                    clip.transform_rotation_keyframes.len(),
-                    clip.opacity_keyframes.len(),
-                    clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionX),
-                    clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionY),
-                    clip.param_modifiers.contains_key(&klipp_core::ParamId::Scale),
-                    clip.param_modifiers.contains_key(&klipp_core::ParamId::Rotation),
-                    clip.param_modifiers.contains_key(&klipp_core::ParamId::Opacity),
+                    "title cache miss track={track_idx} reason: {reason} (frame_key={frame_key} animation_type={:?})",
+                    clip.title_data().unwrap().animation_type,
                 );
+                self.title_cache_diag_logged.insert(track_idx);
             }
 
             // Static-generator fast path: SolidColor / Gradient /
