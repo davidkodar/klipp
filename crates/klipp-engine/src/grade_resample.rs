@@ -140,34 +140,59 @@ pub fn upsample_linear_bilinear(
     let mut out = vec![0.0f32; dst_pixels * 4];
     let src_w_us = src_w as usize;
     let src_h_us = src_h as usize;
+    let dst_w_us = dst_w as usize;
+    let row_floats = src_w_us * 4;
 
-    // Sample at pixel centres. Map dst centre → src centre, then
-    // blend the four nearest source pixels by sub-pixel distance.
     let sx_scale = src_w as f32 / dst_w as f32;
     let sy_scale = src_h as f32 / dst_h as f32;
+
+    // Pre-compute per-column source indexes + horizontal weights so
+    // the inner loop reuses them across every output row. At
+    // 1920-wide output that's two 1920-element scans up-front in
+    // exchange for skipping two `floor + clamp + as usize` per
+    // pixel inside the dst_h × dst_w hot loop.
+    let mut col_x0 = vec![0usize; dst_w_us];
+    let mut col_x1 = vec![0usize; dst_w_us];
+    let mut col_wx = vec![0.0f32; dst_w_us];
+    for dx in 0..dst_w_us {
+        let sx_f = (dx as f32 + 0.5) * sx_scale - 0.5;
+        let sx0 = sx_f.floor().max(0.0) as usize;
+        let sx1 = (sx0 + 1).min(src_w_us - 1);
+        col_x0[dx] = sx0 * 4;
+        col_x1[dx] = sx1 * 4;
+        col_wx[dx] = (sx_f - sx0 as f32).clamp(0.0, 1.0);
+    }
 
     for dy in 0..dst_h {
         let sy_f = (dy as f32 + 0.5) * sy_scale - 0.5;
         let sy0 = sy_f.floor().max(0.0) as usize;
         let sy1 = (sy0 + 1).min(src_h_us - 1);
         let wy = (sy_f - sy0 as f32).clamp(0.0, 1.0);
+        let one_minus_wy = 1.0 - wy;
 
-        for dx in 0..dst_w {
-            let sx_f = (dx as f32 + 0.5) * sx_scale - 0.5;
-            let sx0 = sx_f.floor().max(0.0) as usize;
-            let sx1 = (sx0 + 1).min(src_w_us - 1);
-            let wx = (sx_f - sx0 as f32).clamp(0.0, 1.0);
+        // Row references: bind once per dst row so the inner loop
+        // sees four fixed-length slices instead of a single long
+        // `src` buffer with index arithmetic. LLVM elides the
+        // per-channel bounds checks against length-known refs and
+        // unrolls the 4-channel body cleanly.
+        let row0 = &src[sy0 * row_floats..(sy0 + 1) * row_floats];
+        let row1 = &src[sy1 * row_floats..(sy1 + 1) * row_floats];
+        let dst_row_off = (dy as usize) * dst_w_us * 4;
+        let dst_row = &mut out[dst_row_off..dst_row_off + dst_w_us * 4];
 
-            let i00 = (sy0 * src_w_us + sx0) * 4;
-            let i01 = (sy0 * src_w_us + sx1) * 4;
-            let i10 = (sy1 * src_w_us + sx0) * 4;
-            let i11 = (sy1 * src_w_us + sx1) * 4;
-            let dst_idx = ((dy as usize) * (dst_w as usize) + dx as usize) * 4;
+        for dx in 0..dst_w_us {
+            let i0 = col_x0[dx];
+            let i1 = col_x1[dx];
+            let wx = col_wx[dx];
+            let one_minus_wx = 1.0 - wx;
+            let dst_idx = dx * 4;
 
+            // Channel-unrolled body — straight-line ADD/MUL with
+            // four fixed-stride loads from each row.
             for c in 0..4 {
-                let top = src[i00 + c] * (1.0 - wx) + src[i01 + c] * wx;
-                let bot = src[i10 + c] * (1.0 - wx) + src[i11 + c] * wx;
-                out[dst_idx + c] = top * (1.0 - wy) + bot * wy;
+                let top = row0[i0 + c] * one_minus_wx + row0[i1 + c] * wx;
+                let bot = row1[i0 + c] * one_minus_wx + row1[i1 + c] * wx;
+                dst_row[dst_idx + c] = top * one_minus_wy + bot * wy;
             }
         }
     }
@@ -376,6 +401,33 @@ mod tests {
             assert!((dst[row_start + 8] - 0.4).abs() < 1e-6);
             assert!((dst[row_start + 12] - 0.4).abs() < 1e-6);
         }
+    }
+
+    /// Sanity perf for the user's actual case: 1080×1920 (portrait
+    /// iPhone clip) → 1920×1080 (landscape sequence). The engine
+    /// dispatches this to bilinear (it's a mixed up/down asymmetric
+    /// resize, not an exact 2:1). Production logs showed 22 ms here;
+    /// the slice-ref + hoisted-weights rewrite should drop it well
+    /// under that. Loose cap to catch a regression that lands a
+    /// per-pixel allocation in the inner loop.
+    #[test]
+    fn bilinear_portrait_to_landscape_perf_sanity() {
+        let src_w = 1080u32;
+        let src_h = 1920u32;
+        let dst_w = 1920u32;
+        let dst_h = 1080u32;
+        let src = vec![0.5f32; (src_w as usize) * (src_h as usize) * 4];
+        // Warmup
+        let _ = upsample_linear_bilinear(&src, src_w, src_h, dst_w, dst_h);
+        let mut best_ms = f64::INFINITY;
+        for _ in 0..3 {
+            let t = std::time::Instant::now();
+            let _out = upsample_linear_bilinear(&src, src_w, src_h, dst_w, dst_h);
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            if ms < best_ms { best_ms = ms; }
+        }
+        // 50 ms cap; real release should land ~5–10 ms.
+        assert!(best_ms < 50.0, "bilinear 1080x1920→1920x1080 took {best_ms:.1}ms — too slow");
     }
 
     /// Direction router: identical sizes round-trip without copying
