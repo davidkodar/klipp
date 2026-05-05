@@ -4978,9 +4978,9 @@ impl PlaybackEngine {
                 continue;
             }
             // Diagnostic: log every title-cache miss with the
-            // condition that broke it, plus the cached vs new key
-            // values. Will spam during playback, but we need the
-            // signal until the cache actually holds.
+            // condition that broke it, plus the clip-level
+            // animation-suspect fields so we can pin which one
+            // disqualified the static-title detector.
             if is_synthetic && clip.title_data().is_some() {
                 let reason = if self.overlay_clips.get(&track_idx) != Some(&clip_idx) {
                     format!("clip changed (cached_idx={:?} new_idx={clip_idx})", self.overlay_clips.get(&track_idx))
@@ -4992,9 +4992,26 @@ impl PlaybackEngine {
                 } else {
                     "unknown".to_string()
                 };
+                let td = clip.title_data().unwrap();
+                let obj_kf_count: usize = td.objects.iter().map(|o|
+                    o.transform.center_x_keyframes.len() + o.transform.center_y_keyframes.len()
+                ).sum();
                 tracing::debug!(
-                    "title cache miss track={track_idx} reason: {reason} (frame_key={frame_key} animation_type={:?})",
-                    clip.title_data().unwrap().animation_type,
+                    "title cache miss track={track_idx} reason: {reason} \
+                     anim={:?} obj_kf={obj_kf_count} \
+                     pos_x_kf={} pos_y_kf={} scale_kf={} rot_kf={} op_kf={} \
+                     mods=[posx={} posy={} scale={} rot={} op={}]",
+                    td.animation_type,
+                    clip.transform_pos_x_keyframes.len(),
+                    clip.transform_pos_y_keyframes.len(),
+                    clip.transform_scale_keyframes.len(),
+                    clip.transform_rotation_keyframes.len(),
+                    clip.opacity_keyframes.len(),
+                    clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionX),
+                    clip.param_modifiers.contains_key(&klipp_core::ParamId::PositionY),
+                    clip.param_modifiers.contains_key(&klipp_core::ParamId::Scale),
+                    clip.param_modifiers.contains_key(&klipp_core::ParamId::Rotation),
+                    clip.param_modifiers.contains_key(&klipp_core::ParamId::Opacity),
                 );
             }
 
